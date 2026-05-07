@@ -6,6 +6,7 @@ import { logger } from './lib/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import authRouter from './routes/auth.js'
 import productsRouter from './routes/products.js'
+import customersRouter from './routes/customers.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -45,6 +46,7 @@ app.use('/api/v1/auth/login', loginLimiter)
 // Роуты
 app.use('/api/v1/auth', authRouter)
 app.use('/api/v1/products', productsRouter)
+app.use('/api/v1/customers', customersRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)
