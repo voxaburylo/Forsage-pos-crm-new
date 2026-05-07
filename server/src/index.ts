@@ -33,12 +33,12 @@ const loginLimiter = rateLimit({
   message: { error: { code: 'TOO_MANY_LOGIN_ATTEMPTS', message: 'Забагато спроб входу. Спробуйте через годину.', status: 429 } },
 })
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
-// Login rate limiter на /api/auth/login (роуты будут добавляться в Фазе 1)
-app.use('/api/auth/login', loginLimiter)
+// Login rate limiter — max 10 попыток/час (ТЗ раздел 8.3)
+app.use('/api/v1/auth/login', loginLimiter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

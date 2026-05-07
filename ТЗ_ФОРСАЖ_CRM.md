@@ -1,9 +1,11 @@
-# ТЕХНИЧЕСКОЕ ЗАДАНИЕ
+﻿# ТЕХНИЧЕСКОЕ ЗАДАНИЕ
 ## CRM/ERP система для магазина автозапчастей "Форсаж"
 
-**Версия:** 2.0 (после аудита)
+**Версия:** 3.0 (полная — после аудита всех 14 SPEC файлов)
 **Дата:** 2026-05-07
 **Статус:** Готово к разработке
+
+> ⚠️ **РЕШЕНО:** API использует `/api/v1/` (по большинству SPEC файлов). Этот документ объединяет все 14 SPEC файлов.
 
 ---
 
@@ -654,103 +656,103 @@ CREATE TABLE brands (
 ### 6.2 AUTH
 
 ```
-POST   /api/auth/login          — Вход по телефону + пароль
-POST   /api/auth/logout         — Выход
-POST   /api/auth/refresh        — Обновить access token
-GET    /api/auth/me             — Текущий пользователь
+POST   /api/v1/auth/login          — Вход по телефону + пароль
+POST   /api/v1/auth/logout         — Выход
+POST   /api/v1/auth/refresh        — Обновить access token
+GET    /api/v1/auth/me             — Текущий пользователь
 ```
 
 ### 6.3 PRODUCTS
 
 ```
-GET    /api/products            — Список (поиск, фильтры, пагинация)
-GET    /api/products/:id        — Карточка товара
-POST   /api/products            — Создать (admin+)
-PUT    /api/products/:id        — Обновить (admin+)
-DELETE /api/products/:id        — Soft delete (admin+)
-GET    /api/products/search?q=  — Быстрый поиск для POS (оптимизированный)
-GET    /api/products/:id/price-history — История цен
+GET    /api/v1/products            — Список (поиск, фильтры, пагинация)
+GET    /api/v1/products/:id        — Карточка товара
+POST   /api/v1/products            — Создать (admin+)
+PUT    /api/v1/products/:id        — Обновить (admin+)
+DELETE /api/v1/products/:id        — Soft delete (admin+)
+GET    /api/v1/products/search?q=  — Быстрый поиск для POS (оптимизированный)
+GET    /api/v1/products/:id/price-history — История цен
 ```
 
 ### 6.4 CUSTOMERS
 
 ```
-GET    /api/customers           — Список (поиск по телефону/имени)
-GET    /api/customers/:id       — Карточка клиента
-POST   /api/customers           — Создать клиента
-POST   /api/customers/quick     — Быстрое создание (только phone + name)
-PUT    /api/customers/:id       — Обновить
-GET    /api/customers/:id/sales — История покупок
-GET    /api/customers/:id/debts — История долгов
-POST   /api/customers/:id/pay-debt — Погасить долг
+GET    /api/v1/customers           — Список (поиск по телефону/имени)
+GET    /api/v1/customers/:id       — Карточка клиента
+POST   /api/v1/customers           — Создать клиента
+POST   /api/v1/customers/quick     — Быстрое создание (только phone + name)
+PUT    /api/v1/customers/:id       — Обновить
+GET    /api/v1/customers/:id/sales — История покупок
+GET    /api/v1/customers/:id/debts — История долгов
+POST   /api/v1/customers/:id/pay-debt — Погасить долг
 ```
 
 ### 6.5 SHIFTS (Смены)
 
 ```
-GET    /api/shifts/current      — Текущая открытая смена
-POST   /api/shifts/open         — Открыть смену
-POST   /api/shifts/:id/close    — Закрыть смену
-GET    /api/shifts/:id          — Детали смены
-GET    /api/shifts/:id/report   — Отчёт по смене
+GET    /api/v1/shifts/current      — Текущая открытая смена
+POST   /api/v1/shifts/open         — Открыть смену
+POST   /api/v1/shifts/:id/close    — Закрыть смену
+GET    /api/v1/shifts/:id          — Детали смены
+GET    /api/v1/shifts/:id/report   — Отчёт по смене
 ```
 
 ### 6.6 SALES (Продажи)
 
 ```
-POST   /api/sales                      — Создать продажу
-GET    /api/sales/:id                  — Детали чека
-GET    /api/sales                      — Список (с фильтрами)
-POST   /api/sales/calculate-price      — Предварительный расчёт чека
+POST   /api/v1/sales                      — Создать продажу
+GET    /api/v1/sales/:id                  — Детали чека
+GET    /api/v1/sales                      — Список (с фильтрами)
+POST   /api/v1/sales/calculate-price      — Предварительный расчёт чека
 ```
 
 ### 6.7 RETURNS (Возвраты)
 
 ```
-POST   /api/returns             — Оформить возврат
-GET    /api/returns/:id         — Детали возврата
-GET    /api/returns             — Список возвратов
+POST   /api/v1/returns             — Оформить возврат
+GET    /api/v1/returns/:id         — Детали возврата
+GET    /api/v1/returns             — Список возвратов
 ```
 
 ### 6.8 SUPPLY INVOICES (Приёмка)
 
 ```
-GET    /api/supply-invoices              — Список накладных
-POST   /api/supply-invoices              — Создать накладную (draft)
-PUT    /api/supply-invoices/:id          — Редактировать (пока draft)
-POST   /api/supply-invoices/:id/post     — Провести (увеличивает остатки)
-POST   /api/supply-invoices/:id/cancel   — Отменить
+GET    /api/v1/supply-invoices              — Список накладных
+POST   /api/v1/supply-invoices              — Создать накладную (draft)
+PUT    /api/v1/supply-invoices/:id          — Редактировать (пока draft)
+POST   /api/v1/supply-invoices/:id/post     — Провести (увеличивает остатки)
+POST   /api/v1/supply-invoices/:id/cancel   — Отменить
 ```
 
 ### 6.9 REPORTS
 
 ```
-GET    /api/reports/sales/today          — Продажи сегодня
-GET    /api/reports/sales/period?from=&to= — Продажи за период
-GET    /api/reports/products/low-stock   — Товары с низким остатком
-GET    /api/reports/customers/debtors    — Клиенты с долгами
-GET    /api/reports/shift/:id            — Отчёт по смене
+GET    /api/v1/reports/sales/today          — Продажи сегодня
+GET    /api/v1/reports/sales/period?from=&to= — Продажи за период
+GET    /api/v1/reports/products/low-stock   — Товары с низким остатком
+GET    /api/v1/reports/customers/debtors    — Клиенты с долгами
+GET    /api/v1/reports/shift/:id            — Отчёт по смене
 ```
 
 ### 6.10 ADMIN
 
 ```
-GET    /api/admin/users         — Список пользователей
-POST   /api/admin/users         — Создать пользователя
-PUT    /api/admin/users/:id     — Изменить роль/статус
-DELETE /api/admin/users/:id     — Деактивировать
+GET    /api/v1/admin/users         — Список пользователей
+POST   /api/v1/admin/users         — Создать пользователя
+PUT    /api/v1/admin/users/:id     — Изменить роль/статус
+DELETE /api/v1/admin/users/:id     — Деактивировать
 
-GET    /api/admin/categories    — Список категорий
-POST   /api/admin/categories    — Создать
-PUT    /api/admin/categories/:id — Изменить
-DELETE /api/admin/categories/:id — Удалить
+GET    /api/v1/admin/categories    — Список категорий
+POST   /api/v1/admin/categories    — Создать
+PUT    /api/v1/admin/categories/:id — Изменить
+DELETE /api/v1/admin/categories/:id — Удалить
 
-GET    /api/admin/brands        — Список брендов
-POST   /api/admin/brands        — Создать
-PUT    /api/admin/brands/:id    — Изменить
+GET    /api/v1/admin/brands        — Список брендов
+POST   /api/v1/admin/brands        — Создать
+PUT    /api/v1/admin/brands/:id    — Изменить
 
-GET    /api/settings            — Настройки магазина
-PUT    /api/settings            — Обновить (только owner)
+GET    /api/v1/settings            — Настройки магазина
+PUT    /api/v1/settings            — Обновить (только owner)
 ```
 
 ---
@@ -1169,3 +1171,418 @@ const price = 450.00;  // float для денег
 - [ ] Приёмка → остаток увеличился → проверено
 - [ ] Отчёт по смене совпадает с реальными деньгами в кассе
 - [ ] Печать чека работает на термопринтере
+
+---
+
+## 13. ДЕТАЛИ ИЗ ВСЕХ SPEC ФАЙЛОВ (дополнения к разделам выше)
+
+> Этот раздел содержит всё важное из 13 дополнительных SPEC файлов, которых не было в основном ТЗ.
+
+---
+
+### 13.1 ТОВАРЫ — дополнения из SPEC_PRODUCTS.md
+
+#### Нормализация артикулов (ОБЯЗАТЕЛЬНО для поиска)
+Перед поиском и сохранением — нормализовать все коды:
+- Удалить пробелы, тире, точки, слеши, подчёркивания
+- Привести к UPPERCASE
+- Удалить ведущие нули
+- Пример: `"04465-33471"` → `"0446533471"`, `"w 712"` → `"W712"`
+
+#### Дополнительные поля товара (MVP + Expansion)
+```
+oem_number        VARCHAR(100)   — OEM номер производителя
+supplier_article  VARCHAR(100)   — артикул поставщика
+wholesale_price   INTEGER        — оптовая цена (копейки)
+min_price         INTEGER        — минимальная цена (защита маржи, копейки)
+qty_reserved      NUMERIC(12,3)  — зарезервировано для заказов
+status            ENUM           — active / inactive / discontinued / order_only
+is_weight_based   BOOLEAN        — товар на вес (дробное qty)
+is_quick_cash     BOOLEAN        — универсальный товар без отслеживания (скрепки и т.п.)
+is_order_only     BOOLEAN        — только под заказ, не хранится на складе
+photo_urls        TEXT[]         — массив URL фотографий
+search_vector     TSVECTOR       — для полнотекстового поиска (gin индекс)
+```
+
+#### Дополнительные таблицы товаров
+```sql
+-- Несколько штрихкодов на товар
+product_barcodes (product_id, barcode, barcode_type, is_primary)
+
+-- Псевдонимы (как сотрудники называют товар)
+product_aliases (product_id, alias)
+
+-- Система аналогов
+product_analogs (product_id, analog_product_id, analog_type, priority)
+
+-- Коды поставщиков на товар
+product_supplier_codes (product_id, supplier_id, supplier_code, supplier_price, lead_time_days)
+
+-- История цен
+product_price_history (product_id, price_type, old_price, new_price, changed_by, changed_at)
+
+-- Совместимость с автомобилями
+product_fitment (product_id, make, model, year_from, year_to, engine_code, body_code)
+```
+
+#### Бренд-тиры (приоритет аналогов)
+```
+original  — OEM оригинал (Toyota Genuine, BMW) — 100% baseline
+premium   — TRW, Bosch, Brembo               — 60-80% OEM
+standard  — Remsa, Ferodo, Kayaba             — 40-60% OEM
+budget    — Rider, AURORA                     — 20-40% OEM
+```
+Поле `brands.tier` — ENUM этих значений. При показе аналогов: сначала same-tier, потом tier-up, потом tier-down.
+
+#### Новые API endpoints (товары)
+```
+GET  /api/v1/products/:id/analogs       — аналоги товара
+GET  /api/v1/products/:id/price-history — история цен
+POST /api/v1/products/:id/barcodes      — добавить штрихкод
+GET  /api/v1/products/search?q=&normalize=true — поиск с нормализацией
+```
+
+---
+
+### 13.2 POS КАССА — дополнения из SPEC_POS.md
+
+#### Полный список горячих клавиш
+| Клавиша | Действие |
+|---|---|
+| `F1` | Справка |
+| `F2` | Поиск товара (фокус на поле поиска) |
+| `F4` | Новый клиент |
+| `F5` | Приостановить чек (suspend) |
+| `F6` | Восстановить чек (resume) |
+| `F7` | Добавить заметку к чеку |
+| `F8` | Открыть оплату |
+| `F9` | Скидка на чек |
+| `F10` | Открыть смену / закрыть смену |
+| `F11` | Последняя продажа |
+| `F12` | Печать последнего чека |
+| `Esc` | Очистить поиск |
+| `Enter` | Добавить первый результат (qty=1) |
+| `+` / `-` | Изменить qty выбранной позиции |
+| `Del` | Удалить выбранную позицию |
+| `Ctrl+Z` | Отменить последнее добавление |
+
+#### Приостановка чека (Suspend/Resume)
+- `is_suspended = true` — чек сохраняется в БД, освобождает экран
+- Кассир может обслужить другого клиента
+- Resume восстанавливает чек целиком
+- Максимум 5 приостановленных чеков одновременно
+
+#### Обнаружение дублей
+- Если тот же товар + тот же клиент продавался < 5 минут назад → предупреждение
+- Кассир может проигнорировать
+
+#### Продажа ниже min_price
+- Система предупреждает: "Ціна нижче мінімальної!"
+- Требует PIN-код владельца для override
+- `POST /api/v1/sales/override-min-price` — отдельный endpoint (только Owner/Admin)
+- Все override логируются в `audit_log`
+
+#### Crash recovery
+- Текущий чек сохраняется в `localStorage` каждые 10 секунд
+- При открытии после сбоя — предложение восстановить
+
+#### Звуковые эффекты
+- Успешное сканирование штрихкода → `beep.mp3`
+- Ошибка (товар не найден) → `error.mp3`
+- Оплата принята → `success.mp3`
+- Можно отключить в настройках
+
+#### Правила при debt-продаже
+- Клиент обязателен (нельзя продать в долг анонимно)
+- Проверка `customer.debt_limit` — если превышен → блокировка (можно override с PIN)
+- Клиент с `risk_level = blocked` → продажа только наличными
+
+---
+
+### 13.3 ЦІНОУТВОРЕННЯ — из SPEC_PRICING.md
+
+#### Ценовые уровни (price tiers)
+```sql
+price_tiers (id, tenant_id, name, discount_pct, is_default, sort_order)
+```
+Примеры уровней:
+- Роздріб (0% скидки) — default
+- Опт (-15%)
+- СТО (-20%)
+- VIP (-25%)
+
+Клиент привязывается к уровню через `customers.price_tier_id`.
+
+#### Объёмные скидки
+```sql
+volume_discounts (price_tier_id, product_id, category_id, min_quantity, discount_pct)
+```
+Пример: купить > 10 шт фильтров → скидка ещё 5%.
+
+#### Наценки по категориям
+```sql
+category_markups (category_id, markup_pct, min_markup_pct)
+```
+При создании товара в категории — розничная цена = закупочная × (1 + markup_pct).
+
+#### Расчёт цены (endpoint)
+```
+POST /api/v1/pricing/calculate
+Body: { product_id, customer_id?, qty, override_price? }
+Response: { base_price, tier_discount, volume_discount, final_price, margin_pct }
+```
+Маржу видит только Owner/Admin.
+
+---
+
+### 13.4 ПОВЕРНЕННЯ — дополнения из SPEC_RETURNS.md
+
+#### Четыре типа возвратов (не только один!)
+| Тип | Описание |
+|---|---|
+| `refund` | Деньги назад (наличные или терминал) |
+| `exchange` | Обмен на другой товар |
+| `credit` | Остаток на счёте клиента |
+| `warranty_supplier` | Гарантийный через поставщика |
+
+#### Условия допустимости
+- До 14 дней с даты продажи (настраивается в settings)
+- Гарантийный — до 12 месяцев
+- Проверка запрещённых категорий (например, ГСМ — не возвращается)
+- Override с PIN владельца
+
+#### Действие с товаром (stock action)
+```
+return_to_stock     — вернуть на склад (хорошее состояние)
+write_off           — списать как брак
+send_to_supplier    — отправить поставщику (гарантийный)
+```
+
+#### Частичный возврат
+- В MVP — только полный возврат чека
+- В Expansion — по позициям (return_items)
+
+#### Новые таблицы
+```sql
+customer_returns (customer_id, sale_id, return_date, return_type, reason,
+                  reason_note, status, refund_method, refund_kopecks,
+                  stock_action, warranty_claim_id, approved_by)
+
+customer_return_items (return_id, product_id, quantity, unit_price_kopecks,
+                       condition: good/damaged/opened_packaging/defective)
+```
+
+---
+
+### 13.5 СКЛАД — дополнения из SPEC_MODULES_ALL.md
+
+#### Приёмка товара (inventory_receipts)
+```sql
+inventory_receipts (receipt_number, supplier_id, supplier_invoice_number,
+                    status: draft/confirmed/cancelled, total_amount,
+                    received_by, confirmed_at)
+
+inventory_receipt_items (receipt_id, product_id, qty, purchase_price, total)
+```
+При `confirm` → транзакция: `products.qty_on_hand += qty` для каждой позиции.
+
+#### Списание товара
+```sql
+inventory_writeoffs (product_id, qty, reason: damaged/expired/lost/defective/correction/other,
+                     written_off_by, created_at)
+```
+При списании → `products.qty_on_hand -= qty`.
+
+#### Инвентаризация
+```sql
+inventory_sessions (session_name, status: in_progress/completed/cancelled, started_by)
+inventory_session_items (session_id, product_id, expected_qty, counted_qty, variance)
+```
+При `complete` → применить расхождения к `qty_on_hand`.
+
+#### Резервы под заказы
+```sql
+inventory_reserves (product_id, order_id, customer_id, qty, expires_at, released_at)
+```
+`qty_available = qty_on_hand - qty_reserved`
+
+---
+
+### 13.6 ЗАМОВЛЕННЯ — полная машина состояний
+
+#### Статусы и переходы
+```
+draft → quoted → prepaid → ordered_from_supplier → arrived → issued → completed
+                                                                     ↓
+любой статус →                                                   cancelled
+completed →                                                      lost (ретроспективно)
+```
+
+#### Причины потери заказа (для аналитики)
+```
+price_too_high, found_elsewhere, wrong_part,
+customer_changed_mind, delivery_too_slow, other
+```
+
+#### Новые таблицы
+```sql
+orders (order_number, customer_id, manager_id, status, source,
+        quoted_total, prepayment_amount, final_total, promised_date,
+        is_overdue, supplier_id, vehicle_id, cancel_reason, lost_reason)
+
+order_items (order_id, product_id, custom_description, oem_number,
+             qty, quoted_price, purchase_price)
+
+order_status_history (order_id, old_status, new_status, changed_by, notes)
+
+order_attachments (order_id, attachment_type, file_url, file_name, uploaded_by)
+```
+
+---
+
+### 13.7 ПОСТАВЩИКИ — дополнения из SPEC_SUPPLIER_JOURNAL.md
+
+#### Speed score
+- `(delivered_on_time / total_orders) * 100`
+- Пересчитывается еженедельно (последние 90 дней)
+- Хранится в `suppliers.speed_score`
+
+#### Приоритет поставщика при заказе
+1. Наличие → 2. Цена (дешевле) → 3. Speed score → 4. Lead time
+
+#### Журнал закупок от поставщика
+```sql
+supplier_purchases (supplier_id, receipt_id, invoice_number, invoice_date, total_kopecks)
+supplier_purchase_items (product_id, product_name_snapshot, quantity, unit_price_kopecks)
+```
+
+#### Возвраты поставщику
+```sql
+supplier_returns (supplier_id, purchase_id, return_date, reason,
+                  status: pending/sent/accepted/rejected/refunded, refund_kopecks)
+```
+
+#### Гарантийные претензии
+```sql
+supplier_warranty_claims (supplier_id, product_id, customer_id, sale_id,
+                          description, status: open/sent/waiting/resolved, resolved_at)
+```
+
+---
+
+### 13.8 ЛОЯЛЬНОСТЬ И РИСК — из SPEC_LOYALTY_RISK_NOTES.md
+
+#### Бонусная программа (Expansion, не MVP)
+```sql
+loyalty_settings (is_enabled, accrual_pct DEFAULT 2, max_redeem_pct DEFAULT 30, expiry_days)
+loyalty_transactions (customer_id, type: accrual/redemption, amount_kopecks, sale_id)
+```
+1 бонус = 1 грн скидки при следующей покупке.
+
+#### Риск-профиль клиента (AUTO)
+| Уровень | Условие |
+|---|---|
+| `attention` | Долг 14-30 дней ИЛИ 2+ возврата за 30 дней |
+| `high_risk` | Долг > 30 дней + > 1000 грн ИЛИ 3+ возврата за 90 дней |
+| `blocked` | Только вручную Owner. Продажа только наличными |
+
+Поля: `customers.risk_level`, `risk_note`, `risk_updated_at`
+
+#### Закреплённые заметки
+```sql
+customer_notes (customer_id, text, is_pinned, color: yellow/red/green/blue, created_by)
+```
+Закреплённые заметки показываются при добавлении клиента в чек.
+
+---
+
+### 13.9 ИМПОРТ НАКЛАДНОЙ — из SPEC_IMPORT_INVOICE.md (Expansion)
+
+#### Алгоритм нормализации артикулов
+```typescript
+function normalizeArticle(raw: string): string {
+  return raw.replace(/[\s\-\.\/\_]/g, '').toUpperCase().replace(/^0+/, '')
+}
+```
+
+#### Типы совпадений
+```
+exact  (confidence 100%) — артикул найден точно
+fuzzy  (confidence 60-95%) — Levenshtein distance ≤ 2
+new    (confidence 0%) — товар не найден, нужно создать
+```
+
+#### Таблицы импорта
+```sql
+import_sessions (supplier_id, source_type: excel/csv/text, status, receipt_id)
+import_session_rows (import_session_id, row_number, raw_article, raw_name,
+                     normalized_article, match_type, matched_product_id,
+                     confidence_score, user_decision: accept/reject/create_new)
+```
+
+---
+
+### 13.10 АВТОМОБИЛЬНАЯ ЛОГИКА — из SPEC_AUTOMOTIVE_LOGIC_AND_ROLES.md
+
+#### Поиск по совместимости (Fitment)
+```
+POST /api/v1/fitment/search
+Body: { make, model, year, part_type }
+Response: { in_stock: [...], can_order: [...], not_available: [...] }
+```
+
+#### VIN декодирование (Expansion)
+- WMI (1-3 символ) → производитель
+- VDS (4-9) → характеристики (модель, двигатель, тип кузова)
+- VIS (10-17) → серийный номер + год выпуска (позиция 10)
+- Чек-сумма на позиции 9
+- `POST /api/v1/vin/decode` — принимает строку или URL фото
+
+#### Часто продаваемые вместе
+- Материализованное представление: `co_occurrence` (product_a, product_b, count)
+- Порог: >= 3 раза в одном чеке
+- Отображение в POS: "Часто купують разом"
+
+---
+
+### 13.11 AUDIT LOG — из SPEC_PROTECTION_AUDIT.md
+
+```sql
+audit_log (user_id, user_name, action, entity_type, entity_id,
+           old_value JSONB, new_value JSONB, ip_address, created_at)
+```
+
+Что логируем ОБЯЗАТЕЛЬНО:
+- Вход / выход из системы
+- Изменения цен (старая → новая)
+- Все возвраты
+- Override min_price (с PIN)
+- Изменения ролей пользователей
+- Проведение накладных
+- Закрытие смены
+- Блокировка клиентов
+
+---
+
+### 13.12 ПОЛНАЯ ФАЗИРОВКА (уточнённая)
+
+| Фаза | Что входит | Срок |
+|---|---|---|
+| **MVP (Фазы 1-4)** | Auth, Товары, POS, Клиенты, Смены, Возвраты (полные), Отчёты базовые | 4-6 нед |
+| **v1.1** | Ценовые уровни, PIN-override, Приёмка товара, Инвентаризация | 2-3 нед |
+| **v1.2** | Заказы (статус-машина), Журнал поставщиков, Гарантийные претензии | 2-3 нед |
+| **v2.0** | Лояльность, Риск-профиль, Заметки клиентов, Импорт накладных | 2-3 нед |
+| **v2.1** | Telegram/сообщения/лиды, Автоуведомления | 2-3 нед |
+| **v3.0** | VIN/OCR/Fitment, Аудит лог полный, Мультимагазинность | 4+ нед |
+
+---
+
+### 13.13 ИСПРАВЛЕННЫЕ ПРОТИВОРЕЧИЯ
+
+| Противоречие | Решение |
+|---|---|
+| API `/api/` vs `/api/v1/` | **Используем `/api/v1/`** (13 из 14 файлов) |
+| Мультитенантность ДА/НЕТ | **MVP = один магазин**, `tenant_id` в схеме для будущего |
+| Electron vs Web | **Только Web** в MVP. Electron — в v3.0+ |
+| Простой возврат vs полный | **MVP = полный чек**, v1.1 = частичный + типы |
+| `/login` rate limit 5 vs 10 | **10 попыток/час** (из SPEC_MASTER.md раздел 8) |
