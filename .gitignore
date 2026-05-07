@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.production
+*.local
+
+# pnpm
+.pnpm-store/
+
+# Supabase
+supabase/.branches
+supabase/.temp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.suo
+*.user

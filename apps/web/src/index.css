@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+:root {
+  --color-accent: #FFD000;
+  --color-bg-admin: #F5F5F5;
+  --color-bg-pos: #1A1A1A;
+  --color-surface-pos: #2C2C2C;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* POS dark theme */
+.pos-theme {
+  background-color: var(--color-bg-pos);
+  color: #F5F5F5;
+}
+
+.pos-surface {
+  background-color: var(--color-surface-pos);
+}
