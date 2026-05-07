@@ -62,9 +62,8 @@ function OpenShiftScreen({ onOpened }: { onOpened: () => void }) {
 
 export default function POSPage() {
   const { store, completeSale } = usePOS()
-  const [payOpen, setPayOpen]         = useState(false)
+  const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
-  const [closeCash, setCloseCash]     = useState('')
 
   const shift = store.currentShift
 
@@ -83,9 +82,9 @@ export default function POSPage() {
     await completeSale(method, { cashReceived })
   }
 
-  async function handleCloseShift() {
+  async function handleCloseShift(cashStr: string) {
     if (!shift) return
-    const kopecks = Math.round(parseFloat(closeCash || '0') * 100)
+    const kopecks = Math.round(parseFloat(cashStr || '0') * 100)
     try {
       await shiftApi.close(shift.id, kopecks)
       store.setCurrentShift(null)
@@ -93,8 +92,6 @@ export default function POSPage() {
       toast.success('Зміну закрито')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка закриття зміни')
-    } finally {
-      setCloseCash('')
     }
   }
 
@@ -115,7 +112,7 @@ export default function POSPage() {
           <button
             onClick={() => {
               const cash = prompt('Фактична сума готівки в касі (₴):')
-              if (cash !== null) { setCloseCash(cash); handleCloseShift() }
+              if (cash !== null) handleCloseShift(cash)
             }}
             className="flex items-center gap-1.5 text-gray-500 hover:text-gray-300 text-xs"
           >

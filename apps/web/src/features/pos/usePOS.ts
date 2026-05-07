@@ -3,7 +3,6 @@ import { usePOSStore } from '@/stores/posStore'
 import { shiftApi } from './shiftApi'
 import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
-import { productApi } from '@/features/products/productApi'
 
 export function usePOS() {
   const store = usePOSStore()
@@ -16,27 +15,6 @@ export function usePOS() {
       store.setCurrentShift(null)
     })
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Пошук товару для додавання в чек
-  const addBySearch = useCallback(async (query: string) => {
-    if (!query.trim()) return
-    try {
-      const { data } = await productApi.search(query, 1)
-      if (!data.length) { toast.error('Товар не знайдено'); return }
-      const p = data[0]
-      store.addItem({
-        productId: p.id,
-        sku:       p.sku,
-        name:      p.name,
-        unit:      p.unit,
-        qty:       1,
-        unitPrice: p.retail_price,
-        discount:  0,
-      })
-    } catch {
-      toast.error('Помилка пошуку товару')
-    }
-  }, [store])
 
   // Оформити продаж
   const completeSale = useCallback(async (
@@ -83,5 +61,5 @@ export function usePOS() {
     return () => window.removeEventListener('keydown', handleKey)
   }, [])
 
-  return { store, addBySearch, completeSale }
+  return { store, completeSale }
 }
