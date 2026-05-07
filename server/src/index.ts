@@ -4,6 +4,7 @@ import cors from 'cors'
 import { rateLimit } from 'express-rate-limit'
 import { logger } from './lib/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
+import authRouter from './routes/auth.js'
 import productsRouter from './routes/products.js'
 
 const app = express()
@@ -38,9 +39,11 @@ app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
+// Rate limit на login — підключаємо ДО роутера
 app.use('/api/v1/auth/login', loginLimiter)
 
 // Роуты
+app.use('/api/v1/auth', authRouter)
 app.use('/api/v1/products', productsRouter)
 
 // Централизованный error handler (всегда последний)

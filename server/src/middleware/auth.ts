@@ -7,21 +7,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!,
 )
 
-export interface AuthUser {
-  id: string
-  email: string
-  role: string
-}
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Express {
-    interface Request {
-      user?: AuthUser
-    }
-  }
-}
-
 export async function requireAuth(
   req: Request,
   _res: Response,
