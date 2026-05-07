@@ -18,23 +18,16 @@ export async function listProducts(query: ProductListQuery) {
 
   if (search) {
     const normalized = normalizeArticle(search)
-    // Поиск по нормализованному артикулу, названию и штрихкоду
     q = q.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%`)
   }
   if (category_id) q = q.eq('category_id', category_id)
-  if (brand_id) q = q.eq('brand_id', brand_id)
+  if (brand_id)    q = q.eq('brand_id', brand_id)
   if (is_active !== undefined) q = q.eq('is_active', is_active === 'true')
-  if (low_stock === 'true') q = q.lte('qty_on_hand', db.rpc as unknown as never)
 
-  // low_stock: qty_on_hand <= reorder_point (raw filter)
+  // Фильтр "мало на складе": qty_on_hand <= reorder_point через PostgreSQL функцию
   if (low_stock === 'true') {
-    q = db
-      .from(TABLE)
-      .select('*, brand:brands(id,name), category:categories(id,name)', { count: 'exact' })
-      .is('deleted_at', null)
-      .filter('qty_on_hand', 'lte', 'reorder_point')
-      .order('qty_on_hand', { ascending: true })
-      .range(offset, offset + per_page - 1)
+    q = q.filter('qty_on_hand', 'lte', 'reorder_point')
+    q = q.order('qty_on_hand', { ascending: true })
   }
 
   const { data, error, count } = await q
@@ -64,7 +57,6 @@ export async function getProduct(id: string) {
 }
 
 export async function createProduct(input: CreateProductInput) {
-  // Проверка уникальности SKU
   const { data: existing } = await db
     .from(TABLE)
     .select('id')
@@ -87,7 +79,6 @@ export async function createProduct(input: CreateProductInput) {
 export async function updateProduct(id: string, input: UpdateProductInput, userId: string) {
   const existing = await getProduct(id)
 
-  // Если меняется цена — логируем в price_history
   const priceChanges: Array<{ price_type: string; old_price: number; new_price: number }> = []
   if (input.retail_price !== undefined && input.retail_price !== existing.retail_price) {
     priceChanges.push({ price_type: 'retail', old_price: existing.retail_price, new_price: input.retail_price })
@@ -106,7 +97,6 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
-  // Записываем историю цен
   if (priceChanges.length > 0) {
     await db.from('product_price_history').insert(
       priceChanges.map((c) => ({
@@ -132,7 +122,6 @@ export async function deleteProduct(id: string) {
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
-// Быстрый поиск для POS — оптимизированный, только нужные поля
 export async function searchForPOS(q: string, limit: number) {
   const normalized = normalizeArticle(q)
 

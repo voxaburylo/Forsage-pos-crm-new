@@ -25,6 +25,13 @@ body {
 .border-accent { border-color: #FFD000; }
 .focus\:ring-accent:focus { --tw-ring-color: #FFD000; }
 
+/* Анимации */
+@keyframes slide-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.animate-slide-up { animation: slide-up 0.2s ease-out; }
+
 /* POS dark theme */
 .pos-theme {
   background-color: var(--color-bg-pos);
