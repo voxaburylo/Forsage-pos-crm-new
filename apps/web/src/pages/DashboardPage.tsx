@@ -30,7 +30,7 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           <span className="text-2xl">⚡</span>
           <span className="font-bold text-gray-900">Форсаж CRM</span>
-          <span className="bg-yellow-400 text-black text-xs font-semibold px-2 py-0.5 rounded">BETA</span>
+          <span className="bg-accent text-black text-xs font-semibold px-2 py-0.5 rounded">BETA</span>
         </div>
         <button
           onClick={handleSignOut}

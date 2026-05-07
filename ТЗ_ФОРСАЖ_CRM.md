@@ -654,7 +654,7 @@ CREATE TABLE brands (
 ### 6.2 AUTH
 
 ```
-POST   /api/auth/login          — Вход (phone/email + password)
+POST   /api/auth/login          — Вход по телефону + пароль
 POST   /api/auth/logout         — Выход
 POST   /api/auth/refresh        — Обновить access token
 GET    /api/auth/me             — Текущий пользователь

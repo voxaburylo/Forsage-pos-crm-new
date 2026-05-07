@@ -17,6 +17,14 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Акцентный цвет Форсаж #FFD000 */
+.bg-accent { background-color: #FFD000; }
+.hover\:bg-accent-dark:hover { background-color: #E6BC00; }
+.text-accent { color: #FFD000; }
+.ring-accent { --tw-ring-color: #FFD000; }
+.border-accent { border-color: #FFD000; }
+.focus\:ring-accent:focus { --tw-ring-color: #FFD000; }
+
 /* POS dark theme */
 .pos-theme {
   background-color: var(--color-bg-pos);
