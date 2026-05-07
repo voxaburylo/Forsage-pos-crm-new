@@ -36,6 +36,14 @@ router.get('/:id/sales', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/customers/:id/debts — продажі в борг (историяч долгов)
+router.get('/:id/debts', async (req, res, next) => {
+  try {
+    const debts = await customerService.getCustomerDebts(String(req.params.id))
+    res.json({ data: debts })
+  } catch (err) { next(err) }
+})
+
 // POST /api/v1/customers — створити клієнта
 router.post('/', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   try {

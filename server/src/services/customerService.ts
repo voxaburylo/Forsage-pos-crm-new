@@ -124,6 +124,22 @@ export async function getCustomerSales(customerId: string) {
   return data ?? []
 }
 
+// Повертає продажі в борг — це і є "история долгов" для MVP
+export async function getCustomerDebts(customerId: string) {
+  await getCustomer(customerId)
+
+  const { data, error } = await db
+    .from('sales')
+    .select('id, sale_number, total, status, completed_at')
+    .eq('customer_id', customerId)
+    .eq('payment_method', 'debt')
+    .order('completed_at', { ascending: false })
+    .limit(50)
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return data ?? []
+}
+
 export async function payDebt(customerId: string, input: PayDebtInput) {
   const customer = await getCustomer(customerId)
 
