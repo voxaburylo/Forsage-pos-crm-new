@@ -7,6 +7,8 @@ import { errorHandler } from './middleware/errorHandler.js'
 import authRouter from './routes/auth.js'
 import productsRouter from './routes/products.js'
 import customersRouter from './routes/customers.js'
+import shiftsRouter from './routes/shifts.js'
+import salesRouter from './routes/sales.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -47,6 +49,8 @@ app.use('/api/v1/auth/login', loginLimiter)
 app.use('/api/v1/auth', authRouter)
 app.use('/api/v1/products', productsRouter)
 app.use('/api/v1/customers', customersRouter)
+app.use('/api/v1/shifts', shiftsRouter)
+app.use('/api/v1/sales', salesRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

@@ -12,6 +12,7 @@ const ProductDetailPage    = lazy(() => import('@/features/products/ProductDetai
 const CustomersPage        = lazy(() => import('@/features/customers/CustomersPage'))
 const CustomerFormPage     = lazy(() => import('@/features/customers/CustomerFormPage'))
 const CustomerDetailPage   = lazy(() => import('@/features/customers/CustomerDetailPage'))
+const POSPage              = lazy(() => import('@/features/pos/POSPage'))
 
 function Loader() {
   return (
@@ -38,6 +39,8 @@ function App() {
           <Route path="/customers/new"       element={<ProtectedRoute><CustomerFormPage /></ProtectedRoute>} />
           <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
           <Route path="/customers/:id/edit"  element={<ProtectedRoute><CustomerFormPage /></ProtectedRoute>} />
+
+          <Route path="/pos" element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
