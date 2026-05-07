@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const saleItemSchema = z.object({
   product_id: z.string().uuid(),
-  qty:        z.number().positive().multipleOf(0.001),
+  qty:        z.number().positive(),
   unit_price: z.number().int().positive(),   // копейки — береться з товару
   discount:   z.number().int().min(0).default(0),  // копейки
 })

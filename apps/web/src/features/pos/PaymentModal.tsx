@@ -25,7 +25,7 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
 
   if (!open) return null
 
-  const cashReceived  = parseFloat(cashInput || '0') * 100  // в копійки
+  const cashReceived  = Math.round(parseFloat(cashInput || '0') * 100)  // копійки, без float помилок
   const change        = Math.max(0, cashReceived - store.total)
   const cashValid     = method !== 'cash' || cashReceived >= store.total
   const debtOk        = method !== 'debt' || !!store.customer
