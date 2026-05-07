@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Package, Users, Truck } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { signOut } from '@/lib/auth'
 
@@ -45,15 +46,19 @@ export default function DashboardPage() {
 
         <div className="grid grid-cols-3 gap-4 mb-8">
           {[
-            { label: 'Товари', value: counts.products, icon: '📦' },
-            { label: 'Клієнти', value: counts.customers, icon: '👥' },
-            { label: 'Постачальники', value: counts.suppliers, icon: '🚚' },
-          ].map(({ label, value, icon }) => (
-            <div key={label} className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-              <div className="text-3xl mb-2">{icon}</div>
+            { label: 'Товари', value: counts.products, icon: Package, href: '/products' },
+            { label: 'Клієнти', value: counts.customers, icon: Users, href: '/customers' },
+            { label: 'Постачальники', value: counts.suppliers, icon: Truck, href: '/suppliers' },
+          ].map(({ label, value, icon: Icon, href }) => (
+            <button
+              key={label}
+              onClick={() => navigate(href)}
+              className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 text-left hover:border-yellow-300 hover:shadow-md transition-all"
+            >
+              <Icon size={28} className="text-gray-400 mb-2" />
               <div className="text-3xl font-bold text-gray-900">{value}</div>
               <div className="text-sm text-gray-500 mt-1">{label}</div>
-            </div>
+            </button>
           ))}
         </div>
 

@@ -4,6 +4,7 @@ import cors from 'cors'
 import { rateLimit } from 'express-rate-limit'
 import { logger } from './lib/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
+import productsRouter from './routes/products.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -37,8 +38,10 @@ app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
-// Login rate limiter — max 10 попыток/час (ТЗ раздел 8.3)
 app.use('/api/v1/auth/login', loginLimiter)
+
+// Роуты
+app.use('/api/v1/products', productsRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)
