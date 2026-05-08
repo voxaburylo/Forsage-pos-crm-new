@@ -24,22 +24,25 @@ export async function listProducts(query: ProductListQuery) {
   if (brand_id)    q = q.eq('brand_id', brand_id)
   if (is_active !== undefined) q = q.eq('is_active', is_active === 'true')
 
-  // Фильтр "мало на складе": qty_on_hand <= reorder_point через PostgreSQL функцию
-  if (low_stock === 'true') {
-    q = q.filter('qty_on_hand', 'lte', 'reorder_point')
-    q = q.order('qty_on_hand', { ascending: true })
-  }
-
   const { data, error, count } = await q
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
+  // Фільтр "мало на складі": PostgREST не вміє порівнювати дві колонки →
+  // фільтруємо в JS (прийнятно для одного магазину)
+  let list = data ?? []
+  if (low_stock === 'true') {
+    list = list
+      .filter((p) => p.qty_on_hand <= p.reorder_point)
+      .sort((a, b) => a.qty_on_hand - b.qty_on_hand)
+  }
+
   return {
-    data: data ?? [],
+    data: list,
     pagination: {
       page,
       per_page,
-      total: count ?? 0,
-      total_pages: Math.ceil((count ?? 0) / per_page),
+      total: low_stock === 'true' ? list.length : (count ?? 0),
+      total_pages: Math.ceil((low_stock === 'true' ? list.length : (count ?? 0)) / per_page),
     },
   }
 }

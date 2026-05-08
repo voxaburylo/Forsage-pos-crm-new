@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Package, Users, ShoppingCart, RotateCcw,
-  Truck, BarChart2, Settings, Zap, LogOut,
+  Truck, BarChart2, Settings, Zap, LogOut, Shield,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { to: '/returns',    icon: <RotateCcw size={18} />,       label: 'Повернення',    roles: ['owner','admin','manager'] },
   { to: '/suppliers',  icon: <Truck size={18} />,           label: 'Постачальники', roles: ['owner','admin','manager'] },
   { to: '/reports',    icon: <BarChart2 size={18} />,       label: 'Звіти',         roles: ['owner','admin','manager'] },
+  { to: '/admin',      icon: <Shield size={18} />,          label: 'Адмін',         roles: ['owner','admin'] },
   { to: '/settings',   icon: <Settings size={18} />,        label: 'Налаштування',  roles: ['owner','admin'] },
 ]
 

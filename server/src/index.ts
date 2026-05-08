@@ -11,6 +11,7 @@ import shiftsRouter from './routes/shifts.js'
 import salesRouter from './routes/sales.js'
 import returnsRouter from './routes/returns.js'
 import reportsRouter from './routes/reports.js'
+import adminRouter, { settingsRouter } from './routes/admin.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -55,6 +56,8 @@ app.use('/api/v1/shifts', shiftsRouter)
 app.use('/api/v1/sales', salesRouter)
 app.use('/api/v1/returns', returnsRouter)
 app.use('/api/v1/reports', reportsRouter)
+app.use('/api/v1/admin', adminRouter)
+app.use('/api/v1/settings', settingsRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

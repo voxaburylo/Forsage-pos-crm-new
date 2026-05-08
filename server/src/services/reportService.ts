@@ -53,16 +53,17 @@ export async function getSalesPeriod(query: PeriodQuery) {
 }
 
 export async function getLowStockProducts() {
+  // PostgREST не вміє порівнювати дві колонки → фільтруємо в JS
   const { data, error } = await db
     .from('products')
     .select('id, sku, name, qty_on_hand, reorder_point, unit, brand:brands(name), category:categories(name)')
     .is('deleted_at', null)
     .eq('is_active', true)
-    .filter('qty_on_hand', 'lte', 'reorder_point')
-    .order('qty_on_hand', { ascending: true })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data ?? []
+  return (data ?? [])
+    .filter((p) => p.qty_on_hand <= p.reorder_point)
+    .sort((a, b) => a.qty_on_hand - b.qty_on_hand)
 }
 
 export async function getDebtors() {

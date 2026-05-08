@@ -1,11 +1,9 @@
 import type { Request, Response, NextFunction } from 'express'
-import { createClient } from '@supabase/supabase-js'
+import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from './errorHandler.js'
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-)
+// MVP: один магазин — фіксований tenant_id
+const MVP_TENANT_ID = '00000000-0000-0000-0000-000000000001'
 
 export async function requireAuth(
   req: Request,
@@ -19,15 +17,24 @@ export async function requireAuth(
 
   const token = authHeader.slice(7)
 
-  const { data, error } = await supabase.auth.getUser(token)
+  // Використовуємо єдиний shared admin клієнт (не створюємо новий для кожного запиту)
+  const { data, error } = await supabaseAdmin.auth.getUser(token)
   if (error || !data.user) {
     return next(new AppError('UNAUTHORIZED', 'Недійсний токен', 401))
   }
 
+  const meta = data.user.user_metadata ?? {}
+
+  // Перевіряємо чи користувач активний
+  if (meta.is_active === false) {
+    return next(new AppError('FORBIDDEN', 'Акаунт заблоковано', 403))
+  }
+
   req.user = {
-    id: data.user.id,
-    email: data.user.email ?? '',
-    role: (data.user.user_metadata?.role as string) ?? 'cashier',
+    id:        data.user.id,
+    email:     data.user.email ?? '',
+    role:      (meta.role as string) ?? 'cashier',
+    tenant_id: (meta.tenant_id as string) ?? MVP_TENANT_ID,
   }
 
   next()

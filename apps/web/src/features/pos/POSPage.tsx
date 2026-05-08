@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { Zap, LogOut } from 'lucide-react'
+import { Zap, LogOut, Printer } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
 import { PaymentModal } from './PaymentModal'
+import { ShiftCloseModal } from './ShiftCloseModal'
+import { ReceiptPrint, printReceipt } from './ReceiptPrint'
 import { QuickCustomerModal } from '@/features/customers/QuickCustomerModal'
 import { shiftApi } from './shiftApi'
 import type { Customer } from '@/types/customer'
+import type { Sale } from '@/types/sale'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 
@@ -34,25 +37,16 @@ function OpenShiftScreen({ onOpened }: { onOpened: () => void }) {
         <Zap size={40} className="text-yellow-400 mx-auto mb-4" />
         <h1 className="text-white text-2xl font-bold mb-1">Відкрити зміну</h1>
         <p className="text-gray-500 text-sm mb-6">Введіть початковий залишок готівки в касі</p>
-
         <input
-          type="number"
-          min="0"
-          step="0.01"
-          autoFocus
+          type="number" min="0" step="0.01" autoFocus
           value={cash}
           onChange={(e) => setCash(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') handleOpen() }}
           placeholder="0.00 ₴"
           className="w-full bg-[#1A1A1A] text-white text-2xl font-bold text-center rounded-xl px-4 py-4 border border-gray-700 focus:outline-none focus:border-yellow-400 mb-4"
         />
-
-        <button
-          onClick={handleOpen}
-          disabled={loading}
-          style={{ minHeight: 56 }}
-          className="w-full bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-lg rounded-xl py-4 disabled:opacity-50 transition-colors"
-        >
+        <button onClick={handleOpen} disabled={loading} style={{ minHeight: 56 }}
+          className="w-full bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-lg rounded-xl py-4 disabled:opacity-50 transition-colors">
           {loading ? 'Відкриваємо...' : 'Відкрити зміну'}
         </button>
       </div>
@@ -65,12 +59,10 @@ export default function POSPage() {
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
   const [closeOpen, setCloseOpen]       = useState(false)
-  const [closeCashInput, setCloseCashInput] = useState('')
-  const [closing, setClosing]           = useState(false)
+  const [lastSale, setLastSale]         = useState<Sale | null>(null)
 
   const shift = store.currentShift
 
-  // Немає зміни — показуємо екран відкриття
   if (!shift) {
     return (
       <OpenShiftScreen
@@ -82,24 +74,10 @@ export default function POSPage() {
   }
 
   async function handleConfirmPayment(method: 'cash' | 'card' | 'debt', cashReceived?: number) {
-    await completeSale(method, { cashReceived })
-  }
-
-  async function handleCloseShift() {
-    if (!shift) return
-    const kopecks = Math.round(parseFloat(closeCashInput || '0') * 100)
-    setClosing(true)
-    try {
-      await shiftApi.close(shift.id, kopecks)
-      store.setCurrentShift(null)
-      store.clearReceipt()
-      setCloseOpen(false)
-      setCloseCashInput('')
-      toast.success('Зміну закрито')
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка закриття зміни')
-    } finally {
-      setClosing(false)
+    const sale = await completeSale(method, { cashReceived })
+    if (sale) {
+      setLastSale(sale as Sale)
+      setPayOpen(false)
     }
   }
 
@@ -114,13 +92,16 @@ export default function POSPage() {
           <span className="text-green-400 text-xs font-medium">Зміна відкрита</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-yellow-400 font-bold text-sm">
-            {formatMoney(store.total)}
-          </span>
-          <button
-            onClick={() => setCloseOpen(true)}
-            className="flex items-center gap-1.5 text-gray-500 hover:text-gray-300 text-xs"
-          >
+          {lastSale && (
+            <button onClick={printReceipt}
+              className="flex items-center gap-1.5 text-gray-400 hover:text-white text-xs">
+              <Printer size={14} />
+              Друк чека
+            </button>
+          )}
+          <span className="text-yellow-400 font-bold text-sm">{formatMoney(store.total)}</span>
+          <button onClick={() => setCloseOpen(true)}
+            className="flex items-center gap-1.5 text-gray-500 hover:text-gray-300 text-xs">
             <LogOut size={14} />
             Закрити зміну
           </button>
@@ -129,54 +110,30 @@ export default function POSPage() {
 
       {/* Основна панель POS */}
       <div className="flex-1 flex min-h-0">
-        {/* Ліва панель — пошук */}
         <div className="flex-1 border-r border-gray-800 min-h-0">
           <SearchPanel />
         </div>
-
-        {/* Права панель — чек */}
         <div className="w-80 min-h-0 flex flex-col">
           <ReceiptPanel
             onPay={() => setPayOpen(true)}
             onSelectCustomer={() => setCustomerOpen(true)}
-            onClear={() => {
-              if (store.items.length > 0) store.clearReceipt()
-            }}
+            onClear={() => { if (store.items.length > 0) store.clearReceipt() }}
           />
         </div>
       </div>
 
-      {/* Модалка закриття зміни */}
-      {closeOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setCloseOpen(false)} />
-          <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6">
-            <h2 className="text-white text-lg font-bold mb-1">Закрити зміну</h2>
-            <p className="text-gray-400 text-sm mb-4">Введіть фактичну суму готівки в касі</p>
-            <input
-              type="number" min="0" step="0.01" autoFocus
-              value={closeCashInput}
-              onChange={(e) => setCloseCashInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleCloseShift() }}
-              placeholder="0.00 ₴"
-              className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-[#FFD000] mb-4"
-            />
-            <div className="flex gap-3">
-              <button onClick={() => setCloseOpen(false)}
-                className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
-                Скасувати
-              </button>
-              <button onClick={handleCloseShift} disabled={closing}
-                style={{ minHeight: 56 }}
-                className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-50 transition-colors">
-                {closing ? 'Закриваємо...' : 'Закрити зміну'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Модалки */}
+      <ShiftCloseModal
+        open={closeOpen}
+        shiftId={shift.id}
+        onClose={() => setCloseOpen(false)}
+        onClosed={() => {
+          store.setCurrentShift(null)
+          store.clearReceipt()
+          setCloseOpen(false)
+        }}
+      />
+
       <PaymentModal
         open={payOpen}
         onClose={() => setPayOpen(false)}
@@ -190,6 +147,9 @@ export default function POSPage() {
           store.setCustomer({ id: c.id, phone: c.phone, name: c.full_name, debtBalance: c.debt_balance })
         }}
       />
+
+      {/* Прихований чек для друку */}
+      {lastSale && <ReceiptPrint sale={lastSale} />}
     </div>
   )
 }

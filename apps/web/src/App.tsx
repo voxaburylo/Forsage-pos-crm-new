@@ -16,6 +16,8 @@ const POSPage              = lazy(() => import('@/features/pos/POSPage'))
 const SalesPage            = lazy(() => import('@/features/sales/SalesPage'))
 const ReturnForm           = lazy(() => import('@/features/pos/ReturnForm'))
 const DailyReport          = lazy(() => import('@/features/reports/DailyReport'))
+const AdminPage            = lazy(() => import('@/features/admin/AdminPage'))
+const SettingsPage         = lazy(() => import('@/features/admin/SettingsPage'))
 
 function Loader() {
   return (
@@ -43,10 +45,12 @@ function App() {
           <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
           <Route path="/customers/:id/edit"  element={<ProtectedRoute><CustomerFormPage /></ProtectedRoute>} />
 
-          <Route path="/pos"     element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
-          <Route path="/sales"   element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
-          <Route path="/returns" element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
-          <Route path="/reports" element={<ProtectedRoute><DailyReport /></ProtectedRoute>} />
+          <Route path="/pos"      element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
+          <Route path="/sales"    element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
+          <Route path="/returns"  element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
+          <Route path="/reports"  element={<ProtectedRoute><DailyReport /></ProtectedRoute>} />
+          <Route path="/admin"    element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
