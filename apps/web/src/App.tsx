@@ -13,6 +13,7 @@ const CustomersPage        = lazy(() => import('@/features/customers/CustomersPa
 const CustomerFormPage     = lazy(() => import('@/features/customers/CustomerFormPage'))
 const CustomerDetailPage   = lazy(() => import('@/features/customers/CustomerDetailPage'))
 const POSPage              = lazy(() => import('@/features/pos/POSPage'))
+const SalesPage            = lazy(() => import('@/features/sales/SalesPage'))
 const ReturnForm           = lazy(() => import('@/features/pos/ReturnForm'))
 const DailyReport          = lazy(() => import('@/features/reports/DailyReport'))
 
@@ -43,6 +44,7 @@ function App() {
           <Route path="/customers/:id/edit"  element={<ProtectedRoute><CustomerFormPage /></ProtectedRoute>} />
 
           <Route path="/pos"     element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
+          <Route path="/sales"   element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
           <Route path="/returns" element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute><DailyReport /></ProtectedRoute>} />
 

@@ -67,7 +67,7 @@ export function SearchPanel() {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Пошук: артикул, назва, штрихкод... (Enter — додати)"
-          className="w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 py-3 rounded-xl text-sm border border-gray-700 focus:outline-none focus:border-yellow-400 focus:ring-1 focus:ring-yellow-400"
+          className="w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 py-3 rounded-xl text-sm border border-gray-700 focus:outline-none focus:border-[#FFD000] focus:ring-1 focus:ring-[#FFD000]"
         />
       </div>
 

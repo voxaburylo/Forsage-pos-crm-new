@@ -64,6 +64,9 @@ export default function POSPage() {
   const { store, completeSale } = usePOS()
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
+  const [closeOpen, setCloseOpen]       = useState(false)
+  const [closeCashInput, setCloseCashInput] = useState('')
+  const [closing, setClosing]           = useState(false)
 
   const shift = store.currentShift
 
@@ -82,16 +85,21 @@ export default function POSPage() {
     await completeSale(method, { cashReceived })
   }
 
-  async function handleCloseShift(cashStr: string) {
+  async function handleCloseShift() {
     if (!shift) return
-    const kopecks = Math.round(parseFloat(cashStr || '0') * 100)
+    const kopecks = Math.round(parseFloat(closeCashInput || '0') * 100)
+    setClosing(true)
     try {
       await shiftApi.close(shift.id, kopecks)
       store.setCurrentShift(null)
       store.clearReceipt()
+      setCloseOpen(false)
+      setCloseCashInput('')
       toast.success('Зміну закрито')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка закриття зміни')
+    } finally {
+      setClosing(false)
     }
   }
 
@@ -110,10 +118,7 @@ export default function POSPage() {
             {formatMoney(store.total)}
           </span>
           <button
-            onClick={() => {
-              const cash = prompt('Фактична сума готівки в касі (₴):')
-              if (cash !== null) handleCloseShift(cash)
-            }}
+            onClick={() => setCloseOpen(true)}
             className="flex items-center gap-1.5 text-gray-500 hover:text-gray-300 text-xs"
           >
             <LogOut size={14} />
@@ -135,11 +140,41 @@ export default function POSPage() {
             onPay={() => setPayOpen(true)}
             onSelectCustomer={() => setCustomerOpen(true)}
             onClear={() => {
-              if (store.items.length > 0 && confirm('Очистити чек?')) store.clearReceipt()
+              if (store.items.length > 0) store.clearReceipt()
             }}
           />
         </div>
       </div>
+
+      {/* Модалка закриття зміни */}
+      {closeOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setCloseOpen(false)} />
+          <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6">
+            <h2 className="text-white text-lg font-bold mb-1">Закрити зміну</h2>
+            <p className="text-gray-400 text-sm mb-4">Введіть фактичну суму готівки в касі</p>
+            <input
+              type="number" min="0" step="0.01" autoFocus
+              value={closeCashInput}
+              onChange={(e) => setCloseCashInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCloseShift() }}
+              placeholder="0.00 ₴"
+              className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-[#FFD000] mb-4"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => setCloseOpen(false)}
+                className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
+                Скасувати
+              </button>
+              <button onClick={handleCloseShift} disabled={closing}
+                style={{ minHeight: 56 }}
+                className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-50 transition-colors">
+                {closing ? 'Закриваємо...' : 'Закрити зміну'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Модалки */}
       <PaymentModal

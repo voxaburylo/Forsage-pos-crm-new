@@ -18,8 +18,8 @@ const NAV: NavItem[] = [
   { to: '/pos',        icon: <Zap size={18} />,             label: 'Каса (POS)' },
   { to: '/products',   icon: <Package size={18} />,         label: 'Товари' },
   { to: '/customers',  icon: <Users size={18} />,           label: 'Клієнти' },
-  { to: '/sales',      icon: <ShoppingCart size={18} />,    label: 'Продажі' },
-  { to: '/returns',    icon: <RotateCcw size={18} />,       label: 'Повернення' },
+  { to: '/sales',      icon: <ShoppingCart size={18} />,    label: 'Продажі',       roles: ['owner','admin','manager'] },
+  { to: '/returns',    icon: <RotateCcw size={18} />,       label: 'Повернення',    roles: ['owner','admin','manager'] },
   { to: '/suppliers',  icon: <Truck size={18} />,           label: 'Постачальники', roles: ['owner','admin','manager'] },
   { to: '/reports',    icon: <BarChart2 size={18} />,       label: 'Звіти',         roles: ['owner','admin','manager'] },
   { to: '/settings',   icon: <Settings size={18} />,        label: 'Налаштування',  roles: ['owner','admin'] },
@@ -61,7 +61,7 @@ export function Sidebar() {
             className={({ isActive }) => `
               flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
               ${isActive
-                ? 'bg-yellow-50 text-yellow-800 font-medium'
+                ? 'bg-[#FFD000]/20 text-yellow-900 font-semibold'
                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
               }
             `}
