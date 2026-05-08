@@ -9,6 +9,8 @@ import productsRouter from './routes/products.js'
 import customersRouter from './routes/customers.js'
 import shiftsRouter from './routes/shifts.js'
 import salesRouter from './routes/sales.js'
+import returnsRouter from './routes/returns.js'
+import reportsRouter from './routes/reports.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -51,6 +53,8 @@ app.use('/api/v1/products', productsRouter)
 app.use('/api/v1/customers', customersRouter)
 app.use('/api/v1/shifts', shiftsRouter)
 app.use('/api/v1/sales', salesRouter)
+app.use('/api/v1/returns', returnsRouter)
+app.use('/api/v1/reports', reportsRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

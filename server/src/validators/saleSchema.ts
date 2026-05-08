@@ -26,6 +26,7 @@ export const calculatePriceSchema = z.object({
 export const saleListSchema = z.object({
   shift_id:    z.string().uuid().optional(),
   customer_id: z.string().uuid().optional(),
+  sale_number: z.string().optional(),
   date_from:   z.string().optional(),
   date_to:     z.string().optional(),
   page:        z.coerce.number().int().min(1).default(1),

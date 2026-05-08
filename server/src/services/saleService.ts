@@ -12,7 +12,7 @@ async function generateSaleNumber(): Promise<string> {
 }
 
 export async function listSales(query: SaleListQuery) {
-  const { shift_id, customer_id, date_from, date_to, page, per_page } = query
+  const { shift_id, customer_id, sale_number, date_from, date_to, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
@@ -23,6 +23,7 @@ export async function listSales(query: SaleListQuery) {
 
   if (shift_id)    q = q.eq('shift_id', shift_id)
   if (customer_id) q = q.eq('customer_id', customer_id)
+  if (sale_number) q = q.eq('sale_number', sale_number)
   if (date_from)   q = q.gte('completed_at', date_from)
   if (date_to)     q = q.lte('completed_at', date_to)
 
