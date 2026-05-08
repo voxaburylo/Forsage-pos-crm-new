@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { OpenShiftInput, CloseShiftInput } from '../validators/shiftSchema.js'
 
@@ -107,3 +107,4 @@ export async function getShiftReport(shiftId: string) {
 
   return { shift, total_sales: completed.length, total_revenue, by_method, sales: list }
 }
+

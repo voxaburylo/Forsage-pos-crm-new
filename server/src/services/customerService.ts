@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizePhone } from '../validators/customerSchema.js'
 import type {
@@ -70,7 +70,7 @@ export async function createCustomer(input: CreateCustomerInput) {
 
   const { data, error } = await db
     .from(TABLE)
-    .insert(input)
+    .insert({ ...input, tenant_id: '00000000-0000-0000-0000-000000000001' })
     .select('*')
     .single()
 
@@ -162,3 +162,4 @@ export async function payDebt(customerId: string, input: PayDebtInput) {
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data
 }
+

@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getCurrentShift } from './shiftService.js'
 import type { CreateSaleInput, CalculatePriceInput, SaleListQuery } from '../validators/saleSchema.js'
@@ -163,3 +163,4 @@ export async function createSale(cashierId: string, input: CreateSaleInput) {
 
   return getSale(sale.id)
 }
+

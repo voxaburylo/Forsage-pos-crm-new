@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import type { CreateProductInput, UpdateProductInput, ProductListQuery } from '../validators/productValidator.js'
@@ -59,7 +59,7 @@ export async function getProduct(id: string) {
   return data
 }
 
-export async function createProduct(input: CreateProductInput) {
+export async function createProduct(input: CreateProductInput, _userId: string) {
   const { data: existing } = await db
     .from(TABLE)
     .select('id')
@@ -153,3 +153,5 @@ export async function getPriceHistory(productId: string) {
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data ?? []
 }
+
+

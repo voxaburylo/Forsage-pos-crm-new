@@ -1,4 +1,4 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -55,7 +55,7 @@ router.post('/', requireRole('owner', 'admin', 'storekeeper'), async (req, res, 
   try {
     const parsed = createProductSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані товару', 422, parsed.error.flatten())
-    const product = await productService.createProduct(parsed.data)
+    const product = await productService.createProduct(parsed.data, req.user!.id)
     res.status(201).json({ data: product })
   } catch (err) { next(err) }
 })
@@ -79,3 +79,4 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
 })
 
 export default router
+

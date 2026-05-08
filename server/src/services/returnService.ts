@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { CreateReturnInput, ReturnListQuery } from '../validators/returnSchema.js'
 
@@ -9,7 +9,7 @@ export async function listReturns(query: ReturnListQuery) {
   const offset = (page - 1) * per_page
 
   const { data, error, count } = await db
-    .from('customer_returns')
+    .from('returns')
     .select('*, sale:sales(id,sale_number,total), customer:customers(id,phone,full_name)', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + per_page - 1)
@@ -24,8 +24,8 @@ export async function listReturns(query: ReturnListQuery) {
 
 export async function getReturn(id: string) {
   const { data, error } = await db
-    .from('customer_returns')
-    .select('*, sale:sales(id,sale_number,total,payment_method), customer:customers(id,phone,full_name), customer_return_items(*)')
+    .from('returns')
+    .select('*, sale:sales(id,sale_number,total,payment_method), customer:customers(id,phone,full_name), return_items(*)')
     .eq('id', id)
     .single()
 
@@ -75,7 +75,7 @@ export async function createReturn(userId: string, input: CreateReturnInput) {
 
   // 6. Створюємо запис повернення
   const { data: returnRecord, error: returnError } = await db
-    .from('customer_returns')
+    .from('returns')
     .insert({
       sale_id:        input.sale_id,
       customer_id:    sale.customer_id ?? null,
@@ -96,7 +96,7 @@ export async function createReturn(userId: string, input: CreateReturnInput) {
   // 7. Записуємо позиції повернення та відновлюємо залишки
   for (const item of items) {
     // Записуємо позицію
-    await db.from('customer_return_items').insert({
+    await db.from('return_items').insert({
       return_id:          returnRecord.id,
       product_id:         item.product_id,
       sale_item_id:       item.id,
@@ -143,3 +143,6 @@ export async function createReturn(userId: string, input: CreateReturnInput) {
 
   return getReturn(returnRecord.id)
 }
+
+
+
