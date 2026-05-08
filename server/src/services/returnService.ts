@@ -77,6 +77,7 @@ export async function createReturn(userId: string, input: CreateReturnInput) {
   const { data: returnRecord, error: returnError } = await db
     .from('returns')
     .insert({
+      tenant_id:      '00000000-0000-0000-0000-000000000001',
       sale_id:        input.sale_id,
       customer_id:    sale.customer_id ?? null,
       return_type:    'refund',
@@ -97,6 +98,7 @@ export async function createReturn(userId: string, input: CreateReturnInput) {
   for (const item of items) {
     // Записуємо позицію
     await db.from('return_items').insert({
+      tenant_id:          '00000000-0000-0000-0000-000000000001',
       return_id:          returnRecord.id,
       product_id:         item.product_id,
       sale_item_id:       item.id,
@@ -143,6 +145,9 @@ export async function createReturn(userId: string, input: CreateReturnInput) {
 
   return getReturn(returnRecord.id)
 }
+
+
+
 
 
 

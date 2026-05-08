@@ -99,6 +99,7 @@ export async function createSale(cashierId: string, input: CreateSaleInput) {
   const { data: sale, error: saleError } = await db
     .from(TABLE)
     .insert({
+      tenant_id:      '00000000-0000-0000-0000-000000000001',
       sale_number:    saleNumber,
       customer_id:    input.customer_id ?? null,
       cashier_id:     cashierId,
@@ -118,6 +119,7 @@ export async function createSale(cashierId: string, input: CreateSaleInput) {
 
   // 6. Додаємо позиції чека
   const saleItems = input.items.map((item) => ({
+    tenant_id:  '00000000-0000-0000-0000-000000000001',
     sale_id:    sale.id,
     product_id: item.product_id,
     qty:        item.qty,

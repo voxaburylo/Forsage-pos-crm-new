@@ -32,6 +32,7 @@ export async function openShift(cashierId: string, input: OpenShiftInput) {
   const { data, error } = await db
     .from(TABLE)
     .insert({
+      tenant_id:     '00000000-0000-0000-0000-000000000001',
       cashier_id:    cashierId,
       status:        'open',
       opening_cash:  input.opening_cash,

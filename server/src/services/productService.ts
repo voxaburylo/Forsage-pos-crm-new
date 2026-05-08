@@ -71,7 +71,7 @@ export async function createProduct(input: CreateProductInput, _userId: string) 
 
   const { data, error } = await db
     .from(TABLE)
-    .insert(input)
+    .insert({ ...input, tenant_id: '00000000-0000-0000-0000-000000000001' })
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .single()
 
