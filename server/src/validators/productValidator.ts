@@ -49,7 +49,7 @@ export const productListSchema = z.object({
   is_active: z.enum(['true', 'false']).optional(),
   low_stock: z.enum(['true', 'false']).optional(),
   page: z.coerce.number().int().min(1).default(1),
-  per_page: z.coerce.number().int().min(1).max(200).default(25),
+  per_page: z.coerce.number().int().min(1).max(2000).default(25),
   sort_field: z.enum(['sku', 'name', 'retail_price', 'qty_on_hand', 'created_at', 'brand']).optional(),
   sort_dir: z.enum(['asc', 'desc']).optional().default('asc'),
 })

@@ -31,7 +31,7 @@ export function useOfflineSync(serverOnline: boolean) {
     }
 
     try {
-      const res = await api.get<{ data: any[] }>('/api/v1/products?per_page=2000&is_active=true')
+      const res = await api.get<{ data: any[] }>('/api/v1/products?per_page=2000&is_active=true', { silent: true })
       await cacheProducts(res.data ?? [])
       setLastCached(new Date())
     } catch {

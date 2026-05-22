@@ -23,3 +23,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Secrets
+*key.json
+*service-account*
+google-key.json
