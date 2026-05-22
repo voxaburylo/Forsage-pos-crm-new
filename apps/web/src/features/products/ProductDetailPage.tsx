@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, Clock, AlertTriangle, CheckCircle, XCircle, Barcode, Printer } from 'lucide-react'
+import { Edit, Trash2, Clock, AlertTriangle, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
 import { productApi } from './productApi'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { getSpecTemplate } from './productSpecs'
+import { ProductPhotoUpload } from './ProductPhotoUpload'
 import { Layout } from '@/components/Layout'
-import { Button, Badge, Card } from '@/components/ui'
+import { Button, Badge, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { printLabel } from './LabelPrinter'
 
@@ -38,6 +39,23 @@ export default function ProductDetailPage() {
   const [analogs, setAnalogs] = useState<{ grouped: Record<string, any[]> } | null>(null)
   const [fitment, setFitment] = useState<{ grouped: Record<string, any[]> } | null>(null)
   const [cobuy, setCobuy] = useState<any[]>([])
+  const [photoModalOpen, setPhotoModalOpen] = useState(false)
+  const [savingPhoto, setSavingPhoto] = useState(false)
+
+  async function handlePhotoUrl(url: string | null) {
+    if (!product || !id) return
+    setSavingPhoto(true)
+    try {
+      await productApi.update(id, { photo_url: url ?? null } as any)
+      setProduct({ ...product, photo_url: url ?? undefined })
+      toast.success(url ? 'Фото збережено' : 'Фото видалено')
+      setPhotoModalOpen(false)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка')
+    } finally {
+      setSavingPhoto(false)
+    }
+  }
 
   useEffect(() => {
     if (!id) return
@@ -93,14 +111,28 @@ export default function ProductDetailPage() {
         {/* Основна інфо */}
         <Card>
           <div className="flex items-start gap-5 mb-4">
-            {/* Фото */}
-            {product.photo_url && (
-              <img
-                src={product.photo_url}
-                alt={product.name}
-                className="w-28 h-28 object-cover rounded-xl border border-gray-200 shrink-0"
-              />
-            )}
+            {/* Фото — клікабельне, з можливістю завантажити/змінити */}
+            <div className="relative shrink-0 group">
+              {product.photo_url ? (
+                <img
+                  src={product.photo_url}
+                  alt={product.name}
+                  className="w-28 h-28 object-cover rounded-xl border border-gray-200"
+                />
+              ) : (
+                <div className="w-28 h-28 rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400">
+                  <Camera size={28} />
+                </div>
+              )}
+              <button
+                onClick={() => setPhotoModalOpen(true)}
+                className="absolute inset-0 w-full h-full flex items-center justify-center bg-black/0 group-hover:bg-black/40 rounded-xl transition-all"
+              >
+                <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-medium bg-black/60 px-3 py-1.5 rounded-lg transition-all">
+                  {product.photo_url ? 'Змінити фото' : 'Додати фото'}
+                </span>
+              </button>
+            </div>
             <div className="flex-1 flex items-start justify-between">
               <div>
                 <p className="text-xs text-gray-400 mb-1">Артикул</p>
@@ -328,6 +360,29 @@ export default function ProductDetailPage() {
           </Card>
         )}
       </div>
+
+      {/* Модалка додавання/зміни фото */}
+      <Modal
+        open={photoModalOpen}
+        onClose={() => setPhotoModalOpen(false)}
+        title={product.photo_url ? 'Змінити фото товару' : 'Додати фото товару'}
+        size="md"
+      >
+        <ProductPhotoUpload
+          productId={product.id}
+          currentPhotoUrl={product.photo_url ?? null}
+          onPhotoUrl={handlePhotoUrl}
+        />
+        <div className="flex justify-end mt-4 pt-3 border-t border-gray-100">
+          <Button
+            variant="secondary"
+            onClick={() => setPhotoModalOpen(false)}
+            loading={savingPhoto}
+          >
+            Закрити
+          </Button>
+        </div>
+      </Modal>
     </Layout>
   )
 }
