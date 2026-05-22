@@ -22,6 +22,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* iOS Safari: використовуємо dvh замість vh щоб контент не обрізало панеллю браузера */
+.h-screen-pos {
+  height: 100vh;
+  height: 100dvh;
+}
+
 /* iPhone Safe Area insets */
 .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }

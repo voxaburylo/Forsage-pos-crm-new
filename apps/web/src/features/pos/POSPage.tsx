@@ -370,7 +370,7 @@ export default function POSPage() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-[#1A1A1A] overflow-hidden">
+    <div className="h-screen-pos flex flex-col bg-[#1A1A1A] overflow-hidden">
       {/* Lock Screen */}
       {isLockedPIN && (
         <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />
