@@ -148,6 +148,7 @@ export default function POSPage() {
 
   const shift = store.currentShift
   const [mobileTab, setMobileTab] = useState<'search' | 'cart'>('search')
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   // Завантажуємо список співробітників для селектора менеджера
   useEffect(() => {
@@ -439,9 +440,10 @@ export default function POSPage() {
             <span className="text-white font-semibold text-sm tracking-wide">Форсаж</span>
             <span className="text-emerald-400 text-[10px] font-medium bg-emerald-900/40 px-2 py-0.5 rounded-full border border-emerald-800/30">Зміна</span>
           </div>
+          {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}
             onChange={(e) => store.setManagerId(e.target.value || null)}
-            className="bg-transparent text-gray-400 text-xs border border-gray-800 rounded-lg px-2 py-1.5 focus:outline-none focus:border-yellow-400/50 max-w-[110px] cursor-pointer hover:text-gray-300 appearance-none"
+            className="hidden md:block bg-transparent text-gray-400 text-xs border border-gray-800 rounded-lg px-2 py-1.5 focus:outline-none focus:border-yellow-400/50 max-w-[110px] cursor-pointer hover:text-gray-300 appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}>
             {staffUsers.filter((u) => ['owner','admin','manager','cashier'].includes(u.role)).map((u) => (
               <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
@@ -449,8 +451,8 @@ export default function POSPage() {
           </select>
         </div>
 
-        {/* Права частина — дії + total */}
-        <div className="flex items-center gap-0.5">
+        {/* Desktop права частина — всі кнопки */}
+        <div className="hidden md:flex items-center gap-0.5">
           {lastSale && (
             <button onClick={printReceipt}
               className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
@@ -464,7 +466,7 @@ export default function POSPage() {
             title="Відкладені чеки">
             <span className="text-base leading-none">📦</span>
             {suspendedCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center shadow-lg shadow-red-500/30">
+              <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
                 {suspendedCount > 9 ? '9+' : suspendedCount}
               </span>
             )}
@@ -499,9 +501,7 @@ export default function POSPage() {
             title="На весь екран">
             {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
           </button>
-
           <div className="w-px h-7 bg-gray-800 mx-1.5" />
-
           <div className="flex items-center gap-2 mr-1">
             <span className="text-yellow-400 font-bold text-lg tabular-nums tracking-tight">{formatMoney(store.total)}</span>
             <button onClick={() => setCloseOpen(true)}
@@ -511,7 +511,76 @@ export default function POSPage() {
             </button>
           </div>
         </div>
+
+        {/* Mobile права частина — тільки найважливіше */}
+        <div className="flex md:hidden items-center gap-1">
+          <span className="text-yellow-400 font-bold tabular-nums text-base mr-1">{formatMoney(store.total)}</span>
+          <button onClick={() => setMobileMenuOpen(true)}
+            className="w-10 h-10 flex items-center justify-center rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 active:bg-gray-700 transition-colors text-lg font-bold"
+            title="Меню">
+            ≡
+          </button>
+          <button onClick={() => setCloseOpen(true)}
+            className="h-10 px-3 bg-red-900/40 text-red-300 text-xs font-bold rounded-xl border border-red-900/40 flex items-center gap-1"
+            title="Закрити зміну">
+            <LogOut size={14} />
+          </button>
+        </div>
       </header>
+
+      {/* ─── Мобільне меню-шторка ─────────────────────────────────── */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setMobileMenuOpen(false)} />
+          <div className="absolute bottom-0 left-0 right-0 bg-[#1A1A1A] rounded-t-2xl border-t border-gray-800 p-4 pb-safe">
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-5" />
+
+            {/* Вибір менеджера */}
+            <div className="mb-4">
+              <p className="text-gray-500 text-xs mb-1.5 uppercase tracking-wider">Менеджер</p>
+              <select value={store.managerId ?? session?.user?.id ?? ''}
+                onChange={(e) => store.setManagerId(e.target.value || null)}
+                className="w-full bg-[#2C2C2C] text-gray-300 text-sm border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-yellow-400/50">
+                {staffUsers.filter((u) => ['owner','admin','manager','cashier'].includes(u.role)).map((u) => (
+                  <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Сітка дій */}
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              {[
+                { icon: '🖨️', label: 'Друк', action: () => { printReceipt(); setMobileMenuOpen(false) }, disabled: !lastSale },
+                { icon: '📦', label: 'Відкладені', action: () => { setSuspendedOpen(true); setMobileMenuOpen(false) }, badge: suspendedCount },
+                { icon: '↔️', label: 'Каса', action: () => { setCashOpen(true); setMobileMenuOpen(false) } },
+                { icon: '💸', label: 'Борг', action: () => { setDebtPayOpen(true); setMobileMenuOpen(false) } },
+                { icon: '📊', label: 'Звірка', action: () => { setReconcileOpen(true); setMobileMenuOpen(false) } },
+                { icon: '🔒', label: 'Блок', action: () => { handleLock(); setMobileMenuOpen(false) } },
+                { icon: '❓', label: 'Довідка', action: () => { setHelpOpen(true); setMobileMenuOpen(false) } },
+                { icon: isFullscreen ? '⬜' : '⛶', label: 'Екран', action: () => { toggleFullscreen(); setMobileMenuOpen(false) } },
+              ].map(({ icon, label, action, disabled, badge }) => (
+                <button key={label} onClick={action} disabled={disabled}
+                  className="relative flex flex-col items-center gap-1.5 p-3 bg-[#2C2C2C] rounded-xl active:bg-gray-600 disabled:opacity-30 transition-colors">
+                  <span className="text-2xl leading-none">{icon}</span>
+                  <span className="text-[11px] text-gray-400">{label}</span>
+                  {!!badge && badge > 0 && (
+                    <span className="absolute top-1.5 right-1.5 bg-red-500 text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
+                      {badge > 9 ? '9+' : badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Кнопка закриття зміни */}
+            <button
+              onClick={() => { setCloseOpen(true); setMobileMenuOpen(false) }}
+              className="w-full py-4 bg-red-900/50 hover:bg-red-800/60 text-red-300 font-bold rounded-xl border border-red-800/30 flex items-center justify-center gap-2 active:bg-red-800/80 transition-colors">
+              <LogOut size={18} /> Закрити зміну
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Mobile tabs — тільки на телефоні */}
       <div className="md:hidden flex border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
@@ -523,12 +592,19 @@ export default function POSPage() {
         </button>
         <button
           onClick={() => setMobileTab('cart')}
-          className={`flex-1 py-3 text-sm font-semibold transition-colors relative ${mobileTab === 'cart' ? 'text-yellow-400 border-b-2 border-yellow-400' : 'text-gray-500'}`}
+          className={`flex-1 py-3 text-sm font-semibold transition-colors flex flex-col items-center gap-0.5 ${mobileTab === 'cart' ? 'text-yellow-400 border-b-2 border-yellow-400' : 'text-gray-500'}`}
         >
-          🛒 Кошик
-          {store.items.length > 0 && (
-            <span className="absolute top-2 right-8 min-w-[18px] h-[18px] bg-yellow-400 text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1">
-              {store.items.length}
+          <span className="flex items-center gap-1.5">
+            🛒 Кошик
+            {store.items.length > 0 && (
+              <span className="min-w-[18px] h-[18px] bg-yellow-400 text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                {store.items.length}
+              </span>
+            )}
+          </span>
+          {store.total > 0 && (
+            <span className="text-[11px] text-yellow-400/80 tabular-nums font-medium leading-none">
+              {formatMoney(store.total)} ₴
             </span>
           )}
         </button>
