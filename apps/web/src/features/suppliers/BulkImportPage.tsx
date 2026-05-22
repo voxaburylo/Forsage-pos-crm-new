@@ -29,11 +29,15 @@ export default function BulkImportPage() {
   const [supplierId, setSupplierId] = useState<string>('')
   const [updateRetail, setUpdateRetail] = useState<boolean>(true)
   const [mode, setMode] = useState<'replace' | 'add'>('replace')
-  
+
   // File State
   const [file, setFile] = useState<File | null>(null)
   const [isDragging, setIsDragging] = useState<boolean>(false)
   const [uploading, setUploading] = useState<boolean>(false)
+
+  // Preview wizard
+  const [previewRows, setPreviewRows] = useState<string[][]>([])
+  const [showPreview, setShowPreview] = useState(false)
 
   // Active / History imports state
   const [activeImportId, setActiveImportId] = useState<string | null>(null)
@@ -123,6 +127,21 @@ export default function BulkImportPage() {
     if (selectedFiles && selectedFiles.length > 0) {
       setFile(selectedFiles[0])
     }
+  }
+
+  // Парсимо перші N рядків CSV і показуємо preview
+  const handleShowPreview = () => {
+    if (!file) { toast.error('Оберіть CSV файл'); return }
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const text = (e.target?.result as string) ?? ''
+      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter((l) => l.trim())
+      const sep = lines[0]?.includes(';') ? ';' : lines[0]?.includes('\t') ? '\t' : ','
+      const rows = lines.slice(0, 8).map((l) => l.split(sep).map((c) => c.replace(/^["']|["']$/g, '').trim()))
+      setPreviewRows(rows)
+      setShowPreview(true)
+    }
+    reader.readAsText(file, 'UTF-8')
   }
 
   // Submit Upload
@@ -292,27 +311,61 @@ export default function BulkImportPage() {
 
             {file && (
               <div className="mt-4 flex gap-2">
-                <Button 
-                  onClick={handleUpload} 
-                  disabled={uploading} 
+                <Button
+                  onClick={handleShowPreview}
+                  disabled={uploading}
                   className="flex-1 bg-yellow-400 hover:bg-yellow-500 text-gray-900 border-none font-semibold shadow"
                 >
-                  {uploading ? (
-                    <>
-                      <Loader2 size={16} className="animate-spin mr-2" />
-                      Завантаження...
-                    </>
-                  ) : (
-                    'Запустити імпорт'
-                  )}
+                  Переглянути перед імпортом →
                 </Button>
-                <Button 
-                  variant="outline" 
-                  onClick={() => setFile(null)} 
+                <Button
+                  variant="outline"
+                  onClick={() => setFile(null)}
                   disabled={uploading}
                 >
                   Скасувати
                 </Button>
+              </div>
+            )}
+
+            {/* Preview Modal */}
+            {showPreview && previewRows.length > 0 && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold text-gray-800">Попередній перегляд CSV (перші {previewRows.length} рядків)</h3>
+                    <button onClick={() => setShowPreview(false)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
+                  </div>
+                  <div className="overflow-x-auto rounded-lg border border-gray-100">
+                    <table className="w-full text-xs">
+                      <tbody>
+                        {previewRows.map((row, ri) => (
+                          <tr key={ri} className={ri === 0 ? 'bg-yellow-50 font-semibold' : ri % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                            <td className="px-2 py-1 text-gray-400 border-r border-gray-100 w-6">{ri + 1}</td>
+                            {row.map((cell, ci) => (
+                              <td key={ci} className="px-3 py-1.5 border-r border-gray-100 text-gray-700 truncate max-w-[140px]" title={cell}>
+                                {cell || <span className="text-gray-300">—</span>}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Файл: <strong>{file?.name}</strong> · Режим: <strong>{mode === 'replace' ? 'заміна' : 'додавання'}</strong> · Оновлювати роздрібну: <strong>{updateRetail ? 'так' : 'ні'}</strong>
+                  </p>
+                  <div className="flex gap-3 pt-1">
+                    <Button
+                      onClick={() => { setShowPreview(false); handleUpload() }}
+                      disabled={uploading}
+                      className="flex-1 bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-semibold"
+                    >
+                      {uploading ? <><Loader2 size={16} className="animate-spin mr-2" />Завантаження...</> : 'Підтвердити і запустити імпорт'}
+                    </Button>
+                    <Button variant="outline" onClick={() => setShowPreview(false)}>Скасувати</Button>
+                  </div>
+                </div>
               </div>
             )}
           </Card>

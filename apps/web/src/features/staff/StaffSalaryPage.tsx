@@ -30,6 +30,14 @@ interface EmployeeSummary {
   total: number
 }
 
+interface CommissionPreview {
+  employee_id: string
+  employee_name: string
+  sales_count: number
+  revenue: number
+  commission_paid: number
+}
+
 const TYPE_CONFIG = {
   salary:  { label: 'Зарплата',  color: 'bg-green-100 text-green-700',  icon: <DollarSign size={12} /> },
   bonus:   { label: 'Бонус',     color: 'bg-yellow-100 text-yellow-700', icon: <Award size={12} /> },
@@ -51,10 +59,12 @@ export default function StaffSalaryPage() {
   const [payments, setPayments]   = useState<SalaryPayment[]>([])
   const [summary, setSummary]     = useState<EmployeeSummary[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [modal, setModal]         = useState(false)
-  const [saving, setSaving]       = useState(false)
-  const [filterEmp, setFilterEmp] = useState('')
+  const [loading, setLoading]           = useState(true)
+  const [modal, setModal]               = useState(false)
+  const [saving, setSaving]             = useState(false)
+  const [filterEmp, setFilterEmp]       = useState('')
+  const [commissions, setCommissions]   = useState<CommissionPreview[]>([])
+  const [showCommissions, setShowCommissions] = useState(false)
 
   const [form, setForm] = useState({
     employee_id: '', amount: '', type: 'salary' as const,
@@ -64,12 +74,14 @@ export default function StaffSalaryPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [p, s] = await Promise.all([
+      const [p, s, c] = await Promise.all([
         api.get<{ data: SalaryPayment[] }>(`/api/v1/salary?period=${period}`),
         api.get<{ data: EmployeeSummary[] }>(`/api/v1/salary/summary?period=${period}`),
+        api.get<{ data: CommissionPreview[] }>(`/api/v1/salary/commission-preview?period=${period}`),
       ])
       setPayments(p.data ?? [])
       setSummary(s.data ?? [])
+      setCommissions(c.data ?? [])
     } catch { toast.error('Помилка завантаження') }
     finally { setLoading(false) }
   }, [period])
@@ -146,6 +158,44 @@ export default function StaffSalaryPage() {
             Всього за місяць: <span className="font-bold text-gray-900">{formatMoney(totalMonth)}</span>
           </span>
         </div>
+
+        {/* Комісії менеджерів */}
+        {commissions.length > 0 && (
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-semibold text-gray-800 text-sm flex items-center gap-2">
+                <Award size={15} className="text-yellow-500" /> Комісії за продажі
+              </span>
+              <button
+                onClick={() => setShowCommissions(!showCommissions)}
+                className="text-xs text-blue-500 hover:underline"
+              >
+                {showCommissions ? 'Сховати' : 'Показати деталі'}
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {commissions.map((c) => (
+                <div key={c.employee_id} className="bg-yellow-50 rounded-xl border border-yellow-100 p-3">
+                  <p className="font-semibold text-gray-900 text-sm mb-2 truncate">{c.employee_name || c.employee_id.slice(0, 8)}</p>
+                  <div className="space-y-1 text-xs text-gray-500">
+                    <div className="flex justify-between">
+                      <span>Продажів</span>
+                      <span className="font-medium text-gray-700">{c.sales_count}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Виручка</span>
+                      <span className="font-medium text-gray-700">{formatMoney(c.revenue)}</span>
+                    </div>
+                    <div className="flex justify-between pt-1 border-t border-yellow-100">
+                      <span>Комісія сплачена</span>
+                      <span className="font-bold text-yellow-700">{formatMoney(c.commission_paid)}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {/* Зведення по співробітниках */}
         {summary.length > 0 && (

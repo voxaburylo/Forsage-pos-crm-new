@@ -56,7 +56,10 @@
       "mcp__plugin_supabase_supabase__get_logs",
       "Bash(echo \"EXIT=$?\")",
       "Bash(supabase projects *)",
-      "Bash(psql --version)"
+      "Bash(psql --version)",
+      "Bash(git commit -m ' *)",
+      "mcp__plugin_supabase_supabase__list_projects",
+      "mcp__plugin_supabase_supabase__list_migrations"
     ]
   }
 }

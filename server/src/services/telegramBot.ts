@@ -401,7 +401,7 @@ export async function notifyStatusUpdate(orderId: string, newStatus: string) {
   try {
     // Отримуємо дані замовлення та клієнта
     const { data: o } = await db.from('customer_orders')
-      .select('id, customer:customers(telegram_chat_id, full_name)')
+      .select('id, pickup_cell, customer:customers(telegram_chat_id, full_name)')
       .eq('id', orderId)
       .single()
 
@@ -419,10 +419,14 @@ export async function notifyStatusUpdate(orderId: string, newStatus: string) {
       arrived: 'Прибуло на склад', called: 'Клієнт повідомлений', no_answer: 'Не відповідає',
       ready: 'Готово до видачі', completed: 'Виконано (Закрито)', canceled: 'Скасовано',
     }
+    const pickupCellLine = newStatus === 'ready' && (o as any).pickup_cell
+      ? `\n🗄 Комірка видачі: *${(o as any).pickup_cell}*`
+      : ''
     const msg = `🔔 *Оновлення статусу замовлення!*\n\n` +
                 `📦 Номер: \`#${o.id.slice(0, 8)}\`\n` +
-                `📊 Новий статус: ${ic[newStatus] ?? '•'} *${lb[newStatus] ?? newStatus}*\n\n` +
-                `Менеджер Форсаж Авто завжди на зв'язку! 🚀`
+                `📊 Новий статус: ${ic[newStatus] ?? '•'} *${lb[newStatus] ?? newStatus}*` +
+                pickupCellLine +
+                `\n\nМенеджер Форсаж Авто завжди на зв'язку! 🚀`
 
     await bot.telegram.sendMessage(chatId, msg, {
       parse_mode: 'Markdown',

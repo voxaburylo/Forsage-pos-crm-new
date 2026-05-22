@@ -98,6 +98,71 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/salary/commission-preview — зведення комісій по менеджерах за місяць
+// Повертає: скільки вже записано комісій (type=bonus з commission_source_order_id)
+// та скільки зроблено продажів по кожному менеджеру за period
+router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const period = (req.query.period as string) ?? new Date().toISOString().slice(0, 7)
+    const userId = req.query.user_id as string | undefined
+    const tenantId = req.user!.tenant_id
+
+    // Вже нараховані комісії за цей місяць (тип bonus з прив'язкою до замовлення)
+    let commQuery = db
+      .from('salary_payments')
+      .select('employee_id, employee_name, amount')
+      .eq('tenant_id', tenantId)
+      .eq('type', 'bonus')
+      .eq('period', period)
+      .not('commission_source_order_id', 'is', null)
+    if (userId) commQuery = commQuery.eq('employee_id', userId)
+    const { data: commissions, error: commErr } = await commQuery
+    if (commErr) throw new AppError('DB_ERROR', commErr.message, 500)
+
+    // Продажі по менеджерах за поточний місяць
+    const fromDate = period + '-01'
+    const toDate = new Date(new Date(fromDate).setMonth(new Date(fromDate).getMonth() + 1)).toISOString().slice(0, 10)
+
+    let salesQuery = db
+      .from('sales')
+      .select('manager_id, total')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'completed')
+      .gte('completed_at', fromDate)
+      .lt('completed_at', toDate)
+    if (userId) salesQuery = salesQuery.eq('manager_id', userId)
+    const { data: sales, error: salesErr } = await salesQuery
+    if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
+
+    // Агрегуємо
+    const map: Record<string, {
+      employee_id: string
+      employee_name: string
+      sales_count: number
+      revenue: number
+      commission_paid: number
+    }> = {}
+
+    for (const s of commissions ?? []) {
+      if (!map[s.employee_id]) {
+        map[s.employee_id] = { employee_id: s.employee_id, employee_name: s.employee_name, sales_count: 0, revenue: 0, commission_paid: 0 }
+      }
+      map[s.employee_id].commission_paid += s.amount
+    }
+
+    for (const s of sales ?? []) {
+      if (!s.manager_id) continue
+      if (!map[s.manager_id]) {
+        map[s.manager_id] = { employee_id: s.manager_id, employee_name: s.manager_id.slice(0, 8), sales_count: 0, revenue: 0, commission_paid: 0 }
+      }
+      map[s.manager_id].sales_count += 1
+      map[s.manager_id].revenue += s.total
+    }
+
+    res.json({ data: Object.values(map), period })
+  } catch (err) { next(err) }
+})
+
 // DELETE /api/v1/salary/:id — видалити запис
 router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
