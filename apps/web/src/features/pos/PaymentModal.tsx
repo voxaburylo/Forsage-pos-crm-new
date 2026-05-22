@@ -12,7 +12,7 @@ interface SplitAmounts {
 interface Props {
   open: boolean
   onClose: () => void
-  onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean) => Promise<void>
+  onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean, terminalAuthCode?: string) => Promise<void>
 }
 
 type Method = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
@@ -29,10 +29,11 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
 
 export function PaymentModal({ open, onClose, onConfirm }: Props) {
   const store             = usePOSStore()
-  const [method, setMethod]     = useState<Method>('cash')
-  const [cashInput, setCash]    = useState('')
-  const [loading, setLoading]   = useState(false)
-  const [terminalWait, setTerminalWait] = useState(false)
+  const [method, setMethod]         = useState<Method>('cash')
+  const [cashInput, setCash]        = useState('')
+  const [loading, setLoading]       = useState(false)
+  const [terminalStep, setTerminalStep] = useState<'none' | 'waiting_auth'>('none')
+  const [terminalAuthCode, setTerminalAuthCode] = useState('')
   const [bonusBalance, setBonusBalance]   = useState(0)
   const [maxBonus, setMaxBonus]           = useState(0)
   const [bonusInput, setBonusInput]       = useState('')
@@ -59,21 +60,67 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
     }).catch(() => {})
   }, [open, store.customer, store.total])
 
-  if (!open || terminalWait) {
-    if (terminalWait) {
-      return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/70" />
-          <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-8 text-center space-y-4">
-            <Loader2 size={48} className="text-yellow-400 animate-spin mx-auto" />
-            <p className="text-white text-lg font-bold">Очікування оплати на терміналі...</p>
-            <p className="text-gray-400 text-sm">Прикладіть картку до термінала</p>
+  // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
+  const _bonusRedeemed = Math.min(
+    Math.round(parseFloat(bonusInput || '0') * 100),
+    maxBonus, bonusBalance,
+  )
+  const _toPay = Math.max(0, store.total - _bonusRedeemed)
+
+  // Діалог: проведіть оплату на терміналі і введіть код авторизації
+  if (terminalStep === 'waiting_auth') {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-black/70" />
+        <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-5">
+          <div className="text-center">
+            <CreditCard size={40} className="text-blue-400 mx-auto mb-3" />
+            <h3 className="text-white text-lg font-bold">Проведіть оплату на терміналі</h3>
+            <p className="text-yellow-400 text-3xl font-bold mt-2">{formatMoney(_toPay)}</p>
+          </div>
+
+          <div className="bg-[#2C2C2C] rounded-xl p-4 text-sm text-gray-300 space-y-1">
+            <p>1. Введіть суму на терміналі ПриватБанку</p>
+            <p>2. Клієнт прикладає картку / телефон</p>
+            <p>3. Після успішної оплати введіть код авторизації з чека термінала</p>
+          </div>
+
+          <div>
+            <label className="text-gray-400 text-xs mb-1 block">Код авторизації (з чека термінала)</label>
+            <input
+              type="text"
+              autoFocus
+              value={terminalAuthCode}
+              onChange={(e) => setTerminalAuthCode(e.target.value.toUpperCase().replace(/\s/g, ''))}
+              onKeyDown={(e) => { if (e.key === 'Enter') confirmTerminalPayment() }}
+              maxLength={12}
+              placeholder="наприклад: 123456"
+              className="w-full bg-[#2C2C2C] text-white text-xl font-mono text-center rounded-xl px-4 py-3 border border-gray-600 focus:outline-none focus:border-blue-400"
+            />
+            <p className="text-gray-500 text-xs mt-1 text-center">Залиште порожнім якщо код не потрібен</p>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setLoading(false) }}
+              className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700"
+            >
+              Скасувати
+            </button>
+            <button
+              onClick={confirmTerminalPayment}
+              disabled={loading}
+              className="flex-1 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold disabled:opacity-40"
+            >
+              {loading ? <Loader2 size={16} className="animate-spin mx-auto" /> : 'Підтвердити оплату'}
+            </button>
           </div>
         </div>
-      )
-    }
-    return null
+      </div>
+    )
   }
+
+  if (!open) return null
 
   const bonusRedeemed = Math.min(
     Math.round(parseFloat(bonusInput || '0') * 100), maxBonus, bonusBalance,
@@ -96,24 +143,35 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
 
   async function handleConfirm() {
     if (!cashValid || !debtOk || !splitValid) return
+
+    // Картка або Split → спочатку показуємо діалог термінала
+    if (method === 'card' || (method === 'mixed' && splitCardKopecks > 0)) {
+      setLoading(true)
+      setTerminalStep('waiting_auth')
+      return
+    }
+
+    await submitSale()
+  }
+
+  async function confirmTerminalPayment() {
     setLoading(true)
+    await submitSale(terminalAuthCode || undefined)
+    setTerminalStep('none')
+    setTerminalAuthCode('')
+  }
 
-    if (method === 'card') {
-      setTerminalWait(true)
-      // Імітація очікування термінала (2 сек)
-      await new Promise((r) => setTimeout(r, 2000))
-      setTerminalWait(false)
+  async function submitSale(authCode?: string) {
+    try {
+      if (method === 'mixed') {
+        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, fiscal, authCode)
+      } else {
+        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, fiscal, authCode)
+      }
+    } finally {
+      setLoading(false)
+      setCash(''); setMethod('cash'); setBonusInput(''); setSplitCash('')
     }
-
-    if (method === 'mixed') {
-      await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, fiscal)
-    } else {
-      await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, fiscal)
-    }
-
-    setLoading(false)
-    setCash(''); setMethod('cash'); setBonusInput(''); setSplitCash('')
-    onClose()
   }
 
   return (

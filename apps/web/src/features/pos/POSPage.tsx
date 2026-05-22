@@ -308,6 +308,7 @@ export default function POSPage() {
     bonusRedeemed?: number,
     split?: { cash_amount: number; card_amount: number },
     isFiscal?: boolean,
+    terminalAuthCode?: string,
   ) {
     // Офлайн-режим: тільки готівкові продажі без ПРРО
     if (!serverOnline) {
@@ -340,7 +341,7 @@ export default function POSPage() {
       return
     }
 
-    const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal })
+    const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
     if (sale) {
       setLastSale(sale as Sale)
       clearSavedCart()

@@ -147,7 +147,11 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     const settings = await (await import('./adminService.js')).getSettings()
     const provider = settings.terminal_provider ?? 'mock'
 
-    if (provider === 'privatbank') {
+    // manual — касир сам провів на терміналі та ввів код
+    if (provider === 'manual' || !settings.bank_terminal_enabled) {
+      bankAuthCode = (input as any).terminal_auth_code ?? null
+      logger.info({ bankAuthCode }, 'Термінал: ручне підтвердження (manual mode)')
+    } else if (provider === 'privatbank') {
       const { privatbankProcessPayment } = await import('./integrations/PrivatBankTerminalService.js')
       const terminalResult = await privatbankProcessPayment(
         {

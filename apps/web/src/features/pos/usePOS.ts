@@ -22,7 +22,7 @@ export function usePOS() {
   // Оформити продаж
   const completeSale = useCallback(async (
     method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer',
-    options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean }
+    options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean; terminalAuthCode?: string }
   ) => {
     const { currentShift, items, customer, notes, total, managerId } = store
     const bonusRedeemed = options?.bonusRedeemed ?? 0
@@ -55,7 +55,8 @@ export function usePOS() {
         })),
         payment_method: method,
         notes:          notes || undefined,
-        is_fiscal:      options?.isFiscal ?? false,
+        is_fiscal:           options?.isFiscal ?? false,
+        terminal_auth_code:  options?.terminalAuthCode ?? null,
       }
       if (method === 'mixed' && options?.split) {
         salePayload.cash_amount = options.split.cash_amount

@@ -20,6 +20,7 @@ export const createSaleSchema = z.object({
   card_amount:    z.number().int().min(0).default(0),
   pickup_cell:    z.string().max(50).optional().nullable(),
   bonuses_spent:  z.number().int().min(0).default(0),
+  terminal_auth_code: z.string().max(20).optional().nullable(),
 }).refine(
   (data) => {
     if (data.payment_method === 'debt') {

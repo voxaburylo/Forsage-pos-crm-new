@@ -12,6 +12,7 @@ interface CreateSaleBody {
   cash_amount?: number
   card_amount?: number
   is_fiscal?: boolean
+  terminal_auth_code?: string | null
 }
 
 export const saleApi = {
