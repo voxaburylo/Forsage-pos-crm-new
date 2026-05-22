@@ -198,7 +198,7 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
   // ==================================================================
   // 4. Викликаємо атомарну RPC
   // ==================================================================
-  const itemsPayload = input.items.map((i) => ({
+  const itemsPayload = input.items.map((i: any) => ({
     sale_item_id: i.sale_item_id,
     product_id: i.product_id,
     quantity: i.quantity,

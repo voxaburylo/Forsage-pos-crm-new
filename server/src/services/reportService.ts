@@ -245,28 +245,28 @@ export async function getShiftReport(shiftId: string) {
   function filterSales(method: string) { return completed.filter((s) => s.payment_method === method) }
 
   // Готівка: cash_amount з усіх чеків (включаючи mixed)
-  const cashTotal = completed.reduce((s, x) => s + ((x as any).cash_amount ?? 0), 0)
+  const cashTotal = completed.reduce((s: number, x: any) => s + ((x as any).cash_amount ?? 0), 0)
   const cashFiscal = completed
-    .filter((s) => (s as any).is_fiscal && ((s as any).cash_amount ?? 0) > 0)
-    .reduce((s, x) => s + ((x as any).cash_amount ?? 0), 0)
+    .filter((s: any) => (s as any).is_fiscal && ((s as any).cash_amount ?? 0) > 0)
+    .reduce((s: number, x: any) => s + ((x as any).cash_amount ?? 0), 0)
 
   // Термінал: card_amount з усіх чеків (включаючи mixed)
-  const cardTotal = completed.reduce((s, x) => s + ((x as any).card_amount ?? 0), 0)
+  const cardTotal = completed.reduce((s: number, x: any) => s + ((x as any).card_amount ?? 0), 0)
   const cardFiscal = completed
-    .filter((s) => (s as any).is_fiscal && ((s as any).card_amount ?? 0) > 0)
-    .reduce((s, x) => s + ((x as any).card_amount ?? 0), 0)
+    .filter((s: any) => (s as any).is_fiscal && ((s as any).card_amount ?? 0) > 0)
+    .reduce((s: number, x: any) => s + ((x as any).card_amount ?? 0), 0)
 
-  const transferTotal = filterSales('transfer').reduce((s, x) => s + x.total, 0)
+  const transferTotal = filterSales('transfer').reduce((s: number, x: any) => s + x.total, 0)
 
   return {
     shift,
     total_sales:   completed.length,
-    total_revenue: completed.reduce((s, x) => s + x.total, 0),
+    total_revenue: completed.reduce((s: number, x: any) => s + x.total, 0),
     by_method: {
       cash:     cashTotal,
       card:     cardTotal,
       transfer: transferTotal,
-      debt:     filterSales('debt').reduce((s, x) => s + x.total, 0),
+      debt:     filterSales('debt').reduce((s: number, x: any) => s + x.total, 0),
     },
     fiscal_breakdown: {
       cash_fiscal:    cashFiscal,
