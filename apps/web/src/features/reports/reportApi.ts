@@ -19,6 +19,12 @@ export const reportApi = {
   debtors: () =>
     api.get<{ data: Debtor[] }>('/api/v1/reports/customers/debtors'),
 
+  weekly: () =>
+    api.get<{ data: Array<{ date: string; revenue: number; sales: number }> }>('/api/v1/reports/sales/weekly'),
+
+  writeoffsSummary: () =>
+    api.get<{ data: { count: number; total_cost: number; writeoffs: Array<{ id: string; reason: string; created_at: string; items: Array<{ cost_kopecks: number }> }> } }>('/api/v1/reports/writeoffs/summary'),
+
   shiftReport: (shiftId: string) =>
-    api.get<{ data: unknown }>(`/api/v1/reports/shift/${shiftId}`),
+    api.get<{ data: unknown }>('/api/v1/reports/shift/' + shiftId),
 }

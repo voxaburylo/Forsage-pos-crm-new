@@ -22,7 +22,7 @@ export function formatDateTime(iso: string): string {
 
 // Нормалізація артикулу (по ТЗ розділ 13.1)
 export function normalizeArticle(raw: string): string {
-  return raw.replace(/[\s\-\.\/\_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
+  return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
 }
 
 // Нормалізація телефону

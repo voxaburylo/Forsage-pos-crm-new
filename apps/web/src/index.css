@@ -32,6 +32,13 @@ body {
 }
 .animate-slide-up { animation: slide-up 0.2s ease-out; }
 
+/* Slide-in drawer справа */
+@keyframes slide-left {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.animate-slide-left { animation: slide-left 0.2s ease-out; }
+
 /* POS dark theme */
 .pos-theme {
   background-color: var(--color-bg-pos);
@@ -40,4 +47,161 @@ body {
 
 .pos-surface {
   background-color: var(--color-surface-pos);
+}
+
+/* ========== Touch-friendly utilities ========== */
+
+/* Touch target min-size */
+.touch-target {
+  min-width: 48px;
+  min-height: 48px;
+}
+
+/* Ripple effect container */
+.ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(255,255,255,0.3) 10%, transparent 10%);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100%;
+  opacity: 0;
+  transition: none;
+  pointer-events: none;
+}
+
+.ripple:active::after {
+  animation: ripple-effect 0.4s ease-out forwards;
+}
+
+@keyframes ripple-effect {
+  from {
+    opacity: 0.4;
+    background-size: 0%;
+  }
+  to {
+    opacity: 0;
+    background-size: 400%;
+  }
+}
+
+/* Active press effect */
+.active-press:active {
+  transform: scale(0.96);
+}
+
+/* Swipe reveal container */
+.swipe-container {
+  overflow: hidden;
+  position: relative;
+}
+
+.swipe-content {
+  transition: transform 0.2s ease-out;
+  touch-action: pan-y;
+}
+
+.swipe-reveal {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  transform: translateX(100%);
+  transition: transform 0.2s ease-out;
+}
+
+.swipe-reveal.open {
+  transform: translateX(0);
+}
+
+.swipe-content.open {
+  transform: translateX(-72px);
+}
+
+/* Numpad overlay */
+.numpad-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: #111;
+  animation: fade-in 0.15s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.numpad-display {
+  flex: 0 0 auto;
+  padding: 2rem 1.5rem 1rem;
+  text-align: center;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.numpad-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  padding: 2px;
+  background: #1a1a1a;
+}
+
+.numpad-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+  background: #2a2a2a;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  min-height: 64px;
+}
+
+.numpad-btn:active {
+  background: #3a3a3a;
+}
+
+.numpad-btn.confirm {
+  background: #FFD000;
+  color: #000;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.numpad-btn.confirm:active {
+  background: #E6BC00;
+}
+
+.numpad-btn.action {
+  background: #333;
+  color: #aaa;
+}
+
+.numpad-btn.action:active {
+  background: #444;
+}
+
+@media (min-width: 768px) {
+  .numpad-overlay {
+    max-width: 400px;
+    left: auto;
+    right: 0;
+    border-left: 1px solid #2a2a2a;
+  }
 }

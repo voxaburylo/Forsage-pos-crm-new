@@ -3,3 +3,5 @@ packages:
   - "server"
 allowBuild:
   - esbuild
+allowBuilds:
+  esbuild: true

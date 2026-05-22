@@ -20,3 +20,6 @@ Thumbs.db
 .idea/
 *.suo
 *.user
+
+# Logs
+*.log

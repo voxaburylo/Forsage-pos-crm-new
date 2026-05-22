@@ -4,6 +4,7 @@ import { api } from '@/lib/api'
 export interface AdminUser {
   id: string
   phone: string
+  email: string
   full_name: string
   role: string
   is_active: boolean
@@ -22,6 +23,37 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 }
 
 // Settings
+export interface LabelSettings {
+  width_mm: number
+  height_mm: number
+  padding_mm: number
+  font_size: number
+  barcode_height: number
+  show_shop_name: boolean
+  show_product_name: boolean
+  show_barcode: boolean
+  show_sku: boolean
+  show_price: boolean
+  show_storage_bin: boolean
+}
+
+export interface QuickChildItem {
+  label: string
+  sku: string
+  price?: number
+}
+
+export interface QuickItemConfig {
+  sku: string
+  label: string
+  emoji?: string
+  price?: number
+  color?: string
+  children?: QuickChildItem[]
+  type?: 'static' | 'food_popup'       // static = фіксована ціна, food_popup = вікно з категоріями
+  category_filter?: string[]            // для food_popup: які категорії показувати
+}
+
 export interface ShopSettings {
   id: string
   shop_name: string
@@ -31,6 +63,9 @@ export interface ShopSettings {
   allow_negative_qty: boolean
   return_days: number
   currency: string
+  default_debt_limit_kopecks: number
+  label_settings?: LabelSettings
+  pos_quick_items?: QuickItemConfig[]
 }
 
 export const adminApi = {
@@ -42,6 +77,8 @@ export const adminApi = {
     api.put<{ data: AdminUser }>(`/api/v1/admin/users/${id}`, body),
   deactivateUser: (id: string) =>
     api.delete<void>(`/api/v1/admin/users/${id}`),
+  resetPassword: (id: string, password: string) =>
+    api.put<{ data: { success: boolean } }>(`/api/v1/admin/users/${id}/password`, { password }),
 
   // Categories
   listCategories: () => api.get<{ data: Array<{ id: string; name: string; sort_order: number }> }>('/api/v1/admin/categories'),

@@ -40,14 +40,46 @@ export const brandSchema = z.object({
   country: z.string().max(100).optional().nullable(),
 })
 
+const labelSettingsSchema = z.object({
+  width_mm:          z.number().min(20).max(120).optional(),
+  height_mm:         z.number().min(15).max(100).optional(),
+  padding_mm:        z.number().min(0).max(10).optional(),
+  font_size:         z.number().min(4).max(20).optional(),
+  barcode_height:    z.number().min(10).max(60).optional(),
+  show_shop_name:    z.boolean().optional(),
+  show_product_name: z.boolean().optional(),
+  show_barcode:      z.boolean().optional(),
+  show_sku:          z.boolean().optional(),
+  show_price:        z.boolean().optional(),
+  show_storage_bin:  z.boolean().optional(),
+})
+
 // --- Settings ---
+export const quickChildSchema = z.object({
+  label: z.string().min(1).max(100),
+  sku: z.string().min(1).max(50),
+  price: z.number().int().min(0).optional().default(0),
+})
+
+export const quickItemSchema = z.object({
+  sku: z.string().min(1).max(50),
+  label: z.string().min(1).max(100),
+  emoji: z.string().max(10).optional().default('📦'),
+  price: z.number().int().min(0).optional().default(0),
+  color: z.string().optional().default('#2C2C2C'),
+  children: z.array(quickChildSchema).optional().default([]),
+})
+
 export const settingsSchema = z.object({
-  shop_name:          z.string().min(1).max(200).optional(),
-  shop_address:       z.string().max(500).optional().nullable(),
-  phone:              z.string().max(30).optional().nullable(),
-  max_discount_pct:   z.number().min(0).max(100).optional(),
-  allow_negative_qty: z.boolean().optional(),
-  return_days:        z.number().int().min(1).max(365).optional(),
+  shop_name:                 z.string().min(1).max(200).optional(),
+  shop_address:              z.string().max(500).optional().nullable(),
+  phone:                     z.string().max(30).optional().nullable(),
+  max_discount_pct:          z.number().min(0).max(100).optional(),
+  allow_negative_qty:        z.boolean().optional(),
+  return_days:               z.number().int().min(1).max(365).optional(),
+  default_debt_limit_kopecks: z.number().int().min(0).optional(),
+  label_settings:            labelSettingsSchema.optional(),
+  pos_quick_items:           z.array(quickItemSchema).optional().default([]),
 })
 
 export type CreateUserInput  = z.infer<typeof createUserSchema>

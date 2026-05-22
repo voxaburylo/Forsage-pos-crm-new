@@ -11,6 +11,13 @@ export interface Shift {
   notes: string | null
 }
 
+export interface ShiftReportByUser {
+  user_id: string
+  cash_in: number
+  cash_out: number
+  count: number
+}
+
 export interface ShiftReport {
   shift: Shift
   total_sales: number
@@ -20,6 +27,7 @@ export interface ShiftReport {
     card: number
     debt: number
   }
+  by_user?: ShiftReportByUser[]
   sales: Array<{
     id: string
     sale_number: string

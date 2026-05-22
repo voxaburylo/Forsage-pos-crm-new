@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { shiftApi } from './shiftApi'
 import type { ShiftReport } from '@/types/shift'
+import type { ExpectedCash } from './shiftApi'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 
@@ -14,29 +15,34 @@ interface Props {
 const VARIANCE_THRESHOLD = 1000  // 10 грн в копійках
 
 export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
-  const [report, setReport]       = useState<ShiftReport | null>(null)
-  const [cashInput, setCashInput] = useState('')
-  const [comment, setComment]     = useState('')
-  const [loading, setLoading]     = useState(false)
-  const [closing, setClosing]     = useState(false)
+  const [report, setReport]             = useState<ShiftReport | null>(null)
+  const [cashBreakdown, setCashBreakdown] = useState<ExpectedCash | null>(null)
+  const [cashInput, setCashInput]       = useState('')
+  const [comment, setComment]           = useState('')
+  const [loading, setLoading]           = useState(false)
+  const [closing, setClosing]           = useState(false)
 
   useEffect(() => {
     if (!open) return
     setLoading(true)
-    shiftApi.report(shiftId)
-      .then(({ data }) => setReport(data))
+    Promise.all([
+      shiftApi.report(shiftId),
+      shiftApi.expectedCash(),
+    ])
+      .then(([reportRes, cashRes]) => {
+        setReport(reportRes.data)
+        setCashBreakdown(cashRes.data)
+      })
       .catch(() => toast.error('Помилка завантаження даних зміни'))
       .finally(() => setLoading(false))
   }, [open, shiftId])
 
   if (!open) return null
 
-  const cashReceived  = Math.round(parseFloat(cashInput || '0') * 100)
-  const openingCash   = report?.shift.opening_cash ?? 0
-  const cashSales     = report?.by_method.cash ?? 0
-  const expectedCash  = openingCash + cashSales
-  const variance      = cashInput ? cashReceived - expectedCash : null
-  const needsComment  = variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
+  const cashReceived = Math.round(parseFloat(cashInput || '0') * 100)
+  const expectedCash = cashBreakdown?.expected_amount ?? 0
+  const variance     = cashInput ? cashReceived - expectedCash : null
+  const needsComment = variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
 
   async function handleClose() {
     if (needsComment && !comment.trim()) {
@@ -61,6 +67,13 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
       <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-5">
         <h2 className="text-white text-lg font-bold">Закрити зміну</h2>
 
+        {/* Нагадування звірки */}
+        {!loading && cashInput === '' && (
+          <div className="bg-yellow-900/30 border border-yellow-500/40 rounded-xl px-4 py-3 text-yellow-300 text-sm">
+            Перед закриттям перерахуйте готівку в касі і введіть фактичну суму нижче.
+          </div>
+        )}
+
         {loading ? (
           <p className="text-gray-400 text-sm text-center">Завантаження...</p>
         ) : report && (
@@ -69,12 +82,30 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
             <div className="bg-[#2C2C2C] rounded-xl p-4 space-y-2 text-sm">
               <div className="flex justify-between text-gray-400">
                 <span>Початкова готівка:</span>
-                <span>{formatMoney(openingCash)}</span>
+                <span>{formatMoney(cashBreakdown?.opening_cash ?? 0)}</span>
               </div>
               <div className="flex justify-between text-gray-400">
                 <span>Продажі готівкою:</span>
-                <span className="text-green-400">+{formatMoney(cashSales)}</span>
+                <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_sales ?? 0)}</span>
               </div>
+              {(cashBreakdown?.cash_in ?? 0) > 0 && (
+                <div className="flex justify-between text-gray-400">
+                  <span>Внесення в касу:</span>
+                  <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_in ?? 0)}</span>
+                </div>
+              )}
+              {(cashBreakdown?.cash_returns ?? 0) > 0 && (
+                <div className="flex justify-between text-gray-400">
+                  <span>Повернення готівкою:</span>
+                  <span className="text-red-400">−{formatMoney(cashBreakdown?.cash_returns ?? 0)}</span>
+                </div>
+              )}
+              {(cashBreakdown?.cash_out ?? 0) > 0 && (
+                <div className="flex justify-between text-gray-400">
+                  <span>Витрати з каси:</span>
+                  <span className="text-red-400">−{formatMoney(cashBreakdown?.cash_out ?? 0)}</span>
+                </div>
+              )}
               <div className="flex justify-between text-white font-semibold border-t border-gray-700 pt-2">
                 <span>Очікується в касі:</span>
                 <span>{formatMoney(expectedCash)}</span>
@@ -149,7 +180,7 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
             className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
             Скасувати
           </button>
-          <button onClick={handleClose} disabled={closing || loading || !cashInput}
+          <button onClick={handleClose} disabled={closing || loading || cashInput === ''}
             style={{ minHeight: 56 }}
             className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-40 transition-colors">
             {closing ? 'Закриваємо...' : 'Закрити зміну'}

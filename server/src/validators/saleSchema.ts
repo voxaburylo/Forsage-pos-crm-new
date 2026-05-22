@@ -10,11 +10,31 @@ export const saleItemSchema = z.object({
 export const createSaleSchema = z.object({
   shift_id:       z.string().uuid(),
   customer_id:    z.string().uuid().optional().nullable(),
+  manager_id:     z.string().uuid().optional().nullable(),
   items:          z.array(saleItemSchema).min(1, 'Чек не може бути порожнім'),
-  payment_method: z.enum(['cash', 'card', 'debt']),
+  payment_method: z.enum(['cash', 'card', 'debt', 'mixed', 'transfer']),
+  is_fiscal:      z.boolean().default(false),
   discount:       z.number().int().min(0).default(0),  // знижка на весь чек (копейки)
   notes:          z.string().max(500).optional(),
-})
+  cash_amount:    z.number().int().min(0).default(0),
+  card_amount:    z.number().int().min(0).default(0),
+  pickup_cell:    z.string().max(50).optional().nullable(),
+  bonuses_spent:  z.number().int().min(0).default(0),
+}).refine(
+  (data) => {
+    if (data.payment_method === 'debt') {
+      return !!data.customer_id
+    }
+    if (data.payment_method === 'mixed') {
+      return data.cash_amount + data.card_amount > 0
+    }
+    return true
+  },
+  {
+    message: 'При змішаній оплаті суми готівки та картки мають бути більше 0',
+    path: ['cash_amount'],
+  },
+)
 
 export const calculatePriceSchema = z.object({
   items: z.array(z.object({

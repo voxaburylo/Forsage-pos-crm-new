@@ -1,15 +1,12 @@
-﻿import { db } from '../db/supabase.js'
+import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getCurrentShift } from './shiftService.js'
+import { logAction } from './auditService.js'
+import { logger } from '../lib/logger.js'
 import type { CreateSaleInput, CalculatePriceInput, SaleListQuery } from '../validators/saleSchema.js'
 
 const TABLE = 'sales'
 
-async function generateSaleNumber(): Promise<string> {
-  const { count } = await db.from(TABLE).select('*', { count: 'exact', head: true })
-  const num = ((count ?? 0) + 1).toString().padStart(6, '0')
-  return num
-}
 
 export async function listSales(query: SaleListQuery) {
   const { shift_id, customer_id, sale_number, date_from, date_to, page, per_page } = query
@@ -21,11 +18,11 @@ export async function listSales(query: SaleListQuery) {
     .order('completed_at', { ascending: false })
     .range(offset, offset + per_page - 1)
 
-  if (shift_id)    q = q.eq('shift_id', shift_id)
+  if (shift_id) q = q.eq('shift_id', shift_id)
   if (customer_id) q = q.eq('customer_id', customer_id)
   if (sale_number) q = q.eq('sale_number', sale_number)
-  if (date_from)   q = q.gte('completed_at', date_from)
-  if (date_to)     q = q.lte('completed_at', date_to)
+  if (date_from) q = q.gte('completed_at', date_from)
+  if (date_to) q = q.lte('completed_at', date_to)
 
   const { data, error, count } = await q
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -63,106 +60,293 @@ export async function calculatePrice(input: CalculatePriceInput) {
     const total = Math.round(product.retail_price * item.qty)
     return {
       product_id: item.product_id,
-      sku:        product.sku,
-      name:       product.name,
-      unit:       product.unit,
+      sku: product.sku,
+      name: product.name,
+      unit: product.unit,
       unit_price: product.retail_price,
-      qty:        item.qty,
+      qty: item.qty,
       total,
-      in_stock:   product.qty_on_hand >= item.qty,
+      in_stock: product.qty_on_hand >= item.qty,
       qty_on_hand: product.qty_on_hand,
     }
   })
 }
 
-export async function createSale(cashierId: string, input: CreateSaleInput) {
+
+
+
+/**
+ * ▐▄▄▄▄▌ Атомарне створення продажу через RPC (process_sale).
+ * Вся логіка (перевірка залишків, оновлення qty_on_hand, борг клієнта)
+ * виконується в єдиній транзакції PostgreSQL.
+ */
+export async function createSale(cashierId: string, tenantId: string, input: CreateSaleInput, idempotencyKey?: string) {
+  // 0. Idempotency check — повертаємо кешовану відповідь якщо ключ вже є
+  if (idempotencyKey) {
+    const { data: cached } = await db
+      .from('idempotency_keys')
+      .select('response')
+      .eq('key', idempotencyKey)
+      .eq('tenant_id', tenantId)
+      .maybeSingle()
+    if (cached) {
+      logger.info({ idempotencyKey }, 'Idempotency hit — повертаємо кешовану відповідь')
+      return cached.response as any
+    }
+  }
+
   // 1. Перевіряємо що зміна відкрита
   const shift = await getCurrentShift(cashierId)
   if (!shift) throw new AppError('NO_OPEN_SHIFT', 'Спочатку відкрийте зміну', 400)
   if (shift.id !== input.shift_id) throw new AppError('WRONG_SHIFT', 'Невірна зміна', 400)
 
-  // 2. Борг вимагає клієнта
-  if (input.payment_method === 'debt' && !input.customer_id) {
-    throw new AppError('CUSTOMER_REQUIRED', 'При продажу в борг потрібно вказати клієнта', 400)
+  // 2. Розраховуємо суми для змішаної оплати
+  const subtotalItems = input.items.reduce((s, i) => s + i.unit_price * i.qty, 0)
+  const discountedTotal = Math.max(0, subtotalItems - input.discount)
+
+  let cashAmount = 0
+  let cardAmount = 0
+  if (input.payment_method === 'mixed') {
+    cashAmount = input.cash_amount ?? 0
+    cardAmount = input.card_amount ?? 0
+    if (cashAmount + cardAmount !== discountedTotal) {
+      throw new AppError('SPLIT_MISMATCH', 'Сума готівки та картки не відповідає сумі чека', 422)
+    }
+  } else if (input.payment_method === 'cash') {
+    cashAmount = discountedTotal
+  } else if (input.payment_method === 'card') {
+    cardAmount = discountedTotal
+  } else if (input.payment_method === 'transfer') {
+    // Перекази на карту — не термінал і не готівка
   }
 
-  // 3. Рахуємо суми
-  const subtotal = input.items.reduce((s, i) => s + i.unit_price * i.qty, 0)
-  const itemsDiscount = input.items.reduce((s, i) => s + i.discount, 0)
-  const totalDiscount = input.discount + itemsDiscount
-  const total = Math.max(0, subtotal - totalDiscount)
-
-  // 4. Генеруємо номер чека
-  const saleNumber = await generateSaleNumber()
-
-  // 5. Створюємо продаж
-  const { data: sale, error: saleError } = await db
-    .from(TABLE)
-    .insert({
-      tenant_id:      '00000000-0000-0000-0000-000000000001',
-      sale_number:    saleNumber,
-      customer_id:    input.customer_id ?? null,
-      cashier_id:     cashierId,
-      shift_id:       input.shift_id,
-      status:         'completed',
-      subtotal:       Math.round(subtotal),
-      discount:       Math.round(totalDiscount),
-      total:          Math.round(total),
-      payment_method: input.payment_method,
-      is_debt:        input.payment_method === 'debt',
-      notes:          input.notes ?? null,
-    })
-    .select('id')
-    .single()
-
-  if (saleError || !sale) throw new AppError('DB_ERROR', saleError?.message ?? 'Помилка створення продажу', 500)
-
-  // 6. Додаємо позиції чека
-  const saleItems = input.items.map((item) => ({
-    tenant_id:  '00000000-0000-0000-0000-000000000001',
-    sale_id:    sale.id,
-    product_id: item.product_id,
-    qty:        item.qty,
-    unit_price: item.unit_price,
-    discount:   item.discount,
-    total:      Math.round(item.unit_price * item.qty - item.discount),
+  // 3. Формуємо items для RPC
+  const items = input.items.map((i) => ({
+    product_id: i.product_id,
+    qty: i.qty,
+    unit_price: i.unit_price,
+    discount: i.discount,
   }))
 
-  const { error: itemsError } = await db.from('sale_items').insert(saleItems)
-  if (itemsError) throw new AppError('DB_ERROR', itemsError.message, 500)
-
-  // 7. Зменшуємо залишки товарів (select + update для кожного)
-  for (const item of input.items) {
-    const { data: prod } = await db
-      .from('products')
-      .select('qty_on_hand')
-      .eq('id', item.product_id)
-      .single()
-
-    if (prod) {
-      await db
-        .from('products')
-        .update({ qty_on_hand: prod.qty_on_hand - item.qty, updated_at: new Date().toISOString() })
-        .eq('id', item.product_id)
+  // 3a. Розраховуємо бонуси ДО RPC (щоб передати атомарно)
+  const bonusesSpent = input.bonuses_spent ?? 0
+  let bonusesEarned = 0
+  if (process.env.USE_BONUS_ATOMIC_SALE === 'true' && input.customer_id && input.payment_method !== 'debt') {
+    const { getSettings } = await import('./loyaltyService.js')
+    const loyaltySettings = await getSettings()
+    if (loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
+      bonusesEarned = Math.round(discountedTotal * ((loyaltySettings.accrual_pct ?? 0) / 100))
     }
   }
 
-  // 8. Якщо борг — збільшуємо debt_balance клієнта
-  if (input.payment_method === 'debt' && input.customer_id) {
-    const { data: customer } = await db
-      .from('customers')
-      .select('debt_balance')
-      .eq('id', input.customer_id)
-      .single()
+  // 3b. Термінал підтверджує ДО виклику process_sale
+  // Якщо термінал відхиляє → продаж НЕ створюється
+  let bankAuthCode: string | null = null
+  if (input.payment_method === 'card' || input.payment_method === 'mixed') {
+    const { processCardPayment } = await import('./integrations/MockBankTerminalService.js')
+    const terminalResult = await processCardPayment(cardAmount)
+    if (!terminalResult.success) {
+      throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+    }
+    bankAuthCode = terminalResult.auth_code
+    logger.info({ bankAuthCode }, 'Термінал підтвердив — виконуємо process_sale')
+  }
 
-    if (customer) {
-      await db
-        .from('customers')
-        .update({ debt_balance: customer.debt_balance + Math.round(total), updated_at: new Date().toISOString() })
-        .eq('id', input.customer_id)
+  const useBonusAtomic = process.env.USE_BONUS_ATOMIC_SALE === 'true'
+  const rpcName = useBonusAtomic
+    ? 'process_sale_v3'
+    : process.env.USE_RESERVE_AWARE_SALE === 'true' ? 'process_sale_v2' : 'process_sale'
+  logger.info({ shift_id: input.shift_id, items_count: items.length, payment_method: input.payment_method, rpc: rpcName }, 'Виклик process_sale RPC')
+
+  // 4. Викликаємо атомарну PostgreSQL функцію
+  const rpcParams: Record<string, unknown> = {
+    p_tenant_id:      tenantId,
+    p_cashier_id:     cashierId,
+    p_shift_id:       input.shift_id,
+    p_customer_id:    input.customer_id ?? null,
+    p_manager_id:     input.manager_id ?? cashierId,
+    p_items:          JSON.stringify(items),
+    p_payment_method: input.payment_method,
+    p_discount:       input.discount,
+    p_notes:          input.notes ?? null,
+    p_cash_amount:    cashAmount,
+    p_card_amount:    cardAmount,
+  }
+  if (useBonusAtomic) {
+    rpcParams.p_bonuses_spent  = bonusesSpent
+    rpcParams.p_bonuses_earned = bonusesEarned
+  }
+  const { data, error } = await db.rpc(rpcName, rpcParams)
+
+  // 4. Обробка помилок RPC
+  if (error) {
+    const msg = error.message ?? ''
+    if (msg.includes('INSUFFICIENT_STOCK')) {
+      throw new AppError('INSUFFICIENT_STOCK', msg.replace('INSUFFICIENT_STOCK: ', '').trim(), 422)
+    }
+    if (msg.includes('not found') || msg.includes('не знайдено')) {
+      throw new AppError('PRODUCT_NOT_FOUND', msg, 404)
+    }
+    throw new AppError('DB_ERROR', msg, 500)
+  }
+
+  if (!data) {
+    throw new AppError('DB_ERROR', 'RPC process_sale не повернув дані', 500)
+  }
+
+  // 5. Парсимо результат (JSONB -> об'єкт)
+  const sale = typeof data === 'string' ? JSON.parse(data) : data
+
+  // 5b. Якщо фіскальний чек — викликаємо MockPrroService
+  let fiscalNumber: string | null = null
+  if (input.is_fiscal) {
+    const { fiscalizeSale } = await import('./integrations/MockPrroService.js')
+    const fiscalResult = await fiscalizeSale(sale.id, sale.sale_number ?? '', sale.total)
+    if (fiscalResult.success) {
+      fiscalNumber = fiscalResult.fiscal_number
     }
   }
 
-  return getSale(sale.id)
+  // 5c. Оновлюємо запис в БД з фіскальними даними
+  if (fiscalNumber || bankAuthCode || input.is_fiscal) {
+    const updateData: Record<string, unknown> = {}
+    if (input.is_fiscal) updateData.is_fiscal = true
+    if (fiscalNumber) updateData.fiscal_number = fiscalNumber
+    if (bankAuthCode) updateData.bank_auth_code = bankAuthCode
+    if (Object.keys(updateData).length > 0) {
+      await db.from('sales').update(updateData).eq('id', sale.id)
+      sale.is_fiscal = updateData.is_fiscal ?? false
+      sale.fiscal_number = fiscalNumber
+      sale.bank_auth_code = bankAuthCode
+    }
+  }
+
+  // 6. Аудит (await — гарантуємо запис перед відповіддю)
+  await logAction({
+    tenantId: tenantId,
+    userId: cashierId,
+    userRole: 'cashier',
+    action: 'sale.created',
+    entityType: 'sale',
+    entityId: sale.id,
+    entityLabel: '#' + (sale.sale_number ?? ''),
+    newValue: {
+      total: sale.total,
+      payment_method: input.payment_method,
+      items: input.items.length,
+    },
+  })
+
+  // 5d. Оновлюємо pickup_cell якщо передано (для відкладених чеків)
+  if (input.pickup_cell) {
+    await db.from('sales').update({ pickup_cell: input.pickup_cell }).eq('id', sale.id)
+    sale.pickup_cell = input.pickup_cell
+  }
+
+  // 5e-5g. Бонуси — якщо НЕ атомарний режим, викликаємо окремо (legacy)
+  if (!useBonusAtomic) {
+    let bonusSpent = 0
+    if (input.bonuses_spent && input.bonuses_spent > 0 && input.customer_id) {
+      const { error: spendErr } = await db.rpc('process_bonus_spend', {
+        p_customer_id: input.customer_id,
+        p_amount:      input.bonuses_spent,
+        p_sale_id:     sale.id,
+      })
+      if (!spendErr) bonusSpent = input.bonuses_spent
+    }
+
+    let bonusEarned = 0
+    if (input.customer_id && input.payment_method !== 'debt') {
+      const settings = await (await import('./loyaltyService.js')).getSettings()
+      if (settings.is_enabled && sale.total >= (settings.min_purchase_kopecks ?? 0)) {
+        const earnAmount = Math.round(sale.total * ((settings.accrual_pct ?? 0) / 100))
+        if (earnAmount > 0) {
+          const { error: earnErr } = await db.rpc('process_bonus_earn', {
+            p_customer_id: input.customer_id,
+            p_amount:      earnAmount,
+            p_sale_id:     sale.id,
+          })
+          if (!earnErr) bonusEarned = earnAmount
+        }
+      }
+    }
+
+    if (bonusSpent > 0 || bonusEarned > 0) {
+      await db.from('sales').update({
+        bonuses_spent: bonusSpent,
+        bonuses_earned: bonusEarned,
+      }).eq('id', sale.id)
+      sale.bonuses_spent = bonusSpent
+      sale.bonuses_earned = bonusEarned
+    }
+  }
+
+  // 7. Зберігаємо idempotency key щоб повторний запит отримав ту ж відповідь
+  if (idempotencyKey) {
+    await db.from('idempotency_keys').insert({
+      key: idempotencyKey,
+      tenant_id: tenantId,
+      response: sale,
+    }).then(({ error }) => {
+      if (error) logger.warn({ idempotencyKey, error: error.message }, 'Не вдалось зберегти idempotency key')
+    })
+  }
+
+  return sale
 }
 
+/** Відновити відкладений чек */
+export async function resumeSale(saleId: string) {
+  const { data, error } = await db
+    .from('sales')
+    .update({ status: 'draft', updated_at: new Date().toISOString() })
+    .eq('id', saleId)
+    .eq('status', 'suspended')
+    .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)')
+    .single()
+
+  if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Відкладений чек не знайдено', 404)
+  return data
+}
+
+/** Позначити чек як готовий до видачі + надіслати сповіщення */
+export async function markReadyForPickup(saleId: string) {
+  const { data: sale, error: saleErr } = await db
+    .from('sales')
+    .update({ status: 'ready_for_pickup', updated_at: new Date().toISOString() })
+    .eq('id', saleId)
+    .select('*, customer:customers(id, full_name, phone)')
+    .single()
+
+  if (saleErr || !sale) throw new AppError('SALE_NOT_FOUND', 'Чек не знайдено', 404)
+
+  // Авто-сповіщення через месенджер
+  if (sale.customer) {
+    const { data: settings } = await db.from('shop_settings').select('auto_notify_order_ready').single() as any
+    if (settings?.auto_notify_order_ready !== false) {
+      const { data: chat } = await db.from('messenger_chats')
+        .select('platform_chat_id, channel:messenger_channels(id, platform, credentials)')
+        .eq('customer_id', sale.customer.id)
+        .maybeSingle()
+
+      if (chat) {
+        const totalHryvnia = (sale.total / 100).toFixed(2)
+        const cell = sale.pickup_cell ?? 'біля каси'
+        const msg = `✅ Доброго дня${sale.customer.full_name ? ', ' + sale.customer.full_name : ''}! Ваше замовлення зібрано і чекає на вас у магазині${cell ? ' (Ячейка: ' + cell + ')' : ''}. Сума до сплати: ${totalHryvnia} грн.`
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const chatData = chat as any
+        const channel = Array.isArray(chatData.channel) ? chatData.channel[0] : chatData.channel
+        if (channel?.platform === 'telegram' && channel?.credentials?.token) {
+          try {
+            const { Telegraf } = await import('telegraf')
+            const bot = new Telegraf(channel.credentials.token)
+            await bot.telegram.sendMessage(chatData.platform_chat_id, msg)
+          } catch {}
+        }
+      }
+    }
+  }
+
+  return sale
+}

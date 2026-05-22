@@ -5,6 +5,7 @@ export interface CustomerFilters {
   search?: string
   has_debt?: 'true' | 'false'
   tag?: string
+  group_id?: string
   page?: number
   per_page?: number
 }
@@ -27,13 +28,13 @@ export const customerApi = {
   getSales: (id: string) =>
     api.get<{ data: CustomerSale[] }>(`/api/v1/customers/${id}/sales`),
 
-  create: (body: { phone: string; full_name?: string; email?: string; notes?: string; tags?: string[] }) =>
+  create: (body: { phone: string; full_name?: string; email?: string; notes?: string; tags?: string[]; price_tier_id?: string | null }) =>
     api.post<{ data: Customer }>('/api/v1/customers', body),
 
   quickCreate: (phone: string, full_name: string) =>
     api.post<{ data: Customer }>('/api/v1/customers/quick', { phone, full_name }),
 
-  update: (id: string, body: Partial<{ phone: string; full_name: string; email: string; notes: string; tags: string[] }>) =>
+  update: (id: string, body: Partial<{ phone: string; full_name: string; email: string; notes: string; tags: string[]; price_tier_id: string | null; vip_level: string; risk_profile: string }>) =>
     api.put<{ data: Customer }>(`/api/v1/customers/${id}`, body),
 
   delete: (id: string) =>

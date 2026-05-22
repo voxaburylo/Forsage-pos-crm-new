@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -20,7 +21,7 @@ router.post('/users', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const parsed = createUserSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані користувача', 422, parsed.error.flatten())
-    res.status(201).json({ data: await adminService.createUser(parsed.data) })
+    res.status(201).json({ data: await adminService.createUser(parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -36,16 +37,27 @@ router.delete('/users/:id', requireRole('owner', 'admin'), async (req, res, next
   try { await adminService.deactivateUser(String(req.params.id)); res.status(204).send() } catch (err) { next(err) }
 })
 
-// Categories
-router.get('/categories', requireRole('owner', 'admin'), async (_req, res, next) => {
-  try { res.json({ data: await adminService.listCategories() }) } catch (err) { next(err) }
+// PUT /api/v1/admin/users/:id/password — скидання пароля адміном
+router.put('/users/:id/password', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const schema = z.object({ password: z.string().min(6, 'Пароль мінімум 6 символів') })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    await adminService.resetPassword(String(req.params.id), parsed.data.password)
+    res.json({ data: { success: true } })
+  } catch (err) { next(err) }
 })
 
-router.post('/categories', requireRole('owner', 'admin'), async (req, res, next) => {
+// Categories — GET доступний усім авторизованим (для фільтрів у товарах)
+router.get('/categories', async (req, res, next) => {
+  try { res.json({ data: await adminService.listCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+
+router.post('/categories', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
   try {
     const parsed = categorySchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані категорії', 422, parsed.error.flatten())
-    res.status(201).json({ data: await adminService.createCategory(parsed.data) })
+    res.status(201).json({ data: await adminService.createCategory(parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -53,24 +65,24 @@ router.put('/categories/:id', requireRole('owner', 'admin'), async (req, res, ne
   try {
     const parsed = categorySchema.partial().safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    res.json({ data: await adminService.updateCategory(String(req.params.id), parsed.data) })
+    res.json({ data: await adminService.updateCategory(String(req.params.id), parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
 router.delete('/categories/:id', requireRole('owner', 'admin'), async (req, res, next) => {
-  try { await adminService.deleteCategory(String(req.params.id)); res.status(204).send() } catch (err) { next(err) }
+  try { await adminService.deleteCategory(String(req.params.id), req.user!.tenant_id); res.status(204).send() } catch (err) { next(err) }
 })
 
-// Brands
-router.get('/brands', requireRole('owner', 'admin'), async (_req, res, next) => {
-  try { res.json({ data: await adminService.listBrands() }) } catch (err) { next(err) }
+// Brands — GET доступний усім авторизованим
+router.get('/brands', async (req, res, next) => {
+  try { res.json({ data: await adminService.listBrands(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
-router.post('/brands', requireRole('owner', 'admin'), async (req, res, next) => {
+router.post('/brands', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
   try {
     const parsed = brandSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані бренду', 422, parsed.error.flatten())
-    res.status(201).json({ data: await adminService.createBrand(parsed.data) })
+    res.status(201).json({ data: await adminService.createBrand(parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -78,7 +90,7 @@ router.put('/brands/:id', requireRole('owner', 'admin'), async (req, res, next) 
   try {
     const parsed = brandSchema.partial().safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    res.json({ data: await adminService.updateBrand(String(req.params.id), parsed.data) })
+    res.json({ data: await adminService.updateBrand(String(req.params.id), parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 

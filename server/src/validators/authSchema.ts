@@ -18,7 +18,7 @@ export const loginSchema = z.object({
     .refine((v) => phoneRegex.test(v), 'Невірний формат телефону (+380XXXXXXXXX)'),
   password: z
     .string()
-    .min(6, 'Пароль мінімум 6 символів'),
+    .min(4, 'Пароль мінімум 4 символи'),
 })
 
 export type LoginInput = z.infer<typeof loginSchema>

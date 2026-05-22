@@ -3,6 +3,16 @@ import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { CreateUserInput, UpdateUserInput, CategoryInput, BrandInput, SettingsInput } from '../validators/adminSchema.js'
 
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const brandsCache = new Map<string, CacheEntry<any[]>>();
+const categoriesCache = new Map<string, CacheEntry<any[]>>();
+const CACHE_TTL_MS = 60000; // 1 minute
+
+
 function phoneToEmail(phone: string): string {
   return `${phone.replace(/\D/g, '')}@forsage.internal`
 }
@@ -24,7 +34,7 @@ export async function listUsers() {
   }))
 }
 
-export async function createUser(input: CreateUserInput) {
+export async function createUser(input: CreateUserInput, tenantId: string) {
   const email = phoneToEmail(input.phone)
 
   const { data: existing } = await supabaseAdmin.auth.admin.listUsers()
@@ -39,6 +49,7 @@ export async function createUser(input: CreateUserInput) {
       phone:     input.phone,
       full_name: input.full_name,
       role:      input.role,
+      tenant_id: tenantId,
       is_active: true,
     },
   })
@@ -65,6 +76,11 @@ export async function updateUser(id: string, input: UpdateUserInput) {
   return data.user
 }
 
+export async function resetPassword(id: string, newPassword: string) {
+  const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password: newPassword })
+  if (error) throw new AppError('AUTH_ERROR', error.message, 500)
+}
+
 export async function deactivateUser(id: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
   if (!existing.user) throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
@@ -79,37 +95,48 @@ export async function deactivateUser(id: string) {
 
 // ===================== CATEGORIES =====================
 
-export async function listCategories() {
+export async function listCategories(tenantId: string) {
+  const cached = categoriesCache.get(tenantId);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
   const { data, error } = await db
     .from('categories')
     .select('*')
+    .eq('tenant_id', tenantId)
     .order('sort_order', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data ?? []
+  const result = data ?? []
+  categoriesCache.set(tenantId, { data: result, timestamp: Date.now() });
+  return result
 }
 
-export async function createCategory(input: CategoryInput) {
+export async function createCategory(input: CategoryInput, tenantId: string) {
+  categoriesCache.delete(tenantId);
   const { data, error } = await db
     .from('categories')
-    .insert(input)
+    .insert({ ...input, tenant_id: tenantId })
     .select('*')
     .single()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data
 }
 
-export async function updateCategory(id: string, input: Partial<CategoryInput>) {
+export async function updateCategory(id: string, input: Partial<CategoryInput>, tenantId: string) {
+  categoriesCache.delete(tenantId);
   const { data, error } = await db
     .from('categories')
     .update(input)
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .select('*')
     .single()
   if (error || !data) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
   return data
 }
 
-export async function deleteCategory(id: string) {
+export async function deleteCategory(id: string, tenantId: string) {
+  categoriesCache.delete(tenantId);
   const { count } = await db
     .from('products')
     .select('*', { count: 'exact', head: true })
@@ -119,36 +146,46 @@ export async function deleteCategory(id: string) {
   if ((count ?? 0) > 0) {
     throw new AppError('CATEGORY_IN_USE', 'Категорія використовується в товарах', 409)
   }
-  const { error } = await db.from('categories').delete().eq('id', id)
+  const { error } = await db.from('categories').delete().eq('id', id).eq('tenant_id', tenantId)
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
 // ===================== BRANDS =====================
 
-export async function listBrands() {
+export async function listBrands(tenantId: string) {
+  const cached = brandsCache.get(tenantId);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
   const { data, error } = await db
     .from('brands')
     .select('*')
+    .eq('tenant_id', tenantId)
     .order('name', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data ?? []
+  const result = data ?? []
+  brandsCache.set(tenantId, { data: result, timestamp: Date.now() });
+  return result
 }
 
-export async function createBrand(input: BrandInput) {
+export async function createBrand(input: BrandInput, tenantId: string) {
+  brandsCache.delete(tenantId);
   const { data, error } = await db
     .from('brands')
-    .insert(input)
+    .insert({ ...input, tenant_id: tenantId })
     .select('*')
     .single()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data
 }
 
-export async function updateBrand(id: string, input: Partial<BrandInput>) {
+export async function updateBrand(id: string, input: Partial<BrandInput>, tenantId: string) {
+  brandsCache.delete(tenantId);
   const { data, error } = await db
     .from('brands')
     .update(input)
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .select('*')
     .single()
   if (error || !data) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
