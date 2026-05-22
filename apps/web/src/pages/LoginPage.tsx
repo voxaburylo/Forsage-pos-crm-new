@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { signIn } from '@/lib/auth'
 
@@ -19,6 +19,14 @@ export default function LoginPage() {
   const [phoneError, setPhoneError] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingMsg, setLoadingMsg] = useState('Входимо...')
+
+  useEffect(() => {
+    if (!loading) { setLoadingMsg('Входимо...'); return }
+    const t1 = setTimeout(() => setLoadingMsg('Підключаємося до сервера...'), 4000)
+    const t2 = setTimeout(() => setLoadingMsg('Сервер прогрівається, зачекайте...'), 10000)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [loading])
 
   function validatePhone(value: string): boolean {
     const normalized = normalizePhone(value)
@@ -108,7 +116,7 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-accent hover:bg-accent-dark text-black font-semibold py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Входимо...' : 'Увійти'}
+            {loading ? loadingMsg : 'Увійти'}
           </button>
         </form>
 

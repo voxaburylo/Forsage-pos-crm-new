@@ -14,27 +14,43 @@ function normalizePhone(raw: string): string {
 export async function signIn(phone: string, password: string) {
   const normalized = normalizePhone(phone)
 
-  const res = await fetch(`${API_URL}/api/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone: normalized, password }),
-  })
+  // Retry up to 2 extra times to handle Render cold start (free tier sleeps)
+  let lastErr: Error | null = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${API_URL}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: normalized, password }),
+        signal: AbortSignal.timeout(20000),
+      })
 
-  const body = await res.json()
+      const body = await res.json()
 
-  if (!res.ok) {
-    throw new Error(body?.error?.message ?? 'Невірний номер телефону або пароль')
+      if (!res.ok) {
+        throw new Error(body?.error?.message ?? 'Невірний номер телефону або пароль')
+      }
+
+      const { error } = await supabase.auth.setSession({
+        access_token: body.access_token,
+        refresh_token: body.refresh_token,
+      })
+      if (error) throw new Error('Помилка встановлення сесії')
+      return body
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err))
+      // Only retry on network errors (not auth errors like wrong password)
+      if (lastErr.message !== 'Невірний номер телефону або пароль' &&
+          lastErr.message !== 'Помилка встановлення сесії' &&
+          !lastErr.message.startsWith('HTTP ') &&
+          attempt < 2) {
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
+        continue
+      }
+      throw lastErr
+    }
   }
-
-  // Встановлюємо сесію в Supabase клієнт (для подальших запитів до БД)
-  const { error } = await supabase.auth.setSession({
-    access_token: body.access_token,
-    refresh_token: body.refresh_token,
-  })
-
-  if (error) throw new Error('Помилка встановлення сесії')
-
-  return body
+  throw lastErr ?? new Error('Помилка входу')
 }
 
 export async function signOut() {
