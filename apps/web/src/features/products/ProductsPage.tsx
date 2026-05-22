@@ -369,26 +369,56 @@ export default function ProductsPage() {
     <Layout
       title={`Товари${total ? ` (${total})` : ''}`}
       actions={
-        <div className="flex gap-2">
-          <Button variant="secondary" icon={<Upload size={14} />} onClick={() => setImportOpen(true)}>Імпорт</Button>
-          <Button variant="secondary" icon={<Download size={14} />} onClick={handleExport}>Експорт CSV</Button>
-          <Button icon={<Plus size={16} />} onClick={() => navigate('/products/new')}>Новий товар</Button>
+        <div className="flex gap-1.5">
+          <span className="hidden md:flex gap-1.5">
+            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт</Button>
+            <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>
+          </span>
+          <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/products/new')}>
+            <span className="hidden sm:inline">Новий товар</span>
+          </Button>
         </div>
       }
     >
+      {/* Мобільні фільтр-чіпи (категорії) — тільки на телефоні */}
+      {categories.length > 0 && (
+        <div className="flex md:hidden gap-1.5 mb-3 overflow-x-auto pb-1">
+          <button
+            onClick={() => { setCategoryFilter(''); setPage(1) }}
+            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+              !categoryFilter ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600'
+            }`}
+          >
+            Всі
+          </button>
+          {categories.map((cat) => (
+            <button key={cat.id}
+              onClick={() => { setCategoryFilter(cat.id); setPage(1) }}
+              className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                categoryFilter === cat.id ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600'
+              }`}
+            >
+              {cat.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="flex gap-5 min-h-0">
 
-        {/* ── Ліва колонка: категорії + бренди ── */}
-        <CategorySidebar
-          categories={categories}
-          brands={brands}
-          activeCategory={categoryFilter}
-          activeBrand={brandFilter}
-          onCategory={(id) => { setCategoryFilter(id); setPage(1) }}
-          onBrand={(id) => { setBrandFilter(id); setPage(1) }}
-          onReload={loadMeta}
-          isAdmin={isAdmin}
-        />
+        {/* ── Ліва колонка: категорії + бренди — тільки desktop ── */}
+        <div className="hidden md:block">
+          <CategorySidebar
+            categories={categories}
+            brands={brands}
+            activeCategory={categoryFilter}
+            activeBrand={brandFilter}
+            onCategory={(id) => { setCategoryFilter(id); setPage(1) }}
+            onBrand={(id) => { setBrandFilter(id); setPage(1) }}
+            onReload={loadMeta}
+            isAdmin={isAdmin}
+          />
+        </div>
 
         {/* ── Права частина: пошук + таблиця ── */}
         <div className="flex-1 min-w-0 flex flex-col gap-3">

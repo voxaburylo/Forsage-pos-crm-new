@@ -147,6 +147,7 @@ export default function POSPage() {
   const searchRef = useRef<SearchPanelHandle>(null)
 
   const shift = store.currentShift
+  const [mobileTab, setMobileTab] = useState<'search' | 'cart'>('search')
 
   // Завантажуємо список співробітників для селектора менеджера
   useEffect(() => {
@@ -512,16 +513,37 @@ export default function POSPage() {
         </div>
       </header>
 
+      {/* Mobile tabs — тільки на телефоні */}
+      <div className="md:hidden flex border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
+        <button
+          onClick={() => setMobileTab('search')}
+          className={`flex-1 py-3 text-sm font-semibold transition-colors ${mobileTab === 'search' ? 'text-yellow-400 border-b-2 border-yellow-400' : 'text-gray-500'}`}
+        >
+          🔍 Пошук
+        </button>
+        <button
+          onClick={() => setMobileTab('cart')}
+          className={`flex-1 py-3 text-sm font-semibold transition-colors relative ${mobileTab === 'cart' ? 'text-yellow-400 border-b-2 border-yellow-400' : 'text-gray-500'}`}
+        >
+          🛒 Кошик
+          {store.items.length > 0 && (
+            <span className="absolute top-2 right-8 min-w-[18px] h-[18px] bg-yellow-400 text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+              {store.items.length}
+            </span>
+          )}
+        </button>
+      </div>
+
       {/* Основна панель POS */}
       <div className="flex-1 flex min-h-0">
-        <div className="flex-1 border-r border-gray-800 min-h-0">
+        <div className={`flex-1 border-r border-gray-800 min-h-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
           <SearchPanel ref={searchRef} />
           <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
           <CrossSellPanel />
         </div>
-        <div className="w-[35%] min-w-[380px] lg:w-[40%] xl:w-[420px] min-h-0 flex flex-col">
+        <div className={`md:w-[35%] md:min-w-[320px] lg:w-[40%] xl:w-[420px] min-h-0 flex flex-col w-full ${mobileTab === 'search' ? 'hidden md:flex' : 'flex'}`}>
           <ReceiptPanel
-            onPay={() => setPayOpen(true)}
+            onPay={() => { setPayOpen(true) }}
             onSelectCustomer={() => setCustomerOpen(true)}
             onClear={originalClear}
           />
