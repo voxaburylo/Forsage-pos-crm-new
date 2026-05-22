@@ -12,6 +12,8 @@ function normalizePhone(value: string): string {
   return value
 }
 
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const [phone, setPhone] = useState('')
@@ -20,6 +22,11 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('Входимо...')
+
+  // Ping the server as soon as the login page loads so Render wakes up early
+  useEffect(() => {
+    fetch(`${API_URL}/api/v1/health`, { signal: AbortSignal.timeout(30000) }).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (!loading) { setLoadingMsg('Входимо...'); return }
