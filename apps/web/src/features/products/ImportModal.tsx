@@ -337,30 +337,43 @@ export function ImportModal({ onClose, onImported }: Props) {
 
   // Рендеринг кроків
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative bg-white rounded-2xl w-full mx-4 shadow-2xl overflow-hidden flex flex-col transition-all duration-300 ${
-        step === 'preview' ? 'max-w-6xl h-[90vh]' : 'max-w-3xl max-h-[85vh]'
-      }`}>
-        
+      <div className={`relative bg-white w-full shadow-2xl overflow-hidden flex flex-col transition-all duration-300
+        rounded-t-2xl sm:rounded-2xl sm:mx-4
+        ${step === 'preview' ? 'sm:max-w-6xl h-[95vh] sm:h-[90vh]' : 'sm:max-w-3xl max-h-[95vh] sm:max-h-[85vh]'}
+      `}>
+
         {/* Хедер модального вікна */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0 bg-gray-50">
-          <div>
-            <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-              <Upload className="text-yellow-500" size={20} />
-              Покроковий імпорт товарів
+        <div className="flex items-start justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 shrink-0 bg-gray-50">
+          <div className="flex-1 min-w-0 pr-3">
+            <h2 className="text-base sm:text-lg font-bold text-gray-900 flex items-center gap-2">
+              <Upload className="text-yellow-500 shrink-0" size={18} />
+              <span className="truncate">Покроковий імпорт товарів</span>
             </h2>
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${step === 'source' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-500'}`}>1. Джерело</span>
-              <ChevronRight size={12} className="text-gray-300" />
-              <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${step === 'mapping' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-500'}`}>2. Зіставлення</span>
-              <ChevronRight size={12} className="text-gray-300" />
-              <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${step === 'preview' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-500'}`}>3. Попередній перегляд</span>
-              <ChevronRight size={12} className="text-gray-300" />
-              <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${step === 'success' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-500'}`}>4. Результат</span>
+            {/* Breadcrumb — горизонтальна прокрутка на мобільному */}
+            <div className="flex items-center gap-1.5 mt-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+              {([
+                { id: 'source',  label: '1. Джерело' },
+                { id: 'mapping', label: '2. Зіставлення' },
+                { id: 'preview', label: '3. Перегляд' },
+                { id: 'success', label: '4. Результат' },
+              ] as const).map((s, i, arr) => (
+                <span key={s.id} className="flex items-center gap-1.5 shrink-0">
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${
+                    step === s.id ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-400'
+                  }`}>{s.label}</span>
+                  {i < arr.length - 1 && <ChevronRight size={10} className="text-gray-300 shrink-0" />}
+                </span>
+              ))}
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-200 transition-colors">
+          {/* Кнопка закриття — велика, завжди видима */}
+          <button
+            onClick={onClose}
+            className="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-200 hover:bg-gray-300 text-gray-600 transition-colors"
+            aria-label="Закрити"
+          >
             <X size={18} />
           </button>
         </div>
