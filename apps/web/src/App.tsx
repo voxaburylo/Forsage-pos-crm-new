@@ -27,6 +27,7 @@ const InvoiceFormPage      = lazy(() => import('@/features/suppliers/InvoiceForm
 const InvoiceDetailPage    = lazy(() => import('@/features/suppliers/InvoiceDetailPage'))
 const ImportPage           = lazy(() => import('@/features/suppliers/ImportPage'))
 const BulkImportPage       = lazy(() => import('@/features/suppliers/BulkImportPage'))
+const OnecImportPage       = lazy(() => import('@/features/suppliers/OnecImportPage'))
 const AuditLogPage         = lazy(() => import('@/features/admin/AuditLogPage'))
 const PricingPage          = lazy(() => import('@/features/admin/PricingPage'))
 const StockIntegrityPage   = lazy(() => import('@/features/admin/StockIntegrityPage'))
@@ -104,6 +105,7 @@ function App() {
           <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute><InvoiceFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/import"            element={<ProtectedRoute><ImportPage /></ProtectedRoute>} />
           <Route path="/suppliers/bulk-import"       element={<ProtectedRoute><BulkImportPage /></ProtectedRoute>} />
+          <Route path="/suppliers/1c-import"         element={<ProtectedRoute><OnecImportPage /></ProtectedRoute>} />
 
           <Route path="/staff"          element={<ProtectedRoute><StaffPage /></ProtectedRoute>} />
           <Route path="/staff-salary"   element={<ProtectedRoute><StaffSalaryPage /></ProtectedRoute>} />

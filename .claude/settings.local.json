@@ -63,7 +63,10 @@
       "Bash(git add *)",
       "WebSearch",
       "Bash(npx kill-port *)",
-      "Bash(node dist/index.js)"
+      "Bash(node dist/index.js)",
+      "Bash(xargs -I{} basename {} .sql)",
+      "mcp__plugin_supabase_supabase__execute_sql",
+      "Bash(npm run *)"
     ]
   }
 }

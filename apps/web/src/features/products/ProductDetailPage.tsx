@@ -47,7 +47,7 @@ export default function ProductDetailPage() {
     setSavingPhoto(true)
     try {
       await productApi.update(id, { photo_url: url ?? null } as any)
-      setProduct({ ...product, photo_url: url ?? undefined })
+      setProduct({ ...product, photo_url: url ?? null })
       toast.success(url ? 'Фото збережено' : 'Фото видалено')
       setPhotoModalOpen(false)
     } catch (e) {

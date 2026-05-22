@@ -45,6 +45,7 @@ import warehouseMovementsRouter from './routes/warehouseMovements.js'
 import notificationsRouter from './routes/notifications.js'
 import printRouter from './routes/print.js'
 import autoPurchaseRouter from './routes/autoPurchase.js'
+import onecImportRouter from './routes/onecImport.js'
 import { processImport } from './services/supplierImportService.js'
 import { ReserveService } from './services/reserveService.js'
 import { StockValidatorService } from './services/stockValidatorService.js'
@@ -126,6 +127,7 @@ app.use('/api/v1/warehouse/movements', warehouseMovementsRouter)
 app.use('/api/v1/notifications', notificationsRouter)
 app.use('/api/v1/print', printRouter)
 app.use('/api/v1/auto-purchase', autoPurchaseRouter)
+app.use('/api/v1/import/1c',    onecImportRouter)
 
 app.use('/api/v1/customer-groups', customerGroupsRouter)
 app.use('/api/v1/salary', salaryRouter)

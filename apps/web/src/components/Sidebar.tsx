@@ -58,7 +58,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/suppliers',          icon: <Truck size={18} />,    label: 'Список',   roles: ['owner','admin','manager'] },
       { to: '/suppliers/invoices', icon: <FileText size={18} />, label: 'Накладні', roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/suppliers/import',   icon: <Upload size={18} />,   label: 'Імпорт',   roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/suppliers/import',    icon: <Upload size={18} />,   label: 'Імпорт прайсу',   roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/suppliers/1c-import', icon: <Upload size={18} />,   label: 'Імпорт з 1С',     roles: ['owner','admin','manager'] },
     ],
   },
   {
