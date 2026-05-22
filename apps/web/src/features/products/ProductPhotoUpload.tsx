@@ -146,6 +146,33 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
     })
   }
 
+  // ── Вставка з буфера (кнопка + мобільний clipboard API) ────────────────────
+  async function pasteFromClipboard() {
+    try {
+      // Сучасний Clipboard API (працює в Chrome/Edge/Safari на мобільних)
+      if (navigator.clipboard?.read) {
+        const items = await navigator.clipboard.read()
+        for (const item of items) {
+          const imageType = item.types.find((t) => t.startsWith('image/'))
+          if (!imageType) continue
+          const blob = await item.getType(imageType)
+          await processFile(blob, 'clipboard')
+          return
+        }
+        toast.info('У буфері немає зображення')
+      } else {
+        // Якщо Clipboard API не підтримується
+        toast.info('Натисніть Ctrl+V щоб вставити зображення з буфера')
+      }
+    } catch (e: any) {
+      if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+        toast.error('Дозвольте доступ до буфера обміну в налаштуваннях браузера')
+      } else {
+        toast.error(e instanceof Error ? e.message : 'Не вдалося вставити з буфера')
+      }
+    }
+  }
+
   return (
     <div className="space-y-3">
 
@@ -210,6 +237,17 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
       >
         <Camera size={20} />
         Зробити фото
+      </button>
+
+      {/* Кнопка вставки з буфера обміну */}
+      <button
+        type="button"
+        onClick={pasteFromClipboard}
+        disabled={uploading}
+        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium transition-all disabled:opacity-50 active:scale-[0.98] touch-target border border-gray-200"
+      >
+        <Clipboard size={18} />
+        Вставити з буфера
       </button>
 
       {/* Галерея */}
