@@ -159,10 +159,10 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
           await processFile(blob, 'clipboard')
           return
         }
-        toast.info('У буфері немає зображення')
+        toast.warning('У буфері немає зображення')
       } else {
         // Якщо Clipboard API не підтримується
-        toast.info('Натисніть Ctrl+V щоб вставити зображення з буфера')
+        toast.warning('Натисніть Ctrl+V щоб вставити зображення з буфера')
       }
     } catch (e: any) {
       if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
