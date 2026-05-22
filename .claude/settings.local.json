@@ -61,7 +61,9 @@
       "mcp__plugin_supabase_supabase__list_projects",
       "mcp__plugin_supabase_supabase__list_migrations",
       "Bash(git add *)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(npx kill-port *)",
+      "Bash(node dist/index.js)"
     ]
   }
 }

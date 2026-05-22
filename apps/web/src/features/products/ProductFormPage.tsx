@@ -395,6 +395,15 @@ export default function ProductFormPage() {
                 ⭐ Швидкий товар (показувати на касі)
               </label>
             </div>
+            <div className="flex items-center gap-3">
+              <input type="checkbox" id="is_service"
+                checked={(form as any).is_service ?? false}
+                onChange={(e) => set('is_service' as any, e.target.checked)}
+                className="w-4 h-4 accent-blue-400" />
+              <label htmlFor="is_service" className="text-sm text-gray-700">
+                ☕ Сервісний товар — кава, їжа (без обліку залишків)
+              </label>
+            </div>
 
             <div className="flex gap-3 pt-2">
               <Button type="submit" loading={saving} icon={<Save size={16} />}>

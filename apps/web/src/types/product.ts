@@ -12,6 +12,7 @@ export interface Product {
   reorder_point: number
   notes: string | null
   is_active: boolean
+  is_service: boolean
   storage_bin: string | null
   is_favorite: boolean | null
   photo_url: string | null

@@ -142,7 +142,8 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       .filter((i) => i.productId === p.id)
       .reduce((s, i) => s + i.qty, 0)
     const newTotalQty = existingQty + 1
-    const lowStock = qtyAvailable < newTotalQty
+    // Сервісні товари (кава, снеки) — завжди доступні, без перевірки залишків
+    const lowStock = !p.is_service && qtyAvailable < newTotalQty
 
     if (lowStock) {
       if (qtyAvailable <= 0) {
@@ -278,17 +279,25 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
                   </div>
                   <div className="text-right shrink-0">
                     <p className="text-white font-bold text-xl">{kopecksToHryvnia(p.retail_price)} ₴</p>
-                    <p className={`text-xs mt-0.5 flex items-center gap-1 justify-end ${
-                      (p.qty_available ?? p.qty_on_hand) <= 0 ? 'text-red-400' :
-                      (p.qty_available ?? p.qty_on_hand) <= p.reorder_point ? 'text-orange-400' : 'text-green-400'
-                    }`}>
-                      <ShoppingCart size={12} />
-                      {(p.qty_available ?? p.qty_on_hand) <= 0 ? '✗ Нема' : `● ${(p.qty_available ?? p.qty_on_hand)} ${p.unit}`}
-                    </p>
-                    {p.qty_reserved !== undefined && p.qty_reserved > 0 && (
-                      <p className="text-gray-400 text-[10px] mt-0.5 font-medium">
-                        резерв: {p.qty_reserved} {p.unit} (фіз: {p.qty_on_hand})
+                    {p.is_service ? (
+                      <p className="text-xs mt-0.5 text-blue-400 flex items-center gap-1 justify-end">
+                        <ShoppingCart size={12} /> ∞ сервіс
                       </p>
+                    ) : (
+                      <>
+                        <p className={`text-xs mt-0.5 flex items-center gap-1 justify-end ${
+                          (p.qty_available ?? p.qty_on_hand) <= 0 ? 'text-red-400' :
+                          (p.qty_available ?? p.qty_on_hand) <= p.reorder_point ? 'text-orange-400' : 'text-green-400'
+                        }`}>
+                          <ShoppingCart size={12} />
+                          {(p.qty_available ?? p.qty_on_hand) <= 0 ? '✗ Нема' : `● ${(p.qty_available ?? p.qty_on_hand)} ${p.unit}`}
+                        </p>
+                        {p.qty_reserved !== undefined && p.qty_reserved > 0 && (
+                          <p className="text-gray-400 text-[10px] mt-0.5 font-medium">
+                            резерв: {p.qty_reserved} {p.unit} (фіз: {p.qty_on_hand})
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
