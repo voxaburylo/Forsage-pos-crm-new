@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Upload, X, Star, ImagePlus, Clipboard } from 'lucide-react'
+import { Upload, X, Star, ImagePlus, Clipboard, Camera } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 
 interface Props {
@@ -71,6 +71,7 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const inputRef     = useRef<HTMLInputElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
   const [tmpFolder] = useState(() => `tmp_${Date.now()}`)
   const folder = productId ?? tmpFolder
 
@@ -182,15 +183,34 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
                 <ImagePlus size={22} className="text-gray-400" />
               </div>
               <p className="text-sm font-medium text-gray-600">
-                Перетягни, вибери файл або <kbd className="px-1.5 py-0.5 bg-gray-100 rounded text-xs font-mono">Ctrl+V</kbd>
+                Натисни або перетягни файли сюди
               </p>
               <p className="text-xs text-gray-400">
-                JPG, PNG, WebP, BMP, HEIC — будь-який формат · Авто-стиснення до {MAX_PX}px/{Math.round(JPEG_QUALITY * 100)}% JPEG
+                JPG, PNG, WebP · Авто-стиснення до {MAX_PX}px/{Math.round(JPEG_QUALITY * 100)}% JPEG
               </p>
             </>
           )}
         </div>
       </div>
+
+      {/* Кнопка камери (на телефоні відкриває камеру) */}
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={onFileInput}
+      />
+      <button
+        type="button"
+        onClick={() => cameraInputRef.current?.click()}
+        disabled={uploading}
+        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-semibold transition-all disabled:opacity-50 active:scale-[0.98] touch-target"
+      >
+        <Camera size={20} />
+        Зробити фото
+      </button>
 
       {/* Галерея */}
       {photos.length > 0 && (
