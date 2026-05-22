@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
-import { Search, Plus, MapPin, Link2, Camera, ShoppingCart } from 'lucide-react'
+import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff } from 'lucide-react'
 import { productApi } from '@/features/products/productApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
@@ -8,6 +8,8 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
+import { searchProductsOffline } from '@/lib/offlineDB'
+import { useServerStatus } from '@/hooks/useServerStatus'
 
 export interface SearchPanelHandle {
   focus: () => void
@@ -16,7 +18,8 @@ export interface SearchPanelHandle {
 }
 
 export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
-  const store = usePOSStore()
+  const store        = usePOSStore()
+  const serverOnline = useServerStatus()
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
   const [loading, setLoading]   = useState(false)
@@ -50,6 +53,14 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     timer.current = setTimeout(async () => {
       setLoading(true)
       try {
+        // Офлайн-режим: шукаємо в IndexedDB
+        if (!serverOnline) {
+          const offlineResults = await searchProductsOffline(query.trim(), 20)
+          setResults(offlineResults as Product[])
+          setLoading(false)
+          return
+        }
+
         if (categoryFilter) {
           const { data } = await api.get<{ data: Product[] }>(
             `/api/v1/products?search=${encodeURIComponent(query)}&per_page=50`
@@ -159,6 +170,13 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
 
   return (
     <div className="flex flex-col h-full bg-[#1A1A1A] p-4">
+      {/* Офлайн-індикатор */}
+      {!serverOnline && (
+        <div className="mb-2 px-3 py-1.5 bg-red-900/30 rounded-lg flex items-center gap-2 text-red-300 text-xs">
+          <WifiOff size={12} /> Офлайн — пошук по кешу
+        </div>
+      )}
+
       {/* Поле пошуку */}
       <div className="relative mb-4 flex gap-2">
         <div className="relative flex-1">
@@ -166,7 +184,9 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           <input ref={inputRef} type="text" value={query}
             onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKeyDown}
             placeholder="Артикул, назва, штрихкод..."
-            className="w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-12 pr-4 rounded-xl text-lg font-medium border-2 border-gray-700 focus:outline-none focus:border-yellow-400 focus:ring-2 focus:ring-yellow-400/20"
+            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-12 pr-4 rounded-xl text-lg font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 ${
+              serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
+            }`}
             style={{ minHeight: 56 }}
           />
         </div>

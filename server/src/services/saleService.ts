@@ -142,14 +142,36 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   // 3b. Термінал підтверджує ДО виклику process_sale
   // Якщо термінал відхиляє → продаж НЕ створюється
   let bankAuthCode: string | null = null
+  let terminalRrn:  string | null = null
   if (input.payment_method === 'card' || input.payment_method === 'mixed') {
-    const { processCardPayment } = await import('./integrations/MockBankTerminalService.js')
-    const terminalResult = await processCardPayment(cardAmount)
-    if (!terminalResult.success) {
-      throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+    const settings = await (await import('./adminService.js')).getSettings()
+    const provider = settings.terminal_provider ?? 'mock'
+
+    if (provider === 'privatbank') {
+      const { privatbankProcessPayment } = await import('./integrations/PrivatBankTerminalService.js')
+      const terminalResult = await privatbankProcessPayment(
+        {
+          ip:          settings.privatbank_terminal_ip  ?? '127.0.0.1',
+          port:        settings.privatbank_terminal_port ?? 8082,
+          merchant_id: settings.privatbank_merchant_id  ?? '',
+        },
+        cardAmount,
+        `TMP-${Date.now()}`,
+      )
+      if (!terminalResult.success) {
+        throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+      }
+      bankAuthCode = terminalResult.auth_code
+      terminalRrn  = terminalResult.rrn
+    } else {
+      const { processCardPayment } = await import('./integrations/MockBankTerminalService.js')
+      const terminalResult = await processCardPayment(cardAmount)
+      if (!terminalResult.success) {
+        throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+      }
+      bankAuthCode = terminalResult.auth_code
     }
-    bankAuthCode = terminalResult.auth_code
-    logger.info({ bankAuthCode }, 'Термінал підтвердив — виконуємо process_sale')
+    logger.info({ bankAuthCode, terminalRrn }, 'Термінал підтвердив — виконуємо process_sale')
   }
 
   const useBonusAtomic = process.env.USE_BONUS_ATOMIC_SALE === 'true'
@@ -197,28 +219,70 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   // 5. Парсимо результат (JSONB -> об'єкт)
   const sale = typeof data === 'string' ? JSON.parse(data) : data
 
-  // 5b. Якщо фіскальний чек — викликаємо MockPrroService
+  // 5b. Фіскалізація через ПРРО
   let fiscalNumber: string | null = null
+  let fiscalQrUrl:  string | null = null
   if (input.is_fiscal) {
-    const { fiscalizeSale } = await import('./integrations/MockPrroService.js')
-    const fiscalResult = await fiscalizeSale(sale.id, sale.sale_number ?? '', sale.total)
-    if (fiscalResult.success) {
-      fiscalNumber = fiscalResult.fiscal_number
+    const settings = await (await import('./adminService.js')).getSettings()
+    const prroProvider = settings.prro_provider ?? 'mock'
+
+    if (prroProvider === 'kashalot' && settings.kashalot_license_key && settings.kashalot_pin) {
+      const {
+        kashalotLogin, kashalotGetCurrentShift, kashalotOpenShift, kashalotFiscalize,
+      } = await import('./integrations/KashalotService.js')
+
+      try {
+        const token = await kashalotLogin({
+          license_key: settings.kashalot_license_key,
+          pin:         settings.kashalot_pin,
+        })
+
+        let shiftId = settings.kashalot_active_shift ?? await kashalotGetCurrentShift(token)
+        if (!shiftId) {
+          shiftId = await kashalotOpenShift(token)
+          await db.from('shop_settings').update({ kashalot_active_shift: shiftId })
+        }
+
+        const fiscalResult = await kashalotFiscalize(
+          token, shiftId, sale.sale_number ?? sale.id,
+          sale.total,
+          input.items.map((i) => ({
+            name:       i.product_id,   // буде перезаписано після збагачення
+            qty:        i.qty,
+            unit_price: i.unit_price,
+            discount:   i.discount,
+          })),
+          input.payment_method,
+        )
+
+        if (fiscalResult.success) {
+          fiscalNumber = fiscalResult.fiscal_number
+          fiscalQrUrl  = fiscalResult.qr_url
+        } else {
+          logger.warn({ error: fiscalResult.error }, 'Кашалот: не вдалось фіскалізувати')
+        }
+      } catch (err: any) {
+        logger.error({ error: err.message }, 'Кашалот: помилка інтеграції')
+      }
+    } else {
+      // Mock ПРРО
+      const { fiscalizeSale } = await import('./integrations/MockPrroService.js')
+      const fiscalResult = await fiscalizeSale(sale.id, sale.sale_number ?? '', sale.total)
+      if (fiscalResult.success) fiscalNumber = fiscalResult.fiscal_number
     }
   }
 
-  // 5c. Оновлюємо запис в БД з фіскальними даними
-  if (fiscalNumber || bankAuthCode || input.is_fiscal) {
-    const updateData: Record<string, unknown> = {}
-    if (input.is_fiscal) updateData.is_fiscal = true
-    if (fiscalNumber) updateData.fiscal_number = fiscalNumber
-    if (bankAuthCode) updateData.bank_auth_code = bankAuthCode
-    if (Object.keys(updateData).length > 0) {
-      await db.from('sales').update(updateData).eq('id', sale.id)
-      sale.is_fiscal = updateData.is_fiscal ?? false
-      sale.fiscal_number = fiscalNumber
-      sale.bank_auth_code = bankAuthCode
-    }
+  // 5c. Оновлюємо запис в БД з фіскальними та терміналь даними
+  const extraData: Record<string, unknown> = {}
+  if (input.is_fiscal) extraData.is_fiscal = true
+  if (fiscalNumber)    extraData.fiscal_number = fiscalNumber
+  if (fiscalQrUrl)     extraData.fiscal_qr_url  = fiscalQrUrl
+  if (bankAuthCode)    extraData.bank_auth_code  = bankAuthCode
+  if (terminalRrn)     extraData.terminal_rrn    = terminalRrn
+
+  if (Object.keys(extraData).length > 0) {
+    await db.from('sales').update(extraData).eq('id', sale.id)
+    Object.assign(sale, extraData)
   }
 
   // 6. Аудит (await — гарантуємо запис перед відповіддю)

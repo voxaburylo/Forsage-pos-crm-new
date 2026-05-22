@@ -607,6 +607,160 @@ export default function SettingsPage() {
             </div>
           </div>
         </Card>
+
+        {/* ─── ПРРО (Кашалот) ─────────────────────────────────────────── */}
+        <Card className="space-y-4 mt-6">
+          <h2 className="font-semibold text-gray-800 text-base">ПРРО (Кашалот)</h2>
+
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input type="checkbox"
+                checked={form.prro_enabled ?? false}
+                onChange={(e) => setForm((f) => ({ ...f, prro_enabled: e.target.checked }))}
+                className="rounded border-gray-300 text-yellow-500 focus:ring-yellow-400 w-4 h-4" />
+              Увімкнути фіскалізацію
+            </label>
+          </div>
+
+          {form.prro_enabled && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Провайдер</label>
+                <select
+                  value={form.prro_provider ?? 'mock'}
+                  onChange={(e) => setForm((f) => ({ ...f, prro_provider: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <option value="mock">Тестовий (Mock)</option>
+                  <option value="kashalot">Кашалот</option>
+                </select>
+              </div>
+
+              {form.prro_provider === 'kashalot' && (
+                <div className="space-y-3 p-3 bg-blue-50 rounded-xl border border-blue-100">
+                  <p className="text-xs text-blue-600 font-medium">Дані з особистого кабінету Кашалот</p>
+                  <Input
+                    label="Ключ ліцензії"
+                    value={form.kashalot_license_key ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, kashalot_license_key: e.target.value }))}
+                    placeholder="XXXX-XXXX-XXXX-XXXX"
+                  />
+                  <Input
+                    label="PIN-код касира"
+                    type="password"
+                    value={form.kashalot_pin ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, kashalot_pin: e.target.value }))}
+                    placeholder="••••"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <Button
+            size="sm"
+            icon={<Save size={14} />}
+            onClick={async () => {
+              setSaving(true)
+              try {
+                await adminApi.updateSettings({
+                  prro_enabled: form.prro_enabled,
+                  prro_provider: form.prro_provider,
+                  kashalot_license_key: form.kashalot_license_key,
+                  kashalot_pin: form.kashalot_pin,
+                })
+                toast.success('ПРРО налаштовано')
+              } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+              finally { setSaving(false) }
+            }}
+            disabled={saving}
+          >
+            Зберегти ПРРО
+          </Button>
+        </Card>
+
+        {/* ─── Банківський термінал (ПриватБанк) ───────────────────────── */}
+        <Card className="space-y-4 mt-4">
+          <h2 className="font-semibold text-gray-800 text-base">Банківський термінал</h2>
+
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input type="checkbox"
+                checked={form.bank_terminal_enabled ?? false}
+                onChange={(e) => setForm((f) => ({ ...f, bank_terminal_enabled: e.target.checked }))}
+                className="rounded border-gray-300 text-yellow-500 focus:ring-yellow-400 w-4 h-4" />
+              Увімкнути термінал
+            </label>
+          </div>
+
+          {form.bank_terminal_enabled && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Провайдер</label>
+                <select
+                  value={form.terminal_provider ?? 'mock'}
+                  onChange={(e) => setForm((f) => ({ ...f, terminal_provider: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <option value="mock">Тестовий (Mock)</option>
+                  <option value="privatbank">ПриватБанк</option>
+                </select>
+              </div>
+
+              {form.terminal_provider === 'privatbank' && (
+                <div className="space-y-3 p-3 bg-green-50 rounded-xl border border-green-100">
+                  <p className="text-xs text-green-700 font-medium">
+                    Встановіть агент ПриватБанку на цьому ПК. Агент слухає на порту нижче.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="IP агента"
+                      value={form.privatbank_terminal_ip ?? '127.0.0.1'}
+                      onChange={(e) => setForm((f) => ({ ...f, privatbank_terminal_ip: e.target.value }))}
+                      placeholder="127.0.0.1"
+                    />
+                    <Input
+                      label="Порт агента"
+                      type="number"
+                      value={String(form.privatbank_terminal_port ?? 8082)}
+                      onChange={(e) => setForm((f) => ({ ...f, privatbank_terminal_port: parseInt(e.target.value) || 8082 }))}
+                      placeholder="8082"
+                    />
+                  </div>
+                  <Input
+                    label="Merchant ID (MID)"
+                    value={form.privatbank_merchant_id ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, privatbank_merchant_id: e.target.value }))}
+                    placeholder="Отримайте від менеджера ПриватБанку"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <Button
+            size="sm"
+            icon={<Save size={14} />}
+            onClick={async () => {
+              setSaving(true)
+              try {
+                await adminApi.updateSettings({
+                  bank_terminal_enabled: form.bank_terminal_enabled,
+                  terminal_provider: form.terminal_provider,
+                  privatbank_terminal_ip: form.privatbank_terminal_ip,
+                  privatbank_terminal_port: form.privatbank_terminal_port,
+                  privatbank_merchant_id: form.privatbank_merchant_id,
+                })
+                toast.success('Термінал налаштовано')
+              } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+              finally { setSaving(false) }
+            }}
+            disabled={saving}
+          >
+            Зберегти термінал
+          </Button>
+        </Card>
+
       </div>
     </Layout>
   )

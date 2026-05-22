@@ -66,6 +66,17 @@ export interface ShopSettings {
   default_debt_limit_kopecks: number
   label_settings?: LabelSettings
   pos_quick_items?: QuickItemConfig[]
+  // ПРРО
+  prro_enabled:           boolean
+  prro_provider:          string   // 'mock' | 'kashalot'
+  kashalot_license_key:   string | null
+  kashalot_pin:           string | null
+  // Банківський термінал
+  bank_terminal_enabled:  boolean
+  terminal_provider:      string   // 'mock' | 'privatbank'
+  privatbank_terminal_ip:   string | null
+  privatbank_terminal_port: number | null
+  privatbank_merchant_id:   string | null
 }
 
 export const adminApi = {

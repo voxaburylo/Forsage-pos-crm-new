@@ -30,6 +30,8 @@ import { initAudio, playCashRegister } from '@/lib/audioService'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useServerStatus } from '@/hooks/useServerStatus'
+import { useOfflineSync } from '@/hooks/useOfflineSync'
+import { enqueueSale } from '@/lib/offlineDB'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -126,6 +128,7 @@ export default function POSPage() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
+  const { pendingCount, syncing, incrementPending } = useOfflineSync(serverOnline)
 
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
@@ -306,6 +309,37 @@ export default function POSPage() {
     split?: { cash_amount: number; card_amount: number },
     isFiscal?: boolean,
   ) {
+    // Офлайн-режим: тільки готівкові продажі без ПРРО
+    if (!serverOnline) {
+      if (method === 'card' || method === 'debt') {
+        toast.error('Оплата карткою та в борг недоступна в офлайн-режимі')
+        return
+      }
+      const { currentShift, items, customer, notes, managerId, total, getActiveTab } = store
+      if (!currentShift || !items.length) return
+
+      const offlineSale = {
+        offline_id:      crypto.randomUUID(),
+        created_at:      new Date().toISOString(),
+        shift_id:        currentShift.id,
+        customer_id:     customer?.id ?? null,
+        manager_id:      managerId,
+        items:           items.map((i) => ({ product_id: i.productId, qty: i.qty, unit_price: i.unitPrice, discount: i.discount })),
+        payment_method:  method,
+        total,
+        notes:           notes || null,
+        idempotency_key: getActiveTab()?.idempotencyKey ?? crypto.randomUUID(),
+      }
+      await enqueueSale(offlineSale)
+      incrementPending()
+      store.clearReceipt()
+      clearSavedCart()
+      setPayOpen(false)
+      playCashRegister()
+      toast.success(`Продаж збережено офлайн (${offlineSale.offline_id.slice(0,8)})`)
+      return
+    }
+
     const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal })
     if (sale) {
       setLastSale(sale as Sale)
@@ -359,11 +393,20 @@ export default function POSPage() {
         </div>
       )}
 
-      {/* Connectivity banner — сервер недоступний */}
+      {/* Connectivity banner */}
       {!serverOnline && (
         <div className="shrink-0 bg-red-900/80 border-b border-red-500 px-4 py-2 flex items-center gap-2 text-red-200 text-sm font-medium">
           <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse inline-block" />
-          Сервер недоступний — продажі не зберігаються. Перевірте мережу.
+          <span>ОФЛАЙН — продажі зберігаються локально і відправляться при відновленні зв'язку</span>
+          {pendingCount > 0 && (
+            <span className="ml-2 px-2 py-0.5 bg-red-700 rounded-full text-xs font-bold">{pendingCount} в черзі</span>
+          )}
+        </div>
+      )}
+      {serverOnline && syncing && (
+        <div className="shrink-0 bg-blue-900/60 border-b border-blue-500 px-4 py-1.5 flex items-center gap-2 text-blue-200 text-xs">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-300 animate-pulse inline-block" />
+          Синхронізація офлайн-продажів...
         </div>
       )}
 
