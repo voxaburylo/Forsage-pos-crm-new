@@ -91,7 +91,9 @@ export default function DashboardPage() {
 
   return (
     <Layout title="Дашборд" actions={
-      <Button icon={<Zap size={16} />} onClick={() => navigate('/pos')} size="lg">Відкрити касу</Button>
+      <Button icon={<Zap size={16} />} onClick={() => navigate('/pos')}>
+        <span className="hidden sm:inline">Відкрити касу</span>
+      </Button>
     }>
       {/* Period selector */}
       <div className="flex gap-2 mb-6 flex-wrap">
@@ -103,23 +105,25 @@ export default function DashboardPage() {
             {PERIOD_LABELS[p]}
           </button>
         ))}
-        <span className="text-sm text-gray-400 self-center ml-auto">{range.startDate} — {range.endDate}</span>
+        <span className="text-xs text-gray-400 self-center ml-auto hidden sm:block whitespace-nowrap">
+          {range.startDate} — {range.endDate}
+        </span>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
         {[
-          { label: 'Виторг', value: d?.total_revenue ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
-          { label: 'Валовий прибуток', value: d?.gross_profit ?? 0, color: 'bg-blue-50 border-blue-200', iconColor: 'text-blue-600', icon: TrendingUp },
-          { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200', iconColor: 'text-purple-600', icon: ClipboardList },
-          { label: 'Середній чек', value: d?.average_receipt ?? 0, color: 'bg-amber-50 border-amber-200', iconColor: 'text-amber-600', icon: Receipt },
+          { label: 'Виторг',          value: d?.total_revenue  ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
+          { label: 'Валовий прибуток', value: d?.gross_profit  ?? 0, color: 'bg-blue-50 border-blue-200',       iconColor: 'text-blue-600',    icon: TrendingUp },
+          { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200',   iconColor: 'text-purple-600',  icon: ClipboardList },
+          { label: 'Середній чек',    value: d?.average_receipt ?? 0, color: 'bg-amber-50 border-amber-200',   iconColor: 'text-amber-600',   icon: Receipt },
         ].map(({ label, value, color, iconColor, icon: Icon }) => (
-          <div key={label} className={`${color} border rounded-2xl p-5 shadow-sm`}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</span>
-              <Icon size={20} className={iconColor} />
+          <div key={label} className={`${color} border rounded-2xl p-3 md:p-5 shadow-sm`}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] md:text-xs font-semibold text-gray-500 uppercase tracking-wider leading-tight">{label}</span>
+              <Icon size={16} className={`${iconColor} shrink-0`} />
             </div>
-            <div className="text-3xl font-bold text-gray-900">
+            <div className="text-xl md:text-3xl font-bold text-gray-900 truncate">
               {loading ? <span className="text-gray-300">—</span> : formatMoney(value)}
             </div>
           </div>
@@ -146,7 +150,7 @@ export default function DashboardPage() {
 
       {/* Bottom row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 grid grid-cols-4 gap-4">
+        <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3 md:gap-4">
           {[
             { label: 'Товари', value: totals.products, icon: Package, href: '/products', color: 'text-blue-500' },
             { label: 'Клієнти', value: totals.customers, icon: Users, href: '/customers', color: 'text-purple-500' },
