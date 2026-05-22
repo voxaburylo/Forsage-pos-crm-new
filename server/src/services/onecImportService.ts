@@ -216,14 +216,17 @@ export async function runOnecImport(
 
       if (error) throw new Error(error.message)
 
-      // Якщо є категорія — оновлюємо окремо (upsert_product_import не знає про category_id)
-      if (categoryId && data?.id) {
+      // upsert_product_import повертає масив — беремо перший елемент
+      const record = Array.isArray(data) ? data[0] : data
+
+      // Оновлюємо category_id окремо (RPC не знає про category_id)
+      if (categoryId && record?.id) {
         await db.from('products')
           .update({ category_id: categoryId })
-          .eq('id', data.id)
+          .eq('id', record.id)
       }
 
-      if (data?.is_new) result.created++
+      if (record?.is_new) result.created++
       else result.updated++
 
     } catch (err: any) {
