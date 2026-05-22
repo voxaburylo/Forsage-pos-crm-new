@@ -33,10 +33,8 @@ async function seed() {
     if (e) { console.error('  ❌ Owner:', e.message); process.exit(1) }
     console.log('  ✅ Owner створено')
   } else {
-    // Ensure password is set correctly
-    const owner = existingUsers.users.find((u) => u.email === email)!
-    await supabase.auth.admin.updateUserById(owner.id, { password: ownerPassword })
-    console.log('  ✅ Owner вже існує (пароль оновлено)')
+    // Власник вже існує — пароль НЕ змінюємо щоб не перезаписати
+    console.log('  ✅ Owner вже існує (пароль збережено без змін)')
   }
 
   // 2. Cashier
