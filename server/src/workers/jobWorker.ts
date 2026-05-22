@@ -77,9 +77,11 @@ export class JobWorker {
         }
       }
 
-      // Immediately poll again for more jobs
-      this.isPolling = false
-      this.poll()
+      // Відкладаємо наступний poll через setImmediate — уникаємо накопичення стеку
+      setImmediate(() => {
+        this.isPolling = false
+        this.poll()
+      })
     } catch (err: any) {
       logger.error({ error: err.message }, 'Unexpected error in JobWorker poll loop')
       this.isPolling = false
@@ -107,8 +109,8 @@ export class JobWorker {
     const isFatal = attempts >= maxAttempts
     const nextStatus = isFatal ? 'failed' : 'pending'
     
-    // Exponential backoff or simple delay: (attempts * 30 seconds)
-    const delaySeconds = attempts * 30
+    // Exponential backoff: 60s, 120s, 240s ... max 3600s
+    const delaySeconds = Math.min(Math.pow(2, attempts) * 30, 3600)
     const scheduledAt = isFatal ? new Date() : new Date(Date.now() + delaySeconds * 1000)
 
     const { error: updateError } = await db

@@ -340,8 +340,8 @@ router.get('/staff-profitability', requireRole('owner', 'admin'), async (req, re
       .select('id, total_amount, manager_id')
       .eq('tenant_id', tenantId)
       .eq('status', 'completed')
-      .gte('updated_at', dateFrom)
-      .lte('updated_at', dateTo)
+      .gte('created_at', dateFrom)
+      .lte('created_at', dateTo)
 
     if (ordersErr) throw new AppError('DB_ERROR', ordersErr.message, 500)
 
