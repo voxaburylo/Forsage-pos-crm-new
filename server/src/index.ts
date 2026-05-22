@@ -167,8 +167,18 @@ jobWorker.register('close_stale_shifts', async (_payload, _jobInfo) => {
   logger.info('Running close_stale_shifts background job...')
   const closed = await closeStaleShifts()
   logger.info({ closed }, 'Completed close_stale_shifts job')
-  // Re-enqueue для наступного запуску через 6 год
   await TaskQueue.enqueue('close_stale_shifts', {}, {
+    scheduledAt: new Date(Date.now() + 6 * 3600 * 1000),
+    tenantId: '00000000-0000-0000-0000-000000000001',
+    priority: JOB_PRIORITY.BACKGROUND,
+  })
+})
+jobWorker.register('cleanup_suspended_sales', async (_payload, _jobInfo) => {
+  logger.info('Running cleanup_suspended_sales background job...')
+  const { data } = await db.rpc('cleanup_expired_suspended_sales' as any)
+  logger.info({ cancelled: data ?? 0 }, 'Completed cleanup_suspended_sales job')
+  // Re-enqueue кожні 6 годин
+  await TaskQueue.enqueue('cleanup_suspended_sales', {}, {
     scheduledAt: new Date(Date.now() + 6 * 3600 * 1000),
     tenantId: '00000000-0000-0000-0000-000000000001',
     priority: JOB_PRIORITY.BACKGROUND,
@@ -224,6 +234,17 @@ const server = app.listen(PORT, () => {
           priority: JOB_PRIORITY.BACKGROUND,
         })
         logger.info('Enqueued initial close_stale_shifts job')
+      }
+
+      const { data: existingSuspended } = await db.from('sys_background_jobs')
+        .select('id').eq('job_type', 'cleanup_suspended_sales').eq('status', 'pending').limit(1).maybeSingle()
+      if (!existingSuspended) {
+        await TaskQueue.enqueue('cleanup_suspended_sales', {}, {
+          scheduledAt: new Date(Date.now() + 10 * 60 * 1000),
+          tenantId: '00000000-0000-0000-0000-000000000001',
+          priority: JOB_PRIORITY.BACKGROUND,
+        })
+        logger.info('Enqueued initial cleanup_suspended_sales job')
       }
     } catch (err: any) {
       logger.error({ error: err ? err.message : 'Unknown error' }, 'Failed to check or enqueue initial jobs')

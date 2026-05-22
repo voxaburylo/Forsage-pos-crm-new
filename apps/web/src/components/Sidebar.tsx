@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Package, Users, ShoppingCart, RotateCcw,
   Truck, BarChart2, BarChart3, Settings, Zap, LogOut, Shield, FileText, Upload, Trash2, ScrollText, Tag, ClipboardList, Clock,
   ChevronDown, UserCog, Barcode, MessageSquare, DollarSign, ArrowDownLeft, Wallet, Percent, TrendingUp, ShieldCheck, ArrowRightLeft,
-  Bell, Printer, ShoppingBag,
+  Bell, Printer, ShoppingBag, FilePlus,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -39,7 +39,8 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     items: [
-      { to: '/orders', icon: <ClipboardList size={18} />, label: 'Замовлення', roles: ['owner','admin','manager'] },
+      { to: '/orders',     icon: <ClipboardList size={18} />, label: 'Замовлення',       roles: ['owner','admin','manager'] },
+      { to: '/quotes/new', icon: <FilePlus size={18} />,      label: 'Нова пропозиція',  roles: ['owner','admin','manager'] },
     ],
   },
   {
