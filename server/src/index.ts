@@ -57,7 +57,7 @@ import { db } from './db/supabase.js'
 const app = express()
 const PORT = process.env.PORT ?? 3001
 
-const corsOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173').split(',').map((s) => s.trim())
+const corsOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173,https://forsage-pos-crm-new.vercel.app,https://forsage-pos-crm-new-web.vercel.app').split(',').map((s) => s.trim())
 
 app.use(cors({
   origin: corsOrigins,

@@ -16,7 +16,7 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: CORS_ORIGIN
-        value: https://forsage-pos-crm-new.vercel.app
+        value: https://forsage-pos-crm-new.vercel.app,https://forsage-pos-crm-new-web.vercel.app
       - key: DATABASE_URL
         sync: false
       - key: TELEGRAM_BOT_TOKEN
