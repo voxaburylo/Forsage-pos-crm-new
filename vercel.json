@@ -9,5 +9,14 @@
       "VITE_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1aGFubHNwZWpnaXpqYndibmRhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxNzAyOTEsImV4cCI6MjA5Mzc0NjI5MX0.3FZJmqq-0eWjGqhvVTl3yAVIoOBuMN2g-lR3E5Fxr2U",
       "VITE_API_URL": "https://forsage-pos-crm-new.onrender.com"
     }
+  },
+  "experimentalServices": {
+    "forsage-api": {
+      "type": "web",
+      "root": "server",
+      "entrypoint": "src/index.ts",
+      "routePrefix": "/",
+      "buildCommand": "npm install --include=dev && npm run build"
+    }
   }
 }

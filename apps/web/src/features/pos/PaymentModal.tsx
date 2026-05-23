@@ -144,9 +144,10 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
   async function handleConfirm() {
     if (!cashValid || !debtOk || !splitValid) return
 
+    setLoading(true)
+
     // Картка або Split → спочатку показуємо діалог термінала
     if (method === 'card' || (method === 'mixed' && splitCardKopecks > 0)) {
-      setLoading(true)
       setTerminalStep('waiting_auth')
       return
     }

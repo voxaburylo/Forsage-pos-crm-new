@@ -191,7 +191,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     p_shift_id:       input.shift_id,
     p_customer_id:    input.customer_id ?? null,
     p_manager_id:     input.manager_id ?? cashierId,
-    p_items:          JSON.stringify(items),
+    p_items:          items,
     p_payment_method: input.payment_method,
     p_discount:       input.discount,
     p_notes:          input.notes ?? null,

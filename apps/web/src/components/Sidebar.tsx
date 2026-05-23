@@ -97,6 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/settings/commission', icon: <Percent size={18} />,       label: 'Правила комісійних',   roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,      label: 'Налаштування',         roles: ['owner','admin'] },
       { to: '/settings/channels',   icon: <MessageSquare size={18} />, label: 'Канали зв\'язку',      roles: ['owner','admin'] },
+      { to: '/settings/templates',  icon: <FileText size={18} />,      label: 'Шаблони сповіщень',    roles: ['owner','admin'] },
       { to: '/labels',              icon: <Barcode size={18} />,       label: 'Друк етикеток',        roles: ['owner','admin'] },
       { to: '/pricing',             icon: <Tag size={18} />,           label: 'Ціноутворення',        roles: ['owner','admin'] },
       { to: '/admin',               icon: <Shield size={18} />,        label: 'Користувачі',          roles: ['owner','admin'] },

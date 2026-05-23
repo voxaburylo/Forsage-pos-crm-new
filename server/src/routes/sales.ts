@@ -137,7 +137,11 @@ router.post('/', async (req, res, next) => {
   try {
     const parsed = createSaleSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані продажу', 422, parsed.error.flatten())
+    
     const idempotencyKey = req.headers['x-idempotency-key'] as string | undefined
+    if (!idempotencyKey) {
+      throw new AppError('VALIDATION_ERROR', 'Заголовок X-Idempotency-Key є обов\'язковим для створення продажу', 400)
+    }
 
     // RBAC: знижки дозволені лише owner/admin/manager
     const canDiscount = ['owner', 'admin', 'manager'].includes(req.user!.role)

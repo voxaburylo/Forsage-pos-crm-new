@@ -7,6 +7,7 @@ import { customerVehiclesApi } from './customerVehiclesApi'
 import type { CustomerVehicle } from '@/types/customer'
 import CustomerNotes from './CustomerNotes'
 import CustomerLoyalty from './CustomerLoyalty'
+import CustomerPreferences from './CustomerPreferences'
 import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import type { Customer, CustomerSale } from '@/types/customer'
@@ -288,6 +289,11 @@ export default function CustomerDetailPage() {
         {/* Нотатки */}
         <Card>
           <CustomerNotes customerId={customer.id} />
+        </Card>
+
+        {/* Уподобання сповіщень */}
+        <Card>
+          <CustomerPreferences customerId={customer.id} />
         </Card>
 
         {/* Замовлення клієнта */}

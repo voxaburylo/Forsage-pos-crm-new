@@ -24,22 +24,23 @@ async function main() {
     process.exit(0)
   }
 
-  // Встановлюємо новий пароль для першого owner
-  const owner = users.find((u) => u.user_metadata?.role === 'owner') ?? users[0]
   const NEW_PASSWORD = 'Forsage2026!'
 
-  const { error: resetErr } = await supabase.auth.admin.updateUserById(owner.id, {
-    password: NEW_PASSWORD,
-  })
-
-  if (resetErr) {
-    console.error('Помилка скидання:', resetErr.message)
-    process.exit(1)
+  console.log('\nResetting passwords for all users...')
+  for (const user of users) {
+    const phone = user.user_metadata?.phone ?? user.email
+    const { error: resetErr } = await supabase.auth.admin.updateUserById(user.id, {
+      password: NEW_PASSWORD,
+    })
+    if (resetErr) {
+      console.error(`❌ Failed resetting for ${phone}:`, resetErr.message)
+    } else {
+      console.log(`✅ Password reset for ${phone}`)
+    }
   }
 
-  console.log('\n✅ Пароль скинуто!')
-  console.log('   Телефон:', owner.user_metadata?.phone ?? owner.email)
-  console.log('   Новий пароль: ' + NEW_PASSWORD)
+  console.log('\n✅ All passwords updated to: ' + NEW_PASSWORD)
 }
 
 main().catch(console.error)
+

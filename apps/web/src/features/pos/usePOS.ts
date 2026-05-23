@@ -2,7 +2,6 @@ import { useEffect, useCallback } from 'react'
 import { usePOSStore } from '@/stores/posStore'
 import { shiftApi } from './shiftApi'
 import { saleApi } from './saleApi'
-import { api } from '@/lib/api'
 import { toast } from '@/components/ui/Toast'
 
 const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
@@ -24,7 +23,7 @@ export function usePOS() {
     method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer',
     options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean; terminalAuthCode?: string }
   ) => {
-    const { currentShift, items, customer, notes, total, managerId } = store
+    const { currentShift, items, customer, notes, total, totalDiscount, managerId } = store
     const bonusRedeemed = options?.bonusRedeemed ?? 0
     const toPay = Math.max(0, total - bonusRedeemed)
 
@@ -57,6 +56,8 @@ export function usePOS() {
         notes:          notes || undefined,
         is_fiscal:           options?.isFiscal ?? false,
         terminal_auth_code:  options?.terminalAuthCode ?? null,
+        discount:            totalDiscount + bonusRedeemed,
+        bonuses_spent:       bonusRedeemed,
       }
       if (method === 'mixed' && options?.split) {
         salePayload.cash_amount = options.split.cash_amount
@@ -65,18 +66,6 @@ export function usePOS() {
       const idempotencyKey = store.getActiveTab()?.idempotencyKey
       const { data: sale } = await saleApi.create(salePayload, idempotencyKey)
       if (!sale?.id) throw new Error('Сервер не повернув ID продажу')
-
-      // Списуємо бонуси якщо були використані
-      if (bonusRedeemed > 0 && customer) {
-        try {
-          await api.post('/api/v1/loyalty/customer/' + customer.id + '/redeem', {
-            amount: bonusRedeemed,
-            sale_id: sale.id,
-          })
-        } catch {
-          toast.warning('Продаж оформлено, але бонуси не списались — зверніться до адміна')
-        }
-      }
 
       localStorage.removeItem(PAYMENT_ATTEMPT_KEY)
       store.clearReceipt()

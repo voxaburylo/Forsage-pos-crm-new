@@ -54,6 +54,7 @@ const ReservesList         = lazy(() => import('@/features/inventory/ReservesLis
 const WarehousePicking     = lazy(() => import('@/features/inventory/WarehousePicking'))
 const WarehouseMovementPage = lazy(() => import('@/features/inventory/WarehouseMovementPage'))
 const InboxPage             = lazy(() => import('@/features/notifications/InboxPage'))
+const TemplateEditor        = lazy(() => import('@/features/notifications/TemplateEditor'))
 const PrintCenterPage       = lazy(() => import('@/features/print/PrintCenterPage'))
 const AutoPurchasePage      = lazy(() => import('@/features/autoPurchase/AutoPurchasePage'))
 
@@ -116,6 +117,7 @@ function App() {
           <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
           <Route path="/stock-integrity" element={<ProtectedRoute><StockIntegrityPage /></ProtectedRoute>} />
           <Route path="/notifications"  element={<ProtectedRoute><InboxPage /></ProtectedRoute>} />
+          <Route path="/settings/templates" element={<ProtectedRoute><TemplateEditor /></ProtectedRoute>} />
           <Route path="/print-center"   element={<ProtectedRoute><PrintCenterPage /></ProtectedRoute>} />
           <Route path="/auto-purchase"  element={<ProtectedRoute><AutoPurchasePage /></ProtectedRoute>} />
 

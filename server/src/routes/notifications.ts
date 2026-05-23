@@ -98,4 +98,49 @@ router.put('/templates/:id', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/notifications/preferences/:customerId — отримати уподобання клієнта
+router.get('/preferences/:customerId', async (req, res, next) => {
+  try {
+    const { customerId } = req.params
+    const { data, error } = await db
+      .from('customer_notification_preferences')
+      .select('*')
+      .eq('tenant_id', req.user!.tenant_id)
+      .eq('customer_id', customerId)
+
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.json({ data: data ?? [] })
+  } catch (err) { next(err) }
+})
+
+// PUT /api/v1/notifications/preferences/:customerId — оновити уподобання клієнта
+router.put('/preferences/:customerId', async (req, res, next) => {
+  try {
+    const { customerId } = req.params
+    const { preferences } = req.body
+
+    if (!Array.isArray(preferences)) {
+      throw new AppError('VALIDATION_ERROR', 'preferences must be an array', 400)
+    }
+
+    const rows = preferences.map((p: any) => ({
+      tenant_id: req.user!.tenant_id,
+      customer_id: customerId,
+      channel: p.channel,
+      event_type: p.event_type,
+      is_enabled: !!p.is_enabled,
+      updated_at: new Date().toISOString()
+    }))
+
+    // Upsert into customer_notification_preferences
+    const { data, error } = await db
+      .from('customer_notification_preferences')
+      .upsert(rows, { onConflict: 'tenant_id,customer_id,channel,event_type' })
+      .select()
+
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.json({ data: data ?? [] })
+  } catch (err) { next(err) }
+})
+
 export default router
