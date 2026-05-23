@@ -23,3 +23,7 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: USE_BONUS_ATOMIC_SALE
+        value: "true"
+      - key: USE_RESERVE_AWARE_SALE
+        value: "true"
