@@ -427,18 +427,18 @@ export default function POSPage() {
       )}
 
       {/* Хедер */}
-      <header className="bg-[#0D0D0D] border-b border-gray-800 px-3 flex items-center justify-between shrink-0 gap-1" style={{ minHeight: 52 }}>
+      <header className="bg-[#0D0D0D] border-b border-gray-800 px-2 md:px-3 flex items-center justify-between shrink-0 gap-1 h-11 md:h-13">
         {/* Ліва частина — бренд + статус */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 md:gap-1.5">
           <button onClick={() => navigate('/dashboard')}
-            className="flex items-center justify-center text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 w-10 h-10"
+            className="flex items-center justify-center text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 w-8 h-8 md:w-10 md:h-10"
             title="На головну">
-            <Home size={18} />
+            <Home className="size-4 md:size-[18px]" />
           </button>
-          <div className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-lg bg-gray-900/50">
-            <Zap size={16} className="text-yellow-400" />
-            <span className="text-white font-semibold text-sm tracking-wide">Форсаж</span>
-            <span className="text-emerald-400 text-[10px] font-medium bg-emerald-900/40 px-2 py-0.5 rounded-full border border-emerald-800/30">Зміна</span>
+          <div className="flex items-center gap-1 pl-1 pr-1.5 py-0.5 md:pl-1.5 md:pr-2 md:py-1 rounded-lg bg-gray-900/50">
+            <Zap className="text-yellow-400 size-3.5 md:size-4" />
+            <span className="text-white font-semibold text-xs md:text-sm tracking-wide">Форсаж</span>
+            <span className="text-emerald-400 text-[9px] md:text-[10px] font-medium bg-emerald-900/40 px-1.5 py-0.5 rounded-full border border-emerald-800/30">Зміна</span>
           </div>
           {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}
@@ -514,16 +514,16 @@ export default function POSPage() {
 
         {/* Mobile права частина — тільки найважливіше */}
         <div className="flex md:hidden items-center gap-1">
-          <span className="text-yellow-400 font-bold tabular-nums text-base mr-1">{formatMoney(store.total)}</span>
+          <span className="text-yellow-400 font-bold tabular-nums text-sm mr-1">{formatMoney(store.total)}</span>
           <button onClick={() => setMobileMenuOpen(true)}
-            className="w-10 h-10 flex items-center justify-center rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 active:bg-gray-700 transition-colors text-lg font-bold"
+            className="w-8 h-8 flex items-center justify-center rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 active:bg-gray-700 transition-colors text-base font-bold"
             title="Меню">
             ≡
           </button>
           <button onClick={() => setCloseOpen(true)}
-            className="h-10 px-3 bg-red-900/40 text-red-300 text-xs font-bold rounded-xl border border-red-900/40 flex items-center gap-1"
+            className="h-8 px-2.5 bg-red-900/40 text-red-300 text-[10px] font-bold rounded-xl border border-red-900/40 flex items-center gap-1"
             title="Закрити зміну">
-            <LogOut size={14} />
+            <LogOut size={12} />
           </button>
         </div>
       </header>
@@ -582,40 +582,16 @@ export default function POSPage() {
         </div>
       )}
 
-      {/* Mobile tabs — тільки на телефоні */}
-      <div className="md:hidden flex border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
-        <button
-          onClick={() => setMobileTab('search')}
-          className={`flex-1 py-3 text-sm font-semibold transition-colors ${mobileTab === 'search' ? 'text-yellow-400 border-b-2 border-yellow-400' : 'text-gray-500'}`}
-        >
-          🔍 Пошук
-        </button>
-        <button
-          onClick={() => setMobileTab('cart')}
-          className={`flex-1 py-3 text-sm font-semibold transition-colors flex flex-col items-center gap-0.5 ${mobileTab === 'cart' ? 'text-yellow-400 border-b-2 border-yellow-400' : 'text-gray-500'}`}
-        >
-          <span className="flex items-center gap-1.5">
-            🛒 Кошик
-            {store.items.length > 0 && (
-              <span className="min-w-[18px] h-[18px] bg-yellow-400 text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1">
-                {store.items.length}
-              </span>
-            )}
-          </span>
-          {store.total > 0 && (
-            <span className="text-[11px] text-yellow-400/80 tabular-nums font-medium leading-none">
-              {formatMoney(store.total)} ₴
-            </span>
-          )}
-        </button>
-      </div>
-
       {/* Основна панель POS */}
       <div className="flex-1 flex min-h-0">
         <div className={`flex-1 border-r border-gray-800 min-h-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
           <SearchPanel ref={searchRef} />
-          <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
-          <CrossSellPanel />
+          <div className="hidden md:flex md:flex-col min-h-0 flex-1">
+            <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
+          </div>
+          <div className="hidden md:block">
+            <CrossSellPanel />
+          </div>
         </div>
         <div className={`md:w-[35%] md:min-w-[320px] lg:w-[40%] xl:w-[420px] min-h-0 flex flex-col w-full ${mobileTab === 'search' ? 'hidden md:flex' : 'flex'}`}>
           <ReceiptPanel
@@ -624,6 +600,38 @@ export default function POSPage() {
             onClear={originalClear}
           />
         </div>
+      </div>
+
+      {/* Mobile tabs — тільки на телефоні (тепер знизу з відступом safe-area) */}
+      <div className="md:hidden flex border-t border-gray-800 shrink-0 bg-[#0D0D0D] pb-safe">
+        <button
+          onClick={() => setMobileTab('search')}
+          className={`flex-1 py-3 text-sm font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'search' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
+        >
+          <span className="text-lg mb-0.5">🔍</span>
+          <span>Пошук</span>
+        </button>
+        <button
+          onClick={() => setMobileTab('cart')}
+          className={`flex-1 py-3 text-sm font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'cart' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
+        >
+          <span className="relative text-lg mb-0.5">
+            🛒
+            {store.items.length > 0 && (
+              <span className="absolute -top-1 -right-2 min-w-[16px] h-[16px] bg-yellow-400 text-black text-[9px] font-bold rounded-full flex items-center justify-center px-0.5">
+                {store.items.length}
+              </span>
+            )}
+          </span>
+          <span className="flex items-center gap-1">
+            Кошик
+            {store.total > 0 && (
+              <span className="text-[11px] text-yellow-400/80 tabular-nums">
+                ({formatMoney(store.total)})
+              </span>
+            )}
+          </span>
+        </button>
       </div>
 
       <FavoritesPanel />
@@ -710,8 +718,8 @@ export default function POSPage() {
           }
         }} />
 
-      {/* Hotkeys cheat sheet — постійна підказка для касира */}
-      <div className="shrink-0 bg-[#0D0D0D] border-t border-gray-800 px-4 py-1 flex items-center gap-4 overflow-x-auto select-none print:hidden">
+      {/* Hotkeys cheat sheet — постійна підказка для касира (прихована на мобільних) */}
+      <div className="hidden md:flex shrink-0 bg-[#0D0D0D] border-t border-gray-800 px-4 py-1 flex items-center gap-4 overflow-x-auto select-none print:hidden">
         {[
           ['F1', 'Довідка'],
           ['F2', 'Пошук'],

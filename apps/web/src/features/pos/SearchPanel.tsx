@@ -42,13 +42,23 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     },
   }))
 
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
+
   // Auto focus
   useEffect(() => { inputRef.current?.focus() }, [])
+
+  // Load categories dynamically
+  useEffect(() => {
+    if (serverOnline) {
+      api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories')
+        .then((res) => setCategories(res.data ?? []))
+        .catch(() => {})
+    }
+  }, [serverOnline])
 
   // Debounced search
   useEffect(() => {
     clearTimeout(timer.current)
-    if (!query.trim() && !categoryFilter) { setResults([]); return }
 
     timer.current = setTimeout(async () => {
       setLoading(true)
@@ -62,18 +72,23 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         }
 
         if (categoryFilter) {
+          // Fetch products with large limit and filter by category name
           const { data } = await api.get<{ data: Product[] }>(
-            `/api/v1/products?search=${encodeURIComponent(query)}&per_page=50`
+            `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`
           )
           setResults((data ?? []).filter((p) => p.category?.name === categoryFilter))
-        } else {
+        } else if (query.trim()) {
           const { data } = await productApi.search(query, 8)
           setResults(data)
+        } else {
+          // If query is empty and no category filter, load first page of active products
+          const res = await productApi.list({ per_page: 50, is_active: 'true' })
+          setResults(res.data ?? [])
         }
       } catch { setResults([]) }
       finally { setLoading(false) }
     }, 200)
-  }, [query, categoryFilter])
+  }, [query, categoryFilter, serverOnline])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { setQuery(''); setResults([]); return }
@@ -170,7 +185,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   }
 
   return (
-    <div className="flex flex-col h-full bg-[#1A1A1A] p-4">
+    <div className="flex flex-col flex-1 min-h-0 bg-[#1A1A1A] p-3 md:p-4">
       {/* Офлайн-індикатор */}
       {!serverOnline && (
         <div className="mb-2 px-3 py-1.5 bg-red-900/30 rounded-lg flex items-center gap-2 text-red-300 text-xs">
@@ -179,23 +194,21 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       )}
 
       {/* Поле пошуку */}
-      <div className="relative mb-4 flex gap-2">
+      <div className="relative mb-3 flex gap-2 shrink-0">
         <div className="relative flex-1">
-          <Search size={22} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
           <input ref={inputRef} type="text" value={query}
             onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKeyDown}
             placeholder="Артикул, назва, штрихкод..."
-            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-12 pr-4 rounded-xl text-lg font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 ${
+            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}
-            style={{ minHeight: 56 }}
           />
         </div>
         <button onClick={() => setCameraOpen(true)}
-          className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50"
-          style={{ minWidth: 56, minHeight: 56 }}
+          className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 md:w-[50px] md:h-[50px] w-[44px] h-[44px] shrink-0"
           title="Сканувати камерою">
-          <Camera size={24} />
+          <Camera size={20} />
         </button>
       </div>
 
@@ -203,47 +216,38 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         onScan={(code) => { setQuery(code); setCameraOpen(false); setTimeout(() => handleBarcodeScan(code), 100) }} />
 
       {/* Фільтр категорій */}
-      <div className="flex gap-1.5 mb-2 overflow-x-auto pb-1 scrollbar-thin">
+      <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1.5 scrollbar-none shrink-0">
         <button onClick={() => setCategoryFilter(null)}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+          className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-all border ${
             !categoryFilter
-              ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-              : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50'
+              ? 'bg-yellow-500 text-black border-yellow-500'
+              : 'bg-gray-800/60 text-gray-400 border-gray-700/50 hover:bg-gray-700/50'
           }`}>
           🏠 Все
         </button>
-        <button onClick={() => setCategoryFilter('Кава та напої')}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
-            categoryFilter === 'Кава та напої'
-              ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-              : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50'
-          }`}>
-          ☕ Кава/Напої
-        </button>
-        <button onClick={() => setCategoryFilter('Снеки та хотдоги')}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
-            categoryFilter === 'Снеки та хотдоги'
-              ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-              : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50'
-          }`}>
-          🌭 Снеки/Хотдоги
-        </button>
+        {categories.map((cat) => {
+          const isActive = categoryFilter === cat.name
+          return (
+            <button key={cat.id} onClick={() => setCategoryFilter(isActive ? null : cat.name)}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-all border ${
+                isActive
+                  ? 'bg-yellow-500 text-black border-yellow-500'
+                  : 'bg-gray-800/60 text-gray-400 border-gray-700/50 hover:bg-gray-700/50'
+              }`}>
+              {cat.name}
+            </button>
+          )
+        })}
       </div>
 
       {/* Результати */}
-      <div className="flex-1 overflow-y-auto space-y-2">
+      <div className="flex-1 overflow-y-auto space-y-2 pr-0.5 scrollbar-thin">
         {loading && (
           <p className="text-gray-500 text-sm text-center py-8">Пошук...</p>
         )}
 
-        {!loading && query && results.length === 0 && (
+        {!loading && results.length === 0 && (
           <p className="text-gray-500 text-sm text-center py-8">Нічого не знайдено</p>
-        )}
-
-        {!loading && !query && (
-          <p className="text-gray-600 text-sm text-center py-16">
-            Введіть артикул або назву товару
-          </p>
         )}
 
         {results.map((p, idx) => {
