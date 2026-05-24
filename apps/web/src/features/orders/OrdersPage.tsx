@@ -1023,8 +1023,8 @@ export default function OrdersPage() {
         {/* робоча площина */}
         <div className="flex-1 flex min-h-0 min-w-0">
 
-          {/* ── Ліва панель — прихована на мобільному коли вибрано запис ── */}
-          <aside className={`w-72 md:w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col ${selection ? 'hidden md:flex' : 'flex'}`}>
+          {/* ── Ліва панель — на мобільному на всю ширину ── */}
+          <aside className={`w-full md:w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col ${selection ? 'hidden md:flex' : 'flex'}`}>
             {/* tabs + search */}
             <div className="px-3 pt-3 pb-2 border-b border-gray-100 space-y-2">
               <div className="flex gap-1 flex-wrap">
