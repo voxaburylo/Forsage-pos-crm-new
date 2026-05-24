@@ -73,7 +73,7 @@ export default function CashflowPage() {
     <Layout title="Каса та витрати">
       <div className="max-w-4xl space-y-4">
         {/* Картки */}
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Card className="bg-green-50 border-green-200">
             <p className="text-xs text-green-700 font-medium">Надходження</p>
             <p className="text-2xl font-bold text-green-800">{formatMoney(totalIn)}</p>

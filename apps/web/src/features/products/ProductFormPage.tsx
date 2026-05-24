@@ -270,7 +270,7 @@ export default function ProductFormPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <Input
                 label="Закупівельна ціна (₴)"
                 type="number" min="0" step="0.01"

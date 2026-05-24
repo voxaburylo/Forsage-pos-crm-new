@@ -15,7 +15,7 @@ interface Props<T> {
 
 export function Table<T>({ columns, data, keyFn, loading, empty }: Props<T>) {
   return (
-    <div className="overflow-hidden">
+    <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 border-b border-gray-100">
           <tr>
