@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import { Minus, Trash2, User, X, Plus as PlusIcon, ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePOSStore } from '@/stores/posStore'
 import { useAuthStore } from '@/stores/authStore'
@@ -36,32 +36,34 @@ function NumpadModal({
   onClose: () => void
 }) {
   const [input, setInput] = useState(String(value))
-  const [hasDot, setHasDot] = useState(String(value).includes('.'))
+
+  // Синхронізуємо input при відкритті для нового товару
+  useEffect(() => {
+    if (open) {
+      setInput(String(value))
+    }
+  }, [open, value])
 
   const handleDigit = useCallback((d: string) => {
     setInput((prev) => {
       if (prev === '0' && d !== '.') return d
       if (d === '.') {
-        if (hasDot) return prev
-        setHasDot(true)
-        return prev + '.'
+        return prev.includes('.') ? prev : prev + '.'
       }
       return prev + d
     })
-  }, [hasDot])
+  }, [])
 
   const handleBackspace = useCallback(() => {
     setInput((prev) => {
       if (prev.length <= 1) return '0'
       const next = prev.slice(0, -1)
-      if (!next.includes('.')) setHasDot(false)
       return next
     })
   }, [])
 
   const handleClear = useCallback(() => {
     setInput('0')
-    setHasDot(false)
   }, [])
 
   const handleConfirm = useCallback(() => {
@@ -70,15 +72,6 @@ function NumpadModal({
     onConfirm(num)
     onClose()
   }, [input, onConfirm, onClose])
-
-  // Reset when opened
-  if (open && input !== String(value) && input === String(value)) {
-    // initial sync
-  }
-  if (open && input === '0' && String(value) !== '0') {
-    setInput(String(value))
-    setHasDot(String(value).includes('.'))
-  }
 
   if (!open) return null
 

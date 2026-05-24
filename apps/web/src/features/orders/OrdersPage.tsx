@@ -10,6 +10,7 @@ import { orderApi } from './orderApi'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
+import { Menu } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
 import { Card, Badge, Button, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -736,6 +737,7 @@ export default function OrdersPage() {
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'mixed'>('cash')
   const [isFiscal, setIsFiscal] = useState(false)
   const [cancelModal, setCancelModal] = useState<CustomerOrder | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // bulk arrival
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -974,20 +976,46 @@ export default function OrdersPage() {
   // ── рендер ──
   return (
     <div className="flex h-screen bg-gray-100 overflow-hidden">
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+
+      {/* Mobile backdrop for sidebar */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
       <div className="flex-1 flex flex-col min-w-0">
         {/* шапка */}
-        <header className="bg-white border-b border-gray-100 px-6 py-3 flex items-center justify-between shrink-0">
-          <h1 className="font-bold text-gray-900 text-lg">Замовлення</h1>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" icon={<FilePen size={14} />} onClick={() => navigate('/quotes/new')}>
+        <header className="bg-white border-b border-gray-100 px-3 md:px-6 py-2 md:py-3 flex items-center justify-between shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <button className="md:hidden shrink-0 p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+              onClick={() => setSidebarOpen(true)} aria-label="Меню">
+              <Menu size={20} />
+            </button>
+            {selection ? (
+              <button onClick={() => setSelection(null)}
+                className="md:hidden shrink-0 text-gray-400 hover:text-gray-600 transition-colors text-xl leading-none">
+                ←
+              </button>
+            ) : null}
+            <h1 className="font-bold text-gray-900 text-sm md:text-lg truncate">Замовлення</h1>
+          </div>
+          <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+            <Button variant="secondary" size="sm" icon={<FilePen size={14} />}
+              className="!hidden md:!inline-flex" onClick={() => navigate('/quotes/new')}>
               Чернетка
             </Button>
-            <Button variant="secondary" size="sm" icon={<Truck size={14} />} onClick={() => setBulkOpen(true)}>
+            <Button variant="secondary" size="sm" icon={<FilePen size={14} />}
+              className="md:hidden !px-2" onClick={() => navigate('/quotes/new')}
+              title="Чернетка" />
+            <Button variant="secondary" size="sm" icon={<Truck size={14} />}
+              className="!hidden md:!inline-flex" onClick={() => setBulkOpen(true)}>
               Приймання
             </Button>
+            <Button variant="secondary" size="sm" icon={<Truck size={14} />}
+              className="md:hidden !px-2" onClick={() => setBulkOpen(true)}
+              title="Приймання" />
             <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')}>
-              Нове замовлення
+              <span className="hidden sm:inline">Нове замовлення</span>
             </Button>
           </div>
         </header>
@@ -995,8 +1023,8 @@ export default function OrdersPage() {
         {/* робоча площина */}
         <div className="flex-1 flex min-h-0">
 
-          {/* ── Ліва панель ── */}
-          <aside className="w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col">
+          {/* ── Ліва панель — прихована на мобільному коли вибрано запис ── */}
+          <aside className={`w-72 md:w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col ${selection ? 'hidden md:flex' : 'flex'}`}>
             {/* tabs + search */}
             <div className="px-3 pt-3 pb-2 border-b border-gray-100 space-y-2">
               <div className="flex gap-1 flex-wrap">
@@ -1067,8 +1095,8 @@ export default function OrdersPage() {
             </div>
           </aside>
 
-          {/* ── Середня панель ── */}
-          <div className="flex-1 flex flex-col min-w-0 bg-white">
+          {/* ── Середня панель — на мобільному тільки коли вибрано ── */}
+          <div className={`flex-1 flex flex-col min-w-0 bg-white ${!selection ? 'hidden md:flex' : 'flex'}`}>
             {selectedChat ? (
               <>
                 {/* шапка чату */}

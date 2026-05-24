@@ -169,9 +169,22 @@ export default function ProductDetailPage() {
               <p className="text-sm text-gray-800">{product.brand?.name ?? '—'}</p>
             </div>
             <div>
-              <p className="text-xs text-gray-400 mb-0.5">Штрихкод</p>
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-mono text-gray-800">{product.barcode ?? '—'}</p>
+              <p className="text-xs text-gray-400 mb-1.5">Штрихкод</p>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 min-h-[48px]">
+                  {product.barcode ? (
+                    <>
+                      <span className="text-lg font-mono font-bold text-gray-900 tracking-wider select-all">{product.barcode}</span>
+                      <button onClick={() => { setPrintCopies(1); setPrintModalOpen(true); }}
+                        className="ml-auto text-xs text-green-600 hover:text-green-800 flex items-center gap-1 font-medium shrink-0 px-2 py-1 rounded-lg hover:bg-green-50 transition-colors"
+                        title="Друк етикетки">
+                        <Printer size={14} /> Друк
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-gray-400 text-sm italic">Не вказано</span>
+                  )}
+                </div>
                 <button onClick={async () => {
                   try {
                     const { data } = await productApi.generateBarcode(product.id)
@@ -179,15 +192,9 @@ export default function ProductDetailPage() {
                     toast.success('Штрих-код згенеровано: ' + data.barcode)
                   } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
                 }}
-                  className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium">
-                  <Barcode size={12} /> Згенерувати
+                  className="self-start text-xs text-gray-500 hover:text-blue-600 flex items-center gap-1 font-medium px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors">
+                  <Barcode size={14} /> Згенерувати штрихкод
                 </button>
-                {product.barcode && (
-                  <button onClick={() => { setPrintCopies(1); setPrintModalOpen(true); }}
-                    className="text-xs text-green-600 hover:text-green-800 flex items-center gap-0.5 font-medium">
-                    <Printer size={12} /> Друк
-                  </button>
-                )}
               </div>
             </div>
             <div>

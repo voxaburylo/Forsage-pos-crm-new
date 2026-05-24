@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Lightbulb } from 'lucide-react'
-import { api } from '@/lib/api'
+import { request } from '@/lib/api'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
@@ -10,11 +10,10 @@ export function CrossSellPanel() {
   const store = usePOSStore()
   const [suggestions, setSuggestions] = useState<Product[]>([])
 
-  // Збираємо всі productId з активного чека
-  const currentProductIds = store.items.map((i) => i.productId)
-
   // Завантажуємо рекомендації для останнього доданого товару
   useEffect(() => {
+    const currentProductIds = store.items.map((i) => i.productId)
+
     if (store.items.length === 0) { setSuggestions([]); return }
     const lastItem = store.items[store.items.length - 1]
     if (!lastItem) { setSuggestions([]); return }
@@ -22,12 +21,20 @@ export function CrossSellPanel() {
     // Не запитуємо cobuy для синтетичних ID швидких товарів
     if (lastItem.productId.startsWith('quick_')) { setSuggestions([]); return }
 
-    api.get<{ data: Product[] }>(`/api/v1/products/${lastItem.productId}/cobuy`)
+    const controller = new AbortController()
+
+    request<{ data: Product[] }>(`/api/v1/products/${lastItem.productId}/cobuy`, { signal: controller.signal })
       .then((res) => {
-        // Фільтруємо ті, що вже в чеку
-        setSuggestions(res.data.filter((p) => !currentProductIds.includes(p.id)))
+        if (!controller.signal.aborted) {
+          // Фільтруємо ті, що вже в чеку
+          setSuggestions(res.data.filter((p) => !currentProductIds.includes(p.id)))
+        }
       })
-      .catch(() => setSuggestions([]))
+      .catch(() => {
+        if (!controller.signal.aborted) setSuggestions([])
+      })
+
+    return () => controller.abort()
   }, [store.items.length])
 
   if (suggestions.length === 0) return null

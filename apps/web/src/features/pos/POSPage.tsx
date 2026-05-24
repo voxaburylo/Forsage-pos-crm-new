@@ -613,10 +613,10 @@ export default function POSPage() {
       )}
 
       {/* Основна панель POS */}
-      <div className="flex-1 flex min-h-0">
-        <div className={`flex-1 border-r border-gray-800 min-h-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
+      <div className="flex-1 flex min-h-0 min-w-0">
+        <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
           <SearchPanel ref={searchRef} />
-          <div className="hidden md:flex md:flex-col min-h-0 flex-1">
+          <div className="hidden md:flex md:flex-col min-h-0 min-w-0 flex-1">
             <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
           </div>
           <div className="hidden md:block">

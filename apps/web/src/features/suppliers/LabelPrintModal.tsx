@@ -114,7 +114,7 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
           Вкажіть кількість етикеток для кожного товару. За замовчуванням — кількість з накладної.
         </p>
 
-        <div className="border border-gray-200 rounded-xl overflow-hidden">
+        <div className="border border-gray-200 rounded-xl overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>

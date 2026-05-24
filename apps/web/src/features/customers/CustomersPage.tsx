@@ -177,7 +177,7 @@ export default function CustomersPage() {
 
       {/* Пошук + фільтр */}
       <div className="flex gap-3 mb-4">
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-0">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             value={search}

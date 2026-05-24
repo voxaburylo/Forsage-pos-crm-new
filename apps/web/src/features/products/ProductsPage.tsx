@@ -460,7 +460,7 @@ export default function ProductsPage() {
 
           {/* Панель пошуку */}
           <div className="flex gap-2 items-center">
-            <div className="relative flex-1">
+            <div className="relative flex-1 min-w-0">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 value={search} onChange={(e) => setSearch(e.target.value)}

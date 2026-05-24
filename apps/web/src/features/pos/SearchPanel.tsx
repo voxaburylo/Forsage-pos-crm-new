@@ -185,7 +185,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 bg-[#1A1A1A] p-3 md:p-4">
+    <div className="flex flex-col flex-1 min-h-0 min-w-0 bg-[#1A1A1A] p-3 md:p-4">
       {/* Офлайн-індикатор */}
       {!serverOnline && (
         <div className="mb-2 px-3 py-1.5 bg-red-900/30 rounded-lg flex items-center gap-2 text-red-300 text-xs">
@@ -195,7 +195,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
 
       {/* Поле пошуку */}
       <div className="relative mb-3 flex gap-2 shrink-0">
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
           <input ref={inputRef} type="text" value={query}
             onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKeyDown}
@@ -241,7 +241,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       </div>
 
       {/* Результати */}
-      <div className="flex-1 overflow-y-auto space-y-2 pr-0.5 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-2 pr-0.5 scrollbar-thin">
         {loading && (
           <p className="text-gray-500 text-sm text-center py-8">Пошук...</p>
         )}
