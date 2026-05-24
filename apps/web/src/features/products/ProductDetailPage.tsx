@@ -403,13 +403,15 @@ export default function ProductDetailPage() {
           currentPhotoUrl={product.photo_url ?? null}
           onPhotoUrl={handlePhotoUrl}
         />
-        <div className="flex justify-end mt-4 pt-3 border-t border-gray-100">
+        <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
+          <p className="text-xs text-gray-400">
+            {savingPhoto ? 'Зберігаємо...' : 'Зміни зберігаються автоматично'}
+          </p>
           <Button
-            variant="secondary"
             onClick={() => setPhotoModalOpen(false)}
             loading={savingPhoto}
           >
-            Закрити
+            Готово
           </Button>
         </div>
       </Modal>

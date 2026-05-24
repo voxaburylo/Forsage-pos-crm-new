@@ -9,27 +9,34 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 export function usePOS() {
   const store = usePOSStore()
 
+  // Беремо actions через селектори — Zustand гарантує стабільні ссилки.
+  // НЕ використовувати `store.setX` в deps useCallback/useEffect, інакше нескінченний
+  // re-render цикл (store-об'єкт міняється на кожне оновлення state).
+  const setInitializing = usePOSStore((s) => s.setInitializing)
+  const setInitError    = usePOSStore((s) => s.setInitError)
+  const setCurrentShift = usePOSStore((s) => s.setCurrentShift)
+
   const checkShift = useCallback(() => {
-    store.setInitializing(true)
-    store.setInitError(null)
+    setInitializing(true)
+    setInitError(null)
 
     shiftApi.current()
       .then(({ data }) => {
-        store.setCurrentShift(data)
-        store.setInitError(null)
+        setCurrentShift(data)
+        setInitError(null)
       })
       .catch((err) => {
         const status = err?.status
         if (status === 404 || err?.message?.includes('NO_SHIFT') || err?.message?.includes('not found')) {
-          store.setCurrentShift(null)
+          setCurrentShift(null)
         } else {
-          store.setInitError(err?.message ?? 'Помилка зв\'язку з сервером')
+          setInitError(err?.message ?? 'Помилка зв\'язку з сервером')
         }
       })
       .finally(() => {
-        store.setInitializing(false)
+        setInitializing(false)
       })
-  }, [store])
+  }, [setInitializing, setInitError, setCurrentShift])
 
   // Завантажуємо поточну зміну при старті
   useEffect(() => {

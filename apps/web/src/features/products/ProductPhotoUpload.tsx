@@ -93,17 +93,16 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
       const sizeAfter  = (blob.size  / 1024).toFixed(0)
       const url        = await uploadToStorage(blob, folder)
 
-      let becameMain = false
+      // Нове завантажене фото завжди стає головним — це очікувана поведінка
+      // (інакше користувач не розуміє чому фото не «зберіглось»).
+      let newMainIdx = 0
       setPhotos((prev) => {
         const next = [...prev, url]
-        if (prev.length === 0) {
-          setMainIdx(0)
-          becameMain = true
-        }
+        newMainIdx = next.length - 1
+        setMainIdx(newMainIdx)
         return next
       })
-      // Уведомляем родителя только если это первая (главная) фотка
-      if (becameMain) onPhotoUrlRef.current(url)
+      onPhotoUrlRef.current(url)
 
       toast.success(`Фото завантажено (${sizeBefore} KB → ${sizeAfter} KB)`)
       if (name) console.info(`[photo] ${name}: ${sizeBefore} KB → ${sizeAfter} KB`)
