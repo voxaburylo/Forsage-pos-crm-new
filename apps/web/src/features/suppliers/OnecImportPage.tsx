@@ -38,6 +38,13 @@ export default function OnecImportPage() {
 
   async function handleFile(file: File) {
     setFileName(file.name)
+    // Перевірка: .xlsx/.xls не читаються через file.text() — це binary zip
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (ext === 'xlsx' || ext === 'xls') {
+      toast.error('Формат Excel (.xlsx/.xls) не підтримується. Збережіть файл як CSV: в 1С натисніть "Файл → Зберегти як" і виберіть "CSV (роздільники ;)"')
+      setFileText('')
+      return
+    }
     const text = await file.text()
     setFileText(text)
   }
@@ -120,7 +127,7 @@ export default function OnecImportPage() {
                 fileText ? 'border-green-400 bg-green-50' : 'border-gray-200 hover:border-yellow-400 hover:bg-yellow-50'
               }`}
             >
-              <input ref={fileRef} type="file" accept=".csv,.txt,.xls,.xlsx" className="hidden"
+              <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
               {fileText ? (
                 <div className="space-y-1">
@@ -132,7 +139,7 @@ export default function OnecImportPage() {
                 <div className="space-y-2">
                   <Upload size={40} className="text-gray-400 mx-auto" />
                   <p className="text-gray-600 font-medium">Перетягніть CSV файл або натисніть</p>
-                  <p className="text-xs text-gray-400">CSV, TXT (розділювачі: ; або ,)</p>
+                  <p className="text-xs text-gray-400">Тільки CSV/TXT (розділювачі: ; або ,). XLSX не підтримується.</p>
                 </div>
               )}
             </div>
@@ -213,15 +220,22 @@ export default function OnecImportPage() {
 
             {/* Категорії */}
             {preview.categories.length > 0 && (
-              <Card className="space-y-2">
-                <h3 className="font-semibold text-gray-800 text-sm">
-                  Групи/Категорії ({preview.categories.length}) — будуть створені автоматично
-                </h3>
+              <Card className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-gray-800 text-sm">
+                    Групи/Категорії ({preview.categories.length})
+                  </h3>
+                  <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">будуть створені автоматично</span>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {preview.categories.map((c) => (
-                    <span key={c} className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-100">{c}</span>
+                    <span key={c} className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-100 font-medium">{c}</span>
                   ))}
                 </div>
+                <p className="text-xs text-gray-400">
+                  Якщо в 1С категорія має вкладеність (напр. "Запчастини/Фільтри"), вона буде створена як один рівень.
+                  Для ієрархічних категорій скористайтесь сторінкою <span className="font-medium">Товари → Імпорт</span>.
+                </p>
               </Card>
             )}
 
