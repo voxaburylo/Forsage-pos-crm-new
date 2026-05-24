@@ -409,12 +409,12 @@ export default function ProductsPage() {
           <span className="hidden md:flex gap-1.5">
             <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>
-            {isOwner && (
-              <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} onClick={() => navigate('/admin?tab=categories')}>
-                Очистити каталог
-              </Button>
-            )}
           </span>
+          {isOwner && (
+            <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} onClick={() => navigate('/admin?tab=categories')}>
+              Очистити каталог
+            </Button>
+          )}
           <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/products/new')}>
             <span className="hidden sm:inline">Новий товар</span>
           </Button>
