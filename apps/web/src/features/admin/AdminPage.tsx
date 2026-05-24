@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Users, Package, Tag, Plus, Trash2, UserX, UserCheck, AlertTriangle, Pencil, Check, X } from 'lucide-react'
 import { adminApi, ROLE_LABELS } from './adminApi'
 import type { AdminUser, UserRole } from './adminApi'
@@ -361,7 +362,9 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
 
 // ---- Main AdminPage ----
 export default function AdminPage() {
-  const [tab, setTab] = useState<Tab>('users')
+  const [searchParams] = useSearchParams()
+  const initialTab = (searchParams.get('tab') as Tab) ?? 'users'
+  const [tab, setTab] = useState<Tab>(initialTab)
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'users',      label: 'Користувачі',  icon: <Users size={16} /> },
