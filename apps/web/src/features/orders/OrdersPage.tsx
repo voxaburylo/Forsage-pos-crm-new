@@ -1021,7 +1021,7 @@ export default function OrdersPage() {
         </header>
 
         {/* робоча площина */}
-        <div className="flex-1 flex min-h-0">
+        <div className="flex-1 flex min-h-0 min-w-0">
 
           {/* ── Ліва панель — прихована на мобільному коли вибрано запис ── */}
           <aside className={`w-72 md:w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col ${selection ? 'hidden md:flex' : 'flex'}`}>
@@ -1149,7 +1149,7 @@ export default function OrdersPage() {
                           </div>
                         )}
                         <div className={`flex ${isCustomer ? 'justify-start' : 'justify-end'}`}>
-                          <div className={`max-w-[72%] px-4 py-2.5 text-[15px] leading-relaxed shadow-sm ${
+                          <div className={`max-w-[85%] md:max-w-[72%] px-3 md:px-4 py-2.5 text-[15px] leading-relaxed shadow-sm break-all ${
                             isCustomer
                               ? 'bg-white text-gray-800 rounded-2xl rounded-tl-sm border border-gray-100'
                               : isBot
@@ -1170,8 +1170,8 @@ export default function OrdersPage() {
                   className="px-3 md:px-5 py-3 md:py-4 border-t border-gray-200 bg-white flex gap-3 items-end shrink-0 pb-safe">
                   <input ref={composerRef} value={input} onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend() } }}
-                    placeholder="Написати повідомлення... (Enter — надіслати)"
-                    className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-yellow-400" />
+                    placeholder="Написати повідомлення..."
+                    className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-yellow-400" />
                   <button type="submit" disabled={sending || !input.trim()}
                     className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-gray-900 font-bold rounded-2xl w-12 h-12 flex items-center justify-center shrink-0 transition-colors shadow-sm">
                     <Send size={18} />
