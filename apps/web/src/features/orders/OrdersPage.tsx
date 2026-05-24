@@ -1100,7 +1100,12 @@ export default function OrdersPage() {
             {selectedChat ? (
               <>
                 {/* шапка чату */}
-                <div className="px-5 py-3 border-b border-gray-200 flex items-center gap-3 shrink-0">
+                <div className="px-3 md:px-5 py-3 border-b border-gray-200 flex items-center gap-3 shrink-0">
+                  <button onClick={() => setSelection(null)}
+                    className="md:hidden shrink-0 text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 -ml-1"
+                    title="Назад">
+                    ←
+                  </button>
                   <div className="relative shrink-0">
                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-gray-200 to-gray-300 flex items-center justify-center text-base font-bold text-gray-600">
                       {avatarLetter(selectedChat)}
@@ -1123,7 +1128,7 @@ export default function OrdersPage() {
                 </div>
 
                 {/* повідомлення */}
-                <div className="flex-1 overflow-y-auto px-5 py-5 space-y-2"
+                <div className="flex-1 overflow-y-auto px-3 md:px-5 py-3 md:py-5 space-y-2"
                   style={{ background: 'linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)' }}>
                   {messages.length === 0 ? (
                     <div className="flex items-center justify-center h-full">
@@ -1162,7 +1167,7 @@ export default function OrdersPage() {
 
                 {/* композер */}
                 <form onSubmit={(e) => { e.preventDefault(); doSend() }}
-                  className="px-5 py-4 border-t border-gray-200 bg-white flex gap-3 items-end shrink-0">
+                  className="px-3 md:px-5 py-3 md:py-4 border-t border-gray-200 bg-white flex gap-3 items-end shrink-0 pb-safe">
                   <input ref={composerRef} value={input} onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend() } }}
                     placeholder="Написати повідомлення... (Enter — надіслати)"
@@ -1349,7 +1354,7 @@ function OrderInlineView({
   const overdue = order.pickup_deadline_at && new Date(order.pickup_deadline_at) < now
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
+    <div className="flex-1 overflow-y-auto p-3 md:p-6 pb-safe">
       <div className="max-w-3xl mx-auto space-y-4">
 
         {/* шапка */}
@@ -1434,7 +1439,7 @@ function OrderInlineView({
                 const actions = ITEM_STATUS_ACTIONS[item.item_status]
                 const itemConf = STATUS_CONFIG[item.item_status]
                 return (
-                  <div key={item.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm">
+                  <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm gap-1.5">
                     <div className="flex-1 min-w-0">
                       <span className="font-medium text-gray-800">{item.name}</span>
                       {item.sku && <span className="text-gray-400 text-xs ml-1.5 font-mono">{item.sku}</span>}
@@ -1442,12 +1447,12 @@ function OrderInlineView({
                         {itemConf?.label ?? item.item_status}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0 ml-2">
-                      <span className="text-gray-600 text-xs">{item.qty} × {formatMoney(item.sell_price)}</span>
+                    <div className="flex items-center gap-1.5 md:gap-2 shrink-0 ml-0 sm:ml-2 flex-wrap">
+                      <span className="text-gray-600 text-xs whitespace-nowrap">{item.qty} × {formatMoney(item.sell_price)}</span>
                       {actions?.map((a) => (
                         <button key={a.status} onClick={() => onItemStatus(item.id, a.status)}
                           className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-gray-200 hover:bg-gray-100 transition-colors">
-                          {a.icon} {a.label}
+                          {a.icon} <span className="hidden sm:inline">{a.label}</span>
                         </button>
                       ))}
                     </div>
