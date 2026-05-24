@@ -81,21 +81,53 @@ export async function calculatePrice(input: CalculatePriceInput) {
  * виконується в єдиній транзакції PostgreSQL.
  */
 export async function createSale(cashierId: string, tenantId: string, input: CreateSaleInput, idempotencyKey?: string) {
-  // 0. Idempotency check — повертаємо кешовану відповідь якщо ключ вже є
+  // 0. Idempotency check — повертаємо кешовану відповідь або блокуємо паралельний запит
   if (idempotencyKey) {
     const { data: cached } = await db
       .from('idempotency_keys')
-      .select('response')
+      .select('status, response')
       .eq('key', idempotencyKey)
       .eq('tenant_id', tenantId)
       .maybeSingle()
+
     if (cached) {
-      logger.info({ idempotencyKey }, 'Idempotency hit — повертаємо кешовану відповідь')
-      return cached.response as any
+      if (cached.status === 'completed') {
+        logger.info({ idempotencyKey }, 'Idempotency hit (completed) — повертаємо кешовану відповідь')
+        return cached.response as any
+      }
+      if (cached.status === 'processing') {
+        logger.warn({ idempotencyKey }, 'Idempotency hit (processing) — паралельний запит відхилено')
+        throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
+      }
+      if (cached.status === 'failed') {
+        try {
+          await db.from('idempotency_keys').delete().eq('key', idempotencyKey).eq('tenant_id', tenantId)
+        } catch {}
+      }
+    }
+
+    // Lock-Before-Work: реєструємо спробу оплати
+    const { error: insertErr } = await db.from('idempotency_keys').insert({
+      key: idempotencyKey,
+      tenant_id: tenantId,
+      status: 'processing',
+      response: null
+    })
+
+    if (insertErr) {
+      logger.warn({ idempotencyKey, err: insertErr.message }, 'Idempotency insert conflict — паралельний запит')
+      throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
     }
   }
 
-  // 1. Перевіряємо що зміна відкрита
+  let isCharged = false
+  let chargedProvider: 'privatbank' | 'mock' | null = null
+  let terminalConfigUsed: any = null
+  let bankAuthCode: string | null = null
+  let terminalRrn:  string | null = null
+
+  try {
+    // 1. Перевіряємо що зміна відкрита
   const shift = await getCurrentShift(cashierId)
   if (!shift) throw new AppError('NO_OPEN_SHIFT', 'Спочатку відкрийте зміну', 400)
   if (shift.id !== input.shift_id) throw new AppError('WRONG_SHIFT', 'Невірна зміна', 400)
@@ -141,8 +173,6 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
 
   // 3b. Термінал підтверджує ДО виклику process_sale
   // Якщо термінал відхиляє → продаж НЕ створюється
-  let bankAuthCode: string | null = null
-  let terminalRrn:  string | null = null
   if (input.payment_method === 'card' || input.payment_method === 'mixed') {
     const settings = await (await import('./adminService.js')).getSettings()
     const provider = settings.terminal_provider ?? 'mock'
@@ -152,13 +182,15 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       bankAuthCode = (input as any).terminal_auth_code ?? null
       logger.info({ bankAuthCode }, 'Термінал: ручне підтвердження (manual mode)')
     } else if (provider === 'privatbank') {
+      chargedProvider = 'privatbank'
+      terminalConfigUsed = {
+        ip:          settings.privatbank_terminal_ip  ?? '127.0.0.1',
+        port:        settings.privatbank_terminal_port ?? 8082,
+        merchant_id: settings.merchant_id ?? settings.privatbank_merchant_id ?? '',
+      }
       const { privatbankProcessPayment } = await import('./integrations/PrivatBankTerminalService.js')
       const terminalResult = await privatbankProcessPayment(
-        {
-          ip:          settings.privatbank_terminal_ip  ?? '127.0.0.1',
-          port:        settings.privatbank_terminal_port ?? 8082,
-          merchant_id: settings.privatbank_merchant_id  ?? '',
-        },
+        terminalConfigUsed,
         cardAmount,
         `TMP-${Date.now()}`,
       )
@@ -167,17 +199,25 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       }
       bankAuthCode = terminalResult.auth_code
       terminalRrn  = terminalResult.rrn
+      isCharged = true
     } else {
+      chargedProvider = 'mock'
       const { processCardPayment } = await import('./integrations/MockBankTerminalService.js')
       const terminalResult = await processCardPayment(cardAmount)
       if (!terminalResult.success) {
         throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
       }
       bankAuthCode = terminalResult.auth_code
+      isCharged = true
     }
     logger.info({ bankAuthCode, terminalRrn }, 'Термінал підтвердив — виконуємо process_sale')
   }
 
+  // Вибір версії RPC за feature flags (детально див. .env.example):
+  //   v1 process_sale         — базова, без перевірки резервів (migrations 019/021/025/031)
+  //   v2 process_sale_v2      — qty_available з урахуванням резервів (073/075/091)
+  //   v3 process_sale_v3      — атомарне списання бонусів у межах RPC (081)
+  // Default продакшен: v3. Усі три функції живуть у БД одночасно як fallback для відкату.
   const useBonusAtomic = process.env.USE_BONUS_ATOMIC_SALE === 'true'
   const rpcName = useBonusAtomic
     ? 'process_sale_v3'
@@ -349,18 +389,62 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     }
   }
 
-  // 7. Зберігаємо idempotency key щоб повторний запит отримав ту ж відповідь
-  if (idempotencyKey) {
-    await db.from('idempotency_keys').insert({
-      key: idempotencyKey,
-      tenant_id: tenantId,
-      response: sale,
-    }).then(({ error }) => {
-      if (error) logger.warn({ idempotencyKey, error: error.message }, 'Не вдалось зберегти idempotency key')
-    })
-  }
+    // 7. Оновлюємо статус idempotency_keys
+    if (idempotencyKey) {
+      await db.from('idempotency_keys')
+        .update({
+          status: 'completed',
+          response: sale,
+        })
+        .eq('key', idempotencyKey)
+        .eq('tenant_id', tenantId)
+    }
 
-  return sale
+    return sale
+  } catch (err: any) {
+    logger.error({ error: err.message, idempotencyKey }, 'Помилка в createSale. Запускаємо відкат...')
+
+    // 1. Автоматичний відкат коштів на терміналі
+    if (isCharged) {
+      try {
+        if (chargedProvider === 'privatbank' && terminalRrn) {
+          const { privatbankCancelPayment } = await import('./integrations/PrivatBankTerminalService.js')
+          logger.info({ terminalRrn }, 'Спроба скасування транзакції на терміналі ПриватБанк...')
+          const cancelled = await privatbankCancelPayment(terminalConfigUsed, terminalRrn)
+          if (cancelled) {
+            logger.info({ terminalRrn }, 'Транзакцію успішно скасовано (Void) на терміналі ПриватБанк.')
+          } else {
+            logger.error({ terminalRrn }, 'КРИТИЧНО: Не вдалося автоматично скасувати транзакцію на терміналі ПриватБанк! Потрібне ручне втручання.')
+          }
+        } else if (chargedProvider === 'mock' && bankAuthCode) {
+          const { cancelCardPayment } = await import('./integrations/MockBankTerminalService.js')
+          await cancelCardPayment(bankAuthCode)
+          logger.info('Транзакцію успішно скасовано (mock).')
+        }
+      } catch (cancelErr: any) {
+        logger.error({ cancelError: cancelErr.message }, 'КРИТИЧНО: Помилка при спробі скасування транзакції на терміналі!')
+      }
+    }
+
+    // 2. Очищення або оновлення idempotency_keys
+    if (idempotencyKey) {
+      try {
+        await db.from('idempotency_keys')
+          .update({ status: 'failed' })
+          .eq('key', idempotencyKey)
+          .eq('tenant_id', tenantId)
+      } catch {}
+      // Видаляємо запис для можливості повторної спроби
+      try {
+        await db.from('idempotency_keys')
+          .delete()
+          .eq('key', idempotencyKey)
+          .eq('tenant_id', tenantId)
+      } catch {}
+    }
+
+    throw err
+  }
 }
 
 /** Відновити відкладений чек */

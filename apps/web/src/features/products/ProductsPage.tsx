@@ -14,9 +14,10 @@ import { adminApi } from '@/features/admin/adminApi'
 import type { Product, PaginatedProducts } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { Layout } from '@/components/Layout'
-import { Button, Badge } from '@/components/ui'
+import { Button, Badge, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
+import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 
 // ─── Типи ────────────────────────────────────────────────────────────────────
 interface Category { id: string; name: string; sort_order: number }
@@ -254,6 +255,7 @@ export default function ProductsPage() {
   const [bulkOpen, setBulkOpen]     = useState(false)
   const [mergeProduct, setMergeProduct] = useState<Product | null>(null)
   const [importOpen, setImportOpen] = useState(false)
+  const [bulkPrintOpen, setBulkPrintOpen] = useState(false)
   const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
 
   // Завантаження категорій та брендів
@@ -330,6 +332,22 @@ export default function ProductsPage() {
     setSelectedIds(selectedIds.size === ids.length ? new Set() : new Set(ids.map((p) => p.id)))
   }
 
+  const selectedProducts = useMemo(() => {
+    return products.filter((p) => selectedIds.has(p.id))
+  }, [products, selectedIds])
+
+  const [bulkQtys, setBulkQtys] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    if (bulkPrintOpen) {
+      const initial: Record<string, number> = {}
+      selectedProducts.forEach((p) => {
+        initial[p.id] = 1
+      })
+      setBulkQtys(initial)
+    }
+  }, [bulkPrintOpen, selectedProducts])
+
   async function handleExport() {
     try {
       const { supabase } = await import('@/lib/supabase')
@@ -342,23 +360,40 @@ export default function ProductsPage() {
     } catch { toast.error('Помилка експорту') }
   }
 
-  async function handleDelete(product: Product) {
-    if (!confirm(`Видалити товар "${product.name}"?`)) return
-    try { await productApi.delete(product.id); toast.success('Видалено'); load() }
-    catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+  // Підтвердження видалення (одиничного або масового)
+  const [confirmState, setConfirmState] = useState<
+    | null
+    | { title: string; message: React.ReactNode; onConfirm: () => Promise<void> }
+  >(null)
+
+  function askDelete(product: Product) {
+    setConfirmState({
+      title: 'Видалити товар',
+      message: <>Видалити товар <strong>{product.name}</strong>?</>,
+      onConfirm: async () => {
+        try { await productApi.delete(product.id); toast.success('Видалено'); load() }
+        catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+      },
+    })
   }
 
-  async function handleBulkDelete() {
-    if (!confirm(`Видалити ${selectedIds.size} товарів? Цю дію не можна скасувати.`)) return
-    let done = 0; let failed = 0
-    for (const id of selectedIds) {
-      try { await productApi.delete(id); done++ }
-      catch { failed++ }
-    }
-    if (done > 0) toast.success(`Видалено ${done} товарів${failed > 0 ? `, помилок: ${failed}` : ''}`)
-    else toast.error('Не вдалося видалити')
-    setSelectedIds(new Set())
-    load()
+  function askBulkDelete() {
+    const n = selectedIds.size
+    setConfirmState({
+      title: `Видалити ${n} товарів`,
+      message: 'Цю дію не можна скасувати.',
+      onConfirm: async () => {
+        let done = 0; let failed = 0
+        for (const id of selectedIds) {
+          try { await productApi.delete(id); done++ }
+          catch { failed++ }
+        }
+        if (done > 0) toast.success(`Видалено ${done} товарів${failed > 0 ? `, помилок: ${failed}` : ''}`)
+        else toast.error('Не вдалося видалити')
+        setSelectedIds(new Set())
+        load()
+      },
+    })
   }
 
   const allSelected = !!result?.data.length && selectedIds.size === result.data.length
@@ -447,9 +482,10 @@ export default function ProductsPage() {
               <span className="text-sm text-yellow-800 font-medium">Вибрано {selectedIds.size} товарів</span>
               <div className="flex gap-2">
                 <Button size="sm" onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
+                <Button size="sm" variant="secondary" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
                 {isAdmin && (
                   <Button size="sm" variant="secondary"
-                    onClick={handleBulkDelete}
+                    onClick={askBulkDelete}
                     className="!text-red-600 !border-red-200 hover:!bg-red-50">
                     🗑 Видалити
                   </Button>
@@ -562,7 +598,7 @@ export default function ProductsPage() {
                               <>
                                 <button onClick={() => setMergeProduct(p)}
                                   className="text-xs px-2 py-1 rounded-lg bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors font-medium">Злити</button>
-                                <button onClick={() => handleDelete(p)}
+                                <button onClick={() => askDelete(p)}
                                   className="text-xs px-2 py-1 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors font-medium">Видал.</button>
                               </>
                             )}
@@ -609,6 +645,92 @@ export default function ProductsPage() {
           onClose={() => setBulkOpen(false)}
           onUpdated={() => { setBulkOpen(false); setSelectedIds(new Set()); load() }} />
       )}
+      {bulkPrintOpen && (
+        <Modal
+          open={bulkPrintOpen}
+          onClose={() => setBulkPrintOpen(false)}
+          title="Друк етикеток для вибраних товарів"
+          size="md"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">
+              Вкажіть кількість копій етикеток для кожного обраного товару. Якщо вказати 0, етикетка для цього товару не друкуватиметься.
+            </p>
+
+            <div className="border border-gray-200 rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs text-gray-500 font-medium">Товар</th>
+                    <th className="px-3 py-2 text-center text-xs text-gray-500 font-medium w-24">Кількість</th>
+                    <th className="px-4 py-2 text-right text-xs text-gray-500 font-medium w-28">Ціна</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {selectedProducts.map((p) => (
+                    <tr key={p.id}>
+                      <td className="px-4 py-2">
+                        <p className="font-medium text-gray-900 text-sm">{p.name}</p>
+                        <p className="text-xs text-gray-400">{p.sku}</p>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={999}
+                          value={bulkQtys[p.id] ?? 0}
+                          onChange={(e) => {
+                            const val = Math.max(0, parseInt(e.target.value) || 0)
+                            setBulkQtys((prev) => ({ ...prev, [p.id]: val }))
+                          }}
+                          className="w-full text-center border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                        />
+                      </td>
+                      <td className="px-4 py-2 text-right font-medium text-gray-700">
+                        {kopecksToHryvnia(p.retail_price)} ₴
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex gap-3 justify-end pt-2 border-t border-gray-100">
+              <Button variant="secondary" onClick={() => setBulkPrintOpen(false)}>Скасувати</Button>
+              <Button
+                disabled={Object.values(bulkQtys).reduce((sum, q) => sum + q, 0) === 0}
+                onClick={async () => {
+                  try {
+                    const settingsRes = await adminApi.getSettings()
+                    const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+                    const items = selectedProducts.flatMap((p) => {
+                      const qty = bulkQtys[p.id] ?? 0
+                      return Array(qty).fill(p)
+                    })
+                    printLabels(settings as any, items, false)
+                    setBulkPrintOpen(false)
+                    setSelectedIds(new Set())
+                  } catch {
+                    toast.error('Помилка друку')
+                  }
+                }}
+              >
+                Друкувати ({Object.values(bulkQtys).reduce((sum, q) => sum + q, 0)} шт)
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      <ConfirmDialog
+        open={confirmState !== null}
+        onClose={() => setConfirmState(null)}
+        onConfirm={() => confirmState?.onConfirm() ?? Promise.resolve()}
+        title={confirmState?.title ?? ''}
+        message={confirmState?.message}
+        confirmLabel="Видалити"
+        danger
+      />
     </Layout>
   )
 }

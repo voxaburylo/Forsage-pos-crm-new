@@ -66,7 +66,9 @@
       "Bash(node dist/index.js)",
       "Bash(xargs -I{} basename {} .sql)",
       "mcp__plugin_supabase_supabase__execute_sql",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git push *)",
+      "Bash(python -m json.tool)"
     ]
   }
 }

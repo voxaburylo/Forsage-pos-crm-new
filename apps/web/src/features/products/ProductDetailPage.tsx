@@ -7,9 +7,10 @@ import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { getSpecTemplate } from './productSpecs'
 import { ProductPhotoUpload } from './ProductPhotoUpload'
 import { Layout } from '@/components/Layout'
-import { Button, Badge, Card, Modal } from '@/components/ui'
+import { Button, Badge, Card, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { printLabel } from './LabelPrinter'
+import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
+import { adminApi } from '@/features/admin/adminApi'
 
 function StockBadge({ product }: { product: Product }) {
   const status = stockStatus(product)
@@ -41,19 +42,33 @@ export default function ProductDetailPage() {
   const [cobuy, setCobuy] = useState<any[]>([])
   const [photoModalOpen, setPhotoModalOpen] = useState(false)
   const [savingPhoto, setSavingPhoto] = useState(false)
+  const [printModalOpen, setPrintModalOpen] = useState(false)
+  const [printCopies, setPrintCopies] = useState(1)
 
   async function handlePhotoUrl(url: string | null) {
     if (!product || !id) return
     setSavingPhoto(true)
     try {
-      await productApi.update(id, { photo_url: url ?? null } as any)
-      setProduct({ ...product, photo_url: url ?? null })
+      await productApi.update(id, { photo_url: url })
+      setProduct({ ...product, photo_url: url })
       toast.success(url ? 'Фото збережено' : 'Фото видалено')
       setPhotoModalOpen(false)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка')
     } finally {
       setSavingPhoto(false)
+    }
+  }
+
+  async function handlePrintBinLabel() {
+    if (!product || !product.storage_bin) return
+    try {
+      const settingsRes = await adminApi.getSettings()
+      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      printLabels(settings as any, [{ label: product.storage_bin }], true)
+      toast.success('Етикетку комірки відправлено на друк')
+    } catch {
+      toast.error('Помилка друку')
     }
   }
 
@@ -74,8 +89,10 @@ export default function ProductDetailPage() {
     }).catch(() => navigate('/products')).finally(() => setLoading(false))
   }, [id, navigate])
 
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+
   async function handleDelete() {
-    if (!product || !confirm(`Видалити товар "${product.name}"?`)) return
+    if (!product) return
     try {
       await productApi.delete(product.id)
       toast.success('Товар видалено')
@@ -100,7 +117,7 @@ export default function ProductDetailPage() {
           <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/products/${product.id}/edit`)}>
             Редагувати
           </Button>
-          <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={handleDelete}>
+          <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
             Видалити
           </Button>
         </div>
@@ -166,7 +183,7 @@ export default function ProductDetailPage() {
                   <Barcode size={12} /> Згенерувати
                 </button>
                 {product.barcode && (
-                  <button onClick={() => printLabel(product)}
+                  <button onClick={() => { setPrintCopies(1); setPrintModalOpen(true); }}
                     className="text-xs text-green-600 hover:text-green-800 flex items-center gap-0.5 font-medium">
                     <Printer size={12} /> Друк
                   </button>
@@ -176,6 +193,19 @@ export default function ProductDetailPage() {
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Одиниця</p>
               <p className="text-sm text-gray-800">{product.unit}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 mb-0.5">Місце зберігання</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-mono text-gray-800">{product.storage_bin ?? '—'}</p>
+                {product.storage_bin && (
+                  <button onClick={handlePrintBinLabel}
+                    className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium ml-2"
+                    title="Друк етикетки ячейки">
+                    <Printer size={12} /> Друк комірки
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -383,6 +413,60 @@ export default function ProductDetailPage() {
           </Button>
         </div>
       </Modal>
+
+      {/* Модалка друку етикеток */}
+      <Modal
+        open={printModalOpen}
+        onClose={() => setPrintModalOpen(false)}
+        title="Друк етикетки"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Кількість копій
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={999}
+              value={printCopies}
+              onChange={(e) => setPrintCopies(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+            <Button variant="secondary" onClick={() => setPrintModalOpen(false)}>
+              Скасувати
+            </Button>
+            <Button
+              onClick={async () => {
+                try {
+                  const settingsRes = await adminApi.getSettings()
+                  const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+                  const items = Array(printCopies).fill(product)
+                  printLabels(settings as any, items, false)
+                  setPrintModalOpen(false)
+                } catch {
+                  toast.error('Помилка друку')
+                }
+              }}
+            >
+              Друкувати
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onClose={() => setConfirmDeleteOpen(false)}
+        onConfirm={handleDelete}
+        title="Видалити товар"
+        message={<>Видалити товар <strong>{product.name}</strong>?</>}
+        confirmLabel="Видалити"
+        danger
+      />
     </Layout>
   )
 }

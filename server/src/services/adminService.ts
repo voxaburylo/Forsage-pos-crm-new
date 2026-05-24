@@ -150,6 +150,37 @@ export async function deleteCategory(id: string, tenantId: string) {
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
+// Повне очищення каталогу: soft-delete усіх товарів + hard-delete усіх категорій.
+// Продажі, повернення, рухи складу залишаються цілими (FK на products зберігається,
+// бо товари не видаляються фізично, а лише позначаються deleted_at).
+export async function resetCatalog(tenantId: string) {
+  // 1. Soft-delete усіх активних товарів + обнуляємо category_id (щоб FK не блокував
+  //    видалення категорій). product_id у sale_items залишається.
+  const { data: deletedProducts, error: prodErr } = await db
+    .from('products')
+    .update({ deleted_at: new Date().toISOString(), category_id: null })
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .select('id')
+  if (prodErr) throw new AppError('DB_ERROR', prodErr.message, 500)
+
+  // 2. Hard-delete усіх категорій тенанта (вони більше нічим не використовуються).
+  const { data: deletedCats, error: catErr } = await db
+    .from('categories')
+    .delete()
+    .eq('tenant_id', tenantId)
+    .select('id')
+  if (catErr) throw new AppError('DB_ERROR', catErr.message, 500)
+
+  categoriesCache.delete(tenantId)
+  brandsCache.delete(tenantId)
+
+  return {
+    products_deleted:   deletedProducts?.length ?? 0,
+    categories_deleted: deletedCats?.length ?? 0,
+  }
+}
+
 // ===================== BRANDS =====================
 
 export async function listBrands(tenantId: string) {
@@ -190,6 +221,21 @@ export async function updateBrand(id: string, input: Partial<BrandInput>, tenant
     .single()
   if (error || !data) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
   return data
+}
+
+export async function deleteBrand(id: string, tenantId: string) {
+  brandsCache.delete(tenantId);
+  const { count } = await db
+    .from('products')
+    .select('*', { count: 'exact', head: true })
+    .eq('brand_id', id)
+    .is('deleted_at', null)
+
+  if ((count ?? 0) > 0) {
+    throw new AppError('BRAND_IN_USE', 'Бренд використовується в товарах', 409)
+  }
+  const { error } = await db.from('brands').delete().eq('id', id).eq('tenant_id', tenantId)
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
 // ===================== SETTINGS =====================

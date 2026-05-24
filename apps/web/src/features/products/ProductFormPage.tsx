@@ -86,6 +86,20 @@ export default function ProductFormPage() {
     setForm((f) => ({ ...f, [field]: value }))
   }
 
+  const [generatingBarcode, setGeneratingBarcode] = useState(false)
+  async function handleGenerateBarcode() {
+    setGeneratingBarcode(true)
+    try {
+      const { data } = await productApi.generateBarcodeOnly()
+      set('barcode', data.barcode)
+      toast.success('Штрих-код згенеровано: ' + data.barcode)
+    } catch {
+      toast.error('Не вдалося згенерувати штрих-код')
+    } finally {
+      setGeneratingBarcode(false)
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!form.sku.trim())        { toast.error('Артикул обов\'язковий'); return }
@@ -135,20 +149,35 @@ export default function ProductFormPage() {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <Input
-                label="Артикул (SKU) *"
-                value={form.sku}
-                onChange={(e) => set('sku', e.target.value)}
-                placeholder="W712, 04465-33471..."
-                required
-              />
-              <Input
-                label="Штрихкод"
-                value={form.barcode}
-                onChange={(e) => set('barcode', e.target.value)}
-                placeholder="4006633364515"
-              />
+            <Input
+              label="Артикул (SKU) *"
+              value={form.sku}
+              onChange={(e) => set('sku', e.target.value)}
+              placeholder="W712, 04465-33471..."
+              required
+            />
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Штрихкод</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={form.barcode}
+                  onChange={(e) => set('barcode', e.target.value)}
+                  placeholder="4006633364515 або відскануйте..."
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleGenerateBarcode}
+                  loading={generatingBarcode}
+                  icon={<Wand2 size={15} />}
+                  className="shrink-0"
+                >
+                  Генерувати
+                </Button>
+              </div>
             </div>
 
             <Input

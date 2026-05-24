@@ -98,13 +98,13 @@ router.post('/verify-pin', requireAuth, async (req, res, next) => {
       .maybeSingle()
 
     if (error) {
-      // Якщо таблиця недоступна — дозволяємо вхід
-      return res.json({ data: { valid: true } })
+      logger.error({ error: error.message, userId: req.user!.id }, 'verify-pin: DB error')
+      return res.json({ data: { valid: false, error: 'Помилка бази даних' } })
     }
 
     if (!stored) {
-      // PIN не встановлено — дозволяємо будь-який 4-значний код
-      return res.json({ data: { valid: true } })
+      logger.warn({ userId: req.user!.id }, 'verify-pin: PIN not configured for user')
+      return res.json({ data: { valid: false, error: 'PIN-код не налаштовано' } })
     }
 
     const valid = stored.pin_code === parsed.data.pin

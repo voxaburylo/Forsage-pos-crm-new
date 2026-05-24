@@ -106,6 +106,15 @@ export const adminApi = {
     api.post('/api/v1/admin/brands', { name, country: country || null }),
   updateBrand: (id: string, name: string) =>
     api.put(`/api/v1/admin/brands/${id}`, { name }),
+  deleteBrand: (id: string) =>
+    api.delete(`/api/v1/admin/brands/${id}`),
+
+  // Повне очищення каталогу
+  resetCatalog: () =>
+    api.post<{ data: { products_deleted: number; categories_deleted: number } }>(
+      '/api/v1/admin/reset-catalog',
+      { confirmation: 'ВИДАЛИТИ ВСЕ' },
+    ),
 
   // Settings
   getSettings: () => api.get<{ data: ShopSettings }>('/api/v1/settings'),

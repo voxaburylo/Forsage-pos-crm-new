@@ -28,12 +28,17 @@ function buildQuery(filters: ProductFilters): string {
   return params.toString() ? `?${params.toString()}` : ''
 }
 
-function formToApi(form: ProductFormData) {
-  // Прибираємо порожні spec-поля щоб не захаращувати JSONB
+function cleanSpecs(raw: Record<string, string> | undefined | null): Record<string, string> | null {
+  if (!raw) return null
   const specs: Record<string, string> = {}
-  for (const [k, v] of Object.entries(form.specs ?? {})) {
+  for (const [k, v] of Object.entries(raw)) {
     if (v !== '' && v !== null && v !== undefined) specs[k] = String(v)
   }
+  return Object.keys(specs).length > 0 ? specs : null
+}
+
+// Create — требует ВСЕ поля формы, маппит с дефолтами.
+function formToCreatePayload(form: ProductFormData) {
   return {
     sku: form.sku,
     name: form.name,
@@ -49,9 +54,34 @@ function formToApi(form: ProductFormData) {
     is_active: form.is_active,
     storage_bin: form.storage_bin || null,
     is_favorite: form.is_favorite,
-    specs: Object.keys(specs).length > 0 ? specs : null,
+    specs: cleanSpecs(form.specs),
     photo_url: form.photo_url || null,
   }
+}
+
+// Update — маппит ТОЛЬКО переданные ключи. Поля, отсутствующие в partial,
+// в payload не попадают и на бэке остаются неизменными.
+// Не использовать formToCreatePayload для partial — он заполнит отсутствующие
+// поля дефолтами (0/null) и обнулит товар.
+function formToUpdatePayload(partial: Partial<ProductFormData>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (partial.sku !== undefined)            out.sku = partial.sku
+  if (partial.name !== undefined)           out.name = partial.name
+  if (partial.barcode !== undefined)        out.barcode = partial.barcode || null
+  if (partial.brand_id !== undefined)       out.brand_id = partial.brand_id || null
+  if (partial.category_id !== undefined)    out.category_id = partial.category_id || null
+  if (partial.unit !== undefined)           out.unit = partial.unit
+  if (partial.purchase_price !== undefined) out.purchase_price = hryvniaToKopecks(partial.purchase_price)
+  if (partial.retail_price !== undefined)   out.retail_price = hryvniaToKopecks(partial.retail_price)
+  if (partial.qty_on_hand !== undefined)    out.qty_on_hand = parseFloat(partial.qty_on_hand || '0')
+  if (partial.reorder_point !== undefined)  out.reorder_point = parseFloat(partial.reorder_point || '0')
+  if (partial.notes !== undefined)          out.notes = partial.notes || null
+  if (partial.is_active !== undefined)      out.is_active = partial.is_active
+  if (partial.storage_bin !== undefined)    out.storage_bin = partial.storage_bin || null
+  if (partial.is_favorite !== undefined)    out.is_favorite = partial.is_favorite
+  if (partial.specs !== undefined)          out.specs = cleanSpecs(partial.specs)
+  if (partial.photo_url !== undefined)      out.photo_url = partial.photo_url || null
+  return out
 }
 
 export const productApi = {
@@ -65,10 +95,10 @@ export const productApi = {
     api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 
   create: (form: ProductFormData) =>
-    api.post<{ data: Product }>('/api/v1/products', formToApi(form)),
+    api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form)),
 
   update: (id: string, form: Partial<ProductFormData>) =>
-    api.put<{ data: Product }>(`/api/v1/products/${id}`, formToApi(form as ProductFormData)),
+    api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form)),
 
   delete: (id: string) =>
     api.delete<void>(`/api/v1/products/${id}`),
@@ -99,4 +129,7 @@ export const productApi = {
 
   getCobuy: (id: string) =>
     api.get<any[]>(`/api/v1/products/${id}/cobuy`),
+
+  generateBarcodeOnly: () =>
+    api.get<{ data: { barcode: string } }>('/api/v1/products/generate-barcode-only'),
 }

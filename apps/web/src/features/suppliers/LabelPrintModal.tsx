@@ -1,7 +1,10 @@
 import { useRef, useState } from 'react'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Modal, Button } from '@/components/ui'
+import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
+import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
+import { adminApi } from '@/features/admin/adminApi'
 
 interface Props {
   open:     boolean
@@ -28,7 +31,26 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
     return qtys.find((q) => q.itemId === itemId)?.qty ?? 1
   }
   function setQty(itemId: string, qty: number) {
-    setQtys((prev) => prev.map((q) => q.itemId === itemId ? { ...q, qty: Math.max(1, qty) } : q))
+    setQtys((prev) => prev.map((q) => q.itemId === itemId ? { ...q, qty: Math.max(0, qty) } : q))
+  }
+
+  const [printingThermal, setPrintingThermal] = useState(false)
+  async function handleThermalPrint() {
+    setPrintingThermal(true)
+    try {
+      const settingsRes = await adminApi.getSettings()
+      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      const printItems = items.flatMap((item) => {
+        const count = getQty(item.id)
+        if (count <= 0) return []
+        return Array(count).fill(item.product)
+      })
+      printLabels(settings as any, printItems, false)
+    } catch {
+      toast.error('Помилка друку')
+    } finally {
+      setPrintingThermal(false)
+    }
   }
 
   function handlePrint() {
@@ -111,10 +133,10 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
                   <td className="px-3 py-2">
                     <input
                       type="number"
-                      min={1}
+                      min={0}
                       max={999}
                       value={getQty(item.id)}
-                      onChange={(e) => setQty(item.id, parseInt(e.target.value) || 1)}
+                      onChange={(e) => setQty(item.id, parseInt(e.target.value) || 0)}
                       className="w-full text-center border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
                     />
                   </td>
@@ -152,8 +174,11 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
 
         <div className="flex gap-3 justify-end pt-2">
           <Button variant="secondary" onClick={onClose}>Скасувати</Button>
+          <Button variant="outline" onClick={handleThermalPrint} disabled={totalLabels === 0} loading={printingThermal}>
+            Друк на термопринтері
+          </Button>
           <Button onClick={handlePrint} disabled={totalLabels === 0}>
-            Друкувати {totalLabels} ет.
+            Друк на А4 ({totalLabels} шт.)
           </Button>
         </div>
       </div>

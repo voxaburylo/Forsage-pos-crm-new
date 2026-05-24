@@ -3,6 +3,7 @@ import { X, DollarSign } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
 
 interface Props {
   open: boolean
@@ -10,6 +11,10 @@ interface Props {
 }
 
 export function CashReconciliationModal({ open, onClose }: Props) {
+  const session = useAuthStore((s) => s.session)
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const isOwnerOrAdmin = role === 'owner' || role === 'admin'
+
   const [expected, setExpected] = useState(0)
   const [breakdown, setBreakdown] = useState<Record<string, number>>({})
   const [actual, setActual] = useState('')
@@ -34,7 +39,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
   const actualKopecks = Math.round(parseFloat(actual || '0') * 100)
   const difference = actualKopecks - expected
   const hasDiff = difference !== 0
-  const needsComment = hasDiff && !comment.trim()
+  const needsComment = isOwnerOrAdmin && hasDiff && !comment.trim()
 
   async function handleSave() {
     if (needsComment) { toast.error('При розбіжності вкажіть коментар'); return }
@@ -67,26 +72,30 @@ export function CashReconciliationModal({ open, onClose }: Props) {
         </div>
 
         {loading ? (
-          <p className="text-gray-400 text-sm text-center py-8">Розрахунок очікуваної суми...</p>
+          <p className="text-gray-400 text-sm text-center py-8">Завантаження...</p>
         ) : (
           <div className="space-y-5">
             {/* Expected */}
-            <div className="bg-[#2C2C2C] rounded-xl p-4 text-center">
-              <p className="text-gray-400 text-xs mb-1">Очікувана сума в касі</p>
-              <p className="text-white text-4xl font-bold">{formatMoney(expected)}</p>
-            </div>
+            {isOwnerOrAdmin && (
+              <div className="bg-[#2C2C2C] rounded-xl p-4 text-center">
+                <p className="text-gray-400 text-xs mb-1">Очікувана сума в касі</p>
+                <p className="text-white text-4xl font-bold">{formatMoney(expected)}</p>
+              </div>
+            )}
 
             {/* Breakdown */}
-            <div className="bg-[#242424] rounded-xl p-3 space-y-1 text-xs">
-              <div className="flex justify-between text-gray-400"><span>Початковий залишок</span><span>{formatMoney(breakdown.opening_cash ?? 0)}</span></div>
-              <div className="flex justify-between text-green-400"><span>+ Продажі готівкою</span><span>+{formatMoney(breakdown.cash_sales ?? 0)}</span></div>
-              <div className="flex justify-between text-red-400"><span>− Повернення</span><span>-{formatMoney(breakdown.cash_returns ?? 0)}</span></div>
-              <div className="flex justify-between text-blue-400"><span>+ Внесення</span><span>+{formatMoney(breakdown.cash_in ?? 0)}</span></div>
-              <div className="flex justify-between text-orange-400"><span>− Вилучення</span><span>-{formatMoney(breakdown.cash_out ?? 0)}</span></div>
-              <div className="border-t border-gray-700 pt-1 flex justify-between text-white font-semibold">
-                <span>= Очікується</span><span>{formatMoney(expected)}</span>
+            {isOwnerOrAdmin && (
+              <div className="bg-[#242424] rounded-xl p-3 space-y-1 text-xs">
+                <div className="flex justify-between text-gray-400"><span>Початковий залишок</span><span>{formatMoney(breakdown.opening_cash ?? 0)}</span></div>
+                <div className="flex justify-between text-green-400"><span>+ Продажі готівкою</span><span>+{formatMoney(breakdown.cash_sales ?? 0)}</span></div>
+                <div className="flex justify-between text-red-400"><span>− Повернення</span><span>-{formatMoney(breakdown.cash_returns ?? 0)}</span></div>
+                <div className="flex justify-between text-blue-400"><span>+ Внесення</span><span>+{formatMoney(breakdown.cash_in ?? 0)}</span></div>
+                <div className="flex justify-between text-orange-400"><span>− Вилучення</span><span>-{formatMoney(breakdown.cash_out ?? 0)}</span></div>
+                <div className="border-t border-gray-700 pt-1 flex justify-between text-white font-semibold">
+                  <span>= Очікується</span><span>{formatMoney(expected)}</span>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Actual input */}
             <div>
@@ -99,7 +108,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
             </div>
 
             {/* Difference */}
-            {actual && (
+            {isOwnerOrAdmin && actual && (
               <div className={`rounded-xl px-4 py-3 text-center font-bold text-lg ${
                 difference === 0 ? 'bg-gray-800 text-gray-400' :
                 difference > 0 ? 'bg-green-900/40 text-green-400 border border-green-500/40' :
@@ -112,7 +121,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
             )}
 
             {/* Comment */}
-            {hasDiff && (
+            {isOwnerOrAdmin && hasDiff ? (
               <div>
                 <label className="text-red-400 text-xs mb-1 block">
                   ⚠️ Коментар обов'язковий (розбіжність)
@@ -120,6 +129,13 @@ export function CashReconciliationModal({ open, onClose }: Props) {
                 <textarea value={comment} onChange={(e) => setComment(e.target.value)}
                   rows={2} placeholder="Поясніть причину розбіжності..."
                   className="w-full bg-[#2C2C2C] text-white text-sm rounded-xl px-4 py-2 border border-red-500/50 focus:outline-none focus:border-red-400 resize-none" />
+              </div>
+            ) : (
+              <div>
+                <label className="text-gray-400 text-xs mb-1 block">Коментар (необов'язково)</label>
+                <textarea value={comment} onChange={(e) => setComment(e.target.value)}
+                  rows={2} placeholder="Примітки..."
+                  className="w-full bg-[#2C2C2C] text-white text-sm rounded-xl px-4 py-2 border border-gray-700 focus:outline-none focus:border-yellow-400 resize-none" />
               </div>
             )}
 

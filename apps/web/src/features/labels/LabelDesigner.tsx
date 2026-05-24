@@ -37,7 +37,7 @@ export interface LabelSettings {
   pos_bin?: { x: number; y: number }
 }
 
-const DEFAULT_LABEL: LabelSettings = {
+export const DEFAULT_LABEL: LabelSettings = {
   width_mm: 40, height_mm: 30, padding_mm: 2,
   font_size: 7, barcode_height: 28,
   show_shop_name: true, show_product_name: true, show_barcode: true,
@@ -168,9 +168,9 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
 // ================================================================
 // Друк етикеток
 // ================================================================
-function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean) {
+export function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean) {
   const shopName = 'Форсаж'
-  const labelsHtml = items.map((item) => {
+  const labelsHtml = items.map((item, index) => {
     const product = isBins ? null : item as Product
     const binLabel = isBins ? (item as any).label : null
 
@@ -181,13 +181,16 @@ function printLabels(settings: LabelSettings, items: Array<Product | { label: st
     }
 
     if (binLabel) {
-      body += `<div style="font-size:${Math.min(settings.font_size * 4, settings.width_mm * 0.7)}px;font-weight:700;text-align:center;margin:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${binLabel}</div>`
+      body += `<div style="font-size:${Math.min(settings.font_size * 2, settings.width_mm * 0.7)}px;font-weight:700;text-align:center;margin:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${binLabel}</div>`
+      if (settings.show_barcode) {
+        body += `<div style="text-align:center;margin:1mm 0;"><svg id="bin-bc-${index}"></svg></div>`
+      }
     } else if (product) {
       if (settings.show_product_name) {
         body += `<div style="font-size:${settings.font_size + 2}px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${product.name}</div>`
       }
       if (settings.show_barcode && product.barcode) {
-        body += `<div style="text-align:center;margin:1mm 0;"><svg id="bc-${product.id}"></svg></div>`
+        body += `<div style="text-align:center;margin:1mm 0;"><svg id="bc-${product.id}-${index}"></svg></div>`
       }
       body += `<div style="display:flex;justify-content:space-between;align-items:baseline;">`
       body += `<div style="font-size:${settings.font_size - 1}px;color:#666;">`
@@ -199,7 +202,7 @@ function printLabels(settings: LabelSettings, items: Array<Product | { label: st
     }
 
     const jsCode = product?.barcode
-      ? `JsBarcode('#bc-${product.id}', '${product.barcode}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: true });`
+      ? `JsBarcode('#bc-${product.id}-${index}', '${product.barcode}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: true });`
       : ''
 
     return `
@@ -238,10 +241,16 @@ function printLabels(settings: LabelSettings, items: Array<Product | { label: st
   ${labelsHtml}
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3/dist/JsBarcode.all.min.js"></script>
   <script>
-    try { ${items.filter(i => !isBins && (i as Product).barcode).map((i) => {
+    try { ${items.map((i, idx) => {
+      if (isBins) {
+        const bin = (i as any).label
+        if (!bin || !settings.show_barcode) return ''
+        return `JsBarcode('#bin-bc-${idx}', '${bin}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: false });`
+      }
       const p = i as Product
-      return `JsBarcode('#bc-${p.id}', '${p.barcode}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: true });`
-    }).join('\n')} } catch(e) {}
+      if (!p.barcode) return ''
+      return `JsBarcode('#bc-${p.id}-${idx}', '${p.barcode}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: true });`
+    }).filter(Boolean).join('\n')} } catch(e) {}
     window.onload = function() { setTimeout(function() { window.print(); window.close(); }, 500); };
   </script>
 </body></html>`

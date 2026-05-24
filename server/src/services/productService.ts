@@ -161,6 +161,7 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
     .from(TABLE)
     .select('id')
     .eq('sku', input.sku)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .maybeSingle()
 
@@ -184,6 +185,19 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
 
 export async function updateProduct(id: string, input: UpdateProductInput, userId: string) {
   const existing = await getProduct(id)
+
+  // Перевірка унікальності SKU при зміні артикулу
+  if (input.sku !== undefined && input.sku !== existing.sku) {
+    const { data: dup } = await db
+      .from(TABLE)
+      .select('id')
+      .eq('sku', input.sku)
+      .eq('tenant_id', existing.tenant_id)
+      .neq('id', id)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (dup) throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує`, 409)
+  }
 
   const priceChanges: Array<{ price_type: string; old_price: number; new_price: number }> = []
   if (input.retail_price !== undefined && input.retail_price !== existing.retail_price) {

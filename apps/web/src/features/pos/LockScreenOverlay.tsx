@@ -39,10 +39,12 @@ export function LockScreenOverlay({ onUnlock }: Props) {
         setError(true)
         setPin('')
       }
-    } catch {
-      // Fallback: якщо API недоступний, розблоковуємо (для розробки)
-      setLocked(false)
-      onUnlock()
+    } catch (err: any) {
+      setError(true)
+      setPin('')
+      import('@/components/ui/Toast').then(({ toast }) => {
+        toast.error(err?.message ?? 'Помилка зв\'язку з сервером при перевірці PIN')
+      })
     }
   }
 

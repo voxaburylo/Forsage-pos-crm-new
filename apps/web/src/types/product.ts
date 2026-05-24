@@ -40,7 +40,7 @@ export interface ProductFormData {
   is_active: boolean
   storage_bin: string
   is_favorite: boolean
-  photo_url?: string
+  photo_url?: string | null
   specs: Record<string, string>   // технічні характеристики
 }
 

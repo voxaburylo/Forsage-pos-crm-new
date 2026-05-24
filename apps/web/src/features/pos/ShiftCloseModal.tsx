@@ -4,6 +4,7 @@ import type { ShiftReport } from '@/types/shift'
 import type { ExpectedCash } from './shiftApi'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
 
 interface Props {
   open: boolean
@@ -15,6 +16,10 @@ interface Props {
 const VARIANCE_THRESHOLD = 1000  // 10 грн в копійках
 
 export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
+  const session = useAuthStore((s) => s.session)
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const isOwnerOrAdmin = role === 'owner' || role === 'admin'
+
   const [report, setReport]             = useState<ShiftReport | null>(null)
   const [cashBreakdown, setCashBreakdown] = useState<ExpectedCash | null>(null)
   const [cashInput, setCashInput]       = useState('')
@@ -42,7 +47,7 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
   const cashReceived = Math.round(parseFloat(cashInput || '0') * 100)
   const expectedCash = cashBreakdown?.expected_amount ?? 0
   const variance     = cashInput ? cashReceived - expectedCash : null
-  const needsComment = variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
+  const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
 
   async function handleClose() {
     if (needsComment && !comment.trim()) {
@@ -79,42 +84,44 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
         ) : report && (
           <>
             {/* Розбивка готівки */}
-            <div className="bg-[#2C2C2C] rounded-xl p-4 space-y-2 text-sm">
-              <div className="flex justify-between text-gray-400">
-                <span>Початкова готівка:</span>
-                <span>{formatMoney(cashBreakdown?.opening_cash ?? 0)}</span>
-              </div>
-              <div className="flex justify-between text-gray-400">
-                <span>Продажі готівкою:</span>
-                <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_sales ?? 0)}</span>
-              </div>
-              {(cashBreakdown?.cash_in ?? 0) > 0 && (
+            {isOwnerOrAdmin && (
+              <div className="bg-[#2C2C2C] rounded-xl p-4 space-y-2 text-sm">
                 <div className="flex justify-between text-gray-400">
-                  <span>Внесення в касу:</span>
-                  <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_in ?? 0)}</span>
+                  <span>Початкова готівка:</span>
+                  <span>{formatMoney(cashBreakdown?.opening_cash ?? 0)}</span>
                 </div>
-              )}
-              {(cashBreakdown?.cash_returns ?? 0) > 0 && (
                 <div className="flex justify-between text-gray-400">
-                  <span>Повернення готівкою:</span>
-                  <span className="text-red-400">−{formatMoney(cashBreakdown?.cash_returns ?? 0)}</span>
+                  <span>Продажі готівкою:</span>
+                  <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_sales ?? 0)}</span>
                 </div>
-              )}
-              {(cashBreakdown?.cash_out ?? 0) > 0 && (
-                <div className="flex justify-between text-gray-400">
-                  <span>Витрати з каси:</span>
-                  <span className="text-red-400">−{formatMoney(cashBreakdown?.cash_out ?? 0)}</span>
+                {(cashBreakdown?.cash_in ?? 0) > 0 && (
+                  <div className="flex justify-between text-gray-400">
+                    <span>Внесення в касу:</span>
+                    <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_in ?? 0)}</span>
+                  </div>
+                )}
+                {(cashBreakdown?.cash_returns ?? 0) > 0 && (
+                  <div className="flex justify-between text-gray-400">
+                    <span>Повернення готівкою:</span>
+                    <span className="text-red-400">−{formatMoney(cashBreakdown?.cash_returns ?? 0)}</span>
+                  </div>
+                )}
+                {(cashBreakdown?.cash_out ?? 0) > 0 && (
+                  <div className="flex justify-between text-gray-400">
+                    <span>Витрати з каси:</span>
+                    <span className="text-red-400">−{formatMoney(cashBreakdown?.cash_out ?? 0)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-white font-semibold border-t border-gray-700 pt-2">
+                  <span>Очікується в касі:</span>
+                  <span>{formatMoney(expectedCash)}</span>
                 </div>
-              )}
-              <div className="flex justify-between text-white font-semibold border-t border-gray-700 pt-2">
-                <span>Очікується в касі:</span>
-                <span>{formatMoney(expectedCash)}</span>
+                <div className="flex justify-between text-gray-300 text-xs">
+                  <span>Всього продажів: {report.total_sales} чек(ів)</span>
+                  <span>Виручка: {formatMoney(report.total_revenue)}</span>
+                </div>
               </div>
-              <div className="flex justify-between text-gray-300 text-xs">
-                <span>Всього продажів: {report.total_sales} чек(ів)</span>
-                <span>Виручка: {formatMoney(report.total_revenue)}</span>
-              </div>
-            </div>
+            )}
 
             {/* Ввід фактичної суми */}
             <div>
@@ -130,7 +137,7 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
             </div>
 
             {/* Варіанс */}
-            {variance !== null && (
+            {isOwnerOrAdmin && variance !== null && (
               <div className={`rounded-xl px-4 py-3 text-sm font-medium text-center ${
                 Math.abs(variance) <= VARIANCE_THRESHOLD
                   ? 'bg-green-900/30 border border-green-500/50 text-green-400'
@@ -144,34 +151,19 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
               </div>
             )}
 
-            {/* Коментар (обов'язковий при великому варіансі) */}
-            {needsComment && (
-              <div>
-                <label className="text-red-400 text-xs mb-1 block">
-                  ⚠️ Коментар обов'язковий (розбіжність &gt; 10 грн)
-                </label>
-                <textarea
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  rows={2}
-                  placeholder="Поясніть причину розбіжності..."
-                  className="w-full bg-[#2C2C2C] text-white text-sm rounded-xl px-4 py-2 border border-red-500/50 focus:outline-none focus:border-red-400 resize-none"
-                />
-              </div>
-            )}
-
-            {!needsComment && (
-              <div>
-                <label className="text-gray-400 text-xs mb-1 block">Коментар (необов'язково)</label>
-                <textarea
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  rows={2}
-                  placeholder="Примітки до зміни..."
-                  className="w-full bg-[#2C2C2C] text-white text-sm rounded-xl px-4 py-2 border border-gray-700 focus:outline-none focus:border-[#FFD000] resize-none"
-                />
-              </div>
-            )}
+            {/* Коментар */}
+            <div>
+              <label className={`text-xs mb-1 block ${needsComment ? 'text-red-400' : 'text-gray-400'}`}>
+                {needsComment ? '⚠️ Коментар обов' + "'" + 'язковий (розбіжність > 10 грн)' : 'Коментар (необов' + "'" + 'язково)'}
+              </label>
+              <textarea
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                rows={2}
+                placeholder="Поясніть причину розбіжності..."
+                className={`w-full bg-[#2C2C2C] text-white text-sm rounded-xl px-4 py-2 border ${needsComment ? 'border-red-500/50 focus:border-red-400' : 'border-gray-700 focus:border-[#FFD000]'} resize-none focus:outline-none`}
+              />
+            </div>
           </>
         )}
 
@@ -180,7 +172,7 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
             className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
             Скасувати
           </button>
-          <button onClick={handleClose} disabled={closing || loading || cashInput === ''}
+          <button onClick={handleClose} disabled={closing || loading || (cashInput === '' && !loading)}
             style={{ minHeight: 56 }}
             className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-40 transition-colors">
             {closing ? 'Закриваємо...' : 'Закрити зміну'}

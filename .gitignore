@@ -28,3 +28,13 @@ Thumbs.db
 *key.json
 *service-account*
 google-key.json
+.vercel
+.env.vercel
+.env.vercel.*
+
+# Тимчасові test-скрипти з хардкодженими credentials (НЕ комітити)
+server/test_*.cjs
+server/test_*.js
+
+# Dev-скрипти з прямими DB підключеннями
+server/src/scratch/

@@ -73,6 +73,19 @@ router.delete('/categories/:id', requireRole('owner', 'admin'), async (req, res,
   try { await adminService.deleteCategory(String(req.params.id), req.user!.tenant_id); res.status(204).send() } catch (err) { next(err) }
 })
 
+// Повне очищення каталогу — товари (soft) + категорії (hard). Тільки власник.
+// Потрібне підтвердження рядком "ВИДАЛИТИ ВСЕ" у тілі запиту.
+router.post('/reset-catalog', requireRole('owner'), async (req, res, next) => {
+  try {
+    const schema = z.object({ confirmation: z.literal('ВИДАЛИТИ ВСЕ') })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) {
+      throw new AppError('CONFIRMATION_REQUIRED', 'Введіть "ВИДАЛИТИ ВСЕ" для підтвердження', 400)
+    }
+    res.json({ data: await adminService.resetCatalog(req.user!.tenant_id) })
+  } catch (err) { next(err) }
+})
+
 // Brands — GET доступний усім авторизованим
 router.get('/brands', async (req, res, next) => {
   try { res.json({ data: await adminService.listBrands(req.user!.tenant_id) }) } catch (err) { next(err) }
@@ -92,6 +105,10 @@ router.put('/brands/:id', requireRole('owner', 'admin'), async (req, res, next) 
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
     res.json({ data: await adminService.updateBrand(String(req.params.id), parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
+})
+
+router.delete('/brands/:id', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { await adminService.deleteBrand(String(req.params.id), req.user!.tenant_id); res.status(204).send() } catch (err) { next(err) }
 })
 
 export default router

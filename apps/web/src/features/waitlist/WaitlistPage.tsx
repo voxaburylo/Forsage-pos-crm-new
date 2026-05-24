@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Clock } from 'lucide-react'
+import { Clock, Bell, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { Card, Badge } from '@/components/ui'
+import { Card, Badge, ConfirmDialog } from '@/components/ui'
+import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
 
 interface WaitlistEntry {
@@ -19,13 +20,50 @@ interface WaitlistEntry {
 export default function WaitlistPage() {
   const [entries, setEntries] = useState<WaitlistEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId]   = useState<string | null>(null)
 
-  useEffect(() => {
-    api.get<{ data: WaitlistEntry[] }>('/api/v1/waitlist')
-      .then((res) => setEntries(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
+  async function load() {
+    setLoading(true)
+    try {
+      const res = await api.get<{ data: WaitlistEntry[] }>('/api/v1/waitlist')
+      setEntries(res.data)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  async function handleNotify(id: string) {
+    setBusyId(id)
+    try {
+      await api.post(`/api/v1/waitlist/${id}/notify`, {})
+      toast.success('Клієнта сповіщено')
+      load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка сповіщення')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const [confirmDelId, setConfirmDelId] = useState<string | null>(null)
+
+  async function doDelete() {
+    if (!confirmDelId) return
+    setBusyId(confirmDelId)
+    try {
+      await api.delete(`/api/v1/waitlist/${confirmDelId}`)
+      toast.success('Видалено')
+      setEntries((prev) => prev.filter((e) => e.id !== confirmDelId))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка')
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   return (
     <Layout title="Лист очікування">
@@ -45,13 +83,14 @@ export default function WaitlistPage() {
                 <th className="text-right px-4 py-3">Залишок</th>
                 <th className="text-center px-4 py-3">Статус</th>
                 <th className="text-right px-4 py-3">Дата</th>
+                <th className="text-right px-4 py-3 w-24">Дії</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading ? (
-                <tr><td colSpan={6} className="text-center text-gray-400 py-8">Завантаження...</td></tr>
+                <tr><td colSpan={7} className="text-center text-gray-400 py-8">Завантаження...</td></tr>
               ) : entries.length === 0 ? (
-                <tr><td colSpan={6} className="text-center text-gray-400 py-8">Немає очікувань</td></tr>
+                <tr><td colSpan={7} className="text-center text-gray-400 py-8">Немає очікувань</td></tr>
               ) : entries.map((e) => (
                 <tr key={e.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">{e.customer.full_name ?? e.customer.phone}</td>
@@ -72,12 +111,44 @@ export default function WaitlistPage() {
                     </Badge>
                   </td>
                   <td className="px-4 py-3 text-right text-gray-400 text-xs">{formatDate(e.created_at)}</td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {e.status === 'waiting' && (
+                        <button
+                          onClick={() => handleNotify(e.id)}
+                          disabled={busyId === e.id}
+                          className="text-blue-500 hover:text-blue-700 p-1 rounded disabled:opacity-40"
+                          title="Сповістити вручну"
+                        >
+                          <Bell size={14} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setConfirmDelId(e.id)}
+                        disabled={busyId === e.id}
+                        className="text-gray-400 hover:text-red-600 p-1 rounded disabled:opacity-40"
+                        title="Видалити"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={confirmDelId !== null}
+        onClose={() => setConfirmDelId(null)}
+        onConfirm={doDelete}
+        title="Видалити запис"
+        message="Видалити запис з листа очікування?"
+        confirmLabel="Видалити"
+        danger
+      />
     </Layout>
   )
 }

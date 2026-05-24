@@ -9,14 +9,32 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 export function usePOS() {
   const store = usePOSStore()
 
+  const checkShift = useCallback(() => {
+    store.setInitializing(true)
+    store.setInitError(null)
+
+    shiftApi.current()
+      .then(({ data }) => {
+        store.setCurrentShift(data)
+        store.setInitError(null)
+      })
+      .catch((err) => {
+        const status = err?.status
+        if (status === 404 || err?.message?.includes('NO_SHIFT') || err?.message?.includes('not found')) {
+          store.setCurrentShift(null)
+        } else {
+          store.setInitError(err?.message ?? 'Помилка зв\'язку з сервером')
+        }
+      })
+      .finally(() => {
+        store.setInitializing(false)
+      })
+  }, [store])
+
   // Завантажуємо поточну зміну при старті
   useEffect(() => {
-    shiftApi.current().then(({ data }) => {
-      store.setCurrentShift(data)
-    }).catch(() => {
-      store.setCurrentShift(null)
-    })
-  }, [])
+    checkShift()
+  }, [checkShift])
 
   // Оформити продаж
   const completeSale = useCallback(async (
@@ -77,5 +95,5 @@ export function usePOS() {
     }
   }, [store])
 
-  return { store, completeSale, PAYMENT_ATTEMPT_KEY }
+  return { store, completeSale, checkShift, PAYMENT_ATTEMPT_KEY }
 }

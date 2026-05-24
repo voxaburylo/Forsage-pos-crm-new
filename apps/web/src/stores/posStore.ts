@@ -67,6 +67,10 @@ interface POSState {
   // Зміна (глобальна)
   currentShift: Shift | null
   setCurrentShift: (shift: Shift | null) => void
+  isInitializing: boolean
+  setInitializing: (val: boolean) => void
+  initError: string | null
+  setInitError: (err: string | null) => void
 
   // Вкладки
   tabs: ReceiptTab[]
@@ -133,7 +137,11 @@ export const usePOSStore = create<POSState>((set, get) => {
 
   return {
     currentShift: null,
-    setCurrentShift: (shift) => set({ currentShift: shift }),
+    setCurrentShift: (shift) => set({ currentShift: shift, isInitializing: false }),
+    isInitializing: true,
+    setInitializing: (val) => set({ isInitializing: val }),
+    initError: null,
+    setInitError: (err) => set({ initError: err }),
 
     tabs: [initialTab],
     activeTabId: initialTab.id,

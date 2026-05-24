@@ -2,7 +2,26 @@ import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from './errorHandler.js'
 
-// MVP: один магазин — фіксований tenant_id
+/**
+ * MVP_TENANT_ID — фіксований ідентифікатор єдиного магазину в режимі MVP.
+ *
+ * Призначення:
+ *   - Усі дані (товари, продажі, клієнти) прив'язані до tenant_id.
+ *   - У межах одного магазину поле в JWT user_metadata.tenant_id може бути відсутнім —
+ *     тоді цей константний fallback гарантує, що дані не «загубляться».
+ *
+ * РИЗИК БЕЗПЕКИ:
+ *   Якщо в системі з'явиться другий магазин, цей fallback створює загрозу
+ *   витоку даних: користувач без tenant_id у JWT отримає доступ до даних магазину #1.
+ *
+ * Умови видалення fallback (перед запуском мультитенантності):
+ *   1. Усі активні користувачі мають tenant_id у user_metadata
+ *      (перевірити: SELECT id FROM auth.users WHERE raw_user_meta_data->>'tenant_id' IS NULL).
+ *   2. Seed/міграційні скрипти автоматично присвоюють tenant_id новим користувачам.
+ *   3. Тут — замість fallback кидати AppError('NO_TENANT', 403).
+ *
+ * План мультитенантності — див. [[project_forsage_crm]] в auto-memory або ARCHITECT_PLAN.md.
+ */
 const MVP_TENANT_ID = '00000000-0000-0000-0000-000000000001'
 
 export async function requireAuth(

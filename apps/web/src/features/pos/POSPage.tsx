@@ -111,7 +111,7 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 
 export default function POSPage() {
   const navigate = useNavigate()
-  const { store, completeSale } = usePOS()
+  const { store, completeSale, checkShift } = usePOS()
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
   const [closeOpen, setCloseOpen]       = useState(false)
@@ -293,6 +293,36 @@ export default function POSPage() {
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
   }, [store.items, store.selectedProductId, store.removeItem, store.updateQty])
+
+  if (store.isInitializing) {
+    return (
+      <div className="min-h-screen bg-[#1A1A1A] flex flex-col items-center justify-center">
+        <div className="animate-pulse flex flex-col items-center">
+          <Zap size={48} className="text-yellow-400 animate-spin mb-4" style={{ animationDuration: '3s' }} />
+          <h2 className="text-white text-xl font-bold mb-2">Ініціалізація каси...</h2>
+          <p className="text-gray-500 text-sm">Перевіряємо статус касової зміни</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (store.initError) {
+    return (
+      <div className="min-h-screen bg-[#1A1A1A] flex items-center justify-center">
+        <div className="bg-[#2C2C2C] rounded-2xl p-10 w-full max-w-md text-center border border-red-900/30 shadow-xl">
+          <div className="w-16 h-16 rounded-full bg-red-900/20 border border-red-500/30 flex items-center justify-center mx-auto mb-4">
+            <span className="text-red-400 text-3xl">⚠️</span>
+          </div>
+          <h1 className="text-white text-2xl font-bold mb-2">Помилка з'єднання</h1>
+          <p className="text-gray-400 text-sm mb-6">{store.initError}</p>
+          <button onClick={checkShift} style={{ minHeight: 52 }}
+            className="w-full bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-lg rounded-xl py-3 active:scale-95 transition-all">
+            Спробувати знову
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (!shift) {
     return (

@@ -74,6 +74,19 @@ router.post('/:id/notify', requireRole('owner', 'admin', 'manager'), async (req,
   } catch (err) { next(err) }
 })
 
+// DELETE /api/v1/waitlist/:id — видалити запис
+router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+  try {
+    const { error } = await db
+      .from('product_waitlist')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.status(204).send()
+  } catch (err) { next(err) }
+})
+
 /**
  * Авто-сповіщення клієнтів, які чекають на товар
  */

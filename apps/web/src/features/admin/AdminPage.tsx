@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Users, Package, Tag, Plus, Edit2, Trash2, UserX, UserCheck } from 'lucide-react'
+import { Users, Package, Tag, Plus, Trash2, UserX, UserCheck, AlertTriangle, Pencil, Check, X } from 'lucide-react'
 import { adminApi, ROLE_LABELS } from './adminApi'
 import type { AdminUser, UserRole } from './adminApi'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Modal, Input, Badge, Table } from '@/components/ui'
+import { Button, Card, Modal, Input, Badge, Table, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
 
 type Tab = 'users' | 'categories' | 'brands'
 
@@ -126,6 +127,30 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
   const [extra, setExtra]         = useState('')
   const [saving, setSaving]       = useState(false)
 
+  // --- Reset catalog (тільки для вкладки категорій, тільки owner) ---
+  const userRole = useAuthStore((s) => s.session?.user?.user_metadata?.role as string | undefined)
+  const isOwner  = userRole === 'owner'
+  const [resetOpen, setResetOpen]       = useState(false)
+  const [resetText, setResetText]       = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+  const CONFIRM_PHRASE = 'ВИДАЛИТИ ВСЕ'
+
+  async function handleReset() {
+    if (resetText !== CONFIRM_PHRASE) return
+    setResetLoading(true)
+    try {
+      const { data } = await adminApi.resetCatalog()
+      toast.success(`Видалено: ${data.products_deleted} товарів, ${data.categories_deleted} категорій`)
+      setResetOpen(false)
+      setResetText('')
+      load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка очищення')
+    } finally {
+      setResetLoading(false)
+    }
+  }
+
   async function load() {
     setLoading(true)
     try {
@@ -151,22 +176,83 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
     finally { setSaving(false) }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Видалити?')) return
+  const [confirmDelId, setConfirmDelId] = useState<string | null>(null)
+  const [confirmDelName, setConfirmDelName] = useState<string>('')
+
+  function askDelete(item: Item) {
+    setConfirmDelId(item.id)
+    setConfirmDelName(item.name)
+  }
+
+  async function doDelete() {
+    if (!confirmDelId) return
     try {
-      if (type === 'categories') await adminApi.deleteCategory(id)
+      if (type === 'categories') await adminApi.deleteCategory(confirmDelId)
+      else await adminApi.deleteBrand(confirmDelId)
       toast.success('Видалено')
       load()
     } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
   }
 
+  // Inline rename
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName]   = useState('')
+
+  function startEdit(item: Item) {
+    setEditingId(item.id)
+    setEditName(item.name)
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditName('')
+  }
+
+  async function saveEdit(id: string) {
+    const trimmed = editName.trim()
+    if (!trimmed) { toast.error('Назва не може бути порожньою'); return }
+    try {
+      if (type === 'categories') await adminApi.updateCategory(id, trimmed)
+      else await adminApi.updateBrand(id, trimmed)
+      toast.success('Перейменовано')
+      cancelEdit()
+      load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка')
+    }
+  }
+
   const columns = [
-    { key: 'name', header: 'Назва', render: (i: Item) => <span className="font-medium">{i.name}</span> },
+    { key: 'name', header: 'Назва', render: (i: Item) => (
+      editingId === i.id ? (
+        <div className="flex items-center gap-1">
+          <input
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') saveEdit(i.id)
+              if (e.key === 'Escape') cancelEdit()
+            }}
+            autoFocus
+            className="flex-1 text-sm border border-yellow-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-yellow-300"
+          />
+          <button onClick={() => saveEdit(i.id)} className="text-green-600 hover:text-green-700 p-1" aria-label="Зберегти"><Check size={14} /></button>
+          <button onClick={cancelEdit} className="text-gray-400 hover:text-gray-600 p-1" aria-label="Скасувати"><X size={14} /></button>
+        </div>
+      ) : (
+        <div className="group flex items-center gap-2">
+          <span className="font-medium">{i.name}</span>
+          <button onClick={() => startEdit(i)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-500 p-0.5 transition-opacity" aria-label="Перейменувати">
+            <Pencil size={12} />
+          </button>
+        </div>
+      )
+    )},
     ...(type === 'brands' ? [{ key: 'country', header: 'Країна', render: (i: Item) => <span className="text-gray-500">{i.country ?? '—'}</span> }] : []),
     { key: 'del', header: '', className: 'w-12 text-right', render: (i: Item) => (
-      type === 'categories'
-        ? <button onClick={() => handleDelete(i.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
-        : <button className="text-gray-300 cursor-not-allowed" title="Бренди не видаляються"><Edit2 size={14} /></button>
+      <button onClick={() => askDelete(i)} className="text-red-400 hover:text-red-600" aria-label="Видалити">
+        <Trash2 size={14} />
+      </button>
     )},
   ]
 
@@ -174,7 +260,16 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
 
   return (
     <>
-      <div className="flex justify-end mb-4">
+      <div className="flex justify-end gap-2 mb-4">
+        {type === 'categories' && isOwner && (
+          <Button
+            variant="danger-outline"
+            icon={<Trash2 size={16} />}
+            onClick={() => setResetOpen(true)}
+          >
+            Очистити каталог
+          </Button>
+        )}
         <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>{title}</Button>
       </div>
       <Card padding="none">
@@ -194,6 +289,72 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
           </div>
         </form>
       </Modal>
+
+      {type === 'categories' && (
+        <Modal
+          open={resetOpen}
+          onClose={() => { if (!resetLoading) { setResetOpen(false); setResetText('') } }}
+          title="Очистити весь каталог"
+          size="sm"
+        >
+          <div className="space-y-4">
+            <div className="flex gap-3 p-3 rounded-lg bg-red-50 border border-red-200">
+              <AlertTriangle size={20} className="text-red-600 shrink-0 mt-0.5" />
+              <div className="text-sm text-red-900 space-y-1">
+                <p className="font-semibold">Незворотна операція!</p>
+                <p>Усі товари будуть позначені як видалені (soft-delete),
+                  усі категорії — видалені повністю.</p>
+                <p className="text-red-700">Продажі, повернення, рухи складу — залишаються цілими.</p>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Введіть <span className="font-mono font-bold text-red-600">{CONFIRM_PHRASE}</span> для підтвердження
+              </label>
+              <Input
+                value={resetText}
+                onChange={(e) => setResetText(e.target.value)}
+                placeholder={CONFIRM_PHRASE}
+                autoFocus
+                disabled={resetLoading}
+              />
+            </div>
+            <div className="flex gap-3">
+              <Button
+                type="button"
+                variant="danger"
+                loading={resetLoading}
+                disabled={resetText !== CONFIRM_PHRASE}
+                onClick={handleReset}
+                className="flex-1"
+              >
+                Видалити все
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={resetLoading}
+                onClick={() => { setResetOpen(false); setResetText('') }}
+              >
+                Скасувати
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      <ConfirmDialog
+        open={confirmDelId !== null}
+        onClose={() => setConfirmDelId(null)}
+        onConfirm={async () => {
+          await doDelete()
+          setConfirmDelId(null)
+        }}
+        title={type === 'categories' ? 'Видалити категорію' : 'Видалити бренд'}
+        message={<>Видалити {type === 'categories' ? 'категорію' : 'бренд'} <strong>{confirmDelName}</strong>?</>}
+        confirmLabel="Видалити"
+        danger
+      />
     </>
   )
 }

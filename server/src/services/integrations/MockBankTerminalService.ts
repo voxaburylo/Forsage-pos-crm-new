@@ -32,3 +32,11 @@ export async function processCardPayment(
   logger.info({ ref, authCode }, 'Термінал: оплату успішно завершено')
   return { success: true, auth_code: authCode }
 }
+
+export async function cancelCardPayment(
+  authCode: string,
+): Promise<boolean> {
+  logger.info({ authCode }, 'Термінал (mock): скасування транзакції...')
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  return true
+}

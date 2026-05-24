@@ -75,10 +75,10 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
   const [tmpFolder] = useState(() => `tmp_${Date.now()}`)
   const folder = productId ?? tmpFolder
 
-  // Синхронізуємо головне фото з батьківським компонентом
-  useEffect(() => {
-    onPhotoUrl(photos[mainIdx] ?? null)
-  }, [photos, mainIdx, onPhotoUrl])
+  // Стабильная ссылка на onPhotoUrl, чтобы processFile/обработчики не пересоздавались
+  // на каждый рендер родителя (иначе useCallback бесполезен).
+  const onPhotoUrlRef = useRef(onPhotoUrl)
+  useEffect(() => { onPhotoUrlRef.current = onPhotoUrl }, [onPhotoUrl])
 
   // ── Обробка файлу ──────────────────────────────────────────────────────────
   const processFile = useCallback(async (file: File | Blob, name = '') => {
@@ -93,11 +93,18 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
       const sizeAfter  = (blob.size  / 1024).toFixed(0)
       const url        = await uploadToStorage(blob, folder)
 
+      let becameMain = false
       setPhotos((prev) => {
         const next = [...prev, url]
-        if (prev.length === 0) setMainIdx(0)
+        if (prev.length === 0) {
+          setMainIdx(0)
+          becameMain = true
+        }
         return next
       })
+      // Уведомляем родителя только если это первая (главная) фотка
+      if (becameMain) onPhotoUrlRef.current(url)
+
       toast.success(`Фото завантажено (${sizeBefore} KB → ${sizeAfter} KB)`)
       if (name) console.info(`[photo] ${name}: ${sizeBefore} KB → ${sizeAfter} KB`)
     } catch (e) {
@@ -139,11 +146,19 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
   async function removePhoto(idx: number) {
     const url = photos[idx]
     await deleteFromStorage(url)
-    setPhotos((prev) => {
-      const next = prev.filter((_, i) => i !== idx)
-      setMainIdx((m) => Math.min(m, Math.max(0, next.length - 1)))
-      return next
-    })
+    const next        = photos.filter((_, i) => i !== idx)
+    const nextMainIdx = Math.min(mainIdx, Math.max(0, next.length - 1))
+    setPhotos(next)
+    setMainIdx(nextMainIdx)
+    // Уведомляем родителя: если фото-массив опустел — null, иначе новое главное
+    onPhotoUrlRef.current(next[nextMainIdx] ?? null)
+  }
+
+  // ── Смена головного фото ──────────────────────────────────────────────────
+  function selectMain(idx: number) {
+    if (idx === mainIdx) return
+    setMainIdx(idx)
+    onPhotoUrlRef.current(photos[idx] ?? null)
   }
 
   // ── Вставка з буфера (кнопка + мобільний clipboard API) ────────────────────
@@ -259,7 +274,7 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
 
               <img src={url} alt={`Фото ${idx + 1}`}
                 className="w-full aspect-square object-cover cursor-pointer"
-                onClick={() => setMainIdx(idx)}
+                onClick={() => selectMain(idx)}
               />
 
               {/* Головне фото */}
@@ -270,7 +285,7 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
               )}
               {idx !== mainIdx && (
                 <button
-                  onClick={() => setMainIdx(idx)}
+                  onClick={() => selectMain(idx)}
                   className="absolute top-1 left-1 hidden group-hover:flex bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded items-center gap-0.5 hover:bg-yellow-500 hover:text-black transition-colors"
                 >
                   <Star size={9} /> Головне

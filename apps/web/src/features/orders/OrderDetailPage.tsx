@@ -11,6 +11,9 @@ import { Button, Card, Badge, Input } from '@/components/ui'
 import { Modal } from '@/components/ui/Modal'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
+import { adminApi } from '@/features/admin/adminApi'
+import { productApi } from '@/features/products/productApi'
+import { DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 
 interface Payment {
   id: string
@@ -95,6 +98,11 @@ export default function OrderDetailPage() {
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'mixed'>('cash')
   const [isFiscal, setIsFiscal]   = useState(false)
   const [paying, setPaying]       = useState(false)
+
+  const [itemLabelModal, setItemLabelModal] = useState(false)
+  const [selectedOrderItem, setSelectedOrderItem] = useState<any | null>(null)
+  const [itemLabelCopies, setItemLabelCopies] = useState(1)
+  const [printingLabel, setPrintingLabel] = useState(false)
 
   const [cancelModal, setCancelModal] = useState(false)
   const [canceling, setCanceling]     = useState(false)
@@ -194,6 +202,116 @@ export default function OrderDetailPage() {
       setCancelModal(false)
       load()
     } catch { toast.error('Помилка') } finally { setCanceling(false) }
+  }
+
+  async function handlePrintItemLabelConfirm() {
+    if (!order || !selectedOrderItem) return
+    setPrintingLabel(true)
+    try {
+      let barcodeValue = selectedOrderItem.sku || ''
+      if (selectedOrderItem.product_id) {
+        try {
+          const res = await productApi.get(selectedOrderItem.product_id)
+          if (res.data.barcode) {
+            barcodeValue = res.data.barcode
+          }
+        } catch { /* fallback: лишаємо barcodeValue = sku, друк не блокуємо */ }
+      }
+
+      const settingsRes = await adminApi.getSettings()
+      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+
+      const w = settings.width_mm
+      const h = settings.height_mm
+      const padding = settings.padding_mm
+      const fontSize = settings.font_size
+
+      const clientName = order.customer?.full_name || order.customer?.phone || '—'
+      const carInfo = order.vehicle_info
+        ? [order.vehicle_info.make, order.vehicle_info.model].filter(Boolean).join(' ')
+        : ''
+      const orderNum = order.kp_number || order.id.slice(0, 8)
+      const cellInfo = order.pickup_cell ? `Комірка: ${order.pickup_cell}` : ''
+      const today = new Date().toLocaleDateString('uk-UA')
+
+      const labelsHtml = Array(itemLabelCopies).fill(0).map((_, index) => {
+        return `
+          <div class="label">
+            <div style="font-size:${fontSize}px; font-weight:bold; border-bottom:0.2mm solid #ddd; padding-bottom:0.5mm; display:flex; justify-content:between; width:100%;">
+              <span>ЗАМОВЛЕННЯ №${orderNum}</span>
+              ${cellInfo ? `<span style="color:#b45309; font-weight:bold; margin-left:auto;">${cellInfo}</span>` : ''}
+            </div>
+            <div style="font-size:${fontSize + 1}px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:0.5mm; width:100%;">
+              ${selectedOrderItem.name}
+            </div>
+            <div style="font-size:${fontSize}px; font-weight:bold; color:#1e3a8a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">
+              Клієнт: ${clientName}
+            </div>
+            ${carInfo ? `<div style="font-size:${fontSize - 1}px; color:#4b5563; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">Авто: ${carInfo}</div>` : ''}
+            
+            <div style="text-align:center; margin:0.5mm 0; width:100%;">
+              <svg id="bc-${index}"></svg>
+            </div>
+            
+            <div style="display:flex; justify-content:space-between; align-items:baseline; font-size:${fontSize - 1}px; color:#6b7280; width:100%;">
+              <div>Арт: ${selectedOrderItem.sku || '—'}</div>
+              <div>${today}</div>
+            </div>
+          </div>
+        `
+      }).join('')
+
+      const html = `<!DOCTYPE html>
+    <html><head><style>
+      @page { margin: 0; size: ${w}mm ${h}mm; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        width: ${w}mm; min-height: ${h}mm;
+        padding: ${padding}mm;
+        font-family: 'Courier New', monospace;
+        font-size: ${fontSize}px;
+        line-height: 1.2;
+        overflow: hidden;
+      }
+      .label {
+        width: ${w - padding * 2}mm;
+        height: ${h - padding * 2}mm;
+        display: flex; flex-direction: column;
+        justify-content: space-between;
+        page-break-inside: avoid;
+        page-break-after: always;
+      }
+      .label svg { max-width: ${w - padding * 2}mm; max-height: ${settings.barcode_height * 0.8}px; }
+    </style></head><body>
+      ${labelsHtml}
+      <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3/dist/JsBarcode.all.min.js"></script>
+      <script>
+        try {
+          ${Array(itemLabelCopies).fill(0).map((_, idx) => `
+            JsBarcode('#bc-${idx}', '${barcodeValue}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${fontSize}, margin: 0, displayValue: ${barcodeValue ? 'true' : 'false'} });
+          `).join('\n')}
+        } catch(e) {}
+        window.onload = function() { setTimeout(function() { window.print(); window.close(); }, 500); };
+      </script>
+    </body></html>`
+
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'fixed'
+      iframe.style.top = '-9999px'
+      iframe.style.width = '0'
+      iframe.style.height = '0'
+      document.body.appendChild(iframe)
+      iframe.contentDocument?.open()
+      iframe.contentDocument?.write(html)
+      iframe.contentDocument?.close()
+      setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe) }, 30000)
+
+      setItemLabelModal(false)
+    } catch {
+      toast.error('Не вдалося надрукувати етикетку')
+    } finally {
+      setPrintingLabel(false)
+    }
   }
 
   if (loading) return <Layout title="Замовлення"><div className="text-center py-20 text-gray-400">Завантаження...</div></Layout>
@@ -336,6 +454,11 @@ export default function OrderDetailPage() {
                     </div>
                     <div className="flex items-center gap-2 shrink-0 ml-3">
                       <span className="text-gray-600 text-xs">{item.qty} × {formatMoney(item.sell_price)}</span>
+                      <button onClick={() => { setSelectedOrderItem(item); setItemLabelCopies(Math.ceil(item.qty)); setItemLabelModal(true); }}
+                        className="text-[11px] px-2 py-0.5 rounded bg-white border border-gray-200 hover:bg-gray-100 transition-colors flex items-center gap-0.5 text-gray-700"
+                        title="Друк етикетки замовлення">
+                        🏷️ Етикетка
+                      </button>
                       {actions?.map((action) => (
                         <button key={action.status} onClick={() => handleItemStatus(item.id, action.status)}
                           className="text-[11px] px-2 py-0.5 rounded bg-white border border-gray-200 hover:bg-gray-100 transition-colors">
@@ -550,6 +673,47 @@ export default function OrderDetailPage() {
           </div>
         )}
       </Modal>
+
+      {/* Модалка друку етикетки заказної позиції */}
+      {itemLabelModal && selectedOrderItem && (
+        <Modal
+          open={itemLabelModal}
+          onClose={() => setItemLabelModal(false)}
+          title="Друк етикетки замовлення"
+          size="sm"
+        >
+          <div className="space-y-4">
+            <div>
+              <p className="font-semibold text-gray-900">{selectedOrderItem.name}</p>
+              <p className="text-xs text-gray-400">Артикул: {selectedOrderItem.sku || '—'}</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Кількість копій
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={999}
+                value={itemLabelCopies}
+                onChange={(e) => setItemLabelCopies(Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+              <Button variant="secondary" onClick={() => setItemLabelModal(false)}>
+                Скасувати
+              </Button>
+              <Button
+                onClick={handlePrintItemLabelConfirm}
+                loading={printingLabel}
+              >
+                Друкувати
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Layout>
   )
 }

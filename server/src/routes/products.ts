@@ -40,6 +40,14 @@ router.get('/export', requireRole('owner', 'admin', 'manager'), async (_req, res
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/products/generate-barcode-only — згенерувати унікальний штрих-код без прив'язки до товару
+router.get('/generate-barcode-only', requireRole('owner', 'admin', 'storekeeper'), async (_req, res, next) => {
+  try {
+    const barcode = await productService.generateBarcode()
+    res.json({ data: { barcode } })
+  } catch (err) { next(err) }
+})
+
 // POST /api/v1/products/import — імпорт товарів (upsert по sku або barcode)
 router.post('/import', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
