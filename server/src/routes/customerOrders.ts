@@ -19,7 +19,7 @@ const createOrderSchema = z.object({
     year: z.number().optional(),
     engine_volume: z.string().optional(),
     vin: z.string().optional(),
-  }).optional(),
+  }).optional().nullable(),
   comment:               z.string().max(2000).optional().nullable(),
   source:                z.enum(['walk_in', 'messenger', 'telegram_bot', 'mobile_draft', 'phone']).default('walk_in'),
   prepayment:            z.number().int().min(0).default(0),
