@@ -732,6 +732,11 @@ export default function OrdersPage() {
   const [search, setSearch] = useState('')
   const [selection, setSelection] = useState<Selection>(null)
   const [now] = useState(() => new Date())
+  const [showCustPanelMobile, setShowCustPanelMobile] = useState(false)
+
+  useEffect(() => {
+    setShowCustPanelMobile(false)
+  }, [selection])
 
   // композер
   const [input, setInput] = useState('')
@@ -1129,10 +1134,15 @@ export default function OrdersPage() {
                       {!selectedChat.customer && <span className="text-orange-400 ml-2">● Клієнта не прив'язано</span>}
                     </p>
                   </div>
-                  <button onClick={() => resolveChat(selectedChat)}
-                    className="text-gray-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-red-50 transition-colors" title="Закрити чат">
-                    🔒
-                  </button>
+                    <button onClick={() => setShowCustPanelMobile(true)}
+                      className="lg:hidden text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+                      title="Картка клієнта">
+                      <User size={18} />
+                    </button>
+                    <button onClick={() => resolveChat(selectedChat)}
+                      className="text-gray-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-red-50 transition-colors" title="Закрити чат">
+                      🔒
+                    </button>
                 </div>
 
                 {/* повідомлення */}
@@ -1207,9 +1217,11 @@ export default function OrdersPage() {
             )}
           </div>
 
-          {/* ── Права панель (тільки для чату) ── */}
+          {/* ── Права панель (тільки для чату) — відображається тільки на великих екранах ── */}
           {selectedChat && (
-            <CustomerPanel chat={selectedChat} messages={messages} onCustomerLinked={handleCustomerLinked} />
+            <div className="hidden lg:block">
+              <CustomerPanel chat={selectedChat} messages={messages} onCustomerLinked={handleCustomerLinked} />
+            </div>
           )}
         </div>
       </div>
@@ -1328,6 +1340,26 @@ export default function OrdersPage() {
           )}
         </div>
       </Modal>
+
+      {/* Мобільний Drawer для картки клієнта */}
+      {selectedChat && showCustPanelMobile && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowCustPanelMobile(false)} />
+          {/* Content */}
+          <div className="absolute right-0 top-0 bottom-0 w-80 max-w-[90%] bg-gray-50 shadow-xl flex flex-col animate-in slide-in-from-right duration-200 z-50">
+            <div className="flex items-center justify-between p-4 border-b bg-white">
+              <span className="font-bold text-gray-900">Картка клієнта</span>
+              <button onClick={() => setShowCustPanelMobile(false)} className="text-gray-400 hover:text-gray-600 p-1">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="flex-grow overflow-y-auto min-h-0">
+              <CustomerPanel chat={selectedChat} messages={messages} onCustomerLinked={handleCustomerLinked} />
+            </div>
+          </div>
+        </div>
+      )}
 
       <ToastContainer />
     </div>
