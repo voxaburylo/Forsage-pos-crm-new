@@ -219,8 +219,8 @@ export async function cancelSupplyInvoice(id: string) {
 
 export async function deleteSupplyInvoice(id: string) {
   const invoice = await getSupplyInvoice(id)
-  if (invoice.status !== 'draft') {
-    throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену або скасовану накладну', 400)
+  if (invoice.status === 'posted') {
+    throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну. Спочатку скасуйте її.', 400)
   }
 
   // Видаляємо позиції, потім накладну (через ON DELETE RESTRICT)

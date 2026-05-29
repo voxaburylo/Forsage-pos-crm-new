@@ -1,6 +1,6 @@
-﻿import { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Tag } from 'lucide-react'
+import { Tag, Trash2 } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
@@ -8,6 +8,7 @@ import { Button, Badge, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
 import { LabelPrintModal } from './LabelPrintModal'
+import { useAuthStore } from '@/stores/authStore'
 
 const STATUS_BADGE: Record<string, 'yellow' | 'green' | 'red'> = {
   draft: 'yellow', posted: 'green', cancelled: 'red',
@@ -23,6 +24,23 @@ export default function InvoiceDetailPage() {
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
   const [labelModal, setLabelModal]       = useState(false)
+
+  const userRole = useAuthStore((s) => s.session?.user?.user_metadata?.role as string | undefined)
+  const canDelete = userRole === 'owner' || userRole === 'admin'
+
+  async function handleDelete() {
+    if (!confirm('Ви впевнені, що хочете остаточно видалити цю накладну? Цю дію неможливо скасувати.')) return
+    setActionLoading(true)
+    try {
+      await supplierApi.deleteInvoice(id!)
+      toast.success('Накладну видалено')
+      navigate('/suppliers/invoices')
+    } catch {
+      toast.error('Помилка видалення накладної')
+    } finally {
+      setActionLoading(false)
+    }
+  }
 
   function load() {
     supplierApi.getInvoice(id!).then((res) => setInvoice(res.data)).catch(() => {
@@ -74,6 +92,11 @@ export default function InvoiceDetailPage() {
         <div className="flex gap-2">
           {invoice.status === 'draft' && (
             <>
+              {canDelete && (
+                <Button variant="danger-outline" icon={<Trash2 size={15} />} onClick={handleDelete} disabled={actionLoading}>
+                  {actionLoading ? '...' : 'Видалити'}
+                </Button>
+              )}
               <Button variant="outline" onClick={() => navigate(`/suppliers/invoices/${id}/edit`)}>
                 Редагувати
               </Button>
@@ -91,6 +114,11 @@ export default function InvoiceDetailPage() {
                 {actionLoading ? '...' : 'Скасувати'}
               </Button>
             </>
+          )}
+          {invoice.status === 'cancelled' && canDelete && (
+            <Button variant="danger" icon={<Trash2 size={15} />} onClick={handleDelete} disabled={actionLoading}>
+              {actionLoading ? '...' : 'Видалити'}
+            </Button>
           )}
         </div>
       }
