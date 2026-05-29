@@ -68,6 +68,8 @@ export const quickItemSchema = z.object({
   price: z.number().int().min(0).optional().default(0),
   color: z.string().optional().default('#2C2C2C'),
   children: z.array(quickChildSchema).optional().default([]),
+  type: z.enum(['static', 'food_popup']).optional().default('static'),
+  category_filter: z.array(z.string().max(200)).optional().default([]),
 })
 
 const markupRuleSchema = z.object({
@@ -87,6 +89,7 @@ export const settingsSchema = z.object({
   label_settings:            labelSettingsSchema.optional(),
   pos_quick_items:           z.array(quickItemSchema).optional().default([]),
   markup_rules:              z.array(markupRuleSchema).optional(),
+  employee_discount_pct:     z.number().min(0).max(100).optional(),
 })
 
 export type CreateUserInput  = z.infer<typeof createUserSchema>

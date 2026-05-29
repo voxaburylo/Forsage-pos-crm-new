@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign } from 'lucide-react'
+import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
@@ -28,6 +28,7 @@ import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { initAudio, playCashRegister } from '@/lib/audioService'
 import { api } from '@/lib/api'
+import { adminApi } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
@@ -129,6 +130,8 @@ export default function POSPage() {
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
   const { pendingCount, syncing, incrementPending } = useOfflineSync(serverOnline)
+  const [isEmployeeSale, setIsEmployeeSale] = useState(false)
+  const [employeeDiscountPct, setEmployeeDiscountPct] = useState(0)
 
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
@@ -150,7 +153,7 @@ export default function POSPage() {
   const [mobileTab, setMobileTab] = useState<'search' | 'cart'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
-  // Завантажуємо список співробітників для селектора менеджера
+  // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
     api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/users')
       .then((res) => {
@@ -164,6 +167,10 @@ export default function POSPage() {
       .catch(() => {})
     // Лічильник відкладених чеків
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
+    // Знижка працівника
+    adminApi.getSettings()
+      .then(({ data }) => setEmployeeDiscountPct(data.employee_discount_pct ?? 0))
+      .catch(() => {})
   }, [])
 
   // Ініціалізація аудіо при першій взаємодії (через гарячі клавіші)
@@ -516,6 +523,34 @@ export default function POSPage() {
             title="Звірка">
             <span className="text-sm leading-none">📊</span>
           </button>
+          {employeeDiscountPct > 0 && (
+            <button
+              onClick={() => {
+                const next = !isEmployeeSale
+                setIsEmployeeSale(next)
+                // Застосовуємо або знімаємо знижку з усіх товарів
+                store.items.forEach((item) => {
+                  if (next) {
+                    const disc = Math.round(item.unitPrice * item.qty * employeeDiscountPct / 100)
+                    store.setDiscount(item.productId, disc)
+                  } else {
+                    store.setDiscount(item.productId, 0)
+                  }
+                })
+                toast.success(next
+                  ? `Знижка працівника ${employeeDiscountPct}% увімкнена`
+                  : 'Знижку працівника вимкнено')
+              }}
+              className={`flex items-center justify-center rounded-xl w-11 h-11 transition-colors ${
+                isEmployeeSale
+                  ? 'bg-green-900/50 text-green-400 hover:bg-green-800/60 ring-1 ring-green-600/50'
+                  : 'text-gray-500 hover:text-white hover:bg-gray-800'
+              }`}
+              title={`Продаж працівнику (${employeeDiscountPct}%)`}
+            >
+              <Users size={16} />
+            </button>
+          )}
           <button onClick={handleLock}
             className="flex items-center justify-center text-gray-500 hover:text-yellow-400 rounded-xl hover:bg-gray-800 w-11 h-11"
             title="Заблокувати">

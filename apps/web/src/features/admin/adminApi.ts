@@ -73,6 +73,7 @@ export interface ShopSettings {
   label_settings?: LabelSettings
   pos_quick_items?: QuickItemConfig[]
   markup_rules?: MarkupRule[]
+  employee_discount_pct?: number
   // ПРРО
   prro_enabled:           boolean
   prro_provider:          string   // 'mock' | 'kashalot'

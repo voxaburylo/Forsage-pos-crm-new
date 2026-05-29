@@ -134,7 +134,7 @@ export function FavoritesPanel() {
       {/* ─── Нижня панель — прихована на мобільному (md:block) ─────── */}
       <div className="hidden md:block border-t-2 border-gray-700 bg-[#0D0D0D] shrink-0">
         <div className="flex items-stretch">
-          {items.slice(0, 6).map((item) => {
+          {items.map((item) => {
             const price       = getPrice(item)
             const isFood      = item.type === 'food_popup'
             const hasChildren = !isFood && (item.children?.length ?? 0) > 0
