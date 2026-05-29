@@ -281,50 +281,84 @@ async function createLead(chatId: number | string, txt: string, username?: strin
     logger.error({ error: e instanceof Error ? e.message : e }, 'createLead: getOrCreateChat failed')
   }
 
-  // Шукаємо існуючий лід (status=lead) за останні 30 хв через SQL
-  try {
-    const customerId = await getCustomerId(chatId)
-    if (customerId) {
-      const { data: existing } = await db
-        .from('customer_orders')
-        .select('id, comment')
-        .eq('customer_id', customerId)
-        .eq('status', 'lead')
-        .gte('created_at', new Date(Date.now() - 30 * 60_000).toISOString())
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-
-      if (existing) {
-        await db.from('customer_orders').update({ comment: (existing.comment ?? '') + `\n---\n${txt.slice(0, 1500)}` }).eq('id', existing.id)
-        return existing
-      }
-    }
-  } catch { /* fall through to create new */ }
-
-  // Створюємо новий лід
-  try {
-    const cid = await getCustomerId(chatId)
-    const managerId  = await getManagerId()
-
-    // Формуємо vehicle_info: carId → customer_cars або VIN з тексту
-    let vehicleInfo: Record<string, any> | null = null
-    if (carId) {
+  // Формуємо vehicle_info: carId → customer_cars або VIN з тексту
+  let vehicleInfo: Record<string, any> | null = null
+  if (carId) {
+    try {
       const { data: car } = await db.from('customer_cars')
         .select('make, model, year, vin').eq('id', carId).maybeSingle()
       if (car) {
         vehicleInfo = { make: car.make, model: car.model, year: car.year, vin: car.vin }
       }
+    } catch (e) {
+      logger.error({ error: e instanceof Error ? e.message : e }, 'createLead: load car failed')
+    }
+  } else {
+    const extractedVin = extractVin(txt.toUpperCase())
+    if (extractedVin) {
+      vehicleInfo = { vin: extractedVin, make: getMake(extractedVin) }
+    }
+  }
+
+  const customerId = await getCustomerId(chatId)
+
+  // Шукаємо існуючий лід (status=lead) за останні 30 хв
+  try {
+    let query = db
+      .from('customer_orders')
+      .select('id, comment, vehicle_info')
+      .eq('status', 'lead')
+      .eq('tenant_id', TENANT_ID)
+      .gte('created_at', new Date(Date.now() - 30 * 60_000).toISOString())
+      .order('created_at', { ascending: false })
+
+    if (customerId) {
+      query = query.or(`customer_id.eq.${customerId},chat_id.eq.${dbChatId}`)
+    } else if (dbChatId) {
+      query = query.eq('chat_id', dbChatId)
     } else {
-      const extractedVin = extractVin(txt.toUpperCase())
-      if (extractedVin) {
-        vehicleInfo = { vin: extractedVin, make: getMake(extractedVin) }
-      }
+      query = null as any
     }
 
-    const commentText = `📨 Від ${username ?? '#' + key}:\n${txt.slice(0, 1500)}`
+    if (query) {
+      const { data: existing } = await query.limit(1).maybeSingle()
+
+      if (existing) {
+        const updateData: Record<string, any> = {
+          comment: (existing.comment ?? '') + `\n---\n${txt.slice(0, 1500)}`
+        }
+        
+        // Прикріплюємо VIN / автомобіль, якщо раніше не було прикріплено
+        if (!existing.vehicle_info && vehicleInfo) {
+          updateData.vehicle_info = vehicleInfo
+        }
+
+        // Оновлюємо також customer_id, якщо з'явився авторизований клієнт
+        if (customerId) {
+          updateData.customer_id = customerId
+        }
+
+        await db.from('customer_orders').update(updateData).eq('id', existing.id)
+        return existing
+      }
+    }
+  } catch (e) {
+    logger.error({ error: e instanceof Error ? e.message : e }, 'createLead: check/update existing failed')
+  }
+
+  // Створюємо новий лід
+  try {
+    const managerId  = await getManagerId()
+    
+    // Додаємо інформацію про авто на початок коментаря для кращої читаємості менеджером в CRM
+    let commentText = `📨 Від ${username ?? '#' + key}:\n${txt.slice(0, 1500)}`
+    if (vehicleInfo) {
+      const carStr = [vehicleInfo.make, vehicleInfo.model, vehicleInfo.year].filter(Boolean).join(' ')
+      commentText = `🚗 Авто: ${carStr}${vehicleInfo.vin ? ` (VIN: ${vehicleInfo.vin})` : ''}\n${commentText}`
+    }
+
     const { data, error } = await db.from('customer_orders').insert({
-      tenant_id: TENANT_ID, customer_id: cid ?? null,
+      tenant_id: TENANT_ID, customer_id: customerId ?? null,
       chat_id: dbChatId,
       manager_id: managerId, status: 'lead', total_amount: 0, source: 'telegram_bot',
       vehicle_info: vehicleInfo,
@@ -334,7 +368,42 @@ async function createLead(chatId: number | string, txt: string, username?: strin
 
     notifyMgr(`📨 *Новий лід з Telegram!*\nКлієнт: ${username ?? '#' + key}\nТекст: ${txt.slice(0, 300)}\nНомер: #${(data?.id ?? '').slice(0, 8)}`).catch(() => {})
     return data
-  } catch { return null }
+  } catch (err) { 
+    logger.error({ error: err instanceof Error ? err.message : err }, 'createLead insert catch')
+    return null 
+  }
+}
+
+async function checkIfRecentLeadExists(chatId: number | string): Promise<boolean> {
+  try {
+    const customerId = await getCustomerId(chatId)
+    const channelId = await getMainChannelId()
+    let dbChatId: string | null = null
+    if (channelId) {
+      const { chatId: uuid } = await getOrCreateChat(channelId, String(chatId))
+      dbChatId = uuid
+    }
+
+    let query = db
+      .from('customer_orders')
+      .select('id')
+      .eq('status', 'lead')
+      .eq('tenant_id', TENANT_ID)
+      .gte('created_at', new Date(Date.now() - 30 * 60_000).toISOString())
+
+    if (customerId) {
+      query = query.or(`customer_id.eq.${customerId},chat_id.eq.${dbChatId}`)
+    } else if (dbChatId) {
+      query = query.eq('chat_id', dbChatId)
+    } else {
+      return false
+    }
+
+    const { data } = await query.limit(1).maybeSingle()
+    return !!data
+  } catch {
+    return false
+  }
 }
 
 async function notifyMgr(msg: string) {
@@ -727,10 +796,33 @@ async function authCustomer(chatId: number, phone: string, name: string, send: S
     if (customerId) {
       const channelId = await getMainChannelId()
       if (channelId) {
+        const { chatId: dbChatId } = await getOrCreateChat(channelId, String(chatId))
+
         await db.from('messenger_chats')
           .update({ customer_id: customerId })
           .eq('channel_id', channelId)
           .eq('platform_chat_id', String(chatId))
+
+        // Знаходимо і оновлюємо нещодавні ліди цього чату, які не мають customer_id
+        const { data: recentLeads } = await db
+          .from('customer_orders')
+          .select('id, vehicle_info')
+          .eq('chat_id', dbChatId)
+          .is('customer_id', null)
+        
+        if (recentLeads && recentLeads.length > 0) {
+          for (const lead of recentLeads) {
+            await db.from('customer_orders')
+              .update({ customer_id: customerId })
+              .eq('id', lead.id)
+            
+            // Якщо у ліда був VIN, додаємо його в гараж клієнта
+            const vin = lead.vehicle_info?.vin
+            if (vin) {
+              await saveVin(chatId, vin)
+            }
+          }
+        }
       }
     }
 
@@ -1073,7 +1165,15 @@ export function startBot() {
       // Зберігаємо в ChatsInbox (тільки для прямих чатів, не business)
       if (!isBiz && text) {
         const cid = await getCustomerId(chatId)
-        saveToInbox(String(chatId), src.from?.username, src.from?.first_name, text, cid).catch(() => {})
+        
+        // Перевіряємо чи є активний контекст автомобіля
+        let textToSave = text
+        const carCtx = userContext.get(String(chatId))
+        if (carCtx && carCtx.carLabel) {
+          textToSave = `🚗 [${carCtx.carLabel}]\n${text}`
+        }
+        
+        saveToInbox(String(chatId), src.from?.username, src.from?.first_name, textToSave, cid).catch(() => {})
       }
 
       // Contact shared
@@ -1122,6 +1222,25 @@ export function startBot() {
       if (vin) {
         const carId = await saveVin(chatId, vin)
         const authed = !!(await getCustomerId(chatId))
+        
+        // Очищаємо текст від VIN та маркерів, щоб перевірити чи є додатковий опис запиту
+        const cleanText = text.replace(new RegExp(vin, 'gi'), '')
+                              .replace(/\b(E|VIN|НОМЕР КУЗОВА|IDENTIFICATION|NUMBER|CHASSIS|BODY|КУЗОВ|ШВІ|ШАСІ|VIN\d)\b/gi, '')
+                              .trim()
+        const hasOtherText = cleanText.length > 5
+
+        if (hasOtherText) {
+          // Якщо є опис запиту разом з VIN-кодом — створюємо лід одразу
+          await createLead(chatId, text, src.from?.username, carId ?? undefined)
+          const make = getMake(vin)
+          await send(`✅ *Заявку прийнято!*
+🚘 Авто: *${make}* (VIN: \`${vin}\`)
+📝 Запит: *${cleanText}*
+
+Менеджер вже опрацьовує ваш запит. 🚀`, { parse_mode: 'Markdown', reply_markup: MAIN_MENU.reply_markup })
+          return
+        }
+
         if (authed && carId) {
           // Авторизований клієнт — питаємо запчастини, створюємо лід після відповіді
           const make = getMake(vin)
@@ -1164,6 +1283,15 @@ export function startBot() {
 ✅ Дякуємо! Менеджер опрацює й найближчим часом зв'яжеться з вами.`,
           { parse_mode: 'Markdown', ...CLR_KB, reply_markup: MAIN_MENU.reply_markup })
         notifyMgr(`📨 *Запит запчастин${label}*\nКлієнт: #${chatId}\nТекст: ${text.slice(0, 300)}`).catch(() => {})
+        return
+      }
+
+      // Перевіряємо чи є активний лід за останні 30 хвилин для цього чату/клієнта.
+      // Якщо є, додаємо це повідомлення туди як додатковий коментар/запит.
+      const hasRecentLead = await checkIfRecentLeadExists(chatId)
+      if (hasRecentLead) {
+        await createLead(chatId, text, src.from?.username)
+        await send('📝 *Ваше повідомлення додано до існуючого запиту.* Менеджер незабаром зв\'яжеться з вами!', { parse_mode: 'Markdown', reply_markup: MAIN_MENU.reply_markup })
         return
       }
 
@@ -1214,6 +1342,9 @@ export function startBot() {
         transcribe_voice: () => transcribeVoice(chatId, send),
         pick_car_new: async () => {
           const pendingTranscript = voiceTranscript.get(String(chatId))
+          const cid = await getCustomerId(chatId)
+          saveToInbox(String(chatId), cb.from?.username, undefined, `➕ Обрано: інше авто / новий VIN`, cid).catch(() => {})
+
           if (pendingTranscript) {
             voiceTranscript.delete(String(chatId))
             await createLead(chatId, `🎤 Голосове: ${pendingTranscript.text}`, pendingTranscript.username)
@@ -1229,6 +1360,10 @@ export function startBot() {
         try {
           const { data: car } = await db.from('customer_cars').select('make, model, vin').eq('id', carId).single()
           const label = car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : ''
+
+          const cid = await getCustomerId(chatId)
+          // Зберігаємо вибір авто в повідомлення для менеджера в CRM
+          saveToInbox(String(chatId), cb.from?.username, undefined, `🚗 Обрано авто: ${label}`, cid).catch(() => {})
 
           // Перевіряємо чи є pending транскрипт голосу
           const pendingTranscript = voiceTranscript.get(String(chatId))
@@ -1269,8 +1404,13 @@ export function startBot() {
       if (cb.data.startsWith('car_parts_')) {
         const id = cb.data.replace('car_parts_', '')
         try {
-          const { data: car } = await db.from('customer_cars').select('make, model').eq('id', id).single()
-          const label = car ? `${car.make} ${car.model}` : ''
+          const { data: car } = await db.from('customer_cars').select('make, model, vin').eq('id', id).single()
+          const label = car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : ''
+
+          const cid = await getCustomerId(chatId)
+          // Зберігаємо вибір авто в повідомлення для менеджера в CRM
+          saveToInbox(String(chatId), cb.from?.username, undefined, `🚗 Запит підбору для авто: ${label}`, cid).catch(() => {})
+
           userContext.set(String(chatId), { carId: id, carLabel: label })
           await send(`🔍 Ви обрали підбір для *${label}*.
 
