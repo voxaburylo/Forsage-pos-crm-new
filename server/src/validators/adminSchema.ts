@@ -70,6 +70,12 @@ export const quickItemSchema = z.object({
   children: z.array(quickChildSchema).optional().default([]),
 })
 
+const markupRuleSchema = z.object({
+  minPrice: z.number().int().min(0),
+  maxPrice: z.number().int().min(0),
+  markupPct: z.number().int().min(0),
+})
+
 export const settingsSchema = z.object({
   shop_name:                 z.string().min(1).max(200).optional(),
   shop_address:              z.string().max(500).optional().nullable(),
@@ -80,6 +86,7 @@ export const settingsSchema = z.object({
   default_debt_limit_kopecks: z.number().int().min(0).optional(),
   label_settings:            labelSettingsSchema.optional(),
   pos_quick_items:           z.array(quickItemSchema).optional().default([]),
+  markup_rules:              z.array(markupRuleSchema).optional(),
 })
 
 export type CreateUserInput  = z.infer<typeof createUserSchema>

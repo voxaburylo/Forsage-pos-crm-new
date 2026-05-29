@@ -54,6 +54,12 @@ export interface QuickItemConfig {
   category_filter?: string[]            // для food_popup: які категорії показувати
 }
 
+export interface MarkupRule {
+  minPrice: number
+  maxPrice: number
+  markupPct: number
+}
+
 export interface ShopSettings {
   id: string
   shop_name: string
@@ -66,6 +72,7 @@ export interface ShopSettings {
   default_debt_limit_kopecks: number
   label_settings?: LabelSettings
   pos_quick_items?: QuickItemConfig[]
+  markup_rules?: MarkupRule[]
   // ПРРО
   prro_enabled:           boolean
   prro_provider:          string   // 'mock' | 'kashalot'
