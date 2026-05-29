@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Phone, MessageSquare, FilePen, DollarSign, Printer } from 'lucide-react'
+import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown } from 'lucide-react'
 import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
 import { printOrderReceipt } from './OrderReceiptPrint'
@@ -113,6 +113,14 @@ export default function OrderDetailPage() {
   const [payMethodField, setPayMethodField] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [payFiscal, setPayFiscal] = useState(false)
   const [paySaving, setPaySaving] = useState(false)
+  const [actionsOpen, setActionsOpen] = useState(false)
+
+  useEffect(() => {
+    if (!actionsOpen) return
+    const handleClick = () => setActionsOpen(false)
+    window.addEventListener('click', handleClick)
+    return () => window.removeEventListener('click', handleClick)
+  }, [actionsOpen])
 
   const load = useCallback(async () => {
     if (!id) return
@@ -332,7 +340,7 @@ export default function OrderDetailPage() {
       title={`Замовлення від ${formatDate(order.created_at)}`}
       onBack={() => navigate('/orders')}
       actions={
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           {isDraft && (
             <Button icon={<FilePen size={15} />} onClick={() => navigate('/quotes/' + id)}>
               Редагувати КП
@@ -348,22 +356,53 @@ export default function OrderDetailPage() {
               📦 Зібрати
             </Button>
           )}
-          <Button variant="secondary" icon={<Printer size={15} />} onClick={() => printPickingList(order as any)}>
-            📋 Збірочний лист
-          </Button>
-          <Button variant="secondary" icon={<Printer size={15} />} onClick={() => printOrderReceipt(order)}>
-            🖨 Квитанція
-          </Button>
-          {order.chat_id && (
-            <Button variant="secondary" size="sm" icon={<MessageSquare size={14} />} onClick={() => navigate(`/chats?chat_id=${order.chat_id}`)}>
-              💬 Чат
-            </Button>
-          )}
-          {canCancel && (
-            <Button variant="secondary" onClick={() => setCancelModal(true)}>
-              ❌ Скасувати
-            </Button>
-          )}
+
+          {/* Випадаюче меню для другорядних дій */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setActionsOpen(!actionsOpen); }}
+              className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl hover:bg-gray-100 transition-colors text-sm font-semibold flex items-center gap-1 text-gray-700 shadow-sm"
+            >
+              Дії <ChevronDown size={14} className={`transition-transform duration-200 ${actionsOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {actionsOpen && (
+              <div className="absolute right-0 mt-1.5 w-52 bg-white border border-gray-150 rounded-xl shadow-lg py-1.5 z-30 focus:outline-none animate-in fade-in slide-in-from-top-1 duration-100">
+                <button
+                  onClick={() => printPickingList(order as any)}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  📋 Збірочний лист
+                </button>
+                <button
+                  onClick={() => printOrderReceipt(order)}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  🖨 Квитанція
+                </button>
+                {order.chat_id && (
+                  <button
+                    onClick={() => navigate(`/chats?chat_id=${order.chat_id}`)}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                  >
+                    💬 Чат
+                  </button>
+                )}
+                {canCancel && (
+                  <div className="border-t border-gray-100 my-1" />
+                )}
+                {canCancel && (
+                  <button
+                    onClick={() => setCancelModal(true)}
+                    className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 font-semibold"
+                  >
+                    ❌ Скасувати замовлення
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       }
     >
@@ -435,36 +474,40 @@ export default function OrderDetailPage() {
           {order.items.length === 0 ? (
             <p className="text-sm text-gray-400">Позиції відсутні</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {order.items.map((item) => {
                 const actions = ITEM_STATUS_ACTIONS[item.item_status]
                 return (
-                  <div key={item.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2.5 text-sm">
+                  <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between bg-gray-50 rounded-xl p-4 text-sm gap-3 shadow-sm border border-gray-100/50">
                     <div className="flex-1 min-w-0">
-                      <span className="font-medium text-gray-800">{item.name}</span>
-                      {item.sku && <span className="text-gray-400 text-xs ml-1.5 font-mono">{item.sku}</span>}
-                      <span className="ml-2">
+                      <div className="flex items-start gap-2 flex-wrap">
+                        <span className="font-semibold text-gray-900 leading-snug">{item.name}</span>
+                        {item.sku && <span className="text-gray-400 text-xs font-mono bg-white px-1.5 py-0.5 rounded border border-gray-100">{item.sku}</span>}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         <Badge color={ITEM_STATUS_COLOR[item.item_status]}>{ITEM_STATUS_LABEL[item.item_status]}</Badge>
-                      </span>
-                      {item.expected_date && (
-                        <span className={`text-xs ml-1 ${new Date(item.expected_date) < new Date() ? 'text-red-500' : 'text-gray-400'}`}>
-                          ⏳ {formatDate(item.expected_date)}
-                        </span>
-                      )}
+                        {item.expected_date && (
+                          <span className={`text-xs ${new Date(item.expected_date) < new Date() ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
+                            ⏳ Очікується: {formatDate(item.expected_date)}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0 ml-3">
-                      <span className="text-gray-600 text-xs">{item.qty} × {formatMoney(item.sell_price)}</span>
-                      <button onClick={() => { setSelectedOrderItem(item); setItemLabelCopies(Math.ceil(item.qty)); setItemLabelModal(true); }}
-                        className="text-[11px] px-2 py-0.5 rounded bg-white border border-gray-200 hover:bg-gray-100 transition-colors flex items-center gap-0.5 text-gray-700"
-                        title="Друк етикетки замовлення">
-                        🏷️ Етикетка
-                      </button>
-                      {actions?.map((action) => (
-                        <button key={action.status} onClick={() => handleItemStatus(item.id, action.status)}
-                          className="text-[11px] px-2 py-0.5 rounded bg-white border border-gray-200 hover:bg-gray-100 transition-colors">
-                          {action.icon} {action.label}
+                    <div className="flex items-center justify-between md:justify-end gap-3 shrink-0 pt-3 md:pt-0 border-t md:border-t-0 border-gray-200/60">
+                      <span className="text-gray-950 text-sm font-semibold">{item.qty} × {formatMoney(item.sell_price)}</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button onClick={() => { setSelectedOrderItem(item); setItemLabelCopies(Math.ceil(item.qty)); setItemLabelModal(true); }}
+                          className="text-xs px-2.5 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 active:bg-gray-100 transition-colors flex items-center gap-1 text-gray-700 font-medium shadow-sm"
+                          title="Друк етикетки замовлення">
+                          🏷️ <span className="md:hidden lg:inline">Етикетка</span>
                         </button>
-                      ))}
+                        {actions?.map((action) => (
+                          <button key={action.status} onClick={() => handleItemStatus(item.id, action.status)}
+                            className="text-xs px-2.5 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 active:bg-gray-100 transition-colors font-medium shadow-sm">
+                            {action.icon} {action.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )

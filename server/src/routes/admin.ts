@@ -34,7 +34,7 @@ router.put('/users/:id', requireRole('owner', 'admin'), async (req, res, next) =
 })
 
 router.delete('/users/:id', requireRole('owner', 'admin'), async (req, res, next) => {
-  try { await adminService.deactivateUser(String(req.params.id)); res.status(204).send() } catch (err) { next(err) }
+  try { await adminService.deleteUser(String(req.params.id)); res.status(204).send() } catch (err) { next(err) }
 })
 
 // PUT /api/v1/admin/users/:id/password — скидання пароля адміном

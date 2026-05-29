@@ -10,13 +10,23 @@ router.use(requireAuth)
 // POST /api/v1/inventory — створити сесію
 router.post('/', requireRole('owner', 'admin', 'storekeeper'), async (req, res, next) => {
   try {
-    const schema = z.object({ name: z.string().min(1).max(200) })
+    const schema = z.object({
+      name: z.string().min(1).max(200),
+      created_by: z.string().uuid().optional(),
+      created_at: z.string().optional(),
+    })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна назва', 422)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна назва або параметри', 422)
 
     const { data, error } = await db
       .from('inventory_sessions')
-      .insert({ tenant_id: req.user!.tenant_id, name: parsed.data.name, status: 'draft', created_by: req.user!.id })
+      .insert({
+        tenant_id: req.user!.tenant_id,
+        name: parsed.data.name,
+        status: 'draft',
+        created_by: parsed.data.created_by || req.user!.id,
+        ...(parsed.data.created_at ? { created_at: parsed.data.created_at } : {}),
+      })
       .select()
       .single()
     if (error) throw new AppError('DB_ERROR', error.message, 500)

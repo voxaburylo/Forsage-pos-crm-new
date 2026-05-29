@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { CheckCircle, Search, Minus, Plus, Camera } from 'lucide-react'
 import { api } from '@/lib/api'
+import { productApi } from '@/features/products/productApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -31,6 +32,7 @@ export default function ActiveSession() {
   const [scanInput, setScanInput] = useState('')
   const [scanning, setScanning] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
+  const [searchResults, setSearchResults] = useState<any[]>([])
   const scanRef = useRef<HTMLInputElement>(null)
 
   async function load() {
@@ -44,6 +46,29 @@ export default function ActiveSession() {
 
   useEffect(() => { load() }, [id])
   useEffect(() => { scanRef.current?.focus() }, [session?.items])
+
+  // Пошук товарів за назвою/артикулом для автодоповнення
+  useEffect(() => {
+    const query = scanInput.trim()
+    if (!query || query.length < 2) {
+      setSearchResults([])
+      return
+    }
+    // Якщо вводиться чистий штрихкод (лише цифри, від 8 до 14 символів), не шукаємо за назвою
+    if (/^\d{8,14}$/.test(query)) {
+      setSearchResults([])
+      return
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const { data } = await productApi.search(query, 8)
+        setSearchResults(data)
+      } catch {
+        setSearchResults([])
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [scanInput])
 
   async function handleScan(e: React.FormEvent) {
     e.preventDefault()
@@ -100,9 +125,41 @@ export default function ActiveSession() {
                 <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input ref={scanRef} type="text" value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
-                  placeholder="Скануйте штрих-код або введіть артикул..."
+                  placeholder="Скануйте штрих-код або введіть назву..."
                   className="w-full bg-gray-50 border-2 border-yellow-400 rounded-xl pl-10 pr-4 py-3.5 text-lg font-mono focus:outline-none focus:border-yellow-500"
                   autoFocus />
+                {searchResults.length > 0 && (
+                  <div className="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-50 divide-y max-h-60 overflow-y-auto">
+                    {searchResults.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={async () => {
+                          setSearchResults([])
+                          setScanInput('')
+                          initAudio()
+                          try {
+                            const { data } = await api.post<{ data: Item[] }>(`/api/v1/inventory/${id}/scan`, { product_id: p.id })
+                            setSession((prev) => prev ? { ...prev, items: data } : prev)
+                            playSuccessBeep()
+                          } catch (err) {
+                            playErrorTone()
+                            toast.error(err instanceof Error ? err.message : 'Помилка')
+                          }
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-yellow-50 flex items-center justify-between transition-colors text-sm"
+                      >
+                        <div>
+                          <p className="font-medium text-gray-900">{p.name}</p>
+                          <p className="text-xs text-gray-400 font-mono">{p.sku} {p.barcode ? `· ${p.barcode}` : ''}</p>
+                        </div>
+                        <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                          {p.qty_on_hand} {p.unit ?? 'шт'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <button type="button" onClick={() => setCameraOpen(true)}
                 className="md:hidden bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl px-3 flex items-center justify-center transition-colors border border-gray-300"
@@ -160,7 +217,16 @@ export default function ActiveSession() {
                             className="w-6 h-6 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 flex items-center justify-center">
                             <Minus size={12} />
                           </button>
-                          <span className="w-10 text-center font-semibold">{item.counted_stock}</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={item.counted_stock}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value)
+                              updateCount(item.id, isNaN(val) ? 0 : val)
+                            }}
+                            className="w-12 text-center font-semibold bg-gray-50 border border-gray-200 rounded py-0.5 focus:outline-none focus:ring-1 focus:ring-accent"
+                          />
                           <button onClick={() => updateCount(item.id, item.counted_stock + 1)}
                             className="w-6 h-6 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 flex items-center justify-center">
                             <Plus size={12} />

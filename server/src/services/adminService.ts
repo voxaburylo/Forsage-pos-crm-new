@@ -93,6 +93,18 @@ export async function deactivateUser(id: string) {
   return data.user
 }
 
+export async function deleteUser(id: string) {
+  // 1. Clean up references
+  await db.from('warehouse_movements').update({ moved_by: null }).eq('moved_by', id)
+  await db.from('print_jobs').update({ printed_by: null }).eq('printed_by', id)
+  await db.from('staff_kpi_targets').delete().eq('user_id', id)
+
+  // 2. Delete user from supabase auth
+  const { error } = await supabaseAdmin.auth.admin.deleteUser(id)
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+}
+
+
 // ===================== CATEGORIES =====================
 
 export async function listCategories(tenantId: string) {

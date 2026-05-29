@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Plus, Edit2, KeyRound, UserX, UserCheck } from 'lucide-react'
+import { Plus, Edit2, KeyRound, UserX, UserCheck, Trash2 } from 'lucide-react'
 import { adminApi, ROLE_LABELS } from '@/features/admin/adminApi'
 import type { AdminUser, UserRole } from '@/features/admin/adminApi'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Modal, Input, Badge, Table } from '@/components/ui'
+import { Button, Card, Modal, Input, Badge, Table, ConfirmDialog } from '@/components/ui'
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
@@ -25,6 +25,7 @@ export default function StaffPage() {
   const [passOpen, setPassOpen]    = useState(false)
   const [editUser, setEditUser]    = useState<AdminUser | null>(null)
   const [saving, setSaving]        = useState(false)
+  const [deleteConfirmUser, setDeleteConfirmUser] = useState<AdminUser | null>(null)
 
   // Add form
   const [addForm, setAddForm] = useState({ phone: '', password: '', full_name: '', role: 'cashier' as UserRole })
@@ -101,6 +102,21 @@ export default function StaffPage() {
     } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
   }
 
+  async function handleDeleteUser() {
+    if (!deleteConfirmUser) return
+    setSaving(true)
+    try {
+      await adminApi.deleteUser(deleteConfirmUser.id)
+      toast.success('Співробітника видалено')
+      setDeleteConfirmUser(null)
+      load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка при видаленні')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const columns = [
     { key: 'name', header: 'Співробітник', render: (u: AdminUser) => (
       <div>
@@ -124,7 +140,7 @@ export default function StaffPage() {
         {u.is_active ? 'Активний' : 'Заблокований'}
       </Badge>
     )},
-    { key: 'actions', header: '', className: 'w-32 text-right', render: (u: AdminUser) => (
+    { key: 'actions', header: '', className: 'w-40 text-right', render: (u: AdminUser) => (
       <div className="flex items-center justify-end gap-1">
         <button onClick={() => openEdit(u)}
           className="p-1.5 text-gray-400 hover:text-yellow-600 rounded-lg hover:bg-yellow-50 transition-colors"
@@ -144,6 +160,11 @@ export default function StaffPage() {
           }`}
           title={u.is_active ? 'Деактивувати' : 'Активувати'}>
           {u.is_active ? <UserX size={14} /> : <UserCheck size={14} />}
+        </button>
+        <button onClick={() => setDeleteConfirmUser(u)}
+          className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+          title="Видалити повністю">
+          <Trash2 size={14} />
         </button>
       </div>
     )},
@@ -258,6 +279,24 @@ export default function StaffPage() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={deleteConfirmUser !== null}
+        onClose={() => setDeleteConfirmUser(null)}
+        onConfirm={handleDeleteUser}
+        title="Видалити співробітника"
+        message={
+          <>
+            Ви впевнені, що хочете повністю видалити співробітника <strong>{deleteConfirmUser?.full_name}</strong> ({deleteConfirmUser?.phone})?
+            <br />
+            <span className="text-red-500 text-xs mt-2 block">
+              Ця дія є незворотною. Зв'язані документи та історія операцій залишаться в базі даних, але зв'язок із цим користувачем буде розірвано.
+            </span>
+          </>
+        }
+        confirmLabel="Видалити"
+        danger
+      />
     </Layout>
   )
 }

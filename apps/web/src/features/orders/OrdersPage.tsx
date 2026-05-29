@@ -134,7 +134,7 @@ interface CustomerSearchResult {
 
 type Vehicle = CustomerVehicle
 
-type Tab = 'all' | 'leads' | 'drafts' | 'active' | 'ready' | 'completed'
+type Tab = 'all' | 'leads' | 'drafts' | 'bots' | 'active' | 'ready' | 'completed'
 
 type Selection = { kind: 'chat'; id: string } | { kind: 'order'; id: string } | null
 
@@ -722,6 +722,13 @@ export default function OrdersPage() {
 
   // ui
   const [tab, setTab] = useState<Tab>('all')
+
+  useEffect(() => {
+    const urlTab = searchParams.get('tab') as Tab
+    if (urlTab && ['all', 'leads', 'drafts', 'bots', 'active', 'ready', 'completed'].includes(urlTab)) {
+      setTab(urlTab)
+    }
+  }, [searchParams])
   const [search, setSearch] = useState('')
   const [selection, setSelection] = useState<Selection>(null)
   const [now] = useState(() => new Date())
@@ -818,10 +825,11 @@ export default function OrdersPage() {
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   // ── фільтрація ──
-  const chatsShown = tab === 'all' || tab === 'leads'
+  const chatsShown = tab === 'all' || tab === 'leads' || tab === 'bots'
 
   const filteredOrders = useMemo(() => {
     return orders.filter((o) => {
+      if (tab === 'bots')      return false
       if (tab === 'all')       return !['completed', 'canceled'].includes(o.status)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
@@ -875,6 +883,7 @@ export default function OrdersPage() {
     { id: 'all',       label: 'Усі',           count: chats.length + filteredOrders.length },
     { id: 'leads',     label: 'Ліди',          count: stats.leads },
     { id: 'drafts',    label: 'Чернетки',      count: stats.drafts },
+    { id: 'bots',      label: 'Месенджер',     count: chats.length },
     { id: 'active',    label: 'В дорозі',      count: stats.active },
     { id: 'ready',     label: 'До видачі',     count: stats.ready, accent: true },
     { id: 'completed', label: 'Завершені',     count: stats.completed },
@@ -1025,12 +1034,11 @@ export default function OrdersPage() {
 
           {/* ── Ліва панель — на мобільному на всю ширину ── */}
           <aside className={`w-full md:w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col ${selection ? 'hidden md:flex' : 'flex'}`}>
-            {/* tabs + search */}
             <div className="px-3 pt-3 pb-2 border-b border-gray-100 space-y-2">
-              <div className="flex gap-1 flex-wrap">
+              <div className="flex gap-1 overflow-x-auto md:flex-wrap pb-1.5 md:pb-0 scrollbar-none whitespace-nowrap scroll-smooth -mx-3 px-3 md:mx-0 md:px-0">
                 {TABS.map((t) => (
                   <button key={t.id} onClick={() => setTab(t.id)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors shrink-0 ${
                       tab === t.id
                         ? t.accent ? 'bg-green-500 text-white' : 'bg-yellow-400 text-black'
                         : 'bg-gray-50 text-gray-600 hover:bg-gray-100'

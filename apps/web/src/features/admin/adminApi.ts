@@ -86,7 +86,7 @@ export const adminApi = {
     api.post<{ data: AdminUser }>('/api/v1/admin/users', body),
   updateUser: (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string }) =>
     api.put<{ data: AdminUser }>(`/api/v1/admin/users/${id}`, body),
-  deactivateUser: (id: string) =>
+  deleteUser: (id: string) =>
     api.delete<void>(`/api/v1/admin/users/${id}`),
   resetPassword: (id: string, password: string) =>
     api.put<{ data: { success: boolean } }>(`/api/v1/admin/users/${id}/password`, { password }),

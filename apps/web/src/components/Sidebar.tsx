@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Package, Users, ShoppingCart, RotateCcw,
   Truck, BarChart2, BarChart3, Settings, Zap, LogOut, Shield, FileText, Upload, Trash2, ScrollText, Tag, ClipboardList, Clock,
   ChevronDown, UserCog, Barcode, MessageSquare, DollarSign, ArrowDownLeft, Wallet, Percent, TrendingUp, ShieldCheck, ArrowRightLeft,
-  Bell, Printer, ShoppingBag, FilePlus, X,
+  Bell, Printer, ShoppingBag, FilePlus, X, Folder, Bookmark,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -30,82 +30,91 @@ interface SidebarProps {
 
 const NAV_GROUPS: NavGroup[] = [
   {
+    title: 'Головна',
     items: [
-      { to: '/dashboard', icon: <LayoutDashboard size={18} />, label: 'Дашборд' },
-      { to: '/pos',       icon: <Zap size={18} />,             label: 'Каса (POS)' },
+      { to: '/dashboard',           icon: <LayoutDashboard size={18} />, label: 'Дашборд' },
+      { to: '/pos',                 icon: <Zap size={18} />,             label: 'Каса (POS)' },
+      { to: '/notifications',       icon: <Bell size={18} />,            label: 'Сповіщення',           roles: ['owner','admin','manager'] },
     ],
   },
   {
-    title: 'Каталог',
+    title: 'Товари',
     items: [
-      { to: '/products',  icon: <Package size={18} />, label: 'Товари' },
-      { to: '/customers', icon: <Users size={18} />,   label: 'Клієнти' },
+      { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
+      { to: '/admin?tab=brands',     icon: <Bookmark size={18} />,        label: 'Бренди',               roles: ['owner','admin'] },
+      { to: '/admin?tab=categories', icon: <Folder size={18} />,          label: 'Категорії',            roles: ['owner','admin'] },
+      { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
+      { to: '/pricing',             icon: <Tag size={18} />,             label: 'Ціноутворення',        roles: ['owner','admin'] },
+      { to: '/labels',              icon: <Barcode size={18} />,         label: 'Друк етикеток',        roles: ['owner','admin'] },
     ],
   },
   {
+    title: 'Замовлення',
+    roles: ['owner','admin','manager'],
     items: [
-      { to: '/orders',     icon: <ClipboardList size={18} />, label: 'Замовлення',       roles: ['owner','admin','manager'] },
-      { to: '/quotes/new', icon: <FilePlus size={18} />,      label: 'Нова пропозиція',  roles: ['owner','admin','manager'] },
+      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
+      { to: '/orders?tab=drafts',   icon: <FileText size={18} />,        label: 'Чернетки / КП',        roles: ['owner','admin','manager'] },
+      { to: '/orders?tab=bots',     icon: <MessageSquare size={18} />,   label: 'Боти / Месенджер',     roles: ['owner','admin','manager'] },
+      { to: '/quotes/new',          icon: <FilePlus size={18} />,        label: 'Нова пропозиція',      roles: ['owner','admin','manager'] },
+      { to: '/waitlist',            icon: <Clock size={18} />,           label: 'Лист очікування',      roles: ['owner','admin','manager'] },
     ],
   },
   {
-    title: 'Продажі',
+    title: 'Фінанси та Продажі',
     roles: ['owner', 'admin', 'manager', 'cashier'],
     items: [
-      { to: '/sales',    icon: <ShoppingCart size={18} />, label: 'Журнал продажів', roles: ['owner','admin','manager'] },
-      { to: '/returns',  icon: <RotateCcw size={18} />,    label: 'Повернення',      roles: ['owner','admin','manager'] },
-      { to: '/cashflow', icon: <Wallet size={18} />,       label: 'Каса та витрати', roles: ['owner','admin','manager'] },
+      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Журнал продажів',      roles: ['owner','admin','manager'] },
+      { to: '/returns',             icon: <RotateCcw size={18} />,       label: 'Повернення',           roles: ['owner','admin','manager'] },
+      { to: '/cashflow',            icon: <Wallet size={18} />,          label: 'Каса та витрати',      roles: ['owner','admin','manager'] },
     ],
   },
   {
     title: 'Постачальники',
     roles: ['owner', 'admin', 'manager', 'storekeeper'],
     items: [
-      { to: '/suppliers',           icon: <Truck size={18} />,    label: 'Список',        roles: ['owner','admin','manager'] },
-      { to: '/suppliers/invoices',  icon: <FileText size={18} />, label: 'Накладні',      roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/suppliers/import',    icon: <Upload size={18} />,   label: 'Імпорт прайсу', roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/suppliers/1c-import', icon: <Upload size={18} />,   label: 'Імпорт з 1С',  roles: ['owner','admin','manager'] },
+      { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Список',               roles: ['owner','admin','manager'] },
+      { to: '/suppliers/invoices',  icon: <FileText size={18} />,        label: 'Накладні',             roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/suppliers/import',    icon: <Upload size={18} />,          label: 'Імпорт прайсу',        roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/suppliers/1c-import', icon: <Upload size={18} />,          label: 'Імпорт з 1С',          roles: ['owner','admin','manager'] },
+      { to: '/auto-purchase',       icon: <ShoppingBag size={18} />,     label: 'Автозакупки',          roles: ['owner','admin'] },
     ],
   },
   {
-    title: 'Склад',
+    title: 'Склад (WMS)',
     roles: ['owner', 'admin', 'manager', 'storekeeper'],
     items: [
-      { to: '/inventory',            icon: <ClipboardList size={18} />, label: 'Інвентаризація',  roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/inventory/picking',    icon: <Package size={18} />,       label: 'Складання (WMS)', roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/inventory/writeoffs',  icon: <Trash2 size={18} />,        label: 'Списання',        roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/internal',             icon: <ArrowDownLeft size={18} />, label: 'Внутр. відпуск',  roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/inventory/reserves',   icon: <Clock size={18} />,          label: 'Резерви товарів', roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/inventory/movements',  icon: <ArrowRightLeft size={18} />, label: 'Переміщення',    roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory',            icon: <ClipboardList size={18} />,   label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory/picking',    icon: <Package size={18} />,         label: 'Складання (WMS)',      roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory/writeoffs',  icon: <Trash2 size={18} />,          label: 'Списання',             roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/internal',             icon: <ArrowDownLeft size={18} />,   label: 'Внутр. відпуск',       roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory/movements',  icon: <ArrowRightLeft size={18} />,  label: 'Переміщення',          roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory/reserves',   icon: <Clock size={18} />,           label: 'Резерви товарів',      roles: ['owner','admin','manager','storekeeper'] },
     ],
   },
   {
+    title: 'Аналітика',
+    roles: ['owner','admin','manager'],
     items: [
-      { to: '/reports',             icon: <BarChart2 size={18} />,  label: 'Звіти',                     roles: ['owner','admin','manager'] },
-      { to: '/abc',                 icon: <BarChart3 size={18} />,  label: 'ABC-аналіз',                roles: ['owner','admin','manager'] },
-      { to: '/staff-kpi',           icon: <BarChart3 size={18} />,  label: 'KPI персоналу',             roles: ['owner','admin'] },
-      { to: '/staff-profitability', icon: <TrendingUp size={18} />, label: 'Прибутковість працівників', roles: ['owner','admin'] },
-      { to: '/waitlist',            icon: <Clock size={18} />,      label: 'Лист очікування',           roles: ['owner','admin','manager'] },
+      { to: '/reports',             icon: <BarChart2 size={18} />,       label: 'Звіти',                roles: ['owner','admin','manager'] },
+      { to: '/abc',                 icon: <BarChart3 size={18} />,       label: 'ABC-аналіз',           roles: ['owner','admin','manager'] },
+      { to: '/staff-kpi',           icon: <BarChart3 size={18} />,       label: 'KPI персоналу',        roles: ['owner','admin'] },
+      { to: '/staff-profitability', icon: <TrendingUp size={18} />,      label: 'Прибутковість',        roles: ['owner','admin'] },
     ],
   },
   {
     title: 'Управління',
     roles: ['owner', 'admin'],
     items: [
-      { to: '/staff',               icon: <UserCog size={18} />,       label: 'Команда',              roles: ['owner','admin'] },
-      { to: '/staff-salary',        icon: <DollarSign size={18} />,    label: 'Нарахування ЗП',       roles: ['owner','admin'] },
-      { to: '/settings/commission', icon: <Percent size={18} />,       label: 'Правила комісійних',   roles: ['owner','admin'] },
-      { to: '/settings',            icon: <Settings size={18} />,      label: 'Налаштування',         roles: ['owner','admin'] },
-      { to: '/settings/channels',   icon: <MessageSquare size={18} />, label: 'Канали зв\'язку',      roles: ['owner','admin'] },
-      { to: '/settings/templates',  icon: <FileText size={18} />,      label: 'Шаблони сповіщень',    roles: ['owner','admin'] },
-      { to: '/labels',              icon: <Barcode size={18} />,       label: 'Друк етикеток',        roles: ['owner','admin'] },
-      { to: '/pricing',             icon: <Tag size={18} />,           label: 'Ціноутворення',        roles: ['owner','admin'] },
-      { to: '/admin',               icon: <Shield size={18} />,        label: 'Користувачі',          roles: ['owner','admin'] },
-      { to: '/audit',               icon: <ScrollText size={18} />,    label: 'Журнал дій',           roles: ['owner','admin'] },
-      { to: '/stock-integrity',     icon: <ShieldCheck size={18} />,   label: 'Цілісність залишків',  roles: ['owner','admin'] },
-      { to: '/notifications',       icon: <Bell size={18} />,          label: 'Сповіщення',           roles: ['owner','admin','manager'] },
-      { to: '/print-center',        icon: <Printer size={18} />,       label: 'Центр друку',          roles: ['owner','admin','manager'] },
-      { to: '/auto-purchase',       icon: <ShoppingBag size={18} />,   label: 'Автозакупки',          roles: ['owner','admin'] },
+      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда',              roles: ['owner','admin'] },
+      { to: '/staff-salary',        icon: <DollarSign size={18} />,      label: 'Нарахування ЗП',       roles: ['owner','admin'] },
+      { to: '/settings/commission', icon: <Percent size={18} />,         label: 'Правила комісійних',   roles: ['owner','admin'] },
+      { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
+      { to: '/settings/channels',   icon: <MessageSquare size={18} />,   label: 'Канали зв\'язку',      roles: ['owner','admin'] },
+      { to: '/settings/templates',  icon: <FileText size={18} />,        label: 'Шаблони сповіщень',    roles: ['owner','admin'] },
+      { to: '/print-center',        icon: <Printer size={18} />,         label: 'Центр друку',          roles: ['owner','admin','manager'] },
+      { to: '/audit',               icon: <ScrollText size={18} />,      label: 'Журнал дій',           roles: ['owner','admin'] },
+      { to: '/stock-integrity',     icon: <ShieldCheck size={18} />,     label: 'Цілісність залишків',  roles: ['owner','admin'] },
+      { to: '/admin',               icon: <Shield size={18} />,          label: 'Користувачі',          roles: ['owner','admin'] },
     ],
   },
 ]
@@ -113,11 +122,33 @@ const NAV_GROUPS: NavGroup[] = [
 // ── SidebarLink ───────────────────────────────────────────────────────────────
 
 function SidebarLink({ item, badge, onClose }: { item: NavItem; badge?: number; onClose: () => void }) {
+  const location = useLocation()
+
+  const isActive = (() => {
+    if (item.to.includes('?')) {
+      const [path, search] = item.to.split('?')
+      const searchParams = new URLSearchParams(search)
+      const currentParams = new URLSearchParams(location.search)
+
+      const pathMatches = location.pathname === path
+      const paramsMatch = Array.from(searchParams.entries()).every(
+        ([key, val]) => currentParams.get(key) === val
+      )
+      return pathMatches && paramsMatch
+    }
+
+    if (item.to === '/dashboard') {
+      return location.pathname === '/dashboard' || location.pathname === '/'
+    }
+
+    return location.pathname === item.to || (item.to !== '/' && location.pathname.startsWith(item.to + '/'))
+  })()
+
   return (
     <NavLink
       to={item.to}
       onClick={onClose}
-      className={({ isActive }) =>
+      className={
         `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
           isActive
             ? 'bg-yellow-50 text-yellow-700 font-medium'

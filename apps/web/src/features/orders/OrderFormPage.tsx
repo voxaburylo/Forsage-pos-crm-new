@@ -280,7 +280,7 @@ export default function OrderFormPage() {
           </div>
 
           <div className="space-y-3">
-            <div className="grid grid-cols-[1fr_120px_70px_90px_140px_32px] gap-2 text-xs text-gray-500 font-medium px-1">
+            <div className="hidden md:grid grid-cols-[1fr_120px_70px_90px_140px_32px] gap-2 text-xs text-gray-500 font-medium px-1">
               <span>Назва / деталь</span>
               <span>Артикул / OEM</span>
               <span>Кіл-сть</span>
@@ -289,33 +289,89 @@ export default function OrderFormPage() {
               <span />
             </div>
 
-            {items.map((row, i) => (
-              <div key={i} className="grid grid-cols-[1fr_120px_70px_90px_140px_32px] gap-2 items-center">
-                <input type="text" value={row.name} onChange={(e) => updateItem(i, 'name', e.target.value)}
-                  placeholder="Фільтр масляний Toyota 1NZ" required
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full"
-                />
-                <input type="text" value={row.sku} onChange={(e) => updateItem(i, 'sku', e.target.value)}
-                  placeholder="90915-YZZD1"
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full"
-                />
-                <input type="number" min="1" step="any" value={row.qty} onChange={(e) => updateItem(i, 'qty', e.target.value)}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-center"
-                />
-                <input type="number" min="0" step="0.01" value={row.sell_price} onChange={(e) => updateItem(i, 'sell_price', e.target.value)}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-right"
-                />
-                <select value={row.supplier_id} onChange={(e) => updateItem(i, 'supplier_id', e.target.value)}
-                  className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full">
-                  <option value="">— Зі складу —</option>
-                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-                <button type="button" onClick={() => removeItem(i)} disabled={items.length === 1}
-                  className="text-gray-400 hover:text-red-500 disabled:opacity-30 flex items-center justify-center">
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
+            {/* Мобільний вигляд */}
+            <div className="space-y-4 md:hidden">
+              {items.map((row, i) => (
+                <div key={i} className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3 relative shadow-sm">
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-xs font-bold text-gray-500">Позиція #{i + 1}</span>
+                    <button type="button" onClick={() => removeItem(i)} disabled={items.length === 1}
+                      className="text-gray-400 hover:text-red-500 disabled:opacity-30 p-1">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Назва / деталь *</label>
+                    <input type="text" value={row.name} onChange={(e) => updateItem(i, 'name', e.target.value)}
+                      placeholder="Фільтр масляний Toyota 1NZ" required
+                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full bg-white"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Артикул / OEM</label>
+                      <input type="text" value={row.sku} onChange={(e) => updateItem(i, 'sku', e.target.value)}
+                        placeholder="90915-YZZD1"
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Кіл-сть</label>
+                      <input type="number" min="1" step="any" value={row.qty} onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-center bg-white"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Ціна (грн)</label>
+                      <input type="number" min="0" step="0.01" value={row.sell_price} onChange={(e) => updateItem(i, 'sell_price', e.target.value)}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-right bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Постачальник</label>
+                      <select value={row.supplier_id} onChange={(e) => updateItem(i, 'supplier_id', e.target.value)}
+                        className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full bg-white h-[38px]">
+                        <option value="">— Зі складу —</option>
+                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Десктопний вигляд */}
+            <div className="hidden md:block space-y-3">
+              {items.map((row, i) => (
+                <div key={i} className="grid grid-cols-[1fr_120px_70px_90px_140px_32px] gap-2 items-center">
+                  <input type="text" value={row.name} onChange={(e) => updateItem(i, 'name', e.target.value)}
+                    placeholder="Фільтр масляний Toyota 1NZ" required
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full"
+                  />
+                  <input type="text" value={row.sku} onChange={(e) => updateItem(i, 'sku', e.target.value)}
+                    placeholder="90915-YZZD1"
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full"
+                  />
+                  <input type="number" min="1" step="any" value={row.qty} onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-center"
+                  />
+                  <input type="number" min="0" step="0.01" value={row.sell_price} onChange={(e) => updateItem(i, 'sell_price', e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-right"
+                  />
+                  <select value={row.supplier_id} onChange={(e) => updateItem(i, 'supplier_id', e.target.value)}
+                    className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full">
+                    <option value="">— Зі складу —</option>
+                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <button type="button" onClick={() => removeItem(i)} disabled={items.length === 1}
+                    className="text-gray-400 hover:text-red-500 disabled:opacity-30 flex items-center justify-center">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="mt-4 pt-4 border-t border-gray-100 flex justify-end gap-6 text-sm">
