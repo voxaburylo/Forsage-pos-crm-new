@@ -156,15 +156,15 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
         </div>
 
         {/* Preview label */}
-        <div className="border border-dashed border-gray-300 rounded-xl p-3">
-          <p className="text-xs text-gray-400 mb-2">Зразок етикетки:</p>
+        <div className="border border-dashed border-gray-300 rounded-xl p-3 flex flex-col items-center">
+          <p className="text-xs text-gray-400 mb-2 self-start">Зразок етикетки:</p>
           {items[0]?.product && (
-            <div className="inline-block border border-gray-400 rounded p-2 text-xs font-mono" style={{ width: 160 }}>
+            <div className="inline-block border border-gray-400 rounded p-2 text-xs font-mono bg-white" style={{ width: 160 }}>
               <div className="text-gray-400 text-[9px] border-b border-gray-200 mb-1 pb-1">ФОРСАЖ</div>
-              <div className="font-bold text-[10px] leading-tight mb-0.5">{items[0].product!.name}</div>
+              <div className="font-bold text-[10px] leading-tight mb-0.5 truncate">{items[0].product!.name}</div>
               <div className="text-gray-500 text-[9px]">Арт: {items[0].product!.sku}</div>
               {items[0].product!.barcode && (
-                <div className="text-[8px] text-gray-400 font-mono tracking-widest my-0.5">{items[0].product!.barcode}</div>
+                <div className="text-[8px] text-gray-400 font-mono tracking-wide my-0.5 break-all truncate">{items[0].product!.barcode}</div>
               )}
               <div className="font-bold text-sm mt-1">{formatMoney(items[0].product!.retail_price)}</div>
               <div className="text-[8px] text-gray-400">{today}</div>
@@ -172,12 +172,12 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
           )}
         </div>
 
-        <div className="flex gap-3 justify-end pt-2">
-          <Button variant="secondary" onClick={onClose}>Скасувати</Button>
-          <Button variant="outline" onClick={handleThermalPrint} disabled={totalLabels === 0} loading={printingThermal}>
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 sm:justify-end pt-2">
+          <Button variant="secondary" onClick={onClose} className="w-full sm:w-auto">Скасувати</Button>
+          <Button variant="outline" onClick={handleThermalPrint} disabled={totalLabels === 0} loading={printingThermal} className="w-full sm:w-auto">
             Друк на термопринтері
           </Button>
-          <Button onClick={handlePrint} disabled={totalLabels === 0}>
+          <Button onClick={handlePrint} disabled={totalLabels === 0} className="w-full sm:w-auto">
             Друк на А4 ({totalLabels} шт.)
           </Button>
         </div>

@@ -663,7 +663,7 @@ export default function ProductsPage() {
               Вкажіть кількість копій етикеток для кожного обраного товару. Якщо вказати 0, етикетка для цього товару не друкуватиметься.
             </p>
 
-            <div className="border border-gray-200 rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+            <div className="border border-gray-200 rounded-xl overflow-x-auto max-h-96 overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
@@ -701,9 +701,10 @@ export default function ProductsPage() {
               </table>
             </div>
 
-            <div className="flex gap-3 justify-end pt-2 border-t border-gray-100">
-              <Button variant="secondary" onClick={() => setBulkPrintOpen(false)}>Скасувати</Button>
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 sm:justify-end pt-2 border-t border-gray-100">
+              <Button variant="secondary" onClick={() => setBulkPrintOpen(false)} className="w-full sm:w-auto">Скасувати</Button>
               <Button
+                className="w-full sm:w-auto"
                 disabled={Object.values(bulkQtys).reduce((sum, q) => sum + q, 0) === 0}
                 onClick={async () => {
                   try {

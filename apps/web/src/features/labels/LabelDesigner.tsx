@@ -438,7 +438,7 @@ export default function LabelDesigner() {
           <div className="sticky top-6">
             <Card>
               <h3 className="text-sm font-semibold text-gray-800 mb-4">Попередній перегляд</h3>
-              <div className="flex items-center justify-center bg-gray-100 rounded-xl p-4 min-h-[200px]">
+              <div className="flex items-center justify-center bg-gray-100 rounded-xl p-4 min-h-[200px] overflow-x-auto max-w-full">
                 <LabelPreview settings={settings} product={printItems[0] || null} onPosChange={handlePosChange} />
               </div>
               <div className="flex items-center justify-between mt-2">
@@ -563,7 +563,7 @@ export default function LabelDesigner() {
           <div className="space-y-4">
             <Card>
               <h3 className="text-sm font-semibold text-gray-800 mb-3">Попередній перегляд</h3>
-              <div className="flex items-center justify-center bg-gray-100 rounded-xl p-4 min-h-[150px]">
+              <div className="flex items-center justify-center bg-gray-100 rounded-xl p-4 min-h-[150px] overflow-x-auto max-w-full">
                 {binMode ? (
                   <LabelPreview settings={settings} binLabel={binLabels[binLabels.length - 1] || 'A-1'} />
                 ) : (
