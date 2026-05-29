@@ -111,8 +111,8 @@ export const adminApi = {
   listBrands: () => api.get<{ data: Array<{ id: string; name: string; country: string | null }> }>('/api/v1/admin/brands'),
   createBrand: (name: string, country?: string) =>
     api.post('/api/v1/admin/brands', { name, country: country || null }),
-  updateBrand: (id: string, name: string) =>
-    api.put(`/api/v1/admin/brands/${id}`, { name }),
+  updateBrand: (id: string, body: { name?: string; country?: string | null }) =>
+    api.put(`/api/v1/admin/brands/${id}`, body),
   deleteBrand: (id: string) =>
     api.delete(`/api/v1/admin/brands/${id}`),
 

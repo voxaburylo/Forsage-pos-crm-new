@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Users, Package, Tag, Plus, Trash2, UserX, UserCheck, AlertTriangle, Pencil, Check, X } from 'lucide-react'
+import { Users, Package, Tag, Plus, Trash2, UserX, UserCheck, AlertTriangle, Pencil, Check, X, Search, Globe } from 'lucide-react'
 import { adminApi, ROLE_LABELS } from './adminApi'
 import type { AdminUser, UserRole } from './adminApi'
 import { Layout } from '@/components/Layout'
@@ -120,13 +120,14 @@ function UsersTab() {
 
 // ---- Simple CRUD Tab (categories/brands) ----
 function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
-  type Item = { id: string; name: string; country?: string | null; sort_order?: number }
+  type Item = { id: string; name: string; country?: string | null; sort_order?: number; product_count?: number }
   const [items, setItems]         = useState<Item[]>([])
   const [loading, setLoading]     = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [name, setName]           = useState('')
   const [extra, setExtra]         = useState('')
   const [saving, setSaving]       = useState(false)
+  const [search, setSearch]       = useState('')
 
   // --- Reset catalog (тільки для вкладки категорій, тільки owner) ---
   const userRole = useAuthStore((s) => s.session?.user?.user_metadata?.role as string | undefined)
@@ -195,33 +196,47 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
     } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
   }
 
-  // Inline rename
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editName, setEditName]   = useState('')
+  // Inline editing
+  const [editingId, setEditingId]       = useState<string | null>(null)
+  const [editName, setEditName]         = useState('')
+  const [editCountry, setEditCountry]   = useState('')
 
   function startEdit(item: Item) {
     setEditingId(item.id)
     setEditName(item.name)
+    setEditCountry(item.country ?? '')
   }
 
   function cancelEdit() {
     setEditingId(null)
     setEditName('')
+    setEditCountry('')
   }
 
   async function saveEdit(id: string) {
     const trimmed = editName.trim()
     if (!trimmed) { toast.error('Назва не може бути порожньою'); return }
     try {
-      if (type === 'categories') await adminApi.updateCategory(id, trimmed)
-      else await adminApi.updateBrand(id, trimmed)
-      toast.success('Перейменовано')
+      if (type === 'categories') {
+        await adminApi.updateCategory(id, trimmed)
+      } else {
+        await adminApi.updateBrand(id, { name: trimmed, country: editCountry.trim() || null })
+      }
+      toast.success('Збережено')
       cancelEdit()
       load()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка')
     }
   }
+
+  // Filtered items by search
+  const filtered = search.trim()
+    ? items.filter((i) => {
+        const q = search.toLowerCase()
+        return i.name.toLowerCase().includes(q) || (i.country && i.country.toLowerCase().includes(q))
+      })
+    : items
 
   const columns = [
     { key: 'name', header: 'Назва', render: (i: Item) => (
@@ -243,13 +258,30 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
       ) : (
         <div className="group flex items-center gap-2">
           <span className="font-medium">{i.name}</span>
-          <button onClick={() => startEdit(i)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-500 p-0.5 transition-opacity" aria-label="Перейменувати">
+          <button onClick={() => startEdit(i)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-500 p-0.5 transition-opacity" aria-label="Редагувати">
             <Pencil size={12} />
           </button>
         </div>
       )
     )},
-    ...(type === 'brands' ? [{ key: 'country', header: 'Країна', render: (i: Item) => <span className="text-gray-500">{i.country ?? '—'}</span> }] : []),
+    ...(type === 'brands' ? [{ key: 'country', header: 'Країна', className: 'w-40', render: (i: Item) => (
+      editingId === i.id ? (
+        <input
+          value={editCountry}
+          onChange={(e) => setEditCountry(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') saveEdit(i.id)
+            if (e.key === 'Escape') cancelEdit()
+          }}
+          placeholder="Країна"
+          className="w-full text-sm border border-yellow-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-yellow-300"
+        />
+      ) : (
+        <span className="text-gray-500 flex items-center gap-1">
+          {i.country ? <><Globe size={12} className="text-gray-400" />{i.country}</> : '—'}
+        </span>
+      )
+    ) }] : []),
     { key: 'del', header: '', className: 'w-12 text-right', render: (i: Item) => (
       <button onClick={() => askDelete(i)} className="text-red-400 hover:text-red-600" aria-label="Видалити">
         <Trash2 size={14} />
@@ -261,21 +293,39 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
 
   return (
     <>
-      <div className="flex justify-end gap-2 mb-4">
-        {type === 'categories' && isOwner && (
-          <Button
-            variant="danger-outline"
-            icon={<Trash2 size={16} />}
-            onClick={() => setResetOpen(true)}
-          >
-            Очистити каталог
-          </Button>
-        )}
-        <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>{title}</Button>
+      <div className="flex flex-col sm:flex-row justify-between gap-3 mb-4">
+        {/* Пошук */}
+        <div className="relative flex-1 max-w-xs">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={type === 'categories' ? 'Шукати категорію...' : 'Шукати бренд...'}
+            className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-300 bg-white"
+          />
+        </div>
+        <div className="flex gap-2">
+          {type === 'categories' && isOwner && (
+            <Button
+              variant="danger-outline"
+              icon={<Trash2 size={16} />}
+              onClick={() => setResetOpen(true)}
+            >
+              Очистити каталог
+            </Button>
+          )}
+          <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>{title}</Button>
+        </div>
       </div>
+
+      {/* Лічильник */}
+      <p className="text-xs text-gray-400 mb-2">
+        {type === 'categories' ? 'Категорій' : 'Брендів'}: {filtered.length}{search && ` з ${items.length}`}
+      </p>
+
       <Card padding="none">
-        <Table columns={columns} data={items} keyFn={(i) => i.id} loading={loading}
-          empty={<p className="text-gray-400 text-sm">Нічого не знайдено</p>} />
+        <Table columns={columns} data={filtered} keyFn={(i) => i.id} loading={loading}
+          empty={<p className="text-gray-400 text-sm">{search ? 'Нічого не знайдено за запитом' : 'Нічого не знайдено'}</p>} />
       </Card>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={title} size="sm">
