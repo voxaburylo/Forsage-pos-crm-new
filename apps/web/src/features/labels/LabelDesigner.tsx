@@ -36,6 +36,10 @@ export interface LabelSettings {
   pos_sku?: { x: number; y: number }
   pos_price?: { x: number; y: number }
   pos_bin?: { x: number; y: number }
+  // Нові налаштування
+  show_barcode_text: boolean
+  barcode_width_factor: number
+  max_name_lines: number
 }
 
 export const DEFAULT_LABEL: LabelSettings = {
@@ -50,6 +54,9 @@ export const DEFAULT_LABEL: LabelSettings = {
   pos_sku: { x: 5, y: 75 },
   pos_price: { x: 50, y: 75 },
   pos_bin: { x: 5, y: 88 },
+  show_barcode_text: true,
+  barcode_width_factor: 1.0,
+  max_name_lines: 2,
 }
 
 type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' | 'pos_price' | 'pos_bin'
@@ -91,6 +98,29 @@ function MockBarcode({ width, height, value, displayValue = true }:
       )}
     </div>
   )
+}
+
+export const DEMO_PRODUCT: Product = {
+  id: 'demo',
+  name: 'Ремінь ГРМ Ланос 1.5 Gates (Тестовий товар для перевірки переносу)',
+  sku: 'GT-5047',
+  barcode: '4820000000012',
+  retail_price: 65000,
+  storage_bin: 'A-12',
+  unit: 'шт',
+  purchase_price: 45000,
+  qty_on_hand: 10,
+  reorder_point: 2,
+  is_active: true,
+  is_favorite: false,
+  category_id: '',
+  brand_id: '',
+  created_at: '',
+  updated_at: '',
+  notes: null,
+  is_service: false,
+  photo_url: null,
+  specs: null,
 }
 
 // ================================================================
@@ -156,10 +186,10 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         defaultPos: settings.pos_barcode,
         children: (
           <MockBarcode
-            width={settings.width_mm * previewScale * 0.7}
+            width={settings.width_mm * previewScale * 0.7 * (settings.barcode_width_factor ?? 1.0)}
             height={settings.barcode_height}
             value={binLabel}
-            displayValue={false}
+            displayValue={settings.show_barcode_text}
           />
         ),
       })
@@ -178,7 +208,7 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
             wordBreak: 'break-word',
             lineHeight: 1.1,
             display: '-webkit-box',
-            WebkitLineClamp: 2,
+            WebkitLineClamp: settings.max_name_lines ?? 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
             width: pw * (95 - (settings.pos_product_name?.x ?? 5)) / 100 + 'px',
@@ -188,17 +218,19 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         ),
       })
     }
-    if (settings.show_barcode && product.barcode) {
+    if (settings.show_barcode) {
+      // Якщо в товару немає штрих-коду, все одно показуємо плейсхолдер у прев'ю
+      const barcodeVal = product.barcode || '123456789012'
       items.push({
         key: 'pos_barcode',
         visible: settings.show_barcode,
         defaultPos: settings.pos_barcode,
         children: (
           <MockBarcode
-            width={settings.width_mm * previewScale * 0.7}
+            width={settings.width_mm * previewScale * 0.7 * (settings.barcode_width_factor ?? 1.0)}
             height={settings.barcode_height}
-            value={product.barcode}
-            displayValue={true}
+            value={barcodeVal}
+            displayValue={settings.show_barcode_text}
           />
         ),
       })
@@ -310,7 +342,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     } else if (product) {
       if (settings.show_product_name) {
         const pName = settings.pos_product_name || { x: 5, y: 25 }
-        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${95 - pName.x}%; font-size: ${settings.font_size_title}px; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${product.name}</div>`
+        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${95 - pName.x}%; font-size: ${settings.font_size_title}px; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: ${settings.max_name_lines ?? 2}; -webkit-box-orient: vertical; max-height: ${(settings.max_name_lines ?? 2) * 1.1}em; overflow: hidden; white-space: normal;">${product.name}</div>`
       }
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
@@ -367,11 +399,11 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
       if (isBins) {
         const bin = (i as any).label
         if (!bin || !settings.show_barcode) return ''
-        return `JsBarcode('#bin-bc-${idx}', '${bin}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: false });`
+        return `JsBarcode('#bin-bc-${idx}', '${bin}', { width: ${(settings.barcode_width_factor ?? 1.0) * 1.2}, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: ${settings.show_barcode_text ?? true} });`
       }
       const p = i as Product
       if (!p.barcode) return ''
-      return `JsBarcode('#bc-${p.id}-${idx}', '${p.barcode}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: true });`
+      return `JsBarcode('#bc-${p.id}-${idx}', '${p.barcode}', { width: ${(settings.barcode_width_factor ?? 1.0) * 1.2}, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: ${settings.show_barcode_text ?? true} });`
     }).filter(Boolean).join('\n')} } catch(e) {}
     window.onload = function() { setTimeout(function() { window.print(); window.close(); }, 500); };
   </script>
@@ -405,6 +437,30 @@ export default function LabelDesigner() {
   const [binMode, setBinMode] = useState(false)
   const [binInput, setBinInput] = useState('')
   const [binLabels, setBinLabels] = useState<string[]>([])
+
+  // Стан для масового створення ячейок
+  const [binPrefix, setBinPrefix] = useState('A-')
+  const [binStart, setBinStart] = useState(1)
+  const [binEnd, setBinEnd] = useState(10)
+
+  function handleGenerateBinSeries() {
+    if (binStart > binEnd) {
+      toast.error('Початковий номер має бути меншим за кінцевий')
+      return
+    }
+    const count = binEnd - binStart + 1
+    if (count > 200) {
+      toast.error('За один раз можна згенерувати не більше 200 ячейок')
+      return
+    }
+    const newBins: string[] = []
+    for (let i = binStart; i <= binEnd; i++) {
+      newBins.push(`${binPrefix}${i}`)
+    }
+    setBinLabels((prev) => [...prev, ...newBins])
+    toast.success(`Згенеровано та додано ${count} ячейок`)
+  }
+
 
   // Categories/Brands для группового додавання
   const [categories, setCategories] = useState<any[]>([])
@@ -489,24 +545,36 @@ export default function LabelDesigner() {
 
   // Завантаження товарів з обраної накладної
   async function loadInvoiceItems(invoiceId: string) {
+    setInvoicesLoading(true)
     try {
       const { data } = await supplierApi.getInvoice(invoiceId)
       const items = data.items || []
       const validItems = items.filter((i) => i.product)
       if (validItems.length === 0) {
         toast.error('У цій накладній немає товарів')
+        setInvoicesLoading(false)
         return
       }
 
+      const fullProducts = await Promise.all(
+        validItems.map(async (item) => {
+          try {
+            const res = await productApi.get(item.product!.id)
+            return { ...res.data, copies: item.qty }
+          } catch {
+            return { ...item.product!, copies: item.qty }
+          }
+        })
+      )
+
       setPrintItems((prev) => {
         const merged = [...prev]
-        validItems.forEach((item) => {
-          const prod = item.product!
+        fullProducts.forEach((prod) => {
           const existing = merged.find((p) => p.id === prod.id)
           if (existing) {
-            existing.copies += item.qty
+            existing.copies += prod.copies
           } else {
-            merged.push({ ...prod, copies: item.qty } as any)
+            merged.push(prod as any)
           }
         })
         return merged
@@ -516,6 +584,8 @@ export default function LabelDesigner() {
       setIsInvoiceModalOpen(false)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка завантаження накладної')
+    } finally {
+      setInvoicesLoading(false)
     }
   }
 
@@ -624,6 +694,12 @@ export default function LabelDesigner() {
                 <Input label="Ціна" type="number" min={4} max={30} value={settings.font_size_price}
                   onChange={(e) => updateSetting('font_size_price', parseInt(e.target.value) || 12)} />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Рядків назви (макс)" type="number" min={1} max={5} value={settings.max_name_lines}
+                  onChange={(e) => updateSetting('max_name_lines', parseInt(e.target.value) || 2)} />
+                <Input label="Ширина штрих-коду" type="number" min={0.5} max={2.5} step={0.1} value={settings.barcode_width_factor}
+                  onChange={(e) => updateSetting('barcode_width_factor', parseFloat(e.target.value) || 1.0)} />
+              </div>
               <Input label="Базовий розмір (штрих-код)" type="number" min={4} max={20} value={settings.font_size}
                 onChange={(e) => updateSetting('font_size', parseInt(e.target.value) || 7)} />
               <Input label="Висота штрих-коду (px)" type="number" min={10} max={60} value={settings.barcode_height}
@@ -636,6 +712,7 @@ export default function LabelDesigner() {
                 { key: 'show_shop_name', label: 'Назва магазину' },
                 { key: 'show_product_name', label: 'Назва товару' },
                 { key: 'show_barcode', label: 'Штрих-код' },
+                { key: 'show_barcode_text', label: 'Текст під штрих-кодом' },
                 { key: 'show_sku', label: 'Артикул' },
                 { key: 'show_price', label: 'Ціна' },
                 { key: 'show_storage_bin', label: 'Місце зберігання' },
@@ -663,12 +740,12 @@ export default function LabelDesigner() {
             <Card>
               <h3 className="text-sm font-semibold text-gray-800 mb-4">Попередній перегляд</h3>
               <div className="flex items-center justify-center bg-gray-100 rounded-xl p-4 min-h-[200px] overflow-x-auto max-w-full">
-                <LabelPreview settings={settings} product={printItems[0] || null} onPosChange={handlePosChange} />
+                <LabelPreview settings={settings} product={printItems[0] || DEMO_PRODUCT} onPosChange={handlePosChange} />
               </div>
               <div className="flex items-center justify-between mt-2">
                 <p className="text-xs text-gray-400">
                   [{settings.width_mm}×{settings.height_mm}mm]
-                  {printItems.length > 0 ? ` · ${printItems[0].name}` : ''}
+                  {printItems.length > 0 ? ` · ${printItems[0].name}` : ` · ${DEMO_PRODUCT.name}`}
                 </p>
                 <p className="text-xs text-gray-400">
                   <Move size={10} className="inline" /> Тягніть елементи мишкою
@@ -765,13 +842,48 @@ export default function LabelDesigner() {
                 </div>
               </>
             ) : (
-              <div className="flex gap-2">
-                <Input value={binInput} onChange={(e) => setBinInput(e.target.value.toUpperCase())}
-                  placeholder="Назва ячейки: A-3, B12, Стелаж 5..."
-                  className="flex-1" />
-                <Button size="sm" onClick={() => { if (binInput.trim()) { setBinLabels((prev) => [...prev, binInput.trim()]); setBinInput('') } }}>
-                  <Plus size={14} />
-                </Button>
+              <div className="space-y-4">
+                {/* Поштучне додавання */}
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-2">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    Поштучне додавання ячейки
+                  </label>
+                  <div className="flex gap-2">
+                    <Input value={binInput} onChange={(e) => setBinInput(e.target.value.toUpperCase())}
+                      placeholder="Назва ячейки: A-3, B12, Стелаж 5..."
+                      className="flex-1" />
+                    <Button size="sm" onClick={() => { if (binInput.trim()) { setBinLabels((prev) => [...prev, binInput.trim()]); setBinInput('') } }}>
+                      <Plus size={14} />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Масове генерування серії ячейок */}
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-3">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    Масове генерування ячейок
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Префікс</label>
+                      <input type="text" value={binPrefix} onChange={(e) => setBinPrefix(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Початок (№)</label>
+                      <input type="number" min={1} value={binStart} onChange={(e) => setBinStart(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Кінець (№)</label>
+                      <input type="number" min={1} value={binEnd} onChange={(e) => setBinEnd(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={handleGenerateBinSeries} className="w-full">
+                    Згенерувати серію ячейок
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -840,7 +952,7 @@ export default function LabelDesigner() {
                 {binMode ? (
                   <LabelPreview settings={settings} binLabel={binLabels[binLabels.length - 1] || 'A-1'} />
                 ) : (
-                  <LabelPreview settings={settings} product={printItems[0] || null} />
+                  <LabelPreview settings={settings} product={printItems[0] || DEMO_PRODUCT} />
                 )}
               </div>
             </Card>
