@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Rnd } from 'react-rnd'
-import { Save, Printer, Plus, Trash2, Copy, Settings, Tag, Move } from 'lucide-react'
+import { Save, Printer, Plus, Trash2, Copy, Settings, Tag, Move, FileText, Loader2 } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import { productApi } from '@/features/products/productApi'
+import { supplierApi } from '@/features/suppliers/supplierApi'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Input } from '@/components/ui'
+import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 
 type Tab = 'design' | 'print'
@@ -54,12 +55,50 @@ export const DEFAULT_LABEL: LabelSettings = {
 type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' | 'pos_price' | 'pos_bin'
 
 // ================================================================
+// Малюємо фейковий штрих-код для попереднього перегляду
+// ================================================================
+function MockBarcode({ width, height, value, displayValue = true }:
+  { width: number; height: number; value: string; displayValue?: boolean }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: width + 'px' }}>
+      <svg width={width} height={height} viewBox="0 0 100 35" preserveAspectRatio="none" style={{ display: 'block' }}>
+        <rect x="0" y="0" width="3" height="35" fill="black" />
+        <rect x="5" y="0" width="1" height="35" fill="black" />
+        <rect x="8" y="0" width="2" height="35" fill="black" />
+        <rect x="12" y="0" width="4" height="35" fill="black" />
+        <rect x="18" y="0" width="1" height="35" fill="black" />
+        <rect x="21" y="0" width="3" height="35" fill="black" />
+        <rect x="26" y="0" width="2" height="35" fill="black" />
+        <rect x="30" y="0" width="1" height="35" fill="black" />
+        <rect x="33" y="0" width="3" height="35" fill="black" />
+        <rect x="38" y="0" width="4" height="35" fill="black" />
+        <rect x="44" y="0" width="1" height="35" fill="black" />
+        <rect x="47" y="0" width="2" height="35" fill="black" />
+        <rect x="51" y="0" width="3" height="35" fill="black" />
+        <rect x="56" y="0" width="1" height="35" fill="black" />
+        <rect x="59" y="0" width="4" height="35" fill="black" />
+        <rect x="65" y="0" width="2" height="35" fill="black" />
+        <rect x="69" y="0" width="1" height="35" fill="black" />
+        <rect x="72" y="0" width="3" height="35" fill="black" />
+        <rect x="77" y="0" width="2" height="35" fill="black" />
+        <rect x="81" y="0" width="4" height="35" fill="black" />
+        <rect x="87" y="0" width="1" height="35" fill="black" />
+        <rect x="90" y="0" width="3" height="35" fill="black" />
+        <rect x="95" y="0" width="2" height="35" fill="black" />
+      </svg>
+      {displayValue && (
+        <span style={{ fontSize: '8px', color: '#333', fontFamily: 'monospace', marginTop: '2px', letterSpacing: '1px' }}>{value}</span>
+      )}
+    </div>
+  )
+}
+
+// ================================================================
 // Preview-компонент етикетки (рендериться в реальному часі)
 // ================================================================
 function LabelPreview({ settings, product, binLabel, onPosChange }:
   { settings: LabelSettings; product?: Product | null; binLabel?: string; onPosChange?: (key: PosKey, pos: { x: number; y: number }) => void }) {
   const shopName = 'Форсаж'
-  // Більший масштаб для зручного перетягування
   const previewScale = 5
   const pw = settings.width_mm * previewScale
   const ph = settings.height_mm * previewScale
@@ -68,32 +107,85 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
 
   const items: RndItem[] = []
 
+  // Спільна логіка відображення назви магазину
   if (settings.show_shop_name) {
     items.push({
       key: 'pos_shop_name',
       visible: settings.show_shop_name,
       defaultPos: settings.pos_shop_name,
-      children: <div style={{ fontSize: settings.font_size_shop * previewScale + 'px', color: '#888' }}>{shopName}</div>,
+      children: (
+        <div style={{
+          fontSize: settings.font_size_shop * previewScale + 'px',
+          color: '#888',
+          width: pw * (95 - (settings.pos_shop_name?.x ?? 5)) / 100 + 'px',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
+          {shopName}
+        </div>
+      ),
     })
   }
 
   if (binLabel) {
+    // Режим ячейки
     items.push({
       key: 'pos_bin',
       visible: true,
       defaultPos: settings.pos_bin,
-      children: <div style={{
-        fontSize: Math.min(settings.font_size_title * previewScale, settings.width_mm * 1.5) + 'px',
-        fontWeight: 700, textAlign: 'center',
-      }}>{binLabel}</div>,
+      children: (
+        <div style={{
+          fontSize: Math.min(settings.font_size_title * previewScale, settings.width_mm * 1.5) + 'px',
+          fontWeight: 700,
+          textAlign: 'center',
+          width: pw * (95 - (settings.pos_bin?.x ?? 5)) / 100 + 'px',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
+          {binLabel}
+        </div>
+      ),
     })
+
+    if (settings.show_barcode) {
+      items.push({
+        key: 'pos_barcode',
+        visible: settings.show_barcode,
+        defaultPos: settings.pos_barcode,
+        children: (
+          <MockBarcode
+            width={settings.width_mm * previewScale * 0.7}
+            height={settings.barcode_height}
+            value={binLabel}
+            displayValue={false}
+          />
+        ),
+      })
+    }
   } else if (product) {
+    // Режим товару
     if (settings.show_product_name) {
       items.push({
         key: 'pos_product_name',
         visible: settings.show_product_name,
         defaultPos: settings.pos_product_name,
-        children: <div style={{ fontSize: settings.font_size_title * previewScale + 'px', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{product.name}</div>,
+        children: (
+          <div style={{
+            fontSize: settings.font_size_title * previewScale + 'px',
+            fontWeight: 700,
+            wordBreak: 'break-word',
+            lineHeight: 1.1,
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            width: pw * (95 - (settings.pos_product_name?.x ?? 5)) / 100 + 'px',
+          }}>
+            {product.name}
+          </div>
+        ),
       })
     }
     if (settings.show_barcode && product.barcode) {
@@ -101,7 +193,14 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         key: 'pos_barcode',
         visible: settings.show_barcode,
         defaultPos: settings.pos_barcode,
-        children: <div style={{ fontSize: settings.font_size * previewScale + 'px', color: '#999', textAlign: 'center' }}>[{product.barcode}]</div>,
+        children: (
+          <MockBarcode
+            width={settings.width_mm * previewScale * 0.7}
+            height={settings.barcode_height}
+            value={product.barcode}
+            displayValue={true}
+          />
+        ),
       })
     }
     if (settings.show_sku || settings.show_storage_bin) {
@@ -109,10 +208,19 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         key: 'pos_sku',
         visible: settings.show_sku,
         defaultPos: settings.pos_sku,
-        children: <div style={{ fontSize: settings.font_size_sku * previewScale + 'px', color: '#888' }}>
-          {settings.show_sku && product.sku}
-          {settings.show_storage_bin && (product as any).storage_bin && <span> · {(product as any).storage_bin}</span>}
-        </div>,
+        children: (
+          <div style={{
+            fontSize: settings.font_size_sku * previewScale + 'px',
+            color: '#888',
+            width: pw * (95 - (settings.pos_sku?.x ?? 5)) / 100 + 'px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {settings.show_sku && product.sku}
+            {settings.show_storage_bin && (product as any).storage_bin && <span> · {(product as any).storage_bin}</span>}
+          </div>
+        ),
       })
     }
     if (settings.show_price) {
@@ -120,7 +228,18 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         key: 'pos_price',
         visible: settings.show_price,
         defaultPos: settings.pos_price,
-        children: <div style={{ fontSize: settings.font_size_price * previewScale + 'px', fontWeight: 700 }}>{kopecksToHryvnia(product.retail_price)} ₴</div>,
+        children: (
+          <div style={{
+            fontSize: settings.font_size_price * previewScale + 'px',
+            fontWeight: 700,
+            width: pw * (95 - (settings.pos_price?.x ?? 5)) / 100 + 'px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {kopecksToHryvnia(product.retail_price)} ₴
+          </div>
+        ),
       })
     }
   }
@@ -177,39 +296,43 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     let body = ''
 
     if (settings.show_shop_name) {
-      body += `<div style="font-size:${settings.font_size}px;color:#666;">${shopName}</div>`
+      const pShop = settings.pos_shop_name || { x: 5, y: 5 }
+      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${95 - pShop.x}%; font-size: ${settings.font_size_shop}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${shopName}</div>`
     }
 
     if (binLabel) {
-      body += `<div style="font-size:${Math.min(settings.font_size * 2, settings.width_mm * 0.7)}px;font-weight:700;text-align:center;margin:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${binLabel}</div>`
+      const pBin = settings.pos_bin || { x: 5, y: 88 }
+      body += `<div style="position: absolute; left: ${pBin.x}%; top: ${pBin.y}%; width: ${95 - pBin.x}%; font-size: ${settings.font_size_title + 2}px; font-weight: 700; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${binLabel}</div>`
       if (settings.show_barcode) {
-        body += `<div style="text-align:center;margin:1mm 0;"><svg id="bin-bc-${index}"></svg></div>`
+        const pBc = settings.pos_barcode || { x: 10, y: 45 }
+        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%;"><svg id="bin-bc-${index}"></svg></div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
-        body += `<div style="font-size:${settings.font_size + 2}px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${product.name}</div>`
+        const pName = settings.pos_product_name || { x: 5, y: 25 }
+        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${95 - pName.x}%; font-size: ${settings.font_size_title}px; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${product.name}</div>`
       }
       if (settings.show_barcode && product.barcode) {
-        body += `<div style="text-align:center;margin:1mm 0;"><svg id="bc-${product.id}-${index}"></svg></div>`
+        const pBc = settings.pos_barcode || { x: 10, y: 45 }
+        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%;"><svg id="bc-${product.id}-${index}"></svg></div>`
       }
-      body += `<div style="display:flex;justify-content:space-between;align-items:baseline;">`
-      body += `<div style="font-size:${settings.font_size - 1}px;color:#666;">`
-      if (settings.show_sku) body += product.sku
-      if (settings.show_storage_bin && (product as any).storage_bin) body += ` · ${(product as any).storage_bin}`
-      body += `</div>`
-      if (settings.show_price) body += `<div style="font-size:${settings.font_size + 5}px;font-weight:700;">${kopecksToHryvnia(product.retail_price)} ₴</div>`
-      body += `</div>`
+      if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
+        const pSku = settings.pos_sku || { x: 5, y: 75 }
+        let skuText = ''
+        if (settings.show_sku) skuText += product.sku
+        if (settings.show_storage_bin && (product as any).storage_bin) skuText += ` · ${(product as any).storage_bin}`
+        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${95 - pSku.x}%; font-size: ${settings.font_size_sku}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${skuText}</div>`
+      }
+      if (settings.show_price) {
+        const pPrice = settings.pos_price || { x: 50, y: 75 }
+        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${95 - pPrice.x}%; font-size: ${settings.font_size_price}px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${kopecksToHryvnia(product.retail_price)} ₴</div>`
+      }
     }
-
-    const jsCode = product?.barcode
-      ? `JsBarcode('#bc-${product.id}-${index}', '${product.barcode}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: true });`
-      : ''
 
     return `
       <div class="label">
         ${body}
       </div>
-      <script>${jsCode}</script>
     `
   }).join('')
 
@@ -231,8 +354,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   .label {
     width: ${w - settings.padding_mm * 2}mm;
     height: ${h - settings.padding_mm * 2}mm;
-    display: flex; flex-direction: column;
-    justify-content: space-between;
+    position: relative;
     page-break-inside: avoid;
     page-break-after: always;
   }
@@ -284,7 +406,20 @@ export default function LabelDesigner() {
   const [binInput, setBinInput] = useState('')
   const [binLabels, setBinLabels] = useState<string[]>([])
 
-  // Завантажуємо налаштування
+  // Categories/Brands для группового додавання
+  const [categories, setCategories] = useState<any[]>([])
+  const [brands, setBrands] = useState<any[]>([])
+  const [selectedCatId, setSelectedCatId] = useState('')
+  const [selectedBrandId, setSelectedBrandId] = useState('')
+  const [groupCopies, setGroupCopies] = useState(1)
+  const [groupLoading, setGroupLoading] = useState(false)
+
+  // Накладні для імпорту
+  const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false)
+  const [invoices, setInvoices] = useState<any[]>([])
+  const [invoicesLoading, setInvoicesLoading] = useState(false)
+
+  // Завантажуємо налаштування, категорії та бренди
   useEffect(() => {
     adminApi.getSettings()
       .then((res) => {
@@ -294,6 +429,9 @@ export default function LabelDesigner() {
       })
       .catch(() => toast.error('Помилка завантаження налаштувань'))
       .finally(() => setLoading(false))
+
+    adminApi.listCategories().then((res) => setCategories(res.data)).catch(() => {})
+    adminApi.listBrands().then((res) => setBrands(res.data)).catch(() => {})
   }, [])
 
   // Пошук товарів
@@ -333,6 +471,92 @@ export default function LabelDesigner() {
     }
     setSearchQuery('')
     setSearchResults([])
+  }
+
+  // Відкриття модалки накладних та завантаження списку
+  async function openInvoiceModal() {
+    setIsInvoiceModalOpen(true)
+    setInvoicesLoading(true)
+    try {
+      const res = await supplierApi.listInvoices({ per_page: 50 })
+      setInvoices(res.data || [])
+    } catch {
+      toast.error('Помилка завантаження накладних')
+    } finally {
+      setInvoicesLoading(false)
+    }
+  }
+
+  // Завантаження товарів з обраної накладної
+  async function loadInvoiceItems(invoiceId: string) {
+    try {
+      const { data } = await supplierApi.getInvoice(invoiceId)
+      const items = data.items || []
+      const validItems = items.filter((i) => i.product)
+      if (validItems.length === 0) {
+        toast.error('У цій накладній немає товарів')
+        return
+      }
+
+      setPrintItems((prev) => {
+        const merged = [...prev]
+        validItems.forEach((item) => {
+          const prod = item.product!
+          const existing = merged.find((p) => p.id === prod.id)
+          if (existing) {
+            existing.copies += item.qty
+          } else {
+            merged.push({ ...prod, copies: item.qty } as any)
+          }
+        })
+        return merged
+      })
+
+      toast.success(`Додано ${validItems.length} товарів з накладної`)
+      setIsInvoiceModalOpen(false)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка завантаження накладної')
+    }
+  }
+
+  // Додавання товарів групою (за категорією/брендом)
+  async function handleAddGroup() {
+    if (!selectedCatId && !selectedBrandId) {
+      toast.error('Виберіть категорію або бренд')
+      return
+    }
+    setGroupLoading(true)
+    try {
+      const { data } = await productApi.list({
+        category_id: selectedCatId || undefined,
+        brand_id: selectedBrandId || undefined,
+        per_page: 500,
+      })
+
+      if (!data || data.length === 0) {
+        toast.error('Товарів не знайдено за вибраними фільтрами')
+        return
+      }
+
+      setPrintItems((prev) => {
+        const merged = [...prev]
+        data.forEach((prod) => {
+          const existing = merged.find((p) => p.id === prod.id)
+          if (existing) {
+            existing.copies += groupCopies
+          } else {
+            merged.push({ ...prod, copies: groupCopies })
+          }
+        })
+        return merged
+      })
+
+      toast.success(`Додано ${data.length} товарів`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка завантаження товарів')
+    } finally {
+      setGroupLoading(false)
+    }
   }
 
   function handlePrint() {
@@ -477,19 +701,68 @@ export default function LabelDesigner() {
 
             {!binMode ? (
               <>
-                <Input label="Пошук товарів" value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)} placeholder="Назва, артикул..." />
-                {searchResults.length > 0 && (
-                  <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y">
-                    {searchResults.map((p) => (
-                      <button key={p.id} onClick={() => addToPrint(p)}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-yellow-50 flex items-center justify-between transition-colors">
-                        <span className="font-medium">{p.name}</span>
-                        <span className="text-xs text-gray-400">{p.sku} · {kopecksToHryvnia(p.retail_price)} ₴</span>
-                      </button>
-                    ))}
+                {/* Джерело додавання */}
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">
+                      Поштучне додавання
+                    </label>
+                    <Input value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)} placeholder="Назва товару, артикул..." />
+                    {searchResults.length > 0 && (
+                      <div className="mt-2 max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y bg-white">
+                        {searchResults.map((p) => (
+                          <button key={p.id} onClick={() => addToPrint(p)}
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-yellow-50 flex items-center justify-between transition-colors">
+                            <span className="font-medium">{p.name}</span>
+                            <span className="text-xs text-gray-400">{p.sku} · {kopecksToHryvnia(p.retail_price)} ₴</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
+
+                  <div className="border-t border-gray-200 pt-4 flex gap-3">
+                    <Button variant="outline" size="sm" onClick={openInvoiceModal} className="flex-1">
+                      <FileText size={14} className="mr-1.5" /> Завантажити з накладної
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Групове додавання за категорією/брендом */}
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-3">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    Групове додавання товарів
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Категорія</label>
+                      <select value={selectedCatId} onChange={(e) => setSelectedCatId(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white">
+                        <option value="">Усі категорії</option>
+                        {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Бренд</label>
+                      <select value={selectedBrandId} onChange={(e) => setSelectedBrandId(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white">
+                        <option value="">Усі бренди</option>
+                        {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex gap-3 items-end pt-1">
+                    <div className="w-24">
+                      <label className="block text-[10px] text-gray-400 mb-1">Кількість копій</label>
+                      <input type="number" min={1} value={groupCopies} onChange={(e) => setGroupCopies(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
+                    </div>
+                    <Button size="sm" onClick={handleAddGroup} loading={groupLoading} className="flex-1">
+                      <Plus size={14} className="mr-1.5" /> Додати групу
+                    </Button>
+                  </div>
+                </div>
               </>
             ) : (
               <div className="flex gap-2">
@@ -520,7 +793,7 @@ export default function LabelDesigner() {
               {!binMode ? (
                 <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
                   {printItems.length === 0 ? (
-                    <p className="text-gray-400 text-sm text-center py-8">Додайте товари через пошук</p>
+                    <p className="text-gray-400 text-sm text-center py-8">Додайте товари через пошук або накладну</p>
                   ) : (
                     printItems.map((item) => (
                       <div key={item.id} className="px-4 py-2 flex items-center justify-between text-sm">
@@ -578,6 +851,39 @@ export default function LabelDesigner() {
           </div>
         </div>
       )}
+
+      {/* Модалка вибору накладної */}
+      <Modal open={isInvoiceModalOpen} onClose={() => setIsInvoiceModalOpen(false)} title="Виберіть приходну накладну" size="lg">
+        <div className="space-y-4">
+          {invoicesLoading ? (
+            <div className="text-center py-8 text-sm text-gray-400 flex justify-center items-center gap-2">
+              <Loader2 className="animate-spin" size={16} /> Завантаження накладних...
+            </div>
+          ) : invoices.length === 0 ? (
+            <div className="text-center py-8 text-sm text-gray-400">Накладних не знайдено</div>
+          ) : (
+            <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-xl divide-y">
+              {invoices.map((inv) => (
+                <div key={inv.id} className="p-3 flex justify-between items-center hover:bg-gray-50 transition-colors">
+                  <div>
+                    <p className="font-semibold text-sm text-gray-900">Накладна №{inv.invoice_number || '—'}</p>
+                    <p className="text-xs text-gray-400">
+                      Постачальник: {inv.supplier?.name || '—'} · Дата: {new Date(inv.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-gray-700">{kopecksToHryvnia(inv.total)} ₴</span>
+                    <Button size="sm" onClick={() => loadInvoiceItems(inv.id)}>Вибрати</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end pt-2 border-t border-gray-100">
+            <Button variant="secondary" onClick={() => setIsInvoiceModalOpen(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }
