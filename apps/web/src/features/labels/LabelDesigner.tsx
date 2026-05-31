@@ -475,6 +475,11 @@ export default function LabelDesigner() {
   const [invoices, setInvoices] = useState<any[]>([])
   const [invoicesLoading, setInvoicesLoading] = useState(false)
 
+  // Стратегія кількості етикеток при імпорті з накладної
+  const [invoiceCopiesStrategy, setInvoiceCopiesStrategy] = useState<'invoice_qty' | 'fixed'>('invoice_qty')
+  const [invoiceFixedCopies, setInvoiceFixedCopies] = useState(1)
+
+
   // Завантажуємо налаштування, категорії та бренди
   useEffect(() => {
     adminApi.getSettings()
@@ -558,11 +563,12 @@ export default function LabelDesigner() {
 
       const fullProducts = await Promise.all(
         validItems.map(async (item) => {
+          const qty = invoiceCopiesStrategy === 'invoice_qty' ? item.qty : invoiceFixedCopies
           try {
             const res = await productApi.get(item.product!.id)
-            return { ...res.data, copies: item.qty }
+            return { ...res.data, copies: qty }
           } catch {
-            return { ...item.product!, copies: item.qty }
+            return { ...item.product!, copies: qty }
           }
         })
       )
@@ -649,19 +655,36 @@ export default function LabelDesigner() {
 
   return (
     <Layout title="Друк етикеток">
-      <div className="flex gap-2 mb-6">
-        <button onClick={() => setTab('design')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            tab === 'design' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
-          }`}>
-          <Settings size={16} /> Дизайнер
-        </button>
-        <button onClick={() => setTab('print')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            tab === 'print' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
-          }`}>
-          <Printer size={16} /> Друк
-        </button>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div className="flex gap-2">
+          <button onClick={() => setTab('design')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'design' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
+            }`}>
+            <Settings size={16} /> Дизайнер
+          </button>
+          <button onClick={() => setTab('print')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'print' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
+            }`}>
+            <Printer size={16} /> Друк
+          </button>
+        </div>
+
+        <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
+          <button onClick={() => setBinMode(false)}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+              !binMode ? 'bg-white text-black shadow-sm' : 'bg-transparent text-gray-600 hover:text-gray-900'
+            }`}>
+            <Tag size={14} className="inline mr-1" />Товари
+          </button>
+          <button onClick={() => setBinMode(true)}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+              binMode ? 'bg-white text-black shadow-sm' : 'bg-transparent text-gray-600 hover:text-gray-900'
+            }`}>
+            <Copy size={14} className="inline mr-1" />Ячейки (Bins)
+          </button>
+        </div>
       </div>
 
       {tab === 'design' && (
@@ -740,12 +763,20 @@ export default function LabelDesigner() {
             <Card>
               <h3 className="text-sm font-semibold text-gray-800 mb-4">Попередній перегляд</h3>
               <div className="flex items-center justify-center bg-gray-100 rounded-xl p-4 min-h-[200px] overflow-x-auto max-w-full">
-                <LabelPreview settings={settings} product={printItems[0] || DEMO_PRODUCT} onPosChange={handlePosChange} />
+                {binMode ? (
+                  <LabelPreview settings={settings} binLabel={binLabels[binLabels.length - 1] || 'A-1'} onPosChange={handlePosChange} />
+                ) : (
+                  <LabelPreview settings={settings} product={printItems[0] || DEMO_PRODUCT} onPosChange={handlePosChange} />
+                )}
               </div>
               <div className="flex items-center justify-between mt-2">
                 <p className="text-xs text-gray-400">
                   [{settings.width_mm}×{settings.height_mm}mm]
-                  {printItems.length > 0 ? ` · ${printItems[0].name}` : ` · ${DEMO_PRODUCT.name}`}
+                  {binMode ? (
+                    ` · Ячейка: ${binLabels[binLabels.length - 1] || 'A-1'}`
+                  ) : (
+                    printItems.length > 0 ? ` · ${printItems[0].name}` : ` · ${DEMO_PRODUCT.name}`
+                  )}
                 </p>
                 <p className="text-xs text-gray-400">
                   <Move size={10} className="inline" /> Тягніть елементи мишкою
@@ -760,22 +791,6 @@ export default function LabelDesigner() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Пошук та додавання */}
           <div className="space-y-4">
-            {/* Перемикач: Товари / Ячейки */}
-            <div className="flex gap-2">
-              <button onClick={() => setBinMode(false)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  !binMode ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600'
-                }`}>
-                <Tag size={14} className="inline mr-1" />Товари
-              </button>
-              <button onClick={() => setBinMode(true)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  binMode ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600'
-                }`}>
-                <Copy size={14} className="inline mr-1" />Ячейки (Bins)
-              </button>
-            </div>
-
             {!binMode ? (
               <>
                 {/* Джерело додавання */}
@@ -974,22 +989,43 @@ export default function LabelDesigner() {
           ) : invoices.length === 0 ? (
             <div className="text-center py-8 text-sm text-gray-400">Накладних не знайдено</div>
           ) : (
-            <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-xl divide-y">
-              {invoices.map((inv) => (
-                <div key={inv.id} className="p-3 flex justify-between items-center hover:bg-gray-50 transition-colors">
-                  <div>
-                    <p className="font-semibold text-sm text-gray-900">Накладна №{inv.invoice_number || '—'}</p>
-                    <p className="text-xs text-gray-400">
-                      Постачальник: {inv.supplier?.name || '—'} · Дата: {new Date(inv.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-semibold text-gray-700">{kopecksToHryvnia(inv.total)} ₴</span>
-                    <Button size="sm" onClick={() => loadInvoiceItems(inv.id)}>Вибрати</Button>
-                  </div>
+            <>
+              {/* Опції кількості */}
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 flex flex-wrap gap-4 items-center justify-between">
+                <span className="text-xs font-semibold text-gray-700">Кількість етикеток для кожного товару при імпорті:</span>
+                <div className="flex gap-4 items-center">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                    <input type="radio" checked={invoiceCopiesStrategy === 'invoice_qty'} onChange={() => setInvoiceCopiesStrategy('invoice_qty')} className="text-accent" />
+                    Кількість з накладної
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                    <input type="radio" checked={invoiceCopiesStrategy === 'fixed'} onChange={() => setInvoiceCopiesStrategy('fixed')} className="text-accent" />
+                    Фіксована кількість:
+                  </label>
+                  {invoiceCopiesStrategy === 'fixed' && (
+                    <input type="number" min={1} value={invoiceFixedCopies} onChange={(e) => setInvoiceFixedCopies(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-14 border border-gray-200 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[26px]" />
+                  )}
                 </div>
-              ))}
-            </div>
+              </div>
+
+              <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-xl divide-y">
+                {invoices.map((inv) => (
+                  <div key={inv.id} className="p-3 flex justify-between items-center hover:bg-gray-50 transition-colors">
+                    <div>
+                      <p className="font-semibold text-sm text-gray-900">Накладна №{inv.invoice_number || '—'}</p>
+                      <p className="text-xs text-gray-400">
+                        Постачальник: {inv.supplier?.name || '—'} · Дата: {new Date(inv.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-semibold text-gray-700">{kopecksToHryvnia(inv.total)} ₴</span>
+                      <Button size="sm" onClick={() => loadInvoiceItems(inv.id)}>Вибрати</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
           <div className="flex justify-end pt-2 border-t border-gray-100">
             <Button variant="secondary" onClick={() => setIsInvoiceModalOpen(false)}>Скасувати</Button>
