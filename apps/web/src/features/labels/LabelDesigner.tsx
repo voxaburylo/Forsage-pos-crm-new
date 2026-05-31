@@ -100,6 +100,73 @@ function MockBarcode({ width, height, value, displayValue = true }:
   )
 }
 
+export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: string }> = {
+  standard_product_4030: {
+    name: 'Товарна стандартна (40×30 мм)',
+    width_mm: 40, height_mm: 30, padding_mm: 2,
+    font_size_shop: 6, font_size_title: 7, font_size_sku: 5, font_size_price: 12,
+    font_size: 7, barcode_height: 28,
+    show_shop_name: true, show_product_name: true, show_barcode: true, show_barcode_text: true,
+    show_sku: true, show_price: true, show_storage_bin: true,
+    pos_shop_name: { x: 5, y: 5 },
+    pos_product_name: { x: 5, y: 25 },
+    pos_barcode: { x: 10, y: 45 },
+    pos_sku: { x: 5, y: 75 },
+    pos_price: { x: 50, y: 75 },
+    pos_bin: { x: 5, y: 88 },
+    barcode_width_factor: 1.0,
+    max_name_lines: 2
+  },
+  large_product_5840: {
+    name: 'Товарна велика (58×40 мм)',
+    width_mm: 58, height_mm: 40, padding_mm: 3,
+    font_size_shop: 7, font_size_title: 9, font_size_sku: 6, font_size_price: 16,
+    font_size: 8, barcode_height: 35,
+    show_shop_name: true, show_product_name: true, show_barcode: true, show_barcode_text: true,
+    show_sku: true, show_price: true, show_storage_bin: true,
+    pos_shop_name: { x: 5, y: 5 },
+    pos_product_name: { x: 5, y: 20 },
+    pos_barcode: { x: 10, y: 42 },
+    pos_sku: { x: 5, y: 78 },
+    pos_price: { x: 50, y: 78 },
+    pos_bin: { x: 5, y: 90 },
+    barcode_width_factor: 1.2,
+    max_name_lines: 2
+  },
+  standard_bin_4030: {
+    name: 'Ячейка стандартна (40×30 мм)',
+    width_mm: 40, height_mm: 30, padding_mm: 2,
+    font_size_shop: 6, font_size_title: 10, font_size_sku: 5, font_size_price: 12,
+    font_size: 7, barcode_height: 28,
+    show_shop_name: true, show_product_name: false, show_barcode: true, show_barcode_text: true,
+    show_sku: false, show_price: false, show_storage_bin: false,
+    pos_shop_name: { x: 5, y: 5 },
+    pos_product_name: { x: 5, y: 25 },
+    pos_barcode: { x: 10, y: 40 },
+    pos_sku: { x: 5, y: 75 },
+    pos_price: { x: 50, y: 75 },
+    pos_bin: { x: 5, y: 25 },
+    barcode_width_factor: 1.0,
+    max_name_lines: 1
+  },
+  large_bin_5840: {
+    name: 'Ячейка велика (58×40 мм)',
+    width_mm: 58, height_mm: 40, padding_mm: 3,
+    font_size_shop: 7, font_size_title: 14, font_size_sku: 6, font_size_price: 16,
+    font_size: 8, barcode_height: 35,
+    show_shop_name: true, show_product_name: false, show_barcode: true, show_barcode_text: true,
+    show_sku: false, show_price: false, show_storage_bin: false,
+    pos_shop_name: { x: 5, y: 5 },
+    pos_product_name: { x: 5, y: 20 },
+    pos_barcode: { x: 10, y: 35 },
+    pos_sku: { x: 5, y: 80 },
+    pos_price: { x: 50, y: 80 },
+    pos_bin: { x: 5, y: 20 },
+    barcode_width_factor: 1.2,
+    max_name_lines: 1
+  }
+}
+
 export const DEMO_PRODUCT: Product = {
   id: 'demo',
   name: 'Ремінь ГРМ Ланос 1.5 Gates (Тестовий товар для перевірки переносу)',
@@ -479,6 +546,46 @@ export default function LabelDesigner() {
   const [invoiceCopiesStrategy, setInvoiceCopiesStrategy] = useState<'invoice_qty' | 'fixed'>('invoice_qty')
   const [invoiceFixedCopies, setInvoiceFixedCopies] = useState(1)
 
+  // Фільтр для списку друку та автогенерація штрих-кодів
+  const [printQueueFilter, setPrintQueueFilter] = useState('')
+  const [generatingBarcodes, setGeneratingBarcodes] = useState(false)
+
+  async function handleGenerateMissingBarcodes() {
+    const missing = printItems.filter(p => !p.barcode)
+    if (missing.length === 0) {
+      toast.success('Усі товари вже мають штрих-коди')
+      return
+    }
+    setGeneratingBarcodes(true)
+    try {
+      let updatedCount = 0
+      const updatedItems = [...printItems]
+      
+      for (const item of missing) {
+        try {
+          const res = await productApi.generateBarcode(item.id)
+          const updatedProd = res.data
+          
+          const idx = updatedItems.findIndex(p => p.id === item.id)
+          if (idx !== -1) {
+            updatedItems[idx] = { ...updatedItems[idx], barcode: updatedProd.barcode }
+          }
+          updatedCount++
+        } catch (err) {
+          console.error(`Помилка генерації для ${item.name}:`, err)
+        }
+      }
+      
+      setPrintItems(updatedItems)
+      toast.success(`Згенеровано штрих-коди для ${updatedCount} товарів`)
+    } catch {
+      toast.error('Помилка генерації штрих-кодів')
+    } finally {
+      setGeneratingBarcodes(false)
+    }
+  }
+
+
 
   // Завантажуємо налаштування, категорії та бренди
   useEffect(() => {
@@ -692,7 +799,27 @@ export default function LabelDesigner() {
           {/* Налаштування */}
           <div className="space-y-4">
             <Card className="space-y-4">
-              <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Розміри</h3>
+              <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+                <h3 className="text-sm font-semibold text-gray-800">Розміри</h3>
+                <div>
+                  <select
+                    onChange={(e) => {
+                      const key = e.target.value
+                      if (key && LABEL_PRESETS[key]) {
+                        setSettings((prev) => ({ ...prev, ...LABEL_PRESETS[key] }))
+                        toast.success('Завантажено шаблон: ' + LABEL_PRESETS[key].name)
+                      }
+                    }}
+                    defaultValue=""
+                    className="border border-gray-200 rounded px-2 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="" disabled>Завантажити шаблон...</option>
+                    {Object.entries(LABEL_PRESETS).map(([key, preset]) => (
+                      <option key={key} value={key}>{preset.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Ширина (мм)" type="number" min={20} max={120} value={settings.width_mm}
                   onChange={(e) => updateSetting('width_mm', parseInt(e.target.value) || 40)} />
@@ -909,6 +1036,11 @@ export default function LabelDesigner() {
                   {binMode ? 'Ячейки' : 'Товари'} ({binMode ? binLabels.length : printItems.reduce((s, i) => s + i.copies, 0)} шт)
                 </span>
                 <div className="flex gap-2">
+                  {!binMode && printItems.some(p => !p.barcode) && (
+                    <Button size="sm" variant="outline" onClick={handleGenerateMissingBarcodes} loading={generatingBarcodes} className="text-xs">
+                      Згенерувати штрих-коди
+                    </Button>
+                  )}
                   {!binMode && printItems.length > 0 && (
                     <Button size="sm" variant="outline" onClick={() => setPrintItems([])}>Очистити</Button>
                   )}
@@ -917,28 +1049,66 @@ export default function LabelDesigner() {
                   )}
                 </div>
               </div>
+
+              {!binMode && printItems.length > 0 && (
+                <div className="px-4 py-2 border-b border-gray-100 bg-gray-50/50">
+                  <input
+                    type="text"
+                    placeholder="Пошук у списку друку..."
+                    value={printQueueFilter}
+                    onChange={(e) => setPrintQueueFilter(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white"
+                  />
+                </div>
+              )}
+
               {!binMode ? (
                 <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
                   {printItems.length === 0 ? (
                     <p className="text-gray-400 text-sm text-center py-8">Додайте товари через пошук або накладну</p>
                   ) : (
-                    printItems.map((item) => (
-                      <div key={item.id} className="px-4 py-2 flex items-center justify-between text-sm">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{item.name}</p>
-                          <p className="text-xs text-gray-400">{item.sku}</p>
+                    (() => {
+                      const filtered = printItems.filter(item => {
+                        if (!printQueueFilter.trim()) return true
+                        const q = printQueueFilter.toLowerCase()
+                        return (
+                          item.name.toLowerCase().includes(q) ||
+                          item.sku.toLowerCase().includes(q) ||
+                          (item.barcode && item.barcode.includes(q))
+                        )
+                      })
+                      if (filtered.length === 0) {
+                        return <p className="text-gray-400 text-sm text-center py-8">Товарів не знайдено</p>
+                      }
+                      return filtered.map((item) => (
+                        <div key={item.id} className="px-4 py-2 flex items-center justify-between text-sm">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium truncate">{item.name}</p>
+                            <p className="text-xs text-gray-400">
+                              {item.sku}{!item.barcode && <span className="text-red-400 ml-2">(немає штрих-коду)</span>}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 ml-2">
+                            <button onClick={() => setPrintItems((prev) => prev.map((p) => p.id === item.id ? { ...p, copies: Math.max(1, p.copies - 1) } : p))}
+                              className="w-6 h-6 bg-gray-100 rounded text-gray-600 hover:bg-gray-200">−</button>
+                            <input
+                              type="number"
+                              min={1}
+                              value={item.copies}
+                              onChange={(e) => {
+                                const val = Math.max(1, parseInt(e.target.value) || 1)
+                                setPrintItems((prev) => prev.map((p) => p.id === item.id ? { ...p, copies: val } : p))
+                              }}
+                              className="w-12 text-center font-medium border border-gray-200 rounded py-0.5 focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[24px]"
+                            />
+                            <button onClick={() => setPrintItems((prev) => prev.map((p) => p.id === item.id ? { ...p, copies: p.copies + 1 } : p))}
+                              className="w-6 h-6 bg-gray-100 rounded text-gray-600 hover:bg-gray-200">+</button>
+                            <button onClick={() => setPrintItems((prev) => prev.filter((p) => p.id !== item.id))}
+                              className="ml-1 text-red-300 hover:text-red-500"><Trash2 size={14} /></button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 ml-2">
-                          <button onClick={() => setPrintItems((prev) => prev.map((p) => p.id === item.id ? { ...p, copies: Math.max(1, p.copies - 1) } : p))}
-                            className="w-6 h-6 bg-gray-100 rounded text-gray-600 hover:bg-gray-200">−</button>
-                          <span className="w-6 text-center font-medium">{item.copies}</span>
-                          <button onClick={() => setPrintItems((prev) => prev.map((p) => p.id === item.id ? { ...p, copies: p.copies + 1 } : p))}
-                            className="w-6 h-6 bg-gray-100 rounded text-gray-600 hover:bg-gray-200">+</button>
-                          <button onClick={() => setPrintItems((prev) => prev.filter((p) => p.id !== item.id))}
-                            className="ml-1 text-red-300 hover:text-red-500"><Trash2 size={14} /></button>
-                        </div>
-                      </div>
-                    ))
+                      ))
+                    })()
                   )}
                 </div>
               ) : (
