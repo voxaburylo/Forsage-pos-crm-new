@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Package, Users, ShoppingCart, RotateCcw,
-  Truck, BarChart2, BarChart3, Settings, Zap, LogOut, Shield, FileText, Upload, Trash2, ScrollText, Tag, ClipboardList, Clock,
+  Truck, BarChart2, BarChart3, Settings, Zap, LogOut, FileText, Upload, Trash2, ScrollText, Tag, ClipboardList, Clock,
   ChevronDown, UserCog, Barcode, MessageSquare, DollarSign, ArrowDownLeft, Wallet, Percent, TrendingUp, ShieldCheck, ArrowRightLeft,
   Bell, Printer, ShoppingBag, FilePlus, X, Folder, Bookmark,
 } from 'lucide-react'
@@ -114,7 +114,6 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/print-center',        icon: <Printer size={18} />,         label: 'Центр друку',          roles: ['owner','admin','manager'] },
       { to: '/audit',               icon: <ScrollText size={18} />,      label: 'Журнал дій',           roles: ['owner','admin'] },
       { to: '/stock-integrity',     icon: <ShieldCheck size={18} />,     label: 'Цілісність залишків',  roles: ['owner','admin'] },
-      { to: '/admin',               icon: <Shield size={18} />,          label: 'Користувачі',          roles: ['owner','admin'] },
     ],
   },
 ]
