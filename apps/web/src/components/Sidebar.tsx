@@ -21,6 +21,7 @@ interface NavGroup {
   title?: string
   items: NavItem[]
   roles?: string[]
+  collapsible?: boolean
 }
 
 interface SidebarProps {
@@ -31,14 +32,15 @@ interface SidebarProps {
 const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Головна',
+    collapsible: false,
     items: [
-      { to: '/dashboard',           icon: <LayoutDashboard size={18} />, label: 'Дашборд' },
       { to: '/pos',                 icon: <Zap size={18} />,             label: 'Каса (POS)' },
       { to: '/notifications',       icon: <Bell size={18} />,            label: 'Сповіщення',           roles: ['owner','admin','manager'] },
     ],
   },
   {
     title: 'Основне',
+    collapsible: false,
     items: [
       { to: '/products',            icon: <Package size={18} />,         label: 'Товари та Клієнти' },
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
@@ -51,6 +53,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Аналітика',
     roles: ['owner','admin','manager'],
     items: [
+      { to: '/dashboard',           icon: <LayoutDashboard size={18} />, label: 'Дашборд',              roles: ['owner','admin','manager'] },
       { to: '/reports',             icon: <BarChart2 size={18} />,       label: 'Аналітика',            roles: ['owner','admin','manager'] },
     ],
   },
@@ -144,19 +147,27 @@ function NavSection({
     )
   }
 
+  const isCollapsible = group.collapsible !== false
+
   return (
     <div>
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center justify-between w-full px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-600 transition-colors"
-      >
-        {group.title}
-        <ChevronDown
-          size={14}
-          className={`transition-transform duration-200 ${open ? 'rotate-0' : '-rotate-90'}`}
-        />
-      </button>
-      {open && (
+      {isCollapsible ? (
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex items-center justify-between w-full px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-600 transition-colors"
+        >
+          {group.title}
+          <ChevronDown
+            size={14}
+            className={`transition-transform duration-200 ${open ? 'rotate-0' : '-rotate-90'}`}
+          />
+        </button>
+      ) : (
+        <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider select-none">
+          {group.title}
+        </div>
+      )}
+      {(open || !isCollapsible) && (
         <div className="space-y-0.5 mt-0.5">
           {visibleItems.map((item) => (
             <SidebarLink key={item.to} item={item} badge={badgeMap[item.to]} onClose={onClose} />

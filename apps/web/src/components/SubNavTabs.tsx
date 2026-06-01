@@ -97,8 +97,9 @@ export const INVENTORY_TABS = [
 ]
 
 export const ANALYTICS_TABS = [
-  { to: '/reports', label: 'Денний звіт' },
-  { to: '/abc', label: 'ABC-аналіз' }
+  { to: '/dashboard', label: 'Дашборд', roles: ['owner', 'admin', 'manager'] },
+  { to: '/reports', label: 'Денний звіт', roles: ['owner', 'admin', 'manager'] },
+  { to: '/abc', label: 'ABC-аналіз', roles: ['owner', 'admin', 'manager'] }
 ]
 
 export const STAFF_TABS = [
