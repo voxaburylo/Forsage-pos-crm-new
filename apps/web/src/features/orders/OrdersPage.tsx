@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, Truck, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
-  Trash2, X, Check, RefreshCw,
+  Trash2, X, Check, RefreshCw, Pencil, Copy, ArrowRight,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -710,6 +710,327 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
 
 // ───────────────────────── Main: OrdersPage ─────────────────────────
 
+
+// ─── DraftsGrid Component ───
+interface DraftsGridProps {
+  orders: CustomerOrder[]
+  onLoad: () => void
+  onEdit: (id: string) => void
+}
+
+function DraftsGrid({ orders, onLoad, onEdit }: DraftsGridProps) {
+  const navigate = useNavigate()
+  const drafts = orders.filter(isDraft)
+
+  async function handleConvertToOrder(orderId: string) {
+    try {
+      await orderApi.updateStatus(orderId, 'new')
+      toast.success('Чернетку переведено в замовлення!')
+      onLoad()
+    } catch {
+      toast.error('Помилка при переведенні замовлення')
+    }
+  }
+
+  async function handleDelete(orderId: string, clientName: string) {
+    if (!confirm(`Видалити чернетку для "${clientName}"?`)) return
+    try {
+      await api.delete(`/api/v1/customer-orders/${orderId}`)
+      toast.success('Чернетку видалено')
+      onLoad()
+    } catch {
+      toast.error('Помилка видалення')
+    }
+  }
+
+  return (
+    <div className="flex-1 p-4 md:p-6 overflow-y-auto bg-gray-50/50">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex justify-between items-center">
+          <h2 className="text-lg md:text-xl font-bold text-gray-900">Робочі чернетки</h2>
+          <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/quotes/new')}>
+            Створити чернетку
+          </Button>
+        </div>
+
+        {drafts.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-gray-400">
+            Немає активних чернеток
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {drafts.map((d) => {
+              const isUrgent = d.comment?.toLowerCase().includes('терміново')
+              return (
+                <div key={d.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm flex flex-col hover:shadow-md transition-shadow">
+                  <div className="p-5 flex-1 space-y-4">
+                    {/* Header */}
+                    <div className="flex justify-between items-start">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                        isUrgent ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {isUrgent ? 'Терміново' : 'Чернетка'}
+                      </span>
+                      <span className="text-xs text-gray-400 font-mono">
+                        {formatDate(d.created_at)}
+                      </span>
+                    </div>
+
+                    {/* Client info */}
+                    <div>
+                      <h4 className="font-bold text-gray-900 leading-tight">
+                        {d.customer?.full_name ?? 'Не відомо'}
+                      </h4>
+                      {d.customer?.phone && (
+                        <p className="text-xs text-gray-400 mt-0.5">{d.customer.phone}</p>
+                      )}
+                    </div>
+
+                    {/* Vehicle */}
+                    {d.vehicle_info && (
+                      <div className="bg-gray-50 border border-gray-100 rounded-xl px-3 py-2 flex items-center justify-between text-xs text-gray-600">
+                        <div className="flex items-center gap-2">
+                          <Car size={14} className="text-gray-400" />
+                          <span>{d.vehicle_info.make} {d.vehicle_info.model} {d.vehicle_info.year ? `(${d.vehicle_info.year})` : ''}</span>
+                        </div>
+                        {d.vehicle_info.vin && (
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(d.vehicle_info?.vin ?? '')
+                              toast.success('VIN скопійовано')
+                            }}
+                            className="text-gray-400 hover:text-gray-600 transition-colors p-1 cursor-pointer"
+                            title="Скопіювати VIN"
+                          >
+                            <Copy size={12} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Items list */}
+                    {d.items && d.items.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Деталі</p>
+                        <ul className="text-xs text-gray-600 space-y-1">
+                          {d.items.slice(0, 3).map((item) => (
+                            <li key={item.id} className="flex justify-between gap-2">
+                              <span className="truncate">{item.name}</span>
+                              <span className="text-gray-400 shrink-0">x{item.qty}</span>
+                            </li>
+                          ))}
+                          {d.items.length > 3 && (
+                            <li className="text-[10px] text-gray-400 italic">ще {d.items.length - 3} позицій...</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="border-t border-gray-100 px-5 py-3.5 bg-gray-50/30 rounded-b-2xl flex items-center justify-between gap-2">
+                    <div className="flex gap-1">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => onEdit(d.id)}
+                        icon={<Pencil size={12} />}
+                        title="Редагувати"
+                      />
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="text-red-600 hover:text-red-700"
+                        onClick={() => handleDelete(d.id, d.customer?.full_name ?? 'Не відомо')}
+                        icon={<Trash2 size={12} />}
+                        title="Видалити"
+                      />
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => handleConvertToOrder(d.id)}
+                      icon={<ArrowRight size={12} />}
+                      className="!bg-green-500 hover:!bg-green-600 text-white font-semibold text-xs py-1.5 px-3"
+                    >
+                      В замовлення
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── OrdersTable Component ───
+interface OrdersTableProps {
+  orders: CustomerOrder[]
+  search: string
+  setSearch: (s: string) => void
+  onRefresh: () => void
+}
+
+function OrdersTable({ orders, search, setSearch, onRefresh }: OrdersTableProps) {
+  const navigate = useNavigate()
+
+  return (
+    <div className="flex-1 p-4 md:p-6 overflow-y-auto bg-gray-50/50">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <h2 className="text-lg md:text-xl font-bold text-gray-900">База замовлень</h2>
+          <div className="flex items-center gap-2 w-full md:w-auto">
+            <div className="relative flex-1 md:w-85">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Пошук замовлення..."
+                className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+              />
+            </div>
+            <button
+              onClick={onRefresh}
+              className="p-2 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 text-gray-500 cursor-pointer"
+              title="Оновити"
+            >
+              <RefreshCw size={15} />
+            </button>
+            <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/orders/new')}>
+              Нове замовлення
+            </Button>
+          </div>
+        </div>
+
+        {/* Table Card */}
+        <Card padding="none" className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
+                  <th className="px-5 py-4">Замовлення</th>
+                  <th className="px-5 py-4">Клієнт</th>
+                  <th className="px-5 py-4">Авто</th>
+                  <th className="px-5 py-4">Сума</th>
+                  <th className="px-5 py-4">Статус</th>
+                  <th className="px-5 py-4 text-right">Дії</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {orders.map((o: CustomerOrder) => {
+                  const hasDebt = o.total_amount > o.prepayment
+                  return (
+                    <tr key={o.id} className="hover:bg-gray-50/30 transition-colors">
+                      {/* Замовлення */}
+                      <td className="px-5 py-4">
+                        <div className="font-bold text-gray-900">#{o.id.slice(0, 8)}</div>
+                        <div className="text-[11px] text-gray-400 mt-0.5 font-mono">
+                          {formatDateTime(o.created_at)}
+                        </div>
+                        <div className="text-[10px] text-gray-500 mt-1 font-semibold flex items-center gap-1">
+                          <span>📦 {o.source === 'walk_in' ? 'Магазин' : o.source === 'phone' ? 'Телефон' : 'Чат'}</span>
+                        </div>
+                      </td>
+
+                      {/* Клієнт */}
+                      <td className="px-5 py-4">
+                        <div className="font-bold text-gray-900">
+                          {o.customer?.full_name ?? '—'}
+                        </div>
+                        {o.customer?.phone && (
+                          <div className="text-xs text-gray-400 mt-0.5">{o.customer.phone}</div>
+                        )}
+                      </td>
+
+                      {/* Авто */}
+                      <td className="px-5 py-4">
+                        {o.vehicle_info ? (
+                          <div className="space-y-1">
+                            <div className="font-medium text-gray-700">
+                              {o.vehicle_info.make} {o.vehicle_info.model} {o.vehicle_info.year ? `(${o.vehicle_info.year})` : ''}
+                            </div>
+                            {o.vehicle_info.vin && (
+                              <div className="text-xs text-gray-400 font-mono flex items-center gap-1">
+                                <span>{o.vehicle_info.vin}</span>
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(o.vehicle_info?.vin ?? '')
+                                    toast.success('VIN скопійовано')
+                                  }}
+                                  className="text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                                  title="Скопіювати VIN"
+                                >
+                                  <Copy size={11} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+
+                      {/* Сума */}
+                      <td className="px-5 py-4">
+                        <div className="font-bold text-gray-900">{formatMoney(o.total_amount)}</div>
+                        {o.prepayment > 0 && (
+                          <div className="text-[11px] text-blue-600 mt-0.5">
+                            Сплачено: {formatMoney(o.prepayment)}
+                          </div>
+                        )}
+                        {hasDebt && (
+                          <div className="text-[11px] text-red-500 font-semibold mt-0.5">
+                            Борг: {formatMoney(o.total_amount - o.prepayment)}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Статус */}
+                      <td className="px-5 py-4">
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                          STATUS_CONFIG[o.status]?.color === 'green' ? 'bg-green-50 text-green-700' :
+                          STATUS_CONFIG[o.status]?.color === 'red' ? 'bg-red-50 text-red-700' :
+                          STATUS_CONFIG[o.status]?.color === 'yellow' ? 'bg-yellow-50 text-yellow-700' :
+                          STATUS_CONFIG[o.status]?.color === 'orange' ? 'bg-orange-50 text-orange-700' :
+                          STATUS_CONFIG[o.status]?.color === 'blue' ? 'bg-blue-50 text-blue-700' :
+                          'bg-gray-50 text-gray-700'
+                        }`}>
+                          {STATUS_CONFIG[o.status]?.label ?? o.status}
+                        </span>
+                      </td>
+
+                      {/* Дії */}
+                      <td className="px-5 py-4 text-right">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => navigate('/orders/' + o.id)}
+                        >
+                          Перегляд
+                        </Button>
+                      </td>
+                    </tr>
+                  )
+                })}
+                {orders.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
+                      Замовлень не знайдено
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
 export default function OrdersPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -1041,6 +1362,8 @@ export default function OrdersPage() {
 
         {/* робоча площина */}
         <div className="flex-1 flex min-h-0 min-w-0">
+          {tab === 'bots' ? (
+            <>
 
           {/* ── Ліва панель — на мобільному на всю ширину ── */}
           <aside className={`w-full md:w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col ${selection ? 'hidden md:flex' : 'flex'}`}>
@@ -1227,6 +1550,12 @@ export default function OrdersPage() {
             <div className="hidden lg:block">
               <CustomerPanel chat={selectedChat} messages={messages} onCustomerLinked={handleCustomerLinked} />
             </div>
+          )}
+            </>
+          ) : tab === 'drafts' ? (
+            <DraftsGrid orders={orders} onLoad={loadOrders} onEdit={(id) => navigate('/quotes/' + id)} />
+          ) : (
+            <OrdersTable orders={displayOrders} search={search} setSearch={setSearch} onRefresh={() => { loadChats(); loadOrders() }} />
           )}
         </div>
       </div>

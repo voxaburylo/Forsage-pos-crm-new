@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Trash2 } from 'lucide-react'
-import { orderApi, type CreateOrderPayload, type OrderSource } from './orderApi'
+import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search } from 'lucide-react'
+import { orderApi, type CreateOrderPayload } from './orderApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
@@ -9,10 +9,23 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
+import type { Customer, CustomerVehicle } from '@/types/customer'
+
+// ─── Helpers ───
+const VIN_WMI: Record<string, string> = {
+  WBA: 'BMW', WBS: 'BMW', WDB: 'Mercedes-Benz', WDD: 'Mercedes-Benz',
+  WAU: 'Audi', WUA: 'Audi', WVW: 'Volkswagen', VF1: 'Renault',
+  JTD: 'Toyota', JHM: 'Honda', KMH: 'Hyundai', KNA: 'Kia',
+  SAL: 'Land Rover', YV1: 'Volvo', ZAR: 'Alfa Romeo', ZFA: 'Fiat',
+  WF0: 'Ford', W0L: 'Opel', JSA: 'Mazda', TMB: 'Škoda',
+}
+
+function vinMake(vin: string): string {
+  if (!vin) return 'Авто'
+  return VIN_WMI[vin.slice(0, 4).toUpperCase()] ?? VIN_WMI[vin.slice(0, 3).toUpperCase()] ?? 'Авто'
+}
 
 interface Supplier { id: string; name: string }
-interface CustomerOption { id: string; phone: string; full_name: string | null }
-interface CustomerVehicle { id: string; brand: string; model: string; year: number | null; vin: string | null }
 
 interface ItemRow {
   name:        string
@@ -24,126 +37,232 @@ interface ItemRow {
 
 const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '' }
 
-const SOURCE_OPTIONS: { value: OrderSource; label: string }[] = [
-  { value: 'walk_in',  label: 'Прийшов сам' },
-  { value: 'phone',    label: 'Телефон' },
-  { value: 'messenger', label: 'Месенджер' },
-]
-
 export default function OrderFormPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
-  // Клієнт
-  const [customerId, setCustomerId]           = useState('')
-  const [customerSearch, setCustomerSearch]   = useState('')
-  const [customerOptions, setCustomerOptions] = useState<CustomerOption[]>([])
-  const [selectedCustomer, setSelectedCustomer] = useState<CustomerOption | null>(null)
+  // Wizard state
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
 
-  // Деталі замовлення
-  const [source, setSource]                   = useState<OrderSource>('walk_in')
-  const [comment, setComment]                 = useState('')
-  const [prepayment, setPrepayment]           = useState('0')
-  const [prepaymentMethod, setPrepaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  // Step 1: Customer
+  const [customerId, setCustomerId] = useState('')
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [defaultCustomers, setDefaultCustomers] = useState<Customer[]>([])
+  const [searchedCustomers, setSearchedCustomers] = useState<Customer[]>([])
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
+  
+  // Inline Create Customer
+  const [showAddCustomer, setShowAddCustomer] = useState(false)
+  const [newCustName, setNewCustName] = useState('')
+  const [newCustPhone, setNewCustPhone] = useState('')
+  const [addingCustomer, setAddingCustomer] = useState(false)
 
-  // Авто
-  const [vehicleMake, setVehicleMake]   = useState('')
-  const [vehicleModel, setVehicleModel] = useState('')
-  const [vehicleYear, setVehicleYear]   = useState('')
-  const [vehicleVin, setVehicleVin]     = useState('')
+  // Step 2: Vehicle
+  const [vehicles, setVehicles] = useState<CustomerVehicle[]>([])
+  const [selectedVehicle, setSelectedVehicle] = useState<CustomerVehicle | null>(null)
 
-  // Авто клієнта
-  const [vehicles, setVehicles]             = useState<CustomerVehicle[]>([])
-  const [selectedVehicleId, setSelectedVehicleId] = useState('')
+  // Inline Create Vehicle
+  const [showAddVehicle, setShowAddVehicle] = useState(false)
+  const [newVehBrand, setNewVehBrand] = useState('')
+  const [newVehModel, setNewVehModel] = useState('')
+  const [newVehYear, setNewVehYear] = useState('')
+  const [newVehVin, setNewVehVin] = useState('')
+  const [addingVehicle, setAddingVehicle] = useState(false)
 
-  // Постачальники (для позицій)
+  // Step 3: Items
+  const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
-  // Позиції
-  const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
+  // Step 4: Summary & Checkout
+  const [comment, setComment] = useState('')
+  const [isUrgent, setIsUrgent] = useState(false)
+  const [prepayment, setPrepayment] = useState('0')
+  const [prepaymentMethod, setPrepaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  const [isFiscal, setIsFiscal] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // Якщо прийшли з чату — підтягуємо customer_id з query
+  // Force isFiscal to true when card is selected
+  useEffect(() => {
+    if (prepaymentMethod === 'card') {
+      setIsFiscal(true)
+    } else {
+      setIsFiscal(false)
+    }
+  }, [prepaymentMethod])
+
+  // Query parameter support
   useEffect(() => {
     const qCustomerId = searchParams.get('customer_id')
-    if (qCustomerId) setCustomerId(qCustomerId)
+    if (qCustomerId) {
+      api.get<{ data: Customer }>('/api/v1/customers/' + qCustomerId)
+        .then((r) => {
+          if (r.data) {
+            handleCustomerSelect(r.data)
+          }
+        })
+        .catch(() => {})
+    }
   }, [searchParams])
 
+  // Load default/recent customers on mount
   useEffect(() => {
+    customerApi.list({ per_page: 5 })
+      .then((r) => setDefaultCustomers((r as any).data ?? []))
+      .catch(() => {})
+
     api.get<{ data: Supplier[] }>('/api/v1/suppliers?per_page=200&is_active=true')
-      .then((r) => setSuppliers((r as { data: Supplier[] }).data ?? []))
+      .then((r) => setSuppliers((r as any).data ?? []))
       .catch(() => {})
   }, [])
 
+  // Auto-search customers
   useEffect(() => {
-    if (customerSearch.trim().length < 2) { setCustomerOptions([]); return }
+    if (customerSearch.trim().length < 2) {
+      setSearchedCustomers([])
+      return
+    }
     const t = setTimeout(() => {
       customerApi.list({ search: customerSearch.trim(), per_page: 8 })
-        .then((r) => setCustomerOptions((r as { data: CustomerOption[] }).data ?? []))
+        .then((r) => setSearchedCustomers((r as any).data ?? []))
         .catch(() => {})
     }, 300)
     return () => clearTimeout(t)
   }, [customerSearch])
 
-  function selectCustomer(c: CustomerOption) {
+  // Decode brand from VIN on the fly
+  useEffect(() => {
+    if (newVehVin.length >= 4) {
+      const brand = vinMake(newVehVin)
+      if (brand !== 'Авто') {
+        setNewVehBrand(brand)
+      }
+    }
+  }, [newVehVin])
+
+  // Selection handlers
+  function handleCustomerSelect(c: Customer) {
     setSelectedCustomer(c)
     setCustomerId(c.id)
-    setCustomerSearch(c.full_name ?? c.phone)
-    setCustomerOptions([])
-    setSelectedVehicleId('')
+    setCustomerSearch('')
+    setShowAddCustomer(false)
+
+    // Load customer vehicles
     customerVehiclesApi.list(c.id)
-      .then((r) => setVehicles((r as any).data ?? []))
-      .catch(() => {})
+      .then((r) => {
+        setVehicles((r as any).data ?? [])
+        setStep(2)
+      })
+      .catch(() => {
+        setStep(2)
+      })
   }
 
-  function handleVehicleSelect(vehicleId: string) {
-    setSelectedVehicleId(vehicleId)
-    const v = vehicles.find((v) => v.id === vehicleId)
-    if (v) {
-      setVehicleMake(v.brand)
-      setVehicleModel(v.model)
-      setVehicleYear(v.year ? String(v.year) : '')
-      setVehicleVin(v.vin ?? '')
+  function handleVehicleSelect(v: CustomerVehicle | null) {
+    setSelectedVehicle(v)
+    setShowAddVehicle(false)
+    setStep(3)
+  }
+
+  // Create handlers
+  async function handleCreateCustomer(e: React.FormEvent) {
+    e.preventDefault()
+    if (!newCustPhone.trim()) {
+      toast.error('Введіть номер телефону')
+      return
+    }
+    setAddingCustomer(true)
+    try {
+      const res = await customerApi.quickCreate(newCustPhone.trim(), newCustName.trim())
+      if (res.data) {
+        toast.success('Клієнта створено!')
+        handleCustomerSelect(res.data)
+      }
+    } catch {
+      toast.error('Помилка при створенні клієнта')
+    } finally {
+      setAddingCustomer(false)
     }
   }
 
+  async function handleCreateVehicle(e: React.FormEvent) {
+    e.preventDefault()
+    if (!newVehBrand.trim() || !newVehModel.trim()) {
+      toast.error('Введіть марку та модель')
+      return
+    }
+    setAddingVehicle(true)
+    try {
+      const res = await customerVehiclesApi.create(customerId, {
+        brand: newVehBrand.trim(),
+        model: newVehModel.trim(),
+        year: newVehYear ? parseInt(newVehYear) : null,
+        vin: newVehVin.trim() || null,
+      })
+      if (res.data) {
+        toast.success('Автомобіль додано!')
+        // Reload vehicles list
+        const vList = await customerVehiclesApi.list(customerId)
+        setVehicles((vList as any).data ?? [])
+        handleVehicleSelect(res.data)
+      }
+    } catch {
+      toast.error('Помилка додавання автомобіля')
+    } finally {
+      setAddingVehicle(false)
+    }
+  }
+
+  // Items manipulation
   function addItem() { setItems((p) => [...p, { ...EMPTY_ITEM }]) }
   function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)) }
   function updateItem<K extends keyof ItemRow>(i: number, key: K, val: string) {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
-  const totalKop = items.reduce((s, row) => {
-    return s + Math.round(parseFloat(row.sell_price || '0') * 100) * (parseFloat(row.qty || '1') || 1)
-  }, 0)
+  const totalKop = useMemo(() => {
+    return items.reduce((s, row) => {
+      const price = parseFloat(row.sell_price || '0') || 0
+      const qty = parseFloat(row.qty || '1') || 1
+      return s + Math.round(price * 100) * qty
+    }, 0)
+  }, [items])
 
-  const prepaymentKop = Math.round(parseFloat(prepayment || '0') * 100)
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-
+  // Submit Order / Save Draft
+  async function handleSave(asDraft: boolean) {
     const validItems = items.filter((row) => row.name.trim())
     if (validItems.length === 0) {
       toast.error('Додайте хоча б одну позицію з назвою')
+      setStep(3)
       return
     }
 
-    const vehicleInfo = (vehicleMake || vehicleModel || vehicleYear || vehicleVin)
+    const vehicleInfo = selectedVehicle
       ? {
-          make:  vehicleMake.trim()  || undefined,
-          model: vehicleModel.trim() || undefined,
-          year:  vehicleYear ? parseInt(vehicleYear) : undefined,
-          vin:   vehicleVin.trim()   || undefined,
+          make:  selectedVehicle.brand,
+          model: selectedVehicle.model,
+          year:  selectedVehicle.year ?? undefined,
+          vin:   selectedVehicle.vin ?? undefined,
         }
       : null
 
+    const finalComment = [
+      isUrgent ? '[ТЕРМІНОВО]' : '',
+      comment.trim(),
+    ].filter(Boolean).join(' ')
+
+    const prepaymentKop = Math.round(parseFloat(prepayment || '0') * 100)
+
+    // Draft orders have 0 prepayment in backend typically
+    const finalPrepayment = asDraft ? 0 : prepaymentKop
+
     const payload: CreateOrderPayload = {
-      customer_id:        customerId || null,
-      source,
-      vehicle_info:       vehicleInfo,
-      comment:            comment.trim() || null,
-      prepayment:         prepaymentKop,
-      prepayment_method:  prepaymentKop > 0 ? prepaymentMethod : null,
+      customer_id: customerId || null,
+      source: 'walk_in',
+      vehicle_info: vehicleInfo,
+      comment: finalComment || null,
+      prepayment: finalPrepayment,
+      prepayment_method: finalPrepayment > 0 ? prepaymentMethod : null,
+      prepayment_is_fiscal: finalPrepayment > 0 ? isFiscal : false,
       items: validItems.map((row) => ({
         name:        row.name.trim(),
         sku:         row.sku.trim() || null,
@@ -158,9 +277,19 @@ export default function OrderFormPage() {
     setSaving(true)
     try {
       const result = await orderApi.create(payload)
-      const orderId = (result as { data: { id: string } }).data.id
-      toast.success('Замовлення створено')
-      navigate('/orders/' + orderId)
+      const newOrder = (result as { data: { id: string } }).data
+      
+      if (asDraft) {
+        toast.success('Чернетку збережено')
+        navigate('/orders?tab=drafts')
+      } else {
+        // If order prepayment is 0, backend creates it as 'lead'. Let's promote it to 'new' since manager explicitly checked it out as Order.
+        if (finalPrepayment === 0) {
+          await orderApi.updateStatus(newOrder.id, 'new')
+        }
+        toast.success('Замовлення оформлено!')
+        navigate('/orders/' + newOrder.id)
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка збереження')
     } finally {
@@ -168,225 +297,525 @@ export default function OrderFormPage() {
     }
   }
 
+  // Customer List to show
+  const customerList = customerSearch.trim().length >= 2 ? searchedCustomers : defaultCustomers
+
   return (
     <Layout title="Нове замовлення" onBack={() => navigate(-1)}>
-      <form onSubmit={handleSubmit} className="max-w-3xl space-y-5">
-
-        {/* Клієнт */}
-        <Card>
-          <h3 className="font-semibold text-gray-800 mb-4">Клієнт</h3>
-          <div className="relative">
-            <Input
-              label="Пошук клієнта (ім'я або телефон)"
-              value={customerSearch}
-              onChange={(e) => {
-                setCustomerSearch(e.target.value)
-                if (!e.target.value) { setCustomerId(''); setSelectedCustomer(null) }
-              }}
-              placeholder="Введіть ім'я або телефон..."
-            />
-            {customerOptions.length > 0 && (
-              <div className="absolute z-20 top-full mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden">
-                {customerOptions.map((c) => (
-                  <button key={c.id} type="button" onClick={() => selectCustomer(c)}
-                    className="w-full text-left px-4 py-2.5 hover:bg-yellow-50 text-sm border-b border-gray-50 last:border-0">
-                    <span className="font-medium text-gray-900">{c.full_name ?? '—'}</span>
-                    <span className="text-gray-500 ml-2">{c.phone}</span>
-                  </button>
-                ))}
+      <div className="max-w-4xl mx-auto space-y-6">
+        
+        {/* Step Indicator */}
+        <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center justify-between">
+          {[
+            { s: 1, label: 'Клієнт' },
+            { s: 2, label: 'Автомобіль' },
+            { s: 3, label: 'Запчастини' },
+            { s: 4, label: 'Завершення' },
+          ].map((item) => {
+            const isActive = step === item.s
+            const isCompleted = step > item.s
+            return (
+              <div key={item.s} className="flex items-center gap-2 flex-1 last:flex-initial">
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-colors ${
+                  isActive ? 'bg-yellow-400 text-black' :
+                  isCompleted ? 'bg-green-500 text-white' :
+                  'bg-gray-100 text-gray-400'
+                }`}>
+                  {isCompleted ? <Check size={14} /> : item.s}
+                </div>
+                <span className={`text-xs md:text-sm font-semibold hidden sm:inline ${isActive ? 'text-gray-900' : 'text-gray-400'}`}>
+                  {item.label}
+                </span>
+                {item.s < 4 && (
+                  <div className="h-0.5 bg-gray-100 flex-1 mx-2 hidden sm:block" />
+                )}
               </div>
-            )}
-          </div>
-          {selectedCustomer && (
-            <p className="mt-2 text-sm text-green-600">
-              Вибрано: {selectedCustomer.full_name ?? selectedCustomer.phone}
-            </p>
-          )}
-        </Card>
+            )
+          })}
+        </div>
 
-        {/* Деталі */}
-        <Card>
-          <h3 className="font-semibold text-gray-800 mb-4">Деталі замовлення</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Канал звернення</label>
-              <select value={source} onChange={(e) => setSource(e.target.value as OrderSource)}
-                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300">
-                {SOURCE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            <Input
-              label="Передоплата (грн)"
-              type="number" min="0" step="0.01"
-              value={prepayment}
-              onChange={(e) => setPrepayment(e.target.value)}
-            />
-            {prepaymentKop > 0 && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Метод передоплати</label>
-                <select value={prepaymentMethod} onChange={(e) => setPrepaymentMethod(e.target.value as any)}
-                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300">
-                  <option value="cash">Готівка</option>
-                  <option value="card">Картка</option>
-                  <option value="transfer">Переказ</option>
-                </select>
+        {/* ─────────────── STEP 1: SELECT CUSTOMER ─────────────── */}
+        {step === 1 && (
+          <div className="space-y-6">
+            <Card className="max-w-2xl mx-auto">
+              <div className="text-center space-y-2 mb-6">
+                <h3 className="text-lg font-bold text-gray-900">Нове замовлення</h3>
+                <p className="text-sm text-gray-500">Оберіть клієнта, щоб розпочати оформлення</p>
               </div>
-            )}
-          </div>
-          <div className="mt-4">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Коментар</label>
-            <textarea value={comment} onChange={(e) => setComment(e.target.value)}
-              placeholder="Додаткова інформація..." rows={2}
-              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 resize-none"
-            />
-          </div>
-        </Card>
 
-        {/* Авто (необов'язково) */}
-        <Card>
-          <h3 className="font-semibold text-gray-800 mb-4">Автомобіль <span className="text-gray-400 font-normal text-sm">(необов'язково)</span></h3>
-          {vehicles.length > 0 && (
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">З гаража клієнта</label>
-              <select
-                value={selectedVehicleId}
-                onChange={(e) => handleVehicleSelect(e.target.value)}
-                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-              >
-                <option value="">— Вибрати або ввести вручну —</option>
-                {vehicles.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.brand} {v.model} {v.year ? `(${v.year})` : ''}{v.vin ? ` — ${v.vin}` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Марка" value={vehicleMake} onChange={(e) => setVehicleMake(e.target.value)} placeholder="Toyota" />
-            <Input label="Модель" value={vehicleModel} onChange={(e) => setVehicleModel(e.target.value)} placeholder="Camry" />
-            <Input label="Рік" type="number" min="1900" max="2099" value={vehicleYear} onChange={(e) => setVehicleYear(e.target.value)} placeholder="2018" />
-            <Input label="VIN" value={vehicleVin} onChange={(e) => setVehicleVin(e.target.value)} placeholder="WVWZZZ1JZ3W386752" />
-          </div>
-        </Card>
+              {/* Search Bar */}
+              <div className="relative mb-6">
+                <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  placeholder="Пошук: Ім'я, Телефон або VIN..."
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                />
+              </div>
 
-        {/* Позиції */}
-        <Card>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-800">Позиції</h3>
-            <Button type="button" variant="secondary" size="sm" icon={<Plus size={14} />} onClick={addItem}>
-              Додати позицію
-            </Button>
-          </div>
-
-          <div className="space-y-3">
-            <div className="hidden md:grid grid-cols-[1fr_120px_70px_90px_140px_32px] gap-2 text-xs text-gray-500 font-medium px-1">
-              <span>Назва / деталь</span>
-              <span>Артикул / OEM</span>
-              <span>Кіл-сть</span>
-              <span>Ціна (грн)</span>
-              <span>Постачальник</span>
-              <span />
-            </div>
-
-            {/* Мобільний вигляд */}
-            <div className="space-y-4 md:hidden">
-              {items.map((row, i) => (
-                <div key={i} className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3 relative shadow-sm">
-                  <div className="flex justify-between items-center gap-2">
-                    <span className="text-xs font-bold text-gray-500">Позиція #{i + 1}</span>
-                    <button type="button" onClick={() => removeItem(i)} disabled={items.length === 1}
-                      className="text-gray-400 hover:text-red-500 disabled:opacity-30 p-1">
-                      <Trash2 size={16} />
+              {/* Customers list */}
+              {customerList.length > 0 ? (
+                <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-6 bg-white shadow-sm">
+                  {customerList.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => handleCustomerSelect(c)}
+                      className="w-full text-left px-4 py-3.5 flex items-center justify-between hover:bg-gray-50/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                          <User size={16} />
+                        </div>
+                        <div>
+                          <p className="font-bold text-gray-900 text-sm">{c.full_name ?? 'Без імені'}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{c.phone}</p>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        {c.primary_vin ? (
+                          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
+                            {vinMake(c.primary_vin)} ({c.primary_vin.slice(0, 6)}...)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-gray-300">Немає авто</span>
+                        )}
+                        <ChevronRight size={16} className="text-gray-400" />
+                      </div>
                     </button>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Назва / деталь *</label>
-                    <input type="text" value={row.name} onChange={(e) => updateItem(i, 'name', e.target.value)}
-                      placeholder="Фільтр масляний Toyota 1NZ" required
-                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full bg-white"
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center text-gray-400 py-6 border border-dashed border-gray-200 rounded-xl mb-6">
+                  Клієнтів не знайдено
+                </div>
+              )}
+
+              {/* DASHED ADD CUSTOMER BUTTON */}
+              {!showAddCustomer ? (
+                <button
+                  onClick={() => setShowAddCustomer(true)}
+                  className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <Plus size={16} /> Створити нового клієнта
+                </button>
+              ) : (
+                <form onSubmit={handleCreateCustomer} className="border border-yellow-100 bg-yellow-50/20 rounded-xl p-4 space-y-4">
+                  <h4 className="font-bold text-yellow-800 text-sm">Створення нового клієнта</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Input
+                      label="Повне ім'я клієнта"
+                      value={newCustName}
+                      onChange={(e) => setNewCustName(e.target.value)}
+                      placeholder="Вардан..."
+                      required
+                    />
+                    <Input
+                      label="Телефон клієнта"
+                      value={newCustPhone}
+                      onChange={(e) => setNewCustPhone(e.target.value)}
+                      placeholder="0973829369"
+                      required
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Артикул / OEM</label>
-                      <input type="text" value={row.sku} onChange={(e) => updateItem(i, 'sku', e.target.value)}
-                        placeholder="90915-YZZD1"
-                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full bg-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Кіл-сть</label>
-                      <input type="number" min="1" step="any" value={row.qty} onChange={(e) => updateItem(i, 'qty', e.target.value)}
-                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-center bg-white"
-                      />
-                    </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" size="sm" onClick={() => setShowAddCustomer(false)}>Скасувати</Button>
+                    <Button type="submit" size="sm" disabled={addingCustomer}>Зберегти клієнта</Button>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Ціна (грн)</label>
-                      <input type="number" min="0" step="0.01" value={row.sell_price} onChange={(e) => updateItem(i, 'sell_price', e.target.value)}
-                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-right bg-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Постачальник</label>
-                      <select value={row.supplier_id} onChange={(e) => updateItem(i, 'supplier_id', e.target.value)}
-                        className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full bg-white h-[38px]">
-                        <option value="">— Зі складу —</option>
-                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                </form>
+              )}
+            </Card>
+          </div>
+        )}
 
-            {/* Десктопний вигляд */}
-            <div className="hidden md:block space-y-3">
-              {items.map((row, i) => (
-                <div key={i} className="grid grid-cols-[1fr_120px_70px_90px_140px_32px] gap-2 items-center">
-                  <input type="text" value={row.name} onChange={(e) => updateItem(i, 'name', e.target.value)}
-                    placeholder="Фільтр масляний Toyota 1NZ" required
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full"
-                  />
-                  <input type="text" value={row.sku} onChange={(e) => updateItem(i, 'sku', e.target.value)}
-                    placeholder="90915-YZZD1"
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full"
-                  />
-                  <input type="number" min="1" step="any" value={row.qty} onChange={(e) => updateItem(i, 'qty', e.target.value)}
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-center"
-                  />
-                  <input type="number" min="0" step="0.01" value={row.sell_price} onChange={(e) => updateItem(i, 'sell_price', e.target.value)}
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full text-right"
-                  />
-                  <select value={row.supplier_id} onChange={(e) => updateItem(i, 'supplier_id', e.target.value)}
-                    className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 w-full">
-                    <option value="">— Зі складу —</option>
-                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                  <button type="button" onClick={() => removeItem(i)} disabled={items.length === 1}
-                    className="text-gray-400 hover:text-red-500 disabled:opacity-30 flex items-center justify-center">
-                    <Trash2 size={16} />
+        {/* ─────────────── STEP 2: SELECT VEHICLE ─────────────── */}
+        {step === 2 && selectedCustomer && (
+          <div className="space-y-6 max-w-2xl mx-auto">
+            <Card>
+              <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-4">
+                <Button size="sm" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft size={14} />} />
+                <div>
+                  <h3 className="font-bold text-gray-900 text-base">Оберіть автомобіль для замовлення</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">Клієнт: {selectedCustomer.full_name ?? 'Без імені'} ({selectedCustomer.phone})</p>
+                </div>
+              </div>
+
+              {/* Vehicles List */}
+              {vehicles.length > 0 ? (
+                <div className="space-y-3 mb-6">
+                  {vehicles.map((v) => (
+                    <button
+                      key={v.id}
+                      onClick={() => handleVehicleSelect(v)}
+                      className="w-full border border-gray-100 hover:border-yellow-400 hover:bg-yellow-50/10 rounded-xl p-4 flex items-center justify-between transition-all"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-yellow-50 text-yellow-600 flex items-center justify-center font-bold">
+                          <Car size={16} />
+                        </div>
+                        <div className="text-left">
+                          <p className="font-bold text-gray-900 text-sm">{v.brand} {v.model}</p>
+                          {v.vin && <p className="text-xs text-gray-400 font-mono mt-0.5">{v.vin}</p>}
+                        </div>
+                      </div>
+                      <ChevronRight size={16} className="text-gray-400" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center text-gray-400 py-6 border border-dashed border-gray-200 rounded-xl mb-6">
+                  Немає прив'язаних автомобілів
+                </div>
+              )}
+
+              {/* Inline Create Vehicle */}
+              {!showAddVehicle ? (
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => setShowAddVehicle(true)}
+                    className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Plus size={16} /> Додати новий автомобіль
                   </button>
+                  
+                  <Button variant="secondary" onClick={() => handleVehicleSelect(null)} className="w-full mt-2">
+                    Пропустити вибір авто
+                  </Button>
                 </div>
-              ))}
+              ) : (
+                <form onSubmit={handleCreateVehicle} className="border border-yellow-100 bg-yellow-50/20 rounded-xl p-4 space-y-4">
+                  <h4 className="font-bold text-yellow-800 text-sm">Додавання автомобіля</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Input
+                      label="VIN-код (17 знаків)"
+                      value={newVehVin}
+                      onChange={(e) => setNewVehVin(e.target.value)}
+                      placeholder="KNEDE241260000300"
+                    />
+                    <Input
+                      label="Марка / Бренд"
+                      value={newVehBrand}
+                      onChange={(e) => setNewVehBrand(e.target.value)}
+                      placeholder="Kia"
+                      required
+                    />
+                    <Input
+                      label="Модель"
+                      value={newVehModel}
+                      onChange={(e) => setNewVehModel(e.target.value)}
+                      placeholder="Rio"
+                      required
+                    />
+                    <Input
+                      label="Рік випуску"
+                      value={newVehYear}
+                      onChange={(e) => setNewVehYear(e.target.value)}
+                      placeholder="2015"
+                      type="number"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" size="sm" onClick={() => setShowAddVehicle(false)}>Скасувати</Button>
+                    <Button type="submit" size="sm" disabled={addingVehicle}>Додати автомобіль</Button>
+                  </div>
+                </form>
+              )}
+            </Card>
+          </div>
+        )}
+
+        {/* ─────────────── STEP 3: PARTS SPECIFICATION ─────────────── */}
+        {step === 3 && selectedCustomer && (
+          <div className="space-y-6">
+            {/* Header info */}
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-wrap justify-between items-center gap-4">
+              <div className="flex items-center gap-3">
+                <Button size="sm" variant="ghost" onClick={() => setStep(2)} icon={<ArrowLeft size={14} />} />
+                <div>
+                  <h3 className="font-bold text-gray-900">Специфікація замовлення</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Клієнт: <span className="font-bold text-gray-700">{selectedCustomer.full_name}</span> | 
+                    Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не обрано'}</span>
+                  </p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Сума замовлення</p>
+                <p className="text-lg font-bold text-yellow-600">{formatMoney(totalKop)}</p>
+              </div>
             </div>
-          </div>
 
-          <div className="mt-4 pt-4 border-t border-gray-100 flex justify-end gap-6 text-sm">
-            {prepaymentKop > 0 && (
-              <span className="text-gray-500">Передоплата: <span className="font-semibold text-blue-600">{formatMoney(prepaymentKop)}</span></span>
-            )}
-            <span className="text-gray-500">Загальна сума: <span className="font-bold text-gray-900">{formatMoney(totalKop)}</span></span>
-          </div>
-        </Card>
+            {/* Parts Table */}
+            <Card padding="none">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
+                      <th className="px-4 py-3 w-10 text-center">#</th>
+                      <th className="px-4 py-3">Назва запчастини / роботи</th>
+                      <th className="px-4 py-3 w-40">Артикул / SKU</th>
+                      <th className="px-4 py-3 w-24">К-сть</th>
+                      <th className="px-4 py-3 w-36">Ціна (грн)</th>
+                      <th className="px-4 py-3 w-48">Постачальник</th>
+                      <th className="px-4 py-3 w-10 text-center"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {items.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50/20">
+                        <td className="px-4 py-3 text-center text-gray-400 font-mono text-xs">{idx + 1}</td>
+                        <td className="px-4 py-3">
+                          <input
+                            value={row.name}
+                            onChange={(e) => updateItem(idx, 'name', e.target.value)}
+                            placeholder="Введіть назву..."
+                            required
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            value={row.sku}
+                            onChange={(e) => updateItem(idx, 'sku', e.target.value)}
+                            placeholder="Артикул..."
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-mono"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            value={row.qty}
+                            onChange={(e) => updateItem(idx, 'qty', e.target.value)}
+                            type="number"
+                            min="1"
+                            required
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            value={row.sell_price}
+                            onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
+                            type="number"
+                            min="0"
+                            step="any"
+                            required
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={row.supplier_id}
+                            onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                          >
+                            <option value="">Наявність на складі</option>
+                            {suppliers.map((s) => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          {items.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeItem(idx)}
+                              className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition-colors"
+                              title="Видалити"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
-        <div className="flex gap-3 justify-end">
-          <Button type="button" variant="secondary" onClick={() => navigate(-1)}>Скасувати</Button>
-          <Button type="submit" loading={saving}>Створити замовлення</Button>
-        </div>
-      </form>
+              {/* Table Action Footer */}
+              <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <Button variant="secondary" size="sm" onClick={addItem} icon={<Plus size={12} />}>
+                  Додати рядок
+                </Button>
+                
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={() => setStep(2)}>Назад</Button>
+                  <Button onClick={() => {
+                    const filled = items.filter(i => i.name.trim())
+                    if (filled.length === 0) {
+                      toast.error('Додайте хоча б одну позицію з назвою')
+                    } else {
+                      setStep(4)
+                    }
+                  }}>Далі</Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ─────────────── STEP 4: SUMMARY & CHECKOUT ─────────────── */}
+        {step === 4 && selectedCustomer && (
+          <div className="space-y-6 max-w-3xl mx-auto">
+            {/* Header info */}
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center gap-3">
+              <Button size="sm" variant="ghost" onClick={() => setStep(3)} icon={<ArrowLeft size={14} />} />
+              <div>
+                <h3 className="font-bold text-gray-900">Завершення оформлення</h3>
+                <p className="text-xs text-gray-400 mt-0.5">Перевірте деталі замовлення та виберіть дію збереження</p>
+              </div>
+            </div>
+
+            {/* Review Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              {/* Order Info Summary */}
+              <Card className="space-y-4">
+                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Деталі контрагента</h4>
+                <div className="space-y-3 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Клієнт:</span>
+                    <span className="font-semibold text-gray-800">{selectedCustomer.full_name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Телефон:</span>
+                    <span className="font-semibold text-gray-800">{selectedCustomer.phone}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Автомобіль:</span>
+                    <span className="font-semibold text-gray-800">
+                      {selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не прив\'язано'}
+                    </span>
+                  </div>
+                  {selectedVehicle?.vin && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">VIN-код:</span>
+                      <span className="font-mono text-xs text-gray-800">{selectedVehicle.vin}</span>
+                    </div>
+                  )}
+                </div>
+
+                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2 pt-2">Сума замовлення</h4>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 text-sm">Загальна сума товарів:</span>
+                  <span className="text-xl font-extrabold text-yellow-600">{formatMoney(totalKop)}</span>
+                </div>
+              </Card>
+
+              {/* Checkout Actions & Prepayment */}
+              <Card className="space-y-4">
+                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Оплата та Коментар</h4>
+                
+                {/* Prepayment Input */}
+                <div className="space-y-3">
+                  <Input
+                    label="Внести передоплату (грн)"
+                    value={prepayment}
+                    onChange={(e) => setPrepayment(e.target.value)}
+                    type="number"
+                    min="0"
+                    step="any"
+                  />
+                  
+                  {parseFloat(prepayment) > 0 && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-500 mb-1">Спосіб передоплати</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(['cash', 'card', 'transfer'] as const).map((method) => (
+                            <button
+                              key={method}
+                              type="button"
+                              onClick={() => setPrepaymentMethod(method)}
+                              className={`py-2 px-3 text-xs font-semibold rounded-lg border text-center transition-all ${
+                                prepaymentMethod === method
+                                  ? 'bg-yellow-400 border-yellow-400 text-black shadow-sm'
+                                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                              }`}
+                            >
+                              {method === 'cash' ? 'Готівка' : method === 'card' ? 'Картка' : 'Переказ'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="pt-2">
+                        <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={isFiscal}
+                            disabled={prepaymentMethod === 'card'}
+                            onChange={(e) => setIsFiscal(e.target.checked)}
+                            className="rounded text-yellow-500 focus:ring-yellow-400 h-4 w-4"
+                          />
+                          🧾 Фіскалізувати передоплату (ПРРО)
+                        </label>
+                        {prepaymentMethod === 'card' && (
+                          <p className="text-[10px] text-blue-500 mt-1 italic">
+                            * Оплата через термінал завжди фіскалізується в ПРРО
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Comment Box */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">Коментар до замовлення</label>
+                    <textarea
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                      placeholder="Особливі побажання клієнта..."
+                      rows={2}
+                      className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                    />
+                  </div>
+
+                  {/* Urgency checkbox */}
+                  <label className="flex items-center gap-2 text-xs font-bold text-red-600 hover:text-red-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isUrgent}
+                      onChange={(e) => setIsUrgent(e.target.checked)}
+                      className="rounded text-red-500 focus:ring-red-400 h-3.5 w-3.5"
+                    />
+                    🔥 ТЕРМІНОВО (позначити замовлення червоним)
+                  </label>
+                </div>
+              </Card>
+
+            </div>
+
+            {/* Save Buttons Panel */}
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4">
+              <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
+              
+              <div className="flex gap-2 w-full sm:w-auto">
+                <Button
+                  variant="secondary"
+                  disabled={saving}
+                  className="flex-1 sm:flex-initial"
+                  onClick={() => handleSave(true)}
+                >
+                  Зберегти як Чернетку
+                </Button>
+                <Button
+                  disabled={saving}
+                  className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
+                  onClick={() => handleSave(false)}
+                >
+                  Оформити замовлення
+                </Button>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+      </div>
     </Layout>
   )
 }

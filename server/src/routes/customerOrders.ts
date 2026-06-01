@@ -53,6 +53,48 @@ router.post('/', async (req, res, next) => {
     const input = parsed.data
     const totalAmount = input.items.reduce((s, i) => s + i.sell_price * i.qty, 0)
 
+    // Термінальна перевірка передоплати ПЕРЕД створенням замовлення в БД
+    let bankAuthCode: string | null = null
+    let terminalRrn:  string | null = null
+    let finalIsFiscal = input.prepayment_is_fiscal
+
+    if (input.prepayment > 0) {
+      if (input.prepayment_method === 'card') {
+        finalIsFiscal = true // Термінал -> 100% ПРРО
+        const { getSettings } = await import('../services/adminService.js')
+        const settings = await getSettings().catch(() => null)
+
+        if (settings && settings.bank_terminal_enabled) {
+          const provider = settings.terminal_provider ?? 'mock'
+          if (provider === 'privatbank') {
+            const { privatbankProcessPayment } = await import('../services/integrations/PrivatBankTerminalService.js')
+            const terminalConfigUsed = {
+              ip:          settings.privatbank_terminal_ip  ?? '127.0.0.1',
+              port:        settings.privatbank_terminal_port ?? 8082,
+              merchant_id: settings.privatbank_merchant_id   ?? 'MOCK_MERCHANT',
+            }
+            const terminalResult = await privatbankProcessPayment(
+              terminalConfigUsed,
+              input.prepayment,
+              "PREPAY-" + Date.now()
+            )
+            if (!terminalResult.success) {
+              throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+            }
+            bankAuthCode = terminalResult.auth_code
+            terminalRrn = terminalResult.rrn
+          } else if (provider === 'mock') {
+            const { processCardPayment } = await import('../services/integrations/MockBankTerminalService.js')
+            const terminalResult = await processCardPayment(input.prepayment, 'pre-order', 'PREPAY-' + Date.now())
+            if (!terminalResult.success) {
+              throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+            }
+            bankAuthCode = terminalResult.auth_code
+          }
+        }
+      }
+    }
+
     // Створюємо замовлення
     const { data: order, error: orderErr } = await db
       .from('customer_orders')
@@ -65,7 +107,7 @@ router.post('/', async (req, res, next) => {
         status: input.prepayment > 0 ? 'new' : 'lead',
         prepayment: input.prepayment,
         prepayment_method: input.prepayment_method ?? null,
-        prepayment_is_fiscal: input.prepayment_is_fiscal,
+        prepayment_is_fiscal: finalIsFiscal,
         total_amount: totalAmount,
         total_paid: input.prepayment,
         comment: input.comment ?? null,
@@ -95,40 +137,99 @@ router.post('/', async (req, res, next) => {
     const { error: itemsErr } = await db.from('customer_order_items').insert(itemsToInsert)
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
 
-    // Якщо є передоплата — створюємо запис у order_payments + cash_operation
+    // Якщо є передоплата — фіскалізуємо ПРРО та записуємо платіж
     if (input.prepayment > 0) {
+      let fiscalNumber: string | null = null
+      let fiscalQrUrl:  string | null = null
+
+      if (finalIsFiscal) {
+        try {
+          const { getSettings } = await import('../services/adminService.js')
+          const settings = await getSettings().catch(() => null)
+          if (settings) {
+            const prroProvider = settings.prro_provider ?? 'mock'
+            if (prroProvider === 'kashalot' && settings.kashalot_license_key && settings.kashalot_pin) {
+              const { kashalotLogin, kashalotGetCurrentShift, kashalotOpenShift, kashalotFiscalize } = await import('../services/integrations/KashalotService.js')
+              const token = await kashalotLogin({
+                license_key: settings.kashalot_license_key,
+                pin:         settings.kashalot_pin,
+              })
+              let shiftId = settings.kashalot_active_shift ?? await kashalotGetCurrentShift(token)
+              if (!shiftId) {
+                shiftId = await kashalotOpenShift(token)
+                await db.from('shop_settings').update({ kashalot_active_shift: shiftId })
+              }
+              const fiscalResult = await kashalotFiscalize(
+                token,
+                shiftId,
+                "PREPAY-" + order.id.slice(0, 8),
+                input.prepayment,
+                [{ name: "Передоплата замовлення", qty: 1, unit_price: input.prepayment, discount: 0 }],
+                input.prepayment_method ?? 'cash'
+              )
+              if (fiscalResult.success) {
+                fiscalNumber = fiscalResult.fiscal_number
+                fiscalQrUrl  = fiscalResult.qr_url
+              } else {
+                logger.warn({ error: fiscalResult.error }, 'Кашалот: не вдалось фіскалізувати')
+              }
+            } else {
+              // Mock ПРРО
+              const { fiscalizeSale } = await import('../services/integrations/MockPrroService.js')
+              const fiscalResult = await fiscalizeSale(order.id, "PREPAY-" + order.id.slice(0, 8), input.prepayment)
+              if (fiscalResult.success) {
+                fiscalNumber = fiscalResult.fiscal_number
+              }
+            }
+          }
+        } catch (prroErr: any) {
+          logger.error({ error: prroErr.message }, 'ПРРО: помилка інтеграції при передоплаті')
+        }
+      }
+
       try {
+        const paymentNotesList = [
+          'Передоплата при створенні',
+          fiscalNumber ? 'Фіскальний №: ' + fiscalNumber : '',
+          fiscalQrUrl ? 'QR-код чеку: ' + fiscalQrUrl : '',
+          bankAuthCode ? 'Код авторизації: ' + bankAuthCode : '',
+          terminalRrn ? 'RRN: ' + terminalRrn : ''
+        ].filter(Boolean).join('\n')
+
         await db.from('order_payments').insert({
           tenant_id:  req.user!.tenant_id,
           order_id:   order.id,
           amount:     input.prepayment,
           method:     input.prepayment_method ?? 'cash',
-          is_fiscal:  input.prepayment_is_fiscal,
+          is_fiscal:  finalIsFiscal,
           created_by: req.user!.id,
-          notes:      'Передоплата при створенні',
+          notes:      paymentNotesList,
         })
 
-        const { data: anyShift } = await db
-          .from('shifts')
-          .select('id')
-          .eq('status', 'open')
-          .eq('tenant_id', req.user!.tenant_id)
-          .limit(1)
-          .maybeSingle()
+        // Касова операція для готівки
+        if (input.prepayment_method === 'cash') {
+          const { data: anyShift } = await db
+            .from('shifts')
+            .select('id')
+            .eq('status', 'open')
+            .eq('tenant_id', req.user!.tenant_id)
+            .limit(1)
+            .maybeSingle()
 
-        if (anyShift) {
-          await db.from('cash_operations').insert({
-            tenant_id: req.user!.tenant_id,
-            shift_id: anyShift.id,
-            type: 'in',
-            amount: input.prepayment,
-            created_by: req.user!.id,
-            note: `Передоплата замовлення #${order.id.slice(0, 8)}`,
-          })
-          logger.info({ orderId: order.id, amount: input.prepayment }, 'Prepayment cash operation created')
-        } else {
-          logger.warn({ orderId: order.id, prepayment: input.prepayment },
-            'Prepayment received but no open shift found')
+          if (anyShift) {
+            await db.from('cash_operations').insert({
+              tenant_id: req.user!.tenant_id,
+              shift_id: anyShift.id,
+              type: 'in',
+              amount: input.prepayment,
+              created_by: req.user!.id,
+              note: "Передоплата замовлення #" + order.id.slice(0, 8),
+            })
+            logger.info({ orderId: order.id, amount: input.prepayment }, 'Prepayment cash operation created')
+          } else {
+            logger.warn({ orderId: order.id, prepayment: input.prepayment },
+              'Prepayment received but no open shift found')
+          }
         }
       } catch (cashErr) {
         logger.error({ error: cashErr instanceof Error ? cashErr.message : cashErr }, 'Failed to create cash operation')
