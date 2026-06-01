@@ -7,6 +7,7 @@ export interface ParsedItem {
   name:          string
   qty:           number
   price:         number
+  retail_price?: number | null
   matched:       boolean
   product_id:    string | null
   match_quality: 'exact' | 'fuzzy' | 'new'
@@ -26,11 +27,12 @@ export const importApi = {
     api.post<ParseResult>('/api/v1/import/parse', body),
 
   confirm: (body: {
-    items:          Array<{ row: number; sku: string; name: string; qty: number; price: number; matched: boolean; product_id: string | null; match_quality: string; warnings: string[] }>
+    items:          ParsedItem[]
     supplier_id?:   string | null
     invoice_number?: string | null
     notes?:         string | null
     create_missing?: boolean
+    update_retail?:  boolean
   }) =>
     api.post<{ data: SupplyInvoice }>('/api/v1/import/confirm', body),
 }

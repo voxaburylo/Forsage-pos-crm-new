@@ -406,6 +406,12 @@ export default function ProductsPage() {
       title={`Товари${total ? ` (${total})` : ''}`}
       actions={
         <div className="flex gap-1.5">
+          {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
+            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => navigate('/suppliers/import')}>
+              <span className="hidden sm:inline">Прийняти товар (накладна)</span>
+              <span className="inline sm:hidden">Прийняти товар</span>
+            </Button>
+          )}
           <span className="hidden md:flex gap-1.5">
             <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>

@@ -22,6 +22,10 @@ export default function ImportPage() {
   const [parsing, setParsing]         = useState(false)
   const [confirming, setConfirming]   = useState(false)
   const [suppliers, setSuppliers]     = useState<Array<{ id: string; name: string }>>([])
+  type PriceStrategy = 'grid' | 'percent' | 'manual'
+  const [priceStrategy, setPriceStrategy] = useState<PriceStrategy>('grid')
+  const [customMarkupPct, setCustomMarkupPct] = useState('30')
+  const [manualPrices, setManualPrices] = useState<Record<number, string>>({})
 
   useEffect(() => {
     supplierApi.list({ per_page: 200 }).then((r) => setSuppliers(r.data)).catch(() => {})
@@ -33,6 +37,15 @@ export default function ImportPage() {
     try {
       const res = await importApi.parse({ text, supplier_id: supplierId || null })
       setResult(res)
+      
+      const initialManual: Record<number, string> = {}
+      res.items.forEach((item) => {
+        if (!item.matched) {
+          initialManual[item.row] = (Math.round(item.price * 1.3) / 100).toFixed(2)
+        }
+      })
+      setManualPrices(initialManual)
+      
       setStep('review')
       if (res.matched_count === 0) {
         toast.warning('Жодного товару не знайдено в базі')
@@ -51,13 +64,47 @@ export default function ImportPage() {
     const matchedItems = result.items.filter((i) => i.matched || createMissing)
     if (matchedItems.length === 0) { toast.error('Немає товарів для створення накладної'); return }
 
+    let finalItems = result.items
+
+    if (createMissing && notFound.length > 0) {
+      if (priceStrategy === 'manual') {
+        for (const item of notFound) {
+          const valStr = manualPrices[item.row]
+          const priceVal = valStr ? parseFloat(valStr) : 0
+          if (isNaN(priceVal) || priceVal <= 0) {
+            toast.error(`Будь ласка, вкажіть коректну роздрібну ціну для "${item.name}" (рядок ${item.row})`)
+            return
+          }
+        }
+      }
+
+      finalItems = result.items.map((item) => {
+        if (item.matched) return item
+
+        let retailPriceCents: number | null = null
+        if (priceStrategy === 'percent') {
+          const pct = parseFloat(customMarkupPct) || 0
+          retailPriceCents = Math.round(item.price * (1 + pct / 100))
+        } else if (priceStrategy === 'manual') {
+          const valStr = manualPrices[item.row]
+          retailPriceCents = Math.round(parseFloat(valStr) * 100)
+        }
+
+        return {
+          ...item,
+          retail_price: retailPriceCents,
+        }
+      })
+    }
+
     setConfirming(true)
     try {
       const res = await importApi.confirm({
-        items:          result.items,
+        items:          finalItems,
         supplier_id:    supplierId || null,
         invoice_number: invoiceNumber.trim() || null,
         create_missing: createMissing,
+        update_retail:  priceStrategy === 'grid',
       })
       toast.success('Накладну створено')
       navigate('/suppliers/invoices/' + res.data.id)
@@ -201,18 +248,54 @@ export default function ImportPage() {
                     <th className="text-left px-4 py-2">Артикул</th>
                     <th className="text-left px-4 py-2">Назва з прайсу</th>
                     <th className="text-right px-2 py-2 w-20">К-сть</th>
-                    <th className="text-right px-4 py-2 w-28">Ціна</th>
+                    <th className="text-right px-4 py-2 w-28">Ціна закупівлі</th>
+                    {createMissing && (
+                      <th className="text-right px-4 py-2 w-36">Роздрібна ціна (₴)</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {notFound.map((item) => (
-                    <tr key={item.row} className="border-b border-gray-50 bg-red-50/30">
-                      <td className="px-4 py-2 font-mono text-xs text-gray-400">{item.sku || '—'}</td>
-                      <td className="px-4 py-2 text-gray-600 text-xs">{item.name}</td>
-                      <td className="px-2 py-2 text-right">{item.qty}</td>
-                      <td className="px-4 py-2 text-right font-mono">{formatMoney(item.price)}</td>
-                    </tr>
-                  ))}
+                  {notFound.map((item) => {
+                    let retailDisplay: React.ReactNode = null
+                    if (priceStrategy === 'grid') {
+                      retailDisplay = <span className="text-xs text-gray-400 italic">Авто (сітка)</span>
+                    } else if (priceStrategy === 'percent') {
+                      const markup = parseFloat(customMarkupPct) || 0
+                      const calcPrice = Math.round(item.price * (1 + markup / 100)) / 100
+                      retailDisplay = <span className="font-mono text-gray-600">{calcPrice.toFixed(2)}</span>
+                    } else if (priceStrategy === 'manual') {
+                      retailDisplay = (
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={manualPrices[item.row] ?? ''}
+                          onChange={(e) => {
+                            setManualPrices({
+                              ...manualPrices,
+                              [item.row]: e.target.value
+                            })
+                          }}
+                          className="w-24 text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                          placeholder="0.00"
+                        />
+                      )
+                    }
+
+                    return (
+                      <tr key={item.row} className="border-b border-gray-50 bg-red-50/30">
+                        <td className="px-4 py-2 font-mono text-xs text-gray-400">{item.sku || '—'}</td>
+                        <td className="px-4 py-2 text-gray-600 text-xs">{item.name}</td>
+                        <td className="px-2 py-2 text-right">{item.qty}</td>
+                        <td className="px-4 py-2 text-right font-mono">{formatMoney(item.price)}</td>
+                        {createMissing && (
+                          <td className="px-4 py-2 text-right">
+                            {retailDisplay}
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
               <div className="px-4 py-3 border-t border-gray-100">
@@ -222,6 +305,67 @@ export default function ImportPage() {
                     className="rounded border-gray-300" />
                   Автоматично створити нові товари для незнайдених позицій
                 </label>
+
+                {createMissing && (
+                  <div className="mt-4 pl-6 border-l-2 border-yellow-400 space-y-4">
+                    <div>
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                        Встановлення роздрібних цін для нових товарів:
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="priceStrategy"
+                            value="grid"
+                            checked={priceStrategy === 'grid'}
+                            onChange={() => setPriceStrategy('grid')}
+                            className="text-yellow-500 focus:ring-yellow-400"
+                          />
+                          За сіткою націнок (авто)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="priceStrategy"
+                            value="percent"
+                            checked={priceStrategy === 'percent'}
+                            onChange={() => setPriceStrategy('percent')}
+                            className="text-yellow-500 focus:ring-yellow-400"
+                          />
+                          Єдиний відсоток націнки
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="priceStrategy"
+                            value="manual"
+                            checked={priceStrategy === 'manual'}
+                            onChange={() => setPriceStrategy('manual')}
+                            className="text-yellow-500 focus:ring-yellow-400"
+                          />
+                          Вручну для кожного
+                        </label>
+                      </div>
+                    </div>
+
+                    {priceStrategy === 'percent' && (
+                      <div className="flex items-center gap-2 bg-gray-50 p-2.5 rounded-lg max-w-xs border border-gray-100">
+                        <span className="text-xs font-medium text-gray-600">Відсоток націнки:</span>
+                        <div className="relative flex items-center">
+                          <input
+                            type="number"
+                            min="0"
+                            value={customMarkupPct}
+                            onChange={(e) => setCustomMarkupPct(e.target.value)}
+                            className="w-20 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400 text-right pr-6"
+                          />
+                          <span className="absolute right-2 text-xs text-gray-400">%</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </Card>
           )}
