@@ -295,23 +295,23 @@ export default function ProductFormPage() {
                       <span>Ціна закупівлі вища за роздрібну! Прибуток від'ємний.</span>
                     </div>
                   )}
-                {form.category_id && form.purchase_price && (
+                {form.purchase_price && (
                   <button type="button"
                     className="mt-1 text-xs text-yellow-600 hover:text-yellow-700 flex items-center gap-1"
                     onClick={async () => {
                       const purchase = Math.round(parseFloat(form.purchase_price || '0') * 100)
                       if (!purchase) return
                       try {
-                        const res = await pricingApi.autoRetail(purchase, form.category_id)
+                        const res = await pricingApi.autoRetail(purchase, form.category_id || undefined)
                         if (res.data.retail_price !== null) {
                           set('retail_price', (res.data.retail_price / 100).toFixed(2))
-                          toast.success('Ціну розраховано за наценкою категорії')
+                          toast.success('Ціну розраховано за правилами націнки')
                         } else {
-                          toast.warning('Для цієї категорії наценка не налаштована')
+                          toast.warning('Націнка для даного товару не налаштована')
                         }
                       } catch { toast.error('Помилка розрахунку') }
                     }}>
-                    <Wand2 size={12} /> Розрахувати за наценкою
+                    <Wand2 size={12} /> Розрахувати за націнкою
                   </button>
                 )}
               </div>

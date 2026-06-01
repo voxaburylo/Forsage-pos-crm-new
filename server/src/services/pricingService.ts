@@ -155,11 +155,27 @@ interface PriceCalcResult {
 export async function calculatePrice(params: PriceCalcParams): Promise<PriceCalcResult> {
   let retailPrice = params.retailPrice
 
-  // Якщо є наценка категорії і базова роздрібна = 0 → розрахувати
-  if (params.categoryId && retailPrice === 0 && params.purchasePrice > 0) {
-    const markupPct = await getCategoryMarkup(params.categoryId)
+  // Якщо базова роздрібна = 0 і є закупка → розрахувати роздрібну
+  if (retailPrice === 0 && params.purchasePrice > 0) {
+    let markupPct: number | null = null;
+    
+    // 1. Спробувати націнку конкретної категорії
+    if (params.categoryId) {
+      markupPct = await getCategoryMarkup(params.categoryId);
+    }
+    
     if (markupPct !== null) {
-      retailPrice = Math.round(params.purchasePrice * (1 + markupPct / 100))
+      retailPrice = Math.round(params.purchasePrice * (1 + markupPct / 100));
+    } else {
+      // 2. Спробувати глобальну матрицю націнок
+      const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', TENANT_ID).single();
+      const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined;
+      if (rules && rules.length > 0) {
+        const rule = rules.find((r) => params.purchasePrice >= r.minPrice && params.purchasePrice < r.maxPrice);
+        if (rule) {
+          retailPrice = Math.round(params.purchasePrice * (1 + rule.markupPct / 100));
+        }
+      }
     }
   }
 
@@ -211,8 +227,23 @@ export async function calculatePrice(params: PriceCalcParams): Promise<PriceCalc
 // ── Авто-розрахунок роздрібної при зміні закупівлі ───────
 
 export async function autoRetailPrice(purchasePrice: number, categoryId?: string): Promise<number | null> {
-  if (!categoryId) return null
-  const markupPct = await getCategoryMarkup(categoryId)
-  if (markupPct === null) return null
-  return Math.round(purchasePrice * (1 + markupPct / 100))
+  // 1. Спробувати націнку категорії
+  if (categoryId) {
+    const markupPct = await getCategoryMarkup(categoryId);
+    if (markupPct !== null) {
+      return Math.round(purchasePrice * (1 + markupPct / 100));
+    }
+  }
+
+  // 2. Спробувати глобальну матрицю націнок
+  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', TENANT_ID).single();
+  const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined;
+  if (rules && rules.length > 0) {
+    const rule = rules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice);
+    if (rule) {
+      return Math.round(purchasePrice * (1 + rule.markupPct / 100));
+    }
+  }
+
+  return null;
 }

@@ -6,7 +6,7 @@ import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
-import { playSuccessBeep, playWarning, initAudio } from '@/lib/audioService'
+import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
 import { searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
@@ -15,6 +15,7 @@ export interface SearchPanelHandle {
   focus: () => void
   clear: () => void
   search: (q: string) => void
+  openCamera: () => void
 }
 
 export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
@@ -40,6 +41,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       setQuery(q)
       setResults([])
     },
+    openCamera: () => setCameraOpen(true),
   }))
 
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
@@ -121,6 +123,9 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         playSuccessBeep()
       } else if (result?.type === 'product' && result?.data) {
         addToReceipt(result.data)
+      } else {
+        playErrorTone()
+        toast.error('Штрих-код не знайдено в базі')
       }
       setQuery('')
       setResults([])
@@ -129,6 +134,9 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         addToReceipt(results[0])
         setQuery('')
         setResults([])
+      } else {
+        playErrorTone()
+        toast.error('Товар або клієнт не знайдено')
       }
     }
   }
@@ -199,7 +207,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
           <input ref={inputRef} type="text" value={query}
             onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKeyDown}
-            placeholder="Артикул, назва, штрихкод..."
+            placeholder="Артикул, назва, штрихкод... (F4)"
             className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}
@@ -207,7 +215,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         </div>
         <button onClick={() => setCameraOpen(true)}
           className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 md:w-[50px] md:h-[50px] w-[44px] h-[44px] shrink-0"
-          title="Сканувати камерою">
+          title="Сканувати камерою (F8)">
           <Camera size={20} />
         </button>
       </div>

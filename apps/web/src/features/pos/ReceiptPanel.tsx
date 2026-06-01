@@ -418,7 +418,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
             className="w-full py-5 rounded-xl bg-yellow-400 text-black text-xl font-bold hover:bg-yellow-300 disabled:opacity-30 transition-all shadow-lg shadow-yellow-400/20 ripple active-press"
             style={{ minHeight: 72 }}
           >
-            💰 ОПЛАТИТИ (F8)
+            💰 ОПЛАТИТИ (F2)
           </button>
         </div>
       </div>

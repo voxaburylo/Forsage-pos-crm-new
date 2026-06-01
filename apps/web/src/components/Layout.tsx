@@ -1,6 +1,19 @@
 import { useState } from 'react'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { useLocation } from 'react-router-dom'
+import { useAuthStore } from '@/stores/authStore'
+import {
+  SubNavTabs,
+  PRODUCTS_TABS,
+  ORDERS_TABS,
+  FINANCE_TABS,
+  SUPPLIERS_TABS,
+  INVENTORY_TABS,
+  ANALYTICS_TABS,
+  STAFF_TABS,
+  SETTINGS_TABS
+} from './SubNavTabs'
 import { ToastContainer } from './ui'
 
 interface Props {
@@ -12,6 +25,27 @@ interface Props {
 
 export function Layout({ children, title, actions, onBack }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const location = useLocation()
+  const session = useAuthStore((s) => s.session)
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+
+  const allGroups = [
+    PRODUCTS_TABS,
+    ORDERS_TABS,
+    FINANCE_TABS,
+    SUPPLIERS_TABS,
+    INVENTORY_TABS,
+    ANALYTICS_TABS,
+    STAFF_TABS,
+    SETTINGS_TABS
+  ]
+
+  const activeGroup = allGroups.find(group => 
+    group.some(tab => {
+      const path = tab.to.split('?')[0]
+      return location.pathname === path
+    })
+  )
 
   return (
     <div className="flex min-h-screen bg-gray-100">
@@ -56,6 +90,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
         </header>
 
         <main className="flex-1 p-4 md:p-6 overflow-auto pb-safe">
+          {activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}
           {children}
         </main>
       </div>

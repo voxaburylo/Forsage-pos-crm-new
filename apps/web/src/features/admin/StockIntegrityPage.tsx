@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { ShieldCheck, AlertTriangle, RefreshCw, Package, MapPin, Clock } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
+import { SubNavTabs, SETTINGS_TABS } from '@/components/SubNavTabs'
 import { useAuthStore } from '@/stores/authStore'
 
 interface IntegrityItem {
@@ -21,6 +22,7 @@ interface CheckResult {
 
 export default function StockIntegrityPage() {
   const { session } = useAuthStore()
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
   const [result, setResult] = useState<CheckResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -55,6 +57,7 @@ export default function StockIntegrityPage() {
     <div style={{ display: 'flex', height: '100vh', background: '#0f1117' }}>
       <Sidebar />
       <main style={{ flex: 1, overflow: 'auto', padding: '32px', color: '#e4e4e7' }}>
+        <SubNavTabs tabs={SETTINGS_TABS} currentRole={role} />
         {/* Заголовок */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '32px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

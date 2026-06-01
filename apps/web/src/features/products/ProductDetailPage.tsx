@@ -60,6 +60,37 @@ export default function ProductDetailPage() {
     }
   }
 
+  function handleSendToPrintQueue() {
+    if (!product) return
+    const queueItems = [{ id: product.id, copies: 1 }]
+
+    const current = localStorage.getItem('forsage_labels_import')
+    let queue: Array<{ id: string; copies: number }> = []
+    if (current) {
+      try {
+        queue = JSON.parse(current)
+        if (!Array.isArray(queue)) queue = []
+      } catch {
+        queue = []
+      }
+    }
+
+    queueItems.forEach(item => {
+      const existing = queue.find(q => q.id === item.id)
+      if (existing) {
+        existing.copies += item.copies
+      } else {
+        queue.push(item)
+      }
+    })
+
+    localStorage.setItem('forsage_labels_import', JSON.stringify(queue))
+    toast.success('Товар додано до черги друку. Перенаправлення...')
+    setTimeout(() => {
+      navigate('/labels')
+    }, 800)
+  }
+
   async function handlePrintBinLabel() {
     if (!product || !product.storage_bin) return
     try {
@@ -179,6 +210,11 @@ export default function ProductDetailPage() {
                         className="ml-auto text-xs text-green-600 hover:text-green-800 flex items-center gap-1 font-medium shrink-0 px-2 py-1 rounded-lg hover:bg-green-50 transition-colors"
                         title="Друк етикетки">
                         <Printer size={14} /> Друк
+                      </button>
+                      <button onClick={handleSendToPrintQueue}
+                        className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 font-medium shrink-0 px-2 py-1 rounded-lg hover:bg-blue-50 transition-colors"
+                        title="Додати в чергу друку">
+                        📥 В чергу
                       </button>
                     </>
                   ) : (

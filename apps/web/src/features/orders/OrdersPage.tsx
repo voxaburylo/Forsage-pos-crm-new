@@ -6,6 +6,8 @@ import {
   Trash2, X, Check, RefreshCw,
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/authStore'
+import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { customerApi } from '@/features/customers/customerApi'
@@ -750,6 +752,8 @@ export default function OrdersPage() {
   const [isFiscal, setIsFiscal] = useState(false)
   const [cancelModal, setCancelModal] = useState<CustomerOrder | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const session = useAuthStore((s) => s.session)
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
 
   // bulk arrival
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1033,6 +1037,7 @@ export default function OrdersPage() {
             </Button>
           </div>
         </header>
+        <SubNavTabs tabs={ORDERS_TABS} currentRole={role} />
 
         {/* робоча площина */}
         <div className="flex-1 flex min-h-0 min-w-0">

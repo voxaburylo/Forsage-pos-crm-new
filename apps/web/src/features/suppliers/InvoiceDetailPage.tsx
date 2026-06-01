@@ -79,6 +79,43 @@ export default function InvoiceDetailPage() {
     }
   }
 
+  function handleSendToQueue() {
+    if (!invoice || !invoice.items) return
+    const items = invoice.items.filter((i) => i.product)
+    const queueItems = items.map((item) => ({
+      id: item.product!.id,
+      copies: Math.ceil(item.qty)
+    }))
+
+    if (queueItems.length === 0) return
+
+    const current = localStorage.getItem('forsage_labels_import')
+    let queue: Array<{ id: string; copies: number }> = []
+    if (current) {
+      try {
+        queue = JSON.parse(current)
+        if (!Array.isArray(queue)) queue = []
+      } catch {
+        queue = []
+      }
+    }
+
+    queueItems.forEach(item => {
+      const existing = queue.find(q => q.id === item.id)
+      if (existing) {
+        existing.copies += item.copies
+      } else {
+        queue.push(item)
+      }
+    })
+
+    localStorage.setItem('forsage_labels_import', JSON.stringify(queue))
+    toast.success(`Додано ${queueItems.length} товарів до черги друку. Перенаправлення...`)
+    setTimeout(() => {
+      navigate('/labels')
+    }, 800)
+  }
+
   if (loading || !invoice) {
     return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>
   }
@@ -109,6 +146,9 @@ export default function InvoiceDetailPage() {
             <>
               <Button variant="secondary" icon={<Tag size={15} />} onClick={() => setLabelModal(true)}>
                 Друк етикеток
+              </Button>
+              <Button variant="secondary" onClick={handleSendToQueue} disabled={actionLoading}>
+                📥 В чергу
               </Button>
               <Button variant="danger-outline" onClick={handleCancel} disabled={actionLoading}>
                 {actionLoading ? '...' : 'Скасувати'}

@@ -230,9 +230,25 @@ export default function POSPage() {
   // Гарячі клавіші
   useEffect(() => {
     function handleGlobalKeyDown(e: KeyboardEvent) {
-      // Не перехоплюємо якщо фокус на input (крім F-клавіш)
+      // Не перехоплюємо якщо фокус на input (крім F-клавіш та Esc)
       const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA'
       const isFKey = e.key.startsWith('F')
+
+      // Escape закриває відкриті модалки
+      const anyModalOpen = payOpen || customerOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen
+      if (e.key === 'Escape' && anyModalOpen) {
+        e.preventDefault()
+        setPayOpen(false)
+        setCustomerOpen(false)
+        setCloseOpen(false)
+        setCashOpen(false)
+        setReconcileOpen(false)
+        setDebtPayOpen(false)
+        setSuspendOpen(false)
+        setSuspendedOpen(false)
+        setHelpOpen(false)
+        return
+      }
 
       if (e.key === 'F1') {
         e.preventDefault()
@@ -240,7 +256,7 @@ export default function POSPage() {
       }
       if (e.key === 'F2') {
         e.preventDefault()
-        searchRef.current?.focus()
+        if (store.items.length > 0) setPayOpen(true)
       }
       if (e.key === 'F3') {
         e.preventDefault()
@@ -248,23 +264,23 @@ export default function POSPage() {
       }
       if (e.key === 'F4') {
         e.preventDefault()
-        setCustomerOpen(true)
+        searchRef.current?.focus()
       }
       if (e.key === 'F5') {
         e.preventDefault()
+        setSuspendedOpen(true)
+      }
+      if (e.key === 'F7') {
+        e.preventDefault()
         if (store.items.length > 0) setSuspendOpen(true)
       }
-      if (e.key === 'F6') {
+      if (e.key === 'F8') {
         e.preventDefault()
-        setSuspendedOpen(true)
+        searchRef.current?.openCamera()
       }
       if (e.key === 'F12' || (e.key === 'l' && e.ctrlKey)) {
         e.preventDefault()
         handleLock()
-      }
-      if (e.key === 'F8') {
-        e.preventDefault()
-        if (store.items.length > 0) setPayOpen(true)
       }
       if (e.key === 'Escape' && !isInput) {
         searchRef.current?.clear()
@@ -272,6 +288,22 @@ export default function POSPage() {
 
       // Навігація по чеку — тільки коли не в полі пошуку
       if (!isInput && !isFKey) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          if (store.items.length > 0) {
+            const currentIdx = store.items.findIndex(i => i.productId === store.selectedProductId)
+            const nextIdx = currentIdx === -1 || currentIdx === store.items.length - 1 ? 0 : currentIdx + 1
+            store.setSelectedProductId(store.items[nextIdx].productId)
+          }
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          if (store.items.length > 0) {
+            const currentIdx = store.items.findIndex(i => i.productId === store.selectedProductId)
+            const prevIdx = currentIdx === -1 || currentIdx === 0 ? store.items.length - 1 : currentIdx - 1
+            store.setSelectedProductId(store.items[prevIdx].productId)
+          }
+        }
         if (e.key === 'Delete' || e.key === 'Del') {
           e.preventDefault()
           const selId = store.selectedProductId
@@ -294,12 +326,10 @@ export default function POSPage() {
           }
         }
       }
-
-      // В фокусі пошуку Enter додає перший результат — це вже оброблено в SearchPanel
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty])
+  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen])
 
   if (store.isInitializing) {
     return (
@@ -498,9 +528,15 @@ export default function POSPage() {
             </button>
           )}
           <ReadyOrdersPanel />
+          <button onClick={() => { if (store.items.length > 0) setSuspendOpen(true) }}
+            disabled={store.items.length === 0}
+            className="flex items-center justify-center text-gray-500 hover:text-white rounded-lg hover:bg-gray-800 w-9 h-9 disabled:opacity-30 relative"
+            title="Відкласти поточний чек (F7)">
+            <span className="text-base leading-none">📥</span>
+          </button>
           <button onClick={() => setSuspendedOpen(true)}
             className="flex items-center justify-center text-gray-500 hover:text-white rounded-lg hover:bg-gray-800 w-9 h-9 relative"
-            title="Відкладені чеки">
+            title="Відкладені чеки (F5)">
             <span className="text-base leading-none">📦</span>
             {suspendedCount > 0 && (
               <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
@@ -787,12 +823,12 @@ export default function POSPage() {
       <div className="hidden md:flex shrink-0 bg-[#0D0D0D] border-t border-gray-800 px-4 py-1 flex items-center gap-4 overflow-x-auto select-none print:hidden">
         {[
           ['F1', 'Довідка'],
-          ['F2', 'Пошук'],
+          ['F2', 'Оплата'],
           ['F3', '+Вкладка'],
-          ['F4', 'Клієнт'],
-          ['F5', 'Відкласти'],
-          ['F6', 'Відкладені'],
-          ['F8', 'Оплата'],
+          ['F4', 'Пошук'],
+          ['F5', 'Відкладені'],
+          ['F7', 'Відкласти'],
+          ['F8', 'Сканер'],
           ['Del', 'Видалити'],
           ['+/−', 'К-сть'],
         ].map(([key, label]) => (

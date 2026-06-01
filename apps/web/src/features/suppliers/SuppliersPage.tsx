@@ -4,11 +4,20 @@ import { Plus, Truck } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import type { Supplier, PaginatedSuppliers } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
+import { useAuthStore } from '@/stores/authStore'
 import { Button, Badge, Card, SearchInput, Table } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 
 export default function SuppliersPage() {
+  const session = useAuthStore((s) => s.session)
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
   const navigate = useNavigate()
+  
+  useEffect(() => {
+    if (role === 'storekeeper') {
+      navigate('/suppliers/invoices', { replace: true })
+    }
+  }, [role, navigate])
   const [result, setResult]     = useState<PaginatedSuppliers | null>(null)
   const [search, setSearch]     = useState('')
   const [page, setPage]         = useState(1)

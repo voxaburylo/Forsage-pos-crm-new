@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -19,9 +20,49 @@ interface LabelQty {
 
 
 export function LabelPrintModal({ open, onClose, invoice }: Props) {
+  const navigate = useNavigate()
   const printAreaRef = useRef<HTMLDivElement>(null)
   const items = invoice.items?.filter((i) => i.product) ?? []
   const today = new Date().toLocaleDateString('uk-UA')
+
+  function handleSendToQueue() {
+    const queueItems = items.flatMap((item) => {
+      const count = getQty(item.id)
+      if (count <= 0) return []
+      return [{ id: item.product!.id, copies: count }]
+    })
+
+    if (queueItems.length === 0) {
+      toast.error('Оберіть кількість етикеток для відправки')
+      return
+    }
+
+    const current = localStorage.getItem('forsage_labels_import')
+    let queue: Array<{ id: string; copies: number }> = []
+    if (current) {
+      try {
+        queue = JSON.parse(current)
+        if (!Array.isArray(queue)) queue = []
+      } catch {
+        queue = []
+      }
+    }
+
+    queueItems.forEach(item => {
+      const existing = queue.find(q => q.id === item.id)
+      if (existing) {
+        existing.copies += item.copies
+      } else {
+        queue.push(item)
+      }
+    })
+
+    localStorage.setItem('forsage_labels_import', JSON.stringify(queue))
+    toast.success(`Додано ${queueItems.length} товарів до черги друку. Перенаправлення...`)
+    setTimeout(() => {
+      navigate('/labels')
+    }, 800)
+  }
 
   const [qtys, setQtys] = useState<LabelQty[]>(
     items.map((i) => ({ itemId: i.id, qty: Math.ceil(i.qty) }))
@@ -174,6 +215,9 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
 
         <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 sm:justify-end pt-2">
           <Button variant="secondary" onClick={onClose} className="w-full sm:w-auto">Скасувати</Button>
+          <Button variant="secondary" onClick={handleSendToQueue} disabled={totalLabels === 0} className="w-full sm:w-auto">
+            📥 В чергу друку
+          </Button>
           <Button variant="outline" onClick={handleThermalPrint} disabled={totalLabels === 0} loading={printingThermal} className="w-full sm:w-auto">
             Друк на термопринтері
           </Button>

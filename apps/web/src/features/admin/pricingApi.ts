@@ -42,9 +42,9 @@ export const pricingApi = {
     api.delete<void>('/api/v1/pricing/markups/' + categoryId),
 
   // Авто-розрахунок
-  autoRetail: (purchaseKopecks: number, categoryId: string) =>
+  autoRetail: (purchaseKopecks: number, categoryId?: string) =>
     api.get<{ data: { retail_price: number | null } }>(
-      '/api/v1/pricing/auto-retail?purchase=' + purchaseKopecks + '&category_id=' + categoryId
+      '/api/v1/pricing/auto-retail?purchase=' + purchaseKopecks + (categoryId ? '&category_id=' + categoryId : '')
     ),
 
   // Розрахунок для конкретного клієнта

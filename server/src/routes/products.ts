@@ -159,21 +159,80 @@ router.post('/bulk-update', requireRole('owner', 'admin'), async (req, res, next
         category_id: z.string().uuid().optional().nullable(),
         brand_id: z.string().uuid().optional().nullable(),
         is_active: z.boolean().optional(),
+        retail_price_action: z.object({
+          type: z.enum(['percent', 'amount', 'markup']),
+          value: z.number()
+        }).optional(),
+        purchase_price_action: z.object({
+          type: z.enum(['percent', 'amount']),
+          value: z.number()
+        }).optional(),
       }).refine(obj => Object.keys(obj).length > 0, 'Хоча б одне поле для оновлення'),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
     const { product_ids, updates } = parsed.data
-    const updateData: Record<string, unknown> = { ...updates, updated_at: new Date().toISOString() }
+    const { retail_price_action, purchase_price_action, ...standardUpdates } = updates
 
-    const { error } = await db
-      .from('products')
-      .update(updateData)
-      .in('id', product_ids)
-      .is('deleted_at', null)
+    if (retail_price_action || purchase_price_action) {
+      // 1. Fetch current prices
+      const { data: products, error: fetchError } = await db
+        .from('products')
+        .select('id, retail_price, purchase_price')
+        .in('id', product_ids)
+        .is('deleted_at', null)
 
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+      if (fetchError) throw new AppError('DB_ERROR', fetchError.message, 500)
+      if (!products || products.length === 0) throw new AppError('NOT_FOUND', 'Товари не знайдені', 404)
+
+      // 2. Perform updates for each product
+      await Promise.all(products.map(async (prod) => {
+        const prodUpdates: Record<string, any> = { ...standardUpdates, updated_at: new Date().toISOString() }
+
+        // Calculate purchase price first
+        let newPurchasePrice = prod.purchase_price
+        if (purchase_price_action) {
+          if (purchase_price_action.type === 'percent') {
+            newPurchasePrice = Math.round(prod.purchase_price * (1 + purchase_price_action.value / 100))
+          } else if (purchase_price_action.type === 'amount') {
+            newPurchasePrice = prod.purchase_price + purchase_price_action.value
+          }
+          prodUpdates.purchase_price = Math.max(0, newPurchasePrice)
+        }
+
+        // Calculate retail price
+        if (retail_price_action) {
+          let newRetailPrice = prod.retail_price
+          if (retail_price_action.type === 'percent') {
+            newRetailPrice = Math.round(prod.retail_price * (1 + retail_price_action.value / 100))
+          } else if (retail_price_action.type === 'amount') {
+            newRetailPrice = prod.retail_price + retail_price_action.value
+          } else if (retail_price_action.type === 'markup') {
+            // Apply markup to new purchase price if updated, otherwise the old purchase price
+            newRetailPrice = Math.round(newPurchasePrice * (1 + retail_price_action.value / 100))
+          }
+          prodUpdates.retail_price = Math.max(0, newRetailPrice)
+        }
+
+        const { error: updateError } = await db
+          .from('products')
+          .update(prodUpdates)
+          .eq('id', prod.id)
+
+        if (updateError) throw new AppError('DB_ERROR', updateError.message, 500)
+      }))
+    } else {
+      // Standard update
+      const updateData: Record<string, unknown> = { ...standardUpdates, updated_at: new Date().toISOString() }
+      const { error } = await db
+        .from('products')
+        .update(updateData)
+        .in('id', product_ids)
+        .is('deleted_at', null)
+
+      if (error) throw new AppError('DB_ERROR', error.message, 500)
+    }
 
     // Audit log
     const { logAction } = await import('../services/auditService.js')
