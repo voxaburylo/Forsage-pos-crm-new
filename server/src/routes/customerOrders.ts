@@ -6,6 +6,7 @@ import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { notifyStatusUpdate } from '../services/telegramBot.js'
 import { calculateAndRecordCommission } from '../services/commissionService.js'
+import { getTerminalAdapter, getFiscalAdapter } from '../services/integrations/adapterFactory.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -65,36 +66,21 @@ router.post('/', async (req, res, next) => {
         const settings = await getSettings().catch(() => null)
 
         if (settings && settings.bank_terminal_enabled) {
-          const provider = settings.terminal_provider ?? 'mock'
-          if (provider === 'privatbank') {
-            const { privatbankProcessPayment } = await import('../services/integrations/PrivatBankTerminalService.js')
-            const terminalConfigUsed = {
-              ip:          settings.privatbank_terminal_ip  ?? '127.0.0.1',
-              port:        settings.privatbank_terminal_port ?? 8082,
-              merchant_id: settings.privatbank_merchant_id   ?? 'MOCK_MERCHANT',
-            }
-            const terminalResult = await privatbankProcessPayment(
-              terminalConfigUsed,
+          const terminalAdapter = getTerminalAdapter(settings)
+          if (terminalAdapter) {
+            const terminalResult = await terminalAdapter.processPayment(
               input.prepayment,
               "PREPAY-" + Date.now()
             )
             if (!terminalResult.success) {
               throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
             }
-            bankAuthCode = terminalResult.auth_code
-            terminalRrn = terminalResult.rrn
-          } else if (provider === 'mock') {
-            const { processCardPayment } = await import('../services/integrations/MockBankTerminalService.js')
-            const terminalResult = await processCardPayment(input.prepayment, 'pre-order', 'PREPAY-' + Date.now())
-            if (!terminalResult.success) {
-              throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
-            }
-            bankAuthCode = terminalResult.auth_code
+            bankAuthCode = terminalResult.authCode
+            terminalRrn = terminalResult.rrn ?? null
           }
         }
       }
     }
-
     // Створюємо замовлення
     const { data: order, error: orderErr } = await db
       .from('customer_orders')
@@ -147,46 +133,25 @@ router.post('/', async (req, res, next) => {
           const { getSettings } = await import('../services/adminService.js')
           const settings = await getSettings().catch(() => null)
           if (settings) {
-            const prroProvider = settings.prro_provider ?? 'mock'
-            if (prroProvider === 'kashalot' && settings.kashalot_license_key && settings.kashalot_pin) {
-              const { kashalotLogin, kashalotGetCurrentShift, kashalotOpenShift, kashalotFiscalize } = await import('../services/integrations/KashalotService.js')
-              const token = await kashalotLogin({
-                license_key: settings.kashalot_license_key,
-                pin:         settings.kashalot_pin,
-              })
-              let shiftId = settings.kashalot_active_shift ?? await kashalotGetCurrentShift(token)
-              if (!shiftId) {
-                shiftId = await kashalotOpenShift(token)
-                await db.from('shop_settings').update({ kashalot_active_shift: shiftId })
-              }
-              const fiscalResult = await kashalotFiscalize(
-                token,
-                shiftId,
-                "PREPAY-" + order.id.slice(0, 8),
-                input.prepayment,
-                [{ name: "Передоплата замовлення", qty: 1, unit_price: input.prepayment, discount: 0 }],
-                input.prepayment_method ?? 'cash'
-              )
-              if (fiscalResult.success) {
-                fiscalNumber = fiscalResult.fiscal_number
-                fiscalQrUrl  = fiscalResult.qr_url
-              } else {
-                logger.warn({ error: fiscalResult.error }, 'Кашалот: не вдалось фіскалізувати')
-              }
+            const fiscalAdapter = getFiscalAdapter(settings)
+            const fiscalResult = await fiscalAdapter.fiscalize(
+              order.id,
+              "PREPAY-" + order.id.slice(0, 8),
+              input.prepayment,
+              [{ name: "Передоплата замовлення", qty: 1, unit_price: input.prepayment, discount: 0 }],
+              input.prepayment_method ?? 'cash'
+            )
+            if (fiscalResult.success) {
+              fiscalNumber = fiscalResult.fiscal_number
+              fiscalQrUrl  = fiscalResult.qr_url
             } else {
-              // Mock ПРРО
-              const { fiscalizeSale } = await import('../services/integrations/MockPrroService.js')
-              const fiscalResult = await fiscalizeSale(order.id, "PREPAY-" + order.id.slice(0, 8), input.prepayment)
-              if (fiscalResult.success) {
-                fiscalNumber = fiscalResult.fiscal_number
-              }
+              logger.warn({ error: fiscalResult.error }, 'Фіскалізація: не вдалось фіскалізувати')
             }
           }
         } catch (prroErr: any) {
           logger.error({ error: prroErr.message }, 'ПРРО: помилка інтеграції при передоплаті')
         }
       }
-
       try {
         const paymentNotesList = [
           'Передоплата при створенні',

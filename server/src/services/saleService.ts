@@ -4,6 +4,7 @@ import { getCurrentShift } from './shiftService.js'
 import { logAction } from './auditService.js'
 import { logger } from '../lib/logger.js'
 import type { CreateSaleInput, CalculatePriceInput, SaleListQuery } from '../validators/saleSchema.js'
+import { getTerminalAdapter, getFiscalAdapter, TerminalAdapter } from './integrations/adapterFactory.js'
 
 const TABLE = 'sales'
 
@@ -121,8 +122,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   }
 
   let isCharged = false
-  let chargedProvider: 'privatbank' | 'mock' | null = null
-  let terminalConfigUsed: any = null
+  let activeTerminalAdapter: TerminalAdapter | null = null
   let bankAuthCode: string | null = null
   let terminalRrn:  string | null = null
 
@@ -181,38 +181,23 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     if (provider === 'manual' || !settings.bank_terminal_enabled) {
       bankAuthCode = (input as any).terminal_auth_code ?? null
       logger.info({ bankAuthCode }, 'Термінал: ручне підтвердження (manual mode)')
-    } else if (provider === 'privatbank') {
-      chargedProvider = 'privatbank'
-      terminalConfigUsed = {
-        ip:          settings.privatbank_terminal_ip  ?? '127.0.0.1',
-        port:        settings.privatbank_terminal_port ?? 8082,
-        merchant_id: settings.merchant_id ?? settings.privatbank_merchant_id ?? '',
-      }
-      const { privatbankProcessPayment } = await import('./integrations/PrivatBankTerminalService.js')
-      const terminalResult = await privatbankProcessPayment(
-        terminalConfigUsed,
-        cardAmount,
-        `TMP-${Date.now()}`,
-      )
-      if (!terminalResult.success) {
-        throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
-      }
-      bankAuthCode = terminalResult.auth_code
-      terminalRrn  = terminalResult.rrn
-      isCharged = true
     } else {
-      chargedProvider = 'mock'
-      const { processCardPayment } = await import('./integrations/MockBankTerminalService.js')
-      const terminalResult = await processCardPayment(cardAmount)
-      if (!terminalResult.success) {
-        throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+      activeTerminalAdapter = getTerminalAdapter(settings)
+      if (activeTerminalAdapter) {
+        const terminalResult = await activeTerminalAdapter.processPayment(
+          cardAmount,
+          `TMP-${Date.now()}`
+        )
+        if (!terminalResult.success) {
+          throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+        }
+        bankAuthCode = terminalResult.authCode
+        terminalRrn  = terminalResult.rrn ?? null
+        isCharged = true
       }
-      bankAuthCode = terminalResult.auth_code
-      isCharged = true
     }
     logger.info({ bankAuthCode, terminalRrn }, 'Термінал підтвердив — виконуємо process_sale')
   }
-
   // Вибір версії RPC за feature flags (детально див. .env.example):
   //   v1 process_sale         — базова, без перевірки резервів (migrations 019/021/025/031)
   //   v2 process_sale_v2      — qty_available з урахуванням резервів (073/075/091)
@@ -268,54 +253,31 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   let fiscalQrUrl:  string | null = null
   if (input.is_fiscal) {
     const settings = await (await import('./adminService.js')).getSettings()
-    const prroProvider = settings.prro_provider ?? 'mock'
+    const fiscalAdapter = getFiscalAdapter(settings)
+    try {
+      const fiscalResult = await fiscalAdapter.fiscalize(
+        sale.id,
+        sale.sale_number ?? sale.id,
+        sale.total,
+        input.items.map((i) => ({
+          name:       i.product_id,   // буде перезаписано після збагачення
+          qty:        i.qty,
+          unit_price: i.unit_price,
+          discount:   i.discount,
+        })),
+        input.payment_method,
+      )
 
-    if (prroProvider === 'kashalot' && settings.kashalot_license_key && settings.kashalot_pin) {
-      const {
-        kashalotLogin, kashalotGetCurrentShift, kashalotOpenShift, kashalotFiscalize,
-      } = await import('./integrations/KashalotService.js')
-
-      try {
-        const token = await kashalotLogin({
-          license_key: settings.kashalot_license_key,
-          pin:         settings.kashalot_pin,
-        })
-
-        let shiftId = settings.kashalot_active_shift ?? await kashalotGetCurrentShift(token)
-        if (!shiftId) {
-          shiftId = await kashalotOpenShift(token)
-          await db.from('shop_settings').update({ kashalot_active_shift: shiftId })
-        }
-
-        const fiscalResult = await kashalotFiscalize(
-          token, shiftId, sale.sale_number ?? sale.id,
-          sale.total,
-          input.items.map((i) => ({
-            name:       i.product_id,   // буде перезаписано після збагачення
-            qty:        i.qty,
-            unit_price: i.unit_price,
-            discount:   i.discount,
-          })),
-          input.payment_method,
-        )
-
-        if (fiscalResult.success) {
-          fiscalNumber = fiscalResult.fiscal_number
-          fiscalQrUrl  = fiscalResult.qr_url
-        } else {
-          logger.warn({ error: fiscalResult.error }, 'Кашалот: не вдалось фіскалізувати')
-        }
-      } catch (err: any) {
-        logger.error({ error: err.message }, 'Кашалот: помилка інтеграції')
+      if (fiscalResult.success) {
+        fiscalNumber = fiscalResult.fiscal_number
+        fiscalQrUrl  = fiscalResult.qr_url
+      } else {
+        logger.warn({ error: fiscalResult.error }, 'Фіскалізація: не вдалось фіскалізувати')
       }
-    } else {
-      // Mock ПРРО
-      const { fiscalizeSale } = await import('./integrations/MockPrroService.js')
-      const fiscalResult = await fiscalizeSale(sale.id, sale.sale_number ?? '', sale.total)
-      if (fiscalResult.success) fiscalNumber = fiscalResult.fiscal_number
+    } catch (err: any) {
+      logger.error({ error: err.message }, 'Фіскалізація: помилка інтеграції')
     }
   }
-
   // 5c. Оновлюємо запис в БД з фіскальними та терміналь даними
   const extraData: Record<string, unknown> = {}
   if (input.is_fiscal) extraData.is_fiscal = true
@@ -405,27 +367,19 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     logger.error({ error: err.message, idempotencyKey }, 'Помилка в createSale. Запускаємо відкат...')
 
     // 1. Автоматичний відкат коштів на терміналі
-    if (isCharged) {
+    if (isCharged && activeTerminalAdapter) {
       try {
-        if (chargedProvider === 'privatbank' && terminalRrn) {
-          const { privatbankCancelPayment } = await import('./integrations/PrivatBankTerminalService.js')
-          logger.info({ terminalRrn }, 'Спроба скасування транзакції на терміналі ПриватБанк...')
-          const cancelled = await privatbankCancelPayment(terminalConfigUsed, terminalRrn)
-          if (cancelled) {
-            logger.info({ terminalRrn }, 'Транзакцію успішно скасовано (Void) на терміналі ПриватБанк.')
-          } else {
-            logger.error({ terminalRrn }, 'КРИТИЧНО: Не вдалося автоматично скасувати транзакцію на терміналі ПриватБанк! Потрібне ручне втручання.')
-          }
-        } else if (chargedProvider === 'mock' && bankAuthCode) {
-          const { cancelCardPayment } = await import('./integrations/MockBankTerminalService.js')
-          await cancelCardPayment(bankAuthCode)
-          logger.info('Транзакцію успішно скасовано (mock).')
+        logger.info({ terminalRrn, bankAuthCode }, 'Спроба скасування транзакції на терміналі...')
+        const cancelled = await activeTerminalAdapter.cancelPayment(bankAuthCode, terminalRrn)
+        if (cancelled) {
+          logger.info('Транзакцію успішно скасовано.')
+        } else {
+          logger.error('КРИТИЧНО: Не вдалося автоматично скасувати транзакцію на терміналі! Потрібне ручне втручання.')
         }
       } catch (cancelErr: any) {
         logger.error({ cancelError: cancelErr.message }, 'КРИТИЧНО: Помилка при спробі скасування транзакції на терміналі!')
       }
     }
-
     // 2. Очищення або оновлення idempotency_keys
     if (idempotencyKey) {
       try {
