@@ -21,6 +21,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@crm-forsage/shared':
+        specifier: workspace:*
+        version: link:../../shared
       '@hookform/resolvers':
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.75.0(react@18.3.1))
@@ -118,6 +121,9 @@ importers:
 
   server:
     dependencies:
+      '@crm-forsage/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@google-cloud/vision':
         specifier: ^5.3.6
         version: 5.3.6
@@ -181,6 +187,12 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
+  shared:
+    dependencies:
       zod:
         specifier: ^3.24.1
         version: 3.25.76

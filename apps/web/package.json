@@ -27,7 +27,8 @@
     "recharts": "^2.15.3",
     "vite-plugin-pwa": "^1.3.0",
     "zod": "^3.24.1",
-    "zustand": "^4.5.5"
+    "zustand": "^4.5.5",
+    "@crm-forsage/shared": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.5",

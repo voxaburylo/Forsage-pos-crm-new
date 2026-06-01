@@ -1,6 +1,7 @@
 packages:
   - "apps/web"
   - "server"
+  - "shared"
 allowBuild:
   - esbuild
 allowBuilds:

@@ -32,7 +32,8 @@
     "tesseract.js": "^7.0.0",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@crm-forsage/shared": "workspace:*"
   },
   "devDependencies": {}
 }

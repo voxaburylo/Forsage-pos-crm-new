@@ -1,18 +1,6 @@
 import { api } from '@/lib/api'
 import type { SupplyInvoice } from '@/types/supplier'
-
-export interface ParsedItem {
-  row:           number
-  sku:           string
-  name:          string
-  qty:           number
-  price:         number
-  retail_price?: number | null
-  matched:       boolean
-  product_id:    string | null
-  match_quality: 'exact' | 'fuzzy' | 'new'
-  warnings:      string[]
-}
+import type { ParsedItem } from '@crm-forsage/shared'
 
 export interface ParseResult {
   supplier_id:   string | null | undefined
