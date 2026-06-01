@@ -52,7 +52,7 @@ const labelSettingsSchema = z.object({
   show_sku:          z.boolean().optional(),
   show_price:        z.boolean().optional(),
   show_storage_bin:  z.boolean().optional(),
-})
+}).passthrough()
 
 // --- Settings ---
 export const quickChildSchema = z.object({

@@ -121,7 +121,7 @@ settingsRouter.get('/', requireRole('owner', 'admin', 'manager'), async (_req, r
   try { res.json({ data: await adminService.getSettings() }) } catch (err) { next(err) }
 })
 
-settingsRouter.put('/', requireRole('owner'), async (req, res, next) => {
+settingsRouter.put('/', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const parsed = settingsSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні налаштування', 422, parsed.error.flatten())

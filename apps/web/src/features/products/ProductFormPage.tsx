@@ -290,9 +290,9 @@ export default function ProductFormPage() {
                 {form.purchase_price && form.retail_price
                   && parseFloat(form.purchase_price) > parseFloat(form.retail_price)
                   && (
-                    <div className="mt-1 flex items-center gap-1 text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-2 py-1">
+                    <div className="mt-1 flex items-center gap-1 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-md px-2 py-1">
                       <span>⚠</span>
-                      <span>Ціна закупівлі вища за роздрібну! Прибуток від'ємний.</span>
+                      <span>Увага: ціна закупівлі вища за роздрібну (прибуток від'ємний). Товар буде збережено.</span>
                     </div>
                   )}
                 {form.purchase_price && (
