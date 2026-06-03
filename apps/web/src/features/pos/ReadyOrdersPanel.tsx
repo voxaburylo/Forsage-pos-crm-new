@@ -33,18 +33,28 @@ export function ReadyOrdersPanel() {
   const [orders, setOrders] = useState<ReadyOrder[]>([])
   const [loading, setLoading] = useState(false)
   const [completing, setCompleting] = useState<string | null>(null)
+  
+  // Search & Payment states
+  const [search, setSearch] = useState('')
+  const [payOrder, setPayOrder] = useState<ReadyOrder | null>(null)
+  const [payAmount, setPayAmount] = useState('')
+  const [payMethod, setPayMethod] = useState<'cash' | 'card'>('cash')
+  const [paying, setPaying] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await api.get<{ data: ReadyOrder[] }>('/api/v1/customer-orders?status=ready')
+      const url = search.trim()
+        ? `/api/v1/customer-orders?search=${encodeURIComponent(search.trim())}&per_page=50`
+        : '/api/v1/customer-orders?status=ready'
+      const { data } = await api.get<{ data: ReadyOrder[] }>(url)
       setOrders(data ?? [])
     } catch {
       // silent
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [search])
 
   useEffect(() => {
     load()
@@ -92,6 +102,40 @@ export function ReadyOrdersPanel() {
 
     setOpen(false)
     toast.success(`Замовлення завантажено: ${warehouseItems.length} позицій`)
+  }
+
+  async function handleAddPayment() {
+    if (!payOrder) return
+    const amountVal = Math.round(parseFloat(payAmount) * 100)
+    if (isNaN(amountVal) || amountVal <= 0) {
+      toast.error('Некоректна сума')
+      return
+    }
+
+    const remaining = payOrder.total_amount - (payOrder.total_paid ?? 0)
+    if (amountVal > remaining) {
+      toast.error('Сума перевищує залишок до сплати')
+      return
+    }
+
+    setPaying(true)
+    try {
+      await api.post(`/api/v1/customer-orders/${payOrder.id}/payments`, {
+        amount: amountVal,
+        method: payMethod,
+        is_fiscal: payMethod === 'card',
+        shift_id: store.currentShift?.id || null,
+        notes: 'Касова оплата замовлення',
+      })
+      toast.success('Оплату успішно внесено!')
+      setPayOrder(null)
+      setPayAmount('')
+      await load()
+    } catch (e: any) {
+      toast.error(e.message ?? 'Помилка внесення оплати')
+    } finally {
+      setPaying(false)
+    }
   }
 
   async function completeOrder(order: ReadyOrder) {
@@ -142,10 +186,21 @@ export function ReadyOrdersPanel() {
         <div className="absolute right-0 top-full mt-1 w-[380px] bg-gray-800 border border-gray-700
                         rounded-xl shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700">
-            <span className="text-sm font-semibold text-white">Готові замовлення</span>
+            <span className="text-sm font-semibold text-white">Управління замовленнями</span>
             <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-white">
               <X size={15} />
             </button>
+          </div>
+          
+          <div className="px-4 py-2 border-b border-gray-700">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Пошук (номер, телефон, клієнт)..."
+              className="w-full bg-gray-900 text-white placeholder-gray-500 text-xs rounded-lg px-3 py-1.5 
+                         border border-gray-700 focus:outline-none focus:border-yellow-500"
+            />
           </div>
 
           <div className="max-h-[420px] overflow-y-auto">
@@ -161,9 +216,28 @@ export function ReadyOrdersPanel() {
               </div>
             )}
 
-            {!loading && orders.map((order) => {
+            {!loading && orders.map((order: any) => {
               const remaining = order.total_amount - (order.total_paid ?? 0)
               const isCompleting = completing === order.id
+              const hasArrivedItems = order.items.some((i: any) => i.item_status === 'arrived' && i.source_type === 'warehouse')
+              
+              // Helper to style status label
+              let statusLabel = order.status
+              let statusColor = 'bg-gray-700 text-gray-300'
+              if (order.status === 'ready') {
+                statusLabel = 'Готовий'
+                statusColor = 'bg-green-900/60 text-green-300'
+              } else if (order.status === 'lead') {
+                statusLabel = 'Чернетка'
+                statusColor = 'bg-yellow-950 text-yellow-300'
+              } else if (order.status === 'new') {
+                statusLabel = 'Новий'
+                statusColor = 'bg-blue-900/60 text-blue-300'
+              } else if (order.status === 'completed') {
+                statusLabel = 'Виданий'
+                statusColor = 'bg-gray-900 text-gray-500'
+              }
+              
               return (
                 <div
                   key={order.id}
@@ -174,42 +248,139 @@ export function ReadyOrdersPanel() {
                       <div className="flex items-center gap-1.5 text-sm font-medium text-white">
                         <User size={13} className="text-gray-400" />
                         {order.customer?.full_name ?? order.customer?.phone ?? 'Без клієнта'}
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${statusColor}`}>
+                          {statusLabel}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-gray-400 mt-0.5">
-                        {order.items.filter((i) => i.item_status === 'arrived' && i.source_type === 'warehouse').length} позицій зі складу
-                        &nbsp;·&nbsp; {formatMoney(order.total_amount)} ₴
-                        {remaining > 0 && (
+                      <div className="text-[11px] text-gray-400 mt-1">
+                        Код: #{order.id.slice(0, 8)} &nbsp;·&nbsp; {formatMoney(order.total_amount)} ₴
+                        {remaining > 0 ? (
                           <span className="text-orange-400 ml-1">· залишок {formatMoney(remaining)} ₴</span>
+                        ) : (
+                          <span className="text-green-400 ml-1">· Сплачено полностью</span>
                         )}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => loadOrderToCart(order)}
-                      className="flex-1 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600
-                                 text-gray-300 font-medium transition-colors"
-                    >
-                      У кошик
-                    </button>
-                    <button
-                      onClick={() => completeOrder(order)}
-                      disabled={isCompleting || remaining > 0}
-                      className="flex-1 py-1 text-xs rounded font-medium transition-colors
-                                 disabled:opacity-50 disabled:cursor-not-allowed
-                                 bg-green-600 hover:bg-green-500 text-white"
-                    >
-                      {isCompleting ? (
-                        <Loader2 size={12} className="animate-spin mx-auto" />
-                      ) : (
-                        'Видати'
-                      )}
-                    </button>
+                    {remaining > 0 && (
+                      <button
+                        onClick={() => {
+                          setPayOrder(order);
+                          setPayAmount((remaining / 100).toString());
+                        }}
+                        className="flex-1 py-1 text-xs rounded bg-yellow-600 hover:bg-yellow-500
+                                   text-white font-medium transition-colors"
+                      >
+                        Прийняти оплату
+                      </button>
+                    )}
+                    {order.status === 'ready' && hasArrivedItems && (
+                      <button
+                        onClick={() => loadOrderToCart(order)}
+                        className="flex-1 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600
+                                   text-gray-300 font-medium transition-colors"
+                      >
+                        У кошик
+                      </button>
+                    )}
+                    {order.status === 'ready' && (
+                      <button
+                        onClick={() => completeOrder(order)}
+                        disabled={isCompleting || remaining > 0}
+                        className="flex-1 py-1 text-xs rounded font-medium transition-colors
+                                   disabled:opacity-50 disabled:cursor-not-allowed
+                                   bg-green-600 hover:bg-green-500 text-white"
+                      >
+                        {isCompleting ? (
+                          <Loader2 size={12} className="animate-spin mx-auto" />
+                        ) : (
+                          'Видати'
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
               )
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Модалка оплати замовлення */}
+      {payOrder && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 w-full max-w-sm shadow-2xl">
+            <h3 className="text-white font-semibold text-sm mb-4">Прийняти оплату по замовленню</h3>
+            
+            <div className="text-xs text-gray-400 mb-4 space-y-1">
+              <div>Клієнт: {payOrder.customer?.full_name ?? payOrder.customer?.phone}</div>
+              <div>Сума замовлення: {formatMoney(payOrder.total_amount)} ₴</div>
+              <div>Вже сплачено: {formatMoney(payOrder.total_paid)} ₴</div>
+              <div className="text-white font-medium">Залишок до сплати: {formatMoney(payOrder.total_amount - (payOrder.total_paid ?? 0))} ₴</div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Сума оплати (₴)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2
+                             focus:outline-none focus:border-yellow-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Спосіб оплати</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPayMethod('cash')}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-colors ${
+                      payMethod === 'cash'
+                        ? 'bg-yellow-600 text-white border-yellow-500'
+                        : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
+                    }`}
+                  >
+                    Готівка
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayMethod('card')}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-colors ${
+                      payMethod === 'card'
+                        ? 'bg-yellow-600 text-white border-yellow-500'
+                        : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
+                    }`}
+                  >
+                    Картка
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPayOrder(null)}
+                  className="flex-1 py-2 text-xs rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium"
+                >
+                  Скасувати
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddPayment}
+                  disabled={paying}
+                  className="flex-1 py-2 text-xs rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium
+                             disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                >
+                  {paying ? <Loader2 size={12} className="animate-spin" /> : 'Внести'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

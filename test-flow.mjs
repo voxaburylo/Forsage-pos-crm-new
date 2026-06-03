@@ -91,6 +91,8 @@ async function run() {
     await dbClient.query("DELETE FROM salary_payments WHERE note LIKE '%автотест%'");
 
     // 10. Очистка основных сущностей (товары, клиенты, поставщики)
+    await dbClient.query("DELETE FROM inventory_reserves WHERE product_id IN (SELECT id FROM products WHERE sku IN ('TEST-PADS-100', 'TESTPADS100'))");
+    await dbClient.query("DELETE FROM inventory_writeoff_items WHERE product_id IN (SELECT id FROM products WHERE sku IN ('TEST-PADS-100', 'TESTPADS100'))");
     await dbClient.query("DELETE FROM products WHERE sku IN ('TEST-PADS-100', 'TESTPADS100')");
     await dbClient.query("DELETE FROM customers WHERE phone = '+380991112233'");
     await dbClient.query("DELETE FROM suppliers WHERE name = 'Автодистрибьютор Украина'");
@@ -325,9 +327,8 @@ async function run() {
       VALUES ($1, 'customer', 'Здравствуйте! Хочу заказать Brembo Carbon-XP', NOW())
     `, [chatIdUuid]);
 
-    await page.goto('http://localhost:5173/orders');
-    await sleep(2000);
-    // Клик по вкладке Чат в левой панели, если она есть
+    await page.goto('http://localhost:5173/orders?tab=bots');
+    await sleep(2500);
     await page.click('button:has-text("Дмитрий Telegram-Клиент")');
     await sleep(1500);
     await page.screenshot({ path: join(ARTIFACT_DIR, 'screenshot_8_telegram_chat.png') });
@@ -361,7 +362,7 @@ async function run() {
 
     // Теперь мы на странице заказа, получаем его ID из URL
     const url = page.url();
-    const orderId = url.split('/').pop();
+    let orderId = url.split('/').pop();
     console.log(`ℹ️ ID созданного заказа: ${orderId}`);
 
     // Привязываем созданную позицию к нашему реальному товару и меняем тип на warehouse в базе данных
@@ -380,10 +381,10 @@ async function run() {
     console.log('👉 Шаг 10: Отправка КП в Telegram...');
     // Перейдем в КП/Предложение
     await page.goto(`http://localhost:5173/quotes/${orderId}`);
-    await page.waitForSelector('text=Надіслати КП в Telegram');
+    await page.waitForSelector('text=КП в Telegram');
     await sleep(1000);
     await page.screenshot({ path: join(ARTIFACT_DIR, 'screenshot_10_quote_editor.png') });
-    await page.click('text=Надіслати КП в Telegram');
+    await page.click('text=КП в Telegram');
     await sleep(2000); // подождем отправки
     await page.screenshot({ path: join(ARTIFACT_DIR, 'screenshot_10_quote_sent.png') });
     console.log('✅ Шаг 10 завершен!');
@@ -395,7 +396,15 @@ async function run() {
     await page.goto(`http://localhost:5173/quotes/${orderId}`);
     await page.waitForSelector('button:has-text("В замовлення")');
     await page.click('button:has-text("В замовлення")');
-    await page.waitForURL(`**/orders/${orderId}`, { timeout: 10000 });
+    await sleep(1500);
+    // Клик по кнопке "Створити замовлення" в модальном окне выбора брендов
+    await page.click('button:has-text("Створити замовлення")');
+    // Ждем перехода на страницу созданного нового заказа
+    await page.waitForURL('**/orders/*', { timeout: 15000 });
+    const currentUrl = page.url();
+    const newOrderId = currentUrl.split('/').pop();
+    console.log(`ℹ️ ID нового созданного заказа: ${newOrderId}`);
+    orderId = newOrderId; // Обновляем orderId на ID созданного заказа
     await sleep(2000);
     await page.screenshot({ path: join(ARTIFACT_DIR, 'screenshot_11_order_reserved.png') });
     console.log('✅ Шаг 11 завершен!');

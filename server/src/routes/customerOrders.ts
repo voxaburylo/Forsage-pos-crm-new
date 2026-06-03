@@ -26,6 +26,7 @@ const createOrderSchema = z.object({
   prepayment:            z.number().int().min(0).default(0),
   prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
   prepayment_is_fiscal:  z.boolean().default(false),
+  parent_draft_id:       z.string().uuid().optional().nullable(),
   items: z.array(z.object({
     sku:          z.string().max(100).optional().nullable(),
     name:         z.string().min(1).max(500),
@@ -98,6 +99,7 @@ router.post('/', async (req, res, next) => {
         total_paid: input.prepayment,
         comment: input.comment ?? null,
         source: input.source,
+        parent_draft_id: input.parent_draft_id ?? null,
       })
       .select()
       .single()
@@ -327,6 +329,99 @@ router.put('/:id/draft', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// POST /api/v1/customer-orders/:id/convert — конвертувати чернетку в замовлення з вибраними варіантами
+router.post('/:id/convert', async (req, res, next) => {
+  try {
+    const convertSchema = z.object({
+      items: z.array(z.object({
+        item_id: z.string().uuid(),
+        selected_variant: z.object({
+          brand: z.string().max(200).optional().nullable(),
+          price: z.number().int().min(0),
+          sku: z.string().max(100).optional().nullable(),
+          product_id: z.string().uuid().optional().nullable(),
+        })
+      })),
+    })
+
+    const parsed = convertSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані конвертації', 422, parsed.error.flatten())
+
+    const draftId = req.params.id
+
+    // Отримуємо вихідну чернетку
+    const { data: draftOrder } = await db.from('customer_orders')
+      .select('*, items:customer_order_items(*)')
+      .eq('id', draftId).single()
+
+    if (!draftOrder) throw new AppError('NOT_FOUND', 'Чернетку не знайдено', 404)
+
+    // Розраховуємо загальну суму для нового замовлення
+    const totalAmount = parsed.data.items.reduce((sum, item) => sum + item.selected_variant.price, 0)
+
+    // Створюємо нове замовлення
+    const { data: newOrder, error: orderErr } = await db.from('customer_orders').insert({
+      tenant_id:          draftOrder.tenant_id,
+      customer_id:        draftOrder.customer_id,
+      manager_id:         draftOrder.manager_id,
+      vehicle_info:       draftOrder.vehicle_info,
+      comment:            draftOrder.comment,
+      source:             draftOrder.source || 'walk_in',
+      parent_draft_id:    draftId,
+      status:             'new',
+      total_amount:       totalAmount,
+    }).select().single()
+
+    if (orderErr || !newOrder) throw new AppError('DB_ERROR', orderErr?.message ?? 'Convert failed', 500)
+
+    // Вставляємо вибрані позиції як реальні
+    const newItems = parsed.data.items.map((item) => {
+      const draftItem = (draftOrder.items as any[]).find((di) => di.id === item.item_id)
+      const name = draftItem 
+        ? (item.selected_variant.brand ? `${draftItem.name} (${item.selected_variant.brand})` : draftItem.name)
+        : 'Запчастина'
+      const qty = draftItem ? draftItem.qty : 1
+
+      const pId = item.selected_variant.product_id || (draftItem ? draftItem.product_id : null);
+      const sType = pId ? 'warehouse' : 'supplier';
+      return {
+        order_id:      newOrder.id,
+        product_id:    pId,
+        sku:           item.selected_variant.sku || (draftItem ? draftItem.sku : null),
+        name:          name,
+        source_type:   sType,
+        item_status:   'pending',
+        buy_price:     0,
+        sell_price:    item.selected_variant.price,
+        qty:           qty,
+        is_draft_note: false,
+      }
+    })
+
+    if (newItems.length > 0) {
+      const { error: itemsErr } = await db.from('customer_order_items').insert(newItems)
+      if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+    }
+
+    // Запускаємо резервування товарів зі складу для нового замовлення
+    await db.rpc('reserve_order_items', {
+      p_tenant_id: req.user!.tenant_id,
+      p_order_id:  newOrder.id,
+      p_user_id:   req.user!.id
+    })
+
+    // Додаємо лог активності
+    await db.from('order_activity_log').insert({
+      order_id: newOrder.id,
+      user_id:  req.user!.id,
+      action:   'created_from_draft',
+      details:  { parent_draft_id: draftId },
+    })
+
+    res.status(201).json({ data: newOrder })
+  } catch (err) { next(err) }
+})
+
 // POST /api/v1/customer-orders/:id/send-telegram — відправити КП в Telegram
 router.post('/:id/send-telegram', async (req, res, next) => {
   try {
@@ -432,8 +527,27 @@ router.post('/:id/payments', async (req, res, next) => {
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 
     const newTotalPaid = (order.total_paid ?? 0) + parsed.data.amount
-    await db.from('customer_orders').update({ total_paid: newTotalPaid, updated_at: new Date().toISOString() })
-      .eq('id', order.id)
+    
+    // Auto status update on payment (if payment covers prepayment requirement or is made on a draft/lead, transition to 'new')
+    let updatedStatus = order.status
+    if ((order.status === 'lead' || order.status === 'quoted') && newTotalPaid > 0) {
+      updatedStatus = 'new'
+    }
+
+    await db.from('customer_orders').update({ 
+      total_paid: newTotalPaid, 
+      status: updatedStatus,
+      updated_at: new Date().toISOString() 
+    }).eq('id', order.id)
+
+    // Trigger reserves if transitioning to new
+    if (updatedStatus === 'new' && (order.status === 'lead' || order.status === 'quoted')) {
+      await db.rpc('reserve_order_items', {
+        p_tenant_id: req.user!.tenant_id,
+        p_order_id:  order.id,
+        p_user_id:   req.user!.id
+      })
+    }
 
     if (parsed.data.method === 'cash' && parsed.data.shift_id) {
       await db.from('cash_operations').insert({
@@ -597,7 +711,7 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
 // PATCH /api/v1/customer-orders/:id/status — змінити статус замовлення
 router.patch('/:id/status', async (req, res, next) => {
   try {
-    const schema = z.object({ status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled']) })
+    const schema = z.object({ status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled', 'archived']) })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний статус', 422)
 
