@@ -95,7 +95,7 @@ export async function listProducts(query: ProductListQuery) {
   const isCacheable = !!search && !category_id && !brand_id && is_active === undefined
   const cacheKey = isCacheable ? JSON.stringify({ search, page, per_page, sort_field, sort_dir }) : null
   if (cacheKey) {
-    const cached = searchCache.get(cacheKey)
+    const cached = await searchCache.get(cacheKey)
     if (cached) return cached
   }
 
@@ -138,7 +138,7 @@ export async function listProducts(query: ProductListQuery) {
     },
   }
 
-  if (cacheKey) searchCache.set(cacheKey, result)
+  if (cacheKey) await searchCache.set(cacheKey, result)
   return result
 }
 
@@ -179,7 +179,7 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
     .single()
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  searchCache.clear()
+  await searchCache.clear()
   return data
 }
 
@@ -236,6 +236,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
       })),
     )
     void logAction({
+      tenantId: existing.tenant_id,
       userId: userId,
       userRole: 'manager',
       action: 'product.price_changed',
@@ -247,7 +248,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     })
   }
 
-  searchCache.clear()
+  await searchCache.clear()
   return data
 }
 
@@ -259,7 +260,7 @@ export async function deleteProduct(id: string) {
     .eq('id', id)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  searchCache.clear()
+  await searchCache.clear()
 }
 
 export async function searchForPOS(q: string, limit: number) {
@@ -284,7 +285,7 @@ export async function updateStock(productId: string, input: { qty_on_hand: numbe
   // 1. Поточний стан
   const { data: current, error: getError } = await db
     .from(TABLE)
-    .select('id, sku, name, qty_on_hand')
+    .select('id, sku, name, qty_on_hand, tenant_id')
     .eq('id', productId)
     .is('deleted_at', null)
     .single()
@@ -314,6 +315,7 @@ export async function updateStock(productId: string, input: { qty_on_hand: numbe
 
   // 3. Аудит
   void logAction({
+    tenantId: current.tenant_id,
     userId: userId,
     userRole: 'manager',
     action: 'stock_correction',
@@ -372,6 +374,7 @@ export async function addProductAnalog(
 
   // Аудит
   void logAction({
+    tenantId: tenantId,
     userId: userId,
     userRole: 'manager',
     action: 'add_analog',

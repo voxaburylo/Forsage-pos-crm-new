@@ -18,6 +18,7 @@ router.get('/barcode/:code', async (req, res, next) => {
       .select('id, sku, name, retail_price, qty_on_hand, unit, barcode, storage_bin, brand:brands(name)')
       .is('deleted_at', null)
       .eq('is_active', true)
+      .eq('tenant_id', req.user!.tenant_id)
       .or(`barcode.eq.${code},additional_barcodes.cs.${code}`)
       .maybeSingle()
 
@@ -31,6 +32,7 @@ router.get('/barcode/:code', async (req, res, next) => {
       .select('id, phone, full_name, card_barcode, bonus_balance, vip_level, risk_profile, price_tier:price_tiers!left(id, name, discount_pct)')
       .is('deleted_at', null)
       .eq('card_barcode', code)
+      .eq('tenant_id', req.user!.tenant_id)
       .maybeSingle()
 
     if (customer) {

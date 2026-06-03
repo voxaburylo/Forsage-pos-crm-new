@@ -41,6 +41,7 @@ export async function createCashOperation(
 
   const label = input.type === 'in' ? 'Внесення' : 'Виймання'
   void logAction({
+    tenantId,
     userId,
     userRole,
     action:      'cash_operation_' + input.type,

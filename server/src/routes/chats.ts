@@ -37,6 +37,16 @@ router.get('/', requireRole('owner', 'admin', 'manager'), async (req, res, next)
 router.get('/:id/messages', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const chatId = String(req.params.id)
+
+    // 1. Перевіряємо що чат належить тененту
+    const { data: chat, error: chatCheckErr } = await db
+      .from('messenger_chats')
+      .select('id')
+      .eq('id', chatId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (chatCheckErr || !chat) throw new AppError('NOT_FOUND', 'Чат не знайдено', 404)
+
     const { data, error } = await db
       .from('messenger_messages')
       .select('*')
@@ -47,7 +57,7 @@ router.get('/:id/messages', requireRole('owner', 'admin', 'manager'), async (req
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 
     // Скидаємо unread_count
-    await db.from('messenger_chats').update({ unread_count: 0 }).eq('id', chatId)
+    await db.from('messenger_chats').update({ unread_count: 0 }).eq('id', chatId).eq('tenant_id', req.user!.tenant_id)
 
     res.json({ data: data ?? [] })
   } catch (err) { next(err) }
@@ -68,14 +78,25 @@ router.patch('/:id/link-customer', requireRole('owner', 'admin', 'manager'), asy
       .from('messenger_chats')
       .select('*')
       .eq('id', chatId)
+      .eq('tenant_id', req.user!.tenant_id)
       .single()
     if (chatErr || !chat) throw new AppError('NOT_FOUND', 'Чат не знайдено', 404)
+
+    // 1.5 Перевіряємо що клієнт належить тененту
+    const { data: customer, error: custErr } = await db
+      .from('customers')
+      .select('id')
+      .eq('id', customerId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (custErr || !customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
 
     // 2. Прив'язуємо клієнта до чату
     const { data: updatedChat, error: updateErr } = await db
       .from('messenger_chats')
       .update({ customer_id: customerId })
       .eq('id', chatId)
+      .eq('tenant_id', req.user!.tenant_id)
       .select('*, channel:messenger_channels(id, name, platform), customer:customers(id, phone, full_name)')
       .single()
     if (updateErr) throw new AppError('DB_ERROR', updateErr.message, 500)
@@ -86,12 +107,14 @@ router.patch('/:id/link-customer', requireRole('owner', 'admin', 'manager'), asy
         .from('messenger_channels')
         .select('platform')
         .eq('id', chat.channel_id)
+        .eq('tenant_id', req.user!.tenant_id)
         .single()
       if (channel?.platform === 'telegram' && chat.platform_chat_id) {
         await db
           .from('customers')
           .update({ telegram_chat_id: chat.platform_chat_id })
           .eq('id', customerId)
+          .eq('tenant_id', req.user!.tenant_id)
       }
     }
 
@@ -100,6 +123,7 @@ router.patch('/:id/link-customer', requireRole('owner', 'admin', 'manager'), asy
       .from('customer_orders')
       .update({ customer_id: customerId })
       .eq('chat_id', chatId)
+      .eq('tenant_id', req.user!.tenant_id)
       .is('customer_id', null)
 
     // 5. Сканування історії чату на VIN-коди → додавання в гараж клієнта
@@ -123,11 +147,12 @@ router.patch('/:id/link-customer', requireRole('owner', 'admin', 'manager'), asy
             .select('id')
             .eq('customer_id', customerId)
             .eq('vin', vin)
+            .eq('tenant_id', req.user!.tenant_id)
             .maybeSingle()
           if (existing) continue
 
           await db.from('customer_cars').insert({
-            tenant_id: chat.tenant_id,
+            tenant_id: req.user!.tenant_id,
             customer_id: customerId,
             make: getMake(vin),
             model: 'VIN: ' + vin.slice(0, 8),
@@ -167,6 +192,15 @@ router.post('/:id/send', requireRole('owner', 'admin', 'manager'), async (req, r
     const schema = z.object({ text: z.string().min(1).max(2000) })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Текст обов\'язковий', 422)
+
+    // 1. Перевіряємо що чат належить тененту
+    const { data: chat, error: chatCheckErr } = await db
+      .from('messenger_chats')
+      .select('id')
+      .eq('id', chatId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (chatCheckErr || !chat) throw new AppError('NOT_FOUND', 'Чат не знайдено', 404)
 
     const ok = await sendMessageToChat(chatId, parsed.data.text)
     if (!ok) throw new AppError('SEND_FAILED', 'Не вдалося відправити повідомлення', 502)

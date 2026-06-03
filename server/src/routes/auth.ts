@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { db } from '../db/supabase.js'
 import { loginSchema } from '../validators/authSchema.js'
 import { logger } from '../lib/logger.js'
+import crypto from 'crypto'
 
 const router = Router()
 
@@ -84,6 +85,11 @@ router.get('/me', requireAuth, (req, res) => {
   res.json({ data: req.user })
 })
 
+
+function hashPin(pin: string, userId: string): string {
+  return crypto.pbkdf2Sync(pin, userId, 10000, 64, 'sha512').toString('hex');
+}
+
 // POST /api/v1/auth/verify-pin — перевірка PIN-коду
 router.post('/verify-pin', requireAuth, async (req, res, next) => {
   try {
@@ -107,7 +113,29 @@ router.post('/verify-pin', requireAuth, async (req, res, next) => {
       return res.json({ data: { valid: false, error: 'PIN-код не налаштовано' } })
     }
 
-    const valid = stored.pin_code === parsed.data.pin
+    let valid = false;
+    if (stored.pin_code.length === 4) {
+      // Plaintext fallback
+      valid = stored.pin_code === parsed.data.pin;
+      if (valid) {
+        // Upgrade to hash on successful verification
+        try {
+          const hashed = hashPin(parsed.data.pin, req.user!.id);
+          await db.from('staff_pins').upsert({
+            user_id: req.user!.id,
+            pin_code: hashed,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'user_id' });
+          logger.info({ userId: req.user!.id }, 'verify-pin: PIN upgraded to secure hash');
+        } catch (e: any) {
+          logger.error({ error: e.message, userId: req.user!.id }, 'verify-pin: failed to upgrade PIN to hash');
+        }
+      }
+    } else {
+      // Hashed comparison
+      valid = stored.pin_code === hashPin(parsed.data.pin, req.user!.id);
+    }
+
     res.json({ data: { valid } })
   } catch (err) { next(err) }
 })
@@ -129,7 +157,7 @@ router.post('/set-pin', requireAuth, async (req, res, next) => {
 
     await db.from('staff_pins').upsert({
       user_id: targetUserId,
-      pin_code: parsed.data.pin,
+      pin_code: hashPin(parsed.data.pin, targetUserId),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' })
 

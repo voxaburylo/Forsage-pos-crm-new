@@ -9,9 +9,9 @@ router.use(requireAuth)
 
 // ── Цінові рівні ──────────────────────────────────────────
 
-router.get('/tiers', async (_req, res, next) => {
+router.get('/tiers', async (req, res, next) => {
   try {
-    res.json({ data: await pricingService.listPriceTiers() })
+    res.json({ data: await pricingService.listPriceTiers(req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -25,7 +25,7 @@ router.post('/tiers', requireRole('owner', 'admin'), async (req, res, next) => {
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    res.status(201).json({ data: await pricingService.createPriceTier(parsed.data) })
+    res.status(201).json({ data: await pricingService.createPriceTier(parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -39,22 +39,22 @@ router.put('/tiers/:id', requireRole('owner', 'admin'), async (req, res, next) =
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    res.json({ data: await pricingService.updatePriceTier(String(req.params.id), parsed.data) })
+    res.json({ data: await pricingService.updatePriceTier(String(req.params.id), parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
 router.delete('/tiers/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    await pricingService.deletePriceTier(String(req.params.id))
+    await pricingService.deletePriceTier(String(req.params.id), req.user!.tenant_id)
     res.status(204).send()
   } catch (err) { next(err) }
 })
 
 // ── Наценки по категоріях ─────────────────────────────────
 
-router.get('/markups', requireRole('owner', 'admin', 'manager'), async (_req, res, next) => {
+router.get('/markups', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    res.json({ data: await pricingService.listCategoryMarkups() })
+    res.json({ data: await pricingService.listCategoryMarkups(req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -70,6 +70,7 @@ router.put('/markups/:categoryId', requireRole('owner', 'admin'), async (req, re
       String(req.params.categoryId),
       parsed.data.markup_pct,
       parsed.data.min_markup_pct,
+      req.user!.tenant_id
     )
     res.json({ data })
   } catch (err) { next(err) }
@@ -77,7 +78,7 @@ router.put('/markups/:categoryId', requireRole('owner', 'admin'), async (req, re
 
 router.delete('/markups/:categoryId', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    await pricingService.deleteCategoryMarkup(String(req.params.categoryId))
+    await pricingService.deleteCategoryMarkup(String(req.params.categoryId), req.user!.tenant_id)
     res.status(204).send()
   } catch (err) { next(err) }
 })
@@ -101,7 +102,7 @@ router.post('/calculate', async (req, res, next) => {
       categoryId:    parsed.data.category_id,
       customerId:    parsed.data.customer_id,
       quantity:      parsed.data.quantity,
-    })
+    }, req.user!.tenant_id)
     res.json({ data: result })
   } catch (err) { next(err) }
 })
@@ -112,7 +113,7 @@ router.get('/auto-retail', async (req, res, next) => {
   try {
     const purchase  = parseInt(String(req.query.purchase ?? '0'), 10)
     const categoryId = String(req.query.category_id ?? '')
-    const retail    = await pricingService.autoRetailPrice(purchase, categoryId || undefined)
+    const retail    = await pricingService.autoRetailPrice(purchase, req.user!.tenant_id, categoryId || undefined)
     res.json({ data: { retail_price: retail } })
   } catch (err) { next(err) }
 })

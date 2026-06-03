@@ -8,9 +8,12 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "@crm-forsage/shared": "workspace:*",
     "@google-cloud/vision": "^5.3.6",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.49.1",
@@ -20,10 +23,12 @@
     "@types/node": "^22.13.10",
     "@types/pg": "^8.20.0",
     "axios": "^1.7.9",
+    "bullmq": "^5.78.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
+    "ioredis": "^5.11.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.20.0",
     "pino": "^9.6.0",
@@ -32,8 +37,11 @@
     "tesseract.js": "^7.0.0",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
-    "zod": "^3.24.1",
-    "@crm-forsage/shared": "workspace:*"
+    "zod": "^3.24.1"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@types/ioredis": "^5.0.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "vitest": "^4.1.8"
+  }
 }

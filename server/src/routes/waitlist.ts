@@ -32,11 +32,19 @@ router.post('/', requireRole('owner', 'admin', 'manager', 'cashier'), async (req
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
+    // Перевіряємо що клієнт та товар належать тененту
+    const { data: customer } = await db.from('customers').select('id').eq('id', parsed.data.customer_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+    if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+
+    const { data: product } = await db.from('products').select('id').eq('id', parsed.data.product_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+    if (!product) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
+
     const { data: existing } = await db
       .from('product_waitlist')
       .select('id')
       .eq('product_id', parsed.data.product_id)
       .eq('customer_id', parsed.data.customer_id)
+      .eq('tenant_id', req.user!.tenant_id)
       .maybeSingle()
 
     if (existing) {
@@ -66,6 +74,7 @@ router.post('/:id/notify', requireRole('owner', 'admin', 'manager'), async (req,
       .from('product_waitlist')
       .select('*, product:products(name, retail_price), customer:customers(id)')
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .single()
     if (error || !entry) throw new AppError('NOT_FOUND', 'Запис не знайдено', 404)
 

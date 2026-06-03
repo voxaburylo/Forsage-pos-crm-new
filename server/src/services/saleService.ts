@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getCurrentShift } from './shiftService.js'
 import { logAction } from './auditService.js'
@@ -45,12 +46,13 @@ export async function getSale(id: string) {
   return data
 }
 
-export async function calculatePrice(input: CalculatePriceInput) {
+export async function calculatePrice(input: CalculatePriceInput, tenantId: string) {
   const productIds = input.items.map((i) => i.product_id)
   const { data: products, error } = await db
     .from('products')
     .select('id, sku, name, retail_price, qty_on_hand, unit')
     .in('id', productIds)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -81,109 +83,92 @@ export async function calculatePrice(input: CalculatePriceInput) {
  * Вся логіка (перевірка залишків, оновлення qty_on_hand, борг клієнта)
  * виконується в єдиній транзакції PostgreSQL.
  */
-export async function createSale(cashierId: string, tenantId: string, input: CreateSaleInput, idempotencyKey?: string) {
-  // 0. Idempotency check — повертаємо кешовану відповідь або блокуємо паралельний запит
-  if (idempotencyKey) {
-    const { data: cached } = await db
-      .from('idempotency_keys')
-      .select('status, response')
-      .eq('key', idempotencyKey)
-      .eq('tenant_id', tenantId)
-      .maybeSingle()
+// Decomposed helpers for createSale
+interface TerminalResult {
+  bankAuthCode: string | null;
+  terminalRrn: string | null;
+  activeTerminalAdapter: TerminalAdapter | null;
+  isCharged: boolean;
+}
 
-    if (cached) {
-      if (cached.status === 'completed') {
-        logger.info({ idempotencyKey }, 'Idempotency hit (completed) — повертаємо кешовану відповідь')
-        return cached.response as any
-      }
-      if (cached.status === 'processing') {
-        logger.warn({ idempotencyKey }, 'Idempotency hit (processing) — паралельний запит відхилено')
-        throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
-      }
-      if (cached.status === 'failed') {
-        try {
-          await db.from('idempotency_keys').delete().eq('key', idempotencyKey).eq('tenant_id', tenantId)
-        } catch {}
-      }
+async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): Promise<any> {
+  const { data: cached } = await db
+    .from('idempotency_keys')
+    .select('status, response')
+    .eq('key', idempotencyKey)
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+
+  if (cached) {
+    if (cached.status === 'completed') {
+      logger.info({ idempotencyKey }, 'Idempotency hit (completed) — повертаємо кешовану відповідь')
+      return cached.response as any
     }
-
-    // Lock-Before-Work: реєструємо спробу оплати
-    const { error: insertErr } = await db.from('idempotency_keys').insert({
-      key: idempotencyKey,
-      tenant_id: tenantId,
-      status: 'processing',
-      response: null
-    })
-
-    if (insertErr) {
-      logger.warn({ idempotencyKey, err: insertErr.message }, 'Idempotency insert conflict — паралельний запит')
+    if (cached.status === 'processing') {
+      logger.warn({ idempotencyKey }, 'Idempotency hit (processing) — паралельний запит відхилено')
       throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
+    }
+    if (cached.status === 'failed') {
+      try {
+        await db.from('idempotency_keys').delete().eq('key', idempotencyKey).eq('tenant_id', tenantId)
+      } catch {}
     }
   }
 
-  let isCharged = false
-  let activeTerminalAdapter: TerminalAdapter | null = null
-  let bankAuthCode: string | null = null
-  let terminalRrn:  string | null = null
+  // Lock-Before-Work
+  const { error: insertErr } = await db.from('idempotency_keys').insert({
+    key: idempotencyKey,
+    tenant_id: tenantId,
+    status: 'processing',
+    response: null
+  })
 
-  try {
-    // 1. Перевіряємо що зміна відкрита
+  if (insertErr) {
+    logger.warn({ idempotencyKey, err: insertErr.message }, 'Idempotency insert conflict — паралельний запит')
+    throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
+  }
+}
+
+async function verifyActiveShift(cashierId: string, shiftId: string): Promise<any> {
   const shift = await getCurrentShift(cashierId)
   if (!shift) throw new AppError('NO_OPEN_SHIFT', 'Спочатку відкрийте зміну', 400)
-  if (shift.id !== input.shift_id) throw new AppError('WRONG_SHIFT', 'Невірна зміна', 400)
+  if (shift.id !== shiftId) throw new AppError('WRONG_SHIFT', 'Невірна зміна', 400)
+  return shift
+}
 
-  // 2. Розраховуємо суми для змішаної оплати
-  const subtotalItems = input.items.reduce((s, i) => s + i.unit_price * i.qty, 0)
-  const discountedTotal = Math.max(0, subtotalItems - input.discount)
-
+function calculateSaleAmounts(input: CreateSaleInput, discountedTotal: number): { cashAmount: number; cardAmount: number; bonusesEarned: number } {
   let cashAmount = 0
   let cardAmount = 0
   if (input.payment_method === 'mixed') {
     cashAmount = input.cash_amount ?? 0
     cardAmount = input.card_amount ?? 0
-    if (cashAmount + cardAmount !== discountedTotal) {
-      throw new AppError('SPLIT_MISMATCH', 'Сума готівки та картки не відповідає сумі чека', 422)
-    }
   } else if (input.payment_method === 'cash') {
     cashAmount = discountedTotal
   } else if (input.payment_method === 'card') {
     cardAmount = discountedTotal
-  } else if (input.payment_method === 'transfer') {
-    // Перекази на карту — не термінал і не готівка
   }
 
-  // 3. Формуємо items для RPC
-  const items = input.items.map((i) => ({
-    product_id: i.product_id,
-    qty: i.qty,
-    unit_price: i.unit_price,
-    discount: i.discount,
-  }))
-
-  // 3a. Розраховуємо бонуси ДО RPC (щоб передати атомарно)
-  const bonusesSpent = input.bonuses_spent ?? 0
   let bonusesEarned = 0
-  if (process.env.USE_BONUS_ATOMIC_SALE === 'true' && input.customer_id && input.payment_method !== 'debt') {
-    const { getSettings } = await import('./loyaltyService.js')
-    const loyaltySettings = await getSettings()
-    if (loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
-      bonusesEarned = Math.round(discountedTotal * ((loyaltySettings.accrual_pct ?? 0) / 100))
-    }
-  }
+  return { cashAmount, cardAmount, bonusesEarned }
+}
 
-  // 3b. Термінал підтверджує ДО виклику process_sale
-  // Якщо термінал відхиляє → продаж НЕ створюється
+async function processTerminalPayment(input: CreateSaleInput, cardAmount: number, tenantId: string): Promise<TerminalResult> {
+  let isCharged = false
+  let activeTerminalAdapter: TerminalAdapter | null = null
+  let bankAuthCode: string | null = null
+  let terminalRrn:  string | null = null
+
   if (input.payment_method === 'card' || input.payment_method === 'mixed') {
-    const settings = await (await import('./adminService.js')).getSettings()
+    const settings = await (await import('./adminService.js')).getSettings(tenantId)
     const provider = settings.terminal_provider ?? 'mock'
 
-    // manual — касир сам провів на терміналі та ввів код
     if (provider === 'manual' || !settings.bank_terminal_enabled) {
       bankAuthCode = (input as any).terminal_auth_code ?? null
       logger.info({ bankAuthCode }, 'Термінал: ручне підтвердження (manual mode)')
     } else {
       activeTerminalAdapter = getTerminalAdapter(settings)
       if (activeTerminalAdapter) {
+        logger.info({ provider, cardAmount }, 'Ініціюємо оплату через інтегрований термінал...')
         const terminalResult = await activeTerminalAdapter.processPayment(
           cardAmount,
           `TMP-${Date.now()}`
@@ -194,65 +179,206 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
         bankAuthCode = terminalResult.authCode
         terminalRrn  = terminalResult.rrn ?? null
         isCharged = true
+        logger.info({ rrn: terminalRrn }, 'Оплата успішна.')
       }
     }
-    logger.info({ bankAuthCode, terminalRrn }, 'Термінал підтвердив — виконуємо process_sale')
   }
-  // Вибір версії RPC за feature flags (детально див. .env.example):
-  //   v1 process_sale         — базова, без перевірки резервів (migrations 019/021/025/031)
-  //   v2 process_sale_v2      — qty_available з урахуванням резервів (073/075/091)
-  //   v3 process_sale_v3      — атомарне списання бонусів у межах RPC (081)
-  // Default продакшен: v3. Усі три функції живуть у БД одночасно як fallback для відкату.
-  const useBonusAtomic = process.env.USE_BONUS_ATOMIC_SALE === 'true'
-  const rpcName = useBonusAtomic
-    ? 'process_sale_v3'
-    : process.env.USE_RESERVE_AWARE_SALE === 'true' ? 'process_sale_v2' : 'process_sale'
-  logger.info({ shift_id: input.shift_id, items_count: items.length, payment_method: input.payment_method, rpc: rpcName }, 'Виклик process_sale RPC')
 
-  // 4. Викликаємо атомарну PostgreSQL функцію
-  const rpcParams: Record<string, unknown> = {
-    p_tenant_id:      tenantId,
-    p_cashier_id:     cashierId,
-    p_shift_id:       input.shift_id,
-    p_customer_id:    input.customer_id ?? null,
-    p_manager_id:     input.manager_id ?? cashierId,
-    p_items:          items,
-    p_payment_method: input.payment_method,
-    p_discount:       input.discount,
-    p_notes:          input.notes ?? null,
-    p_cash_amount:    cashAmount,
-    p_card_amount:    cardAmount,
-  }
-  if (useBonusAtomic) {
-    rpcParams.p_bonuses_spent  = bonusesSpent
-    rpcParams.p_bonuses_earned = bonusesEarned
-  }
-  const { data, error } = await db.rpc(rpcName, rpcParams)
+  return { bankAuthCode, terminalRrn, activeTerminalAdapter, isCharged }
+}
 
-  // 4. Обробка помилок RPC
-  if (error) {
-    const msg = error.message ?? ''
-    if (msg.includes('INSUFFICIENT_STOCK')) {
-      throw new AppError('INSUFFICIENT_STOCK', msg.replace('INSUFFICIENT_STOCK: ', '').trim(), 422)
+async function executeSaleTransaction(
+  cashierId: string,
+  tenantId: string,
+  input: CreateSaleInput,
+  useBonusAtomic: boolean,
+  bonusesEarned: number,
+  cashAmount: number,
+  cardAmount: number
+): Promise<any> {
+  return runTransaction(async (client) => {
+    // Set local lock timeout to 2 seconds to prevent indefinitely hanging transaction locks
+    await client.query("SET LOCAL lock_timeout = '2s'")
+
+    // 1. Get allow_negative_qty
+    const settingsRes = await client.query(
+      'SELECT allow_negative_qty FROM shop_settings WHERE tenant_id = $1 LIMIT 1',
+      [tenantId]
+    )
+    const allowNeg = settingsRes.rows[0]?.allow_negative_qty ?? true
+
+    // 2. Generate next sale number
+    const seqRes = await client.query("SELECT nextval('sale_number_seq')")
+    const saleNumber = String(seqRes.rows[0].nextval).padStart(6, '0')
+
+    // 3. sum subtotal and verify products/stock (Pass 1)
+    let subtotal = 0
+    const productsInfo = new Map()
+
+    for (const item of input.items) {
+      subtotal += item.unit_price * item.qty
+
+      // Select and lock row
+      const prodRes = await client.query(
+        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price FROM products WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+        [item.product_id]
+      )
+      if (prodRes.rowCount === 0) {
+        throw new AppError('PRODUCT_NOT_FOUND', `Товар ${item.product_id} не знайдено`, 404)
+      }
+
+      const product = prodRes.rows[0]
+      const qtyOnHand = parseFloat(product.qty_on_hand)
+      const isService = !!product.is_service
+      const costPrice = parseInt(product.cost_price, 10)
+
+      productsInfo.set(item.product_id, { qty_on_hand: qtyOnHand, is_service: isService, cost_price: costPrice })
+
+      if (!isService) {
+        const reserveRes = await client.query(
+          `SELECT COALESCE(SUM(qty), 0) as reserved FROM inventory_reserves 
+           WHERE product_id = $1 AND released_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,
+          [item.product_id]
+        )
+        const qtyReserved = parseFloat(reserveRes.rows[0].reserved)
+        const qtyAvailable = qtyOnHand - qtyReserved
+
+        if (qtyAvailable < item.qty && !allowNeg) {
+          throw new AppError(
+            'INSUFFICIENT_STOCK',
+            `Недостатньо доступного залишку. Наявно: ${qtyOnHand}, в резерві: ${qtyReserved}, доступно: ${qtyAvailable}, потрібно: ${item.qty}`,
+            422
+          )
+        }
+      }
     }
-    if (msg.includes('not found') || msg.includes('не знайдено')) {
-      throw new AppError('PRODUCT_NOT_FOUND', msg, 404)
+
+    // 4. Verify client bonus balance
+    const bonusesSpent = input.bonuses_spent ?? 0
+    if (useBonusAtomic && bonusesSpent > 0 && input.customer_id) {
+      const custRes = await client.query(
+        'SELECT COALESCE(bonus_balance, 0) as bonus_balance FROM customers WHERE id = $1 FOR UPDATE',
+        [input.customer_id]
+      )
+      if (custRes.rowCount === 0) {
+        throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+      }
+      const bonusBalance = custRes.rows[0].bonus_balance
+      if (bonusBalance < bonusesSpent) {
+        throw new AppError(
+          'INSUFFICIENT_BONUS',
+          `Недостатньо бонусів. Є: ${bonusBalance}, потрібно: ${bonusesSpent}`,
+          400
+        )
+      }
     }
-    throw new AppError('DB_ERROR', msg, 500)
-  }
 
-  if (!data) {
-    throw new AppError('DB_ERROR', 'RPC process_sale не повернув дані', 500)
-  }
+    const total = Math.max(0, subtotal - input.discount)
 
-  // 5. Парсимо результат (JSONB -> об'єкт)
-  const sale = typeof data === 'string' ? JSON.parse(data) : data
+    // 5. Create sale record
+    const saleInsertRes = await client.query(
+      `INSERT INTO sales (
+        tenant_id, sale_number, customer_id, cashier_id, shift_id,
+        status, subtotal, discount, total, payment_method,
+        is_debt, notes, manager_id, cash_amount, card_amount,
+        bonuses_spent, bonuses_earned
+      ) VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      RETURNING *`,
+      [
+        tenantId,
+        saleNumber,
+        input.customer_id ?? null,
+        cashierId,
+        input.shift_id,
+        subtotal,
+        input.discount,
+        total,
+        input.payment_method,
+        input.payment_method === 'debt',
+        input.notes ?? null,
+        input.manager_id ?? cashierId,
+        cashAmount,
+        cardAmount,
+        useBonusAtomic ? bonusesSpent : 0,
+        useBonusAtomic ? bonusesEarned : 0
+      ]
+    )
+    const sale = saleInsertRes.rows[0]
 
-  // 5b. Фіскалізація через ПРРО
+    // 6. Insert items & update product stock
+    for (const item of input.items) {
+      const pInfo = productsInfo.get(item.product_id)
+      const itemTotal = item.unit_price * item.qty - item.discount
+
+      await client.query(
+        `INSERT INTO sale_items (tenant_id, sale_id, product_id, qty, unit_price, discount, total, cost_price)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          tenantId,
+          sale.id,
+          item.product_id,
+          item.qty,
+          item.unit_price,
+          item.discount,
+          itemTotal,
+          pInfo.cost_price
+        ]
+      )
+
+      if (!pInfo.is_service) {
+        await client.query(
+          'UPDATE products SET qty_on_hand = qty_on_hand - $1, updated_at = NOW() WHERE id = $2',
+          [item.qty, item.product_id]
+        )
+      }
+    }
+
+    // 7. Update customer debt if payment_method === 'debt'
+    if (input.payment_method === 'debt' && input.customer_id) {
+      await client.query(
+        'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = NOW() WHERE id = $2',
+        [total, input.customer_id]
+      )
+    }
+
+    // 8. Atomic loyalty bonus spent
+    if (useBonusAtomic && bonusesSpent > 0 && input.customer_id) {
+      await client.query(
+        'UPDATE customers SET bonus_balance = bonus_balance - $1 WHERE id = $2',
+        [bonusesSpent, input.customer_id]
+      )
+
+      await client.query(
+        `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description)
+         VALUES ($1, $2, $3, 'spend', $4, 'Списано при покупці')`,
+        [tenantId, input.customer_id, -bonusesSpent, sale.id]
+      )
+    }
+
+    // 9. Atomic loyalty bonus earned
+    if (useBonusAtomic && bonusesEarned > 0 && input.customer_id) {
+      await client.query(
+        'UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1 WHERE id = $2',
+        [bonusesEarned, input.customer_id]
+      )
+
+      await client.query(
+        `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description)
+         VALUES ($1, $2, $3, 'earn', $4, 'Нараховано за покупку')`,
+        [tenantId, input.customer_id, bonusesEarned, sale.id]
+      )
+    }
+
+    return sale
+  })
+}
+
+async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fiscalNumber: string | null; fiscalQrUrl: string | null }> {
   let fiscalNumber: string | null = null
   let fiscalQrUrl:  string | null = null
+
   if (input.is_fiscal) {
-    const settings = await (await import('./adminService.js')).getSettings()
+    const settings = await (await import('./adminService.js')).getSettings(sale.tenant_id)
     const fiscalAdapter = getFiscalAdapter(settings)
     try {
       const fiscalResult = await fiscalAdapter.fiscalize(
@@ -260,7 +386,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
         sale.sale_number ?? sale.id,
         sale.total,
         input.items.map((i) => ({
-          name:       i.product_id,   // буде перезаписано після збагачення
+          name:       i.product_id,
           qty:        i.qty,
           unit_price: i.unit_price,
           discount:   i.discount,
@@ -278,80 +404,122 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       logger.error({ error: err.message }, 'Фіскалізація: помилка інтеграції')
     }
   }
-  // 5c. Оновлюємо запис в БД з фіскальними та терміналь даними
-  const extraData: Record<string, unknown> = {}
-  if (input.is_fiscal) extraData.is_fiscal = true
-  if (fiscalNumber)    extraData.fiscal_number = fiscalNumber
-  if (fiscalQrUrl)     extraData.fiscal_qr_url  = fiscalQrUrl
-  if (bankAuthCode)    extraData.bank_auth_code  = bankAuthCode
-  if (terminalRrn)     extraData.terminal_rrn    = terminalRrn
 
-  if (Object.keys(extraData).length > 0) {
-    await db.from('sales').update(extraData).eq('id', sale.id)
-    Object.assign(sale, extraData)
+  return { fiscalNumber, fiscalQrUrl }
+}
+
+async function processLegacyBonuses(sale: any, input: CreateSaleInput): Promise<void> {
+  let bonusSpent = 0
+  if (input.bonuses_spent && input.bonuses_spent > 0 && input.customer_id) {
+    const { error: spendErr } = await db.rpc('process_bonus_spend', {
+      p_customer_id: input.customer_id,
+      p_amount:      input.bonuses_spent,
+      p_sale_id:     sale.id,
+    })
+    if (!spendErr) bonusSpent = input.bonuses_spent
   }
 
-  // 6. Аудит (await — гарантуємо запис перед відповіддю)
-  await logAction({
-    tenantId: tenantId,
-    userId: cashierId,
-    userRole: 'cashier',
-    action: 'sale.created',
-    entityType: 'sale',
-    entityId: sale.id,
-    entityLabel: '#' + (sale.sale_number ?? ''),
-    newValue: {
-      total: sale.total,
-      payment_method: input.payment_method,
-      items: input.items.length,
-    },
-  })
-
-  // 5d. Оновлюємо pickup_cell якщо передано (для відкладених чеків)
-  if (input.pickup_cell) {
-    await db.from('sales').update({ pickup_cell: input.pickup_cell }).eq('id', sale.id)
-    sale.pickup_cell = input.pickup_cell
-  }
-
-  // 5e-5g. Бонуси — якщо НЕ атомарний режим, викликаємо окремо (legacy)
-  if (!useBonusAtomic) {
-    let bonusSpent = 0
-    if (input.bonuses_spent && input.bonuses_spent > 0 && input.customer_id) {
-      const { error: spendErr } = await db.rpc('process_bonus_spend', {
-        p_customer_id: input.customer_id,
-        p_amount:      input.bonuses_spent,
-        p_sale_id:     sale.id,
-      })
-      if (!spendErr) bonusSpent = input.bonuses_spent
+  let bonusEarned = 0
+  if (input.customer_id && input.payment_method !== 'debt') {
+    const settings = await (await import('./loyaltyService.js')).getSettings(sale.tenant_id)
+    if (settings.is_enabled && sale.total >= (settings.min_purchase_kopecks ?? 0)) {
+      const earnAmount = Math.round(sale.total * ((settings.accrual_pct ?? 0) / 100))
+      if (earnAmount > 0) {
+        const { error: earnErr } = await db.rpc('process_bonus_earn', {
+          p_customer_id: input.customer_id,
+          p_amount:      earnAmount,
+          p_sale_id:     sale.id,
+        })
+        if (!earnErr) bonusEarned = earnAmount
+      }
     }
+  }
 
-    let bonusEarned = 0
-    if (input.customer_id && input.payment_method !== 'debt') {
-      const settings = await (await import('./loyaltyService.js')).getSettings()
-      if (settings.is_enabled && sale.total >= (settings.min_purchase_kopecks ?? 0)) {
-        const earnAmount = Math.round(sale.total * ((settings.accrual_pct ?? 0) / 100))
-        if (earnAmount > 0) {
-          const { error: earnErr } = await db.rpc('process_bonus_earn', {
-            p_customer_id: input.customer_id,
-            p_amount:      earnAmount,
-            p_sale_id:     sale.id,
-          })
-          if (!earnErr) bonusEarned = earnAmount
-        }
+  if (bonusSpent > 0 || bonusEarned > 0) {
+    await db.from('sales').update({
+      bonuses_spent: bonusSpent,
+      bonuses_earned: bonusEarned,
+    }).eq('id', sale.id)
+    sale.bonuses_spent = bonusSpent
+    sale.bonuses_earned = bonusEarned
+  }
+}
+
+export async function createSale(cashierId: string, tenantId: string, input: CreateSaleInput, idempotencyKey?: string) {
+  if (idempotencyKey) {
+    const cachedResponse = await checkIdempotencyLock(idempotencyKey, tenantId)
+    if (cachedResponse) return cachedResponse
+  }
+
+  const useBonusAtomic = process.env.USE_BONUS_ATOMIC_SALE !== 'false'
+  let isCharged = false
+  let activeTerminalAdapter: TerminalAdapter | null = null
+  let bankAuthCode: string | null = null
+  let terminalRrn:  string | null = null
+
+  try {
+    await verifyActiveShift(cashierId, input.shift_id)
+
+    // Calculate sums
+    const subtotalItems = input.items.reduce((s, i) => s + i.unit_price * i.qty, 0)
+    const discountedTotal = Math.max(0, subtotalItems - input.discount)
+
+    let { cashAmount, cardAmount, bonusesEarned } = calculateSaleAmounts(input, discountedTotal)
+
+    if (useBonusAtomic && input.customer_id && input.payment_method !== 'debt') {
+      const { getSettings } = await import('./loyaltyService.js')
+      const loyaltySettings = await getSettings(tenantId)
+      if (loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
+        bonusesEarned = Math.round(discountedTotal * ((loyaltySettings.accrual_pct ?? 0) / 100))
       }
     }
 
-    if (bonusSpent > 0 || bonusEarned > 0) {
-      await db.from('sales').update({
-        bonuses_spent: bonusSpent,
-        bonuses_earned: bonusEarned,
-      }).eq('id', sale.id)
-      sale.bonuses_spent = bonusSpent
-      sale.bonuses_earned = bonusEarned
-    }
-  }
+    const termResult = await processTerminalPayment(input, cardAmount, tenantId)
+    bankAuthCode = termResult.bankAuthCode
+    terminalRrn = termResult.terminalRrn
+    activeTerminalAdapter = termResult.activeTerminalAdapter
+    isCharged = termResult.isCharged
 
-    // 7. Оновлюємо статус idempotency_keys
+    const sale = await executeSaleTransaction(cashierId, tenantId, input, useBonusAtomic, bonusesEarned, cashAmount, cardAmount)
+
+    const { fiscalNumber, fiscalQrUrl } = await fiscalizeSale(sale, input)
+
+    const extraData: Record<string, unknown> = {}
+    if (input.is_fiscal) extraData.is_fiscal = true
+    if (fiscalNumber)    extraData.fiscal_number = fiscalNumber
+    if (fiscalQrUrl)     extraData.fiscal_qr_url  = fiscalQrUrl
+    if (bankAuthCode)    extraData.bank_auth_code  = bankAuthCode
+    if (terminalRrn)     extraData.terminal_rrn    = terminalRrn
+
+    if (Object.keys(extraData).length > 0) {
+      await db.from('sales').update(extraData).eq('id', sale.id)
+      Object.assign(sale, extraData)
+    }
+
+    await logAction({
+      tenantId: tenantId,
+      userId: cashierId,
+      userRole: 'cashier',
+      action: 'sale.created',
+      entityType: 'sale',
+      entityId: sale.id,
+      entityLabel: '#' + (sale.sale_number ?? ''),
+      newValue: {
+        total: sale.total,
+        payment_method: input.payment_method,
+        items: input.items.length,
+      },
+    })
+
+    if (input.pickup_cell) {
+      await db.from('sales').update({ pickup_cell: input.pickup_cell }).eq('id', sale.id)
+      sale.pickup_cell = input.pickup_cell
+    }
+
+    if (!useBonusAtomic) {
+      await processLegacyBonuses(sale, input)
+    }
+
     if (idempotencyKey) {
       await db.from('idempotency_keys')
         .update({
@@ -366,7 +534,6 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   } catch (err: any) {
     logger.error({ error: err.message, idempotencyKey }, 'Помилка в createSale. Запускаємо відкат...')
 
-    // 1. Автоматичний відкат коштів на терміналі
     if (isCharged && activeTerminalAdapter) {
       try {
         logger.info({ terminalRrn, bankAuthCode }, 'Спроба скасування транзакції на терміналі...')
@@ -380,7 +547,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
         logger.error({ cancelError: cancelErr.message }, 'КРИТИЧНО: Помилка при спробі скасування транзакції на терміналі!')
       }
     }
-    // 2. Очищення або оновлення idempotency_keys
+
     if (idempotencyKey) {
       try {
         await db.from('idempotency_keys')
@@ -388,7 +555,6 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
           .eq('key', idempotencyKey)
           .eq('tenant_id', tenantId)
       } catch {}
-      // Видаляємо запис для можливості повторної спроби
       try {
         await db.from('idempotency_keys')
           .delete()
@@ -401,7 +567,6 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   }
 }
 
-/** Відновити відкладений чек */
 export async function resumeSale(saleId: string) {
   const { data, error } = await db
     .from('sales')

@@ -37,21 +37,23 @@ router.post('/', requireRole('owner', 'admin', 'manager', 'cashier'), async (req
     const parsed = carSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
-    // Перевірка чи клієнт існує
+    // Перевірка чи клієнт існує у цьому магазині
     const { data: customer } = await db
       .from('customers')
       .select('id')
       .eq('id', parsed.data.customer_id)
+      .eq('tenant_id', req.user!.tenant_id)
       .is('deleted_at', null)
       .maybeSingle()
     if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
 
-    // Унікальність VIN
+    // Унікальність VIN в межах нашого магазину
     if (parsed.data.vin) {
       const { data: existing } = await db
         .from('customer_cars')
         .select('id')
         .eq('vin', parsed.data.vin)
+        .eq('tenant_id', req.user!.tenant_id)
         .maybeSingle()
       if (existing) throw new AppError('VIN_DUPLICATE', 'Цей VIN-код вже додано до іншого авто', 409)
     }
@@ -73,10 +75,20 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
     const parsed = carSchema.partial().safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
+    // Перевіряємо що авто належить тененту
+    const { data: car } = await db
+      .from('customer_cars')
+      .select('id')
+      .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (!car) throw new AppError('NOT_FOUND', 'Авто не знайдено', 404)
+
     const { data, error } = await db
       .from('customer_cars')
       .update({ ...parsed.data, updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .select()
       .single()
 
@@ -88,10 +100,20 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
 // DELETE /api/v1/customer-cars/:id — видалити авто
 router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
+    // Спочатку перевіряємо чи належить авто тененту
+    const { data: car } = await db
+      .from('customer_cars')
+      .select('id')
+      .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (!car) throw new AppError('NOT_FOUND', 'Авто не знайдено', 404)
+
     const { error } = await db
       .from('customer_cars')
       .delete()
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     res.status(204).send()

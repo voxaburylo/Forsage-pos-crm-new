@@ -13,6 +13,10 @@ router.use(requireAuth)
 router.get('/current', async (req, res, next) => {
   try {
     const shift = await shiftService.getCurrentShift(req.user!.id)
+    if (shift && shift.tenant_id !== req.user!.tenant_id) {
+      res.json({ data: null })
+      return
+    }
     res.json({ data: shift })
   } catch (err) { next(err) }
 })
@@ -32,7 +36,7 @@ router.post('/:id/close', async (req, res, next) => {
   try {
     const parsed = closeShiftSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть фактичний залишок готівки', 422, parsed.error.flatten())
-    const shift = await shiftService.closeShift(String(req.params.id), req.user!.id, parsed.data)
+    const shift = await shiftService.closeShift(String(req.params.id), req.user!.id, parsed.data, req.user!.tenant_id)
     res.json({ data: shift })
   } catch (err) { next(err) }
 })
@@ -41,7 +45,7 @@ router.post('/:id/close', async (req, res, next) => {
 router.get('/current/expected-cash', async (req, res, next) => {
   try {
     const shift = await shiftService.getCurrentShift(req.user!.id)
-    if (!shift) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
+    if (!shift || shift.tenant_id !== req.user!.tenant_id) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
 
     // Початковий залишок
     const openingCash = shift.opening_cash
@@ -51,15 +55,19 @@ router.get('/current/expected-cash', async (req, res, next) => {
       .from('sales')
       .select('cash_amount')
       .eq('shift_id', shift.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('status', 'completed')
     const totalCashSales = (cashSales ?? []).reduce((s, x) => s + (x.cash_amount ?? 0), 0)
 
     // Повернення готівкою — спочатку отримуємо ID продажів зміни
     const { data: shiftSales } = await db
-      .from('sales').select('id').eq('shift_id', shift.id)
+      .from('sales')
+      .select('id')
+      .eq('shift_id', shift.id)
+      .eq('tenant_id', req.user!.tenant_id)
     const shiftSaleIds = (shiftSales ?? []).map((s) => s.id)
     const { data: returns } = shiftSaleIds.length > 0
-      ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', shiftSaleIds)
+      ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', shiftSaleIds).eq('tenant_id', req.user!.tenant_id)
       : { data: [] }
     const totalReturns = (returns ?? []).reduce((s, x) => s + (x.refund_kopecks ?? 0), 0)
 
@@ -68,6 +76,7 @@ router.get('/current/expected-cash', async (req, res, next) => {
       .from('cash_operations')
       .select('type, amount')
       .eq('shift_id', shift.id)
+      .eq('tenant_id', req.user!.tenant_id)
     const cashIn = (cashOps ?? []).filter((o) => o.type === 'in').reduce((s, x) => s + x.amount, 0)
     const cashOut = (cashOps ?? []).filter((o) => o.type === 'out').reduce((s, x) => s + x.amount, 0)
 
@@ -90,7 +99,7 @@ router.get('/current/expected-cash', async (req, res, next) => {
 router.post('/current/reconcile', async (req, res, next) => {
   try {
     const shift = await shiftService.getCurrentShift(req.user!.id)
-    if (!shift) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
+    if (!shift || shift.tenant_id !== req.user!.tenant_id) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
 
     const schema = z.object({
       actual_amount: z.number().int().min(0),
@@ -101,15 +110,25 @@ router.post('/current/reconcile', async (req, res, next) => {
 
     // Перераховуємо expected
     const { data: cashSales } = await db
-      .from('sales').select('cash_amount').eq('shift_id', shift.id).eq('status', 'completed')
+      .from('sales')
+      .select('cash_amount')
+      .eq('shift_id', shift.id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .eq('status', 'completed')
     const { data: reconcileSales } = await db
-      .from('sales').select('id').eq('shift_id', shift.id)
+      .from('sales')
+      .select('id')
+      .eq('shift_id', shift.id)
+      .eq('tenant_id', req.user!.tenant_id)
     const reconcileSaleIds = (reconcileSales ?? []).map((s) => s.id)
     const { data: returns } = reconcileSaleIds.length > 0
-      ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', reconcileSaleIds)
+      ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', reconcileSaleIds).eq('tenant_id', req.user!.tenant_id)
       : { data: [] }
     const { data: cashOps } = await db
-      .from('cash_operations').select('type, amount').eq('shift_id', shift.id)
+      .from('cash_operations')
+      .select('type, amount')
+      .eq('shift_id', shift.id)
+      .eq('tenant_id', req.user!.tenant_id)
 
     const totalCashSales = (cashSales ?? []).reduce((s, x) => s + (x.cash_amount ?? 0), 0)
     const totalReturns = (returns ?? []).reduce((s, x) => s + (x.refund_kopecks ?? 0), 0)
@@ -142,7 +161,7 @@ router.post('/current/reconcile', async (req, res, next) => {
 // GET /api/v1/shifts/:id — деталі зміни
 router.get('/:id', async (req, res, next) => {
   try {
-    const shift = await shiftService.getShift(String(req.params.id))
+    const shift = await shiftService.getShift(String(req.params.id), req.user!.tenant_id)
     res.json({ data: shift })
   } catch (err) { next(err) }
 })
@@ -150,7 +169,7 @@ router.get('/:id', async (req, res, next) => {
 // GET /api/v1/shifts/:id/report — звіт по зміні
 router.get('/:id/report', async (req, res, next) => {
   try {
-    const report = await shiftService.getShiftReport(String(req.params.id))
+    const report = await shiftService.getShiftReport(String(req.params.id), req.user!.tenant_id)
     res.json({ data: report })
   } catch (err) { next(err) }
 })

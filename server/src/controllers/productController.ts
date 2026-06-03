@@ -201,6 +201,7 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
 
     const { logAction } = await import('../services/auditService.js')
     void logAction({
+      tenantId: req.user!.tenant_id,
       userId: req.user!.id, userRole: req.user!.role,
       action: 'bulk_update', entityType: 'product',
       entityId: product_ids[0],

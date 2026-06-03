@@ -8,9 +8,9 @@ const router = Router()
 router.use(requireAuth)
 
 // GET /api/v1/loyalty/settings
-router.get('/settings', async (_req, res, next) => {
+router.get('/settings', async (req, res, next) => {
   try {
-    res.json({ data: await loyaltyService.getSettings() })
+    res.json({ data: await loyaltyService.getSettings(req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -26,7 +26,7 @@ router.put('/settings', requireRole('owner', 'admin'), async (req, res, next) =>
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    res.json({ data: await loyaltyService.updateSettings(parsed.data) })
+    res.json({ data: await loyaltyService.updateSettings(parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
@@ -37,7 +37,7 @@ router.get('/customer/:id', async (req, res, next) => {
     const [balance, transactions, settings] = await Promise.all([
       loyaltyService.getBalance(customerId),
       loyaltyService.getTransactions(customerId),
-      loyaltyService.getSettings(),
+      loyaltyService.getSettings(req.user!.tenant_id),
     ])
     res.json({ data: { balance, transactions, settings } })
   } catch (err) { next(err) }
@@ -49,7 +49,7 @@ router.get('/customer/:id/max-redeem', async (req, res, next) => {
     const customerId = String(req.params.id)
     const total = parseInt(String(req.query.total) || '0', 10)
     const balance    = await loyaltyService.getBalance(customerId)
-    const maxAllowed = await loyaltyService.maxRedeem(total)
+    const maxAllowed = await loyaltyService.maxRedeem(total, req.user!.tenant_id)
     res.json({ data: { balance, max_redeem: Math.min(balance, maxAllowed) } })
   } catch (err) { next(err) }
 })

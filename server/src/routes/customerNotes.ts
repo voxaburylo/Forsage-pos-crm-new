@@ -11,7 +11,7 @@ router.use(requireAuth)
 router.get('/', async (req, res, next) => {
   try {
     const customerId = String((req.params as Record<string, string>)['customerId'])
-    const data = await noteService.listNotes(customerId)
+    const data = await noteService.listNotes(customerId, req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -22,7 +22,7 @@ router.post('/', requireRole('owner', 'admin', 'manager', 'cashier'), async (req
     const customerId = String((req.params as Record<string, string>)['customerId'])
     const parsed = createNoteSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    const data = await noteService.createNote(customerId, req.user!.id, parsed.data)
+    const data = await noteService.createNote(customerId, req.user!.id, parsed.data, req.user!.tenant_id)
     res.status(201).json({ data })
   } catch (err) { next(err) }
 })
@@ -34,7 +34,7 @@ router.patch('/:noteId', requireRole('owner', 'admin', 'manager', 'cashier'), as
     const noteId     = String((req.params as Record<string, string>)['noteId'])
     const parsed = updateNoteSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    const data = await noteService.updateNote(noteId, customerId, parsed.data)
+    const data = await noteService.updateNote(noteId, customerId, parsed.data, req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -44,7 +44,7 @@ router.delete('/:noteId', requireRole('owner', 'admin', 'manager'), async (req, 
   try {
     const customerId = String((req.params as Record<string, string>)['customerId'])
     const noteId     = String((req.params as Record<string, string>)['noteId'])
-    await noteService.deleteNote(noteId, customerId)
+    await noteService.deleteNote(noteId, customerId, req.user!.tenant_id)
     res.status(204).send()
   } catch (err) { next(err) }
 })

@@ -9,7 +9,7 @@ import type {
   ConfirmImportInput
 } from '../validators/importSchema.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+// No fallback TENANT_ID
 
 function normalizeForMatch(s: string): string {
   return s.replace(/[\s\-\/\.\_\(\)\[\]]/g, '').toLowerCase().replace(/^0+/, '')
@@ -109,7 +109,7 @@ function parseRows(text: string): RawRow[] {
 
 interface MatchedProduct { id: string; sku: string; name: string }
 
-async function matchProduct(sku: string, name: string): Promise<{
+export async function matchProduct(sku: string, name: string): Promise<{
   matched:       boolean
   product_id:    string | null
   match_quality: 'exact' | 'fuzzy' | 'new'
@@ -166,24 +166,22 @@ export interface ParseResult {
   new_count:     number
 }
 
-export async function parseClipboardText(input: ParseImportInput): Promise<ParseResult> {
+export async function parseClipboardText(input: ParseImportInput, tenantId: string): Promise<ParseResult> {
   const rawRows = parseRows(input.text)
-  const items: ParsedItem[] = []
+  
+  const tempItems: TemporaryItem[] = rawRows.map(r => ({
+    row: r.row,
+    sku: r.sku,
+    name: r.name,
+    qty: r.qty,
+    price: r.price,
+    retail_price: null,
+    barcode: null,
+    storage_bin: null,
+  }))
 
-  for (const row of rawRows) {
-    const match = await matchProduct(row.sku, row.name)
-    items.push({
-      row:           row.row,
-      sku:           row.sku,
-      name:          row.name,
-      qty:           row.qty,
-      price:         row.price,
-      matched:       match.matched,
-      product_id:    match.product_id,
-      match_quality: match.match_quality,
-      warnings:      match.warnings,
-    })
-  }
+  const dbProductsList = await fetchDbProducts(tempItems, tenantId)
+  const items = tempItems.map(item => matchPreviewProduct(item, dbProductsList, tempItems.length))
 
   return {
     supplier_id:   input.supplier_id,
@@ -215,80 +213,74 @@ export interface PreviewResult {
   }
 }
 
-export async function previewImport(input: PreviewImportInput): Promise<PreviewResult> {
-  const { text, mapping } = input
+// Decomposed helpers for previewImport
+interface TemporaryItem {
+  row:          number
+  sku:          string
+  name:         string
+  qty:          number
+  price:        number
+  retail_price: number | null
+  barcode:      string | null
+  storage_bin:  string | null
+}
 
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-    .split('\n').filter((l) => l.trim().length > 0)
+function detectDelimiter(firstLine: string): string {
+  const tabCount       = firstLine.split("\t").length
+  const semicolonCount = firstLine.split(";").length
+  const commaCount     = firstLine.split(",").length
+  let sep = "\t"
+  if (semicolonCount >= tabCount && semicolonCount >= commaCount) sep = ";"
+  else if (commaCount >= tabCount && commaCount >= semicolonCount) sep = ","
+  return sep
+}
 
-  if (lines.length === 0) {
-    throw new AppError('PARSE_ERROR', 'Текст порожній', 400)
+function checkHasHeader(firstLine: string, sep: string, mapping: any): boolean {
+  const parts = firstLine.split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ""))
+  let looksLikeHeader = false
+
+  if (mapping.qty !== null && mapping.qty !== undefined && parts[mapping.qty]) {
+    const val = parseFloat(parts[mapping.qty].replace(/,/g, ".").replace(/[^\d.]/g, ""))
+    if (isNaN(val)) looksLikeHeader = true
   }
-
-  const first = lines[0]
-  const tabCount       = first.split('\t').length
-  const semicolonCount = first.split(';').length
-  const commaCount     = first.split(',').length
-  let sep = '\t'
-  if (semicolonCount >= tabCount && semicolonCount >= commaCount) sep = ';'
-  else if (commaCount >= tabCount && commaCount >= semicolonCount) sep = ','
-
-  let startLine = 0
-  // Перевірка наявності заголовка
-  if (lines.length > 0) {
-    const parts = lines[0].split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ''))
-    let looksLikeHeader = false
-
-    if (mapping.qty !== null && mapping.qty !== undefined && parts[mapping.qty]) {
-      const val = parseFloat(parts[mapping.qty].replace(/,/g, '.').replace(/[^\d.]/g, ''))
-      if (isNaN(val)) looksLikeHeader = true
-    }
-    if (mapping.price !== null && mapping.price !== undefined && parts[mapping.price]) {
-      const val = parseFloat(parts[mapping.price].replace(/,/g, '.').replace(/[^\d.]/g, ''))
-      if (isNaN(val)) looksLikeHeader = true
-    }
-    if (mapping.name !== null && mapping.name !== undefined && parts[mapping.name]) {
-      if (/назв|товар|наймен|name|product|description/i.test(parts[mapping.name])) {
-        looksLikeHeader = true
-      }
-    }
-
-    if (looksLikeHeader) {
-      startLine = 1
+  if (mapping.price !== null && mapping.price !== undefined && parts[mapping.price]) {
+    const val = parseFloat(parts[mapping.price].replace(/,/g, ".").replace(/[^\d.]/g, ""))
+    if (isNaN(val)) looksLikeHeader = true
+  }
+  if (mapping.name !== null && mapping.name !== undefined && parts[mapping.name]) {
+    if (/назв|товар|наймен|name|product|description/i.test(parts[mapping.name])) {
+      looksLikeHeader = true
     }
   }
+  return looksLikeHeader
+}
 
-  interface TemporaryItem {
-    row:          number
-    sku:          string
-    name:         string
-    qty:          number
-    price:        number
-    retail_price: number | null
-    barcode:      string | null
-    storage_bin:  string | null
-  }
-
+function parseImportLines(
+  lines: string[],
+  sep: string,
+  startLine: number,
+  mapping: any
+): { temporaryItems: TemporaryItem[]; conflicts: PreviewConflict[] } {
   const temporaryItems: TemporaryItem[] = []
   const conflicts: PreviewConflict[] = []
   const seenSkus = new Set<string>()
 
   for (let i = startLine; i < lines.length; i++) {
-    const parts = lines[i].split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ''))
+    const parts = lines[i].split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ""))
     const rowNum = i + 1
 
     // Отримуємо назву
-    const name = mapping.name !== null && mapping.name !== undefined ? (parts[mapping.name] ?? '').trim() : ''
+    const name = mapping.name !== null && mapping.name !== undefined ? (parts[mapping.name] ?? "").trim() : ""
     if (!name) {
-      conflicts.push({ row: rowNum, reason: 'Відсутня назва товару' })
+      conflicts.push({ row: rowNum, reason: "Відсутня назва товару" })
       continue
     }
 
     // Отримуємо ціну
-    const rawPrice = mapping.price !== null && mapping.price !== undefined ? parts[mapping.price] ?? '' : ''
-    const priceHryvnia = parseFloat(rawPrice.replace(/,/g, '.').replace(/[^\d.]/g, ''))
+    const rawPrice = mapping.price !== null && mapping.price !== undefined ? parts[mapping.price] ?? "" : ""
+    const priceHryvnia = parseFloat(rawPrice.replace(/,/g, ".").replace(/[^\d.]/g, ""))
     if (isNaN(priceHryvnia) || priceHryvnia < 0) {
-      conflicts.push({ row: rowNum, name, reason: `Некоректна ціна закупівлі: "${rawPrice}"` })
+      conflicts.push({ row: rowNum, name, reason: "Некоректна ціна закупівлі: \"" + rawPrice + "\"" })
       continue
     }
     const price = Math.round(priceHryvnia * 100)
@@ -296,10 +288,10 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
     // Отримуємо кількість
     let qty = 1
     if (mapping.qty !== null && mapping.qty !== undefined) {
-      const rawQty = parts[mapping.qty] ?? ''
-      const parsedQty = parseFloat(rawQty.replace(/,/g, '.').replace(/[^\d.]/g, ''))
+      const rawQty = parts[mapping.qty] ?? ""
+      const parsedQty = parseFloat(rawQty.replace(/,/g, ".").replace(/[^\d.]/g, ""))
       if (isNaN(parsedQty) || parsedQty < 0) {
-        conflicts.push({ row: rowNum, name, reason: `Некоректна кількість: "${rawQty}"` })
+        conflicts.push({ row: rowNum, name, reason: "Некоректна кількість: \"" + rawQty + "\"" })
         continue
       }
       qty = parsedQty
@@ -308,9 +300,9 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
     // Отримуємо роздрібну ціну
     let retail_price: number | null = null
     if (mapping.retail_price !== null && mapping.retail_price !== undefined) {
-      const rawRetail = parts[mapping.retail_price] ?? ''
+      const rawRetail = parts[mapping.retail_price] ?? ""
       if (rawRetail) {
-        const parsedRetail = parseFloat(rawRetail.replace(/,/g, '.').replace(/[^\d.]/g, ''))
+        const parsedRetail = parseFloat(rawRetail.replace(/,/g, ".").replace(/[^\d.]/g, ""))
         if (!isNaN(parsedRetail) && parsedRetail >= 0) {
           retail_price = Math.round(parsedRetail * 100)
         }
@@ -318,21 +310,20 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
     }
 
     // Отримуємо артикул
-    const sku = mapping.sku !== null && mapping.sku !== undefined ? (parts[mapping.sku] ?? '').trim() : ''
+    const sku = mapping.sku !== null && mapping.sku !== undefined ? (parts[mapping.sku] ?? "").trim() : ""
 
     // Перевірка дублікатів SKU в межах файлу
     if (sku) {
       const normSku = normalizeArticle(sku)
       if (seenSkus.has(normSku)) {
-        conflicts.push({ row: rowNum, sku, name, reason: 'Дублікат артикулу в імпортованому файлі' })
+        conflicts.push({ row: rowNum, sku, name, reason: "Дублікат артикулу в імпортованому файлі" })
         continue
       }
       seenSkus.add(normSku)
     }
 
-    // Отримуємо штрихкод та комірку
-    const barcode = mapping.barcode !== null && mapping.barcode !== undefined ? (parts[mapping.barcode] ?? '').trim() : null
-    const storage_bin = mapping.storage_bin !== null && mapping.storage_bin !== undefined ? (parts[mapping.storage_bin] ?? '').trim() : null
+    const barcode = mapping.barcode !== null && mapping.barcode !== undefined ? (parts[mapping.barcode] ?? "").trim() : null
+    const storage_bin = mapping.storage_bin !== null && mapping.storage_bin !== undefined ? (parts[mapping.storage_bin] ?? "").trim() : null
 
     temporaryItems.push({
       row: rowNum,
@@ -346,7 +337,10 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
     })
   }
 
-  // Завантажуємо продукти з бази для пошуку збігів
+  return { temporaryItems, conflicts }
+}
+
+async function fetchDbProducts(temporaryItems: TemporaryItem[], tenantId: string): Promise<any[]> {
   const skus = temporaryItems.map(i => normalizeArticle(i.sku)).filter(Boolean)
   const barcodes = temporaryItems.map(i => i.barcode).filter(Boolean) as string[]
   const names = temporaryItems.map(i => i.name.trim()).filter(Boolean)
@@ -356,26 +350,29 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
     const promises = []
     if (skus.length > 0) {
       promises.push(
-        db.from('products')
-          .select('id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin')
-          .is('deleted_at', null)
-          .in('sku', skus)
+        db.from("products")
+          .select("id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin")
+          .eq("tenant_id", tenantId)
+          .is("deleted_at", null)
+          .in("sku", skus)
       )
     }
     if (barcodes.length > 0) {
       promises.push(
-        db.from('products')
-          .select('id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin')
-          .is('deleted_at', null)
-          .in('barcode', barcodes)
+        db.from("products")
+          .select("id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin")
+          .eq("tenant_id", tenantId)
+          .is("deleted_at", null)
+          .in("barcode", barcodes)
       )
     }
     if (names.length > 0) {
       promises.push(
-        db.from('products')
-          .select('id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin')
-          .is('deleted_at', null)
-          .in('name', names)
+        db.from("products")
+          .select("id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin")
+          .eq("tenant_id", tenantId)
+          .is("deleted_at", null)
+          .in("name", names)
       )
     }
 
@@ -391,101 +388,117 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
   for (const p of dbProducts) {
     dbProductsMap.set(p.id, p)
   }
-  const dbProductsList = Array.from(dbProductsMap.values())
+  return Array.from(dbProductsMap.values())
+}
 
-  const items: ParsedItem[] = []
+function matchPreviewProduct(item: TemporaryItem, dbProductsList: any[], totalItemsCount: number): ParsedItem {
+  let matchedProduct: any = null
+  let matchQuality: 'exact' | 'fuzzy' | 'new' = 'new'
+  const warnings: string[] = []
 
-  for (const item of temporaryItems) {
-    let matchedProduct: any = null
-    let matchQuality: 'exact' | 'fuzzy' | 'new' = 'new'
-    const warnings: string[] = []
-
-    // 1. Точний збіг по SKU
-    if (item.sku) {
-      const norm = normalizeArticle(item.sku)
-      matchedProduct = dbProductsList.find(p => p.sku === norm)
-      if (matchedProduct) {
-        matchQuality = 'exact'
-      }
-    }
-
-    // 2. Точний збіг по штрихкоду (якщо не збіглося по SKU)
-    if (!matchedProduct && item.barcode) {
-      matchedProduct = dbProductsList.find(p => p.barcode === item.barcode)
-      if (matchedProduct) {
-        matchQuality = 'exact'
-        warnings.push('Збіг за штрихкодом')
-      }
-    }
-
-    // 3. Точний збіг по назві
-    if (!matchedProduct && item.name) {
-      const trimmedName = item.name.trim().toLowerCase()
-      matchedProduct = dbProductsList.find(p => p.name.trim().toLowerCase() === trimmedName)
-      if (matchedProduct) {
-        matchQuality = 'fuzzy'
-        warnings.push('Знайдено за назвою (артикул/штрихкод не збігається)')
-      }
-    }
-
-    // 4. Левенштейн (fuzzy) пошук для невеликих файлів
-    if (!matchedProduct && item.name && temporaryItems.length < 100) {
-      const normName = normalizeForMatch(item.name)
-      let bestDist = Infinity
-      let bestProduct: any = null
-
-      for (const p of dbProductsList) {
-        const dist = levenshtein(normName, normalizeForMatch(p.name))
-        const similarity = 1 - dist / Math.max(normName.length, normalizeForMatch(p.name).length)
-        if (similarity > 0.5 && dist < bestDist) {
-          bestDist = dist
-          bestProduct = p
-        }
-      }
-
-      if (bestProduct) {
-        matchedProduct = bestProduct
-        matchQuality = 'fuzzy'
-        warnings.push(`Схожий товар в базі: "${bestProduct.name}"`)
-      }
-    }
-
+  // 1. Точний збіг по SKU
+  if (item.sku) {
+    const norm = normalizeArticle(item.sku)
+    matchedProduct = dbProductsList.find(p => p.sku === norm)
     if (matchedProduct) {
-      items.push({
-        row:           item.row,
-        sku:           item.sku || matchedProduct.sku,
-        name:          item.name,
-        qty:           item.qty,
-        price:         item.price,
-        retail_price:  item.retail_price || null,
-        barcode:       item.barcode || matchedProduct.barcode || null,
-        storage_bin:   item.storage_bin || matchedProduct.storage_bin || null,
-        matched:       true,
-        product_id:    matchedProduct.id,
-        match_quality: matchQuality,
-        warnings,
-        // Додаткові поля для порівняння в прев'ю
-        old_price:        matchedProduct.purchase_price,
-        old_qty:          matchedProduct.qty_on_hand,
-        old_retail_price: matchedProduct.retail_price,
-      } as any)
-    } else {
-      items.push({
-        row:           item.row,
-        sku:           item.sku,
-        name:          item.name,
-        qty:           item.qty,
-        price:         item.price,
-        retail_price:  item.retail_price || null,
-        barcode:       item.barcode || null,
-        storage_bin:   item.storage_bin || null,
-        matched:       false,
-        product_id:    null,
-        match_quality: 'new',
-        warnings:      ['Новий товар (не знайдено в базі даних)'],
-      })
+      matchQuality = 'exact'
     }
   }
+
+  // 2. Точний збіг по штрихкоду
+  if (!matchedProduct && item.barcode) {
+    matchedProduct = dbProductsList.find(p => p.barcode === item.barcode)
+    if (matchedProduct) {
+      matchQuality = 'exact'
+      warnings.push("Збіг за штрихкодом")
+    }
+  }
+
+  // 3. Точний збіг по назві
+  if (!matchedProduct && item.name) {
+    const trimmedName = item.name.trim().toLowerCase()
+    matchedProduct = dbProductsList.find(p => p.name.trim().toLowerCase() === trimmedName)
+    if (matchedProduct) {
+      matchQuality = 'fuzzy'
+      warnings.push("Знайдено за назвою (артикул/штрихкод не збігається)")
+    }
+  }
+
+  // 4. Левенштейн (fuzzy) пошук для невеликих файлів
+  if (!matchedProduct && item.name && totalItemsCount < 100) {
+    const normName = normalizeForMatch(item.name)
+    let bestDist = Infinity
+    let bestProduct: any = null
+
+    for (const p of dbProductsList) {
+      const dist = levenshtein(normName, normalizeForMatch(p.name))
+      const similarity = 1 - dist / Math.max(normName.length, normalizeForMatch(p.name).length)
+      if (similarity > 0.5 && dist < bestDist) {
+        bestDist = dist
+        bestProduct = p
+      }
+    }
+
+    if (bestProduct) {
+      matchedProduct = bestProduct
+      matchQuality = 'fuzzy'
+      warnings.push("Схожий товар в базі: \"" + bestProduct.name + "\"")
+    }
+  }
+
+  if (matchedProduct) {
+    return {
+      row:           item.row,
+      sku:           item.sku || matchedProduct.sku,
+      name:          item.name,
+      qty:           item.qty,
+      price:         item.price,
+      retail_price:  item.retail_price || null,
+      barcode:       item.barcode || matchedProduct.barcode || null,
+      storage_bin:   item.storage_bin || matchedProduct.storage_bin || null,
+      matched:       true,
+      product_id:    matchedProduct.id,
+      match_quality: matchQuality,
+      warnings,
+      old_price:        matchedProduct.purchase_price,
+      old_qty:          matchedProduct.qty_on_hand,
+      old_retail_price: matchedProduct.retail_price,
+    } as any
+  } else {
+    return {
+      row:           item.row,
+      sku:           item.sku,
+      name:          item.name,
+      qty:           item.qty,
+      price:         item.price,
+      retail_price:  item.retail_price || null,
+      barcode:       item.barcode || null,
+      storage_bin:   item.storage_bin || null,
+      matched:       false,
+      product_id:    null,
+      match_quality: 'new',
+      warnings:      ["Новий товар (не знайдено в базі даних)"],
+    }
+  }
+}
+
+export async function previewImport(input: PreviewImportInput, tenantId: string): Promise<PreviewResult> {
+  const { text, mapping } = input
+
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    .split("\n").filter((l) => l.trim().length > 0)
+
+  if (lines.length === 0) {
+    throw new AppError("PARSE_ERROR", "Текст порожній", 400)
+  }
+
+  const sep = detectDelimiter(lines[0])
+  const startLine = checkHasHeader(lines[0], sep, mapping) ? 1 : 0
+
+  const { temporaryItems, conflicts } = parseImportLines(lines, sep, startLine, mapping)
+  const dbProductsList = await fetchDbProducts(temporaryItems, tenantId)
+
+  const items = temporaryItems.map(item => matchPreviewProduct(item, dbProductsList, temporaryItems.length))
 
   const toCreate = items.filter(i => !i.matched).length
   const toUpdate = items.filter(i => i.matched).length
@@ -500,10 +513,9 @@ export async function previewImport(input: PreviewImportInput): Promise<PreviewR
     }
   }
 }
-
-async function getCalculatedRetailPrice(purchasePrice: number): Promise<number> {
+async function getCalculatedRetailPrice(purchasePrice: number, tenantId: string): Promise<number> {
   let markupPct = 30
-  const { data: settings } = await db.from('shop_settings').select('markup_rules').single()
+  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
   const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined
   if (rules) {
     const rule = rules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice)
@@ -512,7 +524,7 @@ async function getCalculatedRetailPrice(purchasePrice: number): Promise<number> 
   return Math.round(purchasePrice * (1 + markupPct / 100))
 }
 
-export async function confirmImport(input: ConfirmImportInput, userId: string) {
+export async function confirmImport(input: ConfirmImportInput, userId: string, tenantId: string) {
   // ЯКЩО ВКАЗАНО ПОСТАЧАЛЬНИКА -> Створюємо прихідну накладну (стара поведінка)
   if (input.supplier_id) {
     const invoiceItems = []
@@ -521,7 +533,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string) {
       let productId = item.product_id
 
       if (!productId && input.create_missing) {
-        const calculatedRetailPrice = await getCalculatedRetailPrice(item.price)
+        const calculatedRetailPrice = await getCalculatedRetailPrice(item.price, tenantId)
         const newSku = item.sku ? normalizeArticle(item.sku) : 'IMP-' + Date.now() + '-' + item.row
         const { data: newProduct, error: createError } = await db
           .from('products')
@@ -534,7 +546,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string) {
             qty_on_hand:    0,
             reorder_point:  0,
             is_active:      true,
-            tenant_id:      TENANT_ID,
+            tenant_id:      tenantId,
             barcode:        item.barcode || null,
             storage_bin:    item.storage_bin || null,
           })
@@ -567,7 +579,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string) {
       invoice_number: input.invoice_number ?? undefined,
       notes:          input.notes ?? undefined,
       items:          invoiceItems,
-    })
+    }, tenantId)
   }
 
   // ЯКЩО ПОСТАЧАЛЬНИКА НЕ ВКАЗАНО -> Прямий імпорт у каталог товарів через RPC
@@ -633,18 +645,18 @@ export async function confirmImport(input: ConfirmImportInput, userId: string) {
       if (!input.update_retail) {
         retailPriceToUse = matchedProduct.retail_price ?? 0
       } else if (!retailPriceToUse) {
-        retailPriceToUse = await getCalculatedRetailPrice(item.price)
+        retailPriceToUse = await getCalculatedRetailPrice(item.price, tenantId)
       }
     } else {
       if (!retailPriceToUse) {
-        retailPriceToUse = await getCalculatedRetailPrice(item.price)
+        retailPriceToUse = await getCalculatedRetailPrice(item.price, tenantId)
       }
     }
 
     const skuToUse = item.sku ? normalizeArticle(item.sku) : 'IMP-' + Date.now() + '-' + item.row
 
     const { data, error } = await db.rpc('upsert_product_import', {
-      p_tenant_id:      TENANT_ID,
+      p_tenant_id:      tenantId,
       p_sku:            skuToUse,
       p_barcode:        item.barcode ?? null,
       p_name:           item.name,

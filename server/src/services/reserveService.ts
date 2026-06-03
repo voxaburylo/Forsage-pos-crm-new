@@ -43,14 +43,14 @@ export class ReserveService {
     return data
   }
 
-  static async enqueueCleanupJob(tenantId?: string) {
+  static async enqueueCleanupJob(tenantId: string) {
     const scheduledAt = new Date(Date.now() + 60 * 60 * 1000) // 1 hour from now
     return TaskQueue.enqueue(
       'cleanup_expired_reserves',
       {},
       {
         scheduledAt,
-        tenantId: tenantId || '00000000-0000-0000-0000-000000000001'
+        tenantId
       }
     )
   }

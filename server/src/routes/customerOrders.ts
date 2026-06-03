@@ -63,7 +63,7 @@ router.post('/', async (req, res, next) => {
       if (input.prepayment_method === 'card') {
         finalIsFiscal = true // Термінал -> 100% ПРРО
         const { getSettings } = await import('../services/adminService.js')
-        const settings = await getSettings().catch(() => null)
+        const settings = await getSettings(req.user!.tenant_id).catch(() => null)
 
         if (settings && settings.bank_terminal_enabled) {
           const terminalAdapter = getTerminalAdapter(settings)
@@ -131,7 +131,7 @@ router.post('/', async (req, res, next) => {
       if (finalIsFiscal) {
         try {
           const { getSettings } = await import('../services/adminService.js')
-          const settings = await getSettings().catch(() => null)
+          const settings = await getSettings(req.user!.tenant_id).catch(() => null)
           if (settings) {
             const fiscalAdapter = getFiscalAdapter(settings)
             const fiscalResult = await fiscalAdapter.fiscalize(

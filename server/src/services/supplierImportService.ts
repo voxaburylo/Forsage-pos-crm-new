@@ -3,7 +3,7 @@ import { normalizeArticle } from '../validators/productValidator.js'
 import { createReadStream, promises as fs } from 'fs'
 import readline from 'readline'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+// No fallback TENANT_ID
 
 interface ColMap {
   sku?: number
@@ -31,7 +31,6 @@ function parseCsvLine(line: string, sep: string): string[] {
 
   for (let i = 0; i < line.length; i++) {
     const char = line[i]
-
     if (char === '"' || char === "'") {
       inQuotes = !inQuotes
     } else if (char === sep && !inQuotes) {
@@ -71,6 +70,16 @@ export async function processImport(
   const errorsLog: Array<{ row: number; error: string; raw?: string }> = []
 
   try {
+    // Fetch import record to get its tenant_id
+    const { data: importRecord } = await db
+      .from('supplier_price_imports')
+      .select('tenant_id')
+      .eq('id', importId)
+      .single()
+
+    if (!importRecord) throw new Error('Запис імпорту не знайдено')
+    const tenantId = importRecord.tenant_id
+
     // 1. Оновлюємо статус на processing
     await db
       .from('supplier_price_imports')
@@ -106,7 +115,7 @@ export async function processImport(
       .eq('id', importId)
 
     // 3. Зчитуємо правила націнки
-    const { data: settings } = await db.from('shop_settings').select('markup_rules').single()
+    const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
     const markupRules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined
 
     function calculateRetailPrice(purchasePrice: number): number {
@@ -141,7 +150,6 @@ export async function processImport(
       const trimmed = line.trim()
       if (!trimmed) continue
 
-      // Визначаємо сепаратор і колонки на першому рядку
       if (lineNum === 1) {
         sep = detectSeparator(trimmed)
         colMap = guessColumns(trimmed, sep)
@@ -151,7 +159,6 @@ export async function processImport(
         continue
       }
 
-      // Парсимо звичайний рядок
       try {
         const parts = parseCsvLine(line, sep)
         const name = (colMap.name !== undefined ? parts[colMap.name] ?? '' : '').trim()
@@ -182,13 +189,11 @@ export async function processImport(
 
         chunk.push({ sku, name, price, qty, rowNum: lineNum })
 
-        // Якщо назбирали 1000 рядків, робимо імпорт
         if (chunk.length >= 1000) {
-          await processChunk(chunk, updateRetail, mode, calculateRetailPrice)
+          await processChunk(chunk, updateRetail, mode, calculateRetailPrice, tenantId)
           processedRows += chunk.length
           chunk = []
 
-          // Оновлюємо прогрес у БД
           await db
             .from('supplier_price_imports')
             .update({
@@ -205,13 +210,11 @@ export async function processImport(
 
     rl.close()
 
-    // Обробляємо залишок чанку
     if (chunk.length > 0) {
-      await processChunk(chunk, updateRetail, mode, calculateRetailPrice)
+      await processChunk(chunk, updateRetail, mode, calculateRetailPrice, tenantId)
       processedRows += chunk.length
     }
 
-    // 5. Оновлюємо статус на completed
     await db
       .from('supplier_price_imports')
       .update({
@@ -223,7 +226,6 @@ export async function processImport(
       .eq('id', importId)
 
   } catch (err: any) {
-    // Оновлюємо статус на failed при помилці
     await db
       .from('supplier_price_imports')
       .update({
@@ -235,7 +237,6 @@ export async function processImport(
 
     throw err
   } finally {
-    // Очищаємо тимчасовий файл
     try {
       await fs.unlink(tempPath)
     } catch {}
@@ -246,15 +247,15 @@ async function processChunk(
   items: Array<{ sku: string; name: string; price: number; qty: number; rowNum: number }>,
   updateRetail: boolean,
   mode: 'replace' | 'add',
-  calculateRetailPrice: (purchasePrice: number) => number
+  calculateRetailPrice: (purchasePrice: number) => number,
+  tenantId: string
 ) {
-  // Вибираємо унікальні SKU для цього чанку
   const skus = Array.from(new Set(items.map((i) => i.sku)))
 
-  // Отримуємо існуючі товари, щоб дізнатися qty_on_hand та retail_price
   const { data: existingProducts } = await db
     .from('products')
     .select('sku, id, qty_on_hand, retail_price')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .in('sku', skus)
 
@@ -269,7 +270,6 @@ async function processChunk(
     })
   }
 
-  // Викликаємо RPC upsert_product_import для кожного товару в чанку
   for (const item of items) {
     const existing = existingMap.get(item.sku)
 
@@ -283,7 +283,7 @@ async function processChunk(
     const qty = item.qty
 
     await db.rpc('upsert_product_import', {
-      p_tenant_id:      TENANT_ID,
+      p_tenant_id:      tenantId,
       p_sku:            item.sku,
       p_barcode:        null,
       p_name:           item.name,

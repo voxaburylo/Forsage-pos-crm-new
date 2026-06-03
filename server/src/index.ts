@@ -46,6 +46,9 @@ import notificationsRouter from './routes/notifications.js'
 import printRouter from './routes/print.js'
 import autoPurchaseRouter from './routes/autoPurchase.js'
 import onecImportRouter from './routes/onecImport.js'
+import jobsRouter from './routes/jobs.js'
+import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
+import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
 import { ReserveService } from './services/reserveService.js'
 import { StockValidatorService } from './services/stockValidatorService.js'
@@ -128,6 +131,7 @@ app.use('/api/v1/notifications', notificationsRouter)
 app.use('/api/v1/print', printRouter)
 app.use('/api/v1/auto-purchase', autoPurchaseRouter)
 app.use('/api/v1/import/1c',    onecImportRouter)
+app.use('/api/v1/jobs',           jobsRouter)
 
 app.use('/api/v1/customer-groups', customerGroupsRouter)
 app.use('/api/v1/salary', salaryRouter)
@@ -196,6 +200,7 @@ const server = app.listen(PORT, () => {
   
   // Start background job worker
   jobWorker.start()
+  startImportWorkers()
 
   // Ensure initial cleanup job is enqueued
   ;(async () => {
@@ -255,8 +260,8 @@ const server = app.listen(PORT, () => {
 })
 
 // Graceful shutdown
-process.on('SIGTERM', () => { jobWorker.stop(); stopBot(); stopMessengers(); server.close() })
-process.on('SIGINT',  () => { jobWorker.stop(); stopBot(); stopMessengers(); server.close() })
+process.on('SIGTERM', () => { jobWorker.stop(); stopImportWorkers(); shutdownQueues(); stopBot(); stopMessengers(); server.close() })
+process.on('SIGINT',  () => { jobWorker.stop(); stopImportWorkers(); shutdownQueues(); stopBot(); stopMessengers(); server.close() })
 
 // Запобігти краш від непойманих помилок
 process.on('uncaughtException', (err) => {

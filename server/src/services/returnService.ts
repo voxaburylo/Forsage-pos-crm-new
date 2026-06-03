@@ -6,7 +6,7 @@ import { CONDITION_ALLOWED_ACTIONS } from '../validators/returnSchema.js'
 
 const MAX_RETURN_DAYS = 14
 
-export async function listReturns(query: ReturnListQuery) {
+export async function listReturns(query: ReturnListQuery, tenantId: string) {
   const { page, per_page } = query
   const offset = (page - 1) * per_page
 
@@ -16,6 +16,7 @@ export async function listReturns(query: ReturnListQuery) {
       '*, sale:sales(id,sale_number,total), customer:customers(id,phone,full_name)',
       { count: 'exact' }
     )
+    .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .range(offset, offset + per_page - 1)
 
@@ -31,13 +32,14 @@ export async function listReturns(query: ReturnListQuery) {
   }
 }
 
-export async function getReturn(id: string) {
+export async function getReturn(id: string, tenantId: string) {
   const { data, error } = await db
     .from('returns')
     .select(
       '*, sale:sales(id,sale_number,total,payment_method), customer:customers(id,phone,full_name), return_items(*)'
     )
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (error || !data) {
@@ -47,11 +49,12 @@ export async function getReturn(id: string) {
 }
 
 /** Отримати позиції чека з інформацією скільки вже повернуто */
-export async function getSaleItems(saleId: string) {
+export async function getSaleItems(saleId: string, tenantId: string) {
   const { data: sale, error: saleErr } = await db
     .from('sales')
     .select('id, sale_number, status, customer_id, total, completed_at')
     .eq('id', saleId)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (saleErr || !sale) {
@@ -152,6 +155,7 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
     .from('sales')
     .select('id, sale_number, customer_id, payment_method, completed_at')
     .eq('id', input.sale_id)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (saleErr || !sale) {
@@ -266,5 +270,5 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
     },
   })
 
-  return getReturn(returnRecord.id)
+  return getReturn(returnRecord.id, tenantId)
 }

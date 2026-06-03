@@ -1,15 +1,15 @@
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+// No fallback TENANT_ID
 
-// ── Цінові рівні ──────────────────────────────────────────
+// ── Рівні цін ─────────────────────────────────────────────
 
-export async function listPriceTiers() {
+export async function listPriceTiers(tenantId: string) {
   const { data, error } = await db
     .from('price_tiers')
     .select('*')
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
     .order('sort_order', { ascending: true })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -21,17 +21,16 @@ export async function createPriceTier(input: {
   discount_pct: number
   is_default?:  boolean
   sort_order?:  number
-}) {
+}, tenantId: string) {
   if (input.is_default) {
-    // Знімаємо прапор default з усіх існуючих
     await db.from('price_tiers')
       .update({ is_default: false })
-      .eq('tenant_id', TENANT_ID)
+      .eq('tenant_id', tenantId)
   }
 
   const { data, error } = await db
     .from('price_tiers')
-    .insert({ ...input, tenant_id: TENANT_ID })
+    .insert({ ...input, tenant_id: tenantId })
     .select('*')
     .single()
 
@@ -44,18 +43,18 @@ export async function updatePriceTier(id: string, input: {
   discount_pct?: number
   is_default?:   boolean
   sort_order?:   number
-}) {
+}, tenantId: string) {
   if (input.is_default) {
     await db.from('price_tiers')
       .update({ is_default: false })
-      .eq('tenant_id', TENANT_ID)
+      .eq('tenant_id', tenantId)
   }
 
   const { data, error } = await db
     .from('price_tiers')
     .update(input)
     .eq('id', id)
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
     .select('*')
     .single()
 
@@ -63,44 +62,44 @@ export async function updatePriceTier(id: string, input: {
   return data
 }
 
-export async function deletePriceTier(id: string) {
+export async function deletePriceTier(id: string, tenantId: string) {
   const { error } = await db
     .from('price_tiers')
     .delete()
     .eq('id', id)
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
 // ── Наценки по категоріях ─────────────────────────────────
 
-export async function listCategoryMarkups() {
+export async function listCategoryMarkups(tenantId: string) {
   const { data, error } = await db
     .from('category_markups')
     .select('*, category:categories(id,name)')
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data ?? []
 }
 
-export async function getCategoryMarkup(categoryId: string): Promise<number | null> {
+export async function getCategoryMarkup(categoryId: string, tenantId: string): Promise<number | null> {
   const { data } = await db
     .from('category_markups')
     .select('markup_pct')
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
     .eq('category_id', categoryId)
     .maybeSingle()
 
   return data?.markup_pct ?? null
 }
 
-export async function upsertCategoryMarkup(categoryId: string, markupPct: number, minMarkupPct = 0) {
+export async function upsertCategoryMarkup(categoryId: string, markupPct: number, minMarkupPct = 0, tenantId: string) {
   const { data: existing } = await db
     .from('category_markups')
     .select('id')
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
     .eq('category_id', categoryId)
     .maybeSingle()
 
@@ -109,6 +108,7 @@ export async function upsertCategoryMarkup(categoryId: string, markupPct: number
       .from('category_markups')
       .update({ markup_pct: markupPct, min_markup_pct: minMarkupPct })
       .eq('id', existing.id)
+      .eq('tenant_id', tenantId)
       .select('*')
       .single()
     if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -117,18 +117,18 @@ export async function upsertCategoryMarkup(categoryId: string, markupPct: number
 
   const { data, error } = await db
     .from('category_markups')
-    .insert({ tenant_id: TENANT_ID, category_id: categoryId, markup_pct: markupPct, min_markup_pct: minMarkupPct })
+    .insert({ tenant_id: tenantId, category_id: categoryId, markup_pct: markupPct, min_markup_pct: minMarkupPct })
     .select('*')
     .single()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data
 }
 
-export async function deleteCategoryMarkup(categoryId: string) {
+export async function deleteCategoryMarkup(categoryId: string, tenantId: string) {
   const { error } = await db
     .from('category_markups')
     .delete()
-    .eq('tenant_id', TENANT_ID)
+    .eq('tenant_id', tenantId)
     .eq('category_id', categoryId)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -137,38 +137,35 @@ export async function deleteCategoryMarkup(categoryId: string) {
 // ── Розрахунок ціни ───────────────────────────────────────
 
 interface PriceCalcParams {
-  purchasePrice:  number   // копійки
-  retailPrice:    number   // копійки (base)
+  purchasePrice:  number
+  retailPrice:    number
   categoryId?:    string
   customerId?:    string
   quantity?:      number
 }
 
 interface PriceCalcResult {
-  retail_price:    number   // базова роздрібна
-  tier_price:      number   // ціна з урахуванням рівня клієнта
-  discount_pct:    number   // знижка рівня %
+  retail_price:    number
+  tier_price:      number
+  discount_pct:    number
   tier_name:       string | null
-  min_price:       number   // мінімальна ціна (закупівля + min_markup)
+  min_price:       number
 }
 
-export async function calculatePrice(params: PriceCalcParams): Promise<PriceCalcResult> {
+export async function calculatePrice(params: PriceCalcParams, tenantId: string): Promise<PriceCalcResult> {
   let retailPrice = params.retailPrice
 
-  // Якщо базова роздрібна = 0 і є закупка → розрахувати роздрібну
   if (retailPrice === 0 && params.purchasePrice > 0) {
     let markupPct: number | null = null;
     
-    // 1. Спробувати націнку конкретної категорії
     if (params.categoryId) {
-      markupPct = await getCategoryMarkup(params.categoryId);
+      markupPct = await getCategoryMarkup(params.categoryId, tenantId);
     }
     
     if (markupPct !== null) {
       retailPrice = Math.round(params.purchasePrice * (1 + markupPct / 100));
     } else {
-      // 2. Спробувати глобальну матрицю націнок
-      const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', TENANT_ID).single();
+      const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single();
       const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined;
       if (rules && rules.length > 0) {
         const rule = rules.find((r) => params.purchasePrice >= r.minPrice && params.purchasePrice < r.maxPrice);
@@ -179,21 +176,19 @@ export async function calculatePrice(params: PriceCalcParams): Promise<PriceCalc
     }
   }
 
-  // Мінімальна ціна
   let minPrice = params.purchasePrice
   if (params.categoryId) {
     const { data: markup } = await db
       .from('category_markups')
       .select('min_markup_pct')
       .eq('category_id', params.categoryId)
-      .eq('tenant_id', TENANT_ID)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
     if (markup) {
       minPrice = Math.round(params.purchasePrice * (1 + markup.min_markup_pct / 100))
     }
   }
 
-  // Ціновий рівень клієнта
   let tierPrice = retailPrice
   let discountPct = 0
   let tierName: string | null = null
@@ -210,6 +205,7 @@ export async function calculatePrice(params: PriceCalcParams): Promise<PriceCalc
         .from('price_tiers')
         .select('name, discount_pct')
         .eq('id', customer.price_tier_id)
+        .eq('tenant_id', tenantId)
         .maybeSingle()
 
       if (tier) {
@@ -226,17 +222,15 @@ export async function calculatePrice(params: PriceCalcParams): Promise<PriceCalc
 
 // ── Авто-розрахунок роздрібної при зміні закупівлі ───────
 
-export async function autoRetailPrice(purchasePrice: number, categoryId?: string): Promise<number | null> {
-  // 1. Спробувати націнку категорії
+export async function autoRetailPrice(purchasePrice: number, tenantId: string, categoryId?: string): Promise<number | null> {
   if (categoryId) {
-    const markupPct = await getCategoryMarkup(categoryId);
+    const markupPct = await getCategoryMarkup(categoryId, tenantId);
     if (markupPct !== null) {
       return Math.round(purchasePrice * (1 + markupPct / 100));
     }
   }
 
-  // 2. Спробувати глобальну матрицю націнок
-  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', TENANT_ID).single();
+  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single();
   const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined;
   if (rules && rules.length > 0) {
     const rule = rules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice);

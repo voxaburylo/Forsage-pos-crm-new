@@ -15,11 +15,12 @@ export async function getCurrentShift(cashierId: string) {
   return data  // null якщо немає відкритої зміни
 }
 
-export async function getShift(id: string) {
+export async function getShift(id: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .select('*')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (error || !data) throw new AppError('SHIFT_NOT_FOUND', 'Зміну не знайдено', 404)
@@ -46,8 +47,8 @@ export async function openShift(cashierId: string, tenantId: string, input: Open
   return data
 }
 
-export async function closeShift(shiftId: string, cashierId: string, input: CloseShiftInput) {
-  const shift = await getShift(shiftId)
+export async function closeShift(shiftId: string, cashierId: string, input: CloseShiftInput, tenantId: string) {
+  const shift = await getShift(shiftId, tenantId)
 
   if (shift.cashier_id !== cashierId) {
     throw new AppError('FORBIDDEN', 'Це не ваша зміна', 403)
@@ -61,6 +62,7 @@ export async function closeShift(shiftId: string, cashierId: string, input: Clos
     .from('cash_reconciliations')
     .select('id')
     .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
     .limit(1)
 
   if (!reconciliations || reconciliations.length === 0) {
@@ -72,15 +74,19 @@ export async function closeShift(shiftId: string, cashierId: string, input: Clos
     .from('sales')
     .select('cash_amount')
     .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
     .eq('status', 'completed')
   const totalCashSales = (sales ?? []).reduce((s, x) => s + (x.cash_amount ?? 0), 0)
 
   // 2. Повернення готівкою
   const { data: shiftSales } = await db
-    .from('sales').select('id').eq('shift_id', shiftId)
+    .from('sales')
+    .select('id')
+    .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
   const shiftSaleIds = (shiftSales ?? []).map((s) => s.id)
   const { data: returns } = shiftSaleIds.length > 0
-    ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', shiftSaleIds)
+    ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', shiftSaleIds).eq('tenant_id', tenantId)
     : { data: [] }
   const totalReturns = (returns ?? []).reduce((s, x) => s + (x.refund_kopecks ?? 0), 0)
 
@@ -89,6 +95,7 @@ export async function closeShift(shiftId: string, cashierId: string, input: Clos
     .from('cash_operations')
     .select('type, amount')
     .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
   const cashIn  = (cashOps ?? []).filter((o) => o.type === 'in').reduce((s, x) => s + x.amount, 0)
   const cashOut = (cashOps ?? []).filter((o) => o.type === 'out').reduce((s, x) => s + x.amount, 0)
 
@@ -107,6 +114,7 @@ export async function closeShift(shiftId: string, cashierId: string, input: Clos
       notes:         input.notes ?? shift.notes,
     })
     .eq('id', shiftId)
+    .eq('tenant_id', tenantId)
     .select('*')
     .single()
 
@@ -169,13 +177,14 @@ export async function closeStaleShifts(): Promise<number> {
   return toClose.length
 }
 
-export async function getShiftReport(shiftId: string) {
-  const shift = await getShift(shiftId)
+export async function getShiftReport(shiftId: string, tenantId: string) {
+  const shift = await getShift(shiftId, tenantId)
 
   const { data: sales } = await db
     .from('sales')
     .select('id, sale_number, total, payment_method, status, completed_at')
     .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
     .order('completed_at', { ascending: true })
 
   const list = sales ?? []
@@ -190,4 +199,3 @@ export async function getShiftReport(shiftId: string) {
 
   return { shift, total_sales: completed.length, total_revenue, by_method, sales: list }
 }
-

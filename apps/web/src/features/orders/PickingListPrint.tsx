@@ -1,16 +1,16 @@
-import { formatDate } from '@/lib/utils'
-import type { EnrichedCustomerOrder, EnrichedOrderItem } from '@/features/inventory/pickingApi'
+import { formatDate } from "@/lib/utils"
+import { PrintService } from "@/lib/printService"
+import type { EnrichedCustomerOrder, EnrichedOrderItem } from "@/features/inventory/pickingApi"
 
-export function printPickingList(order: EnrichedCustomerOrder, shopName = 'ФОРСАЖ') {
-  // Групуємо товари за ячейками зберігання
+export function printPickingList(order: EnrichedCustomerOrder, shopName = "ФОРСАЖ") {
   const groups: Record<string, EnrichedOrderItem[]> = {}
 
   order.items.forEach(item => {
-    let key = ''
-    if (item.source_type === 'supplier') {
-      key = 'Під замовлення (Постачальник)'
+    let key = ""
+    if (item.source_type === "supplier") {
+      key = "Під замовлення (Постачальник)"
     } else {
-      key = item.storage_bin ? `Ячейка: ${item.storage_bin}` : 'Без ячейки (Склад)'
+      key = item.storage_bin ? `Ячейка: ${item.storage_bin}` : "Без ячейки (Склад)"
     }
 
     if (!groups[key]) {
@@ -19,33 +19,35 @@ export function printPickingList(order: EnrichedCustomerOrder, shopName = 'ФО�
     groups[key].push(item)
   })
 
+  const esc = PrintService.escapeHtml
+
   const groupsHtml = Object.entries(groups).map(([groupName, items]) => {
     const itemsHtml = items.map((item) => `
       <div style="margin-bottom: 2.5mm; display: flex; align-items: flex-start;">
         <div style="width: 5mm; height: 5mm; border: 1px solid #000; margin-right: 2.5mm; flex-shrink: 0; text-align: center; line-height: 4.5mm; font-weight: bold; font-size: 10px;">
-          ${item.item_status === 'arrived' || item.item_status === 'handed' ? '✓' : ''}
+          ${item.item_status === "arrived" || item.item_status === "handed" ? "✓" : ""}
         </div>
         <div style="flex-grow: 1;">
-          <div style="font-weight: bold; font-size: 11px;">${escapeHtml(item.name)}</div>
+          <div style="font-weight: bold; font-size: 11px;">${esc(item.name)}</div>
           <div style="font-size: 9px; color: #555; display: flex; justify-content: space-between; margin-top: 0.5mm;">
             <span>К-сть: <strong>${item.qty} шт</strong></span>
-            ${item.sku ? `<span>Арт: <strong>${escapeHtml(item.sku)}</strong></span>` : ''}
+            ${item.sku ? `<span>Арт: <strong>${esc(item.sku)}</strong></span>` : ""}
           </div>
         </div>
       </div>
-    `).join('')
+    `).join("")
 
     return `
       <div style="margin-bottom: 4mm;">
         <div style="background: #eee; padding: 1mm 2mm; font-weight: bold; font-size: 11px; margin-bottom: 2mm; border-left: 3px solid #000;">
-          ${escapeHtml(groupName)}
+          ${esc(groupName)}
         </div>
         <div style="padding-left: 1mm;">
           ${itemsHtml}
         </div>
       </div>
     `
-  }).join('')
+  }).join("")
 
   const printContent = `
     <div class="picking-slip">
@@ -53,16 +55,16 @@ export function printPickingList(order: EnrichedCustomerOrder, shopName = 'ФО�
         СБОРКОВИЙ ЛИСТ
       </div>
       <div style="text-align: center; font-size: 10px; color: #555; margin-bottom: 3mm;">
-        Магазин: ${escapeHtml(shopName)}
+        Магазин: ${esc(shopName)}
       </div>
       <hr style="border: none; border-top: 1px dashed #000; margin: 2mm 0;" />
       
       <div style="font-size: 10px; line-height: 1.4; margin-bottom: 3mm;">
         <div><strong>Замовлення:</strong> #${order.id.slice(0, 8)}</div>
-        ${order.kp_number ? `<div><strong>КП:</strong> ${escapeHtml(order.kp_number)}</div>` : ''}
+        ${order.kp_number ? `<div><strong>КП:</strong> ${esc(order.kp_number)}</div>` : ""}
         <div><strong>Дата замовлення:</strong> ${formatDate(order.created_at)}</div>
-        ${order.customer ? `<div><strong>Клієнт:</strong> ${escapeHtml(order.customer.full_name || '')} (${escapeHtml(order.customer.phone)})</div>` : ''}
-        ${order.comment ? `<div style="margin-top: 1.5mm; font-style: italic; background: #fafafa; padding: 1.5mm; border: 1px solid #ddd;">Коментар: ${escapeHtml(order.comment)}</div>` : ''}
+        ${order.customer ? `<div><strong>Клієнт:</strong> ${esc(order.customer.full_name || "")} (${esc(order.customer.phone)})</div>` : ""}
+        ${order.comment ? `<div style="margin-top: 1.5mm; font-style: italic; background: #fafafa; padding: 1.5mm; border: 1px solid #ddd;">Коментар: ${esc(order.comment)}</div>` : ""}
       </div>
       
       <hr style="border: none; border-top: 1px dashed #000; margin: 2mm 0 4mm 0;" />
@@ -78,10 +80,7 @@ export function printPickingList(order: EnrichedCustomerOrder, shopName = 'ФО�
     </div>
   `
 
-  const printWindow = window.open('', '_blank', 'width=500,height=700')
-  if (!printWindow) return
-
-  printWindow.document.write(`
+  const html = `
     <html>
       <head>
         <title>Збірочний лист замовлення #${order.id.slice(0, 8)}</title>
@@ -96,16 +95,11 @@ export function printPickingList(order: EnrichedCustomerOrder, shopName = 'ФО�
       </head>
       <body>${printContent}</body>
     </html>
-  `)
-  printWindow.document.close()
-  setTimeout(() => { printWindow.print() }, 300)
-}
+  `
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
+  PrintService.printHtml(html, {
+    mode: "window",
+    width: 500,
+    height: 700
+  })
 }

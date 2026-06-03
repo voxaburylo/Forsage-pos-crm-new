@@ -1,4 +1,4 @@
-﻿import { Router } from 'express'
+import { Router } from 'express'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { createReturnSchema, returnListSchema } from '../validators/returnSchema.js'
@@ -15,7 +15,7 @@ router.get('/', async (req, res, next) => {
     if (!q.success) {
       throw new AppError('VALIDATION_ERROR', 'Nevirni parametry', 400, q.error.flatten())
     }
-    const result = await returnService.listReturns(q.data)
+    const result = await returnService.listReturns(q.data, req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 })
@@ -23,7 +23,7 @@ router.get('/', async (req, res, next) => {
 // GET /api/v1/returns/sale/:saleId/items — позиції чека (СТАТИЧНИЙ перед /:id)
 router.get('/sale/:saleId/items', async (req, res, next) => {
   try {
-    const result = await returnService.getSaleItems(String(req.params.saleId))
+    const result = await returnService.getSaleItems(String(req.params.saleId), req.user!.tenant_id)
     res.json({ data: result })
   } catch (err) { next(err) }
 })
@@ -31,7 +31,7 @@ router.get('/sale/:saleId/items', async (req, res, next) => {
 // GET /api/v1/returns/:id — деталі повернення
 router.get('/:id', async (req, res, next) => {
   try {
-    const ret = await returnService.getReturn(String(req.params.id))
+    const ret = await returnService.getReturn(String(req.params.id), req.user!.tenant_id)
     res.json({ data: ret })
   } catch (err) { next(err) }
 })

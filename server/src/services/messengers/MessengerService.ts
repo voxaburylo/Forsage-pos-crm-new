@@ -11,7 +11,7 @@ function getSenderBot(token: string): Telegraf {
   return _senderBot
 }
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+// No fallback TENANT_ID
 
 /**
  * Синхронізує токен з env у таблицю messenger_channels.
@@ -28,12 +28,10 @@ export async function initMessengers(): Promise<void> {
   try {
     const { data: channels } = await db
       .from('messenger_channels')
-      .select('id, credentials')
+      .select('id, tenant_id, credentials')
       .eq('platform', 'telegram')
-      .eq('tenant_id', TENANT_ID)
-      .limit(1)
 
-    const existing = channels?.[0]
+    const existing = channels?.find((c: any) => (c.credentials as any)?.token === envToken)
 
     if (existing) {
       if ((existing.credentials as any)?.token !== envToken) {
@@ -44,7 +42,7 @@ export async function initMessengers(): Promise<void> {
       }
     } else {
       const { data: created } = await db.from('messenger_channels').insert({
-        tenant_id: TENANT_ID,
+        tenant_id: '00000000-0000-0000-0000-000000000001',
         name: 'Telegram Bot',
         platform: 'telegram',
         credentials: { token: envToken },
@@ -81,10 +79,17 @@ export async function getOrCreateChat(
 
   if (existing) return { chatId: existing.id, isNew: false }
 
+  const { data: channel } = await db
+    .from('messenger_channels')
+    .select('tenant_id')
+    .eq('id', channelId)
+    .single()
+  const tenantId = channel?.tenant_id || '00000000-0000-0000-0000-000000000001'
+
   const { data: newChat, error } = await db
     .from('messenger_chats')
     .insert({
-      tenant_id: TENANT_ID,
+      tenant_id: tenantId,
       channel_id: channelId,
       platform_chat_id: platformChatId,
       username: username ?? null,

@@ -252,19 +252,21 @@ export async function deleteBrand(id: string, tenantId: string) {
 
 // ===================== SETTINGS =====================
 
-export async function getSettings() {
+export async function getSettings(tenantId: string) {
   const { data, error } = await db
     .from('shop_settings')
     .select('*')
+    .eq('tenant_id', tenantId)
     .single()
   if (error || !data) throw new AppError('DB_ERROR', 'Налаштування не знайдено', 500)
   return data
 }
 
-export async function updateSettings(input: SettingsInput) {
+export async function updateSettings(input: SettingsInput, tenantId: string) {
   const { data, error } = await db
     .from('shop_settings')
     .update({ ...input, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
     .select('*')
     .single()
   if (error) throw new AppError('DB_ERROR', error.message, 500)

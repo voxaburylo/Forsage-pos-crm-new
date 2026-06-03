@@ -114,7 +114,7 @@ router.post('/generate-invoices', async (req, res, next) => {
         invoice_number: invoiceNumber,
         notes: 'Автоматично створено на основі пропозицій закупки',
         items: invoiceItems,
-      })
+      }, req.user!.tenant_id)
 
       createdInvoices.push(invoice)
     }

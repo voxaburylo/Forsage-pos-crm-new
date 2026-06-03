@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { pool } from '../db/pg.js'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -120,89 +121,66 @@ router.get('/dashboard', async (req, res, next) => {
 // GET /api/v1/analytics/abc — ABC-аналіз товарів
 router.get('/abc', async (req, res, next) => {
   try {
-    // Період: за замовчуванням 90 днів
+    const tenantId = req.user!.tenant_id
     const days = Math.max(1, parseInt(String(req.query.days ?? '90'), 10))
     const since = new Date(Date.now() - days * 86400000).toISOString()
 
-    // 1. Отримуємо ID завершених продажів за період
-    const { data: completedSales } = await db
-      .from('sales')
-      .select('id')
-      .eq('status', 'completed')
-      .gte('completed_at', since)
-    const completedSaleIds = (completedSales ?? []).map((s) => s.id)
+    const query = `
+      WITH product_sales AS (
+          SELECT 
+              p.id,
+              p.sku,
+              p.name,
+              p.qty_on_hand AS "currentStock",
+              COALESCE(SUM(si.qty), 0) AS "soldQty",
+              COALESCE(SUM(si.qty * (si.unit_price - COALESCE(p.purchase_price, 0))), 0) AS profit
+          FROM products p
+          LEFT JOIN sale_items si ON si.product_id = p.id
+          LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND s.completed_at >= $2 AND s.tenant_id = $1
+          WHERE p.deleted_at IS NULL AND p.is_active = true AND p.tenant_id = $1
+          GROUP BY p.id, p.sku, p.name, p.qty_on_hand
+      ),
+      ranked_sales AS (
+          SELECT 
+              *,
+              SUM(GREATEST(0, profit)) OVER () as total_profit,
+              SUM(GREATEST(0, profit)) OVER (ORDER BY profit DESC, id) as cumulative_profit
+          FROM product_sales
+      )
+      SELECT 
+          id,
+          sku,
+          name,
+          "currentStock",
+          "soldQty",
+          profit,
+          CASE 
+              WHEN "soldQty" = 0 THEN 'Z'
+              WHEN total_profit = 0 THEN 'Z'
+              WHEN (cumulative_profit / total_profit) <= 0.80 THEN 'A'
+              WHEN (cumulative_profit / total_profit) <= 0.95 THEN 'B'
+              ELSE 'C'
+          END as abc_class,
+          CASE 
+              WHEN total_profit = 0 THEN 0
+              ELSE ROUND((cumulative_profit / total_profit) * 100, 2)
+          END as cumulative_pct
+      FROM ranked_sales
+      ORDER BY profit DESC, id;
+    `
 
-    // Отримуємо позиції тільки якщо є продажі
-    const { data: items } = completedSaleIds.length > 0
-      ? await db
-          .from('sale_items')
-          .select('product_id, qty, unit_price, product:products!inner(id, sku, name, qty_on_hand, purchase_price)')
-          .in('sale_id', completedSaleIds)
-      : { data: [] }
-
-    // Згуртовуємо по product_id
-    const profitMap = new Map<string, { sku: string; name: string; currentStock: number; soldQty: number; profit: number }>()
-    for (const item of items ?? []) {
-      const p = item.product as unknown as { id: string; sku: string; name: string; qty_on_hand: number; purchase_price: number }
-      if (!p) continue
-      const existing = profitMap.get(item.product_id) ?? {
-        sku: p.sku, name: p.name, currentStock: p.qty_on_hand,
-        soldQty: 0, profit: 0,
-      }
-      existing.soldQty += item.qty
-      existing.profit += (item.unit_price - (p.purchase_price ?? 0)) * item.qty
-      profitMap.set(item.product_id, existing)
-    }
-
-    // 2. Товари, що не продавались — отримуємо окремо
-    const soldIds = [...profitMap.keys()]
-    const { data: allProducts } = await db
-      .from('products')
-      .select('id, sku, name, qty_on_hand')
-      .is('deleted_at', null)
-      .eq('is_active', true)
-
-    for (const prod of allProducts ?? []) {
-      if (!soldIds.includes(prod.id)) {
-        profitMap.set(prod.id, {
-          sku: prod.sku, name: prod.name,
-          currentStock: prod.qty_on_hand, soldQty: 0, profit: 0,
-        })
-      }
-    }
-
-    // Сортуємо за прибутком (спадання)
-    const sorted = [...profitMap.entries()]
-      .map(([id, data]) => ({ id, ...data }))
-      .sort((a, b) => b.profit - a.profit)
-
-    const totalProfit = sorted.reduce((s, x) => s + Math.max(0, x.profit), 0)
-    if (totalProfit === 0) {
-      return res.json({ data: sorted.map((x) => ({ ...x, abc_class: 'Z', cumulative_pct: 0 })) })
-    }
-
-    // ABC класифікація
-    let cumulative = 0
-    const result = sorted.map((item) => {
-      const pct = totalProfit > 0 ? (Math.max(0, item.profit) / totalProfit) * 100 : 0
-      cumulative += pct
-      let abcClass: string
-      if (item.soldQty === 0) {
-        abcClass = 'Z'
-      } else if (cumulative <= 80) {
-        abcClass = 'A'
-      } else if (cumulative <= 95) {
-        abcClass = 'B'
-      } else {
-        abcClass = 'C'
-      }
-      return {
-        ...item,
-        profit: item.profit,
-        abc_class: abcClass,
-        cumulative_pct: Math.round(cumulative * 100) / 100,
-      }
-    })
+    const pgResult = await pool.query(query, [tenantId, since])
+    
+    const result = pgResult.rows.map((row) => ({
+      id: row.id,
+      sku: row.sku,
+      name: row.name,
+      currentStock: parseFloat(row.currentStock ?? 0),
+      soldQty: parseFloat(row.soldQty ?? 0),
+      profit: Math.round(parseFloat(row.profit ?? 0)),
+      abc_class: row.abc_class,
+      cumulative_pct: parseFloat(row.cumulative_pct ?? 0),
+    }))
 
     res.json({ data: result })
   } catch (err) { next(err) }

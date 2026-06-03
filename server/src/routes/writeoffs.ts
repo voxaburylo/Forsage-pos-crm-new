@@ -11,13 +11,13 @@ router.get('/', async (req, res, next) => {
   try {
     const q = writeoffListSchema.safeParse(req.query)
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри', 400, q.error.flatten())
-    res.json(await listWriteoffs(q.data))
+    res.json(await listWriteoffs(q.data, req.user!.tenant_id))
   } catch (err) { next(err) }
 })
 
 router.get('/:id', async (req, res, next) => {
   try {
-    res.json({ data: await getWriteoff(String(req.params.id)) })
+    res.json({ data: await getWriteoff(String(req.params.id), req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 

@@ -64,6 +64,7 @@ router.get('/orders/:id', async (req, res, next) => {
         .from('products')
         .select('id, storage_bin')
         .in('id', productIds)
+        .eq('tenant_id', req.user!.tenant_id) // SECURED
       
       if (prodErr) throw new AppError('DB_ERROR', prodErr.message, 500)
 
@@ -117,6 +118,16 @@ router.patch('/items/:itemId', async (req, res, next) => {
       .single()
 
     if (findError || !item) throw new AppError('NOT_FOUND', 'Позицію замовлення не знайдено', 404)
+
+    // Перевіряємо що замовлення належить нашому тененту
+    const { data: order, error: orderErr } = await db
+      .from('customer_orders')
+      .select('id')
+      .eq('id', item.order_id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+
+    if (orderErr || !order) throw new AppError('NOT_FOUND', 'Позицію замовлення не знайдено', 404)
 
     // Оновлюємо статус позиції
     const { error: updateError } = await db

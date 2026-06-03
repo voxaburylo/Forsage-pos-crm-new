@@ -2,14 +2,14 @@ import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { CreateNoteInput, UpdateNoteInput } from '../validators/customerNoteSchema.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
 const TABLE = 'customer_notes'
 
-export async function listNotes(customerId: string) {
+export async function listNotes(customerId: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .select('*')
     .eq('customer_id', customerId)
+    .eq('tenant_id', tenantId)
     .order('is_pinned', { ascending: false })
     .order('created_at', { ascending: false })
 
@@ -17,11 +17,23 @@ export async function listNotes(customerId: string) {
   return data ?? []
 }
 
-export async function createNote(customerId: string, userId: string, input: CreateNoteInput) {
+export async function createNote(customerId: string, userId: string, input: CreateNoteInput, tenantId: string) {
+  // Fetch tenant_id dynamically from customer record to maintain multi-tenant integrity and verify ownership
+  const { data: customer } = await db
+    .from('customers')
+    .select('tenant_id')
+    .eq('id', customerId)
+    .eq('tenant_id', tenantId)
+    .single()
+
+  if (!customer) {
+    throw new AppError('NOT_FOUND', 'Клієнта не знайдено в цьому магазині', 404)
+  }
+
   const { data, error } = await db
     .from(TABLE)
     .insert({
-      tenant_id:   TENANT_ID,
+      tenant_id:   tenantId,
       customer_id: customerId,
       created_by:  userId,
       text:        input.text,
@@ -35,12 +47,13 @@ export async function createNote(customerId: string, userId: string, input: Crea
   return data
 }
 
-export async function updateNote(noteId: string, customerId: string, input: UpdateNoteInput) {
+export async function updateNote(noteId: string, customerId: string, input: UpdateNoteInput, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', noteId)
     .eq('customer_id', customerId)
+    .eq('tenant_id', tenantId)
     .select('*')
     .single()
 
@@ -48,21 +61,23 @@ export async function updateNote(noteId: string, customerId: string, input: Upda
   return data
 }
 
-export async function deleteNote(noteId: string, customerId: string) {
+export async function deleteNote(noteId: string, customerId: string, tenantId: string) {
   const { error } = await db
     .from(TABLE)
     .delete()
     .eq('id', noteId)
     .eq('customer_id', customerId)
+    .eq('tenant_id', tenantId)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
-export async function getPinnedNotes(customerId: string) {
+export async function getPinnedNotes(customerId: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .select('*')
     .eq('customer_id', customerId)
+    .eq('tenant_id', tenantId)
     .eq('is_pinned', true)
     .order('created_at', { ascending: false })
 

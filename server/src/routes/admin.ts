@@ -117,14 +117,14 @@ export default router
 export const settingsRouter = Router()
 settingsRouter.use(requireAuth)
 
-settingsRouter.get('/', requireRole('owner', 'admin', 'manager'), async (_req, res, next) => {
-  try { res.json({ data: await adminService.getSettings() }) } catch (err) { next(err) }
+settingsRouter.get('/', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+  try { res.json({ data: await adminService.getSettings(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
 settingsRouter.put('/', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const parsed = settingsSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні налаштування', 422, parsed.error.flatten())
-    res.json({ data: await adminService.updateSettings(parsed.data) })
+    res.json({ data: await adminService.updateSettings(parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })

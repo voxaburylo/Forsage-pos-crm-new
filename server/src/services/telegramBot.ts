@@ -5,7 +5,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import { getOrCreateChat } from './messengers/MessengerService.js'
 import { TaskQueue } from './taskQueue.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+// No fallback TENANT_ID
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 const MANAGER_CHAT_ID = process.env.MANAGER_CHAT_ID ? Number(process.env.MANAGER_CHAT_ID) : null
@@ -18,41 +18,47 @@ const bot = BOT_TOKEN ? new Telegraf(BOT_TOKEN) : null
 // щоб ChatsInbox у фронтенді бачив переписку
 // ================================================================
 
-let _mainChannelId: string | null = null
+let _mainChannelInfo: { channelId: string; tenantId: string } | null = null
 
-async function getMainChannelId(): Promise<string | null> {
-  if (_mainChannelId) return _mainChannelId
+async function getMainChannelInfo(): Promise<{ channelId: string; tenantId: string } | null> {
+  if (_mainChannelInfo) return _mainChannelInfo
   try {
-    const { data } = await db
+    const { data: channels } = await db
       .from('messenger_channels')
-      .select('id')
+      .select('id, tenant_id, credentials')
       .eq('platform', 'telegram')
       .eq('is_active', true)
-      .eq('tenant_id', TENANT_ID)
-      .limit(1)
-      .maybeSingle()
-    if (data?.id) {
-      _mainChannelId = data.id
-      return _mainChannelId
+
+    const matched = channels?.find((c: any) => c.credentials?.token === BOT_TOKEN)
+    if (matched) {
+      _mainChannelInfo = { channelId: matched.id, tenantId: matched.tenant_id }
+      return _mainChannelInfo
     }
-    // Якщо канал не знайдено — auto-create з env-токена
+
     if (BOT_TOKEN) {
       const { data: created } = await db.from('messenger_channels').insert({
-        tenant_id: TENANT_ID,
+        tenant_id: '00000000-0000-0000-0000-000000000001',
         name: 'Telegram Bot',
         platform: 'telegram',
         credentials: { token: BOT_TOKEN },
         is_active: true,
-      }).select('id').single()
-      if (created?.id) {
-        _mainChannelId = created.id
-        logger.info({ channelId: _mainChannelId }, 'telegramBot: auto-created messenger_channel')
+      }).select('id, tenant_id').single()
+
+      if (created) {
+        _mainChannelInfo = { channelId: created.id, tenantId: created.tenant_id }
+        logger.info(_mainChannelInfo, 'telegramBot: auto-created messenger_channel')
+        return _mainChannelInfo
       }
     }
   } catch (err) {
-    logger.error({ error: err instanceof Error ? err.message : err }, 'getMainChannelId failed')
+    logger.error({ error: err instanceof Error ? err.message : err }, 'getMainChannelInfo failed')
   }
-  return _mainChannelId
+  return null
+}
+
+async function getMainChannelId(): Promise<string | null> {
+  const info = await getMainChannelInfo()
+  return info?.channelId ?? null
 }
 
 async function saveToInbox(
@@ -94,9 +100,63 @@ async function saveToInbox(
 
 const lastGreeting  = new Map<string, number>()
 const bizConnections = new Map<string, string>()  // chatId string → business_connection_id
-const voicePending  = new Map<string, { fileId: string; username?: string }>()
-const voiceTranscript = new Map<string, { text: string; username?: string }>()
-const userContext   = new Map<string, { carId: string; carLabel: string }>()
+const bizConnectionsLastActive = new Map<string, number>()
+const voicePending  = new Map<string, { fileId: string; username?: string; createdAt?: number }>()
+const voiceTranscript = new Map<string, { text: string; username?: string; createdAt?: number }>()
+const userContext   = new Map<string, { carId: string; carLabel: string; createdAt?: number }>()
+
+function getBizConnection(chatId: string): string | undefined {
+  const connId = getBizConnection(chatId)
+  if (connId) {
+    bizConnectionsLastActive.set(chatId, Date.now())
+  }
+  return connId
+}
+
+function sweepTelegramMaps() {
+  try {
+    const now = Date.now()
+    // 1. Clear lastGreeting older than GREETING_COOLDOWN_MS (24h)
+    for (const [chatId, ts] of lastGreeting.entries()) {
+      if (now - ts > GREETING_COOLDOWN_MS) {
+        lastGreeting.delete(chatId)
+      }
+    }
+    // 2. Clear bizConnections inactive for more than 24h
+    for (const [chatId, ts] of bizConnectionsLastActive.entries()) {
+      if (now - ts > 24 * 3600_000) {
+        bizConnections.delete(chatId)
+        bizConnectionsLastActive.delete(chatId)
+      }
+    }
+    // 3. Clear voicePending older than 2h
+    for (const [chatId, data] of voicePending.entries()) {
+      if (data.createdAt && now - data.createdAt > 2 * 3600_000) {
+        voicePending.delete(chatId)
+      }
+    }
+    // 4. Clear voiceTranscript older than 2h
+    for (const [chatId, data] of voiceTranscript.entries()) {
+      if (data.createdAt && now - data.createdAt > 2 * 3600_000) {
+        voiceTranscript.delete(chatId)
+      }
+    }
+    // 5. Clear userContext older than 2h
+    for (const [chatId, data] of userContext.entries()) {
+      if (data.createdAt && now - data.createdAt > 2 * 3600_000) {
+        userContext.delete(chatId)
+      }
+    }
+  } catch (err: any) {
+    logger.error({ error: err.message }, 'Failed in sweepTelegramMaps')
+  }
+}
+
+// Run sweep every 1 hour
+const telegramSweepInterval = setInterval(sweepTelegramMaps, 3600 * 1000)
+if (telegramSweepInterval.unref) {
+  telegramSweepInterval.unref()
+}
 
 const GREETING_COOLDOWN_MS = 24 * 3600_000
 
@@ -231,18 +291,18 @@ export function getMake(vin: string): string {
 // DB Helpers
 // ================================================================
 
-async function getCustomerId(chatId: number | string): Promise<string | null> {
+async function getCustomerId(chatId: number | string, tenantId: string): Promise<string | null> {
   try {
-    const { data: c } = await db.from('customers').select('id').eq('telegram_chat_id', String(chatId)).maybeSingle()
+    const { data: c } = await db.from('customers').select('id').eq('telegram_chat_id', String(chatId)).eq('tenant_id', tenantId).maybeSingle()
     return c?.id ?? null
   } catch { return null }
 }
 
-async function findCustomer(phone: string): Promise<{ id: string } | null> {
+async function findCustomer(phone: string, tenantId: string): Promise<{ id: string } | null> {
   try {
-    const { data: e } = await db.from('customers').select('id').eq('phone', phone).maybeSingle()
+    const { data: e } = await db.from('customers').select('id').eq('phone', phone).eq('tenant_id', tenantId).maybeSingle()
     if (e) return e
-    const { data: a } = await db.from('customers').select('id').eq('phone', phone.replace('+', '')).maybeSingle()
+    const { data: a } = await db.from('customers').select('id').eq('phone', phone.replace('+', '')).eq('tenant_id', tenantId).maybeSingle()
     return a ?? null
   } catch { return null }
 }
@@ -260,8 +320,10 @@ async function getManagerId(): Promise<string> {
 
 async function logMsg(chatId: number, text: string, dir: 'incoming' | 'outgoing') {
   try {
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
     await db.from('telegram_messages').insert({
-      tenant_id: TENANT_ID, chat_id: chatId, direction: dir, text: text.slice(0, 3000),
+      tenant_id: tenantId, chat_id: chatId, direction: dir, text: text.slice(0, 3000),
     })
   } catch { /* best-effort */ }
 }
@@ -300,7 +362,9 @@ async function createLead(chatId: number | string, txt: string, username?: strin
     }
   }
 
-  const customerId = await getCustomerId(chatId)
+  const info = await getMainChannelInfo()
+  const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+  const customerId = await getCustomerId(chatId, tenantId)
 
   // Шукаємо існуючий лід (status=lead) за останні 30 хв
   try {
@@ -308,7 +372,7 @@ async function createLead(chatId: number | string, txt: string, username?: strin
       .from('customer_orders')
       .select('id, comment, vehicle_info')
       .eq('status', 'lead')
-      .eq('tenant_id', TENANT_ID)
+      .eq('tenant_id', tenantId)
       .gte('created_at', new Date(Date.now() - 30 * 60_000).toISOString())
       .order('created_at', { ascending: false })
 
@@ -358,7 +422,7 @@ async function createLead(chatId: number | string, txt: string, username?: strin
     }
 
     const { data, error } = await db.from('customer_orders').insert({
-      tenant_id: TENANT_ID, customer_id: customerId ?? null,
+      tenant_id: tenantId, customer_id: customerId ?? null,
       chat_id: dbChatId,
       manager_id: managerId, status: 'lead', total_amount: 0, source: 'telegram_bot',
       vehicle_info: vehicleInfo,
@@ -376,7 +440,9 @@ async function createLead(chatId: number | string, txt: string, username?: strin
 
 async function checkIfRecentLeadExists(chatId: number | string): Promise<boolean> {
   try {
-    const customerId = await getCustomerId(chatId)
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+    const customerId = await getCustomerId(chatId, tenantId)
     const channelId = await getMainChannelId()
     let dbChatId: string | null = null
     if (channelId) {
@@ -388,7 +454,7 @@ async function checkIfRecentLeadExists(chatId: number | string): Promise<boolean
       .from('customer_orders')
       .select('id')
       .eq('status', 'lead')
-      .eq('tenant_id', TENANT_ID)
+      .eq('tenant_id', tenantId)
       .gte('created_at', new Date(Date.now() - 30 * 60_000).toISOString())
 
     if (customerId) {
@@ -420,7 +486,9 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
 /** Отримати список авто клієнта для інлайн-клавіатури */
 async function getCustomerCarsList(chatId: number | string): Promise<any[]> {
   try {
-    const cid = await getCustomerId(chatId)
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+    const cid = await getCustomerId(chatId, tenantId)
     if (!cid) return []
     const { data } = await db.from('customer_cars')
       .select('id, make, model, year, vin').eq('customer_id', cid)
@@ -446,7 +514,9 @@ async function showCarPicker(cars: any[], send: SendFn): Promise<boolean> {
 /** Зберегти VIN у customer_cars. Повертає carId або null. Якщо VIN вже є — повертає існуючий. */
 async function saveVin(chatId: number | string, vin: string): Promise<string | null> {
   try {
-    const cid = await getCustomerId(chatId)
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+    const cid = await getCustomerId(chatId, tenantId)
     if (!cid) return null
 
     // Перевіряємо чи вже є такий VIN у клієнта
@@ -455,7 +525,7 @@ async function saveVin(chatId: number | string, vin: string): Promise<string | n
     if (existing) return existing.id
 
     const { data: ins } = await db.from('customer_cars').insert({
-      tenant_id: TENANT_ID, customer_id: cid,
+      tenant_id: tenantId, customer_id: cid,
       make: getMake(vin), model: 'VIN: ' + vin.slice(0, 8), vin,
       notes: '📸 Через Telegram-бота',
     }).select('id').single()
@@ -595,13 +665,15 @@ async function ocrPhoto(fileId: string): Promise<string | null> {
 
 async function handlePhoto(send: SendFn, fileId: string, chatId: number, username?: string) {
   try {
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
     await send('📸 Фото отримано, розпізнаю VIN...')
     await TaskQueue.enqueue('ocr_photo', {
       fileId,
       chatId,
       username
     }, {
-      tenantId: TENANT_ID
+      tenantId: tenantId
     })
     logger.info({ chatId, fileId }, 'Enqueued ocr_photo background job')
   } catch (err) {
@@ -634,13 +706,15 @@ export async function processOcrPhoto(fileId: string, chatId: number, username?:
     const make = getMake(vin)
 
     // Зберігаємо VIN в історію чату, щоб менеджер бачив
-    const cid = await getCustomerId(chatId)
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+    const cid = await getCustomerId(chatId, tenantId)
     saveToInbox(String(chatId), username, undefined, `📸 Фото. Розпізнаний VIN: ${vin} (${make})`, cid).catch(() => {})
 
     const carId = await saveVin(chatId, vin)
     if (carId) {
       // Авторизований клієнт — питаємо запчастини
-      userContext.set(String(chatId), { carId, carLabel: `${make} (${vin})` })
+      userContext.set(String(chatId), { carId, carLabel: `${make} (${vin})`, createdAt: Date.now() })
       await send(`✅ VIN \`${vin}\` (${make}) розпізнано!
 
 Які саме запчастини ви шукаєте для цього авто? Напишіть текстом або надішліть голосове повідомлення.`, { parse_mode: 'Markdown', reply_markup: VIN_KB.reply_markup })
@@ -672,7 +746,7 @@ async function handleVoice(send: SendFn, fileId: string, chatId: number, usernam
   if (!bot || !GEMINI_API_KEY) { await send('🎤 Голосові повідомлення тимчасово недоступні.'); return }
   try {
     // Зберігаємо fileId — обробка буде по кнопці
-    voicePending.set(String(chatId), { fileId, username })
+    voicePending.set(String(chatId), { fileId, username, createdAt: Date.now() })
 
     await send('🎤 Голосове повідомлення отримано! Натисніть кнопку нижче, щоб розпізнати текст.', {
       parse_mode: 'Markdown',
@@ -734,14 +808,16 @@ async function transcribeVoice(chatId: number, send: SendFn) {
     await send(`📝 *Розшифровано:* ${transcript}`, { parse_mode: 'Markdown' })
 
     // Зберігаємо транскрипт в історію чату
-    const voiceCid = await getCustomerId(chatId)
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+    const voiceCid = await getCustomerId(chatId, tenantId)
     saveToInbox(String(chatId), pending.username, undefined, `🎤 Голосове: ${transcript.slice(0, 500)}`, voiceCid).catch(() => {})
 
     // Перевіряємо чи є авто в гаражі
     const cars = await getCustomerCarsList(chatId)
     if (cars.length > 0) {
       // Зберігаємо транскрипт — буде використаний після вибору авто
-      voiceTranscript.set(String(chatId), { text: transcript, username: pending.username })
+      voiceTranscript.set(String(chatId), { text: transcript, username: pending.username, createdAt: Date.now() })
       await showCarPicker(cars, send)
     } else {
       // Немає авто — створюємо лід одразу
@@ -779,7 +855,9 @@ async function geminiReply(text: string): Promise<string | null> {
 
 async function authCustomer(chatId: number, phone: string, name: string, send: SendFn) {
   try {
-    const existing = await findCustomer(phone)
+    const info = await getMainChannelInfo()
+    const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+    const existing = await findCustomer(phone, tenantId)
     let customerId: string | null = null
 
     if (existing) {
@@ -787,7 +865,7 @@ async function authCustomer(chatId: number, phone: string, name: string, send: S
       customerId = existing.id
     } else {
       const { data: newCust } = await db.from('customers').insert({
-        tenant_id: TENANT_ID, phone, full_name: name || 'Клієнт', telegram_chat_id: chatId,
+        tenant_id: tenantId, phone, full_name: name || 'Клієнт', telegram_chat_id: chatId,
       }).select('id').single()
       customerId = newCust?.id ?? null
     }
@@ -879,8 +957,10 @@ async function showMainMenu(_chatId: number, send: SendFn) {
 }
 
 async function showCabinet(chatId: number, send: SendFn, isBiz = false) {
+  const info = await getMainChannelInfo()
+  const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
   let c: any
-  try { c = (await db.from('customers').select('*').eq('telegram_chat_id', String(chatId)).maybeSingle()).data }
+  try { c = (await db.from('customers').select('*').eq('telegram_chat_id', String(chatId)).eq('tenant_id', tenantId).maybeSingle()).data }
   catch { c = null }
 
   if (!c) {
@@ -935,13 +1015,15 @@ async function showCabinet(chatId: number, send: SendFn, isBiz = false) {
   if (bot) {
     await bot.telegram.sendPhoto(chatId, `https://barcode.tec-it.com/barcode.ashx?data=${code}&code=Code128&dpi=96`, {
       caption: `🎫 Картка лояльності: \`${code}\``,
-      business_connection_id: bizConnections.get(String(chatId)) ?? null,
+      business_connection_id: getBizConnection(String(chatId)) ?? null,
     } as any).catch(() => {})
   }
 }
 
 async function showOrders(chatId: number, send: SendFn, isBiz = false) {
-  const custId = await getCustomerId(chatId)
+  const info = await getMainChannelInfo()
+  const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+  const custId = await getCustomerId(chatId, tenantId)
   if (!custId) {
     await send('Для доступу потрібно авторизуватись:', isBiz ? {} : { ...CONTACT_KB })
     return
@@ -1007,7 +1089,9 @@ async function showOrderDetails(_chatId: number, orderId: string, send: SendFn) 
 }
 
 async function showCars(chatId: number, send: SendFn, isBiz = false) {
-  const custId = await getCustomerId(chatId)
+  const info = await getMainChannelInfo()
+  const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+  const custId = await getCustomerId(chatId, tenantId)
   if (!custId) {
     await send('Для доступу потрібно авторизуватись:', isBiz ? {} : { ...CONTACT_KB })
     return
@@ -1123,7 +1207,7 @@ export function startBot() {
   // Reply in business chat (always passes business_connection_id)
   async function bizReply(chatId: number, text: string, extra?: any) {
     if (!bot) return
-    const connId = bizConnections.get(String(chatId))
+    const connId = getBizConnection(String(chatId))
     try {
       await bot.telegram.sendMessage(chatId, text, { parse_mode: 'Markdown', business_connection_id: connId, ...extra })
       logMsg(chatId, text, 'outgoing')
@@ -1141,6 +1225,9 @@ export function startBot() {
       const chatId: number = src.chat?.id ?? src.from?.id ?? 0
       const fromId: number = src.from?.id ?? 0
       if (!chatId) return
+
+      const info = await getMainChannelInfo()
+      const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
 
       // Ignore bot & owner
       if (ownerBotId && fromId === ownerBotId) return
@@ -1164,7 +1251,7 @@ export function startBot() {
 
       // Зберігаємо в ChatsInbox (тільки для прямих чатів, не business)
       if (!isBiz && text) {
-        const cid = await getCustomerId(chatId)
+        const cid = await getCustomerId(chatId, tenantId)
         
         // Перевіряємо чи є активний контекст автомобіля
         let textToSave = text
@@ -1205,7 +1292,7 @@ export function startBot() {
 
       // /start, /menu
       if (text === '/start' || /^(меню|menu)$/i.test(text)) {
-        const c = await getCustomerId(chatId)
+        const c = await getCustomerId(chatId, tenantId)
         if (!c) {
           await send(isBiz
             ? '👋 *Форсаж Авто*\n\n🔐 Напишіть номер телефону (наприклад: `0635823858`)'
@@ -1221,7 +1308,7 @@ export function startBot() {
       const vin = extractVin(text.toUpperCase())
       if (vin) {
         const carId = await saveVin(chatId, vin)
-        const authed = !!(await getCustomerId(chatId))
+        const authed = !!(await getCustomerId(chatId, tenantId))
         
         // Очищаємо текст від VIN та маркерів, щоб перевірити чи є додатковий опис запиту
         const cleanText = text.replace(new RegExp(vin, 'gi'), '')
@@ -1244,7 +1331,7 @@ export function startBot() {
         if (authed && carId) {
           // Авторизований клієнт — питаємо запчастини, створюємо лід після відповіді
           const make = getMake(vin)
-          userContext.set(String(chatId), { carId, carLabel: `${make} (${vin})` })
+          userContext.set(String(chatId), { carId, carLabel: `${make} (${vin})`, createdAt: Date.now() })
           await send(`✅ *VIN знайдено!* \`${vin}\` (${make})
 
 Які саме запчастини ви шукаєте для цього авто? Напишіть текстом або надішліть голосове повідомлення.`,
@@ -1262,7 +1349,7 @@ export function startBot() {
 
       // Business: silent for normal text (greet once per 24h)
       if (isBiz) {
-        if (!(await getCustomerId(chatId))) {
+        if (!(await getCustomerId(chatId, tenantId))) {
           const last = lastGreeting.get(String(chatId)) ?? 0
           if (Date.now() - last > GREETING_COOLDOWN_MS) {
             lastGreeting.set(String(chatId), Date.now())
@@ -1296,7 +1383,7 @@ export function startBot() {
       }
 
       // Direct chat: Gemini smart reply, без створення пустого ліда
-      const isAuthed = !!(await getCustomerId(chatId))
+      const isAuthed = !!(await getCustomerId(chatId, tenantId))
       if (isAuthed) {
         // Спробуємо відповісти через Gemini
         const aiReply = await geminiReply(text)
@@ -1323,9 +1410,12 @@ export function startBot() {
       if (ownerBotId && cb.from?.id === ownerBotId) return
       if (ownerUserId && cb.from?.id === ownerUserId) return
 
+      const info = await getMainChannelInfo()
+      const tenantId = info?.tenantId || '00000000-0000-0000-0000-000000000001'
+
       if (isBiz) {
         const connId = cb.business_connection_id ?? cb.message?.business_connection_id
-        if (connId) bizConnections.set(String(chatId), connId)
+        if (connId) { bizConnections.set(String(chatId), connId); bizConnectionsLastActive.set(String(chatId), Date.now()); }
       }
       await ctx.answerCbQuery().catch(() => {})
 
@@ -1342,7 +1432,7 @@ export function startBot() {
         transcribe_voice: () => transcribeVoice(chatId, send),
         pick_car_new: async () => {
           const pendingTranscript = voiceTranscript.get(String(chatId))
-          const cid = await getCustomerId(chatId)
+          const cid = await getCustomerId(chatId, tenantId)
           saveToInbox(String(chatId), cb.from?.username, undefined, `➕ Обрано: інше авто / новий VIN`, cid).catch(() => {})
 
           if (pendingTranscript) {
@@ -1361,7 +1451,7 @@ export function startBot() {
           const { data: car } = await db.from('customer_cars').select('make, model, vin').eq('id', carId).single()
           const label = car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : ''
 
-          const cid = await getCustomerId(chatId)
+          const cid = await getCustomerId(chatId, tenantId)
           // Зберігаємо вибір авто в повідомлення для менеджера в CRM
           saveToInbox(String(chatId), cb.from?.username, undefined, `🚗 Обрано авто: ${label}`, cid).catch(() => {})
 
@@ -1377,7 +1467,7 @@ export function startBot() {
 ✅ Ваше повідомлення передано менеджеру.`, { parse_mode: 'Markdown', reply_markup: MAIN_MENU.reply_markup })
           } else {
             // Звичайний флоу: чекаємо текст запчастин
-            userContext.set(String(chatId), { carId, carLabel: label })
+            userContext.set(String(chatId), { carId, carLabel: label, createdAt: Date.now() })
             await send(`🚘 Обрано *${label}*
 
 Які саме запчастини вам потрібні? Напишіть текстом або надішліть голосове повідомлення.`,
@@ -1407,11 +1497,11 @@ export function startBot() {
           const { data: car } = await db.from('customer_cars').select('make, model, vin').eq('id', id).single()
           const label = car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : ''
 
-          const cid = await getCustomerId(chatId)
+          const cid = await getCustomerId(chatId, tenantId)
           // Зберігаємо вибір авто в повідомлення для менеджера в CRM
           saveToInbox(String(chatId), cb.from?.username, undefined, `🚗 Запит підбору для авто: ${label}`, cid).catch(() => {})
 
-          userContext.set(String(chatId), { carId: id, carLabel: label })
+          userContext.set(String(chatId), { carId: id, carLabel: label, createdAt: Date.now() })
           await send(`🔍 Ви обрали підбір для *${label}*.
 
 Що саме шукаєте? Напишіть назву деталі або надішліть голосове повідомлення.`, { parse_mode: 'Markdown' })
@@ -1444,7 +1534,7 @@ export function startBot() {
   bot.on('callback_query',          async (ctx: any) => { await onCb(ctx, false) })
   bot.on('business_message' as any, async (ctx: any) => {
     const m = ctx.update.business_message
-    if (m.business_connection_id && m.chat?.id) bizConnections.set(String(m.chat.id), m.business_connection_id)
+    if (m.business_connection_id && m.chat?.id) { bizConnections.set(String(m.chat.id), m.business_connection_id); bizConnectionsLastActive.set(String(m.chat.id), Date.now()); }
     await onMsg(ctx, true)
   })
   bot.on('business_callback_query' as any, async (ctx: any) => { await onCb(ctx, true) })

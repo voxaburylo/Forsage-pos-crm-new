@@ -64,6 +64,8 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
           supplierId,
           updateRetail,
           mode,
+        }, {
+          tenantId: req.user!.tenant_id
         })
 
         res.status(201).json({

@@ -1,21 +1,17 @@
-import type { Product } from '@/types/product'
-import { kopecksToHryvnia } from '@/types/product'
+import type { Product } from "@/types/product"
+import { kopecksToHryvnia } from "@/types/product"
+import { PrintService } from "@/lib/printService"
 
 /**
  * Друк етикетки 40x30мм на термопринтер.
  * Використовує iframe + JsBarcode (CDN) для рендерингу штрих-коду.
  */
 export function printLabel(product: Product) {
-  const iframe = document.createElement('iframe')
-  iframe.style.position = 'fixed'
-  iframe.style.top = '-9999px'
-  iframe.style.width = '0'
-  iframe.style.height = '0'
-  document.body.appendChild(iframe)
+  const shopName = "Форсаж"
+  const barcodeValue = product.barcode ?? ""
+  const storageBin = (product as any).storage_bin ?? ""
 
-  const shopName = 'Форсаж'
-  const barcodeValue = product.barcode ?? ''
-  const storageBin = (product as any).storage_bin ?? ''
+  const esc = PrintService.escapeHtml
 
   const html = `
     <!DOCTYPE html>
@@ -27,7 +23,7 @@ export function printLabel(product: Product) {
         body {
           width: 40mm; height: 30mm;
           padding: 1.5mm 2mm;
-          font-family: 'Courier New', monospace;
+          font-family: \x27Courier New\x27, monospace;
           font-size: 7px;
           line-height: 1.2;
           overflow: hidden;
@@ -50,19 +46,19 @@ export function printLabel(product: Product) {
       </style>
     </head>
     <body>
-      <div class="shop-name">${shopName}</div>
-      <div class="product-name">${product.name}</div>
+      <div class="shop-name">${esc(shopName)}</div>
+      <div class="product-name">${esc(product.name)}</div>
       <div class="barcode-wrap">
         <svg id="barcode-svg"></svg>
       </div>
       <div class="footer">
-        <div class="footer-left">${product.sku}${storageBin ? ' · ' + storageBin : ''}</div>
+        <div class="footer-left">${esc(product.sku)}${storageBin ? " · " + esc(storageBin) : ""}</div>
         <div class="price">${kopecksToHryvnia(product.retail_price)} ₴</div>
       </div>
       <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3/dist/JsBarcode.all.min.js"></script>
       <script>
         try {
-          JsBarcode('#barcode-svg', '${barcodeValue}', {
+          JsBarcode(\x27#barcode-svg\x27, \x27${barcodeValue}\x27, {
             width: 1.2, height: 28, fontSize: 8, margin: 0, displayValue: true,
           });
         } catch(e) {}
@@ -73,11 +69,8 @@ export function printLabel(product: Product) {
     </html>
   `
 
-  iframe.contentDocument?.open()
-  iframe.contentDocument?.write(html)
-  iframe.contentDocument?.close()
-
-  setTimeout(() => {
-    if (document.body.contains(iframe)) document.body.removeChild(iframe)
-  }, 5000)
+  PrintService.printHtml(html, {
+    mode: "iframe",
+    cleanupDelayMs: 5000
+  })
 }

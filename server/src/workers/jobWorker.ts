@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 
 type JobHandler = (payload: any, jobInfo: { id: string; tenantId: string }) => Promise<void>
@@ -6,6 +6,7 @@ type JobHandler = (payload: any, jobInfo: { id: string; tenantId: string }) => P
 export class JobWorker {
   private workerId: string
   private intervalId: NodeJS.Timeout | null = null
+  private rescueIntervalId: NodeJS.Timeout | null = null
   private handlers: Map<string, JobHandler> = new Map()
   private isPolling = false
   private pollIntervalMs: number
@@ -27,8 +28,16 @@ export class JobWorker {
     }
     logger.info({ workerId: this.workerId }, 'Starting JobWorker')
     this.intervalId = setInterval(() => this.poll(), this.pollIntervalMs)
+    
+    // Setup rescue stuck jobs timer (every 30 minutes)
+    this.rescueIntervalId = setInterval(() => this.rescueStuckJobs(), 30 * 60 * 1000)
+    if (this.rescueIntervalId.unref) {
+      this.rescueIntervalId.unref()
+    }
+    
     // Run immediate check
     this.poll()
+    this.rescueStuckJobs()
   }
 
   public stop() {
@@ -36,6 +45,45 @@ export class JobWorker {
       clearInterval(this.intervalId)
       this.intervalId = null
       logger.info('Stopped JobWorker')
+    }
+    if (this.rescueIntervalId) {
+      clearInterval(this.rescueIntervalId)
+      this.rescueIntervalId = null
+    }
+  }
+
+  public async rescueStuckJobs() {
+    try {
+      const oneHourAgo = new Date(Date.now() - 3600 * 1000).toISOString()
+      
+      // Find jobs stuck in processing for more than 1 hour
+      const { data: stuckJobs, error } = await db
+        .from('sys_background_jobs')
+        .select('id, attempts, max_attempts')
+        .eq('status', 'processing')
+        .lt('updated_at', oneHourAgo)
+
+      if (error || !stuckJobs || stuckJobs.length === 0) return
+
+      logger.info({ count: stuckJobs.length }, 'Found stuck background jobs. Rescuing them...')
+
+      for (const job of stuckJobs) {
+        const isFatal = job.attempts >= job.max_attempts
+        const nextStatus = isFatal ? 'failed' : 'pending'
+
+        await db
+          .from('sys_background_jobs')
+          .update({
+            status: nextStatus,
+            error_message: 'Job stuck in processing (worker crash suspected)',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', job.id)
+
+        logger.warn({ jobId: job.id, nextStatus }, 'Rescued stuck job')
+      }
+    } catch (err: any) {
+      logger.error({ error: err.message }, 'Failed to rescue stuck jobs')
     }
   }
 
@@ -77,7 +125,6 @@ export class JobWorker {
         }
       }
 
-      // Відкладаємо наступний poll через setImmediate — уникаємо накопичення стеку
       setImmediate(() => {
         this.isPolling = false
         this.poll()

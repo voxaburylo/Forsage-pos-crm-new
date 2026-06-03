@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Сервіс імпорту номенклатури з 1С (Excel/CSV)
  *
  * Підтримувані формати виводу з 1С:
@@ -37,15 +37,15 @@ export interface OnecImportRow {
   name:           string
   category?:      string
   barcode?:       string
-  retail_price:   number   // копійки
-  purchase_price: number   // копійки
+  retail_price:   number
+  purchase_price: number
   qty:            number
   unit:           string
 }
 
 export interface OnecPreviewResult {
   rows:             OnecImportRow[]
-  categories:       string[]           // унікальні назви груп
+  categories:       string[]
   detected_mapping: OnecColumnMapping
   total:            number
   header:           string[]
@@ -72,25 +72,45 @@ export function detectOnecColumns(header: string[]): OnecColumnMapping {
     else if (/^(закупів|собівартість|заготів|purchase|закупка|прих)/.test(lh)) map.purchase_price = i
     else if (/^(залишок|кількість|qty|кіл-ть|к-сть|quantity|stock)/.test(lh)) map.qty          = i
     else if (/^(один|ед\.?|unit|уп|пак)/.test(lh))                        map.unit           = i
-    // Якщо не визначили sku — пробуємо "Код"
     else if (/^(код)/.test(lh) && map.sku === undefined)                  map.sku            = i
-    // Ціна без уточнення — роздрібна
     else if (/^(ціна|price|вартість)/.test(lh) && map.retail_price === undefined) map.retail_price = i
   })
   return map
 }
 
-// ─── Парсинг CSV ─────────────────────────────────────────────────────────────
+// ─── Парсинг CSV (з підтримкою роздільників у кавычках) ─────────────────────
 
 function parseCsv(text: string): string[][] {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
   const rows: string[][] = []
 
+  let sep = ','
+  for (const line of lines) {
+    if (line.trim()) {
+      if (line.includes(';')) sep = ';'
+      else if (line.includes('\t')) sep = '\t'
+      break
+    }
+  }
+
   for (const line of lines) {
     if (!line.trim()) continue
-    // Визначаємо роздільник
-    const sep = line.includes(';') ? ';' : line.includes('\t') ? '\t' : ','
-    const cells = line.split(sep).map((c) => c.trim().replace(/^["']|["']$/g, ''))
+    const cells: string[] = []
+    let current = ''
+    let inQuotes = false
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"' || char === "'") {
+        inQuotes = !inQuotes
+      } else if (char === sep && !inQuotes) {
+        cells.push(current.trim().replace(/^["']|["']$/g, ''))
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    cells.push(current.trim().replace(/^["']|["']$/g, ''))
     rows.push(cells)
   }
   return rows
@@ -128,7 +148,7 @@ export function previewOnecImport(
 
     const sku  = col.sku  !== undefined ? cells[col.sku]?.trim()  ?? '' : ''
     const name = col.name !== undefined ? cells[col.name]?.trim() ?? '' : ''
-    if (!name) continue  // пропускаємо порожні рядки
+    if (!name) continue
 
     const category = col.category !== undefined ? cells[col.category]?.trim() ?? '' : ''
     if (category) categories.add(category)
@@ -155,7 +175,7 @@ export function previewOnecImport(
   }
 }
 
-// ─── Фактичний імпорт в БД ───────────────────────────────────────────────────
+// ─── Фактичний імпорт в БД (оптимізований) ───────────────────────────────────
 
 export async function runOnecImport(
   tenantId: string,
@@ -164,75 +184,104 @@ export async function runOnecImport(
 ): Promise<OnecImportResult> {
   const result: OnecImportResult = { created: 0, updated: 0, categories_created: 0, errors: [] }
 
-  // 1. Збираємо унікальні назви категорій і знаходимо/створюємо їх
+  // 1. Отримуємо всі існуючі категорії одним запитом
+  const { data: allCategories, error: catFetchErr } = await db
+    .from('categories')
+    .select('id, name')
+    .eq('tenant_id', tenantId)
+
+  if (catFetchErr) {
+    logger.error({ error: catFetchErr.message }, '1С імпорт: помилка завантаження категорій')
+    throw new Error(`Не вдалося завантажити категорії: ${catFetchErr.message}`)
+  }
+
+  const categoryMap = new Map<string, string>() // lowercase name -> id
+  if (allCategories) {
+    allCategories.forEach((cat) => {
+      categoryMap.set(cat.name.toLowerCase().trim(), cat.id)
+    })
+  }
+
+  // 2. Визначаємо відсутні категорії
   const categoryNames = [...new Set(rows.map((r) => r.category).filter(Boolean) as string[])]
-  const categoryMap   = new Map<string, string>()  // name → id
+  const missingCats = categoryNames.filter((name) => !categoryMap.has(name.toLowerCase().trim()))
 
-  for (const catName of categoryNames) {
-    // Пошук існуючої
-    const { data: existing } = await db
+  // 3. Пакетне створення відсутніх категорій
+  if (missingCats.length > 0) {
+    const insertPayload = missingCats.map((name) => ({
+      tenant_id: tenantId,
+      name: name.trim(),
+      sort_order: 0,
+    }))
+
+    const { data: createdCats, error: insertErr } = await db
       .from('categories')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .ilike('name', catName)
-      .maybeSingle()
+      .insert(insertPayload)
+      .select('id, name')
 
-    if (existing) {
-      categoryMap.set(catName, existing.id)
-    } else {
-      // Створюємо нову категорію
-      const { data: created, error } = await db
-        .from('categories')
-        .insert({ tenant_id: tenantId, name: catName, sort_order: 0 })
-        .select('id')
-        .single()
-
-      if (error) {
-        logger.warn({ catName, error: error.message }, '1С імпорт: помилка створення категорії')
-      } else if (created) {
-        categoryMap.set(catName, created.id)
-        result.categories_created++
+    if (insertErr) {
+      logger.error({ error: insertErr.message }, '1С імпорт: помилка пакетного створення категорій, перехід на поштучне створення')
+      // Резервний варіант поштучного створення при збої bulk-інсерту
+      for (const catName of missingCats) {
+        try {
+          const { data: created, error: singleErr } = await db
+            .from('categories')
+            .insert({ tenant_id: tenantId, name: catName.trim(), sort_order: 0 })
+            .select('id')
+            .single()
+          if (singleErr) {
+            logger.warn({ catName, error: singleErr.message }, '1С імпорт: помилка створення одиничної категорії')
+          } else if (created) {
+            categoryMap.set(catName.toLowerCase().trim(), created.id)
+            result.categories_created++
+          }
+        } catch (catErr: any) {
+          logger.warn({ catName, error: catErr.message }, '1С імпорт: помилка створення одиничної категорії')
+        }
       }
+    } else if (createdCats) {
+      createdCats.forEach((c) => {
+        categoryMap.set(c.name.toLowerCase().trim(), c.id)
+        result.categories_created++
+      })
     }
   }
 
-  // 2. Імпортуємо товари через upsert_product_import
-  for (const row of rows) {
-    try {
-      const categoryId = row.category ? categoryMap.get(row.category) ?? null : null
+  // 4. Паралельний імпорт товарів чанками
+  const CONCURRENCY = 15
+  for (let i = 0; i < rows.length; i += CONCURRENCY) {
+    const chunk = rows.slice(i, i + CONCURRENCY)
+    await Promise.all(
+      chunk.map(async (row) => {
+        try {
+          const categoryId = row.category ? categoryMap.get(row.category.toLowerCase().trim()) ?? null : null
 
-      const { data, error } = await db.rpc('upsert_product_import', {
-        p_tenant_id:      tenantId,
-        p_sku:            row.sku,
-        p_barcode:        row.barcode ?? null,
-        p_name:           row.name,
-        p_retail_price:   row.retail_price,
-        p_purchase_price: row.purchase_price,
-        p_qty_on_hand:    row.qty,
-        p_unit:           row.unit,
-        p_storage_bin:    null,
-        p_mode:           options.mode,
-      }) as any
+          // Викликаємо RPC з p_category_id безпосередньо, уникаючи другого запиту UPDATE
+          const { data, error } = await db.rpc('upsert_product_import', {
+            p_tenant_id:      tenantId,
+            p_sku:            row.sku,
+            p_barcode:        row.barcode ?? null,
+            p_name:           row.name,
+            p_retail_price:   row.retail_price,
+            p_purchase_price: row.purchase_price,
+            p_qty_on_hand:    row.qty,
+            p_unit:           row.unit,
+            p_storage_bin:    null,
+            p_mode:           options.mode,
+            p_category_id:    categoryId,
+          }) as any
 
-      if (error) throw new Error(error.message)
+          if (error) throw new Error(error.message)
 
-      // upsert_product_import повертає масив — беремо перший елемент
-      const record = Array.isArray(data) ? data[0] : data
-
-      // Оновлюємо category_id окремо (RPC не знає про category_id)
-      if (categoryId && record?.id) {
-        await db.from('products')
-          .update({ category_id: categoryId })
-          .eq('id', record.id)
-      }
-
-      if (record?.is_new) result.created++
-      else result.updated++
-
-    } catch (err: any) {
-      result.errors.push({ row: row.row, sku: row.sku, error: err.message })
-      logger.warn({ row: row.row, sku: row.sku, error: err.message }, '1С імпорт: помилка рядка')
-    }
+          const record = Array.isArray(data) ? data[0] : data
+          if (record?.is_new) result.created++
+          else result.updated++
+        } catch (err: any) {
+          result.errors.push({ row: row.row, sku: row.sku, error: err.message })
+          logger.warn({ row: row.row, sku: row.sku, error: err.message }, '1С імпорт: помилка рядка')
+        }
+      })
+    )
   }
 
   logger.info(result, '1С імпорт завершено')

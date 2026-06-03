@@ -18,7 +18,7 @@ router.get('/', async (req, res, next) => {
   try {
     const q = customerListSchema.safeParse(req.query)
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри', 400, q.error.flatten())
-    const result = await customerService.listCustomers(q.data)
+    const result = await customerService.listCustomers(q.data, req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 })
@@ -26,7 +26,7 @@ router.get('/', async (req, res, next) => {
 // GET /api/v1/customers/:id — картка клієнта
 router.get('/:id', async (req, res, next) => {
   try {
-    const customer = await customerService.getCustomer(String(req.params.id))
+    const customer = await customerService.getCustomer(String(req.params.id), req.user!.tenant_id)
     res.json({ data: customer })
   } catch (err) { next(err) }
 })
@@ -34,7 +34,7 @@ router.get('/:id', async (req, res, next) => {
 // GET /api/v1/customers/:id/sales — історія покупок
 router.get('/:id/sales', async (req, res, next) => {
   try {
-    const sales = await customerService.getCustomerSales(String(req.params.id))
+    const sales = await customerService.getCustomerSales(String(req.params.id), req.user!.tenant_id)
     res.json({ data: sales })
   } catch (err) { next(err) }
 })
@@ -42,7 +42,7 @@ router.get('/:id/sales', async (req, res, next) => {
 // GET /api/v1/customers/:id/debts — продажі в борг (историяч долгов)
 router.get('/:id/debts', async (req, res, next) => {
   try {
-    const debts = await customerService.getCustomerDebts(String(req.params.id))
+    const debts = await customerService.getCustomerDebts(String(req.params.id), req.user!.tenant_id)
     res.json({ data: debts })
   } catch (err) { next(err) }
 })
@@ -72,7 +72,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
   try {
     const parsed = updateCustomerSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані клієнта', 422, parsed.error.flatten())
-    const customer = await customerService.updateCustomer(String(req.params.id), parsed.data)
+    const customer = await customerService.updateCustomer(String(req.params.id), parsed.data, req.user!.tenant_id)
     res.json({ data: customer })
   } catch (err) { next(err) }
 })
@@ -82,7 +82,7 @@ router.post('/:id/pay-debt', requireRole('owner', 'admin', 'manager', 'cashier')
   try {
     const parsed = payDebtSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть коректну суму', 422, parsed.error.flatten())
-    const customer = await customerService.payDebt(String(req.params.id), parsed.data)
+    const customer = await customerService.payDebt(String(req.params.id), parsed.data, req.user!.tenant_id)
 
     // Cash operation для готівки
     if (parsed.data.method === 'cash' && parsed.data.shift_id) {
@@ -115,7 +115,7 @@ router.post('/:id/bonuses', requireRole('owner', 'admin', 'manager'), async (req
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
     const customer = await customerService.manualBonus(
-      String(req.params.id), parsed.data.amount, parsed.data.description ?? null, req.user!.id,
+      String(req.params.id), parsed.data.amount, parsed.data.description ?? null, req.user!.id, req.user!.tenant_id,
     )
     res.json({ data: customer })
   } catch (err) { next(err) }
@@ -124,7 +124,7 @@ router.post('/:id/bonuses', requireRole('owner', 'admin', 'manager'), async (req
 // DELETE /api/v1/customers/:id — soft delete
 router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    await customerService.deleteCustomer(String(req.params.id))
+    await customerService.deleteCustomer(String(req.params.id), req.user!.tenant_id)
     res.status(204).send()
   } catch (err) { next(err) }
 })
@@ -137,7 +137,7 @@ router.use('/:customerId/notes', notesRouter)
 // GET /api/v1/customers/:id/vehicles — список авто клієнта
 router.get('/:id/vehicles', async (req, res, next) => {
   try {
-    const vehicles = await customerService.listCustomerVehicles(String(req.params.id))
+    const vehicles = await customerService.listCustomerVehicles(String(req.params.id), req.user!.tenant_id)
     res.json({ data: vehicles })
   } catch (err) { next(err) }
 })
@@ -163,7 +163,7 @@ router.post('/:id/vehicles', requireRole('owner', 'admin', 'manager', 'cashier')
 // DELETE /api/v1/customers/:id/vehicles/:vehicleId — видалити авто
 router.delete('/:id/vehicles/:vehicleId', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    await customerService.deleteCustomerVehicle(String(req.params.vehicleId))
+    await customerService.deleteCustomerVehicle(String(req.params.vehicleId), req.user!.tenant_id)
     res.status(204).send()
   } catch (err) { next(err) }
 })

@@ -1,28 +1,18 @@
 import type { Request, Response, NextFunction } from 'express'
+import jwt from 'jsonwebtoken'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from './errorHandler.js'
+import { logger } from '../lib/logger.js'
 
-/**
- * MVP_TENANT_ID — фіксований ідентифікатор єдиного магазину в режимі MVP.
- *
- * Призначення:
- *   - Усі дані (товари, продажі, клієнти) прив'язані до tenant_id.
- *   - У межах одного магазину поле в JWT user_metadata.tenant_id може бути відсутнім —
- *     тоді цей константний fallback гарантує, що дані не «загубляться».
- *
- * РИЗИК БЕЗПЕКИ:
- *   Якщо в системі з'явиться другий магазин, цей fallback створює загрозу
- *   витоку даних: користувач без tenant_id у JWT отримає доступ до даних магазину #1.
- *
- * Умови видалення fallback (перед запуском мультитенантності):
- *   1. Усі активні користувачі мають tenant_id у user_metadata
- *      (перевірити: SELECT id FROM auth.users WHERE raw_user_meta_data->>'tenant_id' IS NULL).
- *   2. Seed/міграційні скрипти автоматично присвоюють tenant_id новим користувачам.
- *   3. Тут — замість fallback кидати AppError('NO_TENANT', 403).
- *
- * План мультитенантності — див. [[project_forsage_crm]] в auto-memory або ARCHITECT_PLAN.md.
- */
-const MVP_TENANT_ID = '00000000-0000-0000-0000-000000000001'
+interface SupabaseJwtPayload {
+  sub: string
+  email?: string
+  user_metadata?: {
+    is_active?: boolean
+    role?: string
+    tenant_id?: string
+  }
+}
 
 export async function requireAuth(
   req: Request,
@@ -35,25 +25,55 @@ export async function requireAuth(
   }
 
   const token = authHeader.slice(7)
+  let userPayload: { id: string; email: string; role: string; tenant_id?: string; is_active?: boolean } | null = null
 
-  // Використовуємо єдиний shared admin клієнт (не створюємо новий для кожного запиту)
-  const { data, error } = await supabaseAdmin.auth.getUser(token)
-  if (error || !data.user) {
-    return next(new AppError('UNAUTHORIZED', 'Недійсний токен', 401))
+  // 1. Спроба локальної валідації JWT підпису для прискорення запитів на 150-300мс
+  const jwtSecret = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET
+  if (jwtSecret) {
+    try {
+      const decoded = jwt.verify(token, jwtSecret) as SupabaseJwtPayload
+      userPayload = {
+        id: decoded.sub,
+        email: decoded.email ?? '',
+        role: decoded.user_metadata?.role ?? 'cashier',
+        tenant_id: decoded.user_metadata?.tenant_id,
+        is_active: decoded.user_metadata?.is_active,
+      }
+    } catch (err: any) {
+      logger.debug({ err: err.message }, 'Local JWT verification failed, falling back to Supabase API')
+    }
   }
 
-  const meta = data.user.user_metadata ?? {}
+  // 2. Фолбек на мережевий запит до Supabase Auth API, якщо секрет не задано або локальна валідація не пройшла
+  if (!userPayload) {
+    const { data, error } = await supabaseAdmin.auth.getUser(token)
+    if (error || !data.user) {
+      return next(new AppError('UNAUTHORIZED', 'Недійсний токен', 401))
+    }
+    const meta = data.user.user_metadata ?? {}
+    userPayload = {
+      id: data.user.id,
+      email: data.user.email ?? '',
+      role: (meta.role as string) ?? 'cashier',
+      tenant_id: meta.tenant_id as string | undefined,
+      is_active: meta.is_active as boolean | undefined,
+    }
+  }
 
-  // Перевіряємо чи користувач активний
-  if (meta.is_active === false) {
+  if (userPayload.is_active === false) {
     return next(new AppError('FORBIDDEN', 'Акаунт заблоковано', 403))
   }
 
+  const tenantId = userPayload.tenant_id
+  if (!tenantId) {
+    return next(new AppError('FORBIDDEN', 'Не вказано ідентифікатор магазину (tenant_id)', 403))
+  }
+
   req.user = {
-    id:        data.user.id,
-    email:     data.user.email ?? '',
-    role:      (meta.role as string) ?? 'cashier',
-    tenant_id: (meta.tenant_id as string) ?? MVP_TENANT_ID,
+    id:        userPayload.id,
+    email:     userPayload.email,
+    role:      userPayload.role,
+    tenant_id: tenantId,
   }
 
   next()

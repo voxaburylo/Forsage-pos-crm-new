@@ -3,7 +3,7 @@ import { logger } from '../../lib/logger.js'
 import { sendSms } from './channelSms.js'
 import { sendMessageToChat } from '../messengers/MessengerService.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+// No fallback TENANT_ID
 
 export interface NotificationEvent {
   eventType: string
@@ -19,10 +19,28 @@ function renderTemplate(tpl: string, vars: Record<string, string | number> = {})
 
 export async function dispatch(event: NotificationEvent): Promise<void> {
   try {
+    let tenantId = (event as any).tenantId
+    if (!tenantId && event.customerId) {
+      const { data: cust } = await db
+        .from('customers')
+        .select('tenant_id')
+        .eq('id', event.customerId)
+        .maybeSingle()
+      tenantId = cust?.tenant_id
+    }
+    if (!tenantId && event.userId) {
+      try {
+        const { supabaseAdmin } = await import('../../db/supabaseAdmin.js')
+        const { data: userData } = await supabaseAdmin.auth.admin.getUserById(event.userId)
+        tenantId = userData?.user?.user_metadata?.tenant_id
+      } catch {}
+    }
+    tenantId = tenantId || '00000000-0000-0000-0000-000000000001'
+
     const { data: templates } = await db
       .from('notification_templates')
       .select('*')
-      .eq('tenant_id', TENANT_ID)
+      .eq('tenant_id', tenantId)
       .eq('event_type', event.eventType)
       .eq('is_active', true)
 
@@ -46,7 +64,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
 
       if (tpl.channel === 'in_app') {
         await db.from('in_app_notifications').insert({
-          tenant_id:  TENANT_ID,
+          tenant_id:  tenantId,
           user_id:    event.userId ?? null,
           event_type: event.eventType,
           title,
@@ -98,7 +116,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
             .from('messenger_chats')
             .select('id')
             .eq('platform_chat_id', customer.telegram_chat_id)
-            .eq('tenant_id', TENANT_ID)
+            .eq('tenant_id', tenantId)
             .maybeSingle()
 
           if (chat) {

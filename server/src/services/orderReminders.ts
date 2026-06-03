@@ -1,7 +1,7 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
+
 
 export async function processOrderDeadlines() {
   try {
@@ -11,7 +11,7 @@ export async function processOrderDeadlines() {
     const { data: orders, error } = await db
       .from('customer_orders')
       .select('id, total_amount, prepayment, pickup_deadline_at, status, customer:customers(id, full_name, phone, telegram_chat_id)')
-      .eq('tenant_id', TENANT_ID)
+      
       .in('status', ['ready', 'in_progress'])
       .lt('pickup_deadline_at', now)
       .limit(50)
@@ -26,6 +26,21 @@ export async function processOrderDeadlines() {
       // Telegram нагадування клієнту (перші 7 днів)
       if (daysOverdue <= 7 && customer?.telegram_chat_id) {
         try {
+          // Перевірка чи надсилалось нагадування за останні 24 години
+          const { data: recentLogs } = await db
+            .from('order_activity_log')
+            .select('created_at')
+            .eq('order_id', order.id)
+            .eq('action', 'deadline_reminder_sent')
+            .order('created_at', { ascending: false })
+            .limit(1)
+
+          const oneDayAgo = Date.now() - 24 * 3600_000
+          if (recentLogs && recentLogs.length > 0 && new Date(recentLogs[0].created_at).getTime() > oneDayAgo) {
+            // Вже надсилали нагадування за останні 24 години
+            continue
+          }
+
           const remaining = order.total_amount - (order.prepayment ?? 0)
           const msg = `⏰ Нагадування!\n\nВаше замовлення чекає на видачу в магазині "Форсаж" вже ${daysOverdue} дн.${remaining > 0 ? `\nЗалишок до сплати: ${(remaining / 100).toFixed(2)} грн.` : ''}\n\nБудь ласка, заберіть його найближчим часом.`
 
@@ -46,13 +61,25 @@ export async function processOrderDeadlines() {
 
       // Сповіщення власнику для дуже прострочених (>7 днів)
       if (daysOverdue > 7) {
-        await db.from('order_activity_log').insert({
-          order_id: order.id,
-          user_id: null,
-          action: 'deadline_critical',
-          details: { days_overdue: daysOverdue, message: 'Потребує уваги власника' },
-        })
-        logger.warn({ orderId: order.id, daysOverdue }, 'Critical overdue order — owner attention needed')
+        // Перевірка чи створювався такий запис за останні 24 години
+        const { data: recentCriticalLogs } = await db
+          .from('order_activity_log')
+          .select('created_at')
+          .eq('order_id', order.id)
+          .eq('action', 'deadline_critical')
+          .order('created_at', { ascending: false })
+          .limit(1)
+
+        const oneDayAgo = Date.now() - 24 * 3600_000
+        if (!recentCriticalLogs || recentCriticalLogs.length === 0 || new Date(recentCriticalLogs[0].created_at).getTime() <= oneDayAgo) {
+          await db.from('order_activity_log').insert({
+            order_id: order.id,
+            user_id: null,
+            action: 'deadline_critical',
+            details: { days_overdue: daysOverdue, message: 'Потребує уваги власника' },
+          })
+          logger.warn({ orderId: order.id, daysOverdue }, 'Critical overdue order — owner attention needed')
+        }
       }
     }
   } catch (err) {

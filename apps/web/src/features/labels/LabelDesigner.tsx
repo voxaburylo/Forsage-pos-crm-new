@@ -9,6 +9,7 @@ import { kopecksToHryvnia } from '@/types/product'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { PrintService } from '@/lib/printService'
 
 type Tab = 'design' | 'print'
 
@@ -476,16 +477,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   </script>
 </body></html>`
 
-  const iframe = document.createElement('iframe')
-  iframe.style.position = 'fixed'
-  iframe.style.top = '-9999px'
-  iframe.style.width = '0'
-  iframe.style.height = '0'
-  document.body.appendChild(iframe)
-  iframe.contentDocument?.open()
-  iframe.contentDocument?.write(html)
-  iframe.contentDocument?.close()
-  setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe) }, 30000)
+  PrintService.printHtml(html, { mode: 'iframe', cleanupDelayMs: 30000 })
 }
 
 // ================================================================

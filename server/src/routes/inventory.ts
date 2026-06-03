@@ -35,11 +35,12 @@ router.post('/', requireRole('owner', 'admin', 'storekeeper'), async (req, res, 
 })
 
 // GET /api/v1/inventory — список сесій
-router.get('/', async (_req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const { data, error } = await db
       .from('inventory_sessions')
       .select('*')
+      .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
       .limit(50)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -52,7 +53,7 @@ router.get('/:id', requireRole('owner', 'admin', 'storekeeper'), async (req, res
   try {
     const sessionId = String(req.params.id)
     const [sessionRes, itemsRes] = await Promise.all([
-      db.from('inventory_sessions').select('*').eq('id', sessionId).single(),
+      db.from('inventory_sessions').select('*').eq('id', sessionId).eq('tenant_id', req.user!.tenant_id).single(),
       db.from('inventory_items').select('*, product:products(id, sku, name, barcode, unit)').eq('session_id', sessionId).order('created_at'),
     ])
     if (sessionRes.error || !sessionRes.data) throw new AppError('NOT_FOUND', 'Сесію не знайдено', 404)
@@ -68,6 +69,7 @@ router.post('/:id/start', requireRole('owner', 'admin', 'storekeeper'), async (r
       .from('inventory_sessions')
       .update({ status: 'in_progress' })
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('status', 'draft')
       .select()
       .single()
@@ -87,17 +89,37 @@ router.post('/:id/scan', requireRole('owner', 'admin', 'storekeeper'), async (re
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
     const sessionId = String(req.params.id)
+
+    // Перевіряємо приналежність сесії
+    const { data: session, error: sessErr } = await db
+      .from('inventory_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (sessErr || !session) throw new AppError('NOT_FOUND', 'Сесію не знайдено', 404)
+
     let productId = parsed.data.product_id
 
     // Знаходимо товар по штрих-коду
     if (parsed.data.barcode) {
       const { data: prod } = await db.from('products').select('id, qty_on_hand')
         .is('deleted_at', null)
+        .eq('tenant_id', req.user!.tenant_id)
         .or(`barcode.eq.${parsed.data.barcode},additional_barcodes.cs.${parsed.data.barcode}`)
         .maybeSingle()
       if (!prod) throw new AppError('NOT_FOUND', 'Товар з таким штрих-кодом не знайдено', 404)
       productId = prod.id
+    } else if (productId) {
+      // Перевіряємо приналежність товару
+      const { data: prod } = await db.from('products').select('id, qty_on_hand')
+        .eq('id', productId)
+        .eq('tenant_id', req.user!.tenant_id)
+        .maybeSingle()
+      if (!prod) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
     }
+
+    if (!productId) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
 
     // Додаємо або оновлюємо запис в inventory_items
     const { data: existing } = await db
@@ -110,7 +132,7 @@ router.post('/:id/scan', requireRole('owner', 'admin', 'storekeeper'), async (re
     if (existing) {
       await db.from('inventory_items').update({ counted_stock: existing.counted_stock + 1 }).eq('id', existing.id)
     } else {
-      const { data: prod } = await db.from('products').select('qty_on_hand').eq('id', productId).single()
+      const { data: prod } = await db.from('products').select('qty_on_hand').eq('id', productId).eq('tenant_id', req.user!.tenant_id).single()
       await db.from('inventory_items').insert({
         session_id: sessionId,
         product_id: productId,
@@ -132,6 +154,26 @@ router.put('/:id/items/:itemId', requireRole('owner', 'admin', 'storekeeper'), a
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна кількість', 422)
 
+    const sessionId = String(req.params.id)
+
+    // Перевіряємо приналежність сесії
+    const { data: session } = await db
+      .from('inventory_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (!session) throw new AppError('NOT_FOUND', 'Сесію не знайдено', 404)
+
+    // Перевіряємо приналежність елемента до сесії
+    const { data: item } = await db
+      .from('inventory_items')
+      .select('id')
+      .eq('id', req.params.itemId)
+      .eq('session_id', sessionId)
+      .maybeSingle()
+    if (!item) throw new AppError('NOT_FOUND', 'Елемент ревізії не знайдено', 404)
+
     const { data, error } = await db
       .from('inventory_items')
       .update({ counted_stock: parsed.data.counted_stock })
@@ -148,6 +190,15 @@ router.post('/:id/complete', requireRole('owner', 'admin', 'storekeeper'), async
   try {
     const sessionId = String(req.params.id)
 
+    // Перевіряємо приналежність сесії
+    const { data: session } = await db
+      .from('inventory_sessions')
+      .select('id')
+      .eq('id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (!session) throw new AppError('NOT_FOUND', 'Сесію не знайдено', 404)
+
     // Отримуємо всі items сесії
     const { data: items, error: itemsErr } = await db
       .from('inventory_items')
@@ -162,7 +213,7 @@ router.post('/:id/complete', requireRole('owner', 'admin', 'storekeeper'), async
         await db.from('products').update({
           qty_on_hand: item.counted_stock,
           updated_at: new Date().toISOString(),
-        }).eq('id', item.product_id)
+        }).eq('id', item.product_id).eq('tenant_id', req.user!.tenant_id)
       }
     }
 
@@ -171,6 +222,7 @@ router.post('/:id/complete', requireRole('owner', 'admin', 'storekeeper'), async
       .from('inventory_sessions')
       .update({ status: 'completed', completed_at: new Date().toISOString() })
       .eq('id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
       .select()
       .single()
 

@@ -5,20 +5,20 @@ import type {
   CreateSupplyInvoiceInput, UpdateSupplyInvoiceInput, SupplyInvoiceListQuery,
 } from '../validators/supplierSchema.js'
 
-const TENANT_ID = '00000000-0000-0000-0000-000000000001'
 const SUPPLIER_TABLE = 'suppliers'
 const INVOICE_TABLE  = 'supply_invoices'
 const ITEM_TABLE     = 'supply_invoice_items'
 
 // ===================== Постачальники =====================
 
-export async function listSuppliers(query: SupplierListQuery) {
+export async function listSuppliers(query: SupplierListQuery, tenantId: string) {
   const { search, is_active, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
     .from(SUPPLIER_TABLE)
     .select('*', { count: 'exact' })
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .order('name', { ascending: true })
     .range(offset, offset + per_page - 1)
@@ -40,11 +40,12 @@ export async function listSuppliers(query: SupplierListQuery) {
   }
 }
 
-export async function getSupplier(id: string) {
+export async function getSupplier(id: string, tenantId: string) {
   const { data, error } = await db
     .from(SUPPLIER_TABLE)
     .select('*')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .single()
 
@@ -52,10 +53,10 @@ export async function getSupplier(id: string) {
   return data
 }
 
-export async function createSupplier(input: CreateSupplierInput) {
+export async function createSupplier(input: CreateSupplierInput, tenantId: string) {
   const { data, error } = await db
     .from(SUPPLIER_TABLE)
-    .insert({ ...input, tenant_id: TENANT_ID })
+    .insert({ ...input, tenant_id: tenantId })
     .select('*')
     .single()
 
@@ -63,13 +64,14 @@ export async function createSupplier(input: CreateSupplierInput) {
   return data
 }
 
-export async function updateSupplier(id: string, input: UpdateSupplierInput) {
-  await getSupplier(id)
+export async function updateSupplier(id: string, input: UpdateSupplierInput, tenantId: string) {
+  await getSupplier(id, tenantId)
 
   const { data, error } = await db
     .from(SUPPLIER_TABLE)
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .select('*')
     .single()
@@ -78,25 +80,27 @@ export async function updateSupplier(id: string, input: UpdateSupplierInput) {
   return data
 }
 
-export async function deleteSupplier(id: string) {
-  await getSupplier(id)
+export async function deleteSupplier(id: string, tenantId: string) {
+  await getSupplier(id, tenantId)
   const { error } = await db
     .from(SUPPLIER_TABLE)
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('tenant_id', tenantId)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
 // ===================== Приходні накладні =====================
 
-export async function listSupplyInvoices(query: SupplyInvoiceListQuery) {
+export async function listSupplyInvoices(query: SupplyInvoiceListQuery, tenantId: string) {
   const { status, supplier_id, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
     .from(INVOICE_TABLE)
     .select('*, supplier:suppliers(id,name)', { count: 'exact' })
+    .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .range(offset, offset + per_page - 1)
 
@@ -112,26 +116,25 @@ export async function listSupplyInvoices(query: SupplyInvoiceListQuery) {
   }
 }
 
-export async function getSupplyInvoice(id: string) {
+export async function getSupplyInvoice(id: string, tenantId: string) {
   const { data, error } = await db
     .from(INVOICE_TABLE)
     .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode))')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (error || !data) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
   return data
 }
 
-export async function createSupplyInvoice(_userId: string, input: CreateSupplyInvoiceInput) {
-  // 1. Рахуємо суми на сервері — не довіряємо client-side total
+export async function createSupplyInvoice(_userId: string, input: CreateSupplyInvoiceInput, tenantId: string) {
   const itemsWithTotal = input.items.map((item) => ({
     ...item,
     total: Math.round(item.qty * item.purchase_price),
   }))
   const totalKopecks = itemsWithTotal.reduce((sum, item) => sum + item.total, 0)
 
-  // 2. Створюємо накладну
   const { data: invoice, error: invError } = await db
     .from(INVOICE_TABLE)
     .insert({
@@ -140,31 +143,30 @@ export async function createSupplyInvoice(_userId: string, input: CreateSupplyIn
       notes:          input.notes ?? null,
       status:         'draft',
       total:          totalKopecks,
-      tenant_id:      TENANT_ID,
+      tenant_id:      tenantId,
     })
     .select('id')
     .single()
 
   if (invError || !invoice) throw new AppError('DB_ERROR', invError?.message ?? 'Помилка створення накладної', 500)
 
-  // 3. Створюємо позиції накладної
   const itemsToInsert = itemsWithTotal.map((item) => ({
     invoice_id:     invoice.id,
     product_id:     item.product_id,
     qty:            item.qty,
     purchase_price: item.purchase_price,
     total:          item.total,
-    tenant_id:      TENANT_ID,
+    tenant_id:      tenantId,
   }))
 
   const { error: itemsError } = await db.from(ITEM_TABLE).insert(itemsToInsert)
   if (itemsError) throw new AppError('DB_ERROR', itemsError.message, 500)
 
-  return getSupplyInvoice(invoice.id)
+  return getSupplyInvoice(invoice.id, tenantId)
 }
 
-export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoiceInput) {
-  const existing = await getSupplyInvoice(id)
+export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoiceInput, tenantId: string) {
+  const existing = await getSupplyInvoice(id, tenantId)
   if (existing.status !== 'draft') {
     throw new AppError('INVOICE_POSTED', 'Не можна редагувати проведену накладну', 400)
   }
@@ -173,6 +175,7 @@ export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoice
     .from(INVOICE_TABLE)
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode))')
     .single()
 
@@ -180,7 +183,10 @@ export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoice
   return data
 }
 
-export async function postSupplyInvoice(id: string, userId: string) {
+export async function postSupplyInvoice(id: string, userId: string, tenantId: string) {
+  // Ensure the invoice belongs to the tenant
+  await getSupplyInvoice(id, tenantId)
+
   const { error } = await db.rpc('post_supply_invoice', {
     p_invoice_id: id,
     p_user_id:    userId
@@ -196,10 +202,13 @@ export async function postSupplyInvoice(id: string, userId: string) {
     throw new AppError('DB_ERROR', error.message, 500)
   }
 
-  return getSupplyInvoice(id)
+  return getSupplyInvoice(id, tenantId)
 }
 
-export async function cancelSupplyInvoice(id: string) {
+export async function cancelSupplyInvoice(id: string, tenantId: string) {
+  // Ensure the invoice belongs to the tenant
+  await getSupplyInvoice(id, tenantId)
+
   const { error } = await db.rpc('cancel_supply_invoice', {
     p_invoice_id: id
   })
@@ -214,20 +223,20 @@ export async function cancelSupplyInvoice(id: string) {
     throw new AppError('DB_ERROR', error.message, 500)
   }
 
-  return getSupplyInvoice(id)
+  return getSupplyInvoice(id, tenantId)
 }
 
-export async function deleteSupplyInvoice(id: string) {
-  const invoice = await getSupplyInvoice(id)
+export async function deleteSupplyInvoice(id: string, tenantId: string) {
+  const invoice = await getSupplyInvoice(id, tenantId)
   if (invoice.status === 'posted') {
     throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну. Спочатку скасуйте її.', 400)
   }
 
-  // Видаляємо позиції, потім накладну (через ON DELETE RESTRICT)
   const { error: delItemsError } = await db
     .from(ITEM_TABLE)
     .delete()
     .eq('invoice_id', id)
+    .eq('tenant_id', tenantId)
 
   if (delItemsError) throw new AppError('DB_ERROR', delItemsError.message, 500)
 
@@ -235,6 +244,7 @@ export async function deleteSupplyInvoice(id: string) {
     .from(INVOICE_TABLE)
     .delete()
     .eq('id', id)
+    .eq('tenant_id', tenantId)
 
   if (delError) throw new AppError('DB_ERROR', delError.message, 500)
 }

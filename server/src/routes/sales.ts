@@ -91,7 +91,7 @@ router.post('/calculate-price', async (req, res, next) => {
   try {
     const parsed = calculatePriceSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    const result = await saleService.calculatePrice(parsed.data)
+    const result = await saleService.calculatePrice(parsed.data, req.user!.tenant_id)
     res.json({ data: result })
   } catch (err) { next(err) }
 })

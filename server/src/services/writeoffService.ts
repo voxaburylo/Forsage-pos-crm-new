@@ -5,13 +5,14 @@ import type { CreateWriteoffInput, WriteoffListQuery } from '../validators/write
 
 const TABLE = 'inventory_writeoffs'
 
-export async function listWriteoffs(query: WriteoffListQuery) {
+export async function listWriteoffs(query: WriteoffListQuery, tenantId: string) {
   const { reason, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
     .from(TABLE)
     .select('*, items:inventory_writeoff_items(*, product:products(id,sku,name,unit))', { count: 'exact' })
+    .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .range(offset, offset + per_page - 1)
 
@@ -26,11 +27,12 @@ export async function listWriteoffs(query: WriteoffListQuery) {
   }
 }
 
-export async function getWriteoff(id: string) {
+export async function getWriteoff(id: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .select('*, items:inventory_writeoff_items(*, product:products(id,sku,name,unit))')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (error || !data) throw new AppError('NOT_FOUND', 'Акт списання не знайдено', 404)
@@ -59,6 +61,7 @@ export async function createWriteoff(userId: string, tenantId: string, input: Cr
   const writeoffId = (data as any).id
 
   void logAction({
+    tenantId:    tenantId,
     userId:      userId,
     userRole:    'storekeeper',
     action:      'writeoff.created',
@@ -68,5 +71,5 @@ export async function createWriteoff(userId: string, tenantId: string, input: Cr
     newValue:    { items: input.items.length, reason: input.reason },
   })
 
-  return getWriteoff(writeoffId)
+  return getWriteoff(writeoffId, tenantId)
 }
