@@ -14,6 +14,9 @@ export const importApi = {
   parse: (body: { text: string; supplier_id?: string | null }) =>
     api.post<ParseResult>('/api/v1/import/parse', body),
 
+  preview: (body: { text: string; mapping: any; supplier_id?: string | null }) =>
+    api.post<ParseResult>('/api/v1/import/preview', body),
+
   confirm: (body: {
     items:          ParsedItem[]
     supplier_id?:   string | null

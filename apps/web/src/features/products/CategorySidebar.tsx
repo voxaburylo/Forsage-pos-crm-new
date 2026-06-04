@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Tag, Pencil, Trash2, Check, X, FolderOpen, Package } from 'lucide-react'
+import { Plus, Tag, Pencil, Trash2, Check, X, FolderOpen } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import { toast } from '@/components/ui/Toast'
 
@@ -8,22 +8,16 @@ export interface Brand    { id: string; name: string }
 
 interface CategorySidebarProps {
   categories: Category[]
-  brands: Brand[]
   activeCategory: string
-  activeBrand: string
   onCategory: (id: string) => void
-  onBrand: (id: string) => void
   onReload: () => void
   isAdmin: boolean
 }
 
 export function CategorySidebar({
   categories,
-  brands,
   activeCategory,
-  activeBrand,
   onCategory,
-  onBrand,
   onReload,
   isAdmin,
 }: CategorySidebarProps) {
@@ -32,7 +26,6 @@ export function CategorySidebar({
   const [savingCat, setSavingCat]           = useState(false)
   const [editingId, setEditingId]           = useState<string | null>(null)
   const [editName, setEditName]             = useState('')
-  const [showAllBrands, setShowAllBrands]   = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { if (addingCat) inputRef.current?.focus() }, [addingCat])
@@ -66,7 +59,7 @@ export function CategorySidebar({
     } catch { toast.error('Помилка') }
   }
 
-  const visibleBrands = showAllBrands ? brands : brands.slice(0, 10)
+
 
   return (
     <div className="w-52 shrink-0 flex flex-col gap-4 overflow-y-auto pr-1">
@@ -156,36 +149,7 @@ export function CategorySidebar({
         </div>
       </div>
 
-      {/* Бренди */}
-      {brands.length > 0 && (
-        <div>
-          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-            <Package size={12} /> Бренди
-          </p>
-          <button onClick={() => onBrand('')}
-            className={`w-full text-left px-2.5 py-1.5 rounded-lg text-sm transition-colors mb-0.5 ${
-              !activeBrand ? 'bg-yellow-50 text-yellow-700 font-semibold border border-yellow-200' : 'text-gray-600 hover:bg-gray-100'
-            }`}>
-            Всі бренди
-          </button>
-          <div className="space-y-0.5">
-            {visibleBrands.map((b) => (
-              <button key={b.id} onClick={() => onBrand(b.id)}
-                className={`w-full text-left px-2.5 py-1.5 rounded-lg text-sm transition-colors truncate ${
-                  activeBrand === b.id ? 'bg-yellow-50 text-yellow-700 font-semibold border border-yellow-200' : 'text-gray-600 hover:bg-gray-100'
-                }`}>
-                {b.name}
-              </button>
-            ))}
-          </div>
-          {brands.length > 10 && (
-            <button onClick={() => setShowAllBrands(!showAllBrands)}
-              className="text-xs text-blue-500 hover:text-blue-700 mt-1 px-2.5">
-              {showAllBrands ? 'Сховати' : `Ще ${brands.length - 10}...`}
-            </button>
-          )}
-        </div>
-      )}
+
     </div>
   )
 }

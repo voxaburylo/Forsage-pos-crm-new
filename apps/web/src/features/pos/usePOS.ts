@@ -48,7 +48,7 @@ export function usePOS() {
     method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer',
     options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean; terminalAuthCode?: string }
   ) => {
-    const { currentShift, items, customer, notes, total, totalDiscount, managerId } = store
+    const { currentShift, items, customer, notes, total, totalDiscount, managerId, customerOrderId } = store
     const bonusRedeemed = options?.bonusRedeemed ?? 0
     const toPay = Math.max(0, total - bonusRedeemed)
 
@@ -68,9 +68,10 @@ export function usePOS() {
       }))
 
       const salePayload: any = {
-        shift_id:       currentShift.id,
-        customer_id:    customer?.id ?? null,
-        manager_id:     managerId,
+        shift_id:            currentShift.id,
+        customer_id:         customer?.id ?? null,
+        customer_order_id:   customerOrderId || null,
+        manager_id:          managerId,
         items:          items.map((i) => ({
           product_id: i.productId,
           qty:        i.qty,

@@ -274,15 +274,12 @@ export default function ProductsPage() {
 
       <div className="flex gap-5 min-h-0">
 
-        {/* ── Ліва колонка: категорії + бренди — тільки desktop ── */}
+        {/* ── Ліва колонка: категорії — тільки desktop ── */}
         <div className="hidden md:block">
           <CategorySidebar
             categories={categories}
-            brands={brands}
             activeCategory={categoryFilter}
-            activeBrand={brandFilter}
             onCategory={(id) => { setCategoryFilter(id); setPage(1) }}
-            onBrand={(id) => { setBrandFilter(id); setPage(1) }}
             onReload={loadMeta}
             isAdmin={isAdmin}
           />
@@ -301,6 +298,18 @@ export default function ProductsPage() {
                 className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
               />
             </div>
+            <select
+              value={brandFilter}
+              onChange={(e) => { setBrandFilter(e.target.value); setPage(1) }}
+              className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 text-gray-700 cursor-pointer"
+            >
+              <option value="">Всі бренди</option>
+              {brands.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
             <button onClick={() => { setLowStock(!lowStock); setPage(1) }}
               className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
                 lowStock ? 'bg-orange-100 border-orange-300 text-orange-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'

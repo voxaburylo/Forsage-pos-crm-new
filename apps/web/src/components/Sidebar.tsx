@@ -184,7 +184,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
   const navigate = useNavigate()
   const { session } = useAuthStore()
   const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
-  const [readyCount, setReadyCount]   = useState(0)
+
   const [pickingCount, setPickingCount] = useState(0)
   const [notifCount, setNotifCount]   = useState(0)
 
@@ -193,13 +193,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     const isOffice = ['owner', 'admin', 'manager'].includes(role)
     if (!isOffice && !isStorekeeper) return
 
-    function fetchReady() {
-      if (isOffice) {
-        api.get<{ data: any[] }>('/api/v1/customer-orders?status=ready&per_page=100', { silent: true } as any)
-          .then((r) => setReadyCount((r.data ?? []).length))
-          .catch(() => {})
-      }
-    }
+
     function fetchPicking() {
       api.get<{ data: any[] }>('/api/v1/picking/orders', { silent: true } as any)
         .then((r) => setPickingCount((r.data ?? []).length))
@@ -211,13 +205,12 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
         .catch(() => {})
     }
 
-    fetchReady(); fetchPicking(); fetchNotif()
-    const t = setInterval(() => { fetchReady(); fetchPicking(); fetchNotif() }, 120_000)
+    fetchPicking(); fetchNotif()
+    const t = setInterval(() => { fetchPicking(); fetchNotif() }, 120_000)
     return () => clearInterval(t)
   }, [role])
 
   const badgeMap: Record<string, number> = {
-    '/orders': readyCount,
     '/inventory/picking': pickingCount,
     '/notifications': notifCount,
   }

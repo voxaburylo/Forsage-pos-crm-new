@@ -100,6 +100,8 @@ export function ReadyOrdersPanel() {
       store.setCustomer(customer)
     }
 
+    store.setCustomerOrderId(order.id)
+
     setOpen(false)
     toast.success(`Замовлення завантажено: ${warehouseItems.length} позицій`)
   }

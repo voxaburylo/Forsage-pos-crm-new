@@ -369,6 +369,45 @@ async function executeSaleTransaction(
       )
     }
 
+    // 10. Link and complete customer order if customer_order_id is provided
+    if (input.customer_order_id) {
+      const orderRes = await client.query(
+        'SELECT id, status FROM customer_orders WHERE id = $1 FOR UPDATE',
+        [input.customer_order_id]
+      )
+      if (orderRes.rows && orderRes.rows.length > 0) {
+        const order = orderRes.rows[0]
+        if (order.status !== 'completed') {
+          // Release reserves
+          await client.query(
+            'UPDATE inventory_reserves SET released_at = NOW() WHERE order_id = $1 AND released_at IS NULL',
+            [input.customer_order_id]
+          )
+          // Update customer order items status to \'handed\'
+          await client.query(
+            "UPDATE customer_order_items SET item_status = 'handed' WHERE order_id = $1 AND item_status NOT IN ('canceled', 'handed')",
+            [input.customer_order_id]
+          )
+          // Update customer order status & link to sale
+          await client.query(
+            "UPDATE customer_orders SET status = 'completed', sale_id = $1, updated_at = NOW() WHERE id = $2",
+            [sale.id, input.customer_order_id]
+          )
+          // Insert order activity log
+          await client.query(
+            `INSERT INTO order_activity_log (order_id, user_id, action, details)
+             VALUES ($1, $2, 'completed', $3)`,
+            [
+              input.customer_order_id,
+              cashierId,
+              'completed',
+              JSON.stringify({ sale_id: sale.id, method: input.payment_method, note: 'Видано через касу (POS)' })
+            ]
+          )
+        }
+      }
+    }
+
     return sale
   })
 }
@@ -528,6 +567,22 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
         })
         .eq('key', idempotencyKey)
         .eq('tenant_id', tenantId)
+    }
+
+    if (input.customer_order_id) {
+      try {
+        const { calculateAndRecordCommission } = await import('./commissionService.js')
+        await calculateAndRecordCommission(input.customer_order_id, tenantId, cashierId)
+      } catch (commErr: any) {
+        logger.error({ orderId: input.customer_order_id, error: commErr?.message || String(commErr) }, 'Failed to calculate manager commission')
+      }
+
+      try {
+        const { notifyStatusUpdate } = await import('./telegramBot.js')
+        notifyStatusUpdate(input.customer_order_id, 'completed').catch(() => {})
+      } catch (notifyErr: any) {
+        logger.error({ orderId: input.customer_order_id, error: notifyErr?.message || String(notifyErr) }, 'Failed to send completion notification')
+      }
     }
 
     return sale

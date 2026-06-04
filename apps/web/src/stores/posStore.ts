@@ -36,6 +36,7 @@ export interface ReceiptTab {
   total: number
   selectedProductId: string | null
   bonusToRedeem: number
+  customerOrderId: string | null
 }
 
 const MAX_TABS = 5
@@ -54,6 +55,7 @@ function createEmptyTab(): ReceiptTab {
     subtotal: 0, totalDiscount: 0, total: 0,
     selectedProductId: null,
     bonusToRedeem: 0,
+    customerOrderId: null,
   }
 }
 
@@ -85,6 +87,7 @@ interface POSState {
   total: number
   selectedProductId: string | null
   bonusToRedeem: number
+  customerOrderId: string | null
 
   // Менеджер для комісійних (глобальний на всю зміну)
   managerId: string | null
@@ -105,6 +108,7 @@ interface POSState {
   setNotes: (notes: string) => void
   setBonusToRedeem: (amount: number) => void
   setSelectedProductId: (id: string | null) => void
+  setCustomerOrderId: (id: string | null) => void
   clearReceipt: () => void
 }
 
@@ -119,6 +123,7 @@ function getActiveTabGetters(tabs: ReceiptTab[], activeTabId: string | null) {
     items: [], customer: null, notes: '',
     subtotal: 0, totalDiscount: 0, total: 0,
     selectedProductId: null, bonusToRedeem: 0,
+    customerOrderId: null,
   }
   return {
     items: active.items,
@@ -129,6 +134,7 @@ function getActiveTabGetters(tabs: ReceiptTab[], activeTabId: string | null) {
     total: active.total,
     selectedProductId: active.selectedProductId,
     bonusToRedeem: active.bonusToRedeem,
+    customerOrderId: active.customerOrderId ?? null,
   }
 }
 
@@ -279,6 +285,12 @@ export const usePOSStore = create<POSState>((set, get) => {
       const { activeTabId } = get()
       if (!activeTabId) return
       updateTabInStore(set, get, activeTabId, { selectedProductId: id } as any)
+    },
+
+    setCustomerOrderId: (id) => {
+      const { activeTabId } = get()
+      if (!activeTabId) return
+      updateTabInStore(set, get, activeTabId, { customerOrderId: id } as any)
     },
 
     clearReceipt: () => {

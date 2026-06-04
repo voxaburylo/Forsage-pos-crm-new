@@ -8,9 +8,10 @@ export const saleItemSchema = z.object({
 })
 
 export const createSaleSchema = z.object({
-  shift_id:       z.string().uuid(),
-  customer_id:    z.string().uuid().optional().nullable(),
-  manager_id:     z.string().uuid().optional().nullable(),
+  shift_id:            z.string().uuid(),
+  customer_id:         z.string().uuid().optional().nullable(),
+  customer_order_id:   z.string().uuid().optional().nullable(),
+  manager_id:          z.string().uuid().optional().nullable(),
   items:          z.array(saleItemSchema).min(1, 'Чек не може бути порожнім'),
   payment_method: z.enum(['cash', 'card', 'debt', 'mixed', 'transfer']),
   is_fiscal:      z.boolean().default(false),
