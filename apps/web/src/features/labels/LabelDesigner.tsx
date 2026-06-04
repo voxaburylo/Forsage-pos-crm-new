@@ -41,6 +41,12 @@ export interface LabelSettings {
   show_barcode_text: boolean
   barcode_width_factor: number
   max_name_lines: number
+  // Вирівнювання елементів
+  align_shop_name?: 'left' | 'center' | 'right'
+  align_product_name?: 'left' | 'center' | 'right'
+  align_price?: 'left' | 'center' | 'right'
+  align_sku?: 'left' | 'center' | 'right'
+  align_barcode?: 'left' | 'center' | 'right'
 }
 
 export const DEFAULT_LABEL: LabelSettings = {
@@ -58,6 +64,11 @@ export const DEFAULT_LABEL: LabelSettings = {
   show_barcode_text: true,
   barcode_width_factor: 1.0,
   max_name_lines: 2,
+  align_shop_name: 'left',
+  align_product_name: 'left',
+  align_price: 'left',
+  align_sku: 'left',
+  align_barcode: 'center',
 }
 
 type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' | 'pos_price' | 'pos_bin'
@@ -65,10 +76,11 @@ type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' |
 // ================================================================
 // Малюємо фейковий штрих-код для попереднього перегляду
 // ================================================================
-function MockBarcode({ width, height, value, displayValue = true }:
-  { width: number; height: number; value: string; displayValue?: boolean }) {
+function MockBarcode({ width, height, value, displayValue = true, fontSize = 7, previewScale = 5, align = 'center' }:
+  { width: number; height: number; value: string; displayValue?: boolean; fontSize?: number; previewScale?: number; align?: string }) {
+  const flexAlign = align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center'
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: width + 'px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: flexAlign, width: width + 'px' }}>
       <svg width={width} height={height} viewBox="0 0 100 35" preserveAspectRatio="none" style={{ display: 'block' }}>
         <rect x="0" y="0" width="3" height="35" fill="black" />
         <rect x="5" y="0" width="1" height="35" fill="black" />
@@ -95,7 +107,7 @@ function MockBarcode({ width, height, value, displayValue = true }:
         <rect x="95" y="0" width="2" height="35" fill="black" />
       </svg>
       {displayValue && (
-        <span style={{ fontSize: '8px', color: '#333', fontFamily: 'monospace', marginTop: '2px', letterSpacing: '1px' }}>{value}</span>
+        <span style={{ fontSize: fontSize * previewScale + 'px', color: '#333', fontFamily: 'monospace', marginTop: '2px', letterSpacing: '1px' }}>{value}</span>
       )}
     </div>
   )
@@ -116,7 +128,12 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     pos_price: { x: 50, y: 75 },
     pos_bin: { x: 5, y: 88 },
     barcode_width_factor: 1.0,
-    max_name_lines: 2
+    max_name_lines: 2,
+    align_shop_name: 'left',
+    align_product_name: 'left',
+    align_price: 'left',
+    align_sku: 'left',
+    align_barcode: 'center',
   },
   large_product_5840: {
     name: 'Товарна велика (58×40 мм)',
@@ -132,7 +149,12 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     pos_price: { x: 50, y: 78 },
     pos_bin: { x: 5, y: 90 },
     barcode_width_factor: 1.2,
-    max_name_lines: 2
+    max_name_lines: 2,
+    align_shop_name: 'left',
+    align_product_name: 'left',
+    align_price: 'left',
+    align_sku: 'left',
+    align_barcode: 'center',
   },
   standard_bin_4030: {
     name: 'Ячейка стандартна (40×30 мм)',
@@ -148,7 +170,12 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     pos_price: { x: 50, y: 75 },
     pos_bin: { x: 5, y: 25 },
     barcode_width_factor: 1.0,
-    max_name_lines: 1
+    max_name_lines: 1,
+    align_shop_name: 'center',
+    align_product_name: 'center',
+    align_price: 'center',
+    align_sku: 'center',
+    align_barcode: 'center',
   },
   large_bin_5840: {
     name: 'Ячейка велика (58×40 мм)',
@@ -164,7 +191,12 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     pos_price: { x: 50, y: 80 },
     pos_bin: { x: 5, y: 20 },
     barcode_width_factor: 1.2,
-    max_name_lines: 1
+    max_name_lines: 1,
+    align_shop_name: 'center',
+    align_product_name: 'center',
+    align_price: 'center',
+    align_sku: 'center',
+    align_barcode: 'center',
   }
 }
 
@@ -201,6 +233,10 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
   const pw = settings.width_mm * previewScale
   const ph = settings.height_mm * previewScale
 
+  const innerW = (settings.width_mm - settings.padding_mm * 2) * previewScale
+  const innerH = (settings.height_mm - settings.padding_mm * 2) * previewScale
+  const padPx = settings.padding_mm * previewScale
+
   type RndItem = { key: PosKey; visible: boolean; children: React.ReactNode; defaultPos?: { x: number; y: number } }
 
   const items: RndItem[] = []
@@ -215,10 +251,11 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         <div style={{
           fontSize: settings.font_size_shop * previewScale + 'px',
           color: '#888',
-          width: pw * (95 - (settings.pos_shop_name?.x ?? 5)) / 100 + 'px',
+          width: innerW * (100 - (settings.pos_shop_name?.x ?? 5)) / 100 + 'px',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          textAlign: settings.align_shop_name || 'left',
         }}>
           {shopName}
         </div>
@@ -236,8 +273,8 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         <div style={{
           fontSize: Math.min(settings.font_size_title * previewScale, settings.width_mm * 1.5) + 'px',
           fontWeight: 700,
-          textAlign: 'center',
-          width: pw * (95 - (settings.pos_bin?.x ?? 5)) / 100 + 'px',
+          textAlign: settings.align_product_name || 'center',
+          width: innerW * (100 - (settings.pos_bin?.x ?? 5)) / 100 + 'px',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -254,10 +291,13 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         defaultPos: settings.pos_barcode,
         children: (
           <MockBarcode
-            width={settings.width_mm * previewScale * 0.7 * (settings.barcode_width_factor ?? 1.0)}
-            height={settings.barcode_height}
+            width={innerW * 0.8 * (settings.barcode_width_factor ?? 1.0)}
+            height={settings.barcode_height * (previewScale / 3.78)}
             value={binLabel}
             displayValue={settings.show_barcode_text}
+            fontSize={settings.font_size}
+            previewScale={previewScale}
+            align={settings.align_barcode || 'center'}
           />
         ),
       })
@@ -279,7 +319,8 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
             WebkitLineClamp: settings.max_name_lines ?? 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-            width: pw * (95 - (settings.pos_product_name?.x ?? 5)) / 100 + 'px',
+            width: innerW * (100 - (settings.pos_product_name?.x ?? 5)) / 100 + 'px',
+            textAlign: settings.align_product_name || 'left',
           }}>
             {product.name}
           </div>
@@ -295,10 +336,13 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
         defaultPos: settings.pos_barcode,
         children: (
           <MockBarcode
-            width={settings.width_mm * previewScale * 0.7 * (settings.barcode_width_factor ?? 1.0)}
-            height={settings.barcode_height}
+            width={innerW * 0.8 * (settings.barcode_width_factor ?? 1.0)}
+            height={settings.barcode_height * (previewScale / 3.78)}
             value={barcodeVal}
             displayValue={settings.show_barcode_text}
+            fontSize={settings.font_size}
+            previewScale={previewScale}
+            align={settings.align_barcode || 'center'}
           />
         ),
       })
@@ -312,10 +356,11 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
           <div style={{
             fontSize: settings.font_size_sku * previewScale + 'px',
             color: '#888',
-            width: pw * (95 - (settings.pos_sku?.x ?? 5)) / 100 + 'px',
+            width: innerW * (100 - (settings.pos_sku?.x ?? 5)) / 100 + 'px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
+            textAlign: settings.align_sku || 'left',
           }}>
             {settings.show_sku && product.sku}
             {settings.show_storage_bin && (product as any).storage_bin && <span> · {(product as any).storage_bin}</span>}
@@ -332,10 +377,11 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
           <div style={{
             fontSize: settings.font_size_price * previewScale + 'px',
             fontWeight: 700,
-            width: pw * (95 - (settings.pos_price?.x ?? 5)) / 100 + 'px',
+            width: innerW * (100 - (settings.pos_price?.x ?? 5)) / 100 + 'px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
+            textAlign: settings.align_price || 'left',
           }}>
             {kopecksToHryvnia(product.retail_price)} ₴
           </div>
@@ -356,27 +402,51 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
   return (
     <div className="border border-gray-300 bg-white relative overflow-hidden"
       style={{ width: pw, height: ph, fontFamily: "'Courier New', monospace" }}>
-      {items.map((item) => {
-        const pos = item.defaultPos || { x: 5, y: 5 }
-        return (
-          <Rnd
-            key={item.key}
-            position={{ x: Math.round(pw * pos.x / 100), y: Math.round(ph * pos.y / 100) }}
-            onDragStop={(_e, d) => {
-              const newX = Math.round((d.x / pw) * 100)
-              const newY = Math.round((d.y / ph) * 100)
-              onPosChange?.(item.key, { x: Math.max(0, Math.min(95, newX)), y: Math.max(0, Math.min(95, newY)) })
-            }}
-            bounds="parent"
-            enableResizing={false}
-            style={{ zIndex: 10 }}
-          >
-            <div className="relative group cursor-move" style={{ display: 'inline-block' }}>
-              {item.children}
-            </div>
-          </Rnd>
-        )
-      })}
+      
+      {/* Dashed guide line representing printable boundary */}
+      <div
+        className="absolute border border-dashed border-gray-200 pointer-events-none"
+        style={{
+          left: padPx + 'px',
+          top: padPx + 'px',
+          width: innerW + 'px',
+          height: innerH + 'px',
+          zIndex: 1
+        }}
+      />
+
+      <div
+        className="absolute"
+        style={{
+          left: padPx + 'px',
+          top: padPx + 'px',
+          width: innerW + 'px',
+          height: innerH + 'px',
+        }}
+      >
+        {items.map((item) => {
+          const pos = item.defaultPos || { x: 5, y: 5 }
+          return (
+            <Rnd
+              key={item.key}
+              position={{ x: Math.round(innerW * pos.x / 100), y: Math.round(innerH * pos.y / 100) }}
+              onDragStop={(_e, d) => {
+                const newX = Math.round((d.x / innerW) * 100)
+                const newY = Math.round((d.y / innerH) * 100)
+                onPosChange?.(item.key, { x: Math.max(0, Math.min(100, newX)), y: Math.max(0, Math.min(100, newY)) })
+              }}
+              bounds="parent"
+              enableResizing={false}
+              style={{ zIndex: 10 }}
+            >
+              <div className="relative group cursor-move select-none" style={{ display: 'inline-block', lineHeight: 1 }}>
+                {item.children}
+              </div>
+            </Rnd>
+          )
+        })}
+      </div>
+
       {/* Grid dots hint */}
       <div className="absolute inset-0 pointer-events-none opacity-10"
         style={{ backgroundImage: 'radial-gradient(circle, #000 0.5px, transparent 0.5px)', backgroundSize: '8px 8px' }} />
@@ -397,35 +467,39 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
 
     if (settings.show_shop_name) {
       const pShop = settings.pos_shop_name || { x: 5, y: 5 }
-      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${95 - pShop.x}%; font-size: ${settings.font_size_shop}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${shopName}</div>`
+      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${100 - pShop.x}%; font-size: ${settings.font_size_shop}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_shop_name || 'left'};">${shopName}</div>`
     }
 
     if (binLabel) {
       const pBin = settings.pos_bin || { x: 5, y: 88 }
-      body += `<div style="position: absolute; left: ${pBin.x}%; top: ${pBin.y}%; width: ${95 - pBin.x}%; font-size: ${settings.font_size_title + 2}px; font-weight: 700; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${binLabel}</div>`
+      body += `<div style="position: absolute; left: ${pBin.x}%; top: ${pBin.y}%; width: ${100 - pBin.x}%; font-size: ${settings.font_size_title + 2}px; font-weight: 700; text-align: ${settings.align_product_name || 'center'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${binLabel}</div>`
       if (settings.show_barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
-        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%;"><svg id="bin-bc-${index}"></svg></div>`
+        const alignBc = settings.align_barcode || 'center'
+        const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
+        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%; display: flex; flex-direction: column; align-items: ${flexBc};"><svg id="bin-bc-${index}"></svg></div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
         const pName = settings.pos_product_name || { x: 5, y: 25 }
-        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${95 - pName.x}%; font-size: ${settings.font_size_title}px; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: ${settings.max_name_lines ?? 2}; -webkit-box-orient: vertical; max-height: ${(settings.max_name_lines ?? 2) * 1.1}em; overflow: hidden; white-space: normal;">${product.name}</div>`
+        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${100 - pName.x}%; font-size: ${settings.font_size_title}px; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: ${settings.max_name_lines ?? 2}; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; text-align: ${settings.align_product_name || 'left'};">${product.name}</div>`
       }
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
-        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%;"><svg id="bc-${product.id}-${index}"></svg></div>`
+        const alignBc = settings.align_barcode || 'center'
+        const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
+        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%; display: flex; flex-direction: column; align-items: ${flexBc};"><svg id="bc-${product.id}-${index}"></svg></div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
         const pSku = settings.pos_sku || { x: 5, y: 75 }
         let skuText = ''
         if (settings.show_sku) skuText += product.sku
         if (settings.show_storage_bin && (product as any).storage_bin) skuText += ` · ${(product as any).storage_bin}`
-        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${95 - pSku.x}%; font-size: ${settings.font_size_sku}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${skuText}</div>`
+        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${100 - pSku.x}%; font-size: ${settings.font_size_sku}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_sku || 'left'};">${skuText}</div>`
       }
       if (settings.show_price) {
         const pPrice = settings.pos_price || { x: 50, y: 75 }
-        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${95 - pPrice.x}%; font-size: ${settings.font_size_price}px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${kopecksToHryvnia(product.retail_price)} ₴</div>`
+        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${100 - pPrice.x}%; font-size: ${settings.font_size_price}px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_price || 'left'};">${kopecksToHryvnia(product.retail_price)} ₴</div>`
       }
     }
 
@@ -819,7 +893,10 @@ export default function LabelDesigner() {
                   onChange={(e) => updateSetting('height_mm', parseInt(e.target.value) || 30)} />
               </div>
               <Input label="Відступ (мм)" type="number" min={0} max={10} value={settings.padding_mm}
-                onChange={(e) => updateSetting('padding_mm', parseInt(e.target.value) || 2)} />
+                onChange={(e) => {
+                  const val = parseInt(e.target.value)
+                  updateSetting('padding_mm', isNaN(val) ? 0 : val)
+                }} />
             </Card>
 
             <Card className="space-y-4">
@@ -846,6 +923,76 @@ export default function LabelDesigner() {
                 onChange={(e) => updateSetting('font_size', parseInt(e.target.value) || 7)} />
               <Input label="Висота штрих-коду (px)" type="number" min={10} max={60} value={settings.barcode_height}
                 onChange={(e) => updateSetting('barcode_height', parseInt(e.target.value) || 28)} />
+            </Card>
+
+            <Card className="space-y-4">
+              <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Вирівнювання тексту</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Назва магазину</label>
+                  <select
+                    value={settings.align_shop_name || 'left'}
+                    onChange={(e) => updateSetting('align_shop_name', e.target.value as any)}
+                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="left">Ліворуч</option>
+                    <option value="center">По центру</option>
+                    <option value="right">Праворуч</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Назва товару</label>
+                  <select
+                    value={settings.align_product_name || 'left'}
+                    onChange={(e) => updateSetting('align_product_name', e.target.value as any)}
+                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="left">Ліворуч</option>
+                    <option value="center">По центру</option>
+                    <option value="right">Праворуч</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Артикул / SKU</label>
+                  <select
+                    value={settings.align_sku || 'left'}
+                    onChange={(e) => updateSetting('align_sku', e.target.value as any)}
+                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="left">Ліворуч</option>
+                    <option value="center">По центру</option>
+                    <option value="right">Праворуч</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Ціна</label>
+                  <select
+                    value={settings.align_price || 'left'}
+                    onChange={(e) => updateSetting('align_price', e.target.value as any)}
+                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="left">Ліворуч</option>
+                    <option value="center">По центру</option>
+                    <option value="right">Праворуч</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Штрих-код</label>
+                  <select
+                    value={settings.align_barcode || 'center'}
+                    onChange={(e) => updateSetting('align_barcode', e.target.value as any)}
+                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="left">Ліворуч</option>
+                    <option value="center">По центру</option>
+                    <option value="right">Праворуч</option>
+                  </select>
+                </div>
+              </div>
             </Card>
 
             <Card className="space-y-4">
