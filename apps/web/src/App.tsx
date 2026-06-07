@@ -107,7 +107,7 @@ function App() {
           <Route path="/staff-profitability" element={<ProtectedRoute><StaffProfitabilityReport /></ProtectedRoute>} />
           <Route path="/admin"    element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-          <Route path="/settings/commission" element={<ProtectedRoute><CommissionRulesPage /></ProtectedRoute>} />
+          <Route path="/staff/commission" element={<ProtectedRoute><CommissionRulesPage /></ProtectedRoute>} />
           <Route path="/suppliers" element={<ProtectedRoute><SuppliersPage /></ProtectedRoute>} />
           <Route path="/suppliers/new" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id" element={<ProtectedRoute><SupplierDetailPage /></ProtectedRoute>} />

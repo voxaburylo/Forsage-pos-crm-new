@@ -105,13 +105,13 @@ export const ANALYTICS_TABS = [
 export const STAFF_TABS = [
   { to: '/staff', label: 'Команда', roles: ['owner', 'admin'] },
   { to: '/staff-salary', label: 'Нарахування ЗП', roles: ['owner', 'admin'] },
+  { to: '/staff/commission', label: 'Комісійні', roles: ['owner', 'admin'] },
   { to: '/staff-kpi', label: 'KPI персоналу', roles: ['owner', 'admin'] },
   { to: '/staff-profitability', label: 'Прибутковість', roles: ['owner', 'admin'] }
 ]
 
 export const SETTINGS_TABS = [
   { to: '/settings', label: 'Загальні', roles: ['owner', 'admin'] },
-  { to: '/settings/commission', label: 'Комісійні', roles: ['owner', 'admin'] },
   { to: '/settings/channels', label: 'Канали зв\'язку', roles: ['owner', 'admin'] },
   { to: '/settings/templates', label: 'Шаблони', roles: ['owner', 'admin'] },
   { to: '/print-center', label: 'Центр друку', roles: ['owner', 'admin', 'manager'] },
