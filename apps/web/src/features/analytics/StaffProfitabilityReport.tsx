@@ -4,7 +4,9 @@ import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Card } from '@/components/ui'
 import { formatMoney } from '@/lib/utils'
-import { TrendingUp, DollarSign, Users, Award, Calendar, AlertCircle } from 'lucide-react'
+import { TrendingUp, DollarSign, Users, Award, Calendar, AlertCircle, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
+import { toast } from '@/components/ui/Toast'
 
 interface StaffProfitabilityItem {
   manager_id: string
@@ -90,6 +92,49 @@ export default function StaffProfitabilityReport() {
     }))
   }, [items])
 
+  const exportToExcel = () => {
+    try {
+      if (items.length === 0) {
+        toast.error('Немає даних для експорту')
+        return
+      }
+      const dataToExport = items.map((mgr) => ({
+        'Співробітник': mgr.manager_name,
+        'ID Співробітника': mgr.manager_id,
+        'Виручка (Загальна), грн': mgr.total_revenue / 100,
+        'Виручка POS, грн': mgr.sales_revenue / 100,
+        'Виручка Замовлення, грн': mgr.orders_revenue / 100,
+        'Собівартість (COGS), грн': mgr.total_cogs / 100,
+        'Валовий прибуток, грн': mgr.gross_profit / 100,
+        'Виплати (Загальні), грн': mgr.total_payouts / 100,
+        'ЗП (Ставка), грн': mgr.salary_cost / 100,
+        'Бонуси, грн': mgr.bonus_cost / 100,
+        'Аванси/Штрафи, грн': (mgr.advance_cost - mgr.penalty_cost) / 100,
+        'Чистий результат, грн': mgr.net_profit / 100,
+      }))
+
+      const ws = XLSX.utils.json_to_sheet(dataToExport)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Прибутковість працівників')
+      
+      const maxLens = Object.keys(dataToExport[0] || {}).map(key => {
+        let maxVal = key.length
+        dataToExport.forEach(row => {
+          const val = String(row[key as keyof typeof row] || '')
+          if (val.length > maxVal) maxVal = val.length
+        })
+        return { wch: maxVal + 3 }
+      })
+      ws['!cols'] = maxLens
+
+      XLSX.writeFile(wb, `Staff_Profitability_${range.startDate}_to_${range.endDate}.xlsx`)
+      toast.success('Дані успішно експортовано в Excel')
+    } catch (error) {
+      console.error(error)
+      toast.error('Помилка при експорті в Excel')
+    }
+  }
+
   return (
     <Layout title="Прибутковість працівників">
       <div className="max-w-7xl space-y-6">
@@ -156,9 +201,19 @@ export default function StaffProfitabilityReport() {
             </div>
           )}
 
-          <div className="flex items-center gap-2 text-sm text-gray-500 font-medium">
-            <Calendar size={16} className="text-gray-400" />
-            <span>{range.startDate} — {range.endDate}</span>
+          <div className="flex items-center gap-4 text-sm text-gray-500 font-medium">
+            <div className="flex items-center gap-2">
+              <Calendar size={16} className="text-gray-400" />
+              <span>{range.startDate} — {range.endDate}</span>
+            </div>
+            <button
+              onClick={exportToExcel}
+              className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+              disabled={loading || items.length === 0}
+            >
+              <Download size={14} />
+              Експорт в Excel
+            </button>
           </div>
         </div>
 

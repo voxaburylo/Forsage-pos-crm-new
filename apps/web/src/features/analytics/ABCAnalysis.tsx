@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
+import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Card, Badge, Table } from '@/components/ui'
@@ -44,6 +46,44 @@ export default function ABCAnalysis() {
 
   const deficitCount = items.filter((i) => i.abc_class === 'A' && i.currentStock <= 0).length
 
+  const exportToExcel = () => {
+    try {
+      if (filtered.length === 0) {
+        toast.error('Немає даних для експорту')
+        return
+      }
+      const dataToExport = filtered.map((item) => ({
+        'Клас': item.abc_class,
+        'Артикул': item.sku,
+        'Товар': item.name,
+        'Залишок на складі': item.currentStock,
+        'Продано, шт': item.soldQty,
+        'Прибуток, грн': item.profit / 100,
+      }))
+
+      const ws = XLSX.utils.json_to_sheet(dataToExport)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'ABC-аналіз товарів')
+
+      const maxLens = Object.keys(dataToExport[0] || {}).map(key => {
+        let maxVal = key.length
+        dataToExport.forEach(row => {
+          const val = String(row[key as keyof typeof row] || '')
+          if (val.length > maxVal) maxVal = val.length
+        })
+        return { wch: maxVal + 3 }
+      })
+      ws['!cols'] = maxLens
+
+      const activeFilter = showDeficit ? 'Deficit_Class_A' : (filter || 'All')
+      XLSX.writeFile(wb, `ABC_Analysis_${activeFilter}.xlsx`)
+      toast.success('Дані успішно експортовано в Excel')
+    } catch (error) {
+      console.error(error)
+      toast.error('Помилка при експорті в Excel')
+    }
+  }
+
   const columns = [
     { key: 'class', header: 'Клас', className: 'w-16', render: (i: ABCItem) => (
       <Badge color={CLASS_COLORS[i.abc_class] ?? 'gray'}>{i.abc_class}</Badge>
@@ -86,18 +126,30 @@ export default function ABCAnalysis() {
         )}
 
         {/* Фільтри */}
-        <div className="flex gap-2 flex-wrap">
-          {['A', 'B', 'C', 'Z'].map((cls) => (
-            <button key={cls} onClick={() => { setFilter(filter === cls ? null : cls); setShowDeficit(false) }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                filter === cls ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}>
-              {CLASS_LABELS[cls] ?? cls}
+        <div className="flex gap-2 flex-wrap items-center justify-between">
+          <div className="flex gap-2 flex-wrap">
+            {['A', 'B', 'C', 'Z'].map((cls) => (
+              <button key={cls} onClick={() => { setFilter(filter === cls ? null : cls); setShowDeficit(false) }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  filter === cls ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}>
+                {CLASS_LABELS[cls] ?? cls}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-4 ml-auto">
+            <span className="text-xs text-gray-400">
+              {items.length} товарів · {filtered.length} показано
+            </span>
+            <button
+              onClick={exportToExcel}
+              className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+              disabled={loading || filtered.length === 0}
+            >
+              <Download size={14} />
+              Експорт в Excel
             </button>
-          ))}
-          <span className="text-xs text-gray-400 self-center ml-auto">
-            {items.length} товарів · {filtered.length} показано
-          </span>
+          </div>
         </div>
 
         {/* Таблиця */}

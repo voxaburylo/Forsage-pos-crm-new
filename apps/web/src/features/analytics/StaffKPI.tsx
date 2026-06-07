@@ -6,7 +6,9 @@ import { Card, Button, Modal, Input, Badge } from '@/components/ui'
 import { formatMoney } from '@/lib/utils'
 import { adminApi, AdminUser } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
-import { Target, TrendingUp, TrendingDown, Plus, Printer, Loader2, Award, Calendar, BarChart3 } from 'lucide-react'
+import { Target, TrendingUp, TrendingDown, Plus, Printer, Loader2, Award, Calendar, BarChart3, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
+import { toast } from '@/components/ui/Toast'
 
 interface KPIStaff {
   manager_id: string
@@ -98,6 +100,46 @@ export default function StaffKPI() {
       .catch(() => {})
       .finally(() => setLeaderboardLoading(false))
   }, [range, activeTab])
+
+  const exportLeaderboardToExcel = () => {
+    try {
+      if (leaderboardItems.length === 0) {
+        toast.error('Немає даних для експорту')
+        return
+      }
+      const dataToExport = leaderboardItems.map((mgr) => ({
+        'Співробітник': mgr.manager_name,
+        'ID Співробітника': mgr.manager_id,
+        'Виторг, грн': mgr.total_revenue / 100,
+        'Кількість чеків': mgr.receipt_count,
+        'Середній чек, грн': mgr.average_receipt / 100,
+        'Знижки, грн': mgr.total_discounts / 100,
+        'Відсоток знижок': `${mgr.discount_pct}%`,
+        'Кількість повернень': mgr.returns_count,
+        'Сума повернень, грн': mgr.returns_amount / 100,
+      }))
+
+      const ws = XLSX.utils.json_to_sheet(dataToExport)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Лідерборд KPI')
+
+      const maxLens = Object.keys(dataToExport[0] || {}).map(key => {
+        let maxVal = key.length
+        dataToExport.forEach(row => {
+          const val = String(row[key as keyof typeof row] || '')
+          if (val.length > maxVal) maxVal = val.length
+        })
+        return { wch: maxVal + 3 }
+      })
+      ws['!cols'] = maxLens
+
+      XLSX.writeFile(wb, `Staff_KPI_Leaderboard_${range.startDate}_to_${range.endDate}.xlsx`)
+      toast.success('Дані успішно експортовано в Excel')
+    } catch (error) {
+      console.error(error)
+      toast.error('Помилка при експорті в Excel')
+    }
+  }
 
   // Завантаження списку працівників
   useEffect(() => {
@@ -350,16 +392,28 @@ export default function StaffKPI() {
         {/* Таб Лідерборд */}
         {activeTab === 'leaderboard' && (
           <div className="space-y-4">
-            <div className="flex gap-2">
-              <button onClick={() => setLeaderboardPeriod('month')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium ${leaderboardPeriod === 'month' ? 'bg-yellow-400 text-black' : 'bg-white border border-gray-200 text-gray-600'}`}>
-                Цей місяць
-              </button>
-              <button onClick={() => setLeaderboardPeriod('quarter')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium ${leaderboardPeriod === 'quarter' ? 'bg-yellow-400 text-black' : 'bg-white border border-gray-200 text-gray-600'}`}>
-                3 місяці
-              </button>
-              <span className="text-sm text-gray-400 self-center ml-auto">{range.startDate} — {range.endDate}</span>
+            <div className="flex flex-wrap gap-2 items-center justify-between">
+              <div className="flex gap-2">
+                <button onClick={() => setLeaderboardPeriod('month')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${leaderboardPeriod === 'month' ? 'bg-yellow-400 text-black' : 'bg-white border border-gray-200 text-gray-600'}`}>
+                  Цей місяць
+                </button>
+                <button onClick={() => setLeaderboardPeriod('quarter')}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${leaderboardPeriod === 'quarter' ? 'bg-yellow-400 text-black' : 'bg-white border border-gray-200 text-gray-600'}`}>
+                  3 місяці
+                </button>
+              </div>
+              <div className="flex items-center gap-4 ml-auto">
+                <span className="text-sm text-gray-400">{range.startDate} — {range.endDate}</span>
+                <button
+                  onClick={exportLeaderboardToExcel}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+                  disabled={leaderboardLoading || leaderboardItems.length === 0}
+                >
+                  <Download size={14} />
+                  Експорт в Excel
+                </button>
+              </div>
             </div>
 
             {leaderboardItems.length > 1 && (

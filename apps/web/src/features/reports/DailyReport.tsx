@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign } from 'lucide-react'
+import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
 import { api } from '@/lib/api'
 import { REASON_LABEL } from '@/types/writeoff'
@@ -122,6 +123,98 @@ export default function DailyReport() {
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [])
 
+  const exportToExcel = useCallback(() => {
+    try {
+      let dataToExport: any[] = []
+      let fileName = 'zvit'
+
+      if (tab === 'today' || tab === 'period') {
+        if (!report || !report.sales.length) {
+          toast.error('Немає даних для експорту')
+          return
+        }
+        dataToExport = report.sales.map((s) => ({
+          'Номер чека': `#${s.sale_number}`,
+          'Метод оплати': PAYMENT_LABELS[s.payment_method] || s.payment_method,
+          'Сума (грн)': s.total / 100,
+          'Дата': formatDateTime(s.completed_at),
+        }))
+        fileName = `sales_${tab === 'today' ? 'today' : 'period'}`
+      } else if (tab === 'weekly') {
+        if (!weekly.length) {
+          toast.error('Немає даних для експорту')
+          return
+        }
+        dataToExport = weekly.map((d) => ({
+          'Дата': formatDate(d.date),
+          'Кількість продажів': d.sales,
+          'Виручка (грн)': d.revenue / 100,
+        }))
+        fileName = 'weekly_sales'
+      } else if (tab === 'lowstock') {
+        if (!lowStock.length) {
+          toast.error('Немає даних для експорту')
+          return
+        }
+        dataToExport = lowStock.map((p) => ({
+          'Артикул': p.sku,
+          'Назва': p.name,
+          'Категорія': p.category?.name || '—',
+          'Залишок': `${p.qty_on_hand} ${p.unit}`,
+          'Мінімум': `${p.reorder_point} ${p.unit}`,
+        }))
+        fileName = 'low_stock'
+      } else if (tab === 'debtors') {
+        if (!debtors.length) {
+          toast.error('Немає даних для експорту')
+          return
+        }
+        dataToExport = debtors.map((d) => ({
+          'Телефон': d.phone,
+          'Ім\'я': d.full_name || '—',
+          'Борг (грн)': d.debt_balance / 100,
+        }))
+        fileName = 'debtors'
+      } else if (tab === 'writeoffs') {
+        if (!writeoffs || !writeoffs.writeoffs.length) {
+          toast.error('Немає даних для експорту')
+          return
+        }
+        dataToExport = writeoffs.writeoffs.map((w) => {
+          const cost = w.items.reduce((s, i) => s + i.cost_kopecks, 0)
+          return {
+            'Дата': formatDate(w.created_at),
+            'Причина': REASON_LABEL[w.reason as WriteoffReason] || w.reason,
+            'Кількість позицій': w.items.length,
+            'Собівартість (грн)': cost / 100,
+          }
+        })
+        fileName = 'writeoffs'
+      } else if (tab === 'profit') {
+        if (!profit) {
+          toast.error('Немає даних для експорту')
+          return
+        }
+        dataToExport = [
+          { 'Показник': 'Виручка', 'Значення (грн)': profit.revenue / 100 },
+          { 'Показник': 'Собівартість (COGS)', 'Значення (грн)': -profit.cogs / 100 },
+          { 'Показник': 'Валовий прибуток', 'Значення (грн)': profit.gross_margin / 100 },
+          { 'Показник': 'Операційні витрати', 'Значення (грн)': -profit.expenses / 100 },
+          { 'Показник': 'Чистий прибуток', 'Значення (грн)': profit.net_profit / 100 },
+        ]
+        fileName = 'profit_loss'
+      }
+
+      const worksheet = XLSX.utils.json_to_sheet(dataToExport)
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Звіт')
+      XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      toast.success('Звіт успішно експортовано в Excel')
+    } catch (err) {
+      toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit])
+
   useEffect(() => {
     if (tab === 'today')         loadToday()
     else if (tab === 'weekly')   loadWeekly()
@@ -152,18 +245,26 @@ export default function DailyReport() {
 
   return (
     <Layout title="Звіти">
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id as Tab)}
-            className={
-              'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ' +
-              (tab === t.id
-                ? 'bg-yellow-400 text-black'
-                : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300')
-            }>
-            {t.icon}{t.label}
-          </button>
-        ))}
+      <div className="flex justify-between items-center gap-2 mb-6 flex-wrap">
+        <div className="flex gap-2 flex-wrap">
+          {TABS.map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id as Tab)}
+              className={
+                'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ' +
+                (tab === t.id
+                  ? 'bg-yellow-400 text-black'
+                  : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300')
+              }>
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </div>
+
+        <button onClick={exportToExcel}
+          className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors cursor-pointer">
+          <Download size={15} />
+          Експорт в Excel
+        </button>
       </div>
 
       {/* Сьогодні */}
