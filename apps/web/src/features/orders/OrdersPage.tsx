@@ -46,6 +46,7 @@ type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 const STATUS_CONFIG: Record<string, { label: string; color: BadgeColor }> = {
   lead:       { label: 'Лід',         color: 'blue'   },
   new:        { label: 'Нове',         color: 'gray'   },
+  in_progress:{ label: 'В роботі',     color: 'yellow' },
   ordered:    { label: 'Замовлено',    color: 'yellow' },
   arrived:    { label: 'Прибуло',      color: 'green'  },
   called:     { label: 'Повідомл.',    color: 'blue'   },
@@ -716,9 +717,13 @@ interface DraftsGridProps {
   orders: CustomerOrder[]
   onLoad: () => void
   onEdit: (id: string) => void
+  offset: number
+  onPrevPage: () => void
+  onNextPage: () => void
+  hasMore: boolean
 }
 
-function DraftsGrid({ orders, onLoad, onEdit }: DraftsGridProps) {
+function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, hasMore }: DraftsGridProps) {
   const navigate = useNavigate()
   const drafts = orders.filter(isDraft)
 
@@ -860,6 +865,32 @@ function DraftsGrid({ orders, onLoad, onEdit }: DraftsGridProps) {
             })}
           </div>
         )}
+
+        {/* Пагінація чернеток */}
+        <div className="flex items-center justify-between px-5 py-4 bg-white border border-gray-100 rounded-2xl shadow-sm">
+          <span className="text-xs text-gray-500">
+            Показано {drafts.length} чернеток
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={offset === 0}
+              onClick={onPrevPage}
+            >
+              Попередня сторінка
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!hasMore}
+              onClick={onNextPage}
+            >
+              Наступна сторінка
+            </Button>
+          </div>
+        </div>
+
       </div>
     </div>
   )
@@ -871,9 +902,13 @@ interface OrdersTableProps {
   search: string
   setSearch: (s: string) => void
   onRefresh: () => void
+  offset: number
+  onPrevPage: () => void
+  onNextPage: () => void
+  hasMore: boolean
 }
 
-function OrdersTable({ orders, search, setSearch, onRefresh }: OrdersTableProps) {
+function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore }: OrdersTableProps) {
   const navigate = useNavigate()
 
   return (
@@ -921,7 +956,8 @@ function OrdersTable({ orders, search, setSearch, onRefresh }: OrdersTableProps)
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {orders.map((o: CustomerOrder) => {
-                  const hasDebt = o.total_amount > o.prepayment
+                  const paid = o.total_paid ?? o.prepayment ?? 0
+                  const hasDebt = o.total_amount > paid
                   return (
                     <tr key={o.id} className="hover:bg-gray-50/30 transition-colors">
                       {/* Замовлення */}
@@ -976,14 +1012,14 @@ function OrdersTable({ orders, search, setSearch, onRefresh }: OrdersTableProps)
                       {/* Сума */}
                       <td className="px-5 py-4">
                         <div className="font-bold text-gray-900">{formatMoney(o.total_amount)}</div>
-                        {o.prepayment > 0 && (
+                        {paid > 0 && (
                           <div className="text-[11px] text-blue-600 mt-0.5">
-                            Сплачено: {formatMoney(o.prepayment)}
+                            Сплачено: {formatMoney(paid)}
                           </div>
                         )}
                         {hasDebt && (
                           <div className="text-[11px] text-red-500 font-semibold mt-0.5">
-                            Борг: {formatMoney(o.total_amount - o.prepayment)}
+                            Борг: {formatMoney(o.total_amount - paid)}
                           </div>
                         )}
                       </td>
@@ -1025,6 +1061,32 @@ function OrdersTable({ orders, search, setSearch, onRefresh }: OrdersTableProps)
               </tbody>
             </table>
           </div>
+
+          {/* Пагінація замовлень */}
+          <div className="flex items-center justify-between px-5 py-4 bg-white border-t border-gray-100">
+            <span className="text-xs text-gray-500">
+              Показано {orders.length} замовлень
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={offset === 0}
+                onClick={onPrevPage}
+              >
+                Попередня сторінка
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={!hasMore}
+                onClick={onNextPage}
+              >
+                Наступна сторінка
+              </Button>
+            </div>
+          </div>
+
         </Card>
       </div>
     </div>
@@ -1045,6 +1107,12 @@ export default function OrdersPage() {
 
   // ui
   const [tab, setTab] = useState<Tab>('all')
+  const [offset, setOffset] = useState(0)
+
+  // Reset offset on tab changes
+  useEffect(() => {
+    setOffset(0)
+  }, [tab])
 
   useEffect(() => {
     const urlTab = searchParams.get('tab') as Tab
@@ -1069,6 +1137,9 @@ export default function OrdersPage() {
 
   // модалки
   const [payModal, setPayModal] = useState<CustomerOrder | null>(null)
+  const [callbackModal, setCallbackModal] = useState<{ orderId: string; status: string } | null>(null)
+  const [callbackDate, setCallbackDate] = useState('')
+  const [callbackTime, setCallbackTime] = useState('')
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'mixed'>('cash')
   const [isFiscal, setIsFiscal] = useState(false)
   const [cancelModal, setCancelModal] = useState<CustomerOrder | null>(null)
@@ -1096,8 +1167,8 @@ export default function OrdersPage() {
   }, [loadChats])
 
   // ── завантаження замовлень за вкладкою ──
-  function tabParams(t: Tab): string {
-    const p = new URLSearchParams({ per_page: '200' })
+  function tabParams(t: Tab, currentOffset: number): string {
+    const p = new URLSearchParams({ per_page: '50', offset: currentOffset.toString() })
     if (t === 'active')    p.set('status', 'new,ordered,arrived,called,no_answer')
     if (t === 'ready')     p.set('status', 'ready')
     if (t === 'completed') p.set('status', 'completed,canceled')
@@ -1106,14 +1177,14 @@ export default function OrdersPage() {
   }
   const loadOrders = useCallback(() => {
     setLoadingOrders(true)
-    api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?${tabParams(tab)}`, { silent: true })
+    api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?${tabParams(tab, offset)}`, { silent: true })
       .then((r) => setOrders(r.data ?? []))
       .catch(() => toast.error('Помилка завантаження замовлень'))
       .finally(() => setLoadingOrders(false))
-  }, [tab])
+  }, [tab, offset])
   useEffect(() => {
     loadOrders()
-    const t = setInterval(loadOrders, 60_000)
+    const t = setInterval(loadOrders, 15_000)
     return () => clearInterval(t)
   }, [loadOrders])
 
@@ -1248,12 +1319,32 @@ export default function OrdersPage() {
     loadChats(); loadOrders()
   }
 
-  async function changeOrderStatus(orderId: string, status: string) {
+  async function changeOrderStatus(orderId: string, status: string, callbackAt?: string | null) {
+    if ((status === 'called' || status === 'no_answer') && callbackAt === undefined) {
+      setCallbackModal({ orderId, status })
+      const tomorrow = new Date()
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      setCallbackDate(tomorrow.toISOString().split('T')[0])
+      setCallbackTime('10:00')
+      return
+    }
+
     try {
-      await orderApi.updateStatus(orderId, status as any)
+      await orderApi.updateStatus(orderId, status as any, callbackAt)
       toast.success('Статус змінено')
+      setCallbackModal(null)
       loadOrders()
     } catch { toast.error('Помилка') }
+  }
+
+  function handleConfirmCallback() {
+    if (!callbackModal) return
+    const dt = new Date(`${callbackDate}T${callbackTime}`)
+    if (isNaN(dt.getTime())) {
+      toast.error('Вкажіть коректну дату та час')
+      return
+    }
+    changeOrderStatus(callbackModal.orderId, callbackModal.status, dt.toISOString())
   }
 
   async function updateItemStatus(orderId: string, itemId: string, status: string) {
@@ -1553,9 +1644,26 @@ export default function OrdersPage() {
           )}
             </>
           ) : tab === 'drafts' ? (
-            <DraftsGrid orders={orders} onLoad={loadOrders} onEdit={(id) => navigate('/quotes/' + id)} />
+            <DraftsGrid 
+              orders={orders} 
+              onLoad={loadOrders} 
+              onEdit={(id) => navigate('/quotes/' + id)} 
+              offset={offset}
+              onPrevPage={() => setOffset(Math.max(0, offset - 50))}
+              onNextPage={() => setOffset(offset + 50)}
+              hasMore={orders.length >= 50}
+            />
           ) : (
-            <OrdersTable orders={displayOrders} search={search} setSearch={setSearch} onRefresh={() => { loadChats(); loadOrders() }} />
+            <OrdersTable 
+              orders={displayOrders} 
+              search={search} 
+              setSearch={setSearch} 
+              onRefresh={() => { loadChats(); loadOrders() }} 
+              offset={offset}
+              onPrevPage={() => setOffset(Math.max(0, offset - 50))}
+              onNextPage={() => setOffset(offset + 50)}
+              hasMore={orders.length >= 50}
+            />
           )}
         </div>
       </div>
@@ -1694,6 +1802,47 @@ export default function OrdersPage() {
           </div>
         </div>
       )}
+
+      {/* Модал планування передзвону (P2 Fix 14) */}
+      <Modal
+        open={callbackModal !== null}
+        onClose={() => setCallbackModal(null)}
+        title="Запланувати передзвон"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Ви переводите замовлення в статус "${callbackModal?.status === 'called' ? 'Повідомлено' : 'Не відповів'}". 
+            Вкажіть дату та час для повторного контакту.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="Дата"
+              type="date"
+              value={callbackDate}
+              onChange={(e) => setCallbackDate(e.target.value)}
+            />
+            <Input
+              label="Час"
+              type="time"
+              value={callbackTime}
+              onChange={(e) => setCallbackTime(e.target.value)}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={handleConfirmCallback} className="flex-1">
+              📅 Запланувати
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => changeOrderStatus(callbackModal!.orderId, callbackModal!.status, null)}
+              className="flex-1"
+            >
+              Пропустити
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <ToastContainer />
     </div>

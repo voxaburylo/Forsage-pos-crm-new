@@ -55,7 +55,7 @@ export class PrintService {
       const printWindow = window.open("", "_blank", `width=${width},height=${height}`);
       if (!printWindow) {
         console.error("Failed to open print window. Popup blocker enabled?");
-        return;
+        throw new Error("Popup blocker active");
       }
 
       printWindow.document.open();

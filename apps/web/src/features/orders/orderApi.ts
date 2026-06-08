@@ -2,8 +2,8 @@ import { api } from '@/lib/api'
 
 // ---------- Типи ----------
 
-export type CustomerOrderStatus = 'lead' | 'new' | 'ordered' | 'arrived' | 'called' | 'no_answer' | 'ready' | 'completed' | 'canceled'
-export type ItemStatus = 'pending' | 'ordered' | 'arrived' | 'handed' | 'canceled'
+export type CustomerOrderStatus = 'lead' | 'new' | 'in_progress' | 'ordered' | 'arrived' | 'called' | 'no_answer' | 'ready' | 'completed' | 'canceled'
+export type ItemStatus = 'pending' | 'ordered' | 'arrived' | 'handed' | 'canceled' | 'returned'
 export type OrderSource = 'walk_in' | 'phone' | 'messenger' | 'telegram_bot' | 'mobile_draft'
 
 export interface CustomerOrderItem {
@@ -33,6 +33,7 @@ export interface CustomerOrder {
   prepayment_method: string | null
   total_amount: number
   total_paid: number
+  discount_amount: number
   pickup_deadline_at: string | null
   pickup_cell: string | null
   comment: string | null
@@ -54,6 +55,7 @@ export interface CreateOrderItemPayload {
   buy_price?: number
   sell_price: number
   qty: number
+  expected_date?: string | null
 }
 
 export interface CreateOrderPayload {
@@ -65,6 +67,7 @@ export interface CreateOrderPayload {
   prepayment?: number
   prepayment_method?: 'cash' | 'card' | 'transfer' | null
   prepayment_is_fiscal?: boolean
+  discount_amount?: number
   items: CreateOrderItemPayload[]
 }
 
@@ -82,8 +85,11 @@ export const orderApi = {
   create: (body: CreateOrderPayload) =>
     api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body),
 
-  updateStatus: (id: string, status: CustomerOrderStatus) =>
-    api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status }),
+  update: (id: string, body: CreateOrderPayload) =>
+    api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body),
+
+  updateStatus: (id: string, status: CustomerOrderStatus, callback_at?: string | null) =>
+    api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status, callback_at }),
 
   updateItemStatus: (orderId: string, itemId: string, item_status: ItemStatus) =>
     api.patch(`/api/v1/customer-orders/${orderId}/items/${itemId}/status`, { item_status }),

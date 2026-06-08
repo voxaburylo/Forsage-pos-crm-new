@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search } from 'lucide-react'
 import { orderApi, type CreateOrderPayload } from './orderApi'
 import { customerApi } from '@/features/customers/customerApi'
@@ -22,7 +22,8 @@ const VIN_WMI: Record<string, string> = {
 
 function vinMake(vin: string): string {
   if (!vin) return 'Авто'
-  return VIN_WMI[vin.slice(0, 4).toUpperCase()] ?? VIN_WMI[vin.slice(0, 3).toUpperCase()] ?? 'Авто'
+  const cleanVin = vin.trim().toUpperCase()
+  return VIN_WMI[cleanVin.slice(0, 4)] ?? VIN_WMI[cleanVin.slice(0, 3)] ?? 'Авто'
 }
 
 interface Supplier { id: string; name: string }
@@ -33,13 +34,16 @@ interface ItemRow {
   qty:         string
   sell_price:  string
   supplier_id: string
+  expected_date?: string
 }
 
-const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '' }
+const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '' }
 
 export default function OrderFormPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const { id } = useParams()
+  const [loading, setLoading] = useState(false)
 
   // Wizard state
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
@@ -69,6 +73,137 @@ export default function OrderFormPage() {
   const [newVehVin, setNewVehVin] = useState('')
   const [addingVehicle, setAddingVehicle] = useState(false)
 
+  // Duplicate order initialization (P1 Fix 9)
+  useEffect(() => {
+    if (id) return
+    const raw = sessionStorage.getItem('duplicate_order_payload')
+    if (raw) {
+      sessionStorage.removeItem('duplicate_order_payload')
+      try {
+        const payload = JSON.parse(raw)
+        if (payload.customer_id) {
+          setCustomerId(payload.customer_id)
+          // Load customer
+          customerApi.get(payload.customer_id)
+            .then((r) => {
+              if (r.data) setSelectedCustomer(r.data)
+            })
+            .catch(() => {})
+          // Load vehicles
+          customerVehiclesApi.list(payload.customer_id)
+            .then((res) => {
+              const list = res.data || []
+              setVehicles(list)
+              if (payload.vehicle_info) {
+                const veh = list.find((v) => 
+                  v.brand === payload.vehicle_info.make && 
+                  v.model === payload.vehicle_info.model && 
+                  v.vin === payload.vehicle_info.vin
+                )
+                if (veh) setSelectedVehicle(veh)
+              }
+            })
+            .catch(() => {})
+        }
+        if (payload.items && payload.items.length > 0) {
+          setItems(payload.items)
+        }
+        if (payload.discount_amount) {
+          setDiscount((payload.discount_amount / 100).toString())
+        }
+      } catch (e) {
+        console.error('Duplication payload error', e)
+      }
+    }
+  }, [id])
+
+  // Load existing order details for editing (P0 Fix 1)
+  useEffect(() => {
+    if (!id) return
+    setLoading(true)
+    orderApi.get(id)
+      .then((r) => {
+        const o = r.data
+        if (!o) return
+        
+        // Load customer
+        if (o.customer) {
+          setCustomerId(o.customer.id)
+          const fallbackCust: Customer = {
+            id: o.customer.id,
+            phone: o.customer.phone,
+            full_name: o.customer.full_name,
+            email: '',
+            debt_balance: 0,
+            notes: null,
+            tags: [],
+            price_tier_id: null,
+            price_tier: null,
+            bonus_balance: 0,
+            vip_level: 'standard',
+            risk_profile: 'low',
+            card_barcode: null,
+            primary_vin: o.vehicle_info?.vin ?? null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            deleted_at: null,
+          }
+          customerApi.get(o.customer.id)
+            .then((res) => {
+              if (res.data) setSelectedCustomer(res.data)
+              else setSelectedCustomer(fallbackCust)
+            })
+            .catch(() => {
+              setSelectedCustomer(fallbackCust)
+            })
+          
+          // Load vehicles
+          customerVehiclesApi.list(o.customer.id)
+            .then((res) => {
+              const list = res.data || []
+              setVehicles(list)
+              if (o.vehicle_info) {
+                const veh = list.find((v) => 
+                  v.brand === o.vehicle_info?.make && 
+                  v.model === o.vehicle_info?.model && 
+                  v.vin === o.vehicle_info?.vin
+                )
+                if (veh) setSelectedVehicle(veh)
+              }
+            })
+            .catch(() => {})
+        }
+        
+        // Set comment & urgency
+        let cleanComment = o.comment ?? ''
+        if (cleanComment.includes('[ТЕРМІНОВО]')) {
+          setIsUrgent(true)
+          cleanComment = cleanComment.replace('[ТЕРМІНОВО]', '').trim()
+        }
+        setComment(cleanComment)
+        
+        // Prepayment
+        setPrepayment((o.prepayment / 100).toString())
+        setPrepaymentMethod((o.prepayment_method as any) || 'cash')
+        
+        // Discount
+        setDiscount(o.discount_amount ? (o.discount_amount / 100).toString() : '0')
+        // Items
+        if (o.items && o.items.length > 0) {
+          setItems(o.items.map(item => ({
+            name: item.name,
+            sku: item.sku ?? '',
+            qty: item.qty.toString(),
+            sell_price: (item.sell_price / 100).toString(),
+            supplier_id: item.supplier_id ?? '',
+            expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
+          })))
+        }
+      })
+      .catch(() => toast.error('Помилка завантаження замовлення'))
+      .finally(() => setLoading(false))
+  }, [id])
+
   // Step 3: Items
   const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -77,6 +212,7 @@ export default function OrderFormPage() {
   const [comment, setComment] = useState('')
   const [isUrgent, setIsUrgent] = useState(false)
   const [prepayment, setPrepayment] = useState('0')
+  const [discount, setDiscount] = useState('0')
   const [prepaymentMethod, setPrepaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [isFiscal, setIsFiscal] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -140,6 +276,13 @@ export default function OrderFormPage() {
   }, [newVehVin])
 
   // Selection handlers
+  function handleSkipCustomer() {
+    setSelectedCustomer(null)
+    setCustomerId('')
+    setSelectedVehicle(null)
+    setStep(3)
+  }
+
   function handleCustomerSelect(c: Customer) {
     setSelectedCustomer(c)
     setCustomerId(c.id)
@@ -255,6 +398,7 @@ export default function OrderFormPage() {
     // Draft orders have 0 prepayment in backend typically
     const finalPrepayment = asDraft ? 0 : prepaymentKop
 
+    const discountKop = Math.round(parseFloat(discount || '0') * 100)
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
       source: 'walk_in',
@@ -263,6 +407,7 @@ export default function OrderFormPage() {
       prepayment: finalPrepayment,
       prepayment_method: finalPrepayment > 0 ? prepaymentMethod : null,
       prepayment_is_fiscal: finalPrepayment > 0 ? isFiscal : false,
+      discount_amount: discountKop,
       items: validItems.map((row) => ({
         name:        row.name.trim(),
         sku:         row.sku.trim() || null,
@@ -271,24 +416,31 @@ export default function OrderFormPage() {
         buy_price:   0,
         supplier_id: row.supplier_id || null,
         source_type: row.supplier_id ? 'supplier' : 'warehouse',
+        expected_date: row.supplier_id && row.expected_date ? row.expected_date : null,
       })),
     }
 
     setSaving(true)
     try {
-      const result = await orderApi.create(payload)
-      const newOrder = (result as { data: { id: string } }).data
-      
-      if (asDraft) {
-        toast.success('Чернетку збережено')
-        navigate('/orders?tab=drafts')
+      if (id) {
+        await orderApi.update(id, payload)
+        toast.success('Замовлення оновлено')
+        navigate('/orders/' + id)
       } else {
-        // If order prepayment is 0, backend creates it as 'lead'. Let's promote it to 'new' since manager explicitly checked it out as Order.
-        if (finalPrepayment === 0) {
-          await orderApi.updateStatus(newOrder.id, 'new')
+        const result = await orderApi.create(payload)
+        const newOrder = (result as { data: { id: string } }).data
+        
+        if (asDraft) {
+          toast.success('Чернетку збережено')
+          navigate('/orders?tab=drafts')
+        } else {
+          // If order prepayment is 0, backend creates it as 'lead'. Let's promote it to 'new' since manager explicitly checked it out as Order.
+          if (finalPrepayment === 0) {
+            await orderApi.updateStatus(newOrder.id, 'new')
+          }
+          toast.success('Замовлення оформлено!')
+          navigate('/orders/' + newOrder.id)
         }
-        toast.success('Замовлення оформлено!')
-        navigate('/orders/' + newOrder.id)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка збереження')
@@ -300,8 +452,18 @@ export default function OrderFormPage() {
   // Customer List to show
   const customerList = customerSearch.trim().length >= 2 ? searchedCustomers : defaultCustomers
 
+  if (loading) {
+    return (
+      <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
+        <div className="flex items-center justify-center min-h-[300px]">
+          <p className="text-gray-400 text-sm">Завантаження даних замовлення...</p>
+        </div>
+      </Layout>
+    )
+  }
+
   return (
-    <Layout title="Нове замовлення" onBack={() => navigate(-1)}>
+    <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
       <div className="max-w-4xl mx-auto space-y-6">
         
         {/* Step Indicator */}
@@ -394,12 +556,20 @@ export default function OrderFormPage() {
 
               {/* DASHED ADD CUSTOMER BUTTON */}
               {!showAddCustomer ? (
-                <button
-                  onClick={() => setShowAddCustomer(true)}
-                  className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <Plus size={16} /> Створити нового клієнта
-                </button>
+                <div className="space-y-3">
+                  <button
+                    onClick={() => setShowAddCustomer(true)}
+                    className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Plus size={16} /> Створити нового клієнта
+                  </button>
+                  <button
+                    onClick={handleSkipCustomer}
+                    className="w-full border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    👤 Пропустити вибір клієнта (Швидке замовлення)
+                  </button>
+                </div>
               ) : (
                 <form onSubmit={handleCreateCustomer} className="border border-yellow-100 bg-yellow-50/20 rounded-xl p-4 space-y-4">
                   <h4 className="font-bold text-yellow-800 text-sm">Створення нового клієнта</h4>
@@ -490,7 +660,7 @@ export default function OrderFormPage() {
                     <Input
                       label="VIN-код (17 знаків)"
                       value={newVehVin}
-                      onChange={(e) => setNewVehVin(e.target.value)}
+                      onChange={(e) => setNewVehVin(e.target.value.toUpperCase())}
                       placeholder="KNEDE241260000300"
                     />
                     <Input
@@ -526,17 +696,19 @@ export default function OrderFormPage() {
         )}
 
         {/* ─────────────── STEP 3: PARTS SPECIFICATION ─────────────── */}
-        {step === 3 && selectedCustomer && (
+        {step === 3 && (
           <div className="space-y-6">
             {/* Header info */}
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-wrap justify-between items-center gap-4">
               <div className="flex items-center gap-3">
-                <Button size="sm" variant="ghost" onClick={() => setStep(2)} icon={<ArrowLeft size={14} />} />
+                <Button size="sm" variant="ghost" onClick={() => setStep(selectedCustomer ? 2 : 1)} icon={<ArrowLeft size={14} />} />
                 <div>
                   <h3 className="font-bold text-gray-900">Специфікація замовлення</h3>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    Клієнт: <span className="font-bold text-gray-700">{selectedCustomer.full_name}</span> | 
-                    Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не обрано'}</span>
+                    Клієнт: <span className="font-bold text-gray-700">{selectedCustomer ? (selectedCustomer.full_name ?? 'Без імені') : 'Гість'}</span>
+                    {selectedCustomer && (
+                      <> | Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не обрано'}</span></>
+                    )}
                   </p>
                 </div>
               </div>
@@ -614,6 +786,17 @@ export default function OrderFormPage() {
                               <option key={s.id} value={s.id}>{s.name}</option>
                             ))}
                           </select>
+                          {row.supplier_id && (
+                            <div className="mt-1.5">
+                              <input
+                                type="date"
+                                value={row.expected_date || ''}
+                                onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
+                                className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                                title="Очікувана дата надходження"
+                              />
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-center">
                           {items.length > 1 && (
@@ -640,7 +823,7 @@ export default function OrderFormPage() {
                 </Button>
                 
                 <div className="flex gap-2">
-                  <Button variant="secondary" onClick={() => setStep(2)}>Назад</Button>
+                  <Button variant="secondary" onClick={() => setStep(selectedCustomer ? 2 : 1)}>Назад</Button>
                   <Button onClick={() => {
                     const filled = items.filter(i => i.name.trim())
                     if (filled.length === 0) {
@@ -656,7 +839,7 @@ export default function OrderFormPage() {
         )}
 
         {/* ─────────────── STEP 4: SUMMARY & CHECKOUT ─────────────── */}
-        {step === 4 && selectedCustomer && (
+        {step === 4 && (
           <div className="space-y-6 max-w-3xl mx-auto">
             {/* Header info */}
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center gap-3">
@@ -676,18 +859,22 @@ export default function OrderFormPage() {
                 <div className="space-y-3 text-sm">
                   <div className="flex justify-between">
                     <span className="text-gray-500">Клієнт:</span>
-                    <span className="font-semibold text-gray-800">{selectedCustomer.full_name}</span>
+                    <span className="font-semibold text-gray-800">{selectedCustomer ? (selectedCustomer.full_name ?? 'Без імені') : 'Гість'}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Телефон:</span>
-                    <span className="font-semibold text-gray-800">{selectedCustomer.phone}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Автомобіль:</span>
-                    <span className="font-semibold text-gray-800">
-                      {selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не прив\'язано'}
-                    </span>
-                  </div>
+                  {selectedCustomer && (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Телефон:</span>
+                        <span className="font-semibold text-gray-800">{selectedCustomer.phone}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Автомобіль:</span>
+                        <span className="font-semibold text-gray-800">
+                          {selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не прив\'язано'}
+                        </span>
+                      </div>
+                    </>
+                  )}
                   {selectedVehicle?.vin && (
                     <div className="flex justify-between">
                       <span className="text-gray-500">VIN-код:</span>
@@ -697,9 +884,23 @@ export default function OrderFormPage() {
                 </div>
 
                 <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2 pt-2">Сума замовлення</h4>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500 text-sm">Загальна сума товарів:</span>
-                  <span className="text-xl font-extrabold text-yellow-600">{formatMoney(totalKop)}</span>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Загальна сума товарів:</span>
+                    <span className="font-semibold text-gray-800">{formatMoney(totalKop)}</span>
+                  </div>
+                  {parseFloat(discount) > 0 && (
+                    <div className="flex justify-between text-red-600 font-semibold">
+                      <span>Знижка:</span>
+                      <span>-{formatMoney(Math.round(parseFloat(discount || '0') * 100))}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center border-t border-gray-100 pt-2">
+                    <span className="text-gray-500 font-semibold">До сплати:</span>
+                    <span className="text-xl font-extrabold text-yellow-600">
+                      {formatMoney(Math.max(0, totalKop - Math.round(parseFloat(discount || '0') * 100)))}
+                    </span>
+                  </div>
                 </div>
               </Card>
 
@@ -709,14 +910,24 @@ export default function OrderFormPage() {
                 
                 {/* Prepayment Input */}
                 <div className="space-y-3">
-                  <Input
-                    label="Внести передоплату (грн)"
-                    value={prepayment}
-                    onChange={(e) => setPrepayment(e.target.value)}
-                    type="number"
-                    min="0"
-                    step="any"
-                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Знижка на замовлення (грн)"
+                      value={discount}
+                      onChange={(e) => setDiscount(e.target.value)}
+                      type="number"
+                      min="0"
+                      step="any"
+                    />
+                    <Input
+                      label="Внести передоплату (грн)"
+                      value={prepayment}
+                      onChange={(e) => setPrepayment(e.target.value)}
+                      type="number"
+                      min="0"
+                      step="any"
+                    />
+                  </div>
                   
                   {parseFloat(prepayment) > 0 && (
                     <div className="space-y-3">

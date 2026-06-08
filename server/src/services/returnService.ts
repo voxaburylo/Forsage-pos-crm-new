@@ -251,6 +251,38 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
   const returnRecord = typeof data === 'string' ? JSON.parse(data) : data
 
   // ==================================================================
+  // 5.5. Connected Returns Mappings (P1 Fix 10)
+  // ==================================================================
+  try {
+    const { data: order } = await db
+      .from('customer_orders')
+      .select('id')
+      .eq('sale_id', input.sale_id)
+      .single()
+
+    if (order) {
+      for (const item of input.items) {
+        const { data: orderItem } = await db
+          .from('customer_order_items')
+          .select('id')
+          .eq('order_id', order.id)
+          .eq('product_id', item.product_id)
+          .limit(1)
+          .single()
+
+        if (orderItem) {
+          await db
+            .from('customer_order_items')
+            .update({ item_status: 'returned' })
+            .eq('id', orderItem.id)
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to map return to customer order:', err)
+  }
+
+  // ==================================================================
   // 6. Аудит (await — гарантуємо запис)
   // ==================================================================
   await logAction({

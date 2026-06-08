@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import * as adminService from '../services/adminService.js'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -27,6 +28,7 @@ const createOrderSchema = z.object({
   prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
   prepayment_is_fiscal:  z.boolean().default(false),
   parent_draft_id:       z.string().uuid().optional().nullable(),
+  discount_amount:       z.number().int().min(0).default(0),
   items: z.array(z.object({
     sku:          z.string().max(100).optional().nullable(),
     name:         z.string().min(1).max(500),
@@ -35,8 +37,9 @@ const createOrderSchema = z.object({
     source_type:  z.enum(['warehouse', 'supplier']).default('supplier'),
     buy_price:    z.number().int().min(0).default(0),
     sell_price:   z.number().int().min(0).default(0),
-    qty:          z.number().int().min(1).default(1),
+    qty:          z.number().min(0.001).default(1),
     is_draft_note: z.boolean().default(false),
+    expected_date: z.string().optional().nullable(),
     variants:     z.array(z.object({
       brand:          z.string().max(200),
       price:          z.number().int().min(0),
@@ -55,34 +58,18 @@ router.post('/', async (req, res, next) => {
     const input = parsed.data
     const totalAmount = input.items.reduce((s, i) => s + i.sell_price * i.qty, 0)
 
-    // Термінальна перевірка передоплати ПЕРЕД створенням замовлення в БД
+    // Термінальна перевірка передоплати ПЕРЕД створенням замовлення в БД (Оновлено P2 Fix 13)
     let bankAuthCode: string | null = null
     let terminalRrn:  string | null = null
     let finalIsFiscal = input.prepayment_is_fiscal
 
-    if (input.prepayment > 0) {
-      if (input.prepayment_method === 'card') {
-        finalIsFiscal = true // Термінал -> 100% ПРРО
-        const { getSettings } = await import('../services/adminService.js')
-        const settings = await getSettings(req.user!.tenant_id).catch(() => null)
+    const isCardPrepayment = input.prepayment > 0 && input.prepayment_method === 'card'
 
-        if (settings && settings.bank_terminal_enabled) {
-          const terminalAdapter = getTerminalAdapter(settings)
-          if (terminalAdapter) {
-            const terminalResult = await terminalAdapter.processPayment(
-              input.prepayment,
-              "PREPAY-" + Date.now()
-            )
-            if (!terminalResult.success) {
-              throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
-            }
-            bankAuthCode = terminalResult.authCode
-            terminalRrn = terminalResult.rrn ?? null
-          }
-        }
-      }
-    }
-    // Створюємо замовлення
+    // Створюємо замовлення спочатку в статусі 'lead' (чернетка), якщо це карткова передоплата
+    const initialStatus = isCardPrepayment ? 'lead' : (input.prepayment > 0 ? 'new' : 'lead')
+    const initialPrepayment = isCardPrepayment ? 0 : input.prepayment
+    const initialIsFiscal = isCardPrepayment ? false : finalIsFiscal
+
     const { data: order, error: orderErr } = await db
       .from('customer_orders')
       .insert({
@@ -91,15 +78,16 @@ router.post('/', async (req, res, next) => {
         chat_id: input.chat_id ?? null,
         manager_id: req.user!.id,
         vehicle_info: input.vehicle_info ?? null,
-        status: input.prepayment > 0 ? 'new' : 'lead',
-        prepayment: input.prepayment,
+        status: initialStatus,
+        prepayment: initialPrepayment,
         prepayment_method: input.prepayment_method ?? null,
-        prepayment_is_fiscal: finalIsFiscal,
+        prepayment_is_fiscal: initialIsFiscal,
         total_amount: totalAmount,
-        total_paid: input.prepayment,
+        total_paid: initialPrepayment,
         comment: input.comment ?? null,
         source: input.source,
         parent_draft_id: input.parent_draft_id ?? null,
+        discount_amount: input.discount_amount ?? 0,
       })
       .select()
       .single()
@@ -119,11 +107,63 @@ router.post('/', async (req, res, next) => {
       sell_price: item.sell_price,
       qty: item.qty,
       is_draft_note: item.is_draft_note ?? false,
+      expected_date: item.expected_date ?? null,
       variants: item.variants && item.variants.length > 0 ? item.variants : [],
     }))
 
     const { error: itemsErr } = await db.from('customer_order_items').insert(itemsToInsert)
-    if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+    if (itemsErr) {
+      // rollback order draft
+      await db.from('customer_orders').delete().eq('id', order.id)
+      throw new AppError('DB_ERROR', itemsErr.message, 500)
+    }
+
+    // Якщо це передоплата карткою — проводимо транзакцію на терміналі
+    if (isCardPrepayment) {
+      try {
+        finalIsFiscal = true // Термінал -> 100% ПРРО
+        const { getSettings } = await import('../services/adminService.js')
+        const settings = await getSettings(req.user!.tenant_id).catch(() => null)
+
+        if (settings && settings.bank_terminal_enabled) {
+          const terminalAdapter = getTerminalAdapter(settings)
+          if (terminalAdapter) {
+            const terminalResult = await terminalAdapter.processPayment(
+              input.prepayment,
+              "PREPAY-" + order.id
+            )
+            if (!terminalResult.success) {
+              throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
+            }
+            bankAuthCode = terminalResult.authCode
+            terminalRrn = terminalResult.rrn ?? null
+          }
+        }
+
+        // Транзакція успішна! Активуємо замовлення та оновлюємо передоплату
+        const { error: updateErr } = await db
+          .from('customer_orders')
+          .update({
+            status: 'new',
+            prepayment: input.prepayment,
+            total_paid: input.prepayment,
+            prepayment_is_fiscal: true,
+          })
+          .eq('id', order.id)
+
+        if (updateErr) throw new AppError('DB_ERROR', updateErr.message, 500)
+
+        // Оновимо об'єкт order для подальшого коду
+        order.status = 'new'
+        order.prepayment = input.prepayment
+        order.total_paid = input.prepayment
+        order.prepayment_is_fiscal = true
+      } catch (termErr) {
+        // У разі відхилення терміналом або іншої помилки — видаляємо створену чернетку замовлення
+        await db.from('customer_orders').delete().eq('id', order.id)
+        throw termErr
+      }
+    }
 
     // Якщо є передоплата — фіскалізуємо ПРРО та записуємо платіж
     if (input.prepayment > 0) {
@@ -271,7 +311,7 @@ router.put('/:id/draft', async (req, res, next) => {
         id:             z.string().uuid().optional(),
         name:           z.string().min(1).max(500),
         sku:            z.string().optional().nullable(),
-        qty:            z.number().int().min(1).default(1),
+        qty:            z.number().min(0.001).default(1),
         sell_price:     z.number().int().min(0).default(0),
         is_draft_note:  z.boolean().default(false),
         variants:       z.array(z.object({
@@ -509,7 +549,7 @@ router.post('/:id/payments', async (req, res, next) => {
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
     if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Замовлення вже завершено', 400)
 
-    const remaining = order.total_amount - (order.total_paid ?? 0)
+    const remaining = order.total_amount - (order.discount_amount ?? 0) - (order.total_paid ?? 0)
     if (parsed.data.amount > remaining) {
       throw new AppError('OVERPAYMENT', 'Сума перевищує залишок до сплати', 400)
     }
@@ -562,7 +602,7 @@ router.post('/:id/payments', async (req, res, next) => {
 
     await db.from('order_activity_log').insert({
       order_id: order.id, user_id: req.user!.id, action: 'payment_added',
-      details: { amount: parsed.data.amount, method: parsed.data.method, remaining: newTotalPaid >= order.total_amount ? 0 : order.total_amount - newTotalPaid },
+      details: { amount: parsed.data.amount, method: parsed.data.method, remaining: newTotalPaid >= (order.total_amount - (order.discount_amount ?? 0)) ? 0 : (order.total_amount - (order.discount_amount ?? 0)) - newTotalPaid },
     })
 
     res.status(201).json({ data: payment })
@@ -655,7 +695,7 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
           const chatData = chat as any
           const channel = Array.isArray(chatData.channel) ? chatData.channel[0] : chatData.channel
           if (channel?.platform === 'telegram' && channel?.credentials?.token) {
-            const remaining = order.total_amount - (order.prepayment ?? 0)
+            const remaining = order.total_amount - (order.discount_amount ?? 0) - (order.total_paid ?? order.prepayment ?? 0)
             const msg = `✅ Доброго дня${order.customer.full_name ? ', ' + order.customer.full_name : ''}! Ваше замовлення прибуло в магазин!${remaining > 0 ? ' Залишок до доплати: ' + (remaining / 100).toFixed(2) + ' грн.' : ''} Чекаємо на вас!`
 
             const { Telegraf } = await import('telegraf')
@@ -711,7 +751,10 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
 // PATCH /api/v1/customer-orders/:id/status — змінити статус замовлення
 router.patch('/:id/status', async (req, res, next) => {
   try {
-    const schema = z.object({ status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled', 'archived']) })
+    const schema = z.object({
+      status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled', 'archived']),
+      callback_at: z.string().optional().nullable(),
+    })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний статус', 422)
 
@@ -736,7 +779,7 @@ router.patch('/:id/status', async (req, res, next) => {
       order_id: req.params.id,
       user_id: req.user!.id,
       action: 'status_changed',
-      details: { new_status: parsed.data.status },
+      details: { new_status: parsed.data.status, callback_at: parsed.data.callback_at ?? null },
     })
 
     // Сповіщення в Telegram при зміні статусу менеджером
@@ -764,51 +807,32 @@ router.post('/:id/complete', async (req, res, next) => {
     if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Замовлення вже завершено', 400)
 
     const totalPaid = order.total_paid ?? order.prepayment
-    const remaining = order.total_amount - totalPaid
+    const remaining = order.total_amount - (order.discount_amount ?? 0) - totalPaid
 
     if (remaining > 0) {
       throw new AppError('INCOMPLETE_PAYMENT', 'Не всі оплати проведено. Використайте POST /:id/payments для внесення платежів', 400)
     }
 
-    let saleId: string | null = null
+    // E-3: атомарне завершення з створенням sale-запису
+    const { data: completionData, error: completionErr } = await db.rpc('complete_customer_order', {
+      p_tenant_id:      req.user!.tenant_id,
+      p_order_id:       order.id,
+      p_cashier_id:     req.user!.id,
+      p_shift_id:       parsed.data.shift_id ?? null,
+      p_payment_method: parsed.data.payment_method,
+      p_cash_amount:    parsed.data.cash_amount,
+      p_card_amount:    parsed.data.card_amount,
+    })
 
-    if (process.env.USE_ATOMIC_COMPLETION === 'true') {
-      // E-3: атомарне завершення з створенням sale-запису
-      const { data: completionData, error: completionErr } = await db.rpc('complete_customer_order', {
-        p_tenant_id:      req.user!.tenant_id,
-        p_order_id:       order.id,
-        p_cashier_id:     req.user!.id,
-        p_shift_id:       parsed.data.shift_id ?? null,
-        p_payment_method: parsed.data.payment_method,
-        p_cash_amount:    parsed.data.cash_amount,
-        p_card_amount:    parsed.data.card_amount,
-      })
-
-      if (completionErr) {
-        if (completionErr.message.includes('INSUFFICIENT_STOCK')) {
-          throw new AppError('INSUFFICIENT_STOCK', completionErr.message, 422)
-        }
-        throw new AppError('DB_ERROR', completionErr.message, 500)
+    if (completionErr) {
+      if (completionErr.message.includes('INSUFFICIENT_STOCK')) {
+        throw new AppError('INSUFFICIENT_STOCK', completionErr.message, 422)
       }
-
-      const result = typeof completionData === 'string' ? JSON.parse(completionData) : completionData
-      saleId = result?.sale_id ?? null
-    } else {
-      // Класичний флоу: тільки статус + qty + резерви (без sale)
-      const { error: statusErr } = await db.rpc('update_customer_order_status', {
-        p_tenant_id: req.user!.tenant_id,
-        p_order_id: order.id,
-        p_status: 'completed',
-        p_user_id: req.user!.id
-      })
-
-      if (statusErr) {
-        if (statusErr.message.includes('INSUFFICIENT_STOCK')) {
-          throw new AppError('INSUFFICIENT_STOCK', statusErr.message, 422)
-        }
-        throw new AppError('DB_ERROR', statusErr.message, 500)
-      }
+      throw new AppError('DB_ERROR', completionErr.message, 500)
     }
+
+    const result = typeof completionData === 'string' ? JSON.parse(completionData) : completionData
+    const saleId = result?.sale_id ?? null
 
     await db.from('order_activity_log').insert({
       order_id: order.id,
@@ -867,6 +891,25 @@ router.get('/:id', async (req, res, next) => {
       .single()
 
     if (error || !data) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
+
+    // JOIN profile details for activity log (P1 Fix 11)
+    try {
+      const users = await adminService.listUsers()
+      const usersMap = new Map(users.map(u => [u.id, u]))
+      if (data.activity) {
+        data.activity = data.activity.map((act: any) => {
+          const user = usersMap.get(act.user_id)
+          return {
+            ...act,
+            user_name: user?.full_name ?? '',
+            user_phone: user?.phone ?? '',
+          }
+        })
+      }
+    } catch (usersErr) {
+      logger.error({ error: usersErr }, 'Failed to fetch user list for activity log mapping')
+    }
+
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -967,5 +1010,144 @@ router.post('/:id/cancel', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+
+// PUT /api/v1/customer-orders/:id — оновити замовлення
+router.put('/:id', async (req, res, next) => {
+  try {
+    const schema = z.object({
+      comment:               z.string().max(2000).optional().nullable(),
+      vehicle_info:          z.object({
+        make: z.string().optional(),
+        model: z.string().optional(),
+        year: z.number().optional(),
+        engine_volume: z.string().optional(),
+        vin: z.string().optional(),
+      }).optional().nullable(),
+      customer_id:           z.string().uuid().optional().nullable(),
+      prepayment:            z.number().int().min(0).optional(),
+      prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
+      prepayment_is_fiscal:  z.boolean().optional(),
+      discount_amount:       z.number().int().min(0).optional(),
+      items: z.array(z.object({
+        id:             z.string().uuid().optional(),
+        name:           z.string().min(1).max(500),
+        sku:            z.string().optional().nullable(),
+        product_id:     z.string().uuid().optional().nullable(),
+        supplier_id:    z.string().uuid().optional().nullable(),
+        source_type:    z.enum(['warehouse', 'supplier']).default('supplier'),
+        buy_price:      z.number().int().min(0).default(0),
+        sell_price:     z.number().int().min(0).default(0),
+        qty:            z.number().min(0.001).default(1),
+        is_draft_note:  z.boolean().default(false),
+        expected_date:  z.string().optional().nullable(),
+      })).optional(),
+    })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+
+    const orderId = req.params.id
+
+    // Отримуємо поточне замовлення
+    const { data: order } = await db.from('customer_orders').select('*').eq('id', orderId).single()
+    if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
+    if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Завершене замовлення не можна редагувати', 400)
+
+    // Оновлюємо основні поля
+    const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    if (parsed.data.comment !== undefined) updateFields.comment = parsed.data.comment
+    if (parsed.data.vehicle_info !== undefined) updateFields.vehicle_info = parsed.data.vehicle_info
+    if (parsed.data.customer_id !== undefined) updateFields.customer_id = parsed.data.customer_id
+    if (parsed.data.prepayment !== undefined) {
+      updateFields.prepayment = parsed.data.prepayment
+      updateFields.total_paid = parsed.data.prepayment // оновлюємо також total_paid
+    }
+    if (parsed.data.prepayment_method !== undefined) updateFields.prepayment_method = parsed.data.prepayment_method
+    if (parsed.data.prepayment_is_fiscal !== undefined) updateFields.prepayment_is_fiscal = parsed.data.prepayment_is_fiscal
+    if (parsed.data.discount_amount !== undefined) updateFields.discount_amount = parsed.data.discount_amount
+
+    // Оновлюємо позиції
+    if (parsed.data.items) {
+      // Розраховуємо total_amount
+      const totalAmount = parsed.data.items.reduce((s, i) => s + i.sell_price * i.qty, 0)
+      updateFields.total_amount = totalAmount
+
+      // Видаляємо старі позиції
+      await db.from('customer_order_items').delete().eq('order_id', orderId)
+
+      if (parsed.data.items.length > 0) {
+        await db.from('customer_order_items').insert(
+          parsed.data.items.map((item) => ({
+            order_id: orderId,
+            product_id: item.product_id ?? null,
+            supplier_id: item.supplier_id ?? null,
+            name: item.name,
+            sku: item.sku ?? null,
+            qty: item.qty,
+            sell_price: item.sell_price,
+            buy_price: item.buy_price,
+            source_type: item.supplier_id ? 'supplier' : 'warehouse',
+            item_status: 'pending',
+            is_draft_note: item.is_draft_note,
+            expected_date: item.expected_date ?? null,
+          }))
+        )
+      }
+    }
+
+    await db.from('customer_orders').update(updateFields).eq('id', orderId)
+
+    // Перезапускаємо резервування товарів, якщо статус новий або в процесі
+    if (order.status === 'new' || order.status === 'in_progress') {
+      await db.rpc('reserve_order_items', {
+        p_tenant_id: req.user!.tenant_id,
+        p_order_id: orderId,
+        p_user_id: req.user!.id
+      })
+    }
+
+    // Логуємо дію
+    await db.from('order_activity_log').insert({
+      order_id: orderId,
+      user_id: req.user!.id,
+      action: 'updated',
+      details: { items_count: parsed.data.items?.length, prepayment: parsed.data.prepayment },
+    })
+
+    const { data: updatedOrder } = await db.from('customer_orders')
+      .select('*, customer:customers(id, phone, full_name), items:customer_order_items(*)')
+      .eq('id', orderId).single()
+
+    res.json({ data: updatedOrder })
+  } catch (err) { next(err) }
+})
+
+// DELETE /api/v1/customer-orders/:id — видалити чернетку/замовлення
+router.delete('/:id', async (req, res, next) => {
+  try {
+    const orderId = req.params.id
+
+    // Отримуємо поточне замовлення
+    const { data: order } = await db.from('customer_orders').select('*').eq('id', orderId).single()
+    if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
+
+    // Дозволяємо видаляти тільки чернетки (lead)
+    if (order.status !== 'lead') {
+      throw new AppError('FORBIDDEN', 'Можна видаляти тільки чернетки', 403)
+    }
+
+    // Вивільняємо резерви
+    await db.from('inventory_reserves').update({ released_at: new Date().toISOString() }).eq('order_id', orderId)
+
+    // Видаляємо позиції
+    await db.from('customer_order_items').delete().eq('order_id', orderId)
+
+    // Видаляємо замовлення
+    await db.from('customer_orders').delete().eq('id', orderId)
+
+    res.json({ data: { success: true } })
+  } catch (err) { next(err) }
+})
+
 export default router
+
 

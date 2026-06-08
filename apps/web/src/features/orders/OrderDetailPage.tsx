@@ -30,6 +30,8 @@ interface ActivityEntry {
   details: any
   created_at: string
   user_id: string | null
+  user_name?: string
+  user_phone?: string
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -39,6 +41,7 @@ const ACTION_LABELS: Record<string, string> = {
   'item_status:arrived': 'Прийнято на склад',
   'item_status:handed': 'Видано клієнту',
   'item_status:canceled': 'Скасовано позицію',
+  'item_status:returned': 'Повернуто позицію',
   status_changed: 'Змінено статус',
   payment_added: 'Додано платіж',
   completed: 'Завершено',
@@ -55,6 +58,7 @@ type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 const STATUS_CONFIG: Record<CustomerOrderStatus, { label: string; color: BadgeColor }> = {
   lead:       { label: 'Лід',        color: 'blue'   },
   new:        { label: 'Нове',       color: 'gray'   },
+  in_progress:{ label: 'В роботі',   color: 'yellow' },
   ordered:    { label: 'Замовлено',  color: 'yellow' },
   arrived:    { label: 'Прибуло',    color: 'green'  },
   called:     { label: 'Повідомл.',  color: 'blue'   },
@@ -70,6 +74,7 @@ const ITEM_STATUS_LABEL: Record<ItemStatus, string> = {
   arrived:  'Прийшло',
   handed:   'Видано',
   canceled: 'Скасовано',
+  returned: 'Повернуто',
 }
 
 const ITEM_STATUS_COLOR: Record<ItemStatus, BadgeColor> = {
@@ -78,6 +83,7 @@ const ITEM_STATUS_COLOR: Record<ItemStatus, BadgeColor> = {
   arrived:  'green',
   handed:   'green',
   canceled: 'red',
+  returned: 'red',
 }
 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: string; icon: string }>> = {
@@ -98,6 +104,8 @@ export default function OrderDetailPage() {
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'mixed'>('cash')
   const [isFiscal, setIsFiscal]   = useState(false)
   const [paying, setPaying]       = useState(false)
+  const [inlineAmount, setInlineAmount] = useState('')
+  const [inlinePayMethod, setInlinePayMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
 
   const [itemLabelModal, setItemLabelModal] = useState(false)
   const [selectedOrderItem, setSelectedOrderItem] = useState<any | null>(null)
@@ -160,6 +168,17 @@ export default function OrderDetailPage() {
     try {
       const shiftRes = await shiftApi.current().catch(() => ({ data: null }))
       const shiftId = shiftRes.data?.id ?? null
+
+      const inlineCents = Math.round(parseFloat(inlineAmount || '0') * 100)
+      if (inlineCents > 0) {
+        await api.post(`/api/v1/customer-orders/${id}/payments`, {
+          amount: inlineCents,
+          method: inlinePayMethod,
+          is_fiscal: isFiscal,
+          shift_id: shiftId
+        })
+      }
+
       await orderApi.complete(id, { payment_method: payMethod, is_fiscal: isFiscal, shift_id: shiftId })
       toast.success('Замовлення завершено')
       setPayModal(false)
@@ -173,7 +192,7 @@ export default function OrderDetailPage() {
     if (!id || !order) return
     const amount = Math.round(parseFloat(payAmount || '0') * 100)
     if (amount <= 0) { toast.error('Вкажіть суму'); return }
-    const rem = order.total_amount - (order.total_paid ?? order.prepayment)
+    const rem = order.total_amount - (order.discount_amount ?? 0) - (order.total_paid ?? order.prepayment)
     if (amount > rem) { toast.error('Сума перевищує залишок'); return }
 
     setPaySaving(true)
@@ -326,10 +345,11 @@ export default function OrderDetailPage() {
   if (!order) return null
 
   const conf = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'gray' as const }
+  const discount = order.discount_amount ?? 0
   const totalPaid = order.total_paid ?? order.prepayment
-  const remaining = order.total_amount - totalPaid
-  const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled'].includes(i.item_status))
-  const allHanded  = order.items.every((i) => ['handed', 'canceled'].includes(i.item_status))
+  const remaining = order.total_amount - discount - totalPaid
+  const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled', 'returned'].includes(i.item_status))
+  const allHanded  = order.items.every((i) => ['handed', 'canceled', 'returned'].includes(i.item_status))
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
   const canCancel   = !['completed', 'canceled'].includes(order.status)
   const isDraft     = order.status === 'lead' && ['walk_in', 'mobile_draft'].includes(order.source)
@@ -347,7 +367,12 @@ export default function OrderDetailPage() {
             </Button>
           )}
           {canComplete && (
-            <Button onClick={() => setPayModal(true)} className="bg-green-600 hover:bg-green-700 text-white">
+            <Button onClick={() => {
+              setPayModal(true);
+              setInlineAmount((remaining / 100).toString());
+              setInlinePayMethod('cash');
+              setPayMethod('cash');
+            }} className="bg-green-600 hover:bg-green-700 text-white">
               💰 Видати
             </Button>
           )}
@@ -370,13 +395,47 @@ export default function OrderDetailPage() {
             {actionsOpen && (
               <div className="absolute right-0 mt-1.5 w-52 bg-white border border-gray-150 rounded-xl shadow-lg py-1.5 z-30 focus:outline-none animate-in fade-in slide-in-from-top-1 duration-100">
                 <button
-                  onClick={() => printPickingList(order as any)}
+                  onClick={() => {
+                    sessionStorage.setItem('duplicate_order_payload', JSON.stringify({
+                      customer_id: order.customer_id,
+                      vehicle_info: order.vehicle_info,
+                      items: order.items.map(item => ({
+                        name: item.name,
+                        sku: item.sku ?? '',
+                        qty: item.qty.toString(),
+                        sell_price: (item.sell_price / 100).toString(),
+                        supplier_id: item.supplier_id ?? '',
+                        expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
+                      }))
+                    }))
+                    navigate('/orders/new')
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  🔄 Дублювати замовлення
+                </button>
+                <button
+                  onClick={() => {
+                    try {
+                      printPickingList(order as any)
+                    } catch (err) {
+                      console.error(err)
+                      toast.error('Не вдалося надрукувати збірочний лист. Перевірте, чи не заблоковані спливаючі вікна.')
+                    }
+                  }}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                 >
                   📋 Збірочний лист
                 </button>
                 <button
-                  onClick={() => printOrderReceipt(order)}
+                  onClick={() => {
+                    try {
+                      printOrderReceipt(order)
+                    } catch (err) {
+                      console.error(err)
+                      toast.error('Не вдалося надрукувати квитанцію. Перевірте, чи не заблоковані спливаючі вікна.')
+                    }
+                  }}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                 >
                   🖨 Квитанція
@@ -561,6 +620,12 @@ export default function OrderDetailPage() {
               <span>Загальна сума:</span>
               <span className="font-semibold">{formatMoney(order.total_amount)}</span>
             </div>
+            {discount > 0 && (
+              <div className="flex justify-between text-red-600 font-semibold">
+                <span>Знижка:</span>
+                <span>-{formatMoney(discount)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-green-600">
               <span>Сплачено:</span>
               <span className="font-semibold">{formatMoney(totalPaid)}</span>
@@ -591,6 +656,11 @@ export default function OrderDetailPage() {
                           <span className="text-gray-700 font-medium">
                             {ACTION_LABELS[e.action] ?? e.action}
                           </span>
+                          {e.user_name && (
+                            <span className="text-gray-500 text-xs font-semibold" title={e.user_phone}>
+                              ({e.user_name})
+                            </span>
+                          )}
                           <span className="text-gray-400 text-xs">{formatDate(e.created_at)}</span>
                         </div>
                         {e.action === 'payment_added' && e.details?.amount && (
@@ -618,6 +688,9 @@ export default function OrderDetailPage() {
           <div className="space-y-4">
             <div className="bg-green-50 rounded-xl p-4 space-y-1 text-sm">
               <div className="flex justify-between"><span>Загальна сума:</span><span className="font-bold">{formatMoney(order.total_amount)}</span></div>
+              {discount > 0 && (
+                <div className="flex justify-between text-red-600 font-semibold"><span>Знижка:</span><span>-{formatMoney(discount)}</span></div>
+              )}
               {order.prepayment > 0 && (
                 <div className="flex justify-between text-blue-600"><span>Передоплата:</span><span>{formatMoney(order.prepayment)}</span></div>
               )}
@@ -627,14 +700,31 @@ export default function OrderDetailPage() {
               </div>
             </div>
             {remaining > 0 && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Метод оплати</label>
-                <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as any)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="cash">Готівка</option>
-                  <option value="card">Картка</option>
-                  <option value="mixed">Змішана</option>
-                </select>
+              <div className="space-y-3">
+                <Input
+                  label="Внести оплату при видачі (грн)"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={inlineAmount}
+                  onChange={(e) => setInlineAmount(e.target.value)}
+                />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Метод оплати</label>
+                  <select
+                    value={inlinePayMethod}
+                    onChange={(e) => {
+                      const m = e.target.value as 'cash' | 'card' | 'transfer';
+                      setInlinePayMethod(m);
+                      setPayMethod(m === 'transfer' ? 'cash' : m);
+                    }}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                  >
+                    <option value="cash">Готівка</option>
+                    <option value="card">Картка</option>
+                    <option value="transfer">Переказ</option>
+                  </select>
+                </div>
               </div>
             )}
             <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -657,6 +747,9 @@ export default function OrderDetailPage() {
           <div className="space-y-4">
             <div className="bg-blue-50 rounded-xl p-3 text-sm space-y-1">
               <div className="flex justify-between"><span>Загальна сума:</span><span className="font-bold">{formatMoney(order.total_amount)}</span></div>
+              {discount > 0 && (
+                <div className="flex justify-between text-red-600 font-semibold"><span>Знижка:</span><span>-{formatMoney(discount)}</span></div>
+              )}
               <div className="flex justify-between"><span>Вже сплачено:</span><span className="font-semibold text-green-600">{formatMoney(totalPaid)}</span></div>
               <div className="flex justify-between font-bold"><span>Залишок:</span><span className="text-orange-600">{formatMoney(remaining)}</span></div>
             </div>
