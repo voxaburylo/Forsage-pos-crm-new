@@ -1,12 +1,22 @@
 import { useState, useEffect } from 'react'
-import { Plus, Trash2, Percent, User, Tag, Package, AlertCircle } from 'lucide-react'
+import { Plus, Trash2, Percent, User, Tag, Package, AlertCircle, Edit2 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Modal, Input, Table } from '@/components/ui'
+import { Button, Card, Modal, Input, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { commissionApi } from './commissionApi'
 import type { CommissionRule } from './commissionApi'
-import { adminApi } from '@/features/admin/adminApi'
-import type { AdminUser } from '@/features/admin/adminApi'
+import { adminApi, ROLE_LABELS } from '@/features/admin/adminApi'
+import type { AdminUser, UserRole } from '@/features/admin/adminApi'
+import { formatMoney } from '@/lib/utils'
+
+const ROLE_COLORS: Record<UserRole, 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'> = {
+  owner:       'yellow',
+  admin:       'blue',
+  manager:     'green',
+  cashier:     'gray',
+  storekeeper: 'orange',
+  sto_viewer:  'gray',
+} as const
 
 export default function CommissionRulesPage() {
   const [rules, setRules] = useState<CommissionRule[]>([])
@@ -17,6 +27,12 @@ export default function CommissionRulesPage() {
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // Rate Editing State
+  const [editingUser, setEditingUser] = useState<AdminUser | null>(null)
+  const [editRateValue, setEditRateValue] = useState('')
+  const [isRateModalOpen, setIsRateModalOpen] = useState(false)
+  const [savingRate, setSavingRate] = useState(false)
 
   // Form State
   const [form, setForm] = useState({
@@ -97,6 +113,87 @@ export default function CommissionRulesPage() {
       toast.error(err instanceof Error ? err.message : 'Помилка видалення')
     }
   }
+
+  const openEditRate = (u: AdminUser) => {
+    setEditingUser(u)
+    setEditRateValue(u.base_rate ? (u.base_rate / 100).toString() : '')
+    setIsRateModalOpen(true)
+  }
+
+  const handleUpdateRate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingUser) return
+    setSavingRate(true)
+    try {
+      await adminApi.updateUser(editingUser.id, {
+        role: editingUser.role as any,
+        is_active: editingUser.is_active,
+        full_name: editingUser.full_name,
+        base_rate: editRateValue ? Math.round(parseFloat(editRateValue) * 100) : 0
+      })
+      toast.success('Ставку оновлено')
+      setIsRateModalOpen(false)
+      setEditingUser(null)
+      await loadData()
+    } catch (err: any) {
+      toast.error(err instanceof Error ? err.message : 'Помилка оновлення ставки')
+    } finally {
+      setSavingRate(false)
+    }
+  }
+
+  const staffColumns = [
+    {
+      key: 'name',
+      header: 'Співробітник',
+      render: (u: AdminUser) => (
+        <div>
+          <div className="font-medium text-gray-900">{u.full_name || '—'}</div>
+          <div className="flex gap-2 text-[10px] text-gray-400 mt-0.5">
+            <span className="font-mono">{u.phone}</span>
+            {u.email && (
+              <>
+                <span>·</span>
+                <span>{u.email}</span>
+              </>
+            )}
+          </div>
+        </div>
+      )
+    },
+    {
+      key: 'role',
+      header: 'Роль',
+      render: (u: AdminUser) => (
+        <Badge color={ROLE_COLORS[u.role as UserRole] ?? 'gray'}>
+          {ROLE_LABELS[u.role as UserRole] ?? u.role}
+        </Badge>
+      )
+    },
+    {
+      key: 'base_rate',
+      header: 'Ставка',
+      render: (u: AdminUser) => (
+        <span className="font-semibold text-gray-700">
+          {u.base_rate > 0 ? formatMoney(u.base_rate) : '—'}
+        </span>
+      )
+    },
+    {
+      key: 'actions',
+      header: '',
+      className: 'w-12 text-right',
+      render: (u: AdminUser) => (
+        <button
+          onClick={() => openEditRate(u)}
+          className="p-1.5 text-gray-400 hover:text-yellow-600 rounded-lg hover:bg-yellow-50 transition-colors"
+          title="Редагувати ставку"
+        >
+          <Edit2 size={15} />
+        </button>
+      )
+    }
+  ]
 
   const columns = [
     {
@@ -182,44 +279,73 @@ export default function CommissionRulesPage() {
   ]
 
   return (
-    <Layout title="Правила комісійних менеджерів">
+    <Layout title="Налаштування зарплати та комісій">
       <div className="flex flex-col gap-6">
-        <div className="flex justify-between items-center">
-          <p className="text-sm text-gray-500 max-w-xl">
-            Налаштуйте правила нарахування бонусів менеджерам від проданих товарів. Правила застосовуються автоматично під час завершення замовлення на основі пріоритетів.
-          </p>
-          <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>
-            Додати правило
-          </Button>
-        </div>
-
-        <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 flex gap-3 text-sm text-blue-700">
-          <AlertCircle className="shrink-0 text-blue-500 mt-0.5" size={18} />
+        
+        {/* Секція ставок */}
+        <div className="space-y-3">
           <div>
-            <p className="font-semibold mb-1">Принцип пріоритетності (Scoring):</p>
-            <p>Система шукає найбільш точне співпадіння для кожної позиції замовлення за такою вагою:</p>
-            <ul className="list-disc list-inside mt-1 space-y-0.5 text-xs text-blue-600 font-mono">
-              <li>Конкретний Менеджер (+100)</li>
-              <li>Конкретний Бренд (+10)</li>
-              <li>Конкретна Категорія (+1)</li>
-            </ul>
-            <p className="mt-1">
-              Наприклад, правило для конкретного бренду матиме вищий пріоритет (вага 10), ніж загальне правило для всіх брендів та категорій (вага 0).
+            <h2 className="text-base font-semibold text-gray-900">Базові ставки співробітників</h2>
+            <p className="text-xs text-gray-500">
+              Встановіть щомісячну фіксовану ставку для кожного співробітника. Вона автоматично підставляється при нарахуванні зарплати.
             </p>
           </div>
+          <Card padding="none">
+            <Table
+              columns={staffColumns}
+              data={users.filter(u => u.is_active)}
+              keyFn={(u) => u.id}
+              loading={loading}
+              empty={<p className="text-gray-400 text-sm">Співробітників не знайдено</p>}
+            />
+          </Card>
         </div>
 
-        <Card padding="none">
-          <Table
-            columns={columns}
-            data={rules}
-            keyFn={(r) => r.id}
-            loading={loading}
-            empty={<p className="text-gray-400 text-sm">Правила комісійних ще не створені</p>}
-          />
-        </Card>
+        <hr className="border-gray-200" />
+
+        {/* Секція комісійних */}
+        <div className="space-y-3">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Правила комісійних від продажів</h2>
+              <p className="text-xs text-gray-500">
+                Налаштуйте правила нарахування бонусів менеджерам від проданих товарів. Правила застосовуються автоматично під час завершення замовлення на основі пріоритетів.
+              </p>
+            </div>
+            <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>
+              Додати правило
+            </Button>
+          </div>
+
+          <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 flex gap-3 text-sm text-blue-700">
+            <AlertCircle className="shrink-0 text-blue-500 mt-0.5" size={18} />
+            <div>
+              <p className="font-semibold mb-1">Принцип пріоритетності (Scoring):</p>
+              <p>Система шукає найбільш точне співпадіння для кожної позиції замовлення за такою вагою:</p>
+              <ul className="list-disc list-inside mt-1 space-y-0.5 text-xs text-blue-600 font-mono">
+                <li>Конкретний Менеджер (+100)</li>
+                <li>Конкретний Бренд (+10)</li>
+                <li>Конкретна Категорія (+1)</li>
+              </ul>
+              <p className="mt-1">
+                Наприклад, правило для конкретного бренду матиме вищий пріоритет (вага 10), ніж загальне правило для всіх брендів та категорій (вага 0).
+              </p>
+            </div>
+          </div>
+
+          <Card padding="none">
+            <Table
+              columns={columns}
+              data={rules}
+              keyFn={(r) => r.id}
+              loading={loading}
+              empty={<p className="text-gray-400 text-sm">Правила комісійних ще не створені</p>}
+            />
+          </Card>
+        </div>
       </div>
 
+      {/* Модал створення правила комісії */}
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Нове правило комісії" size="md">
         <form onSubmit={handleCreate} className="space-y-4">
           <div>
@@ -316,6 +442,43 @@ export default function CommissionRulesPage() {
               Створити правило
             </Button>
             <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>
+              Скасувати
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Модал редагування ставки */}
+      <Modal
+        open={isRateModalOpen}
+        onClose={() => { setIsRateModalOpen(false); setEditingUser(null); }}
+        title="Редагування базової ставки"
+        size="sm"
+      >
+        <form onSubmit={handleUpdateRate} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Співробітник</label>
+            <p className="text-sm font-semibold text-gray-900">{editingUser?.full_name || '—'}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{editingUser?.phone || editingUser?.email}</p>
+          </div>
+
+          <Input
+            label="Ставка (грн/місяць) *"
+            type="number"
+            min="0"
+            step="0.01"
+            value={editRateValue}
+            onChange={(e) => setEditRateValue(e.target.value)}
+            placeholder="напр. 15000"
+            required
+            autoFocus
+          />
+
+          <div className="flex gap-3 pt-2">
+            <Button type="submit" loading={savingRate} className="flex-1">
+              Зберегти
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => { setIsRateModalOpen(false); setEditingUser(null); }}>
               Скасувати
             </Button>
           </div>

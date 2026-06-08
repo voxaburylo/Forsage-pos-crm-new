@@ -19,19 +19,24 @@ function phoneToEmail(phone: string): string {
 
 // ===================== USERS =====================
 
-export async function listUsers() {
-  const { data, error } = await supabaseAdmin.auth.admin.listUsers()
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-
-  return (data.users ?? []).map((u) => ({
+function mapSupabaseUser(u: any) {
+  return {
     id:        u.id,
     email:     u.email ?? '',
     phone:     u.user_metadata?.phone ?? u.email?.replace('@forsage.internal', '+') ?? '',
     full_name: u.user_metadata?.full_name ?? '',
     role:      u.user_metadata?.role ?? 'cashier',
     is_active: u.user_metadata?.is_active !== false,
+    base_rate: u.user_metadata?.base_rate ?? 0,
     created_at: u.created_at,
-  }))
+  }
+}
+
+export async function listUsers() {
+  const { data, error } = await supabaseAdmin.auth.admin.listUsers()
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+  return (data.users ?? []).map(mapSupabaseUser)
 }
 
 export async function createUser(input: CreateUserInput, tenantId: string) {
@@ -51,11 +56,12 @@ export async function createUser(input: CreateUserInput, tenantId: string) {
       role:      input.role,
       tenant_id: tenantId,
       is_active: true,
+      base_rate: input.base_rate ?? 0,
     },
   })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data.user
+  return mapSupabaseUser(data.user)
 }
 
 export async function updateUser(id: string, input: UpdateUserInput) {
@@ -69,6 +75,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       ...(input.role      !== undefined ? { role: input.role }           : {}),
       ...(input.is_active !== undefined ? { is_active: input.is_active } : {}),
       ...(input.full_name !== undefined ? { full_name: input.full_name } : {}),
+      ...(input.base_rate !== undefined ? { base_rate: input.base_rate } : {}),
     },
   })
 

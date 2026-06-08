@@ -7,6 +7,7 @@ import { Button, Card, Modal, Input, Badge, Table, ConfirmDialog } from '@/compo
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
+import { formatMoney } from '@/lib/utils'
 
 const ROLE_COLORS: Record<UserRole, BadgeColor> = {
   owner:       'yellow',
@@ -28,9 +29,9 @@ export default function StaffPage() {
   const [deleteConfirmUser, setDeleteConfirmUser] = useState<AdminUser | null>(null)
 
   // Add form
-  const [addForm, setAddForm] = useState({ phone: '', password: '', full_name: '', role: 'cashier' as UserRole })
+  const [addForm, setAddForm] = useState({ phone: '', password: '', full_name: '', role: 'cashier' as UserRole, base_rate: '' })
   // Edit form
-  const [editForm, setEditForm] = useState({ role: 'cashier' as UserRole, is_active: true, full_name: '' })
+  const [editForm, setEditForm] = useState({ role: 'cashier' as UserRole, is_active: true, full_name: '', base_rate: '' })
   // Password form
   const [newPass, setNewPass] = useState('')
   const [pinInput, setPinInput] = useState('')
@@ -48,10 +49,13 @@ export default function StaffPage() {
     e.preventDefault()
     setSaving(true)
     try {
-      await adminApi.createUser(addForm)
+      await adminApi.createUser({
+        ...addForm,
+        base_rate: addForm.base_rate ? Math.round(parseFloat(addForm.base_rate) * 100) : 0
+      })
       toast.success('Співробітника додано')
       setAddOpen(false)
-      setAddForm({ phone: '', password: '', full_name: '', role: 'cashier' })
+      setAddForm({ phone: '', password: '', full_name: '', role: 'cashier', base_rate: '' })
       load()
     } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
     finally { setSaving(false) }
@@ -59,7 +63,12 @@ export default function StaffPage() {
 
   function openEdit(u: AdminUser) {
     setEditUser(u)
-    setEditForm({ role: u.role as UserRole, is_active: u.is_active, full_name: u.full_name })
+    setEditForm({
+      role: u.role as UserRole,
+      is_active: u.is_active,
+      full_name: u.full_name,
+      base_rate: u.base_rate ? (u.base_rate / 100).toString() : ''
+    })
     setEditOpen(true)
   }
 
@@ -68,7 +77,10 @@ export default function StaffPage() {
     if (!editUser) return
     setSaving(true)
     try {
-      await adminApi.updateUser(editUser.id, editForm)
+      await adminApi.updateUser(editUser.id, {
+        ...editForm,
+        base_rate: editForm.base_rate ? Math.round(parseFloat(editForm.base_rate) * 100) : 0
+      })
       toast.success('Дані оновлено')
       setEditOpen(false)
       load()
@@ -134,6 +146,11 @@ export default function StaffPage() {
       <Badge color={ROLE_COLORS[u.role as UserRole] ?? 'gray'}>
         {ROLE_LABELS[u.role as UserRole] ?? u.role}
       </Badge>
+    )},
+    { key: 'base_rate', header: 'Ставка', render: (u: AdminUser) => (
+      <span className="font-semibold text-gray-700">
+        {u.base_rate > 0 ? formatMoney(u.base_rate) : '—'}
+      </span>
     )},
     { key: 'status', header: 'Статус', render: (u: AdminUser) => (
       <Badge color={u.is_active ? 'green' : 'red'}>
@@ -203,6 +220,9 @@ export default function StaffPage() {
           <Input label="Пароль *" type="password" value={addForm.password}
             onChange={(e) => setAddForm((f) => ({ ...f, password: e.target.value }))}
             placeholder="Мінімум 6 символів" required />
+          <Input label="Ставка (грн/місяць)" type="number" min="0" step="0.01" value={addForm.base_rate}
+            onChange={(e) => setAddForm((f) => ({ ...f, base_rate: e.target.value }))}
+            placeholder="наприклад: 15000" />
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Роль *</label>
             <select value={addForm.role}
@@ -232,6 +252,9 @@ export default function StaffPage() {
               {Object.entries(ROLE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
           </div>
+          <Input label="Ставка (грн/місяць)" type="number" min="0" step="0.01" value={editForm.base_rate}
+            onChange={(e) => setEditForm((f) => ({ ...f, base_rate: e.target.value }))}
+            placeholder="наприклад: 15000" />
           <div className="flex items-center gap-3">
             <input type="checkbox" id="edit_active"
               checked={editForm.is_active}

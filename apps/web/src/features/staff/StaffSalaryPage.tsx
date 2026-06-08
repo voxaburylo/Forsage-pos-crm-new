@@ -6,7 +6,7 @@ import { Card, Button, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 
-interface Employee { id: string; email: string; user_metadata: { full_name?: string; role?: string } }
+interface Employee { id: string; email: string; user_metadata: { full_name?: string; role?: string; base_rate?: number } }
 
 interface SalaryPayment {
   id: string
@@ -67,9 +67,25 @@ export default function StaffSalaryPage() {
   const [showCommissions, setShowCommissions] = useState(false)
 
   const [form, setForm] = useState({
-    employee_id: '', amount: '', type: 'salary' as const,
+    employee_id: '', amount: '', type: 'salary' as 'salary' | 'bonus' | 'advance' | 'penalty',
     method: 'cash', note: '', period: currentPeriod(),
   })
+
+  const handleEmployeeChange = (employeeId: string) => {
+    const emp = employees.find((e) => e.id === employeeId)
+    const newAmount = (form.type === 'salary' && emp?.user_metadata?.base_rate)
+      ? (emp.user_metadata.base_rate / 100).toString()
+      : form.amount
+    setForm((f) => ({ ...f, employee_id: employeeId, amount: newAmount }))
+  }
+
+  const handleTypeChange = (type: 'salary' | 'bonus' | 'advance' | 'penalty') => {
+    const emp = employees.find((e) => e.id === form.employee_id)
+    const newAmount = (type === 'salary' && emp?.user_metadata?.base_rate)
+      ? (emp.user_metadata.base_rate / 100).toString()
+      : (type === 'salary' ? '' : form.amount)
+    setForm((f) => ({ ...f, type, amount: newAmount }))
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -290,7 +306,7 @@ export default function StaffSalaryPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Співробітник *</label>
             <select
               value={form.employee_id}
-              onChange={(e) => setForm({ ...form, employee_id: e.target.value })}
+              onChange={(e) => handleEmployeeChange(e.target.value)}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             >
               <option value="">— Виберіть —</option>
@@ -307,7 +323,7 @@ export default function StaffSalaryPage() {
               <label className="block text-sm font-medium text-gray-700 mb-1">Тип</label>
               <select
                 value={form.type}
-                onChange={(e) => setForm({ ...form, type: e.target.value as any })}
+                onChange={(e) => handleTypeChange(e.target.value as any)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
               >
                 <option value="salary">Зарплата</option>
