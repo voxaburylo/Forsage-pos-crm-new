@@ -67,6 +67,7 @@ export const PRODUCTS_TABS = [
 ]
 
 export const ORDERS_TABS = [
+  { to: '/needs-action', label: 'Потребує дії' },
   { to: '/orders', label: 'Список замовлень' },
   { to: '/orders?tab=drafts', label: 'Чернетки / КП' },
   { to: '/orders?tab=bots', label: 'Боти / Месенджер' },

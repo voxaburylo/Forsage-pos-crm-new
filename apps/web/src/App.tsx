@@ -58,6 +58,7 @@ const InventoryPage        = lazyWithRetry(() => import('@/features/inventory/In
 const ActiveSession        = lazyWithRetry(() => import('@/features/inventory/ActiveSession'))
 const LabelDesigner        = lazyWithRetry(() => import('@/features/labels/LabelDesigner'))
 const OrdersPage           = lazyWithRetry(() => import('@/features/orders/OrdersPage'))
+const NeedsActionPage      = lazyWithRetry(() => import('@/features/orders/NeedsActionPage'))
 const OrderFormPage        = lazyWithRetry(() => import('@/features/orders/OrderFormPage'))
 const OrderDetailPage      = lazyWithRetry(() => import('@/features/orders/OrderDetailPage'))
 const QuoteEditorPage      = lazyWithRetry(() => import('@/features/quotes/QuoteEditorPage'))
@@ -103,6 +104,7 @@ function App() {
           <Route path="/reports"  element={<ProtectedRoute><DailyReport /></ProtectedRoute>} />
           <Route path="/abc"        element={<ProtectedRoute><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<ProtectedRoute><WaitlistPage /></ProtectedRoute>} />
+          <Route path="/needs-action" element={<ProtectedRoute><NeedsActionPage /></ProtectedRoute>} />
           <Route path="/staff-kpi"  element={<ProtectedRoute><StaffKPI /></ProtectedRoute>} />
           <Route path="/staff-profitability" element={<ProtectedRoute><StaffProfitabilityReport /></ProtectedRoute>} />
           <Route path="/admin"    element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
