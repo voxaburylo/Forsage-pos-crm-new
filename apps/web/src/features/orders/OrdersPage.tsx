@@ -77,7 +77,7 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ReactNode }> = 
 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: string; label: string; icon: string }>> = {
   pending: [
-    { status: 'ordered',  label: 'Замовлено', icon: '📥' },
+    { status: 'ordered',  label: 'Замовити', icon: '📥' },
     { status: 'canceled', label: 'Скасувати', icon: '❌' },
   ],
   ordered: [

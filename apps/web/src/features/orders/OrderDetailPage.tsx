@@ -88,7 +88,7 @@ const ITEM_STATUS_COLOR: Record<ItemStatus, BadgeColor> = {
 }
 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: string; icon: string }>> = {
-  pending:  [{ status: 'ordered', label: 'Замовлено', icon: '📥' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
+  pending:  [{ status: 'ordered', label: 'Замовити постачальнику', icon: '📥' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
   ordered:  [{ status: 'arrived', label: 'Приїхало', icon: '📦' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
   arrived:  [{ status: 'handed',  label: 'Видано',   icon: '✅' }],
 }
