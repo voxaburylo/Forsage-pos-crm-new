@@ -115,16 +115,16 @@ export default function DashboardPage() {
         {[
           { label: 'Виторг',          value: d?.total_revenue  ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
           { label: 'Валовий прибуток', value: d?.gross_profit  ?? 0, color: 'bg-blue-50 border-blue-200',       iconColor: 'text-blue-600',    icon: TrendingUp },
-          { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200',   iconColor: 'text-purple-600',  icon: ClipboardList },
+          { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200',   iconColor: 'text-purple-600',  icon: ClipboardList, raw: true },
           { label: 'Середній чек',    value: d?.average_receipt ?? 0, color: 'bg-amber-50 border-amber-200',   iconColor: 'text-amber-600',   icon: Receipt },
-        ].map(({ label, value, color, iconColor, icon: Icon }) => (
+        ].map(({ label, value, color, iconColor, icon: Icon, raw }) => (
           <div key={label} className={`${color} border rounded-2xl p-3 md:p-5 shadow-sm`}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] md:text-xs font-semibold text-gray-500 uppercase tracking-wider leading-tight">{label}</span>
               <Icon size={16} className={`${iconColor} shrink-0`} />
             </div>
             <div className="text-xl md:text-3xl font-bold text-gray-900 truncate">
-              {loading ? <span className="text-gray-300">—</span> : formatMoney(value)}
+              {loading ? <span className="text-gray-300">—</span> : raw ? value.toLocaleString('uk-UA') : formatMoney(value)}
             </div>
           </div>
         ))}

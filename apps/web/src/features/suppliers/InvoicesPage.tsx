@@ -59,8 +59,8 @@ export default function InvoicesPage() {
       ),
     },
     {
-      key: 'total', header: 'Сума', className: 'w-28 text-right',
-      render: (inv: SupplyInvoice) => <span className="font-mono text-sm">{formatMoney(inv.total)}</span>,
+      key: 'total', header: 'Сума', className: 'w-32 text-right',
+      render: (inv: SupplyInvoice) => <span className="font-mono text-sm whitespace-nowrap">{formatMoney(inv.total)}</span>,
     },
     {
       key: 'date', header: 'Дата', className: 'hidden md:table-cell w-32 text-sm text-gray-500',

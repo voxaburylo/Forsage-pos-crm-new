@@ -354,7 +354,7 @@ export default function ProductsPage() {
                     <SortTh field="retail_price" label="Ціна"    className="w-28 text-right" sort={sort} onSort={toggleSort} />
                     <SortTh field="qty_on_hand"  label="Залишок" className="w-28 text-right" sort={sort} onSort={toggleSort} />
                     <th className="px-3 py-3 w-20 text-center text-xs font-bold text-gray-500 uppercase tracking-wide">Статус</th>
-                    <th className="px-3 py-3 w-36" />
+                    <th className="px-3 py-3 w-44" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -433,7 +433,7 @@ export default function ProductsPage() {
                           <Badge color={STATUS_COLOR[stock]}>{STATUS_LABEL[stock]}</Badge>
                         </td>
                         <td className="px-3 py-3">
-                          <div className="flex items-center justify-end gap-1">
+                          <div className="flex items-center justify-end gap-1 whitespace-nowrap">
                             <button onClick={() => navigate(`/products/${p.id}/edit`)}
                               className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">Ред.</button>
                             {isAdmin && (
