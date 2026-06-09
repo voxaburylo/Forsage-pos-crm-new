@@ -586,6 +586,11 @@ export default function OrderFormPage() {
                       </div>
                       
                       <div className="flex items-center gap-2">
+                        {c.debt_balance > 0 && (
+                          <span className="text-xs bg-red-50 text-red-600 font-semibold px-2 py-0.5 rounded">
+                            Борг {formatMoney(c.debt_balance)}
+                          </span>
+                        )}
                         {c.primary_vin ? (
                           <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
                             {vinMake(c.primary_vin)} ({c.primary_vin.slice(0, 6)}...)
