@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search } from 'lucide-react'
 import { orderApi, type CreateOrderPayload } from './orderApi'
@@ -427,6 +427,27 @@ export default function OrderFormPage() {
       }
     }
 
+    // ORD-27: попередження про можливий дубль (той самий клієнт+сума за короткий проміжок)
+    if (!asDraft && !id && customerId && totalKop > 0) {
+      try {
+        const recent = await api.get<{ data: Array<{ order_number: number | null; total_amount: number; status: string; created_at: string }> }>(
+          `/api/v1/customer-orders?customer_id=${customerId}&per_page=10`,
+        )
+        const cutoff = Date.now() - 30 * 60 * 1000
+        const dup = ((recent as any).data ?? []).find((o: any) =>
+          o.status !== 'canceled' &&
+          o.total_amount === totalKop &&
+          new Date(o.created_at).getTime() > cutoff,
+        )
+        if (dup) {
+          const noLabel = dup.order_number != null ? `#${dup.order_number} ` : ''
+          if (!confirm(`Можливий дубль: у клієнта вже є замовлення ${noLabel}на ${formatMoney(totalKop)} за останні 30 хв.\nВсе одно створити нове?`)) {
+            return
+          }
+        }
+      } catch { /* помилка перевірки не блокує створення */ }
+    }
+
     const vehicleInfo = selectedVehicle
       ? {
           make:  selectedVehicle.brand,
@@ -498,6 +519,20 @@ export default function OrderFormPage() {
       setSaving(false)
     }
   }
+
+  // ORD-35: гаряча клавіша Ctrl+S — зберегти (на кроці 4 оформити, інакше чернетка)
+  const saveRef = useRef(handleSave)
+  saveRef.current = handleSave
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        saveRef.current(step !== 4)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [step])
 
   // Customer List to show
   const customerList = customerSearch.trim().length >= 2 ? searchedCustomers : defaultCustomers
@@ -620,9 +655,9 @@ export default function OrderFormPage() {
                   </button>
                   <button
                     onClick={handleSkipCustomer}
-                    className="w-full border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                    className="w-full border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
                   >
-                    👤 Пропустити вибір клієнта (Швидке замовлення)
+                    ⚡ Швидке замовлення без клієнта
                   </button>
                 </div>
               ) : (
