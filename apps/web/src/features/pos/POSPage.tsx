@@ -616,6 +616,8 @@ export default function POSPage() {
         {/* Mobile права частина — тільки найважливіше */}
         <div className="flex md:hidden items-center gap-1">
           <span className="text-yellow-400 font-bold tabular-nums text-sm mr-1">{formatMoney(store.total)}</span>
+          {/* ORD-7: видача замовлень доступна і на мобільному */}
+          <ReadyOrdersPanel />
           <button onClick={() => setMobileMenuOpen(true)}
             className="w-8 h-8 flex items-center justify-center rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 active:bg-gray-700 transition-colors text-base font-bold"
             title="Меню">

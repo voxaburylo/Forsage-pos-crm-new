@@ -185,7 +185,7 @@ export function ReadyOrdersPanel() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-[380px] bg-gray-800 border border-gray-700
+        <div className="absolute right-0 top-full mt-1 w-[380px] max-w-[calc(100vw-1.5rem)] bg-gray-800 border border-gray-700
                         rounded-xl shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700">
             <span className="text-sm font-semibold text-white">Управління замовленнями</span>
