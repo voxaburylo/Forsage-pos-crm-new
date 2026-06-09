@@ -19,8 +19,9 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
     .is('deleted_at', null)
     .range(offset, offset + per_page - 1)
 
-  // ORD-33: нещодавні зверху (updated_at) або за іменем (за замовчуванням)
+  // ORD-33/16: нещодавні / найбільший борг зверху, або за іменем (за замовчуванням)
   if (sort === 'recent') q = q.order('updated_at', { ascending: false })
+  else if (sort === 'debt') q = q.order('debt_balance', { ascending: false })
   else q = q.order('full_name', { ascending: true })
 
   if (search) {

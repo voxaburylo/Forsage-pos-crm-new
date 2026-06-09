@@ -37,7 +37,7 @@ export const customerListSchema = z.object({
   has_debt: z.enum(['true', 'false']).optional(),
   tag:      z.string().optional(),
   group_id: z.string().uuid().optional(),
-  sort:     z.enum(['name', 'recent']).optional(),
+  sort:     z.enum(['name', 'recent', 'debt']).optional(),
   page:     z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(100).default(20),
 })

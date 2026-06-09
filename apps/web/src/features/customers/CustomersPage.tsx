@@ -36,6 +36,7 @@ export default function CustomersPage() {
       const data = await customerApi.list({
         search:   search || undefined,
         has_debt: hasDebt ? 'true' : undefined,
+        sort:     hasDebt ? 'debt' : undefined,
         group_id: activeGroup ?? undefined,
         page,
         per_page: 20,
@@ -286,6 +287,18 @@ export default function CustomersPage() {
 
                     {/* Швидкі дії */}
                     <div className="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity shrink-0">
+                      {c.debt_balance > 0 && (
+                        <button
+                          onClick={() => copyToClipboard(
+                            `Доброго дня${c.full_name ? ', ' + c.full_name : ''}! Нагадуємо про заборгованість ${formatMoney(c.debt_balance)} за замовлення у магазині «Форсаж». Дякуємо!`,
+                            'нагадування',
+                          )}
+                          className="px-2 h-8 flex items-center justify-center rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors text-xs font-semibold"
+                          title="Копіювати текст нагадування про борг"
+                        >
+                          💬 Нагадати
+                        </button>
+                      )}
                       <button onClick={() => setDrawerId(c.id)}
                         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition-colors"
                         title="Швидкий перегляд">

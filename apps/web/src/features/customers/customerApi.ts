@@ -6,7 +6,7 @@ export interface CustomerFilters {
   has_debt?: 'true' | 'false'
   tag?: string
   group_id?: string
-  sort?: 'name' | 'recent'
+  sort?: 'name' | 'recent' | 'debt'
   page?: number
   per_page?: number
 }
