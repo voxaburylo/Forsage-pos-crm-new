@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+﻿import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { ToastContainer } from '@/components/ui'
@@ -30,7 +30,7 @@ const ReturnForm           = lazyWithRetry(() => import('@/features/pos/ReturnFo
 const DailyReport          = lazyWithRetry(() => import('@/features/reports/DailyReport'))
 const AdminPage            = lazyWithRetry(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyWithRetry(() => import('@/features/settings/SettingsPage'))
-const CommissionRulesPage  = lazyWithRetry(() => import('@/features/settings/CommissionRulesPage'))
+// CommissionRulesPage merged
 const SuppliersPage        = lazyWithRetry(() => import('@/features/suppliers/SuppliersPage'))
 const SupplierFormPage     = lazyWithRetry(() => import('@/features/suppliers/SupplierFormPage'))
 const SupplierDetailPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierDetailPage'))
@@ -47,7 +47,7 @@ const WriteoffsPage        = lazyWithRetry(() => import('@/features/inventory/Wr
 const WriteoffFormPage     = lazyWithRetry(() => import('@/features/inventory/WriteoffFormPage'))
 const WriteoffDetailPage   = lazyWithRetry(() => import('@/features/inventory/WriteoffDetailPage'))
 const StaffPage            = lazyWithRetry(() => import('@/features/staff/StaffPage'))
-const StaffSalaryPage      = lazyWithRetry(() => import('@/features/staff/StaffSalaryPage'))
+// StaffSalaryPage merged
 const InternalConsumptionsPage = lazyWithRetry(() => import('@/features/inventory/InternalConsumptionsPage'))
 const ABCAnalysis          = lazyWithRetry(() => import('@/features/analytics/ABCAnalysis'))
 const StaffKPI             = lazyWithRetry(() => import('@/features/analytics/StaffKPI'))
@@ -109,7 +109,7 @@ function App() {
           <Route path="/staff-profitability" element={<ProtectedRoute><StaffProfitabilityReport /></ProtectedRoute>} />
           <Route path="/admin"    element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-          <Route path="/staff/commission" element={<ProtectedRoute><CommissionRulesPage /></ProtectedRoute>} />
+          
           <Route path="/suppliers" element={<ProtectedRoute><SuppliersPage /></ProtectedRoute>} />
           <Route path="/suppliers/new" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id" element={<ProtectedRoute><SupplierDetailPage /></ProtectedRoute>} />
@@ -123,7 +123,7 @@ function App() {
           <Route path="/suppliers/1c-import"         element={<ProtectedRoute><OnecImportPage /></ProtectedRoute>} />
 
           <Route path="/staff"          element={<ProtectedRoute><StaffPage /></ProtectedRoute>} />
-          <Route path="/staff-salary"   element={<ProtectedRoute><StaffSalaryPage /></ProtectedRoute>} />
+          
           <Route path="/internal"       element={<ProtectedRoute><InternalConsumptionsPage /></ProtectedRoute>} />
           <Route path="/audit"            element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
           <Route path="/settings/channels" element={<ProtectedRoute><SettingsChannels /></ProtectedRoute>} />
@@ -165,3 +165,4 @@ function App() {
 }
 
 export default App
+

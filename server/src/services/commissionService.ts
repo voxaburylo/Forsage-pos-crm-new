@@ -1,4 +1,4 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { logger } from '../lib/logger.js'
@@ -9,6 +9,7 @@ export interface CreateCommissionRuleInput {
   category_id?: string | null
   pct_from_revenue: number
   pct_from_profit: number
+  rule_type?: string
 }
 
 const TABLE = 'commission_rules'
@@ -36,6 +37,7 @@ export async function createCommissionRule(input: CreateCommissionRuleInput, ten
       category_id: input.category_id || null,
       pct_from_revenue: input.pct_from_revenue,
       pct_from_profit: input.pct_from_profit,
+      rule_type: input.rule_type || 'personal_sales',
     })
     .select('*')
     .single()
@@ -119,113 +121,123 @@ export async function calculateAndRecordCommission(
     return
   }
 
-  let totalCommission = 0
-
-  // 5. Calculate commission for each item
-  for (const item of items) {
-    // Skip canceled items
-    if (item.item_status === 'canceled') continue
-
-    const prodInfo = item.product_id ? productsMap[item.product_id] : null
-    const brandId = prodInfo?.brand_id || null
-    const categoryId = prodInfo?.category_id || null
-
-    const revenue = item.sell_price * item.qty
-    const profit = (item.sell_price - item.buy_price) * item.qty
-
-    let bestRule: any = null
-    let maxScore = -1
-
-    for (const rule of rules) {
-      // User matching constraint
-      if (rule.user_id !== null && rule.user_id !== order.manager_id) {
-        continue
-      }
-      // Brand matching constraint
-      if (rule.brand_id !== null && rule.brand_id !== brandId) {
-        continue
-      }
-      // Category matching constraint
-      if (rule.category_id !== null && rule.category_id !== categoryId) {
-        continue
-      }
-
-      // Calculate rule score
-      let score = 0
-      if (rule.user_id !== null) score += 100
-      if (rule.brand_id !== null) score += 10
-      if (rule.category_id !== null) score += 1
-
-      if (score > maxScore) {
-        maxScore = score
-        bestRule = rule
-      }
-    }
-
-    if (bestRule) {
-      const pctRevenue = Number(bestRule.pct_from_revenue) || 0
-      const pctProfit = Number(bestRule.pct_from_profit) || 0
-
-      const itemComm = Math.round(revenue * (pctRevenue / 100)) + Math.round(profit * (pctProfit / 100))
-      totalCommission += itemComm
-
-      logger.debug(
-        { itemId: item.id, score: maxScore, pctRevenue, pctProfit, itemComm },
-        'Matched commission rule'
-      )
+  // 5. Gather potential commission recipients
+  const candidates = new Set<string>()
+  if (order.manager_id) candidates.add(order.manager_id)
+  for (const rule of rules) {
+    if (rule.rule_type === 'total_cashbox' && rule.user_id) {
+      candidates.add(rule.user_id)
     }
   }
 
-  if (totalCommission <= 0) {
-    logger.info({ orderId }, 'Calculated commission is 0 or less')
-    return
-  }
-
-  // 6. Resolve manager full name
-  let managerName = 'Менеджер'
-  try {
-    const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(order.manager_id)
-    if (userError || !userData?.user) {
-      logger.warn({ managerId: order.manager_id, error: userError?.message }, 'Failed to fetch manager from auth')
-    } else {
-      managerName = userData.user.user_metadata?.full_name || userData.user.email || 'Менеджер'
-    }
-  } catch (err: any) {
-    logger.error({ err: err.message }, 'Error retrieving manager name')
-  }
-
-  // 7. Write to salary_payments
   const date = new Date()
   const period = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 
-  try {
-    const { data: payment, error: insertErr } = await db
-      .from('salary_payments')
-      .insert({
-        tenant_id: tenantId,
-        employee_id: order.manager_id,
-        employee_name: managerName,
-        amount: totalCommission,
-        type: 'bonus',
-        method: 'cash',
-        period,
-        note: `Автоматична комісія за замовлення #${order.id.slice(0, 8)}`,
-        created_by: createdBy,
-        commission_source_order_id: order.id,
-      })
-      .select('*')
-      .single()
+  // 6. Calculate commission per candidate
+  for (const candidateId of candidates) {
+    let candidateCommission = 0
+    const isActiveManager = candidateId === order.manager_id
 
-    if (insertErr) {
-      if (insertErr.code === '23505') { // Unique constraint violation code in PostgreSQL
-        logger.warn({ orderId }, 'Commission already processed for this order (duplicate prevent)')
-      } else {
-        logger.error({ orderId, error: insertErr.message }, 'Failed to insert commission payment')
+    for (const item of items) {
+      // Skip canceled items
+      if (item.item_status === 'canceled') continue
+
+      const prodInfo = item.product_id ? productsMap[item.product_id] : null
+      const brandId = prodInfo?.brand_id || null
+      const categoryId = prodInfo?.category_id || null
+
+      const revenue = item.sell_price * item.qty
+      const profit = (item.sell_price - item.buy_price) * item.qty
+
+      let bestRule: any = null
+      let maxScore = -1
+
+      for (const rule of rules) {
+        // Match user constraint
+        let matchesUser = false
+        if (rule.user_id === candidateId) {
+          if (rule.rule_type === 'total_cashbox' || isActiveManager) {
+            matchesUser = true
+          }
+        } else if (rule.user_id === null && isActiveManager) {
+          if (!rule.rule_type || rule.rule_type === 'personal_sales') {
+            matchesUser = true
+          }
+        }
+
+        if (!matchesUser) continue
+
+        // Brand matching constraint
+        if (rule.brand_id !== null && rule.brand_id !== brandId) continue
+
+        // Category matching constraint
+        if (rule.category_id !== null && rule.category_id !== categoryId) continue
+
+        // Calculate rule score
+        let score = 0
+        if (rule.user_id !== null) score += 100
+        if (rule.brand_id !== null) score += 10
+        if (rule.category_id !== null) score += 1
+
+        if (score > maxScore) {
+          maxScore = score
+          bestRule = rule
+        }
       }
-    } else {
-      logger.info({ orderId, paymentId: payment.id, amount: totalCommission }, 'Commission payment created successfully')
+
+      if (bestRule) {
+        const pctRevenue = Number(bestRule.pct_from_revenue) || 0
+        const pctProfit = Number(bestRule.pct_from_profit) || 0
+
+        const itemComm = Math.round(revenue * (pctRevenue / 100)) + Math.round(profit * (pctProfit / 100))
+        candidateCommission += itemComm
+      }
     }
-  } catch (err: any) {
-    logger.error({ orderId, err: err.message }, 'Exception while recording commission payment')
+
+    if (candidateCommission <= 0) continue
+
+    // 7. Resolve employee name
+    let employeeName = isActiveManager ? 'Менеджер' : 'Співробітник'
+    try {
+      const { data: userData } = await supabaseAdmin.auth.admin.getUserById(candidateId)
+      if (userData?.user) {
+        employeeName = userData.user.user_metadata?.full_name || userData.user.email || (isActiveManager ? 'Менеджер' : 'Співробітник')
+      }
+    } catch (err: any) {
+      logger.error({ candidateId, err: err.message }, 'Error retrieving employee name for commission')
+    }
+
+    // 8. Write to salary_payments
+    try {
+      const { data: payment, error: insertErr } = await db
+        .from('salary_payments')
+        .insert({
+          tenant_id: tenantId,
+          employee_id: candidateId,
+          employee_name: employeeName,
+          amount: candidateCommission,
+          type: 'bonus',
+          method: 'cash',
+          period,
+          note: `Автоматична комісія за замовлення #${order.id.slice(0, 8)}${!isActiveManager ? ' (відсоток від каси)' : ''}`,
+          created_by: createdBy,
+          commission_source_order_id: order.id,
+        })
+        .select('*')
+        .single()
+
+      if (insertErr) {
+        if (insertErr.code === '23505') { // Unique constraint violation
+          logger.warn({ orderId, candidateId }, 'Commission already processed for this employee and order')
+        } else {
+          logger.error({ orderId, candidateId, error: insertErr.message }, 'Failed to insert commission payment')
+        }
+      } else {
+        logger.info({ orderId, candidateId, paymentId: payment.id, amount: candidateCommission }, 'Commission payment created successfully')
+      }
+    } catch (err: any) {
+      logger.error({ orderId, candidateId, err: err.message }, 'Exception while recording commission payment')
+    }
   }
 }
+

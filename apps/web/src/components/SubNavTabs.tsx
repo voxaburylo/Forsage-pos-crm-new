@@ -117,9 +117,7 @@ export const ANALYTICS_TABS = [
 ]
 
 export const STAFF_TABS = [
-  { to: '/staff', label: 'Команда', roles: ['owner', 'admin'] },
-  { to: '/staff-salary', label: 'Нарахування ЗП', roles: ['owner', 'admin'] },
-  { to: '/staff/commission', label: 'Комісійні', roles: ['owner', 'admin'] },
+  { to: '/staff', label: 'Команда та ЗП', roles: ['owner', 'admin'] },
   { to: '/staff-kpi', label: 'KPI персоналу', roles: ['owner', 'admin'] },
   { to: '/staff-profitability', label: 'Прибутковість', roles: ['owner', 'admin'] }
 ]

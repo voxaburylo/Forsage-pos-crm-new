@@ -1,4 +1,4 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -14,6 +14,7 @@ const createRuleSchema = z.object({
   category_id: z.string().uuid().nullable().optional(),
   pct_from_revenue: z.number().min(0).max(100).default(0),
   pct_from_profit: z.number().min(0).max(100).default(0),
+  rule_type: z.string().max(50).default('personal_sales'),
 })
 
 // GET /api/v1/commission/rules

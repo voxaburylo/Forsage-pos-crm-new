@@ -1,4 +1,4 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -52,17 +52,37 @@ router.get('/summary', requireRole('owner', 'admin'), async (req, res, next) => 
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 
-    const map: Record<string, { employee_id: string; employee_name: string; salary: number; bonus: number; advance: number; penalty: number; total: number }> = {}
+    const map: Record<string, {
+      employee_id: string
+      employee_name: string
+      salary: number
+      bonus: number
+      advance: number
+      penalty: number
+      earned: number
+      paid: number
+      balance: number
+      total: number
+    }> = {}
+
     for (const row of data ?? []) {
       if (!map[row.employee_id]) {
         map[row.employee_id] = {
           employee_id: row.employee_id,
           employee_name: row.employee_name,
-          salary: 0, bonus: 0, advance: 0, penalty: 0, total: 0,
+          salary: 0, bonus: 0, advance: 0, penalty: 0,
+          earned: 0, paid: 0, balance: 0, total: 0,
         }
       }
       map[row.employee_id][row.type as 'salary' | 'bonus' | 'advance' | 'penalty'] += row.amount
-      map[row.employee_id].total += row.type === 'penalty' ? -row.amount : row.amount
+    }
+
+    for (const empId of Object.keys(map)) {
+      const e = map[empId]
+      e.earned = e.salary + e.bonus
+      e.paid = e.advance
+      e.balance = e.earned - e.paid - e.penalty
+      e.total = e.balance // total matches the corrected balance
     }
 
     res.json({ data: Object.values(map) })
@@ -99,8 +119,6 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
 })
 
 // GET /api/v1/salary/commission-preview — зведення комісій по менеджерах за місяць
-// Повертає: скільки вже записано комісій (type=bonus з commission_source_order_id)
-// та скільки зроблено продажів по кожному менеджеру за period
 router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const period = (req.query.period as string) ?? new Date().toISOString().slice(0, 7)

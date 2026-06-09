@@ -1,4 +1,4 @@
-import { api } from '@/lib/api'
+﻿import { api } from '@/lib/api'
 
 export interface CommissionRule {
   id: string
@@ -8,6 +8,7 @@ export interface CommissionRule {
   category_id: string | null
   pct_from_revenue: number
   pct_from_profit: number
+  rule_type: string
   created_at: string
   updated_at: string
 }
@@ -18,6 +19,7 @@ export interface CreateCommissionRuleInput {
   category_id?: string | null
   pct_from_revenue: number
   pct_from_profit: number
+  rule_type?: string
 }
 
 export const commissionApi = {
