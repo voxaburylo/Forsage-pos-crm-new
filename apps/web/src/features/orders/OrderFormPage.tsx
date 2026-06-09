@@ -1093,6 +1093,19 @@ export default function OrderFormPage() {
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-semibold text-gray-500 mb-1">Коментар до замовлення</label>
+                    {/* Швидкі теги коментаря (ORD-34) */}
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {['Передзвонити', 'Самовивіз', 'Потрібна накладна', 'Доставка'].map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => setComment((c) => c.includes(tag) ? c : (c.trim() ? `${c.trim()}, ${tag}` : tag))}
+                          className="text-[11px] font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-yellow-100 hover:text-yellow-700 transition-colors"
+                        >
+                          + {tag}
+                        </button>
+                      ))}
+                    </div>
                     <textarea
                       value={comment}
                       onChange={(e) => setComment(e.target.value)}
