@@ -297,8 +297,15 @@ export default function OrderFormPage() {
     // Load customer vehicles
     customerVehiclesApi.list(c.id)
       .then((r) => {
-        setVehicles((r as any).data ?? [])
-        setStep(2)
+        const list = (r as any).data ?? []
+        setVehicles(list)
+        // ORD-4: якщо авто рівно одне — підставляємо й одразу до товарів
+        if (list.length === 1) {
+          setSelectedVehicle(list[0])
+          setStep(3)
+        } else {
+          setStep(2)
+        }
       })
       .catch(() => {
         setStep(2)
@@ -665,7 +672,7 @@ export default function OrderFormPage() {
                           <Car size={16} />
                         </div>
                         <div className="text-left">
-                          <p className="font-bold text-gray-900 text-sm">{v.brand} {v.model}</p>
+                          <p className="font-bold text-gray-900 text-sm">{v.brand} {v.model}{v.year ? ` (${v.year})` : ''}</p>
                           {v.vin && <p className="text-xs text-gray-400 font-mono mt-0.5">{v.vin}</p>}
                         </div>
                       </div>
@@ -747,7 +754,9 @@ export default function OrderFormPage() {
                   <p className="text-xs text-gray-400 mt-0.5">
                     Клієнт: <span className="font-bold text-gray-700">{selectedCustomer ? (selectedCustomer.full_name ?? 'Без імені') : 'Гість'}</span>
                     {selectedCustomer && (
-                      <> | Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не обрано'}</span></>
+                      <> | Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}${selectedVehicle.year ? ` (${selectedVehicle.year})` : ''}` : 'Не обрано'}</span>
+                        <button type="button" onClick={() => setStep(2)} className="ml-1.5 text-yellow-600 hover:text-yellow-700 font-semibold underline">змінити</button>
+                      </>
                     )}
                   </p>
                 </div>
