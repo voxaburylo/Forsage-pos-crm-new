@@ -918,6 +918,7 @@ interface OrdersTableProps {
   onPrevPage: () => void
   onNextPage: () => void
   hasMore: boolean
+  onQuickView: (o: CustomerOrder) => void
 }
 
 // Перша позиція або «N позицій» для рядка списку (ORD-9)
@@ -928,7 +929,7 @@ function itemsSummary(o: CustomerOrder): string {
   return `${real[0].name} +${real.length - 1}`
 }
 
-function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore }: OrdersTableProps) {
+function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView }: OrdersTableProps) {
   const navigate = useNavigate()
 
   return (
@@ -971,7 +972,8 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
             const hasDebt = o.total_amount > paid
             const conf = STATUS_CONFIG[o.status] ?? { label: o.status, color: 'gray' as BadgeColor }
             return (
-              <div key={o.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-2.5">
+              <div key={o.id} onClick={() => onQuickView(o)}
+                className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-2.5 cursor-pointer active:bg-gray-50">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-bold text-gray-900 text-sm">{formatOrderNo(o)}</span>
                   <Badge color={conf.color}>{conf.label}</Badge>
@@ -995,7 +997,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                     {paid > 0 && <div className="text-blue-600">Сплачено: {formatMoney(paid)}</div>}
                     {hasDebt && <div className="text-red-500 font-semibold">Борг: {formatMoney(o.total_amount - paid)}</div>}
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <Button variant="secondary" size="sm" icon={<Copy size={13} />} title="Повторити" onClick={() => startRepeatOrder(o, navigate)} />
                     <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
                   </div>
@@ -1031,7 +1033,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                   const paid = o.total_paid ?? o.prepayment ?? 0
                   const hasDebt = o.total_amount > paid
                   return (
-                    <tr key={o.id} className="hover:bg-gray-50/30 transition-colors">
+                    <tr key={o.id} onClick={() => onQuickView(o)} className="hover:bg-gray-50/30 transition-colors cursor-pointer">
                       {/* Замовлення */}
                       <td className="px-5 py-4">
                         <div className="font-bold text-gray-900">{formatOrderNo(o)}</div>
@@ -1117,7 +1119,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
 
                       {/* Дії */}
                       <td className="px-5 py-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
+                        <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
                           <Button
                             variant="secondary"
                             size="sm"
@@ -1220,6 +1222,9 @@ export default function OrdersPage() {
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLInputElement>(null)
+
+  // швидкий перегляд замовлення (drawer зі списку)
+  const [quickOrderId, setQuickOrderId] = useState<string | null>(null)
 
   // модалки
   const [payModal, setPayModal] = useState<CustomerOrder | null>(null)
@@ -1358,6 +1363,8 @@ export default function OrdersPage() {
   // ── похідні: вибраний чат/замовлення ──
   const selectedChat = selection?.kind === 'chat' ? chats.find((c) => c.id === selection.id) ?? null : null
   const selectedOrder = selection?.kind === 'order' ? orders.find((o) => o.id === selection.id) ?? null : null
+  // Живий об'єкт для drawer швидкого перегляду (оновлюється разом зі списком після дій)
+  const quickOrder = quickOrderId ? orders.find((o) => o.id === quickOrderId) ?? null : null
 
   // ── статистика ──
   const stats = useMemo(() => ({
@@ -1752,6 +1759,7 @@ export default function OrdersPage() {
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
               hasMore={orders.length >= 50}
+              onQuickView={(o) => setQuickOrderId(o.id)}
             />
           )}
         </div>
@@ -1932,6 +1940,35 @@ export default function OrdersPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Швидкий перегляд замовлення — drawer зі списку (без переходу на повну сторінку) */}
+      {quickOrder && (
+        <div className="fixed inset-0 z-40">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setQuickOrderId(null)} />
+          <div className="absolute right-0 top-0 bottom-0 w-full max-w-xl bg-gray-50 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white shrink-0">
+              <span className="font-bold text-gray-900">Швидкий перегляд</span>
+              <button onClick={() => setQuickOrderId(null)} className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100" title="Закрити">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto min-h-0">
+              <OrderInlineView
+                order={quickOrder}
+                now={now}
+                onOpenFull={() => navigate('/orders/' + quickOrder.id)}
+                onEditDraft={() => navigate('/quotes/' + quickOrder.id)}
+                onOpenChat={(chatId) => { setQuickOrderId(null); navigate('/orders?tab=bots&chat_id=' + chatId) }}
+                onChangeStatus={(s) => changeOrderStatus(quickOrder.id, s)}
+                onItemStatus={(itemId, s) => updateItemStatus(quickOrder.id, itemId, s)}
+                onPay={() => setPayModal(quickOrder)}
+                onCancel={() => setCancelModal(quickOrder)}
+                onRepeat={() => startRepeatOrder(quickOrder, navigate)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <ToastContainer />
     </div>
