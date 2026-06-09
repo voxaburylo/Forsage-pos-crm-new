@@ -196,11 +196,17 @@ router.post('/:id/send', requireRole('owner', 'admin', 'manager'), async (req, r
     // 1. Перевіряємо що чат належить тененту
     const { data: chat, error: chatCheckErr } = await db
       .from('messenger_chats')
-      .select('id')
+      .select('id, channel:messenger_channels(platform)')
       .eq('id', chatId)
       .eq('tenant_id', req.user!.tenant_id)
       .maybeSingle()
     if (chatCheckErr || !chat) throw new AppError('NOT_FOUND', 'Чат не знайдено', 404)
+
+    // Наразі вихідні повідомлення підтримує лише Telegram (Viber/WhatsApp ще не інтегровані)
+    const platform = (Array.isArray((chat as any).channel) ? (chat as any).channel[0] : (chat as any).channel)?.platform
+    if (platform && platform !== 'telegram') {
+      throw new AppError('CHANNEL_NOT_SUPPORTED', `Канал ${platform} ще не підключено для відправки. Наразі працює лише Telegram.`, 400)
+    }
 
     const ok = await sendMessageToChat(chatId, parsed.data.text)
     if (!ok) throw new AppError('SEND_FAILED', 'Не вдалося відправити повідомлення', 502)
