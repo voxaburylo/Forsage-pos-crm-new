@@ -8,6 +8,7 @@ import { logger } from '../lib/logger.js'
 import { notifyStatusUpdate } from '../services/telegramBot.js'
 import { calculateAndRecordCommission } from '../services/commissionService.js'
 import { getTerminalAdapter, getFiscalAdapter } from '../services/integrations/adapterFactory.js'
+import { notifyWaitlistCustomers } from './waitlist.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -743,6 +744,38 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
       details: { item_id: req.params.itemId },
     })
 
+    // ORD-19/ORD-14: ланцюг «Замовлено → лист очікування → нагадування при надходженні»
+    if (parsed.data.item_status === 'ordered' || parsed.data.item_status === 'arrived') {
+      try {
+        const { data: item } = await db
+          .from('customer_order_items')
+          .select('product_id, order:customer_orders!inner(customer_id)')
+          .eq('id', req.params.itemId)
+          .maybeSingle()
+        const productId = (item as any)?.product_id
+        const customerId = (item as any)?.order?.customer_id
+        if (productId) {
+          if (parsed.data.item_status === 'ordered' && customerId) {
+            // Реєструємо клієнта в листі очікування на цей товар (ORD-19)
+            const { data: existing } = await db.from('product_waitlist').select('id')
+              .eq('product_id', productId).eq('customer_id', customerId)
+              .eq('tenant_id', req.user!.tenant_id).maybeSingle()
+            if (!existing) {
+              await db.from('product_waitlist').insert({
+                tenant_id: req.user!.tenant_id, product_id: productId,
+                customer_id: customerId, status: 'waiting',
+              })
+            }
+          } else if (parsed.data.item_status === 'arrived') {
+            // Надходження очікуваного товару — авто-сповіщення тих, хто чекав (ORD-14)
+            notifyWaitlistCustomers(productId).catch(() => {})
+          }
+        }
+      } catch (chainErr) {
+        logger.error({ error: chainErr instanceof Error ? chainErr.message : chainErr }, 'Waitlist chain error')
+      }
+    }
+
     // Авто-оновлення загального статусу
     await updateOrderStatus(req.params.id, req.user!.tenant_id, req.user!.id)
 
@@ -923,13 +956,14 @@ router.post('/bulk-arrival', async (req, res, next) => {
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
-    // Отримуємо унікальні order_id
+    // Отримуємо унікальні order_id та product_id
     const { data: items } = await db
       .from('customer_order_items')
-      .select('id, order_id')
+      .select('id, order_id, product_id')
       .in('id', parsed.data.item_ids)
 
     const orderIds = [...new Set((items ?? []).map((i) => i.order_id))]
+    const productIds = [...new Set((items ?? []).map((i: any) => i.product_id).filter(Boolean))]
 
     // Оновлюємо всі позиції на arrived
     const { error } = await db
@@ -938,6 +972,11 @@ router.post('/bulk-arrival', async (req, res, next) => {
       .in('id', parsed.data.item_ids)
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+    // ORD-14: надходження очікуваних товарів — авто-сповіщення клієнтів з листа очікування
+    for (const pid of productIds) {
+      notifyWaitlistCustomers(pid).catch(() => {})
+    }
 
     // Авто-перерахунок статусів замовлень
     for (const oid of orderIds) {
