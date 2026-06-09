@@ -948,7 +948,60 @@ export default function OrderFormPage() {
 
             {/* Parts Table */}
             <Card padding="none">
-              <div className="overflow-x-auto">
+              {/* Mobile: позиції картками (ORD-17) */}
+              <div className="md:hidden divide-y divide-gray-100">
+                {items.map((row, idx) => (
+                  <div key={idx} className="p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-gray-400">Позиція {idx + 1}</span>
+                      {items.length > 1 && (
+                        <button type="button" onClick={() => removeItem(idx)} className="text-red-500 hover:text-red-700 p-1" title="Видалити">
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                    <ProductAutocomplete
+                      value={row.name}
+                      onChange={(val) => setItems((p) => p.map((r, i) => i === idx ? { ...r, name: val, product_id: null, stock: undefined } : r))}
+                      onSelect={(prod) => selectProduct(idx, prod)}
+                      placeholder="Назва або артикул..."
+                    />
+                    {row.product_id && row.stock !== undefined && (
+                      <span className={`block text-[10px] font-semibold ${row.stock > 0 ? 'text-green-600' : 'text-orange-500'}`}>
+                        {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
+                      </span>
+                    )}
+                    <div className="inline-flex rounded-md overflow-hidden border border-gray-200">
+                      {(['product', 'service'] as const).map((t) => (
+                        <button key={t} type="button" onClick={() => updateItem(idx, 'item_type', t)}
+                          className={`px-3 py-1 text-xs font-semibold transition-colors ${(row.item_type ?? 'product') === t ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400'}`}>
+                          {t === 'product' ? 'Товар' : 'Робота'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <input value={row.sku} onChange={(e) => updateItem(idx, 'sku', e.target.value)} placeholder="Артикул"
+                        className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-mono" />
+                      <input value={row.qty} onChange={(e) => updateItem(idx, 'qty', e.target.value)} type="number" min="1" placeholder="К-сть"
+                        className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 text-center" />
+                      <input value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна"
+                        className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
+                    </div>
+                    <select value={row.supplier_id} onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400">
+                      <option value="">Наявність на складі</option>
+                      {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    {row.supplier_id && (
+                      <input type="date" value={row.expected_date || ''} onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
+                        className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                        title="Очікувана дата надходження" />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="overflow-x-auto hidden md:block">
                 <table className="w-full text-left border-collapse text-sm">
                   <thead>
                     <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
