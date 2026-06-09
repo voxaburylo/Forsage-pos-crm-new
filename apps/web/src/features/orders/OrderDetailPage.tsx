@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown } from 'lucide-react'
 import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
-import { formatOrderNo } from './orderActions'
+import { formatOrderNo, startRepeatOrder } from './orderActions'
 import { printOrderReceipt } from './OrderReceiptPrint'
 import { printPickingList } from './PickingListPrint'
 import { shiftApi } from '@/features/pos/shiftApi'
@@ -361,10 +361,10 @@ export default function OrderDetailPage() {
       title={`Замовлення ${formatOrderNo(order)} від ${formatDate(order.created_at)}`}
       onBack={() => navigate('/orders')}
       actions={
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-1.5 md:gap-2 items-center">
           {isDraft && (
             <Button icon={<FilePen size={15} />} onClick={() => navigate('/quotes/' + id)}>
-              Редагувати КП
+              <span className="hidden sm:inline">Редагувати КП</span>
             </Button>
           )}
           {canComplete && (
@@ -374,12 +374,12 @@ export default function OrderDetailPage() {
               setInlinePayMethod('cash');
               setPayMethod('cash');
             }} className="bg-green-600 hover:bg-green-700 text-white">
-              💰 Видати
+              💰<span className="hidden sm:inline">&nbsp;Видати</span>
             </Button>
           )}
           {hasPendingWarehouseItems && !['completed', 'canceled'].includes(order.status) && (
             <Button className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold" onClick={() => navigate(`/inventory/picking?orderId=${id}`)}>
-              📦 Зібрати
+              📦<span className="hidden sm:inline">&nbsp;Зібрати</span>
             </Button>
           )}
 
@@ -396,24 +396,10 @@ export default function OrderDetailPage() {
             {actionsOpen && (
               <div className="absolute right-0 mt-1.5 w-52 bg-white border border-gray-150 rounded-xl shadow-lg py-1.5 z-30 focus:outline-none animate-in fade-in slide-in-from-top-1 duration-100">
                 <button
-                  onClick={() => {
-                    sessionStorage.setItem('duplicate_order_payload', JSON.stringify({
-                      customer_id: order.customer_id,
-                      vehicle_info: order.vehicle_info,
-                      items: order.items.map(item => ({
-                        name: item.name,
-                        sku: item.sku ?? '',
-                        qty: item.qty.toString(),
-                        sell_price: (item.sell_price / 100).toString(),
-                        supplier_id: item.supplier_id ?? '',
-                        expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
-                      }))
-                    }))
-                    navigate('/orders/new')
-                  }}
+                  onClick={() => startRepeatOrder(order, navigate)}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                 >
-                  🔄 Дублювати замовлення
+                  🔄 Повторити замовлення
                 </button>
                 <button
                   onClick={() => {
