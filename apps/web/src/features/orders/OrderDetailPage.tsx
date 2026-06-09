@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown } from 'lucide-react'
 import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
+import { formatOrderNo } from './orderActions'
 import { printOrderReceipt } from './OrderReceiptPrint'
 import { printPickingList } from './PickingListPrint'
 import { shiftApi } from '@/features/pos/shiftApi'
@@ -257,7 +258,7 @@ export default function OrderDetailPage() {
       const carInfo = order.vehicle_info
         ? [order.vehicle_info.make, order.vehicle_info.model].filter(Boolean).join(' ')
         : ''
-      const orderNum = order.kp_number || order.id.slice(0, 8)
+      const orderNum = order.order_number != null ? String(order.order_number) : (order.kp_number || order.id.slice(0, 8))
       const cellInfo = order.pickup_cell ? `Комірка: ${order.pickup_cell}` : ''
       const today = new Date().toLocaleDateString('uk-UA')
 
@@ -357,7 +358,7 @@ export default function OrderDetailPage() {
 
   return (
     <Layout
-      title={`Замовлення від ${formatDate(order.created_at)}`}
+      title={`Замовлення ${formatOrderNo(order)} від ${formatDate(order.created_at)}`}
       onBack={() => navigate('/orders')}
       actions={
         <div className="flex gap-2 items-center">

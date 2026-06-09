@@ -1,3 +1,13 @@
+/**
+ * Людський номер замовлення (ORD-8): #1043 якщо є order_number,
+ * інакше старий kp_number, інакше короткий хеш UUID.
+ */
+export function formatOrderNo(o: { order_number?: number | null; kp_number?: string | null; id: string }): string {
+  if (o.order_number != null) return `#${o.order_number}`
+  if (o.kp_number) return o.kp_number
+  return `#${o.id.slice(0, 8)}`
+}
+
 interface RepeatableItem {
   name: string
   sku?: string | null

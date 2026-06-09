@@ -478,7 +478,7 @@ router.post('/:id/send-telegram', async (req, res, next) => {
     }
 
     // Формуємо КП
-    const kpNum = order.kp_number ?? `#${order.id.slice(0, 8)}`
+    const kpNum = order.order_number != null ? `#${order.order_number}` : (order.kp_number ?? `#${order.id.slice(0, 8)}`)
     const vehicle = order.vehicle_info as any
     const vehicleLine = vehicle
       ? `🚗 ${[vehicle.make, vehicle.model, vehicle.year].filter(Boolean).join(' ')}${vehicle.vin ? ` | VIN: ${vehicle.vin}` : ''}\n`

@@ -8,7 +8,7 @@ import type { CustomerVehicle } from '@/types/customer'
 import CustomerNotes from './CustomerNotes'
 import CustomerLoyalty from './CustomerLoyalty'
 import CustomerPreferences from './CustomerPreferences'
-import { startRepeatOrder } from '@/features/orders/orderActions'
+import { startRepeatOrder, formatOrderNo } from '@/features/orders/orderActions'
 import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import type { Customer, CustomerSale } from '@/types/customer'
@@ -339,7 +339,7 @@ export default function CustomerDetailPage() {
                         {isDraft ? 'Чернетка' : (statusLabel[o.status] ?? o.status)}
                       </span>
                       <span className="text-gray-500 font-mono text-xs shrink-0">
-                        {o.kp_number ?? `#${o.id.slice(0, 8)}`}
+                        {formatOrderNo(o)}
                       </span>
                       {o.vehicle_info?.make && (
                         <span className="text-gray-400 text-xs truncate">

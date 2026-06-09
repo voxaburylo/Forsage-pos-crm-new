@@ -9,7 +9,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
-import { startRepeatOrder } from './orderActions'
+import { startRepeatOrder, formatOrderNo } from './orderActions'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
@@ -113,6 +113,7 @@ interface OrderItem {
 
 interface CustomerOrder {
   id: string
+  order_number: number | null
   kp_number: string | null
   customer_id: string | null
   manager_id: string
@@ -220,7 +221,7 @@ function OrderRow({ order, active, onClick }: {
       }`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono text-[11px] text-gray-500 shrink-0">#{order.id.slice(0, 6)}</span>
+          <span className="font-mono text-[11px] text-gray-500 shrink-0">{formatOrderNo(order)}</span>
           <span className="font-semibold text-sm text-gray-900 truncate">{name}</span>
         </div>
         <span className="text-[10px] text-gray-400 shrink-0">{formatDate(order.created_at)}</span>
@@ -412,7 +413,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
             {chatOrders.map((o) => (
               <div key={o.id} className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm flex flex-col gap-1.5">
                 <div className="flex justify-between items-center text-xs">
-                  <span className="font-bold text-gray-700">#{o.id.slice(0, 8)}</span>
+                  <span className="font-bold text-gray-700">{formatOrderNo(o)}</span>
                   <Badge color={(STATUS_CONFIG[o.status]?.color ?? 'gray') as BadgeColor}>
                     {STATUS_CONFIG[o.status]?.label ?? o.status}
                   </Badge>
@@ -962,7 +963,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
             return (
               <div key={o.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-bold text-gray-900 text-sm">{o.kp_number ?? `#${o.id.slice(0, 8)}`}</span>
+                  <span className="font-bold text-gray-900 text-sm">{formatOrderNo(o)}</span>
                   <Badge color={conf.color}>{conf.label}</Badge>
                 </div>
                 <div>
@@ -1023,7 +1024,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                     <tr key={o.id} className="hover:bg-gray-50/30 transition-colors">
                       {/* Замовлення */}
                       <td className="px-5 py-4">
-                        <div className="font-bold text-gray-900">{o.kp_number ?? `#${o.id.slice(0, 8)}`}</div>
+                        <div className="font-bold text-gray-900">{formatOrderNo(o)}</div>
                         <div className="text-[11px] text-gray-400 mt-0.5 font-mono">
                           {formatDateTime(o.created_at)}
                         </div>
@@ -1333,6 +1334,8 @@ export default function OrdersPage() {
     return filteredOrders.filter((o) =>
       o.customer?.full_name?.toLowerCase().includes(sq) ||
       o.customer?.phone?.includes(sq) ||
+      formatOrderNo(o).toLowerCase().includes(sq) ||
+      (o.order_number != null && String(o.order_number).includes(sq)) ||
       (o.kp_number?.toLowerCase().includes(sq) ?? false) ||
       (o.vehicle_info?.vin?.toLowerCase().includes(sq) ?? false) ||
       o.items.some((i) =>
@@ -1962,10 +1965,7 @@ function OrderInlineView({
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-2 flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-xs text-gray-500">#{order.id.slice(0, 8)}</span>
-                {order.kp_number && (
-                  <span className="text-xs font-mono font-bold text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{order.kp_number}</span>
-                )}
+                <span className="font-mono text-sm font-bold text-gray-800">{formatOrderNo(order)}</span>
                 <Badge color={conf.color}>{conf.label}</Badge>
                 <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">
                   {srcConf.icon}&nbsp;{srcConf.label}

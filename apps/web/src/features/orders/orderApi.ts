@@ -23,6 +23,7 @@ export interface CustomerOrderItem {
 
 export interface CustomerOrder {
   id: string
+  order_number: number | null
   kp_number: string | null
   customer_id: string | null
   chat_id: string | null
