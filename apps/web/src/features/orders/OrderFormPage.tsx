@@ -50,6 +50,15 @@ export default function OrderFormPage() {
   const { id } = useParams()
   const [loading, setLoading] = useState(false)
 
+  // ORD-3: на десктопі (≥1024px) показуємо всі секції на одному екрані без кроків
+  const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+
   // Wizard state
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
 
@@ -583,7 +592,8 @@ export default function OrderFormPage() {
     <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
       <div className="max-w-4xl mx-auto space-y-6">
         
-        {/* Step Indicator */}
+        {/* Step Indicator — лише в покроковому (мобільному) режимі */}
+        {!isDesktop && (
         <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center justify-between">
           {[
             { s: 1, label: 'Клієнт' },
@@ -612,11 +622,12 @@ export default function OrderFormPage() {
             )
           })}
         </div>
+        )}
 
         {/* ─────────────── STEP 1: SELECT CUSTOMER ─────────────── */}
-        {step === 1 && (
+        {(isDesktop || step === 1) && (
           <div className="space-y-6">
-            <Card className="max-w-2xl mx-auto">
+            <Card className="max-w-2xl mx-auto lg:max-w-none">
               <div className="text-center space-y-2 mb-6">
                 <h3 className="text-lg font-bold text-gray-900">Нове замовлення</h3>
                 <p className="text-sm text-gray-500">Оберіть клієнта, щоб розпочати оформлення</p>
@@ -722,11 +733,11 @@ export default function OrderFormPage() {
         )}
 
         {/* ─────────────── STEP 2: SELECT VEHICLE ─────────────── */}
-        {step === 2 && selectedCustomer && (
-          <div className="space-y-6 max-w-2xl mx-auto">
+        {(isDesktop || step === 2) && selectedCustomer && (
+          <div className="space-y-6 max-w-2xl mx-auto lg:max-w-none">
             <Card>
               <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-4">
-                <Button size="sm" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft size={14} />} />
+                {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft size={14} />} />}
                 <div>
                   <h3 className="font-bold text-gray-900 text-base">Оберіть автомобіль для замовлення</h3>
                   <p className="text-xs text-gray-400 mt-0.5">Клієнт: {selectedCustomer.full_name ?? 'Без імені'} ({selectedCustomer.phone})</p>
@@ -818,12 +829,12 @@ export default function OrderFormPage() {
         )}
 
         {/* ─────────────── STEP 3: PARTS SPECIFICATION ─────────────── */}
-        {step === 3 && (
+        {(isDesktop || step === 3) && (
           <div className="space-y-6">
             {/* Header info */}
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-wrap justify-between items-center gap-4">
               <div className="flex items-center gap-3">
-                <Button size="sm" variant="ghost" onClick={() => setStep(selectedCustomer ? 2 : 1)} icon={<ArrowLeft size={14} />} />
+                {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(selectedCustomer ? 2 : 1)} icon={<ArrowLeft size={14} />} />}
                 <div>
                   <h3 className="font-bold text-gray-900">Специфікація замовлення</h3>
                   <p className="text-xs text-gray-400 mt-0.5">
@@ -981,6 +992,7 @@ export default function OrderFormPage() {
                   Додати рядок
                 </Button>
                 
+                {!isDesktop && (
                 <div className="flex gap-2">
                   <Button variant="secondary" onClick={() => setStep(selectedCustomer ? 2 : 1)}>Назад</Button>
                   <Button onClick={() => {
@@ -992,17 +1004,18 @@ export default function OrderFormPage() {
                     }
                   }}>Далі</Button>
                 </div>
+                )}
               </div>
             </Card>
           </div>
         )}
 
         {/* ─────────────── STEP 4: SUMMARY & CHECKOUT ─────────────── */}
-        {step === 4 && (
-          <div className="space-y-6 max-w-3xl mx-auto">
+        {(isDesktop || step === 4) && (
+          <div className="space-y-6 max-w-3xl mx-auto lg:max-w-none">
             {/* Header info */}
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center gap-3">
-              <Button size="sm" variant="ghost" onClick={() => setStep(3)} icon={<ArrowLeft size={14} />} />
+              {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(3)} icon={<ArrowLeft size={14} />} />}
               <div>
                 <h3 className="font-bold text-gray-900">Завершення оформлення</h3>
                 <p className="text-xs text-gray-400 mt-0.5">Перевірте деталі замовлення та виберіть дію збереження</p>
@@ -1228,9 +1241,11 @@ export default function OrderFormPage() {
             </div>
 
             {/* Save Buttons Panel */}
-            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4">
-              <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
-              
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4 lg:sticky lg:bottom-4">
+              {!isDesktop
+                ? <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
+                : <span className="text-xs text-gray-400 hidden sm:block">Ctrl+S — оформити замовлення</span>}
+
               <div className="flex gap-2 w-full sm:w-auto">
                 <Button
                   variant="secondary"
