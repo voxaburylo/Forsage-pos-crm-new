@@ -387,6 +387,12 @@ export default function OrderFormPage() {
     }, 0)
   }, [items])
 
+  // Сума до сплати та решта (ORD-5, ORD-6)
+  const discountKopMemo = Math.round(parseFloat(discount || '0') * 100)
+  const toPayKop = Math.max(0, totalKop - discountKopMemo)
+  const prepaymentKopMemo = Math.round(parseFloat(prepayment || '0') * 100)
+  const changeKop = Math.max(0, prepaymentKopMemo - toPayKop)
+
   // Submit Order / Save Draft
   async function handleSave(asDraft: boolean) {
     const validItems = items.filter((row) => row.name.trim())
@@ -394,6 +400,21 @@ export default function OrderFormPage() {
       toast.error('Додайте хоча б одну позицію з назвою')
       setStep(3)
       return
+    }
+
+    // ORD-5: не дати випадково оформити замовлення на 0 грн
+    if (!asDraft && toPayKop === 0) {
+      if (!confirm('Сума замовлення 0 ₴. Оформити замовлення без вартості?')) {
+        setStep(3)
+        return
+      }
+    }
+
+    // ORD-6: передоплата більша за суму — підтвердити видачу решти
+    if (!asDraft && changeKop > 0) {
+      if (!confirm(`Передоплата перевищує суму до сплати.\nРешта клієнту: ${formatMoney(changeKop)}\n\nЗафіксувати передоплату ${formatMoney(toPayKop)} та видати решту?`)) {
+        return
+      }
     }
 
     const vehicleInfo = selectedVehicle
@@ -410,7 +431,8 @@ export default function OrderFormPage() {
       comment.trim(),
     ].filter(Boolean).join(' ')
 
-    const prepaymentKop = Math.round(parseFloat(prepayment || '0') * 100)
+    // Передоплату обмежуємо сумою до сплати — решта видається готівкою, а не «з'їдається» (ORD-6)
+    const prepaymentKop = Math.min(prepaymentKopMemo, toPayKop)
 
     // Draft orders have 0 prepayment in backend typically
     const finalPrepayment = asDraft ? 0 : prepaymentKop
@@ -952,6 +974,13 @@ export default function OrderFormPage() {
                     />
                   </div>
                   
+                  {changeKop > 0 && (
+                    <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-orange-700">↩️ Решта клієнту:</span>
+                      <span className="text-sm font-bold text-orange-700">{formatMoney(changeKop)}</span>
+                    </div>
+                  )}
+
                   {parseFloat(prepayment) > 0 && (
                     <div className="space-y-3">
                       <div>
