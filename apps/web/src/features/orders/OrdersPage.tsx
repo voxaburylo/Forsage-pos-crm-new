@@ -9,6 +9,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
+import { startRepeatOrder } from './orderActions'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
@@ -1040,13 +1041,22 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
 
                       {/* Дії */}
                       <td className="px-5 py-4 text-right">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => navigate('/orders/' + o.id)}
-                        >
-                          Перегляд
-                        </Button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            icon={<Copy size={13} />}
+                            title="Повторити замовлення"
+                            onClick={() => startRepeatOrder(o, navigate)}
+                          />
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => navigate('/orders/' + o.id)}
+                          >
+                            Перегляд
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -1624,6 +1634,7 @@ export default function OrdersPage() {
                 onItemStatus={(itemId, s) => updateItemStatus(selectedOrder.id, itemId, s)}
                 onPay={() => setPayModal(selectedOrder)}
                 onCancel={() => setCancelModal(selectedOrder)}
+                onRepeat={() => startRepeatOrder(selectedOrder, navigate)}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center">
@@ -1853,7 +1864,7 @@ export default function OrdersPage() {
 
 function OrderInlineView({
   order, now, onOpenFull, onEditDraft, onOpenChat,
-  onChangeStatus, onItemStatus, onPay, onCancel,
+  onChangeStatus, onItemStatus, onPay, onCancel, onRepeat,
 }: {
   order: CustomerOrder
   now: Date
@@ -1864,6 +1875,7 @@ function OrderInlineView({
   onItemStatus: (itemId: string, status: string) => void
   onPay: () => void
   onCancel: () => void
+  onRepeat: () => void
 }) {
   const conf = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'gray' as BadgeColor }
   const srcConf = SOURCE_CONFIG[order.source] ?? { label: order.source, icon: <AlertCircle size={10} /> }
@@ -1944,6 +1956,11 @@ function OrderInlineView({
           <Button size="sm" variant="secondary" icon={<ExternalLink size={14} />} onClick={onOpenFull}>
             Відкрити повністю
           </Button>
+          {!draft && order.items.length > 0 && (
+            <Button size="sm" variant="secondary" icon={<Copy size={14} />} onClick={onRepeat}>
+              Повторити
+            </Button>
+          )}
           {canCancel && (
             <Button size="sm" variant="secondary" onClick={onCancel} className="text-red-500 hover:text-red-600">
               ❌ Скасувати

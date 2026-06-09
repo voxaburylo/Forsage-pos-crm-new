@@ -8,6 +8,7 @@ import type { CustomerVehicle } from '@/types/customer'
 import CustomerNotes from './CustomerNotes'
 import CustomerLoyalty from './CustomerLoyalty'
 import CustomerPreferences from './CustomerPreferences'
+import { startRepeatOrder } from '@/features/orders/orderActions'
 import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import type { Customer, CustomerSale } from '@/types/customer'
@@ -326,12 +327,14 @@ export default function CustomerDetailPage() {
                   completed: 'bg-green-100 text-green-700', canceled: 'bg-red-100 text-red-700',
                 }
                 return (
-                  <button
+                  <div
                     key={o.id}
-                    onClick={() => navigate(isDraft ? `/quotes/${o.id}` : `/orders/${o.id}`)}
-                    className="w-full px-6 py-3 flex items-center justify-between text-sm hover:bg-gray-50 transition-colors text-left"
+                    className="w-full px-6 py-3 flex items-center justify-between text-sm hover:bg-gray-50 transition-colors gap-2"
                   >
-                    <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      onClick={() => navigate(isDraft ? `/quotes/${o.id}` : `/orders/${o.id}`)}
+                      className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                    >
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${statusColor[o.status] ?? 'bg-gray-100 text-gray-500'}`}>
                         {isDraft ? 'Чернетка' : (statusLabel[o.status] ?? o.status)}
                       </span>
@@ -343,14 +346,23 @@ export default function CustomerDetailPage() {
                           🚗 {o.vehicle_info.make} {o.vehicle_info.model}
                         </span>
                       )}
-                    </div>
+                    </button>
                     <div className="flex items-center gap-3 shrink-0 ml-2">
                       {o.total_amount > 0 && (
                         <span className="font-semibold text-gray-900">{formatMoney(o.total_amount)}</span>
                       )}
-                      <span className="text-gray-400 text-xs">{new Date(o.created_at).toLocaleDateString('uk-UA')}</span>
+                      <span className="text-gray-400 text-xs hidden sm:inline">{new Date(o.created_at).toLocaleDateString('uk-UA')}</span>
+                      {!isDraft && o.items?.length > 0 && (
+                        <button
+                          onClick={() => startRepeatOrder(o, navigate)}
+                          className="text-gray-400 hover:text-yellow-600 p-1 rounded hover:bg-yellow-50 transition-colors"
+                          title="Повторити замовлення"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      )}
                     </div>
-                  </button>
+                  </div>
                 )
               })}
             </div>
