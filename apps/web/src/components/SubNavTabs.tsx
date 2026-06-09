@@ -18,6 +18,17 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
     (tab) => !tab.roles || !currentRole || tab.roles.includes(currentRole)
   )
 
+  // Чи активна якась під-вкладка з query на поточному pathname — тоді базову (без query)
+  // вкладку того ж pathname не підсвічуємо, щоб не світилися дві одразу.
+  const queryTabActive = visibleTabs.some((t) => {
+    if (!t.to.includes('?')) return false
+    const [path, search] = t.to.split('?')
+    if (location.pathname !== path) return false
+    const sp = new URLSearchParams(search)
+    const cur = new URLSearchParams(location.search)
+    return Array.from(sp.entries()).every(([k, v]) => cur.get(k) === v)
+  })
+
   return (
     <div className="flex border-b border-gray-100 overflow-x-auto mb-6 -mx-4 px-4 md:-mx-6 md:px-6 bg-white shrink-0 sticky top-0 z-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <div className="flex space-x-6">
@@ -34,6 +45,8 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
               )
               return pathMatches && paramsMatch
             }
+            // Базова вкладка без query не активна, якщо активна під-вкладка того ж pathname
+            if (queryTabActive && location.pathname === tab.to) return false
             if (tab.to === '/suppliers' || tab.to === '/products' || tab.to === '/sales' || tab.to === '/inventory' || tab.to === '/reports' || tab.to === '/staff' || tab.to === '/settings') {
               return location.pathname === tab.to
             }
