@@ -218,6 +218,7 @@ export default function OrderFormPage() {
   const [isUrgent, setIsUrgent] = useState(false)
   const [prepayment, setPrepayment] = useState('0')
   const [discount, setDiscount] = useState('0')
+  const [discountMode, setDiscountMode] = useState<'uah' | 'pct'>('uah')
   const [prepaymentMethod, setPrepaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [isFiscal, setIsFiscal] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -394,8 +395,10 @@ export default function OrderFormPage() {
     }, 0)
   }, [items])
 
-  // Сума до сплати та решта (ORD-5, ORD-6)
-  const discountKopMemo = Math.round(parseFloat(discount || '0') * 100)
+  // Сума до сплати та решта (ORD-5, ORD-6, ORD-21)
+  const discountKopMemo = discountMode === 'pct'
+    ? Math.round(totalKop * (Math.min(parseFloat(discount || '0'), 100) / 100))
+    : Math.round(parseFloat(discount || '0') * 100)
   const toPayKop = Math.max(0, totalKop - discountKopMemo)
   const prepaymentKopMemo = Math.round(parseFloat(prepayment || '0') * 100)
   const changeKop = Math.max(0, prepaymentKopMemo - toPayKop)
@@ -444,7 +447,7 @@ export default function OrderFormPage() {
     // Draft orders have 0 prepayment in backend typically
     const finalPrepayment = asDraft ? 0 : prepaymentKop
 
-    const discountKop = Math.round(parseFloat(discount || '0') * 100)
+    const discountKop = discountKopMemo
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
       source: 'walk_in',
@@ -943,16 +946,16 @@ export default function OrderFormPage() {
                     <span className="text-gray-500">Загальна сума товарів:</span>
                     <span className="font-semibold text-gray-800">{formatMoney(totalKop)}</span>
                   </div>
-                  {parseFloat(discount) > 0 && (
+                  {discountKopMemo > 0 && (
                     <div className="flex justify-between text-red-600 font-semibold">
-                      <span>Знижка:</span>
-                      <span>-{formatMoney(Math.round(parseFloat(discount || '0') * 100))}</span>
+                      <span>Знижка{discountMode === 'pct' ? ` (${discount}%)` : ''}:</span>
+                      <span>-{formatMoney(discountKopMemo)}</span>
                     </div>
                   )}
                   <div className="flex justify-between items-center border-t border-gray-100 pt-2">
                     <span className="text-gray-500 font-semibold">До сплати:</span>
                     <span className="text-xl font-extrabold text-yellow-600">
-                      {formatMoney(Math.max(0, totalKop - Math.round(parseFloat(discount || '0') * 100)))}
+                      {formatMoney(toPayKop)}
                     </span>
                   </div>
                 </div>
@@ -965,14 +968,35 @@ export default function OrderFormPage() {
                 {/* Prepayment Input */}
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-4">
-                    <Input
-                      label="Знижка на замовлення (грн)"
-                      value={discount}
-                      onChange={(e) => setDiscount(e.target.value)}
-                      type="number"
-                      min="0"
-                      step="any"
-                    />
+                    {/* Знижка з перемикачем ₴ / % (ORD-21) */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-gray-500">Знижка</label>
+                        <div className="flex rounded-md overflow-hidden border border-gray-200">
+                          {(['uah', 'pct'] as const).map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setDiscountMode(m)}
+                              className={`px-2 py-0.5 text-xs font-bold transition-colors ${
+                                discountMode === m ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400 hover:bg-gray-50'
+                              }`}
+                            >
+                              {m === 'uah' ? '₴' : '%'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <input
+                        value={discount}
+                        onChange={(e) => setDiscount(e.target.value)}
+                        type="number"
+                        min="0"
+                        max={discountMode === 'pct' ? '100' : undefined}
+                        step="any"
+                        className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                      />
+                    </div>
                     <Input
                       label="Внести передоплату (грн)"
                       value={prepayment}
@@ -981,6 +1005,33 @@ export default function OrderFormPage() {
                       min="0"
                       step="any"
                     />
+                  </div>
+
+                  {/* Швидкі дії оплати (ORD-22) */}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPrepayment((toPayKop / 100).toFixed(2))}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors"
+                    >
+                      Сплатити повністю ({formatMoney(toPayKop)})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPrepayment((Math.round(toPayKop / 2) / 100).toFixed(2))}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100 transition-colors"
+                    >
+                      50%
+                    </button>
+                    {parseFloat(prepayment) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setPrepayment('0')}
+                        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100 transition-colors"
+                      >
+                        Скинути
+                      </button>
+                    )}
                   </div>
                   
                   {changeKop > 0 && (

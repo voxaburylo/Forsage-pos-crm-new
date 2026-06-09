@@ -57,6 +57,16 @@ const STATUS_CONFIG: Record<string, { label: string; color: BadgeColor }> = {
   canceled:   { label: 'Скасовано',    color: 'red'    },
 }
 
+// Кольорові статуси позицій замовлення (ORD-18)
+const ITEM_STATUS_CONFIG: Record<string, { label: string; cls: string }> = {
+  pending:  { label: 'Очікує',     cls: 'bg-gray-100 text-gray-600' },
+  ordered:  { label: 'Замовлено',  cls: 'bg-yellow-100 text-yellow-700' },
+  arrived:  { label: 'Прийшло',    cls: 'bg-green-100 text-green-700' },
+  handed:   { label: 'Видано',     cls: 'bg-blue-100 text-blue-700' },
+  canceled: { label: 'Скасовано',  cls: 'bg-red-100 text-red-700' },
+  returned: { label: 'Повернено',  cls: 'bg-purple-100 text-purple-700' },
+}
+
 const SOURCE_CONFIG: Record<string, { label: string; icon: React.ReactNode }> = {
   walk_in:      { label: 'Магазин',   icon: <ClipboardList size={10} /> },
   phone:        { label: 'Телефон',   icon: <Phone size={10} /> },
@@ -2042,13 +2052,13 @@ function OrderInlineView({
             <div className="space-y-1.5">
               {order.items.map((item) => {
                 const actions = ITEM_STATUS_ACTIONS[item.item_status]
-                const itemConf = STATUS_CONFIG[item.item_status]
+                const itemConf = ITEM_STATUS_CONFIG[item.item_status]
                 return (
                   <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm gap-1.5">
                     <div className="flex-1 min-w-0">
                       <span className="font-medium text-gray-800">{item.name}</span>
                       {item.sku && <span className="text-gray-400 text-xs ml-1.5 font-mono">{item.sku}</span>}
-                      <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-white border border-gray-200 text-gray-600">
+                      <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${itemConf?.cls ?? 'bg-gray-100 text-gray-600'}`}>
                         {itemConf?.label ?? item.item_status}
                       </span>
                     </div>
