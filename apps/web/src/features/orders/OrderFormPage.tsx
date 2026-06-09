@@ -3,7 +3,9 @@ import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search } from 'lucide-react'
 import { orderApi, type CreateOrderPayload } from './orderApi'
 import { ProductAutocomplete } from './ProductAutocomplete'
+import { productApi } from '@/features/products/productApi'
 import { kopecksToHryvnia } from '@/types/product'
+import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
@@ -405,6 +407,40 @@ export default function OrderFormPage() {
     } finally {
       setAddingVehicle(false)
     }
+  }
+
+  // ORD-29: підбір запчастин по VIN авто (бекенд vinSearch через product_fitment)
+  const [vinSuggestions, setVinSuggestions] = useState<Product[]>([])
+  const [vinLoading, setVinLoading] = useState(false)
+  const [vinPanelOpen, setVinPanelOpen] = useState(false)
+  async function pickByVin() {
+    const vin = selectedVehicle?.vin?.trim()
+    if (!vin) return
+    setVinPanelOpen(true)
+    setVinLoading(true)
+    try {
+      const r = await productApi.search(vin, 15)
+      setVinSuggestions(r.data ?? [])
+    } catch {
+      setVinSuggestions([])
+    } finally {
+      setVinLoading(false)
+    }
+  }
+  function addProductAsItem(p: Product) {
+    setItems((rows) => {
+      const base = rows.filter((r) => r.name.trim())
+      return [...base, {
+        ...EMPTY_ITEM,
+        name: p.name,
+        sku: p.sku ?? '',
+        sell_price: kopecksToHryvnia(p.retail_price),
+        product_id: p.id,
+        stock: p.qty_available ?? p.qty_on_hand ?? 0,
+        item_type: p.is_service ? 'service' : 'product',
+      }]
+    })
+    toast.success(`Додано: ${p.name}`)
   }
 
   // Items manipulation
@@ -866,7 +902,49 @@ export default function OrderFormPage() {
               <button type="button" onClick={saveAsTemplate} className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200">
                 💾 Зберегти як шаблон
               </button>
+              {/* ORD-29: підбір по VIN */}
+              {selectedVehicle?.vin && (
+                <button type="button" onClick={pickByVin} className="text-xs font-semibold px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100">
+                  🔍 Підібрати по VIN
+                </button>
+              )}
             </div>
+
+            {/* Панель підбору по VIN (ORD-29) */}
+            {vinPanelOpen && (
+              <Card className="border-blue-100">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-bold text-gray-800 text-sm">
+                    Сумісні запчастини для {selectedVehicle?.brand} {selectedVehicle?.model}
+                    <span className="ml-1 font-mono text-xs text-gray-400">{selectedVehicle?.vin}</span>
+                  </h4>
+                  <button type="button" onClick={() => setVinPanelOpen(false)} className="text-gray-400 hover:text-gray-600 text-sm">✕</button>
+                </div>
+                {vinLoading ? (
+                  <p className="text-xs text-gray-400 py-2">Підбираємо...</p>
+                ) : vinSuggestions.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-2">Сумісних товарів за VIN не знайдено. Перевірте, що для авто заповнено сумісність (fitment) у каталозі.</p>
+                ) : (
+                  <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
+                    {vinSuggestions.map((p) => {
+                      const stock = p.qty_available ?? p.qty_on_hand ?? 0
+                      return (
+                        <div key={p.id} className="flex items-center justify-between gap-2 py-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-gray-800 truncate">{p.name}</p>
+                            <p className="text-[10px] text-gray-400 font-mono">{p.sku} · {stock > 0 ? `склад: ${stock}` : 'немає'}</p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-xs font-bold text-yellow-600">{formatMoney(p.retail_price)}</span>
+                            <Button size="sm" variant="secondary" icon={<Plus size={12} />} onClick={() => addProductAsItem(p)} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </Card>
+            )}
 
             {/* Parts Table */}
             <Card padding="none">
