@@ -9,7 +9,7 @@ import type {
 const TABLE = 'customers'
 
 export async function listCustomers(query: CustomerListQuery, tenantId: string) {
-  const { search, has_debt, tag, group_id, page, per_page } = query
+  const { search, has_debt, tag, group_id, sort, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
@@ -17,8 +17,11 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
     .select('*, price_tier:price_tiers(id,name,discount_pct), customer_vehicles(vin)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
-    .order('full_name', { ascending: true })
     .range(offset, offset + per_page - 1)
+
+  // ORD-33: нещодавні зверху (updated_at) або за іменем (за замовчуванням)
+  if (sort === 'recent') q = q.order('updated_at', { ascending: false })
+  else q = q.order('full_name', { ascending: true })
 
   if (search) {
     const normalized = normalizePhone(search)

@@ -213,6 +213,34 @@ export default function OrderFormPage() {
   const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
+  // ORD-36: шаблони частих позицій (localStorage)
+  const TEMPLATES_KEY = 'order_item_templates'
+  const [templates, setTemplates] = useState<Array<{ name: string; items: ItemRow[] }>>(() => {
+    try { return JSON.parse(localStorage.getItem(TEMPLATES_KEY) ?? '[]') } catch { return [] }
+  })
+  function persistTemplates(next: Array<{ name: string; items: ItemRow[] }>) {
+    setTemplates(next)
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(next))
+  }
+  function applyTemplate(t: { name: string; items: ItemRow[] }) {
+    setItems((prev) => {
+      const base = prev.filter((r) => r.name.trim())
+      return [...base, ...t.items.map((i) => ({ ...EMPTY_ITEM, ...i }))]
+    })
+    toast.success(`Додано шаблон «${t.name}»`)
+  }
+  function saveAsTemplate() {
+    const filled = items.filter((r) => r.name.trim())
+    if (filled.length === 0) { toast.error('Немає позицій для шаблону'); return }
+    const name = prompt('Назва шаблону (напр. «ТО Kia Rio»):')?.trim()
+    if (!name) return
+    persistTemplates([...templates.filter((t) => t.name !== name), { name, items: filled }])
+    toast.success('Шаблон збережено')
+  }
+  function deleteTemplate(name: string) {
+    persistTemplates(templates.filter((t) => t.name !== name))
+  }
+
   // Step 4: Summary & Checkout
   const [comment, setComment] = useState('')
   const [isUrgent, setIsUrgent] = useState(false)
@@ -248,7 +276,7 @@ export default function OrderFormPage() {
 
   // Load default/recent customers on mount
   useEffect(() => {
-    customerApi.list({ per_page: 5 })
+    customerApi.list({ per_page: 5, sort: 'recent' })
       .then((r) => setDefaultCustomers((r as any).data ?? []))
       .catch(() => {})
 
@@ -808,6 +836,21 @@ export default function OrderFormPage() {
                 <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Сума замовлення</p>
                 <p className="text-lg font-bold text-yellow-600">{formatMoney(totalKop)}</p>
               </div>
+            </div>
+
+            {/* Шаблони частих позицій (ORD-36) */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-gray-400">Шаблони:</span>
+              {templates.length === 0 && <span className="text-xs text-gray-300">поки немає</span>}
+              {templates.map((t) => (
+                <span key={t.name} className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-yellow-50 text-yellow-700 border border-yellow-200">
+                  <button type="button" onClick={() => applyTemplate(t)} className="hover:underline">+ {t.name}</button>
+                  <button type="button" onClick={() => deleteTemplate(t.name)} className="text-yellow-400 hover:text-red-500" title="Видалити шаблон">×</button>
+                </span>
+              ))}
+              <button type="button" onClick={saveAsTemplate} className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200">
+                💾 Зберегти як шаблон
+              </button>
             </div>
 
             {/* Parts Table */}
