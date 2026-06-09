@@ -82,7 +82,55 @@ export async function processOrderDeadlines() {
         }
       }
     }
+
+    // ORD-15: нагадування про незабрані товари — готові до видачі понад N днів
+    await processUncollectedReminders()
   } catch (err) {
     logger.error(err, 'processOrderDeadlines failed')
+  }
+}
+
+// Кількість днів після готовності до видачі, після яких створюється нагадування (налаштовуване)
+const UNCOLLECTED_REMINDER_DAYS = 3
+
+/**
+ * ORD-15: знаходить замовлення у статусі ready, які не забрали понад N днів,
+ * і створює нагадування менеджеру (запис у журналі дій, дедуплікація на 24 год).
+ */
+export async function processUncollectedReminders() {
+  try {
+    const cutoff = new Date(Date.now() - UNCOLLECTED_REMINDER_DAYS * 86400000).toISOString()
+    const { data: orders, error } = await db
+      .from('customer_orders')
+      .select('id, updated_at, customer:customers(full_name)')
+      .eq('status', 'ready')
+      .lt('updated_at', cutoff)
+      .limit(50)
+
+    if (error || !orders || orders.length === 0) return
+
+    const oneDayAgo = Date.now() - 24 * 3600_000
+    for (const order of orders) {
+      const { data: recent } = await db
+        .from('order_activity_log')
+        .select('created_at')
+        .eq('order_id', order.id)
+        .eq('action', 'uncollected_reminder')
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      if (recent && recent.length > 0 && new Date(recent[0].created_at).getTime() > oneDayAgo) continue
+
+      const daysReady = Math.floor((Date.now() - new Date(order.updated_at).getTime()) / 86400000)
+      await db.from('order_activity_log').insert({
+        order_id: order.id,
+        user_id: null,
+        action: 'uncollected_reminder',
+        details: { days_ready: daysReady, message: 'Товар готовий, але не забраний — нагадати клієнту' },
+      })
+      logger.info({ orderId: order.id, daysReady }, 'Uncollected order reminder created')
+    }
+  } catch (err) {
+    logger.error(err, 'processUncollectedReminders failed')
   }
 }
