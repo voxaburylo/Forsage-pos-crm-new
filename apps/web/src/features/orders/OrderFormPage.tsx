@@ -2,6 +2,8 @@ import { useEffect, useState, useMemo } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search } from 'lucide-react'
 import { orderApi, type CreateOrderPayload } from './orderApi'
+import { ProductAutocomplete } from './ProductAutocomplete'
+import { kopecksToHryvnia } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
@@ -35,9 +37,11 @@ interface ItemRow {
   sell_price:  string
   supplier_id: string
   expected_date?: string
+  product_id?: string | null
+  stock?:      number
 }
 
-const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '' }
+const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null }
 
 export default function OrderFormPage() {
   const navigate = useNavigate()
@@ -197,6 +201,7 @@ export default function OrderFormPage() {
             sell_price: (item.sell_price / 100).toString(),
             supplier_id: item.supplier_id ?? '',
             expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
+            product_id: item.product_id ?? null,
           })))
         }
       })
@@ -358,8 +363,20 @@ export default function OrderFormPage() {
   // Items manipulation
   function addItem() { setItems((p) => [...p, { ...EMPTY_ITEM }]) }
   function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)) }
-  function updateItem<K extends keyof ItemRow>(i: number, key: K, val: string) {
+  function updateItem<K extends keyof ItemRow>(i: number, key: K, val: ItemRow[K]) {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
+  }
+
+  // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок
+  function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number }) {
+    setItems((rows) => rows.map((row, idx) => idx === i ? {
+      ...row,
+      name: p.name,
+      sku: p.sku ?? '',
+      sell_price: kopecksToHryvnia(p.retail_price),
+      product_id: p.id,
+      stock: p.qty_available ?? p.qty_on_hand ?? 0,
+    } : row))
   }
 
   const totalKop = useMemo(() => {
@@ -411,6 +428,7 @@ export default function OrderFormPage() {
       items: validItems.map((row) => ({
         name:        row.name.trim(),
         sku:         row.sku.trim() || null,
+        product_id:  row.product_id || null,
         qty:         parseFloat(row.qty) || 1,
         sell_price:  Math.round(parseFloat(row.sell_price || '0') * 100),
         buy_price:   0,
@@ -738,13 +756,18 @@ export default function OrderFormPage() {
                       <tr key={idx} className="hover:bg-gray-50/20">
                         <td className="px-4 py-3 text-center text-gray-400 font-mono text-xs">{idx + 1}</td>
                         <td className="px-4 py-3">
-                          <input
+                          <ProductAutocomplete
                             value={row.name}
-                            onChange={(e) => updateItem(idx, 'name', e.target.value)}
-                            placeholder="Введіть назву..."
+                            onChange={(val) => setItems((p) => p.map((r, i) => i === idx ? { ...r, name: val, product_id: null, stock: undefined } : r))}
+                            onSelect={(p) => selectProduct(idx, p)}
+                            placeholder="Введіть назву або артикул..."
                             required
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
                           />
+                          {row.product_id && row.stock !== undefined && (
+                            <span className={`mt-1 inline-block text-[10px] font-semibold ${row.stock > 0 ? 'text-green-600' : 'text-orange-500'}`}>
+                              {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <input
