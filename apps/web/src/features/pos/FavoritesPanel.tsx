@@ -18,13 +18,13 @@ interface FoodItem {
   category?: { name: string } | null
 }
 
-const DEFAULT_ITEMS: QuickItemConfig[] = [
+export const DEFAULT_QUICK_ITEMS: QuickItemConfig[] = [
   {
     sku: 'FOOD', label: 'ЇЖА', emoji: '🍕', price: 0, color: '#7C2D12',
     type: 'food_popup', category_filter: ['Кава та напої', 'Снеки та хотдоги'],
     children: [],
   },
-  { sku: 'CAM13',  label: 'КАМЕРА 13', emoji: '⚙️', price: 0,   color: '#065F46', type: 'static', children: [
+  { sku: 'CAM13',  label: 'КАМЕРА', emoji: '🛞', price: 0,   color: '#065F46', type: 'static', children: [
     { label: 'Р13', sku: 'CAM-R13', price: 0 },
     { label: 'Р14', sku: 'CAM-R14', price: 0 },
   ]},
@@ -52,9 +52,9 @@ export function FavoritesPanel() {
           }).catch(() => {}),
         ])
         const cfg = settingsRes.data.pos_quick_items
-        setItems(cfg && cfg.length > 0 ? cfg : DEFAULT_ITEMS)
+        setItems(cfg && cfg.length > 0 ? cfg : DEFAULT_QUICK_ITEMS)
       } catch {
-        setItems(DEFAULT_ITEMS)
+        setItems(DEFAULT_QUICK_ITEMS)
       }
     }
     load()
@@ -102,7 +102,18 @@ export function FavoritesPanel() {
 
   function addFoodProduct(p: FoodItem) {
     initAudio()
-    store.addItem({ productId: p.id, sku: p.sku, name: p.name, unit: p.unit, qty: 1, unitPrice: p.retail_price, discount: 0, qtyOnHand: 999 })
+    store.addItem({
+      productId: p.id,
+      sku: p.sku,
+      name: p.name,
+      unit: p.unit,
+      qty: 1,
+      unitPrice: p.retail_price,
+      discount: 0,
+      qtyOnHand: 999,
+      requiresCoreReturn: false,
+      coreDepositAmount: 0,
+    })
     playSuccessBeep()
     setFoodItem(null)
   }
@@ -157,11 +168,14 @@ export function FavoritesPanel() {
                 <span className="text-2xl leading-none drop-shadow">{item.emoji ?? '📦'}</span>
                 <span className="text-xs font-bold leading-tight text-center px-1 tracking-wide uppercase">{item.label}</span>
                 {!isFood && (
-                  <span className="text-xs font-mono text-white/80 font-semibold">
-                    {price > 0 ? `${kopecksToHryvnia(price).replace('.00', '')} ₴` : '—'}
-                  </span>
+                  hasChildren ? (
+                    <span className="text-[10px] font-semibold text-white/70 flex items-center gap-0.5">Варіанти ▾</span>
+                  ) : price > 0 ? (
+                    <span className="text-xs font-mono text-white/80 font-semibold">
+                      {kopecksToHryvnia(price).replace('.00', '')} ₴
+                    </span>
+                  ) : null
                 )}
-                {hasChildren && <span className="absolute top-1.5 right-2 text-[10px] text-white/50">▼</span>}
               </button>
             )
           })}

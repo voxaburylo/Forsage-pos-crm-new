@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
+import { DEFAULT_QUICK_ITEMS } from '@/features/pos/FavoritesPanel'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -100,7 +101,11 @@ export default function SettingsPage() {
   }
 
   // ─── POS Quick Items helpers ───────────────────────────────────
-  const quickItems = form.pos_quick_items ?? []
+  // Якщо не налаштовано — показуємо ті самі дефолтні кнопки, що й каса,
+  // щоб власник міг їх відредагувати/видалити (а не бачив порожньо).
+  const quickItems = (form.pos_quick_items && form.pos_quick_items.length > 0)
+    ? form.pos_quick_items
+    : DEFAULT_QUICK_ITEMS
 
   function setQuickItems(items: QuickItemConfig[]) {
     set('pos_quick_items', items)
