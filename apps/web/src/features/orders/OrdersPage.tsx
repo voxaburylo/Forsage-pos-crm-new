@@ -909,6 +909,14 @@ interface OrdersTableProps {
   hasMore: boolean
 }
 
+// Перша позиція або «N позицій» для рядка списку (ORD-9)
+function itemsSummary(o: CustomerOrder): string {
+  const real = (o.items ?? []).filter((i) => !i.is_draft_note)
+  if (real.length === 0) return ''
+  if (real.length === 1) return real[0].name
+  return `${real[0].name} +${real.length - 1}`
+}
+
 function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore }: OrdersTableProps) {
   const navigate = useNavigate()
 
@@ -941,8 +949,60 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
           </div>
         </div>
 
-        {/* Table Card */}
-        <Card padding="none" className="overflow-hidden">
+        {/* Mobile card layout (ORD-12) */}
+        <div className="md:hidden space-y-3">
+          {orders.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center text-gray-400 text-sm">
+              Замовлень не знайдено
+            </div>
+          ) : orders.map((o: CustomerOrder) => {
+            const paid = o.total_paid ?? o.prepayment ?? 0
+            const hasDebt = o.total_amount > paid
+            const conf = STATUS_CONFIG[o.status] ?? { label: o.status, color: 'gray' as BadgeColor }
+            return (
+              <div key={o.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-gray-900 text-sm">{o.kp_number ?? `#${o.id.slice(0, 8)}`}</span>
+                  <Badge color={conf.color}>{conf.label}</Badge>
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900 text-sm">{o.customer?.full_name ?? '—'}</p>
+                  {o.customer?.phone && <p className="text-xs text-gray-400">{o.customer.phone}</p>}
+                </div>
+                {o.vehicle_info?.make && (
+                  <p className="text-xs text-gray-500 flex items-center gap-1">
+                    <Car size={12} className="text-gray-400" />
+                    {o.vehicle_info.make} {o.vehicle_info.model} {o.vehicle_info.year ? `(${o.vehicle_info.year})` : ''}
+                  </p>
+                )}
+                {itemsSummary(o) && (
+                  <p className="text-xs text-gray-600 truncate">🧩 {itemsSummary(o)}</p>
+                )}
+                <div className="flex items-end justify-between pt-2 border-t border-gray-50">
+                  <div className="text-xs space-y-0.5">
+                    <div className="font-bold text-gray-900 text-sm">{formatMoney(o.total_amount)}</div>
+                    {paid > 0 && <div className="text-blue-600">Сплачено: {formatMoney(paid)}</div>}
+                    {hasDebt && <div className="text-red-500 font-semibold">Борг: {formatMoney(o.total_amount - paid)}</div>}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="secondary" size="sm" icon={<Copy size={13} />} title="Повторити" onClick={() => startRepeatOrder(o, navigate)} />
+                    <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
+                  </div>
+                </div>
+                <div className="text-[10px] text-gray-300 text-right">{formatDateTime(o.created_at)}</div>
+              </div>
+            )
+          })}
+          {orders.length > 0 && (
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <Button variant="secondary" size="sm" disabled={offset === 0} onClick={onPrevPage} className="flex-1">← Назад</Button>
+              <Button variant="secondary" size="sm" disabled={!hasMore} onClick={onNextPage} className="flex-1">Далі →</Button>
+            </div>
+          )}
+        </div>
+
+        {/* Table Card — desktop */}
+        <Card padding="none" className="overflow-hidden hidden md:block">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-sm">
               <thead>
@@ -963,10 +1023,15 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                     <tr key={o.id} className="hover:bg-gray-50/30 transition-colors">
                       {/* Замовлення */}
                       <td className="px-5 py-4">
-                        <div className="font-bold text-gray-900">#{o.id.slice(0, 8)}</div>
+                        <div className="font-bold text-gray-900">{o.kp_number ?? `#${o.id.slice(0, 8)}`}</div>
                         <div className="text-[11px] text-gray-400 mt-0.5 font-mono">
                           {formatDateTime(o.created_at)}
                         </div>
+                        {itemsSummary(o) && (
+                          <div className="text-[11px] text-gray-600 mt-1 truncate max-w-[200px]" title={itemsSummary(o)}>
+                            🧩 {itemsSummary(o)}
+                          </div>
+                        )}
                         <div className="text-[10px] text-gray-500 mt-1 font-semibold flex items-center gap-1">
                           <span>📦 {o.source === 'walk_in' ? 'Магазин' : o.source === 'phone' ? 'Телефон' : 'Чат'}</span>
                         </div>
@@ -1006,7 +1071,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                             )}
                           </div>
                         ) : (
-                          <span className="text-gray-400">—</span>
+                          <span className="text-gray-200 text-xs">немає</span>
                         )}
                       </td>
 
