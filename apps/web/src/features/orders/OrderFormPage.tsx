@@ -39,9 +39,10 @@ interface ItemRow {
   expected_date?: string
   product_id?: string | null
   stock?:      number
+  item_type?:  'product' | 'service'
 }
 
-const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null }
+const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product' }
 
 export default function OrderFormPage() {
   const navigate = useNavigate()
@@ -202,6 +203,7 @@ export default function OrderFormPage() {
             supplier_id: item.supplier_id ?? '',
             expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
             product_id: item.product_id ?? null,
+            item_type: item.item_type ?? 'product',
           })))
         }
       })
@@ -403,8 +405,8 @@ export default function OrderFormPage() {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
-  // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок
-  function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number }) {
+  // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок + тип (ORD-24)
+  function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number; is_service?: boolean }) {
     setItems((rows) => rows.map((row, idx) => idx === i ? {
       ...row,
       name: p.name,
@@ -412,6 +414,7 @@ export default function OrderFormPage() {
       sell_price: kopecksToHryvnia(p.retail_price),
       product_id: p.id,
       stock: p.qty_available ?? p.qty_on_hand ?? 0,
+      item_type: p.is_service ? 'service' : 'product',
     } : row))
   }
 
@@ -515,6 +518,7 @@ export default function OrderFormPage() {
         buy_price:   0,
         supplier_id: row.supplier_id || null,
         source_type: row.supplier_id ? 'supplier' : 'warehouse',
+        item_type:   row.item_type ?? 'product',
         expected_date: row.supplier_id && row.expected_date ? row.expected_date : null,
       })),
     }
@@ -885,6 +889,21 @@ export default function OrderFormPage() {
                               {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
                             </span>
                           )}
+                          {/* Тип позиції товар/робота (ORD-24) */}
+                          <div className="mt-1 inline-flex rounded-md overflow-hidden border border-gray-200">
+                            {(['product', 'service'] as const).map((t) => (
+                              <button
+                                key={t}
+                                type="button"
+                                onClick={() => updateItem(idx, 'item_type', t)}
+                                className={`px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                                  (row.item_type ?? 'product') === t ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400 hover:bg-gray-50'
+                                }`}
+                              >
+                                {t === 'product' ? 'Товар' : 'Робота'}
+                              </button>
+                            ))}
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <input

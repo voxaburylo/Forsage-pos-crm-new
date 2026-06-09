@@ -14,6 +14,7 @@ export interface CustomerOrderItem {
   product_id: string | null
   supplier_id: string | null
   source_type: 'warehouse' | 'supplier'
+  item_type: 'product' | 'service'
   item_status: ItemStatus
   buy_price: number
   sell_price: number
@@ -53,6 +54,7 @@ export interface CreateOrderItemPayload {
   product_id?: string | null
   supplier_id?: string | null
   source_type?: 'warehouse' | 'supplier'
+  item_type?: 'product' | 'service'
   buy_price?: number
   sell_price: number
   qty: number
