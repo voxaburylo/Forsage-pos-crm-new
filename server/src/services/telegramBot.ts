@@ -1541,8 +1541,11 @@ export function startBot() {
 
   logger.info('Bot handlers registered')
 
+  // allowed_updates приймає лише ТИПИ апдейтів. 'photo'/'voice' — це типи вмісту
+  // повідомлення (вони приходять усередині 'message'), а не апдейти: Telegram на них
+  // повертав 400 Bad Request і polling падав → бот «не відповідав».
   bot.launch({
-    allowedUpdates: ['message', 'callback_query', 'business_message', 'business_callback_query', 'business_connection', 'photo', 'voice'] as any,
+    allowedUpdates: ['message', 'callback_query', 'business_connection', 'business_message', 'edited_business_message'] as any,
   }).then(() => logger.info('Telegram bot started'))
     .catch((err) => logger.error({ error: err.message }, 'Bot failed'))
 }
