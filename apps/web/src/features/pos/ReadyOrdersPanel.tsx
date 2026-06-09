@@ -259,7 +259,7 @@ export function ReadyOrdersPanel() {
                         {remaining > 0 ? (
                           <span className="text-orange-400 ml-1">· залишок {formatMoney(remaining)} ₴</span>
                         ) : (
-                          <span className="text-green-400 ml-1">· Сплачено полностью</span>
+                          <span className="text-green-400 ml-1">· Сплачено повністю</span>
                         )}
                       </div>
                     </div>
@@ -272,8 +272,8 @@ export function ReadyOrdersPanel() {
                           setPayOrder(order);
                           setPayAmount((remaining / 100).toString());
                         }}
-                        className="flex-1 py-1 text-xs rounded bg-yellow-600 hover:bg-yellow-500
-                                   text-white font-medium transition-colors"
+                        className="flex-1 py-2.5 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500
+                                   active:bg-yellow-700 text-white font-semibold transition-colors"
                       >
                         Прийняти оплату
                       </button>
@@ -281,8 +281,8 @@ export function ReadyOrdersPanel() {
                     {order.status === 'ready' && hasArrivedItems && (
                       <button
                         onClick={() => loadOrderToCart(order)}
-                        className="flex-1 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600
-                                   text-gray-300 font-medium transition-colors"
+                        className="flex-1 py-2.5 text-sm rounded-lg bg-gray-700 hover:bg-gray-600
+                                   active:bg-gray-500 text-gray-200 font-semibold transition-colors"
                       >
                         У кошик
                       </button>
@@ -291,9 +291,9 @@ export function ReadyOrdersPanel() {
                       <button
                         onClick={() => completeOrder(order)}
                         disabled={isCompleting || remaining > 0}
-                        className="flex-1 py-1 text-xs rounded font-medium transition-colors
+                        className="flex-1 py-2.5 text-sm rounded-lg font-semibold transition-colors
                                    disabled:opacity-50 disabled:cursor-not-allowed
-                                   bg-green-600 hover:bg-green-500 text-white"
+                                   bg-green-600 hover:bg-green-500 active:bg-green-700 text-white"
                       >
                         {isCompleting ? (
                           <Loader2 size={12} className="animate-spin mx-auto" />
@@ -329,9 +329,10 @@ export function ReadyOrdersPanel() {
                 <input
                   type="number"
                   step="0.01"
+                  inputMode="decimal"
                   value={payAmount}
                   onChange={(e) => setPayAmount(e.target.value)}
-                  className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2
+                  className="w-full bg-gray-900 border border-gray-700 text-white text-lg font-semibold rounded-lg px-3 py-3
                              focus:outline-none focus:border-yellow-500"
                 />
               </div>
@@ -342,7 +343,7 @@ export function ReadyOrdersPanel() {
                   <button
                     type="button"
                     onClick={() => setPayMethod('cash')}
-                    className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-colors ${
+                    className={`flex-1 py-3 text-sm font-semibold rounded-lg border transition-colors ${
                       payMethod === 'cash'
                         ? 'bg-yellow-600 text-white border-yellow-500'
                         : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
@@ -353,7 +354,7 @@ export function ReadyOrdersPanel() {
                   <button
                     type="button"
                     onClick={() => setPayMethod('card')}
-                    className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-colors ${
+                    className={`flex-1 py-3 text-sm font-semibold rounded-lg border transition-colors ${
                       payMethod === 'card'
                         ? 'bg-yellow-600 text-white border-yellow-500'
                         : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
@@ -368,7 +369,7 @@ export function ReadyOrdersPanel() {
                 <button
                   type="button"
                   onClick={() => setPayOrder(null)}
-                  className="flex-1 py-2 text-xs rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium"
+                  className="flex-1 py-3 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 font-semibold"
                 >
                   Скасувати
                 </button>
@@ -376,7 +377,7 @@ export function ReadyOrdersPanel() {
                   type="button"
                   onClick={handleAddPayment}
                   disabled={paying}
-                  className="flex-1 py-2 text-xs rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium
+                  className="flex-1 py-3 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white font-semibold
                              disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                 >
                   {paying ? <Loader2 size={12} className="animate-spin" /> : 'Внести'}
