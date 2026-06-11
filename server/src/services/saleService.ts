@@ -452,6 +452,29 @@ async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fisca
         unit_price: i.unit_price,
         discount:   i.discount,
       }))
+
+      // Загальна знижка чека (бонуси тощо) понад порядкові знижки розподіляється
+      // по товарних рядках пропорційно їх вартості — інакше сума рядків
+      // не зійдеться з payments. Порядкові знижки вже сидять у discount рядків.
+      const itemDiscountSum = input.items.reduce((s, i) => s + i.discount, 0)
+      const extraDiscount = Math.max(0, (input.discount ?? 0) - itemDiscountSum)
+      if (extraDiscount > 0) {
+        const lineValues = fiscalItems.map((it) => Math.max(0, it.unit_price * it.qty - it.discount))
+        const base = lineValues.reduce((s, v) => s + v, 0)
+        if (base > 0) {
+          const target = Math.min(extraDiscount, base)
+          const shares = lineValues.map((v) => Math.floor((target * v) / base))
+          // залишкові копійки після округлення — на рядки, де ще є запас
+          let remainder = target - shares.reduce((s, v) => s + v, 0)
+          for (let i = 0; remainder > 0 && i < shares.length; i++) {
+            const add = Math.min(lineValues[i] - shares[i], remainder)
+            shares[i] += add
+            remainder -= add
+          }
+          fiscalItems.forEach((it, i) => { it.discount += shares[i] })
+        }
+      }
+
       for (const i of input.items) {
         const p = prodMap.get(i.product_id)
         if (p?.requires_core_return && (p.core_deposit_amount ?? 0) > 0) {
