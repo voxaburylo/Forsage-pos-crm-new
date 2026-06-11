@@ -1,4 +1,5 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
+import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { transliterateToCyrillic, isLatinText } from './translitService.js'
@@ -54,7 +55,7 @@ async function enrichWithAnalogs(results: SearchResult[]): Promise<SearchResult[
     .in('product_id', productIds)
     .limit(1000) // достатньо для підрахунку
 
-  if (error) { console.warn('[search] product_analogs error:', error.message); return results }
+  if (error) { logger.warn({ error: error.message }, '[search] product_analogs error'); return results }
 
   // Підраховуємо кількість аналогів для кожного товару
   const analogCounts = new Map<string, number>()
@@ -86,7 +87,7 @@ async function enrichWithAvailability(results: SearchResult[]): Promise<SearchRe
     .select('product_id, qty_on_hand, qty_reserved, qty_available')
     .in('product_id', productIds)
 
-  if (error) { console.warn('[search] products_available error:', error.message); return results }
+  if (error) { logger.warn({ error: error.message }, '[search] products_available error'); return results }
 
   const availMap = new Map<string, { qty_reserved: number; qty_available: number }>()
   for (const a of avail ?? []) {
@@ -180,7 +181,7 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
     .order('qty_on_hand', { ascending: false })
     .limit(limit)
 
-  if (error) { console.warn('[search] directProductSearch error:', error.message); return [] }
+  if (error) { logger.warn({ error: error.message }, '[search] directProductSearch error'); return [] }
   if (!data || data.length === 0) return []
 
   return data.map((p: any): SearchResult => {
@@ -212,7 +213,7 @@ async function supplierCodeSearch(code: string, limit: number): Promise<SearchRe
     .or(`supplier_code.ilike.%${normalized}%,normalized_supplier_article.eq.${normalized}`)
     .limit(limit)
 
-  if (scError) { console.warn('[search] product_supplier_codes error:', scError.message); return [] }
+  if (scError) { logger.warn({ error: scError.message }, '[search] product_supplier_codes error'); return [] }
   if (!scResults || scResults.length === 0) return []
 
   const productIds = [...new Set(scResults.map((r: any) => r.product_id))].slice(0, limit)
@@ -248,7 +249,7 @@ async function aliasSearch(terms: string[], originalQ: string, limit: number): P
     .or(conditions)
     .limit(limit)
 
-  if (aliasError) { console.warn('[search] product_aliases error:', aliasError.message); return [] }
+  if (aliasError) { logger.warn({ error: aliasError.message }, '[search] product_aliases error'); return [] }
   if (!aliasResults || aliasResults.length === 0) return []
 
   // Знаходимо аліас який співпав (перший по terms)
@@ -290,7 +291,7 @@ async function barcodeSearch(barcode: string, limit: number): Promise<SearchResu
     .eq('barcode', barcode)
     .limit(limit)
 
-  if (bcError) { console.warn('[search] product_barcodes error:', bcError.message); return [] }
+  if (bcError) { logger.warn({ error: bcError.message }, '[search] product_barcodes error'); return [] }
   if (!barcodeResults || barcodeResults.length === 0) return []
 
   const productIds = [...new Set(barcodeResults.map((r: any) => r.product_id))].slice(0, limit)
@@ -326,7 +327,7 @@ async function additionalBarcodesSearch(barcode: string, limit: number): Promise
       .contains('additional_barcodes', JSON.stringify([barcode]))
       .limit(limit)
 
-    if (error) { console.warn('[search] additional_barcodes error:', error.message); return [] }
+    if (error) { logger.warn({ error: error.message }, '[search] additional_barcodes error'); return [] }
     if (!data || data.length === 0) return []
 
     return data.map((p: any): SearchResult => ({
@@ -345,7 +346,7 @@ async function vinSearch(vin: string, limit: number): Promise<SearchResult[]> {
     .ilike('vin', `${vin}%`)
     .limit(5)
 
-  if (vehError) { console.warn('[search] customer_vehicles error:', vehError.message); return [] }
+  if (vehError) { logger.warn({ error: vehError.message }, '[search] customer_vehicles error'); return [] }
   if (!vehicles || vehicles.length === 0) return []
 
   const productIds = new Set<string>()

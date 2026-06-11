@@ -1,4 +1,4 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -23,7 +23,7 @@ router.get('/', requireRole('owner', 'admin', 'manager'), async (req, res, next)
 
     if (error) {
       // Таблиця може не існувати (міграція не застосована) — повертаємо порожній список
-      console.warn('[chats] DB error:', error.message)
+      logger.warn({ error: error.message }, '[chats] DB error')
       res.json({ data: [] })
       return
     }

@@ -1,4 +1,5 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
+import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { logAction } from './auditService.js'
 import type { CreateReturnInput, ReturnListQuery } from '../validators/returnSchema.js'
@@ -279,7 +280,7 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
       }
     }
   } catch (err) {
-    console.error('Failed to map return to customer order:', err)
+    logger.error({ error: err }, 'Failed to map return to customer order')
   }
 
   // ==================================================================

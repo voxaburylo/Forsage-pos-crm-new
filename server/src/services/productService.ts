@@ -1,4 +1,5 @@
-import { db } from '../db/supabase.js'
+﻿import { db } from '../db/supabase.js'
+import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
 import { logAction } from './auditService.js'
@@ -21,7 +22,7 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
     .in('product_id', productIds)
 
   if (error) {
-    console.warn('[productService] products_available error:', error.message)
+    logger.warn({ error: error.message }, '[productService] products_available error')
     return products
   }
 
