@@ -60,6 +60,31 @@ export function FavoritesPanel() {
     load()
   }, [])
 
+  // Listen to custom trigger event for mobile menu support
+  useEffect(() => {
+    function handleTrigger(e: any) {
+      const detail = e.detail;
+      if (!detail || !detail.sku) return;
+      const item = items.find(i => i.sku === detail.sku);
+      if (!item) return;
+
+      const price = getPrice(item);
+      const isFood = item.type === 'food_popup';
+      const hasChildren = !isFood && (item.children?.length ?? 0) > 0;
+
+      if (isFood) {
+        setFoodProds([]);
+        setFoodItem(item);
+      } else if (hasChildren) {
+        setPopupItem(item);
+      } else {
+        addToReceipt(item.sku, item.label, price);
+      }
+    }
+    window.addEventListener('trigger-quick-item', handleTrigger);
+    return () => window.removeEventListener('trigger-quick-item', handleTrigger);
+  }, [items, cam13BasePrice]);
+
   // Завантаження товарів для food_popup
   useEffect(() => {
     if (!foodItem) return

@@ -12,7 +12,7 @@ import { QuickCustomerModal } from '@/features/customers/QuickCustomerModal'
 import { CashOperationModal } from './CashOperationModal'
 import { DebtPaymentModal } from './DebtPaymentModal'
 import { CashReconciliationModal } from './CashReconciliationModal'
-import { FavoritesPanel } from './FavoritesPanel'
+import { FavoritesPanel, DEFAULT_QUICK_ITEMS } from './FavoritesPanel'
 import { DashboardPanel } from './DashboardPanel'
 import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
@@ -150,8 +150,10 @@ export default function POSPage() {
   const searchRef = useRef<SearchPanelHandle>(null)
 
   const shift = store.currentShift
-  const [mobileTab, setMobileTab] = useState<'search' | 'cart'>('search')
+  const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [readyOrdersCount, setReadyOrdersCount] = useState(0)
+  const [quickItems, setQuickItems] = useState<any[]>([])
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
@@ -167,10 +169,29 @@ export default function POSPage() {
       .catch(() => {})
     // Лічильник відкладених чеків
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
-    // Знижка працівника
+    // Знижка працівника та конфігурація швидких товарів
     adminApi.getSettings()
-      .then(({ data }) => setEmployeeDiscountPct(data.employee_discount_pct ?? 0))
+      .then((res: any) => {
+        const data = res.data
+        setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
+        if (data.pos_quick_items) {
+          setQuickItems(data.pos_quick_items)
+        }
+      })
       .catch(() => {})
+
+    // Кількість готових замовлень для мобільного таба
+    const loadReadyCount = () => {
+      api.get('/api/v1/customer-orders?status=ready')
+        .then((res: any) => {
+          const data = res.data
+          if (Array.isArray(data)) setReadyOrdersCount(data.length)
+        })
+        .catch(() => {})
+    }
+    loadReadyCount()
+    const id = setInterval(loadReadyCount, 30000)
+    return () => clearInterval(id)
   }, [])
 
   // Ініціалізація аудіо при першій взаємодії (через гарячі клавіші)
@@ -614,19 +635,12 @@ export default function POSPage() {
         </div>
 
         {/* Mobile права частина — тільки найважливіше */}
-        <div className="flex md:hidden items-center gap-1">
+        <div className="flex md:hidden items-center gap-2">
           <span className="text-yellow-400 font-bold tabular-nums text-sm mr-1">{formatMoney(store.total)}</span>
-          {/* ORD-7: видача замовлень доступна і на мобільному */}
-          <ReadyOrdersPanel />
           <button onClick={() => setMobileMenuOpen(true)}
-            className="w-8 h-8 flex items-center justify-center rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 active:bg-gray-700 transition-colors text-base font-bold"
+            className="w-9 h-9 flex items-center justify-center rounded-xl bg-[#2C2C2C] text-gray-400 hover:text-white hover:bg-gray-750 active:bg-gray-700 transition-colors text-lg font-bold border border-gray-700"
             title="Меню">
             ≡
-          </button>
-          <button onClick={() => setCloseOpen(true)}
-            className="h-8 px-2.5 bg-red-900/40 text-red-300 text-[10px] font-bold rounded-xl border border-red-900/40 flex items-center gap-1"
-            title="Закрити зміну">
-            <LogOut size={12} />
           </button>
         </div>
       </header>
@@ -648,6 +662,27 @@ export default function POSPage() {
                   <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
                 ))}
               </select>
+            </div>
+
+            {/* Швидкі товари для мобільного меню (гамбургера) */}
+            <div className="mb-5">
+              <p className="text-gray-500 text-[10px] mb-2 uppercase tracking-wider font-semibold">Швидкі товари</p>
+              <div className="flex gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
+                {(quickItems.length > 0 ? quickItems : DEFAULT_QUICK_ITEMS).map((item) => (
+                  <button
+                    key={item.sku}
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent('trigger-quick-item', { detail: { sku: item.sku } }));
+                      setMobileMenuOpen(false);
+                    }}
+                    className="flex-shrink-0 min-w-[76px] flex flex-col items-center justify-center py-2 px-1.5 rounded-xl text-white font-bold transition-all active:scale-[0.95] shadow-sm"
+                    style={{ background: item.color ?? '#2C2C2C' }}
+                  >
+                    <span className="text-xl mb-0.5 leading-none">{item.emoji ?? '📦'}</span>
+                    <span className="text-[10px] uppercase font-bold tracking-wide truncate max-w-full px-0.5">{item.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Сітка дій */}
@@ -687,36 +722,60 @@ export default function POSPage() {
 
       {/* Основна панель POS */}
       <div className="flex-1 flex min-h-0 min-w-0">
-        <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
-          <SearchPanel ref={searchRef} />
-          <div className="hidden md:flex md:flex-col min-h-0 min-w-0 flex-1">
-            <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
+        {mobileTab === 'ready_orders' ? (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 md:hidden bg-[#1A1A1A]">
+            <ReadyOrdersPanel isMobileInline onCloseMobile={() => setMobileTab('search')} />
           </div>
-          <div className="hidden md:block">
-            <CrossSellPanel />
-          </div>
-        </div>
-        <div className={`md:w-[35%] md:min-w-[320px] lg:w-[40%] xl:w-[420px] min-h-0 flex flex-col w-full ${mobileTab === 'search' ? 'hidden md:flex' : 'flex'}`}>
-          <ReceiptPanel
-            onPay={() => { setPayOpen(true) }}
-            onSelectCustomer={() => setCustomerOpen(true)}
-            onClear={originalClear}
-          />
-        </div>
+        ) : (
+          <>
+            <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
+              <SearchPanel ref={searchRef} />
+              <div className="hidden md:flex md:flex-col min-h-0 min-w-0 flex-1">
+                <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
+              </div>
+              <div className="hidden md:block">
+                <CrossSellPanel />
+              </div>
+            </div>
+            <div className={`md:w-[35%] md:min-w-[320px] lg:w-[40%] xl:w-[420px] min-h-0 flex flex-col w-full ${mobileTab === 'search' ? 'hidden md:flex' : 'flex'}`}>
+              <ReceiptPanel
+                onPay={() => { setPayOpen(true) }}
+                onSelectCustomer={() => setCustomerOpen(true)}
+                onClear={originalClear}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Mobile tabs — тільки на телефоні (тепер знизу з відступом safe-area) */}
       <div className="md:hidden flex border-t border-gray-800 shrink-0 bg-[#0D0D0D] pb-safe">
         <button
           onClick={() => setMobileTab('search')}
-          className={`flex-1 py-3 text-sm font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'search' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
+          className={`flex-1 py-2 text-[11px] font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'search' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
         >
           <span className="text-lg mb-0.5">🔍</span>
           <span>Пошук</span>
         </button>
+        
+        <button
+          onClick={() => setMobileTab('ready_orders')}
+          className={`flex-1 py-2 text-[11px] font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'ready_orders' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
+        >
+          <span className="relative text-lg mb-0.5">
+            📦
+            {readyOrdersCount > 0 && (
+              <span className="absolute -top-1 -right-2 min-w-[16px] h-[16px] bg-orange-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-0.5">
+                {readyOrdersCount}
+              </span>
+            )}
+          </span>
+          <span>Видача</span>
+        </button>
+
         <button
           onClick={() => setMobileTab('cart')}
-          className={`flex-1 py-3 text-sm font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'cart' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
+          className={`flex-1 py-2 text-[11px] font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'cart' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
         >
           <span className="relative text-lg mb-0.5">
             🛒
@@ -729,7 +788,7 @@ export default function POSPage() {
           <span className="flex items-center gap-1">
             Кошик
             {store.total > 0 && (
-              <span className="text-[11px] text-yellow-400/80 tabular-nums">
+              <span className="text-[10px] text-yellow-400/80 tabular-nums">
                 ({formatMoney(store.total)})
               </span>
             )}
