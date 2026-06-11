@@ -73,6 +73,7 @@ export interface ShopSettings {
   default_debt_limit_kopecks: number
   label_settings?: LabelSettings
   pos_quick_items?: QuickItemConfig[]
+  quick_percents?: number[]
   markup_rules?: MarkupRule[]
   employee_discount_pct?: number
   // ПРРО

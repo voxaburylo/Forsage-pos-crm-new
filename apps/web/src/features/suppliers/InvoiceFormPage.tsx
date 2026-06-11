@@ -1,9 +1,10 @@
-﻿import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Plus } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import { productApi } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
+import { adminApi } from '@/features/admin/adminApi'
 import type { Product, ProductFormData } from '@/types/product'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
@@ -40,11 +41,12 @@ export default function InvoiceFormPage() {
   const [showSearch, setShowSearch] = useState(false)
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
-  const [bulkMarkup, setBulkMarkup] = useState<number>(30)
+  const [quickPercents, setQuickPercents] = useState<number[]>([])
 
   // Завантажуємо постачальників
   useEffect(() => {
     supplierApi.list({ per_page: 200 }).then((r) => setSuppliers(r.data)).catch(() => {})
+    adminApi.getSettings().then((res) => setQuickPercents(res.data.quick_percents || [])).catch(() => {})
   }, [])
 
   // Якщо редагування — завантажуємо накладну
@@ -157,19 +159,29 @@ export default function InvoiceFormPage() {
   }
 
   // Застосування фіксованої націнки на всю накладну
-  function applyBulkMarkup() {
-    if (bulkMarkup <= 0) {
-      toast.warning('Введіть відсоток націнки більше 0')
-      return
-    }
+  function applyBulkQuickPercent(pct: number) {
+    if (pct <= 0) return
     setItems((prev) =>
       prev.map((it) => {
         if (it.purchase_price <= 0) return it
-        const calculatedRetail = Math.round(it.purchase_price * (1 + bulkMarkup / 100))
+        const calculatedRetail = Math.round(it.purchase_price * (1 + pct / 100))
         return { ...it, retail_price: calculatedRetail }
       })
     )
-    toast.success(`Встановлено націнку ${bulkMarkup}% для всіх товарів накладної`)
+    toast.success(`Встановлено націнку ${pct}% для всіх товарів`)
+  }
+
+  function applySingleQuickPercent(index: number, pct: number) {
+    if (pct <= 0) return
+    setItems((prev) => {
+      const next = [...prev]
+      const it = { ...next[index] }
+      if (it.purchase_price > 0) {
+        it.retail_price = Math.round(it.purchase_price * (1 + pct / 100))
+      }
+      next[index] = it
+      return next
+    })
   }
 
   function removeItem(index: number) {
@@ -267,33 +279,27 @@ export default function InvoiceFormPage() {
             {!isEdit && (
               <div className="flex flex-wrap items-center gap-2">
                 {items.length > 0 && (
-                  <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1 flex-wrap">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase mr-1">Націнка:</span>
+                  <div className="flex items-center gap-2 mr-auto flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
                     <button type="button" onClick={() => recalcRetail(undefined, true)}
                       className="px-2 py-1 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-700 text-xs font-semibold rounded-lg transition-colors border border-yellow-500/20"
                       title="Розрахувати роздрібні ціни за сіткою націнок (від-до з налаштувань)">
                       📈 За сіткою
                     </button>
-                    <button type="button" onClick={() => recalcRetail()}
-                      className="px-2 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-700 text-xs font-semibold rounded-lg transition-colors border border-blue-500/20"
-                      title="Розрахувати роздрібні ціни за націнками категорій">
-                      🗂️ За категоріями
-                    </button>
-                    <div className="w-px h-4 bg-gray-300 mx-1" />
-                    <input
-                      type="number"
-                      min="0"
-                      value={bulkMarkup || ''}
-                      onChange={(e) => setBulkMarkup(Number(e.target.value) || 0)}
-                      className="w-12 border border-gray-200 rounded px-1.5 py-0.5 text-xs text-right focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white"
-                      title="Ручна націнка на всю накладну в %"
-                      placeholder="%"
-                    />
-                    <button type="button" onClick={applyBulkMarkup}
-                      className="px-2 py-1 bg-gray-700 hover:bg-gray-650 text-white text-xs font-medium rounded-lg transition-colors"
-                      title="Націнити всі позиції на вказаний відсоток">
-                      Встановити %
-                    </button>
+                    {quickPercents.length > 0 && (
+                      <div className="flex items-center gap-1 border-l border-gray-300 pl-2 ml-1">
+                        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mr-1">Швидкі %:</span>
+                        {quickPercents.map((pct, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => applyBulkQuickPercent(pct)}
+                            className="px-2 py-1 bg-white hover:bg-gray-100 text-gray-800 text-xs font-medium rounded transition-colors shadow-sm border border-gray-200"
+                          >
+                            {pct}%
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
                 <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
@@ -394,11 +400,27 @@ export default function InvoiceFormPage() {
                     </div>
                   </td>
                   <td className="px-2 py-2">
-                    <input type="number" step="0.01" min="0"
-                      value={(item.retail_price / 100).toFixed(2)}
-                      onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
-                      disabled={isEdit}
-                      className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
+                    <div className="flex flex-col gap-1 items-end">
+                      <input type="number" step="0.01" min="0"
+                        value={(item.retail_price / 100).toFixed(2)}
+                        onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                        disabled={isEdit}
+                        className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
+                      {!isEdit && quickPercents.length > 0 && (
+                        <div className="flex flex-wrap justify-end gap-1">
+                          {quickPercents.map((pct, pIdx) => (
+                            <button
+                              key={pIdx}
+                              type="button"
+                              onClick={() => applySingleQuickPercent(i, pct)}
+                              className="text-[10px] leading-none px-1 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-200 hover:text-blue-700 rounded transition-colors"
+                            >
+                              {pct}%
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-2 text-right font-mono">{formatMoney(item.total)}</td>
                   <td className="px-2 py-2">

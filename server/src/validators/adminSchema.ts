@@ -92,6 +92,7 @@ export const settingsSchema = z.object({
   label_settings:            labelSettingsSchema.optional(),
   pos_quick_items:           z.array(quickItemSchema).optional(),
   markup_rules:              z.array(markupRuleSchema).optional(),
+  quick_percents:            z.array(z.number().min(0).max(1000)).optional(),
   employee_discount_pct:     z.number().min(0).max(100).optional(),
 })
 
