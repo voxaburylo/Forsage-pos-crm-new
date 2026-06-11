@@ -20,6 +20,8 @@ router.get('/', async (req, res, next) => {
       .select('*, product:products(id, name, sku, brand:brands(name)), sale:sales(completed_at, sale_number, customer:customers(id, full_name, phone))')
       .eq('tenant_id', tenantId)
       .in('core_return_status', ['pending', 'returned'])
+      .order('created_at', { ascending: false })
+      .limit(500)
 
     if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
 
@@ -29,6 +31,7 @@ router.get('/', async (req, res, next) => {
       .select('*, product:products(id, name, sku, brand:brands(name)), order:customer_orders!inner(created_at, order_number, tenant_id, customer:customers(id, full_name, phone))')
       .eq('order.tenant_id', tenantId)
       .in('core_return_status', ['pending', 'returned'])
+      .limit(500)
 
     if (ordersErr) throw new AppError('DB_ERROR', ordersErr.message, 500)
 
@@ -65,6 +68,7 @@ router.get('/', async (req, res, next) => {
       .eq('invoice.tenant_id', tenantId)
       .eq('invoice.status', 'posted')
       .eq('product.requires_core_return', true)
+      .limit(500)
 
     if (supplierErr) throw new AppError('DB_ERROR', supplierErr.message, 500)
 

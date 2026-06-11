@@ -2055,8 +2055,11 @@ function OrderInlineView({
             </div>
           </div>
           {allItemsCanceled && canCancel && (
-            <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 text-sm text-red-700 font-medium">
-              ⚠️ Всі позиції скасовані — скасуйте замовлення або додайте нові позиції через редагування.
+            <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 text-sm text-red-700 font-medium flex flex-wrap items-center justify-between gap-2">
+              <span>⚠️ Всі позиції скасовані — скасуйте замовлення або додайте нові позиції через редагування.</span>
+              <Button size="sm" onClick={onCancel} className="bg-red-600 hover:bg-red-700 text-white shrink-0">
+                ❌ Скасувати замовлення
+              </Button>
             </div>
           )}
         </Card>
