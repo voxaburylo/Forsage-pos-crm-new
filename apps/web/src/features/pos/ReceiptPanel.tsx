@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
+﻿import { useRef, useState, useCallback, useEffect } from 'react'
 import { Minus, Trash2, User, X, Plus as PlusIcon, ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePOSStore } from '@/stores/posStore'
 import { useAuthStore } from '@/stores/authStore'
@@ -300,7 +300,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                       <p className="text-white text-sm leading-tight truncate font-medium flex items-center gap-1.5">
                         {item.name}
                         {item.requiresCoreReturn && (
-                          <span className="shrink-0 bg-yellow-950 border border-yellow-850 text-yellow-500 text-[8px] px-1 py-0.5 rounded font-bold uppercase tracking-wider">
+                          <span className="shrink-0 bg-yellow-950 border border-yellow-800 text-yellow-500 text-[8px] px-1 py-0.5 rounded font-bold uppercase tracking-wider">
                             ♻️ Обмін
                           </span>
                         )}

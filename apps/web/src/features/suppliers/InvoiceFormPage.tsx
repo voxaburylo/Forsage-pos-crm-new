@@ -155,18 +155,6 @@ export default function InvoiceFormPage() {
 
     setSaving(true)
     try {
-      // Оновлюємо комірки та роздрібні ціни товарів у базі (сетка цен на приходе)
-      if (!isEdit) {
-        await Promise.all(
-          items.map(async (item) => {
-            const patch: Partial<ProductFormData> = {}
-            if (item.storage_bin !== undefined) patch.storage_bin = item.storage_bin || undefined
-            if (item.retail_price > 0) patch.retail_price = (item.retail_price / 100).toFixed(2)
-            if (Object.keys(patch).length > 0) await productApi.update(item.product_id, patch)
-          })
-        )
-      }
-
       const body = {
         supplier_id: supplierId,
         invoice_number: invoiceNumber.trim() || null,
@@ -183,7 +171,23 @@ export default function InvoiceFormPage() {
         toast.success('Накладну оновлено')
       } else {
         await supplierApi.createInvoice(body)
-        toast.success('Накладну створено')
+
+        // Комірки та роздрібні ціни (сітка цін на приході) — ПІСЛЯ успішного
+        // створення накладної, щоб невдале збереження не міняло товари
+        const results = await Promise.allSettled(
+          items.map(async (item) => {
+            const patch: Partial<ProductFormData> = {
+              storage_bin: item.storage_bin ?? '',
+            }
+            if (item.retail_price > 0) patch.retail_price = (item.retail_price / 100).toFixed(2)
+            await productApi.update(item.product_id, patch)
+          })
+        )
+        if (results.some((r) => r.status === 'rejected')) {
+          toast.warning('Накладну створено, але не всі комірки/ціни товарів оновились')
+        } else {
+          toast.success('Накладну створено')
+        }
       }
       navigate(`/suppliers/invoices`)
     } catch {
