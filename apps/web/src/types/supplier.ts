@@ -26,7 +26,7 @@ export interface SupplyInvoiceItem {
   qty: number
   purchase_price: number
   total: number
-  product?: { id: string; sku: string; name: string; unit: string; retail_price: number; barcode: string | null } | null
+  product?: { id: string; sku: string; name: string; unit: string; retail_price: number; barcode: string | null; storage_bin?: string | null } | null
 }
 
 export type SupplyInvoiceStatus = 'draft' | 'posted' | 'cancelled'

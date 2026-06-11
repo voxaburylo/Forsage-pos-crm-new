@@ -3,8 +3,8 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Plus } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import { productApi } from '@/features/products/productApi'
-
-import type { Product } from '@/types/product'
+import { pricingApi } from '@/features/admin/pricingApi'
+import type { Product, ProductFormData } from '@/types/product'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -15,7 +15,10 @@ interface LineItem {
   product_name: string
   qty: number
   purchase_price: number
+  retail_price: number      // роздрібна — авторозрахунок по наценці категорії, з ручним правом правки
+  category_id: string | null
   total: number
+  storage_bin?: string | null
 }
 
 export default function InvoiceFormPage() {
@@ -54,7 +57,10 @@ export default function InvoiceFormPage() {
           product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
           qty: i.qty,
           purchase_price: i.purchase_price,
+          retail_price: i.product?.retail_price ?? 0,
+          category_id: (i.product as any)?.category_id ?? null,
           total: i.total,
+          storage_bin: i.product?.storage_bin ?? null,
         })))
       }).catch(() => {
         toast.error('Не вдалось завантажити накладну')
@@ -87,7 +93,10 @@ export default function InvoiceFormPage() {
       product_name: product.name,
       qty: 1,
       purchase_price: product.purchase_price,
+      retail_price: product.retail_price,
+      category_id: product.category_id ?? null,
       total: product.purchase_price,
+      storage_bin: product.storage_bin,
     }])
     setProductSearch('')
     setProductResults([])
@@ -104,12 +113,33 @@ export default function InvoiceFormPage() {
       } else if (field === 'purchase_price') {
         item.purchase_price = Number(value) || 0
         item.total = Math.round(item.qty * item.purchase_price)
+      } else if (field === 'retail_price') {
+        item.retail_price = Number(value) || 0
       } else {
-        (item as Record<string, string | number>)[field] = value as string | number
+        (item as Record<string, string | number | null>)[field] = value as string | number | null
       }
       next[index] = item
       return next
     })
+  }
+
+  // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії
+  async function recalcRetail(onlyIndex?: number) {
+    const targets = onlyIndex !== undefined ? [onlyIndex] : items.map((_, i) => i)
+    const updates = await Promise.all(targets.map(async (idx) => {
+      const it = items[idx]
+      if (!it || it.purchase_price <= 0) return null
+      try {
+        const r = await pricingApi.autoRetail(it.purchase_price, it.category_id ?? undefined)
+        return r.data?.retail_price != null ? { idx, retail: r.data.retail_price } : null
+      } catch { return null }
+    }))
+    const map = new Map(updates.filter(Boolean).map((u) => [u!.idx, u!.retail]))
+    if (map.size === 0) {
+      if (onlyIndex === undefined) toast.warning('Наценки категорій не задані — задайте їх у «Ціноутворення»')
+      return
+    }
+    setItems((prev) => prev.map((it, i) => map.has(i) ? { ...it, retail_price: map.get(i)! } : it))
   }
 
   function removeItem(index: number) {
@@ -125,6 +155,18 @@ export default function InvoiceFormPage() {
 
     setSaving(true)
     try {
+      // Оновлюємо комірки та роздрібні ціни товарів у базі (сетка цен на приходе)
+      if (!isEdit) {
+        await Promise.all(
+          items.map(async (item) => {
+            const patch: Partial<ProductFormData> = {}
+            if (item.storage_bin !== undefined) patch.storage_bin = item.storage_bin || undefined
+            if (item.retail_price > 0) patch.retail_price = (item.retail_price / 100).toFixed(2)
+            if (Object.keys(patch).length > 0) await productApi.update(item.product_id, patch)
+          })
+        )
+      }
+
       const body = {
         supplier_id: supplierId,
         invoice_number: invoiceNumber.trim() || null,
@@ -189,10 +231,18 @@ export default function InvoiceFormPage() {
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
             <span className="text-sm font-semibold text-gray-800">Позиції ({items.length})</span>
             {!isEdit && (
-              <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
-                onClick={() => setShowSearch(!showSearch)}>
-                Додати товар
-              </Button>
+              <div className="flex items-center gap-2">
+                {items.length > 0 && (
+                  <Button type="button" size="sm" variant="secondary"
+                    onClick={() => recalcRetail()} title="Перерахувати роздрібні ціни за наценкою категорій">
+                    🔄 Роздрібні за наценкою
+                  </Button>
+                )}
+                <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
+                  onClick={() => setShowSearch(!showSearch)}>
+                  Додати товар
+                </Button>
+              </div>
             )}
             {isEdit && (
               <span className="text-xs text-gray-400 italic">Позиції не змінюються при редагуванні</span>
@@ -220,8 +270,10 @@ export default function InvoiceFormPage() {
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
                 <th className="text-left px-4 py-2">Товар</th>
-                <th className="text-right px-2 py-2 w-20">Кількість</th>
-                <th className="text-right px-2 py-2 w-24">Ціна, грн</th>
+                <th className="text-left px-2 py-2 w-28">Комірка</th>
+                <th className="text-right px-2 py-2 w-20">К-сть</th>
+                <th className="text-right px-2 py-2 w-24">Закупка, грн</th>
+                <th className="text-right px-2 py-2 w-28">Розн. ціна, грн</th>
                 <th className="text-right px-4 py-2 w-24">Сума</th>
                 <th className="w-10 px-2 py-2"></th>
               </tr>
@@ -230,6 +282,13 @@ export default function InvoiceFormPage() {
               {items.map((item, i) => (
                 <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/50">
                   <td className="px-4 py-2 font-medium">{item.product_name}</td>
+                  <td className="px-2 py-2">
+                    <input type="text" value={item.storage_bin ?? ''}
+                      onChange={(e) => updateItem(i, 'storage_bin', e.target.value)}
+                      disabled={isEdit}
+                      placeholder="Немає"
+                      className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  </td>
                   <td className="px-2 py-2">
                     <input type="number" step="0.001" min="0.001" value={item.qty}
                       onChange={(e) => updateItem(i, 'qty', e.target.value)}
@@ -240,8 +299,21 @@ export default function InvoiceFormPage() {
                     <input type="number" step="0.01" min="0"
                       value={(item.purchase_price / 100).toFixed(2)}
                       onChange={(e) => updateItem(i, 'purchase_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      onBlur={() => { if (!isEdit) recalcRetail(i) }}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  </td>
+                  <td className="px-2 py-2">
+                    <input type="number" step="0.01" min="0"
+                      value={(item.retail_price / 100).toFixed(2)}
+                      onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      disabled={isEdit}
+                      className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                    {item.purchase_price > 0 && item.retail_price > 0 && (
+                      <div className="text-[10px] text-gray-400 text-right mt-0.5">
+                        +{Math.round((item.retail_price / item.purchase_price - 1) * 100)}%
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right font-mono">{formatMoney(item.total)}</td>
                   <td className="px-2 py-2">
@@ -253,12 +325,12 @@ export default function InvoiceFormPage() {
                 </tr>
               ))}
               {items.length === 0 && (
-                <tr><td colSpan={5} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
+                <tr><td colSpan={7} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}
             </tbody>
             <tfoot>
               <tr className="font-semibold bg-gray-50">
-                <td colSpan={3} className="px-4 py-2 text-right">Всього:</td>
+                <td colSpan={5} className="px-4 py-2 text-right">Всього:</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(total)}</td>
                 <td></td>
               </tr>

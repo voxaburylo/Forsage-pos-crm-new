@@ -197,6 +197,7 @@ export default function InvoiceDetailPage() {
           <thead>
             <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
               <th className="text-left px-4 py-2">Товар</th>
+              <th className="text-left px-2 py-2 w-32">Комірка</th>
               <th className="text-right px-2 py-2 w-20">Кількість</th>
               <th className="text-right px-2 py-2 w-28">Ціна закупівлі</th>
               <th className="text-right px-4 py-2 w-28">Сума</th>
@@ -209,6 +210,15 @@ export default function InvoiceDetailPage() {
                   {item.product?.name ?? '—'}
                   {item.product?.sku && <span className="text-gray-400 text-xs ml-2">({item.product.sku})</span>}
                 </td>
+                <td className="px-2 py-2 font-mono">
+                  {item.product?.storage_bin ? (
+                    <span className="px-1.5 py-0.5 rounded bg-yellow-50 border border-yellow-200/50 text-yellow-800 text-xs font-bold font-mono">
+                      📍 {item.product.storage_bin}
+                    </span>
+                  ) : (
+                    <span className="text-gray-400 text-xs italic">немає</span>
+                  )}
+                </td>
                 <td className="px-2 py-2 text-right">{item.qty} {item.product?.unit ?? ''}</td>
                 <td className="px-2 py-2 text-right font-mono">{formatMoney(item.purchase_price)}</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(item.total)}</td>
@@ -217,7 +227,7 @@ export default function InvoiceDetailPage() {
           </tbody>
           <tfoot>
             <tr className="font-semibold bg-gray-50">
-              <td colSpan={3} className="px-4 py-2 text-right">Всього:</td>
+              <td colSpan={4} className="px-4 py-2 text-right">Всього:</td>
               <td className="px-4 py-2 text-right font-mono">{formatMoney(invoice.total)}</td>
             </tr>
           </tfoot>
