@@ -168,7 +168,7 @@ export default function ProductFormPage() {
                   value={form.barcode}
                   onChange={(e) => set('barcode', e.target.value)}
                   placeholder="4006633364515 або відскануйте..."
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent min-w-0"
                 />
                 <Button
                   type="button"
