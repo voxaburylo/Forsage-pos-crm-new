@@ -250,6 +250,39 @@ export async function deleteSupplyInvoice(id: string, tenantId: string) {
   if (delError) throw new AppError('DB_ERROR', delError.message, 500)
 }
 
+// ===================== Замовлення постачальникам (PO) =====================
+
+export async function listSupplierPOs(tenantId: string, status?: string) {
+  let q = db
+    .from('supplier_purchase_orders')
+    .select(`*, supplier:suppliers(id, name, phone),
+      items:supplier_purchase_order_items(id, qty, product:products(id, name, sku),
+        customer_order_item:customer_order_items(id, order_id, order:customer_orders(order_number)))`)
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+    .limit(200)
+
+  if (status) q = q.eq('status', status)
+
+  const { data, error } = await q
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return data ?? []
+}
+
+export async function updateSupplierPOStatus(id: string, status: 'ordered' | 'received' | 'cancelled', tenantId: string) {
+  const { data, error } = await db
+    .from('supplier_purchase_orders')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .select('*')
+    .single()
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (!data) throw new AppError('NOT_FOUND', 'Замовлення постачальнику не знайдено', 404)
+  return data
+}
+
 export async function createSupplierPOsForOrder(orderId: string, tenantId: string) {
   // 1. Отримуємо позиції замовлення, які вимагають закупівлі у постачальника
   const { data: items, error: itemsErr } = await db
@@ -311,7 +344,8 @@ export async function createSupplierPOsForOrder(orderId: string, tenantId: strin
   await runTransaction(async (client) => {
     for (const [supplierId, groupItems] of Object.entries(groups)) {
       const supplierName = supplierNames.get(supplierId) || 'SUPP'
-      const cleanName = supplierName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
+      // кирилиця в назві постачальника теж має давати читабельний код (не «PO-12--1»)
+      const cleanName = (supplierName.replace(/[^\p{L}\p{N}]/gu, '').slice(0, 6).toUpperCase() || 'SUPP')
       const seqRes = await client.query("SELECT nextval('supplier_po_number_seq') AS n")
       const poNumber = `PO-${orderNumber}-${cleanName}-${seqRes.rows[0].n}`
 

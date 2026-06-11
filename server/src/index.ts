@@ -32,6 +32,7 @@ import customerOrdersRouter from './routes/customerOrders.js'
 import customerGroupsRouter from './routes/customerGroups.js'
 import salaryRouter from './routes/salary.js'
 import coreReturnsRouter from './routes/coreReturns.js'
+import supplierPOsRouter from './routes/supplierPOs.js'
 import internalConsumptionsRouter from './routes/internalConsumptions.js'
 import { startBot, stopBot, processOcrPhoto } from './services/telegramBot.js'
 import { initMessengers, stopMessengers } from './services/messengers/MessengerService.js'
@@ -137,6 +138,7 @@ app.use('/api/v1/jobs',           jobsRouter)
 app.use('/api/v1/customer-groups', customerGroupsRouter)
 app.use('/api/v1/salary', salaryRouter)
 app.use('/api/v1/core-returns', coreReturnsRouter)
+app.use('/api/v1/supplier-pos', supplierPOsRouter)
 app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
 
 // Централизованный error handler (всегда последний)

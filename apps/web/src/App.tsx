@@ -65,6 +65,7 @@ const QuoteEditorPage      = lazyWithRetry(() => import('@/features/quotes/Quote
 const CashflowPage         = lazyWithRetry(() => import('@/features/cashflow/CashflowPage'))
 const ReservesList         = lazyWithRetry(() => import('@/features/inventory/ReservesList'))
 const CoreReturnsPage      = lazyWithRetry(() => import('@/features/inventory/CoreReturnsPage'))
+const SupplierPOsPage      = lazyWithRetry(() => import('@/features/suppliers/SupplierPOsPage'))
 const WarehousePicking     = lazyWithRetry(() => import('@/features/inventory/WarehousePicking'))
 const WarehouseMovementPage = lazyWithRetry(() => import('@/features/inventory/WarehouseMovementPage'))
 const InboxPage             = lazyWithRetry(() => import('@/features/notifications/InboxPage'))
@@ -116,6 +117,7 @@ function App() {
           <Route path="/suppliers/:id" element={<ProtectedRoute><SupplierDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id/edit" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
+          <Route path="/suppliers/pos" element={<ProtectedRoute><SupplierPOsPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/new" element={<ProtectedRoute><InvoiceFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute><InvoiceFormPage /></ProtectedRoute>} />

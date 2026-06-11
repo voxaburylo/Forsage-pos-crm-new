@@ -96,6 +96,7 @@ export const FINANCE_TABS = [
 export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Список постачальників', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/invoices', label: 'Прихідні накладні' },
+  { to: '/suppliers/pos', label: 'Замовлення постачальникам' },
   { to: '/suppliers/import', label: 'Імпорт прайсу' },
   { to: '/suppliers/1c-import', label: 'Імпорт з 1С', roles: ['owner', 'admin', 'manager'] },
   { to: '/auto-purchase', label: 'Автозакупки', roles: ['owner', 'admin'] }
