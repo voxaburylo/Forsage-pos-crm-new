@@ -50,8 +50,7 @@ const StaffPage            = lazyWithRetry(() => import('@/features/staff/StaffP
 // StaffSalaryPage merged
 const InternalConsumptionsPage = lazyWithRetry(() => import('@/features/inventory/InternalConsumptionsPage'))
 const ABCAnalysis          = lazyWithRetry(() => import('@/features/analytics/ABCAnalysis'))
-const StaffKPI             = lazyWithRetry(() => import('@/features/analytics/StaffKPI'))
-const StaffProfitabilityReport = lazyWithRetry(() => import('@/features/analytics/StaffProfitabilityReport'))
+const StaffAnalytics       = lazyWithRetry(() => import('@/features/analytics/StaffAnalytics'))
 const WaitlistPage         = lazyWithRetry(() => import('@/features/waitlist/WaitlistPage'))
 const SettingsChannels     = lazyWithRetry(() => import('@/features/chats/SettingsChannels'))
 const InventoryPage        = lazyWithRetry(() => import('@/features/inventory/InventoryPage'))
@@ -108,8 +107,7 @@ function App() {
           <Route path="/abc"        element={<ProtectedRoute><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<ProtectedRoute><WaitlistPage /></ProtectedRoute>} />
           <Route path="/needs-action" element={<ProtectedRoute><NeedsActionPage /></ProtectedRoute>} />
-          <Route path="/staff-kpi"  element={<ProtectedRoute><StaffKPI /></ProtectedRoute>} />
-          <Route path="/staff-profitability" element={<ProtectedRoute><StaffProfitabilityReport /></ProtectedRoute>} />
+<Route path="/staff-analytics" element={<ProtectedRoute><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
           

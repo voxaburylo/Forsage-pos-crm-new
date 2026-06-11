@@ -69,15 +69,30 @@ export async function updateUser(id: string, input: UpdateUserInput) {
   if (!existing.user) throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
 
   const currentMeta = existing.user.user_metadata ?? {}
-  const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, {
+  
+  if (input.phone !== undefined && input.phone !== currentMeta.phone) {
+    const email = phoneToEmail(input.phone)
+    const { data: allUsers } = await supabaseAdmin.auth.admin.listUsers()
+    const dup = allUsers?.users?.find((u) => u.email === email && u.id !== id)
+    if (dup) throw new AppError('PHONE_DUPLICATE', `Користувач з телефоном ${input.phone} вже існує`, 409)
+  }
+
+  const updatePayload: any = {
     user_metadata: {
       ...currentMeta,
       ...(input.role      !== undefined ? { role: input.role }           : {}),
       ...(input.is_active !== undefined ? { is_active: input.is_active } : {}),
       ...(input.full_name !== undefined ? { full_name: input.full_name } : {}),
       ...(input.base_rate !== undefined ? { base_rate: input.base_rate } : {}),
-    },
-  })
+      ...(input.phone     !== undefined ? { phone: input.phone }         : {}),
+    }
+  }
+
+  if (input.phone !== undefined) {
+    updatePayload.email = phoneToEmail(input.phone)
+  }
+
+  const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, updatePayload)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data.user

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { Card } from '@/components/ui'
+import { Card, Badge } from '@/components/ui'
 import { formatMoney } from '@/lib/utils'
 import { TrendingUp, DollarSign, Users, Award, Calendar, AlertCircle, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
@@ -28,7 +28,7 @@ interface StaffProfitabilityItem {
 
 type Period = 'month' | 'quarter' | 'year'
 
-export default function StaffProfitabilityReport() {
+export default function StaffAnalytics() {
   const [items, setItems] = useState<StaffProfitabilityItem[]>([])
   const [loading, setLoading] = useState(true)
   const [period, setPeriod] = useState<Period>('month')
@@ -62,7 +62,7 @@ export default function StaffProfitabilityReport() {
     api.get<{ data: StaffProfitabilityItem[] }>(
       `/api/v1/analytics/staff-profitability?startDate=${range.startDate}&endDate=${range.endDate}`
     )
-      .then((res) => setItems(res.data))
+      .then((res) => setItems(res.data || []))
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [range])
@@ -92,12 +92,67 @@ export default function StaffProfitabilityReport() {
     }))
   }, [items])
 
+  // Find best seller by gross profit
+  const bestSellerId = useMemo(() => {
+    if (items.length === 0) return null
+    const sorted = [...items].sort((a, b) => b.gross_profit - a.gross_profit)
+    return sorted[0].gross_profit > 0 ? sorted[0].manager_id : null
+  }, [items])
+
+  // Recommendation builder
+  const recommendations = useMemo(() => {
+    return items.map((item) => {
+      const profit = item.gross_profit / 100
+      const isBest = item.manager_id === bestSellerId
+
+      if (profit <= 0) {
+        return {
+          manager_id: item.manager_id,
+          manager_name: item.manager_name,
+          type: 'warning' as const,
+          text: 'Активності або продажів за обраний період немає. Преміювання не рекомендовано.',
+          amount: 0
+        }
+      }
+
+      let bonus = 0
+      let text = ''
+
+      if (profit > 100000) {
+        bonus = Math.round(profit * 0.05)
+        text = `Чудовий показник валового прибутку (>100,000 грн). Рекомендована премія 5% від прибутку: ${bonus.toLocaleString()} ₴.`
+      } else if (profit > 50000) {
+        bonus = Math.round(profit * 0.03)
+        text = `Гарний показник валового прибутку (>50,000 грн). Рекомендована премія 3% від прибутку: ${bonus.toLocaleString()} ₴.`
+      } else if (profit > 20000) {
+        bonus = 1000
+        text = `Стабільні продажі (>20,000 грн прибутку). Рекомендовано преміювати фіксованим бонусом: 1,000 ₴.`
+      } else {
+        text = `Продажі нижче середнього (прибуток ${profit.toLocaleString()} ₴). Преміювання не рекомендовано, рекомендується навчання.`
+      }
+
+      if (isBest) {
+        bonus += 1500
+        text += ` Найкращий продавець за період! Додатковий бонус за 1-е місце: +1,500 ₴.`
+      }
+
+      return {
+        manager_id: item.manager_id,
+        manager_name: item.manager_name,
+        type: bonus > 0 ? ('success' as const) : ('info' as const),
+        text,
+        amount: bonus
+      }
+    })
+  }, [items, bestSellerId])
+
   const exportToExcel = () => {
     try {
       if (items.length === 0) {
         toast.error('Немає даних для експорту')
         return
       }
+
       const dataToExport = items.map((mgr) => ({
         'Співробітник': mgr.manager_name,
         'ID Співробітника': mgr.manager_id,
@@ -127,7 +182,7 @@ export default function StaffProfitabilityReport() {
       })
       ws['!cols'] = maxLens
 
-      XLSX.writeFile(wb, `Staff_Profitability_${range.startDate}_to_${range.endDate}.xlsx`)
+      XLSX.writeFile(wb, `Staff_Analytics_${range.startDate}_to_${range.endDate}.xlsx`)
       toast.success('Дані успішно експортовано в Excel')
     } catch (error) {
       console.error(error)
@@ -136,7 +191,7 @@ export default function StaffProfitabilityReport() {
   }
 
   return (
-    <Layout title="Прибутковість працівників">
+    <Layout title="Аналітика персоналу">
       <div className="max-w-7xl space-y-6">
         {/* Controls */}
         <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
@@ -145,7 +200,7 @@ export default function StaffProfitabilityReport() {
               onClick={() => { setIsCustom(false); setPeriod('month') }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 !isCustom && period === 'month'
-                  ? 'bg-blue-600 text-white shadow-sm'
+                  ? 'bg-yellow-500 text-black shadow-sm font-semibold'
                   : 'bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100'
               }`}
             >
@@ -155,7 +210,7 @@ export default function StaffProfitabilityReport() {
               onClick={() => { setIsCustom(false); setPeriod('quarter') }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 !isCustom && period === 'quarter'
-                  ? 'bg-blue-600 text-white shadow-sm'
+                  ? 'bg-yellow-500 text-black shadow-sm font-semibold'
                   : 'bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100'
               }`}
             >
@@ -165,7 +220,7 @@ export default function StaffProfitabilityReport() {
               onClick={() => { setIsCustom(false); setPeriod('year') }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 !isCustom && period === 'year'
-                  ? 'bg-blue-600 text-white shadow-sm'
+                  ? 'bg-yellow-500 text-black shadow-sm font-semibold'
                   : 'bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100'
               }`}
             >
@@ -175,7 +230,7 @@ export default function StaffProfitabilityReport() {
               onClick={() => setIsCustom(true)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 isCustom
-                  ? 'bg-blue-600 text-white shadow-sm'
+                  ? 'bg-yellow-500 text-black shadow-sm font-semibold'
                   : 'bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100'
               }`}
             >
@@ -189,14 +244,14 @@ export default function StaffProfitabilityReport() {
                 type="date"
                 value={customRange.startDate}
                 onChange={(e) => setCustomRange((prev) => ({ ...prev, startDate: e.target.value }))}
-                className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
               />
               <span className="text-gray-400 text-sm">по</span>
               <input
                 type="date"
                 value={customRange.endDate}
                 onChange={(e) => setCustomRange((prev) => ({ ...prev, endDate: e.target.value }))}
-                className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
               />
             </div>
           )}
@@ -218,38 +273,30 @@ export default function StaffProfitabilityReport() {
         </div>
 
         {/* Metric Cards Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 p-5 rounded-2xl border border-blue-100/80 shadow-sm transition-transform hover:-translate-y-0.5 duration-200">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card className="p-5 border border-gray-100 shadow-sm bg-gradient-to-br from-white to-gray-50/50">
             <div className="flex justify-between items-start">
-              <p className="text-xs font-semibold uppercase tracking-wider text-blue-600/80">Виручка (Загальна)</p>
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Виручка (Загальна)</p>
               <div className="p-1.5 bg-blue-500 text-white rounded-lg"><DollarSign size={16} /></div>
             </div>
-            <h3 className="text-xl font-bold text-blue-900 mt-3">{formatMoney(summary.revenue)}</h3>
-          </div>
+            <h3 className="text-xl font-bold text-gray-900 mt-3">{formatMoney(summary.revenue)}</h3>
+          </Card>
 
-          <div className="bg-gradient-to-br from-orange-50 to-orange-100/50 p-5 rounded-2xl border border-orange-100/80 shadow-sm transition-transform hover:-translate-y-0.5 duration-200">
+          <Card className="p-5 border border-gray-100 shadow-sm bg-gradient-to-br from-white to-gray-50/50">
             <div className="flex justify-between items-start">
-              <p className="text-xs font-semibold uppercase tracking-wider text-orange-600/80">Собівартість (COGS)</p>
-              <div className="p-1.5 bg-orange-500 text-white rounded-lg"><TrendingUp size={16} /></div>
-            </div>
-            <h3 className="text-xl font-bold text-orange-900 mt-3">{formatMoney(summary.cogs)}</h3>
-          </div>
-
-          <div className="bg-gradient-to-br from-teal-50 to-teal-100/50 p-5 rounded-2xl border border-teal-100/80 shadow-sm transition-transform hover:-translate-y-0.5 duration-200">
-            <div className="flex justify-between items-start">
-              <p className="text-xs font-semibold uppercase tracking-wider text-teal-600/80">Валовий прибуток</p>
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Валовий прибуток</p>
               <div className="p-1.5 bg-teal-500 text-white rounded-lg"><Award size={16} /></div>
             </div>
-            <h3 className="text-xl font-bold text-teal-900 mt-3">{formatMoney(summary.grossProfit)}</h3>
-          </div>
+            <h3 className="text-xl font-bold text-teal-700 mt-3">{formatMoney(summary.grossProfit)}</h3>
+          </Card>
 
-          <div className="bg-gradient-to-br from-rose-50 to-rose-100/50 p-5 rounded-2xl border border-rose-100/80 shadow-sm transition-transform hover:-translate-y-0.5 duration-200">
+          <Card className="p-5 border border-gray-100 shadow-sm bg-gradient-to-br from-white to-gray-50/50">
             <div className="flex justify-between items-start">
-              <p className="text-xs font-semibold uppercase tracking-wider text-rose-600/80">Витрати на персонал</p>
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider font-medium">Витрати на персонал</p>
               <div className="p-1.5 bg-rose-500 text-white rounded-lg"><Users size={16} /></div>
             </div>
             <h3 className="text-xl font-bold text-rose-900 mt-3">{formatMoney(summary.payouts)}</h3>
-          </div>
+          </Card>
 
           <div className={`bg-gradient-to-br p-5 rounded-2xl border shadow-sm transition-transform hover:-translate-y-0.5 duration-200 ${
             summary.netProfit >= 0
@@ -272,8 +319,8 @@ export default function StaffProfitabilityReport() {
 
         {/* Visual Chart */}
         {chartData.length > 0 ? (
-          <Card className="p-6">
-            <h3 className="text-base font-bold text-gray-800 mb-6">Порівняльний фінансовий аналіз працівників</h3>
+          <Card className="p-6 border border-gray-100 shadow-sm bg-white">
+            <h3 className="text-base font-bold text-gray-800 mb-6">Порівняльний аналіз успішності працівників</h3>
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
@@ -285,7 +332,7 @@ export default function StaffProfitabilityReport() {
                     contentStyle={{ borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                   />
                   <Legend verticalAlign="top" height={36} />
-                  <Bar dataKey="Валовий прибуток" fill="#14b8a6" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                  <Bar dataKey="Валовий прибуток" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={40} />
                   <Bar dataKey="Витрати на ЗП" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={40} />
                   <Bar dataKey="Чистий прибуток" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={40} />
                 </BarChart>
@@ -297,6 +344,55 @@ export default function StaffProfitabilityReport() {
             <AlertCircle size={20} className="text-yellow-600" />
             <span>Немає активних продажів або замовлень для побудови графіку за вказаний період.</span>
           </div>
+        )}
+
+        {/* Bonus Recommendations Panel */}
+        {!loading && recommendations.length > 0 && (
+          <Card className="p-6 border border-gray-100 shadow-sm bg-white">
+            <h3 className="text-base font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span>💡 Рекомендації та Преміювання</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {recommendations.map((rec) => {
+                const isWinner = rec.manager_id === bestSellerId
+                return (
+                  <div 
+                    key={rec.manager_id}
+                    className={`p-4 rounded-xl border flex flex-col justify-between transition-all ${
+                      isWinner 
+                        ? 'bg-yellow-50/40 border-yellow-200 shadow-sm'
+                        : rec.type === 'success'
+                        ? 'bg-green-50/20 border-green-100'
+                        : rec.type === 'warning'
+                        ? 'bg-red-50/10 border-red-100'
+                        : 'bg-gray-50/50 border-gray-150'
+                    }`}
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <div className="font-bold text-gray-900 flex items-center gap-1.5">
+                          <span>{rec.manager_name}</span>
+                          {isWinner && (
+                            <Badge color="yellow" className="text-[9px] px-1.5 py-0.5 font-bold flex items-center gap-0.5">
+                              🏆 Топ продажів
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">{rec.text}</p>
+                      </div>
+                      
+                      {rec.amount > 0 && (
+                        <div className="text-right shrink-0">
+                          <span className="text-[10px] text-gray-400 font-semibold block">Рекомендована премія</span>
+                          <span className="text-md font-extrabold text-green-600">+{rec.amount.toLocaleString()} ₴</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
         )}
 
         {/* Details Table */}

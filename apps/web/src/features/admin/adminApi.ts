@@ -93,7 +93,7 @@ export const adminApi = {
   listUsers: () => api.get<{ data: AdminUser[] }>('/api/v1/admin/users'),
   createUser: (body: { phone: string; password: string; full_name: string; role: UserRole; base_rate?: number }) =>
     api.post<{ data: AdminUser }>('/api/v1/admin/users', body),
-  updateUser: (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number }) =>
+  updateUser: (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number; phone?: string }) =>
     api.put<{ data: AdminUser }>(`/api/v1/admin/users/${id}`, body),
   deleteUser: (id: string) =>
     api.delete<void>(`/api/v1/admin/users/${id}`),
