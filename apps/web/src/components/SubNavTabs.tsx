@@ -105,7 +105,7 @@ export const SUPPLIERS_TABS = [
 
 export const INVENTORY_TABS = [
   { to: '/inventory', label: 'Інвентаризація' },
-  { to: '/inventory/picking', label: 'Складання (WMS)' },
+  { to: '/inventory/picking', label: 'Збірка замовлень (WMS)' },
   { to: '/inventory/writeoffs', label: 'Списання' },
   { to: '/internal', label: 'Внутр. відпуск' },
   { to: '/inventory/movements', label: 'Переміщення' },

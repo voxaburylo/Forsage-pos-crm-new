@@ -44,6 +44,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/products',            icon: <Package size={18} />,         label: 'Товари та Клієнти' },
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
+      { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень (WMS)', roles: ['owner','admin','manager','storekeeper'] },
       { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
       { to: '/inventory',           icon: <ClipboardList size={18} />,   label: 'Склад (WMS)',          roles: ['owner','admin','manager','storekeeper'] },

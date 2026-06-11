@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ClipboardList, Printer, CheckCircle, Clock, CheckSquare } from 'lucide-react'
+import { ClipboardList, Printer, CheckCircle, Clock, CheckSquare, Barcode, Search } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Badge, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatDate } from '@/lib/utils'
 import { pickingApi, type EnrichedCustomerOrder, type EnrichedOrderItem } from './pickingApi'
 import { printPickingList } from '@/features/orders/PickingListPrint'
+import { playSuccessBeep, playWarning, playErrorTone } from '@/lib/audioService'
 
 export default function WarehousePicking() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -22,6 +23,11 @@ export default function WarehousePicking() {
   const [cellModalOpen, setCellModalOpen] = useState(false)
   const [pickupCell, setPickupCell] = useState('')
   const [savingCell, setSavingCell] = useState(false)
+
+  // Пошук, фільтрація та сканування штрих-кодів
+  const [filterTab, setFilterTab] = useState<'all' | 'ready' | 'pending_supplier'>('all')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [barcodeInput, setBarcodeInput] = useState('')
 
   // Завантажити список замовлень на збірку
   async function loadOrders() {
@@ -66,7 +72,13 @@ export default function WarehousePicking() {
     const newStatus: EnrichedOrderItem['item_status'] = isPicked ? 'arrived' : 'pending'
     try {
       await pickingApi.pickItem(item.id, newStatus)
-      toast.success(isPicked ? 'Товар зібрано' : 'Статус товару скинуто')
+      if (isPicked) {
+        playSuccessBeep()
+        toast.success('Товар зібрано')
+      } else {
+        playWarning()
+        toast.success('Статус товару скинуто')
+      }
       
       // Локально оновлюємо статус, щоб користувач бачив миттєвий результат
       const updatedItems = currentOrder.items.map(i => 
@@ -85,8 +97,65 @@ export default function WarehousePicking() {
         setCellModalOpen(true)
       }
     } catch (err: any) {
+      playErrorTone()
       toast.error(err?.message || 'Помилка оновлення статусу збірки')
     }
+  }
+
+  // Зібрати всі товари складу в один клік
+  async function handlePickAll() {
+    if (!currentOrder) return
+    const pendingItems = currentOrder.items.filter(i => i.source_type === 'warehouse' && i.item_status === 'pending')
+    if (pendingItems.length === 0) return
+
+    setLoadingDetail(true)
+    try {
+      for (const item of pendingItems) {
+        await pickingApi.pickItem(item.id, 'arrived')
+      }
+      playSuccessBeep()
+      toast.success('Всі позиції зі складу відмічено як зібрані!')
+      
+      await loadOrderDetail(currentOrder.id)
+      setCellModalOpen(true)
+    } catch (err: any) {
+      playErrorTone()
+      toast.error(err?.message || 'Не вдалося зібрати всі позиції')
+      await loadOrderDetail(currentOrder.id)
+    } finally {
+      setLoadingDetail(false)
+    }
+  }
+
+  // Обробка сканування штрих-коду
+  async function handleBarcodeScan(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const code = barcodeInput.trim().toUpperCase()
+      if (!code || !currentOrder) return
+
+      const target = currentOrder.items.find(i => 
+        i.source_type === 'warehouse' && 
+        i.item_status === 'pending' && 
+        (i.sku?.toUpperCase() === code || i.sku?.toUpperCase().replace(/\W/g, '') === code.replace(/\W/g, ''))
+      )
+
+      if (target) {
+        await handlePickItem(target, true)
+        setBarcodeInput('')
+      } else {
+        playErrorTone()
+        toast.error(`Товар з артикулом "${code}" не знайдено серед незібраних позицій складу`)
+      }
+    }
+  }
+
+  // Розрахунок статусу готовності деталей постачальника
+  function getOrderReadyStatus(order: EnrichedCustomerOrder) {
+    const supplierItems = order.items.filter(i => i.source_type === 'supplier')
+    if (supplierItems.length === 0) return 'ready'
+    const allArrived = supplierItems.every(i => i.item_status === 'arrived' || i.item_status === 'handed')
+    return allArrived ? 'ready' : 'pending_supplier'
   }
 
   // Зберегти ячейку видачі
@@ -209,11 +278,47 @@ export default function WarehousePicking() {
             )}
           </Card>
 
+          {/* Панель сканування штрих-кодів */}
+          <Card className="shadow-sm border border-gray-100 bg-[#1A1A1A] p-4 flex flex-col sm:flex-row gap-3 items-center">
+            <div className="flex items-center gap-2 text-yellow-400 shrink-0">
+              <Barcode size={22} />
+              <span className="text-xs font-bold text-gray-300 uppercase tracking-wider">Штрих-код / Артикул:</span>
+            </div>
+            <div className="relative flex-1 w-full">
+              <input
+                type="text"
+                placeholder="Введіть або відскануйте артикул (натисніть Enter)..."
+                value={barcodeInput}
+                onChange={(e) => setBarcodeInput(e.target.value)}
+                onKeyDown={handleBarcodeScan}
+                className="w-full bg-[#242424] border border-gray-800 focus:border-yellow-400 focus:outline-none focus:ring-1 focus:ring-yellow-400 text-white rounded-lg px-3 py-2 text-sm font-semibold transition"
+                autoFocus
+              />
+            </div>
+            {barcodeInput && (
+              <Button size="sm" variant="secondary" onClick={() => setBarcodeInput('')} className="shrink-0">
+                Очистити
+              </Button>
+            )}
+          </Card>
+
           {/* Список товарів для збірки */}
           <div className="space-y-3">
-            <h4 className="font-semibold text-gray-800 text-sm uppercase tracking-wider flex items-center gap-2">
-              <ClipboardList size={16} /> Позиції зі складу
-            </h4>
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-gray-800 text-sm uppercase tracking-wider flex items-center gap-2">
+                <ClipboardList size={16} /> Позиції зі складу
+              </h4>
+              {warehouseItems.filter(i => i.item_status === 'pending').length > 0 && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handlePickAll}
+                  className="bg-green-600 hover:bg-green-700 text-white font-semibold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1"
+                >
+                  ⚡ Зібрати всі товари
+                </Button>
+              )}
+            </div>
 
             {warehouseItems.length === 0 ? (
               <Card>
@@ -339,9 +444,28 @@ export default function WarehousePicking() {
     )
   }
 
+  // Фільтрація та пошук замовлень
+  const filteredOrders = orders.filter(order => {
+    const q = searchQuery.toLowerCase().trim()
+    if (q) {
+      const orderIdMatch = order.id.toLowerCase().includes(q)
+      const custNameMatch = order.customer?.full_name?.toLowerCase().includes(q)
+      const custPhoneMatch = order.customer?.phone?.includes(q)
+      const commentMatch = order.comment?.toLowerCase().includes(q)
+      if (!orderIdMatch && !custNameMatch && !custPhoneMatch && !commentMatch) {
+        return false
+      }
+    }
+
+    const status = getOrderReadyStatus(order)
+    if (filterTab === 'ready') return status === 'ready'
+    if (filterTab === 'pending_supplier') return status === 'pending_supplier'
+    return true
+  })
+
   // ЕКРАН СПИСКУ ЗАМОВЛЕНЬ НА ЗБІРКУ
   return (
-    <Layout title="Складання замовлень (WMS)">
+    <Layout title="Збірка замовлень (WMS)">
       <div className="max-w-4xl space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-sm text-gray-500">
@@ -352,25 +476,79 @@ export default function WarehousePicking() {
           </Button>
         </div>
 
+        <Card className="shadow-sm border border-gray-100 bg-white">
+          <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+            {/* Пошук по замовленнях */}
+            <div className="w-full md:w-1/2 relative">
+              <input
+                type="text"
+                placeholder="Пошук за № замовлення, коментарем або ім'ям/телефоном клієнта..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full border border-gray-200 focus:border-yellow-400 focus:outline-none focus:ring-1 focus:ring-yellow-400 rounded-lg pl-9 pr-3 py-2 text-sm bg-gray-50 focus:bg-white transition"
+              />
+              <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
+            </div>
+
+            {/* Вкладки фільтрів */}
+            <div className="flex bg-gray-100 p-1 rounded-lg w-full md:w-auto self-stretch md:self-auto gap-1">
+              <button
+                type="button"
+                onClick={() => setFilterTab('all')}
+                className={`flex-1 md:flex-initial px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  filterTab === 'all'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Всі (${orders.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterTab('ready')}
+                className={`flex-1 md:flex-initial px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  filterTab === 'ready'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Готові (${orders.filter(o => getOrderReadyStatus(o) === 'ready').length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterTab('pending_supplier')}
+                className={`flex-1 md:flex-initial px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  filterTab === 'pending_supplier'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Очікують деталі (${orders.filter(o => getOrderReadyStatus(o) === 'pending_supplier').length})
+              </button>
+            </div>
+          </div>
+        </Card>
+
         <Card padding="none">
           {loadingOrders ? (
             <div className="text-center py-20 text-gray-400 text-sm">Завантаження списку...</div>
-          ) : orders.length === 0 ? (
+          ) : filteredOrders.length === 0 ? (
             <div className="text-center py-20 text-gray-400 text-sm">
               <CheckCircle size={32} className="mx-auto text-green-500 mb-2 opacity-50" />
-              Всі замовлення успішно зібрано! Немає нових завдань.
+              Нічого не знайдено за поточними критеріями
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              {orders.map(order => {
+              {filteredOrders.map(order => {
                 const warehouseItems = order.items.filter(i => i.source_type === 'warehouse')
                 const pendingWarehouseItems = warehouseItems.filter(i => i.item_status === 'pending')
                 const pickedCount = warehouseItems.length - pendingWarehouseItems.length
+                const isReady = getOrderReadyStatus(order) === 'ready'
 
                 return (
                   <div key={order.id} className="p-4 flex items-center justify-between hover:bg-gray-50/50 transition-colors flex-wrap gap-3">
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <button 
                           onClick={() => setSearchParams({ orderId: order.id })}
                           className="font-bold text-gray-950 hover:text-yellow-600 text-sm md:text-base text-left"
@@ -380,6 +558,15 @@ export default function WarehousePicking() {
                         <Badge color={order.status === 'ordered' ? 'yellow' : 'gray'}>
                           {order.status === 'ordered' ? 'Замовлено' : 'Нове'}
                         </Badge>
+                        {isReady ? (
+                          <Badge color="green">
+                            Готово до комплектації
+                          </Badge>
+                        ) : (
+                          <Badge color="yellow">
+                            Очікує деталей
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-xs text-gray-400 flex gap-3 flex-wrap">
                         <span>Створено: {formatDate(order.created_at)}</span>
