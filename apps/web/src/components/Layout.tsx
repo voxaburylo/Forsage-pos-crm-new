@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore'
 import {
   SubNavTabs,
   PRODUCTS_TABS,
+  CUSTOMERS_TABS,
   ORDERS_TABS,
   FINANCE_TABS,
   SUPPLIERS_TABS,
@@ -31,6 +32,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
 
   const allGroups = [
     PRODUCTS_TABS,
+    CUSTOMERS_TABS,
     ORDERS_TABS,
     FINANCE_TABS,
     SUPPLIERS_TABS,

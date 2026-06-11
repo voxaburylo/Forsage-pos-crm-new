@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
-  ChevronDown, UserCog,
+  ChevronDown, UserCog, Users,
   Bell, X,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
@@ -39,15 +39,15 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: 'Основне',
+        title: 'Основне',
     collapsible: false,
     items: [
-      { to: '/products',            icon: <Package size={18} />,         label: 'Товари та Клієнти' },
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
-      { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень (WMS)', roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
+      { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
+      { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
+      { to: '/inventory/picking',   icon: <Package size={18} />,         label: 'Склад та Збірка',      roles: ['owner','admin','manager','storekeeper'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/inventory',           icon: <ClipboardList size={18} />,   label: 'Склад (WMS)',          roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
     ],
   },
   {

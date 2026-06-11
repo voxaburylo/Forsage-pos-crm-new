@@ -47,7 +47,7 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
             }
             // Базова вкладка без query не активна, якщо активна під-вкладка того ж pathname
             if (queryTabActive && location.pathname === tab.to) return false
-            if (tab.to === '/suppliers' || tab.to === '/products' || tab.to === '/sales' || tab.to === '/inventory' || tab.to === '/reports' || tab.to === '/staff' || tab.to === '/settings') {
+            if (tab.to === '/customers' || tab.to === '/suppliers' || tab.to === '/products' || tab.to === '/sales' || tab.to === '/inventory' || tab.to === '/reports' || tab.to === '/staff' || tab.to === '/settings') {
               return location.pathname === tab.to
             }
             return location.pathname === tab.to || (tab.to !== '/' && location.pathname.startsWith(tab.to + '/'))
@@ -72,9 +72,12 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
   )
 }
 
+export const CUSTOMERS_TABS = [
+  { to: '/customers', label: 'Клієнти' }
+]
+
 export const PRODUCTS_TABS = [
   { to: '/products', label: 'Товари' },
-  { to: '/customers', label: 'Клієнти' },
   { to: '/pricing', label: 'Ціноутворення', roles: ['owner', 'admin'] },
   { to: '/labels', label: 'Друк етикеток', roles: ['owner', 'admin'] }
 ]

@@ -12,7 +12,7 @@ import { QuickCustomerModal } from '@/features/customers/QuickCustomerModal'
 import { CashOperationModal } from './CashOperationModal'
 import { DebtPaymentModal } from './DebtPaymentModal'
 import { CashReconciliationModal } from './CashReconciliationModal'
-import { FavoritesPanel, DEFAULT_QUICK_ITEMS } from './FavoritesPanel'
+import { FavoritesPanel } from './FavoritesPanel'
 import { DashboardPanel } from './DashboardPanel'
 import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
@@ -154,7 +154,7 @@ export default function POSPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
-  const [quickItems, setQuickItems] = useState<any[]>([])
+  
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
@@ -175,9 +175,7 @@ export default function POSPage() {
       .then((res: any) => {
         const data = res.data
         setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
-        if (data.pos_quick_items) {
-          setQuickItems(data.pos_quick_items)
-        }
+        
       })
       .catch(() => {})
 
