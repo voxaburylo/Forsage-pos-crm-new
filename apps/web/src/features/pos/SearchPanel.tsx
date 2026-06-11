@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
-import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff } from 'lucide-react'
+import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { productApi } from '@/features/products/productApi'
+import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
@@ -10,6 +11,27 @@ import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/au
 import { CameraScanner } from './CameraScanner'
 import { searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
+function saveRecentItem(key: string, value: string) {
+  if (!value) return
+  try {
+    const raw = localStorage.getItem(key)
+    const items: string[] = raw ? JSON.parse(raw) : []
+    const next = [value, ...items.filter(i => i !== value)].slice(0, 5)
+    localStorage.setItem(key, JSON.stringify(next))
+  } catch (err) {
+    console.error('Failed to save to localStorage:', err)
+  }
+}
+
+function getRecentItems(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
 
 export interface SearchPanelHandle {
   focus: () => void
@@ -23,12 +45,16 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const serverOnline = useServerStatus()
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
+  const [supplierResults, setSupplierResults] = useState<any[]>([])
   const [loading, setLoading]   = useState(false)
+  const [importingId, setImportingId] = useState<string | null>(null)
   const [analogs, setAnalogs]   = useState<Record<string, { analogs: Product[]; grouped: Record<string, Product[]> }>>({})
   const [analogsLoading, setAnalogsLoading] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null)
+  const [pricingModalItem, setPricingModalItem] = useState<any | null>(null)
+  const [pricingRetailPrice, setPricingRetailPrice] = useState<string>('')
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
 
@@ -37,10 +63,12 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     clear: () => {
       setQuery('')
       setResults([])
+      setSupplierResults([])
     },
     search: (q: string) => {
       setQuery(q)
       setResults([])
+      setSupplierResults([])
     },
     openCamera: () => setCameraOpen(true),
   }))
@@ -70,6 +98,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         if (!serverOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20)
           setResults(offlineResults as Product[])
+          setSupplierResults([])
           setLoading(false)
           return
         }
@@ -80,21 +109,30 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
             `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`
           )
           setResults((data ?? []).filter((p) => p.category?.name === categoryFilter))
+          setSupplierResults([])
         } else if (query.trim()) {
-          const { data } = await productApi.search(query, 8)
-          setResults(data)
+          const { data } = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(
+            `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`
+          )
+          setResults(data?.warehouse || [])
+          setSupplierResults(data?.supplier_catalog || [])
         } else {
           // If query is empty and no category filter, load first page of active products
           const res = await productApi.list({ per_page: 50, is_active: 'true' })
           setResults(res.data ?? [])
+          setSupplierResults([])
         }
-      } catch { setResults([]) }
-      finally { setLoading(false) }
+      } catch { 
+        setResults([]) 
+        setSupplierResults([])
+      } finally { 
+        setLoading(false) 
+      }
     }, 200)
   }, [query, categoryFilter, serverOnline])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Escape') { setQuery(''); setResults([]); return }
+    if (e.key === 'Escape') { setQuery(''); setResults([]); setSupplierResults([]); return }
     if (e.key === 'Enter' && query.trim()) {
       e.preventDefault()
       const trimmed = query.trim()
@@ -102,8 +140,10 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         handleBarcodeScan(trimmed)
       } else if (results.length > 0) {
         addToReceipt(results[0])
+        saveRecentItem('recent_scans', trimmed)
         setQuery('')
         setResults([])
+        setSupplierResults([])
       }
     }
   }
@@ -121,20 +161,24 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           vipLevel: c.vip_level ?? 'standard', riskProfile: c.risk_profile ?? 'low',
         })
         toast.success(`Клієнт ${c.full_name ?? c.phone} прив'язаний до чека`)
+        saveRecentItem('recent_scans', code)
         playSuccessBeep()
       } else if (result?.type === 'product' && result?.data) {
         addToReceipt(result.data)
+        saveRecentItem('recent_scans', code)
       } else {
         playErrorTone()
         toast.error('Штрих-код не знайдено в базі')
       }
       setQuery('')
       setResults([])
+      setSupplierResults([])
     } catch {
       if (results.length > 0) {
         addToReceipt(results[0])
         setQuery('')
         setResults([])
+        setSupplierResults([])
       } else {
         playErrorTone()
         toast.error('Товар або клієнт не знайдено')
@@ -167,7 +211,6 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       .filter((i) => i.productId === p.id)
       .reduce((s, i) => s + i.qty, 0)
     const newTotalQty = existingQty + 1
-    // Сервісні товари (кава, снеки) — завжди доступні, без перевірки залишків
     const lowStock = !p.is_service && qtyAvailable < newTotalQty
 
     if (lowStock) {
@@ -194,6 +237,45 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       coreDepositAmount: p.core_deposit_amount,
     })
     inputRef.current?.focus()
+  }
+
+  function openPricingModal(sItem: any) {
+    const purchase = sItem.price_kopecks / 100
+    const val = Math.round(purchase * 1.3)
+    setPricingRetailPrice(String(val))
+    setPricingModalItem(sItem)
+  }
+
+  async function handleImportConfirm() {
+    if (!pricingModalItem) return
+    const retailVal = parseFloat(pricingRetailPrice)
+    if (isNaN(retailVal) || retailVal <= 0) {
+      toast.error('Будь ласка, введіть коректну ціну')
+      return
+    }
+
+    setImportingId(pricingModalItem.id)
+    try {
+      const res = await supplierImportsApi.importOnDemand({
+        sku: pricingModalItem.sku,
+        brand: pricingModalItem.brand || '',
+        name: pricingModalItem.name,
+        supplier_id: pricingModalItem.supplier?.id || null,
+        purchase_price: pricingModalItem.price_kopecks,
+        retail_price: Math.round(retailVal * 100)
+      })
+      if (res.data) {
+        addToReceipt(res.data)
+        setQuery('')
+        setResults([])
+        setSupplierResults([])
+        setPricingModalItem(null)
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Не вдалося імпортувати товар')
+    } finally {
+      setImportingId(null)
+    }
   }
 
   return (
@@ -227,6 +309,23 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
         onScan={(code) => { setQuery(code); setCameraOpen(false); setTimeout(() => handleBarcodeScan(code), 100) }} />
 
+      {/* Нещодавні скани */}
+      {query === '' && getRecentItems('recent_scans').length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-3 px-1 items-center shrink-0">
+          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Нещодавні скани:</span>
+          {getRecentItems('recent_scans').map(code => (
+            <button
+              key={code}
+              type="button"
+              onClick={() => { setQuery(code); handleBarcodeScan(code) }}
+              className="text-[10px] bg-[#2C2C2C] hover:bg-[#3C3C3C] text-gray-300 border border-gray-700 px-2.5 py-1 rounded-full transition font-mono"
+            >
+              {code}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Фільтр категорій */}
       <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1.5 scrollbar-none shrink-0">
         <button onClick={() => setCategoryFilter(null)}
@@ -253,167 +352,327 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       </div>
 
       {/* Результати */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-2 pr-0.5 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-4 pr-0.5 scrollbar-thin">
         {loading && (
           <p className="text-gray-500 text-sm text-center py-8">Пошук...</p>
         )}
 
-        {!loading && results.length === 0 && (
+        {!loading && results.length === 0 && supplierResults.length === 0 && (
           <p className="text-gray-500 text-sm text-center py-8">Нічого не знайдено</p>
         )}
 
-        {results.map((p, idx) => {
-          const storageBin = p.storage_bin
-          const productAnalogsData = analogs[p.id]
-          const productAnalogs = productAnalogsData?.analogs ?? []
-          const groupedAnalogs = productAnalogsData?.grouped ?? {}
-          const showAnalogs = (p.qty_available ?? p.qty_on_hand) <= 0
-          return (
-            <div key={p.id}>
-              <button
-                onClick={() => { addToReceipt(p); setQuery(''); setResults([]) }}
-                className={`w-full text-left p-4 rounded-xl border-2 transition-all active:scale-[0.98] active:bg-gray-700/50 ${
-                  idx === 0
-                    ? 'bg-[#2C2C2C] border-yellow-400/50 hover:border-yellow-400'
-                    : 'bg-[#242424] border-gray-700 hover:border-gray-500'
-                }`}
-                style={{ minHeight: 80 }}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  {p.photo_url && (
-                    <div className="shrink-0 relative self-center" onClick={(e) => e.stopPropagation()}>
-                      <img
-                        src={p.photo_url}
-                        alt={p.name}
-                        onClick={() => setZoomedPhoto(p.photo_url)}
-                        className="w-12 h-12 md:w-14 md:h-14 rounded-lg object-cover border border-gray-700 cursor-zoom-in hover:border-yellow-400 transition-all hover:scale-105 active:scale-95 shadow-sm"
-                      />
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-mono text-yellow-400 text-xs">{p.sku}</span>
-                      {p.category?.name === 'Кава та напої' && <span className="text-xs">☕</span>}
-                      {p.category?.name === 'Снеки та хотдоги' && <span className="text-xs">🌭</span>}
-                    </div>
-                    <p className="text-white text-sm font-medium leading-tight line-clamp-2">{p.name}</p>
-                    {p.brand && <p className="text-gray-500 text-xs mt-0.5">{p.brand.name}</p>}
-                    {storageBin && (
-                      <p className="flex items-center gap-1 text-gray-500 text-xs mt-1">
-                        <MapPin size={12} />
-                        {storageBin}
-                      </p>
-                    )}
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-white font-bold text-xl">{kopecksToHryvnia(p.retail_price)} ₴</p>
-                    {p.is_service ? (
-                      <p className="text-xs mt-0.5 text-blue-400 flex items-center gap-1 justify-end">
-                        <ShoppingCart size={12} /> ∞ сервіс
-                      </p>
-                    ) : (
-                      <>
-                        <p className={`text-xs mt-0.5 flex items-center gap-1 justify-end ${
-                          (p.qty_available ?? p.qty_on_hand) <= 0 ? 'text-red-400' :
-                          (p.qty_available ?? p.qty_on_hand) <= p.reorder_point ? 'text-orange-400' : 'text-green-400'
-                        }`}>
-                          <ShoppingCart size={12} />
-                          {(p.qty_available ?? p.qty_on_hand) <= 0 ? '✗ Нема' : `● ${(p.qty_available ?? p.qty_on_hand)} ${p.unit}`}
-                        </p>
-                        {p.qty_reserved !== undefined && p.qty_reserved > 0 && (
-                          <p className="text-gray-400 text-[10px] mt-0.5 font-medium">
-                            резерв: {p.qty_reserved} {p.unit} (фіз: {p.qty_on_hand})
+        {/* Секція: На нашому складі */}
+        {results.length > 0 && (
+          <div className="space-y-2">
+            {query.trim() && (
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1">
+                📦 На нашому складі ({results.length})
+              </p>
+            )}
+            {results.map((p, idx) => {
+              const storageBin = p.storage_bin
+              const productAnalogsData = analogs[p.id]
+              const productAnalogs = productAnalogsData?.analogs ?? []
+              const groupedAnalogs = productAnalogsData?.grouped ?? {}
+              const showAnalogs = (p.qty_available ?? p.qty_on_hand) <= 0
+              return (
+                <div key={p.id}>
+                  <button
+                    onClick={() => { addToReceipt(p); setQuery(''); setResults([]); setSupplierResults([]) }}
+                    className={`w-full text-left p-4 rounded-xl border-2 transition-all active:scale-[0.98] active:bg-gray-700/50 ${
+                      idx === 0
+                        ? 'bg-[#2C2C2C] border-yellow-400/50 hover:border-yellow-400'
+                        : 'bg-[#242424] border-gray-700 hover:border-gray-500'
+                    }`}
+                    style={{ minHeight: 80 }}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      {p.photo_url && (
+                        <div className="shrink-0 relative self-center" onClick={(e) => e.stopPropagation()}>
+                          <img
+                            src={p.photo_url}
+                            alt={p.name}
+                            onClick={() => setZoomedPhoto(p.photo_url)}
+                            className="w-12 h-12 md:w-14 md:h-14 rounded-lg object-cover border border-gray-700 cursor-zoom-in hover:border-yellow-400 transition-all hover:scale-105 active:scale-95 shadow-sm"
+                          />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-mono text-yellow-400 text-xs">{p.sku}</span>
+                          {p.category?.name === 'Кава та напої' && <span className="text-xs">☕</span>}
+                          {p.category?.name === 'Снеки та хотдоги' && <span className="text-xs">🌭</span>}
+                        </div>
+                        <p className="text-white text-sm font-medium leading-tight line-clamp-2">{p.name}</p>
+                        {p.brand && <p className="text-gray-500 text-xs mt-0.5">{p.brand.name}</p>}
+                        {storageBin && (
+                          <p className="flex items-center gap-1 text-gray-500 text-xs mt-1">
+                            <MapPin size={12} />
+                            {storageBin}
                           </p>
                         )}
-                      </>
-                    )}
-                  </div>
-                </div>
-                {idx === 0 && (
-                  <div className="flex items-center gap-1 mt-2 text-yellow-400/60 text-xs">
-                    <Plus size={12} />
-                    <span>Enter щоб додати</span>
-                  </div>
-                )}
-                <div className="flex items-center gap-3 mt-1.5">
-                  <button onClick={(e) => { e.stopPropagation(); fetchAnalogs(p.id) }}
-                    className="text-gray-500 hover:text-yellow-400 text-xs flex items-center gap-1 transition-colors px-2 py-1.5 rounded-lg hover:bg-gray-700 touch-target">
-                    <Link2 size={12} /> Аналоги
-                  </button>
-                </div>
-              </button>
-
-              {/* Аналоги для товарів без залишку */}
-              {showAnalogs && analogsLoading !== p.id && productAnalogs.length === 0 && (
-                <div className="ml-4 mt-1 mb-2">
-                  <button onClick={() => fetchAnalogs(p.id)}
-                    className="text-orange-400 text-xs flex items-center gap-1 hover:text-orange-300 transition-colors touch-target px-3 py-2 rounded-lg">
-                    ⚠️ Немає в наявності — шукати аналоги
-                  </button>
-                </div>
-              )}
-              {analogsLoading === p.id && (
-                <p className="text-gray-500 text-xs text-center py-2">Пошук аналогів...</p>
-              )}
-              {productAnalogsData && Object.keys(groupedAnalogs).length > 0 && productAnalogs.length > 0 && (
-                <div className="mx-3 mb-3 p-3 bg-[#161616]/60 border border-gray-800 rounded-xl space-y-3">
-                  <p className="text-yellow-400 text-[10px] font-bold uppercase tracking-wider">🔗 Аналоги та кроси:</p>
-                  {Object.entries(groupedAnalogs).map(([tier, items]) => {
-                    const typedItems = items as Product[]
-                    if (!typedItems || typedItems.length === 0) return null
-                    
-                    const tierTitle = 
-                      tier === 'original' ? '🏭 Оригінал' :
-                      tier === 'premium' ? '⭐ Premium' :
-                      tier === 'standard' ? '✅ Standard' : '💵 Budget'
-
-                    const tierColor =
-                      tier === 'original' ? 'text-blue-400 border-blue-900/30 bg-blue-950/20' :
-                      tier === 'premium' ? 'text-yellow-400 border-yellow-950/30 bg-yellow-950/20' :
-                      tier === 'standard' ? 'text-gray-300 border-gray-800 bg-gray-900/30' : 'text-emerald-400 border-emerald-950/30 bg-emerald-950/20'
-
-                    return (
-                      <div key={tier} className="space-y-1.5">
-                        <div className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${tierColor} inline-block`}>
-                          {tierTitle}
-                        </div>
-                        <div className="space-y-1 pl-1">
-                          {typedItems.map((a) => (
-                            <button key={a.id} onClick={(e) => { e.stopPropagation(); addToReceipt(a); setQuery(''); setResults([]) }}
-                              className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-yellow-500/10 transition-colors active:scale-[0.98] border border-gray-800/45 hover:border-yellow-500/30 bg-gray-950/20"
-                              style={{ minHeight: 48 }}>
-                              {a.photo_url && (
-                                <div className="shrink-0 mr-2" onClick={(e) => e.stopPropagation()}>
-                                  <img
-                                    src={a.photo_url}
-                                    alt={a.name}
-                                    onClick={() => setZoomedPhoto(a.photo_url)}
-                                    className="w-8 h-8 rounded-md object-cover border border-gray-800 cursor-zoom-in hover:scale-105 active:scale-95"
-                                  />
-                                </div>
-                              )}
-                              <div className="flex-1 min-w-0 text-left">
-                                <p className="text-white text-xs font-medium truncate">{a.name}</p>
-                                <p className="text-gray-500 text-[10px]">{a.sku} {a.brand && `• ${a.brand.name}`}</p>
-                              </div>
-                              <div className="text-right shrink-0 ml-2">
-                                <p className="text-white text-xs font-semibold">{kopecksToHryvnia(a.retail_price)} ₴</p>
-                                <p className={`text-[10px] ${(a.qty_available ?? a.qty_on_hand) > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                  {(a.qty_available ?? a.qty_on_hand) > 0 ? `● ${(a.qty_available ?? a.qty_on_hand)}` : '✗ Нема'}
-                                </p>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
                       </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-white font-bold text-xl">{kopecksToHryvnia(p.retail_price)} ₴</p>
+                        {p.is_service ? (
+                          <p className="text-xs mt-0.5 text-blue-400 flex items-center gap-1 justify-end">
+                            <ShoppingCart size={12} /> ∞ сервіс
+                          </p>
+                        ) : (
+                          <>
+                            <p className={`text-xs mt-0.5 flex items-center gap-1 justify-end ${
+                              (p.qty_available ?? p.qty_on_hand) <= 0 ? 'text-red-400' :
+                              (p.qty_available ?? p.qty_on_hand) <= p.reorder_point ? 'text-orange-400' : 'text-green-400'
+                            }`}>
+                              <ShoppingCart size={12} />
+                              {(p.qty_available ?? p.qty_on_hand) <= 0 ? '✗ Нема' : `● ${(p.qty_available ?? p.qty_on_hand)} ${p.unit}`}
+                            </p>
+                            {p.qty_reserved !== undefined && p.qty_reserved > 0 && (
+                              <p className="text-gray-400 text-[10px] mt-0.5 font-medium">
+                                резерв: {p.qty_reserved} {p.unit} (фіз: {p.qty_on_hand})
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {idx === 0 && (
+                      <div className="flex items-center gap-1 mt-2 text-yellow-400/60 text-xs">
+                        <Plus size={12} />
+                        <span>Enter щоб додати</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <button onClick={(e) => { e.stopPropagation(); fetchAnalogs(p.id) }}
+                        className="text-gray-500 hover:text-yellow-400 text-xs flex items-center gap-1 transition-colors px-2 py-1.5 rounded-lg hover:bg-gray-700 touch-target">
+                        <Link2 size={12} /> Аналоги
+                      </button>
+                    </div>
+                  </button>
+
+                  {/* Аналоги для товарів без залишку */}
+                  {showAnalogs && analogsLoading !== p.id && productAnalogs.length === 0 && (
+                    <div className="ml-4 mt-1 mb-2">
+                      <button onClick={() => fetchAnalogs(p.id)}
+                        className="text-orange-400 text-xs flex items-center gap-1 hover:text-orange-300 transition-colors touch-target px-3 py-2 rounded-lg">
+                        ⚠️ Немає в наявності — шукати аналоги
+                      </button>
+                    </div>
+                  )}
+                  {analogsLoading === p.id && (
+                    <p className="text-gray-500 text-xs text-center py-2">Пошук аналогів...</p>
+                  )}
+                  {productAnalogsData && Object.keys(groupedAnalogs).length > 0 && productAnalogs.length > 0 && (
+                    <div className="mx-3 mb-3 p-3 bg-[#161616]/60 border border-gray-800 rounded-xl space-y-3">
+                      <p className="text-yellow-400 text-[10px] font-bold uppercase tracking-wider">🔗 Аналоги та кроси:</p>
+                      {Object.entries(groupedAnalogs).map(([tier, items]) => {
+                        const typedItems = items as Product[]
+                        if (!typedItems || typedItems.length === 0) return null
+                        
+                        const tierTitle = 
+                          tier === 'original' ? '🏭 Оригінал' :
+                          tier === 'premium' ? '⭐ Premium' :
+                          tier === 'standard' ? '✅ Standard' : '💵 Budget'
+
+                        const tierColor =
+                          tier === 'original' ? 'text-blue-400 border-blue-900/30 bg-blue-950/20' :
+                          tier === 'premium' ? 'text-yellow-400 border-yellow-950/30 bg-yellow-950/20' :
+                          tier === 'standard' ? 'text-gray-300 border-gray-800 bg-gray-900/30' : 'text-emerald-400 border-emerald-950/30 bg-emerald-950/20'
+
+                        return (
+                          <div key={tier} className="space-y-1.5">
+                            <div className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${tierColor} inline-block`}>
+                              {tierTitle}
+                            </div>
+                            <div className="space-y-1 pl-1">
+                              {typedItems.map((a) => (
+                                <button key={a.id} onClick={(e) => { e.stopPropagation(); addToReceipt(a); setQuery(''); setResults([]); setSupplierResults([]) }}
+                                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-yellow-500/10 transition-colors active:scale-[0.98] border border-gray-800/45 hover:border-yellow-500/30 bg-gray-950/20"
+                                  style={{ minHeight: 48 }}>
+                                  {a.photo_url && (
+                                    <div className="shrink-0 mr-2" onClick={(e) => e.stopPropagation()}>
+                                      <img
+                                        src={a.photo_url}
+                                        alt={a.name}
+                                        onClick={() => setZoomedPhoto(a.photo_url)}
+                                        className="w-8 h-8 rounded-md object-cover border border-gray-800 cursor-zoom-in hover:scale-105 active:scale-95"
+                                      />
+                                    </div>
+                                  )}
+                                  <div className="flex-1 min-w-0 text-left">
+                                    <p className="text-white text-xs font-medium truncate">{a.name}</p>
+                                    <p className="text-gray-500 text-[10px]">{a.sku} {a.brand && `• ${a.brand.name}`}</p>
+                                  </div>
+                                  <div className="text-right shrink-0 ml-2">
+                                    <p className="text-white text-xs font-semibold">{kopecksToHryvnia(a.retail_price)} ₴</p>
+                                    <p className={`text-xs ${(a.qty_available ?? a.qty_on_hand) > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      {(a.qty_available ?? a.qty_on_hand) > 0 ? `● ${(a.qty_available ?? a.qty_on_hand)}` : '✗ Нема'}
+                                    </p>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Секція: У прайсах постачальників */}
+        {!loading && supplierResults.length > 0 && (
+          <div className="space-y-2 pt-2 border-t border-gray-800/60">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1 flex items-center gap-1.5">
+              <Database size={12} className="text-yellow-400" />
+              <span>🚚 У прайсах постачальників ({supplierResults.length})</span>
+            </p>
+            {supplierResults.map((sItem) => {
+              const isImporting = importingId === sItem.id
+              return (
+                <button
+                  key={sItem.id}
+                  onClick={() => openPricingModal(sItem)}
+                  disabled={isImporting}
+                  className="w-full text-left bg-[#242424] hover:bg-gray-800 border border-gray-700/50 rounded-xl p-4 flex items-center justify-between transition-all active:scale-[0.98] disabled:opacity-50"
+                  style={{ minHeight: 80 }}
+                >
+                  <div className="flex-1 min-w-0 pr-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono text-yellow-500 text-xs font-semibold">{sItem.sku}</span>
+                      {sItem.brand && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 font-medium">
+                          {sItem.brand}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-white text-sm font-medium leading-tight line-clamp-2">{sItem.name}</p>
+                    <p className="text-gray-500 text-xs mt-1">
+                      Постачальник: {sItem.supplier?.name || '—'} {sItem.warehouse_name ? `(${sItem.warehouse_name})` : ''} • Кількість: {sItem.qty || '0'}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-white font-bold text-xl">
+                      {(sItem.price_kopecks / 100).toFixed(2)} ₴
+                    </p>
+                    <span className="text-[10px] text-yellow-400/80 block mt-1.5 font-medium">
+                      {isImporting ? 'Імпорт...' : '➕ Замовити'}
+                    </span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Модальне вікно встановлення ціни для замовного товару */}
+      {pricingModalItem && (
+        <div className="fixed inset-0 z-[160] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#242424] border border-gray-800 rounded-2xl max-w-md w-full p-6 shadow-2xl animate-scale-up">
+            <h3 className="text-white text-lg font-bold mb-2">💰 Ціноутворення та імпорт</h3>
+            <p className="text-gray-400 text-xs mb-4">
+              Вкажіть роздрібну ціну для товару: <strong className="text-yellow-400">{pricingModalItem.name}</strong> ({pricingModalItem.sku})
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <span className="block text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1">Ціна закупівлі</span>
+                <div className="text-white text-lg font-semibold bg-[#1A1A1A] px-3 py-2 rounded-lg border border-gray-800/80">
+                  {(pricingModalItem.price_kopecks / 100).toFixed(2)} ₴
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1">
+                  Ціна продажу (роздрібна), ₴
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={pricingRetailPrice}
+                  onChange={(e) => setPricingRetailPrice(e.target.value)}
+                  className="w-full bg-[#1A1A1A] border border-gray-700 focus:border-yellow-400 focus:outline-none focus:ring-1 focus:ring-yellow-400 text-white rounded-lg px-3 py-2 text-lg font-bold transition"
+                  placeholder="0.00"
+                  autoFocus
+                />
+              </div>
+
+              {/* Швидкі націнки */}
+              <div>
+                <span className="block text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1.5">
+                  Швидка націнка
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {[10, 20, 30, 40, 50].map((pct) => {
+                    const purchase = pricingModalItem.price_kopecks / 100
+                    const val = Math.round(purchase * (1 + pct / 100))
+                    return (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setPricingRetailPrice(String(val))}
+                        className="text-[10px] font-semibold bg-[#2C2C2C] hover:bg-yellow-500 hover:text-black border border-gray-700 px-2.5 py-1.5 rounded-lg text-gray-300 transition active:scale-95"
+                      >
+                        +{pct}% ({val} ₴)
+                      </button>
                     )
                   })}
                 </div>
-              )}
+              </div>
+
+              {/* Інформація про маржу */}
+              {(() => {
+                const retail = parseFloat(pricingRetailPrice)
+                const purchase = pricingModalItem.price_kopecks / 100
+                if (!isNaN(retail) && retail > 0) {
+                  const profit = retail - purchase
+                  const pct = purchase > 0 ? (profit / purchase) * 100 : 0
+                  return (
+                    <div className="bg-[#2C2C2C]/50 border border-gray-800 rounded-xl p-3 flex justify-between text-xs">
+                      <span className="text-gray-400">Чистий прибуток:</span>
+                      <span className={`font-bold ${profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {profit.toFixed(2)} ₴ ({pct.toFixed(0)}%)
+                      </span>
+                    </div>
+                  )
+                }
+                return null
+              })()}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPricingModalItem(null)}
+                  className="flex-1 bg-gray-800 hover:bg-gray-700 text-white font-semibold py-2 rounded-xl transition text-sm active:scale-95"
+                >
+                  Скасувати
+                </button>
+                <button
+                  type="button"
+                  onClick={handleImportConfirm}
+                  disabled={importingId === pricingModalItem.id}
+                  className="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-semibold py-2 rounded-xl transition text-sm active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  {importingId === pricingModalItem.id ? (
+                    <>
+                      <span>Імпорт...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Імпортувати</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
-          )
-        })}
-      </div>
+          </div>
+        </div>
+      )}
+
       {/* Лайтбокс для збільшення фотографії (ненав'язливий і простий) */}
       {zoomedPhoto && (
         <div 

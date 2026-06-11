@@ -17,15 +17,30 @@ export interface SupplierPriceImport {
   }
 }
 
+export interface SupplierCatalogItem {
+  id:             string
+  sku:            string
+  brand:          string | null
+  name:           string
+  price_kopecks:  number
+  qty:            string
+  warehouse_name: string | null
+  supplier?: {
+    id:   string
+    name: string
+  }
+}
+
 export const supplierImportsApi = {
-  upload: (file: File, supplierId: string | null, updateRetail: boolean, mode: 'replace' | 'add') => {
+  upload: (file: File, supplierId: string | null, updateRetail: boolean, mode: 'replace' | 'add', warehouseName?: string) => {
     const query = new URLSearchParams()
     if (supplierId) query.append('supplier_id', supplierId)
     query.append('update_retail', String(updateRetail))
     query.append('mode', mode)
+    if (warehouseName) query.append('warehouse_name', warehouseName)
 
     return request<{ success: boolean; importId: string; jobId: string }>(
-      `/api/v1/supplier-imports/upload?${query.toString()}`,
+      '/api/v1/supplier-imports/upload?' + query.toString(),
       {
         method: 'POST',
         headers: {
@@ -38,8 +53,30 @@ export const supplierImportsApi = {
   },
 
   getStatus: (id: string) =>
-    request<{ data: SupplierPriceImport }>(`/api/v1/supplier-imports/status/${id}`),
+    request<{ data: SupplierPriceImport }>('/api/v1/supplier-imports/status/' + id),
 
   list: () =>
     request<{ data: SupplierPriceImport[] }>('/api/v1/supplier-imports'),
+
+  getCatalog: (params: { q?: string; supplier_id?: string; page?: number; limit?: number }) => {
+    const query = new URLSearchParams()
+    if (params.q) query.append('q', params.q)
+    if (params.supplier_id) query.append('supplier_id', params.supplier_id)
+    if (params.page) query.append('page', String(params.page))
+    if (params.limit) query.append('limit', String(params.limit))
+
+    return request<{ data: SupplierCatalogItem[]; pagination: { page: number; limit: number; total: number } }>(
+      '/api/v1/search/catalog?' + query.toString()
+    )
+  },
+
+  importOnDemand: (input: { sku: string; brand: string; name: string; supplier_id: string | null; purchase_price: number; retail_price?: number }) => {
+    return request<{ data: any }>('/api/v1/search/import-on-demand', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    })
+  }
 }

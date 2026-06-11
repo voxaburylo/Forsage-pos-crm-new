@@ -3,13 +3,12 @@ import { normalizeArticle } from '../validators/productValidator.js'
 import { createReadStream, promises as fs } from 'fs'
 import readline from 'readline'
 
-// No fallback TENANT_ID
-
 interface ColMap {
   sku?: number
   name?: number
   qty?: number
   price?: number
+  brand?: number
 }
 
 function guessColumns(header: string, sep: string): ColMap {
@@ -20,6 +19,7 @@ function guessColumns(header: string, sep: string): ColMap {
     else if (/назв|товар|наймен|name|product|description/i.test(p)) map.name  = i
     else if (/кільк|к-сть|qty|кол-во|quantity/i.test(p))           map.qty   = i
     else if (/цін|price|cost|вартість|purchase/i.test(p))           map.price = i
+    else if (/бренд|виробн|brand|manufacturer|mfr/i.test(p))        map.brand = i
   })
   return map
 }
@@ -48,6 +48,7 @@ function detectSeparator(firstLine: string): string {
   const tabCount = firstLine.split('\t').length
   const semicolonCount = firstLine.split(';').length
   const commaCount = firstLine.split(',').length
+
   let sep = '\t'
   if (semicolonCount >= tabCount && semicolonCount >= commaCount) sep = ';'
   else if (commaCount >= tabCount && commaCount >= semicolonCount) sep = ','
@@ -62,9 +63,10 @@ export async function processImport(
     supplierId: string | null
     updateRetail: boolean
     mode: 'replace' | 'add'
+    warehouseName: string | null
   }
 ) {
-  const { importId, tempPath, updateRetail, mode } = payload
+  const { importId, tempPath, supplierId, mode, warehouseName } = payload
   let totalRows = 0
   let processedRows = 0
   const errorsLog: Array<{ row: number; error: string; raw?: string }> = []
@@ -114,20 +116,27 @@ export async function processImport(
       .update({ total_rows: totalRows, updated_at: new Date().toISOString() })
       .eq('id', importId)
 
-    // 3. Зчитуємо правила націнки
-    const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
-    const markupRules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined
-
-    function calculateRetailPrice(purchasePrice: number): number {
-      let markupPct = 30
-      if (markupRules) {
-        const rule = markupRules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice)
-        if (rule) markupPct = rule.markupPct
+    // 2b. Якщо режим 'replace' і вказано постачальника, видаляємо старі записи перед імпортом
+    if (mode === 'replace' && supplierId) {
+      let query = db
+        .from('supplier_price_items')
+        .delete()
+        .eq('supplier_id', supplierId)
+        .eq('tenant_id', tenantId)
+      
+      if (warehouseName) {
+        query = query.eq('warehouse_name', warehouseName)
+      } else {
+        query = query.is('warehouse_name', null)
       }
-      return Math.round(purchasePrice * (1 + markupPct / 100))
+
+      const { error: delError } = await query
+      if (delError) {
+        throw new Error('Не вдалося видалити старі записи прайсу постачальника: ' + delError.message)
+      }
     }
 
-    // 4. Починаємо парсинг та імпорт чанками
+    // 3. Починаємо парсинг та імпорт чанками
     const parseStream = createReadStream(tempPath)
     const rl = readline.createInterface({
       input: parseStream,
@@ -139,6 +148,7 @@ export async function processImport(
     let lineNum = 0
     let chunk: Array<{
       sku: string
+      brand: string
       name: string
       price: number
       qty: number
@@ -170,6 +180,9 @@ export async function processImport(
         const rawSku = colMap.sku !== undefined ? parts[colMap.sku] ?? '' : ''
         const sku = rawSku.trim() ? normalizeArticle(rawSku) : 'IMP-' + Date.now() + '-' + lineNum
 
+        const rawBrand = colMap.brand !== undefined ? parts[colMap.brand] ?? '' : ''
+        const brand = rawBrand.trim()
+
         const rawPrice = colMap.price !== undefined ? parts[colMap.price] ?? '' : ''
         const priceHryvnia = parseFloat(rawPrice.replace(/,/g, '.').replace(/[^\d.]/g, ''))
         if (isNaN(priceHryvnia) || priceHryvnia < 0) {
@@ -187,10 +200,10 @@ export async function processImport(
           }
         }
 
-        chunk.push({ sku, name, price, qty, rowNum: lineNum })
+        chunk.push({ sku, brand, name, price, qty, rowNum: lineNum })
 
         if (chunk.length >= 1000) {
-          await processChunk(chunk, updateRetail, mode, calculateRetailPrice, tenantId)
+          await processChunk(chunk, tenantId, supplierId, warehouseName)
           processedRows += chunk.length
           chunk = []
 
@@ -211,7 +224,7 @@ export async function processImport(
     rl.close()
 
     if (chunk.length > 0) {
-      await processChunk(chunk, updateRetail, mode, calculateRetailPrice, tenantId)
+      await processChunk(chunk, tenantId, supplierId, warehouseName)
       processedRows += chunk.length
     }
 
@@ -244,55 +257,25 @@ export async function processImport(
 }
 
 async function processChunk(
-  items: Array<{ sku: string; name: string; price: number; qty: number; rowNum: number }>,
-  updateRetail: boolean,
-  mode: 'replace' | 'add',
-  calculateRetailPrice: (purchasePrice: number) => number,
-  tenantId: string
+  items: Array<{ sku: string; brand: string; name: string; price: number; qty: number; rowNum: number }>,
+  tenantId: string,
+  supplierId: string | null,
+  warehouseName: string | null
 ) {
-  const skus = Array.from(new Set(items.map((i) => i.sku)))
+  const rows = items.map((item) => ({
+    tenant_id: tenantId,
+    supplier_id: supplierId,
+    sku: item.sku,
+    brand: item.brand || null,
+    name: item.name,
+    price_kopecks: item.price,
+    qty: String(item.qty),
+    warehouse_name: warehouseName,
+    updated_at: new Date().toISOString()
+  }))
 
-  const { data: existingProducts } = await db
-    .from('products')
-    .select('sku, id, qty_on_hand, retail_price')
-    .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
-    .in('sku', skus)
-
-  const existingMap = new Map<string, { id: string; qty_on_hand: number; retail_price: number }>()
-  if (existingProducts) {
-    existingProducts.forEach((p) => {
-      existingMap.set(p.sku, {
-        id: p.id,
-        qty_on_hand: Number(p.qty_on_hand),
-        retail_price: p.retail_price,
-      })
-    })
-  }
-
-  for (const item of items) {
-    const existing = existingMap.get(item.sku)
-
-    let retailPrice: number
-    if (existing) {
-      retailPrice = updateRetail ? calculateRetailPrice(item.price) : existing.retail_price
-    } else {
-      retailPrice = calculateRetailPrice(item.price)
-    }
-
-    const qty = item.qty
-
-    await db.rpc('upsert_product_import', {
-      p_tenant_id:      tenantId,
-      p_sku:            item.sku,
-      p_barcode:        null,
-      p_name:           item.name,
-      p_retail_price:   retailPrice,
-      p_purchase_price: item.price,
-      p_qty_on_hand:    qty,
-      p_unit:           'шт',
-      p_storage_bin:    null,
-      p_mode:           mode,
-    })
+  const { error } = await db.from('supplier_price_items').insert(rows)
+  if (error) {
+    throw new Error('Помилка запису в supplier_price_items: ' + error.message)
   }
 }

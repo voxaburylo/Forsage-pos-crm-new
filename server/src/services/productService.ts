@@ -624,3 +624,127 @@ export async function getStockBreakdown(productId: string) {
     available: data.qty_available as number,
   }
 }
+
+
+async function findOrCreateBrandByName(name: string, tenantId: string): Promise<string | null> {
+  const normalizedBrand = name.trim()
+  if (!normalizedBrand) return null
+
+  const { data: existingBrand } = await db
+    .from('brands')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .ilike('name', normalizedBrand)
+    .maybeSingle()
+
+  if (existingBrand) {
+    return existingBrand.id
+  }
+
+  const { data: newBrand, error } = await db
+    .from('brands')
+    .insert({
+      tenant_id: tenantId,
+      name: normalizedBrand,
+      tier: 'standard'
+    })
+    .select('id')
+    .single()
+
+  if (error) {
+    logger.warn({ error: error.message, brand: normalizedBrand }, 'Failed to auto-create brand')
+    return null
+  }
+
+  return newBrand.id
+}
+export async function importFromCatalog(
+  input: { sku: string; brandName: string; name: string; supplierId: string | null; purchasePrice: number; retailPrice?: number },
+  tenantId: string
+) {
+  const { sku, brandName, name, supplierId, purchasePrice } = input
+  const normalizedSku = normalizeArticle(sku)
+
+  const { data: existing } = await db
+    .from(TABLE)
+    .select('*, brand:brands(id,name), category:categories(id,name)')
+    .eq('sku', normalizedSku)
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .maybeSingle()
+
+  if (existing) {
+    return existing
+  }
+
+  let brandId: string | null = null
+  if (brandName) {
+    brandId = await findOrCreateBrandByName(brandName, tenantId)
+  }
+
+  const { data: settings } = await db
+    .from('shop_settings')
+    .select('markup_rules')
+    .eq('tenant_id', tenantId)
+    .single()
+
+  const markupRules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined
+
+  let retailPrice = input.retailPrice
+  if (retailPrice === undefined || retailPrice === null) {
+    let markupPct = 30
+    if (markupRules) {
+      const rule = markupRules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice)
+      if (rule) markupPct = rule.markupPct
+    }
+    retailPrice = Math.round(purchasePrice * (1 + markupPct / 100))
+  }
+
+  const normalized = {
+    normalized_oem: '',
+    normalized_supplier_article: normalizeOemValue(sku),
+  }
+
+  const { data: newProd, error } = await db
+    .from(TABLE)
+    .insert({
+      tenant_id: tenantId,
+      sku: normalizedSku,
+      name,
+      brand_id: brandId,
+      purchase_price: purchasePrice,
+      retail_price: retailPrice,
+      qty_on_hand: 0,
+      unit: 'шт',
+      status: 'active',
+      is_active: true,
+      ...normalized
+    })
+    .select('*, brand:brands(id,name), category:categories(id,name)')
+    .single()
+
+  if (error) {
+    throw new AppError('DB_ERROR', 'Не вдалося створити товар: ' + error.message, 500)
+  }
+
+  if (supplierId) {
+    const { error: codeErr } = await db
+      .from('product_supplier_codes')
+      .insert({
+        tenant_id: tenantId,
+        product_id: newProd.id,
+        supplier_id: supplierId,
+        supplier_code: sku,
+        supplier_price: purchasePrice,
+        normalized_supplier_article: normalizeOemValue(sku)
+      })
+
+    if (codeErr) {
+      logger.warn({ error: codeErr.message }, 'Failed to link supplier code to imported product')
+    }
+  }
+
+  await searchCache.clear()
+
+  return newProd
+}

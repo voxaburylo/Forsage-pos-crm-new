@@ -12,6 +12,27 @@ import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+function saveRecentItem(key: string, value: string) {
+  if (!value) return
+  try {
+    const raw = localStorage.getItem(key)
+    const items: string[] = raw ? JSON.parse(raw) : []
+    const next = [value, ...items.filter(i => i !== value)].slice(0, 5)
+    localStorage.setItem(key, JSON.stringify(next))
+  } catch (err) {
+    console.error('Failed to save to localStorage:', err)
+  }
+}
+
+function getRecentItems(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
 import { formatMoney } from '@/lib/utils'
 import type { Customer, CustomerVehicle } from '@/types/customer'
 
@@ -374,6 +395,7 @@ export default function OrderFormPage() {
       const res = await customerApi.quickCreate(newCustPhone.trim(), newCustName.trim())
       if (res.data) {
         toast.success('Клієнта створено!')
+        saveRecentItem('recent_phones', newCustPhone.trim())
         handleCustomerSelect(res.data)
       }
     } catch (err) {
@@ -414,6 +436,7 @@ export default function OrderFormPage() {
         // Reload vehicles list
         const vList = await customerVehiclesApi.list(customerId)
         setVehicles((vList as any).data ?? [])
+        if (newVehVin.trim()) saveRecentItem('recent_vins', newVehVin.trim())
         handleVehicleSelect(res.data)
       }
     } catch {
@@ -775,6 +798,7 @@ export default function OrderFormPage() {
                       placeholder="Вардан..."
                       required
                     />
+                    <div>
                     <Input
                       label="Телефон клієнта"
                       value={newCustPhone}
@@ -782,6 +806,22 @@ export default function OrderFormPage() {
                       placeholder="0973829369"
                       required
                     />
+                    {getRecentItems('recent_phones').length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                        <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Нещодавні:</span>
+                        {getRecentItems('recent_phones').map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setNewCustPhone(p)}
+                            className="text-[10px] bg-gray-100 hover:bg-yellow-100 text-gray-700 px-2 py-0.5 rounded-full transition font-mono border border-gray-200/50"
+                          >
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" size="sm" onClick={() => setShowAddCustomer(false)}>Скасувати</Button>
@@ -851,12 +891,29 @@ export default function OrderFormPage() {
                 <form onSubmit={handleCreateVehicle} className="border border-yellow-100 bg-yellow-50/20 rounded-xl p-4 space-y-4">
                   <h4 className="font-bold text-yellow-800 text-sm">Додавання автомобіля</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
                     <Input
                       label="VIN-код (17 знаків)"
                       value={newVehVin}
                       onChange={(e) => setNewVehVin(e.target.value.toUpperCase())}
                       placeholder="KNEDE241260000300"
                     />
+                    {getRecentItems('recent_vins').length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                        <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Нещодавні:</span>
+                        {getRecentItems('recent_vins').map((v) => (
+                          <button
+                            key={v}
+                            type="button"
+                            onClick={() => setNewVehVin(v)}
+                            className="text-[10px] bg-gray-100 hover:bg-yellow-100 text-gray-700 px-2 py-0.5 rounded-full transition font-mono border border-gray-200/50"
+                          >
+                            {v}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                     <Input
                       label="Марка / Бренд"
                       value={newVehBrand}

@@ -18,6 +18,7 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
     const supplierId = req.query.supplier_id as string || null
     const updateRetail = req.query.update_retail === 'true'
     const mode = (req.query.mode as 'replace' | 'add') || 'replace'
+    const warehouseName = (req.query.warehouse_name as string) || null
     
     // Декодуємо ім'я файлу з заголовків
     let filename = req.headers['x-filename'] as string || 'import.csv'
@@ -64,6 +65,7 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
           supplierId,
           updateRetail,
           mode,
+          warehouseName,
         }, {
           tenantId: req.user!.tenant_id
         })

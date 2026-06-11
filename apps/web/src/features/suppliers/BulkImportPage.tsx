@@ -29,6 +29,7 @@ export default function BulkImportPage() {
   const [supplierId, setSupplierId] = useState<string>('')
   const [updateRetail, setUpdateRetail] = useState<boolean>(true)
   const [mode, setMode] = useState<'replace' | 'add'>('replace')
+  const [warehouseName, setWarehouseName] = useState<string>('')
 
   // File State
   const [file, setFile] = useState<File | null>(null)
@@ -157,7 +158,8 @@ export default function BulkImportPage() {
         file, 
         supplierId ? supplierId : null, 
         updateRetail, 
-        mode
+        mode,
+        warehouseName.trim() || undefined
       )
       
       if (res.success) {
@@ -229,6 +231,23 @@ export default function BulkImportPage() {
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
+              </div>
+
+              {/* Warehouse / Source Selection */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wider">
+                  Склад / Джерело (напр. Склад Одеса, Основний склад)
+                </label>
+                <input 
+                  type="text"
+                  placeholder="Вкажіть назву складу або джерело"
+                  value={warehouseName}
+                  onChange={(e) => setWarehouseName(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  При заміні (replace) будуть видалені позиції тільки цього постачальника з цього конкретного складу.
+                </p>
               </div>
 
               {/* Mode Selection */}

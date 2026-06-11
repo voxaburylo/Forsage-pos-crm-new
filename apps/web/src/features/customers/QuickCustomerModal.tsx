@@ -12,6 +12,27 @@ interface Props {
 
 type Mode = 'search' | 'create'
 
+function saveRecentItem(key: string, value: string) {
+  if (!value) return
+  try {
+    const raw = localStorage.getItem(key)
+    const items: string[] = raw ? JSON.parse(raw) : []
+    const next = [value, ...items.filter(i => i !== value)].slice(0, 5)
+    localStorage.setItem(key, JSON.stringify(next))
+  } catch (err) {
+    console.error('Failed to save to localStorage:', err)
+  }
+}
+
+function getRecentItems(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
 export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
@@ -21,6 +42,7 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
   const [phone, setPhone] = useState('')
   const [name, setName]   = useState('')
   const [saving, setSaving] = useState(false)
+  const [recentPhones, setRecentPhones] = useState<string[]>([])
 
   // Reset state on open
   useEffect(() => {
@@ -30,6 +52,7 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
       setResults([])
       setPhone('')
       setName('')
+      setRecentPhones(getRecentItems('recent_phones'))
     }
   }, [open])
 
@@ -54,18 +77,20 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
   }, [query, mode])
 
   function selectCustomer(c: Customer) {
+    saveRecentItem('recent_phones', c.phone)
     onCreated(c)
     onClose()
   }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
-    if (!phone.trim()) { toast.error('Телефон обов\'язковий'); return }
-    if (!name.trim())  { toast.error('Ім\'я обов\'язкове'); return }
+    if (!phone.trim()) { toast.error("Телефон обов'язковий"); return }
+    if (!name.trim())  { toast.error("Ім'я обов'язкове"); return }
     setSaving(true)
     try {
       const { data } = await customerApi.quickCreate(phone, name)
       toast.success('Клієнта створено')
+      saveRecentItem('recent_phones', phone.trim())
       onCreated(data)
       onClose()
     } catch (err) {
@@ -104,6 +129,22 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
             placeholder="Пошук клієнта..."
             autoFocus
           />
+
+          {recentPhones.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-1 items-center">
+              <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Нещодавні:</span>
+              {recentPhones.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setQuery(p)}
+                  className="text-[10px] bg-gray-100 hover:bg-yellow-100 text-gray-700 px-2 py-0.5 rounded-full transition font-mono border border-gray-200/50"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
 
           {searching && (
             <p className="text-sm text-gray-400 text-center py-2">Пошук...</p>
@@ -166,15 +207,32 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
         </div>
       ) : (
         <form onSubmit={handleCreate} className="space-y-4">
-          <Input
-            label="Телефон *"
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="+380671234567"
-            autoFocus
-            required
-          />
+          <div>
+            <Input
+              label="Телефон *"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+380671234567"
+              autoFocus
+              required
+            />
+            {recentPhones.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Нещодавні:</span>
+                {recentPhones.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setPhone(p)}
+                    className="text-[10px] bg-gray-100 hover:bg-yellow-100 text-gray-700 px-2 py-0.5 rounded-full transition font-mono border border-gray-200/50"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <Input
             label="Ім'я *"
             value={name}

@@ -27,6 +27,7 @@ import inventoryRouter from './routes/inventory.js'
 import analyticsRouter from './routes/analytics.js'
 import expenseCategoriesRouter from './routes/expenseCategories.js'
 import barcodeSearchRouter from './routes/barcodeSearch.js'
+import hybridSearchRouter from './routes/hybridSearch.js'
 import waitlistRouter from './routes/waitlist.js'
 import customerOrdersRouter from './routes/customerOrders.js'
 import customerGroupsRouter from './routes/customerGroups.js'
@@ -121,6 +122,7 @@ app.use('/api/v1/inventory', inventoryRouter)
 app.use('/api/v1/analytics', analyticsRouter)
 app.use('/api/v1/expense-categories', expenseCategoriesRouter)
 app.use('/api/v1/search', barcodeSearchRouter)
+app.use('/api/v1/search', hybridSearchRouter)
 app.use('/api/v1/waitlist', waitlistRouter)
 app.use('/api/v1/customer-orders', customerOrdersRouter)
 app.use('/api/v1/reserves', reservesRouter)
