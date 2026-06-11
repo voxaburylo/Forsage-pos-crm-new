@@ -670,26 +670,7 @@ export default function POSPage() {
               </select>
             </div>
 
-            {/* Швидкі товари для мобільного меню (гамбургера) */}
-            <div className="mb-5">
-              <p className="text-gray-500 text-[10px] mb-2 uppercase tracking-wider font-semibold">Швидкі товари</p>
-              <div className="flex gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
-                {(quickItems.length > 0 ? quickItems : DEFAULT_QUICK_ITEMS).map((item) => (
-                  <button
-                    key={item.sku}
-                    onClick={() => {
-                      window.dispatchEvent(new CustomEvent('trigger-quick-item', { detail: { sku: item.sku } }));
-                      setMobileMenuOpen(false);
-                    }}
-                    className="flex-shrink-0 min-w-[76px] flex flex-col items-center justify-center py-2 px-1.5 rounded-xl text-white font-bold transition-all active:scale-[0.95] shadow-sm"
-                    style={{ background: item.color ?? '#2C2C2C' }}
-                  >
-                    <span className="text-xl mb-0.5 leading-none">{item.emoji ?? '📦'}</span>
-                    <span className="text-[10px] uppercase font-bold tracking-wide truncate max-w-full px-0.5">{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+            
 
             {/* Сітка дій */}
             <div className="grid grid-cols-4 gap-3 mb-4">
