@@ -1,6 +1,10 @@
 const { Client } = require('pg');
 
-const connStr = 'postgresql://postgres.zuhanlspejgizjbwbnda:80676462789voxa@aws-0-eu-west-1.pooler.supabase.com:5432/postgres';
+const connStr = process.env.DATABASE_URL;
+if (!connStr) {
+  console.error('Задайте DATABASE_URL (рядок підключення до Postgres) перед запуском.');
+  process.exit(1);
+}
 
 async function runTest() {
   const client = new Client({

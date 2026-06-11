@@ -52,8 +52,12 @@ async function run() {
     }
   });
 
-  // Соединение с БД
-  const dbConnectionString = "postgresql://postgres.zuhanlspejgizjbwbnda:80676462789voxa@aws-0-eu-west-1.pooler.supabase.com:6543/postgres";
+  // Соединение с БД (строка подключения — только из окружения, не хардкодить!)
+  const dbConnectionString = process.env.DATABASE_URL;
+  if (!dbConnectionString) {
+    console.error('Задайте DATABASE_URL перед запуском.');
+    process.exit(1);
+  }
   const dbClient = new Client({ connectionString: dbConnectionString });
   await dbClient.connect();
   console.log('✅ Успешное подключение к базе данных Supabase!');

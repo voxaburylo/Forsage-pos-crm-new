@@ -12,11 +12,16 @@ import { dirname, join } from 'path'
 const require = createRequire(import.meta.url)
 const XLSX = require('../apps/web/node_modules/xlsx/xlsx.js')
 
-const API_URL  = 'https://forsage-pos-crm-new.onrender.com'
-const PHONE    = '+380635823858'
-const PASSWORD = '80676462789'
-const FILE     = 'C:/Users/neo/Desktop/Новый2.xls'
+const API_URL  = process.env.CRM_API_URL ?? 'https://forsage-pos-crm-new.onrender.com'
+const PHONE    = process.env.CRM_PHONE
+const PASSWORD = process.env.CRM_PASSWORD
+const FILE     = process.env.IMPORT_FILE ?? 'C:/Users/neo/Desktop/Новый2.xls'
 const BATCH    = 300   // рядків за один запит
+
+if (!PHONE || !PASSWORD) {
+  console.error('Задайте CRM_PHONE і CRM_PASSWORD перед запуском.')
+  process.exit(1)
+}
 
 // ── 1. Логін ──────────────────────────────────────────────────────────────────
 async function login() {
