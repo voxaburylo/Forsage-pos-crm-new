@@ -40,6 +40,7 @@ export default function InvoiceFormPage() {
   const [showSearch, setShowSearch] = useState(false)
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
+  const [bulkMarkup, setBulkMarkup] = useState<number>(30)
 
   // Завантажуємо постачальників
   useEffect(() => {
@@ -130,23 +131,45 @@ export default function InvoiceFormPage() {
     })
   }
 
-  // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії
-  async function recalcRetail(onlyIndex?: number) {
+  // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
+  async function recalcRetail(onlyIndex?: number, forceUseGrid?: boolean) {
     const targets = onlyIndex !== undefined ? [onlyIndex] : items.map((_, i) => i)
     const updates = await Promise.all(targets.map(async (idx) => {
       const it = items[idx]
       if (!it || it.purchase_price <= 0) return null
       try {
-        const r = await pricingApi.autoRetail(it.purchase_price, it.category_id ?? undefined)
+        const categoryId = forceUseGrid ? undefined : (it.category_id ?? undefined)
+        const r = await pricingApi.autoRetail(it.purchase_price, categoryId)
         return r.data?.retail_price != null ? { idx, retail: r.data.retail_price } : null
       } catch { return null }
     }))
     const map = new Map(updates.filter(Boolean).map((u) => [u!.idx, u!.retail]))
     if (map.size === 0) {
-      if (onlyIndex === undefined) toast.warning('Наценки категорій не задані — задайте їх у «Ціноутворення»')
+      if (onlyIndex === undefined) {
+        toast.warning(forceUseGrid
+          ? 'Сітка націнок не налаштована або не повернула результат'
+          : 'Наценки категорій не задані — задайте їх у «Ціноутворення»'
+        )
+      }
       return
     }
     setItems((prev) => prev.map((it, i) => map.has(i) ? { ...it, retail_price: map.get(i)! } : it))
+  }
+
+  // Застосування фіксованої націнки на всю накладну
+  function applyBulkMarkup() {
+    if (bulkMarkup <= 0) {
+      toast.warning('Введіть відсоток націнки більше 0')
+      return
+    }
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.purchase_price <= 0) return it
+        const calculatedRetail = Math.round(it.purchase_price * (1 + bulkMarkup / 100))
+        return { ...it, retail_price: calculatedRetail }
+      })
+    )
+    toast.success(`Встановлено націнку ${bulkMarkup}% для всіх товарів накладної`)
   }
 
   function removeItem(index: number) {
@@ -239,15 +262,39 @@ export default function InvoiceFormPage() {
 
         {/* Позиції */}
         <Card padding="none" className="mb-6">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-            <span className="text-sm font-semibold text-gray-800">Позиції ({items.length})</span>
+          <div className="px-4 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <span className="text-sm font-semibold text-gray-800 shrink-0">Позиції ({items.length})</span>
             {!isEdit && (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {items.length > 0 && (
-                  <Button type="button" size="sm" variant="secondary"
-                    onClick={() => recalcRetail()} title="Перерахувати роздрібні ціни за наценкою категорій">
-                    🔄 Роздрібні за наценкою
-                  </Button>
+                  <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1 flex-wrap">
+                    <span className="text-[10px] font-bold text-gray-400 uppercase mr-1">Націнка:</span>
+                    <button type="button" onClick={() => recalcRetail(undefined, true)}
+                      className="px-2 py-1 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-700 text-xs font-semibold rounded-lg transition-colors border border-yellow-500/20"
+                      title="Розрахувати роздрібні ціни за сіткою націнок (від-до з налаштувань)">
+                      📈 За сіткою
+                    </button>
+                    <button type="button" onClick={() => recalcRetail()}
+                      className="px-2 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-700 text-xs font-semibold rounded-lg transition-colors border border-blue-500/20"
+                      title="Розрахувати роздрібні ціни за націнками категорій">
+                      🗂️ За категоріями
+                    </button>
+                    <div className="w-px h-4 bg-gray-300 mx-1" />
+                    <input
+                      type="number"
+                      min="0"
+                      value={bulkMarkup || ''}
+                      onChange={(e) => setBulkMarkup(Number(e.target.value) || 0)}
+                      className="w-12 border border-gray-200 rounded px-1.5 py-0.5 text-xs text-right focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white"
+                      title="Ручна націнка на всю накладну в %"
+                      placeholder="%"
+                    />
+                    <button type="button" onClick={applyBulkMarkup}
+                      className="px-2 py-1 bg-gray-700 hover:bg-gray-650 text-white text-xs font-medium rounded-lg transition-colors"
+                      title="Націнити всі позиції на вказаний відсоток">
+                      Встановити %
+                    </button>
+                  </div>
                 )}
                 <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
                   onClick={() => setShowSearch(!showSearch)}>
@@ -282,8 +329,9 @@ export default function InvoiceFormPage() {
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
                 <th className="text-left px-4 py-2">Товар</th>
                 <th className="text-left px-2 py-2 w-28">Комірка</th>
-                <th className="text-right px-2 py-2 w-20">К-сть</th>
+                <th className="text-right px-2 py-2 w-16">К-сть</th>
                 <th className="text-right px-2 py-2 w-24">Закупка, грн</th>
+                <th className="text-right px-2 py-2 w-24 text-right">Націнка</th>
                 <th className="text-right px-2 py-2 w-28">Розн. ціна, грн</th>
                 <th className="text-right px-4 py-2 w-24">Сума</th>
                 <th className="w-10 px-2 py-2"></th>
@@ -328,16 +376,29 @@ export default function InvoiceFormPage() {
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
+                    <div className="flex items-center justify-end gap-1">
+                      <input
+                        type="number"
+                        min="-100"
+                        value={item.purchase_price > 0 ? Math.round((item.retail_price / item.purchase_price - 1) * 100) : 0}
+                        onChange={(e) => {
+                          const pct = Number(e.target.value) || 0
+                          const retail = Math.round(item.purchase_price * (1 + pct / 100))
+                          updateItem(i, 'retail_price', retail)
+                        }}
+                        disabled={isEdit || item.purchase_price <= 0}
+                        placeholder="0"
+                        className="w-16 text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
+                      />
+                      <span className="text-gray-400 text-xs font-semibold">%</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2">
                     <input type="number" step="0.01" min="0"
                       value={(item.retail_price / 100).toFixed(2)}
                       onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
                       disabled={isEdit}
-                      className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
-                    {item.purchase_price > 0 && item.retail_price > 0 && (
-                      <div className="text-[10px] text-gray-400 text-right mt-0.5">
-                        +{Math.round((item.retail_price / item.purchase_price - 1) * 100)}%
-                      </div>
-                    )}
+                      className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
                   </td>
                   <td className="px-4 py-2 text-right font-mono">{formatMoney(item.total)}</td>
                   <td className="px-2 py-2">
@@ -350,12 +411,12 @@ export default function InvoiceFormPage() {
                 )
               })}
               {items.length === 0 && (
-                <tr><td colSpan={7} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
+                <tr><td colSpan={8} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}
             </tbody>
             <tfoot>
               <tr className="font-semibold bg-gray-50">
-                <td colSpan={5} className="px-4 py-2 text-right">Всього:</td>
+                <td colSpan={6} className="px-4 py-2 text-right">Всього:</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(total)}</td>
                 <td></td>
               </tr>
