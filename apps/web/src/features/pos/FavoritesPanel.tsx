@@ -31,7 +31,7 @@ export const DEFAULT_QUICK_ITEMS: QuickItemConfig[] = [
   { sku: 'PACKET', label: 'ПАКЕТ',     emoji: '🛍', price: 500, color: '#075985', type: 'static', children: [] },
 ]
 
-export function FavoritesPanel() {
+export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: () => void }) {
   const store = usePOSStore()
   const [items, setItems]             = useState<QuickItemConfig[]>([])
   const [cam13BasePrice, setCam13]    = useState<number>(0)
@@ -167,45 +167,54 @@ export function FavoritesPanel() {
 
   return (
     <>
-      {/* ─── Нижня панель — прихована на мобільному (md:block) ─────── */}
-      <div className="hidden md:block border-t-2 border-gray-700 bg-[#0D0D0D] shrink-0">
-        <div className="flex items-stretch">
-          {items.map((item) => {
-            const price       = getPrice(item)
-            const isFood      = item.type === 'food_popup'
-            const hasChildren = !isFood && (item.children?.length ?? 0) > 0
+      {/* ─── Burger Menu Quick Access Modal ─────── */}
+      {open && (
+        <div className="fixed inset-0 z-40 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
+          <div className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl animate-slide-up pb-safe" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800">
+              <span className="text-white font-bold text-lg">🍔 Швидкий доступ</span>
+              <button onClick={onClose} className="text-gray-500 text-2xl hover:text-white w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-800">&times;</button>
+            </div>
+            <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 max-h-[60vh] overflow-y-auto">
+              {items.map((item) => {
+                const price       = getPrice(item)
+                const isFood      = item.type === 'food_popup'
+                const hasChildren = !isFood && (item.children?.length ?? 0) > 0
 
-            return (
-              <button key={item.sku}
-                onClick={() => {
-                  if (isFood) {
-                    setFoodProds([])
-                    setFoodItem(item)
-                  } else if (hasChildren) {
-                    setPopupItem(popupItem?.sku === item.sku ? null : item)
-                  } else {
-                    addToReceipt(item.sku, item.label, price)
-                  }
-                }}
-                className="flex-1 flex flex-col items-center justify-center text-white font-bold transition-all active:scale-[0.95] hover:brightness-125 border-r-2 border-black/30 last:border-r-0 relative gap-1"
-                style={{ background: item.color ?? '#2C2C2C', minHeight: 80, minWidth: 0 }}
-              >
-                <span className="text-2xl leading-none drop-shadow">{item.emoji ?? '📦'}</span>
-                <span className="text-xs font-bold leading-tight text-center px-1 tracking-wide uppercase">{item.label}</span>
-                {!isFood && (
-                  hasChildren ? (
-                    <span className="text-[10px] font-semibold text-white/70 flex items-center gap-0.5">Варіанти ▾</span>
-                  ) : price > 0 ? (
-                    <span className="text-xs font-mono text-white/80 font-semibold">
-                      {kopecksToHryvnia(price).replace('.00', '')} ₴
-                    </span>
-                  ) : null
-                )}
-              </button>
-            )
-          })}
+                return (
+                  <button key={item.sku}
+                    onClick={() => {
+                      if (isFood) {
+                        setFoodProds([])
+                        setFoodItem(item)
+                      } else if (hasChildren) {
+                        setPopupItem(popupItem?.sku === item.sku ? null : item)
+                      } else {
+                        addToReceipt(item.sku, item.label, price)
+                        onClose?.()
+                      }
+                    }}
+                    className="flex flex-col items-center justify-center text-white font-bold transition-all active:scale-[0.95] hover:brightness-125 border border-black/30 rounded-2xl relative gap-1 p-2"
+                    style={{ background: item.color ?? '#2C2C2C', minHeight: 80, minWidth: 0 }}
+                  >
+                    <span className="text-2xl leading-none drop-shadow">{item.emoji ?? '📦'}</span>
+                    <span className="text-xs font-bold leading-tight text-center px-1 tracking-wide uppercase">{item.label}</span>
+                    {!isFood && (
+                      hasChildren ? (
+                        <span className="text-[10px] font-semibold text-white/70 flex items-center gap-0.5">Варіанти ▾</span>
+                      ) : price > 0 ? (
+                        <span className="text-xs font-mono text-white/80 font-semibold">
+                          {kopecksToHryvnia(price).replace('.00', '')} ₴
+                        </span>
+                      ) : null
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ─── Попап варіантів (static з children) ──────────────────── */}
       {popupItem && (popupItem.children?.length ?? 0) > 0 && (

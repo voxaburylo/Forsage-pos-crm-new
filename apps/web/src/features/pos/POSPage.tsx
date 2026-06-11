@@ -152,6 +152,7 @@ export default function POSPage() {
   const shift = store.currentShift
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [quickOpen, setQuickOpen] = useState(false)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
   const [quickItems, setQuickItems] = useState<any[]>([])
 
@@ -541,6 +542,11 @@ export default function POSPage() {
 
         {/* Desktop права частина — всі кнопки */}
         <div className="hidden md:flex items-center gap-0.5">
+          <button onClick={() => setQuickOpen(true)}
+            className="h-8 md:h-10 px-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 font-bold rounded-lg transition-colors flex items-center gap-2 border border-indigo-600/30"
+            title="Швидкий доступ">
+            🍔 Товари
+          </button>
           {lastSale && (
             <button onClick={printReceipt}
               className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
@@ -751,11 +757,11 @@ export default function POSPage() {
       {/* Mobile tabs — тільки на телефоні (тепер знизу з відступом safe-area) */}
       <div className="md:hidden flex border-t border-gray-800 shrink-0 bg-[#0D0D0D] pb-safe">
         <button
-          onClick={() => setMobileTab('search')}
+          onClick={() => { setMobileTab('search'); setQuickOpen(true); }}
           className={`flex-1 py-2 text-[11px] font-semibold transition-all flex flex-col items-center justify-center ${mobileTab === 'search' ? 'text-yellow-400 bg-gray-900/40' : 'text-gray-500'}`}
         >
-          <span className="text-lg mb-0.5">🔍</span>
-          <span>Пошук</span>
+          <span className="text-lg mb-0.5">🍔</span>
+          <span>Меню</span>
         </button>
         
         <button
@@ -796,7 +802,7 @@ export default function POSPage() {
         </button>
       </div>
 
-      <FavoritesPanel />
+      <FavoritesPanel open={quickOpen} onClose={() => setQuickOpen(false)} />
 
       {/* Модалки */}
       <ShiftCloseModal
