@@ -588,7 +588,16 @@ export default function OrderFormPage() {
         } else {
           // If order prepayment is 0, backend creates it as 'lead'. Let's promote it to 'new' since manager explicitly checked it out as Order.
           if (finalPrepayment === 0) {
-            await orderApi.updateStatus(newOrder.id, 'new')
+            try {
+              await orderApi.updateStatus(newOrder.id, 'new')
+            } catch (err) {
+              // Активація не вдалась (наприклад, нема залишку) — лід уже створено.
+              // Ведемо користувача на нього, інакше повторний клік наплодить дублі.
+              const msg = err instanceof Error ? err.message : 'Не вдалося активувати замовлення'
+              toast.warning(`${msg}. Збережено як чернетку — виправте і активуйте з картки замовлення.`)
+              navigate('/orders/' + newOrder.id)
+              return
+            }
           }
           toast.success('Замовлення оформлено!')
           navigate('/orders/' + newOrder.id)

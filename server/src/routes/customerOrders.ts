@@ -283,8 +283,23 @@ router.post('/', async (req, res, next) => {
         p_user_id: req.user!.id
       })
       if (reserveErr) {
+        // Не лишаємо замовлення-привид: без передоплати — повний відкат (items
+        // підуть каскадом), з передоплатою — деградація в лід, щоб не втратити
+        // слід грошей (термінал/каса вже провели платіж)
+        const hasPrepayment = (order.total_paid ?? 0) > 0 || input.prepayment > 0
+        if (hasPrepayment) {
+          await db.from('customer_orders').update({ status: 'lead' }).eq('id', order.id)
+        } else {
+          await db.from('customer_orders').delete().eq('id', order.id)
+        }
         if (reserveErr.message.includes('INSUFFICIENT_STOCK')) {
-          throw new AppError('INSUFFICIENT_STOCK', reserveErr.message, 422)
+          throw new AppError(
+            'INSUFFICIENT_STOCK',
+            hasPrepayment
+              ? `${reserveErr.message}. Замовлення збережено як лід (передоплату враховано).`
+              : reserveErr.message,
+            422
+          )
         }
         throw new AppError('DB_ERROR', `Failed to reserve order items: ${reserveErr.message}`, 500)
       }
