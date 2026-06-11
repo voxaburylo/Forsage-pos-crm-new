@@ -28,6 +28,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const [analogsLoading, setAnalogsLoading] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
+  const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null)
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
 
@@ -279,6 +280,16 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
                 style={{ minHeight: 80 }}
               >
                 <div className="flex items-start justify-between gap-4">
+                  {p.photo_url && (
+                    <div className="shrink-0 relative self-center" onClick={(e) => e.stopPropagation()}>
+                      <img
+                        src={p.photo_url}
+                        alt={p.name}
+                        onClick={() => setZoomedPhoto(p.photo_url)}
+                        className="w-12 h-12 md:w-14 md:h-14 rounded-lg object-cover border border-gray-700 cursor-zoom-in hover:border-yellow-400 transition-all hover:scale-105 active:scale-95 shadow-sm"
+                      />
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-mono text-yellow-400 text-xs">{p.sku}</span>
@@ -371,6 +382,16 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
                             <button key={a.id} onClick={(e) => { e.stopPropagation(); addToReceipt(a); setQuery(''); setResults([]) }}
                               className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-yellow-500/10 transition-colors active:scale-[0.98] border border-gray-800/45 hover:border-yellow-500/30 bg-gray-950/20"
                               style={{ minHeight: 48 }}>
+                              {a.photo_url && (
+                                <div className="shrink-0 mr-2" onClick={(e) => e.stopPropagation()}>
+                                  <img
+                                    src={a.photo_url}
+                                    alt={a.name}
+                                    onClick={() => setZoomedPhoto(a.photo_url)}
+                                    className="w-8 h-8 rounded-md object-cover border border-gray-800 cursor-zoom-in hover:scale-105 active:scale-95"
+                                  />
+                                </div>
+                              )}
                               <div className="flex-1 min-w-0 text-left">
                                 <p className="text-white text-xs font-medium truncate">{a.name}</p>
                                 <p className="text-gray-500 text-[10px]">{a.sku} {a.brand && `• ${a.brand.name}`}</p>
@@ -393,6 +414,27 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           )
         })}
       </div>
+      {/* Лайтбокс для збільшення фотографії (ненав'язливий і простий) */}
+      {zoomedPhoto && (
+        <div 
+          className="fixed inset-0 z-[150] bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
+          onClick={() => setZoomedPhoto(null)}
+        >
+          <div className="relative max-w-full max-h-full flex items-center justify-center">
+            <img 
+              src={zoomedPhoto} 
+              alt="Збільшене зображення товару" 
+              className="max-w-[90vw] max-h-[85vh] rounded-2xl border border-gray-800 shadow-2xl object-contain animate-slide-up"
+            />
+            <button 
+              onClick={() => setZoomedPhoto(null)}
+              className="absolute -top-12 right-0 text-white/70 hover:text-white bg-gray-800/60 hover:bg-gray-700/80 w-10 h-10 rounded-full flex items-center justify-center text-xl transition-all"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 })
