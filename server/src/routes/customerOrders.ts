@@ -849,6 +849,28 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
       }
     }
 
+    // Скасування/відновлення позиції: перераховуємо суму замовлення по активних
+    // позиціях і оновлюємо складські резерви (скасована позиція не тримає сток)
+    if (parsed.data.item_status === 'canceled' || parsed.data.item_status === 'pending') {
+      const { data: allItems } = await db
+        .from('customer_order_items')
+        .select('item_status, sell_price, qty, core_deposit_amount')
+        .eq('order_id', req.params.id)
+      if (allItems) {
+        const newTotal = allItems
+          .filter((i) => i.item_status !== 'canceled')
+          .reduce((s, i) => s + i.sell_price * i.qty + (i.core_deposit_amount ?? 0) * i.qty, 0)
+        await db.from('customer_orders').update({ total_amount: newTotal }).eq('id', req.params.id)
+      }
+      await db.rpc('reserve_order_items', {
+        p_tenant_id: req.user!.tenant_id,
+        p_order_id: req.params.id,
+        p_user_id: req.user!.id,
+      }).then(({ error: resErr }) => {
+        if (resErr) logger.error({ error: resErr.message, orderId: req.params.id }, 'Failed to refresh reserves after item status change')
+      })
+    }
+
     // Авто-оновлення загального статусу
     await updateOrderStatus(req.params.id, req.user!.tenant_id, req.user!.id)
 

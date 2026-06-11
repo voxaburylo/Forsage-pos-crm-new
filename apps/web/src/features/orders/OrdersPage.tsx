@@ -78,11 +78,11 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ReactNode }> = 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: string; label: string; icon: string }>> = {
   pending: [
     { status: 'ordered',  label: 'Замовити', icon: '📥' },
-    { status: 'canceled', label: 'Скасувати', icon: '❌' },
+    { status: 'canceled', label: 'Скасувати позицію', icon: '❌' },
   ],
   ordered: [
     { status: 'arrived',  label: 'Приїхало',  icon: '📦' },
-    { status: 'canceled', label: 'Скасувати', icon: '❌' },
+    { status: 'canceled', label: 'Скасувати позицію', icon: '❌' },
   ],
   arrived: [
     { status: 'handed', label: 'Видано', icon: '✅' },
@@ -119,6 +119,8 @@ interface OrderItem {
   expected_date: string | null
   variants?: Array<{ brand: string; price: number; is_recommended: boolean }>
   is_draft_note?: boolean
+  core_deposit_amount?: number
+  core_return_status?: string
 }
 
 interface CustomerOrder {
@@ -2002,6 +2004,10 @@ function OrderInlineView({
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
   const canCancel = !['completed', 'canceled'].includes(order.status)
   const overdue = order.pickup_deadline_at && new Date(order.pickup_deadline_at) < now
+  const coreDepositTotal = order.items
+    .filter((i) => i.item_status !== 'canceled')
+    .reduce((s, i) => s + (i.core_deposit_amount ?? 0) * i.qty, 0)
+  const allItemsCanceled = order.items.length > 0 && order.items.every((i) => i.item_status === 'canceled')
 
   return (
     <div className="flex-1 overflow-y-auto p-3 md:p-6 pb-safe">
@@ -2041,10 +2047,18 @@ function OrderInlineView({
             </div>
             <div className="text-right shrink-0 space-y-1">
               <div className="text-2xl font-bold text-gray-900">{formatMoney(order.total_amount)}</div>
+              {coreDepositTotal > 0 && (
+                <div className="text-xs text-yellow-600 font-medium">у т.ч. застава: {formatMoney(coreDepositTotal)}</div>
+              )}
               {totalPaid > 0 && <div className="text-xs text-green-600">Сплачено: {formatMoney(totalPaid)}</div>}
               {remaining > 0 && !allHanded && <div className="text-xs text-orange-600">Залишок: {formatMoney(remaining)}</div>}
             </div>
           </div>
+          {allItemsCanceled && canCancel && (
+            <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 text-sm text-red-700 font-medium">
+              ⚠️ Всі позиції скасовані — скасуйте замовлення або додайте нові позиції через редагування.
+            </div>
+          )}
         </Card>
 
         {/* кнопки дій */}
@@ -2100,7 +2114,12 @@ function OrderInlineView({
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 md:gap-2 shrink-0 ml-0 sm:ml-2 flex-wrap">
-                      <span className="text-gray-600 text-xs whitespace-nowrap">{item.qty} × {formatMoney(item.sell_price)}</span>
+                      <span className="text-gray-600 text-xs whitespace-nowrap">
+                        {item.qty} × {formatMoney(item.sell_price)}
+                        {(item.core_deposit_amount ?? 0) > 0 && item.item_status !== 'canceled' && (
+                          <span className="text-yellow-600"> +{formatMoney((item.core_deposit_amount ?? 0) * item.qty)} застава</span>
+                        )}
+                      </span>
                       {actions?.map((a) => (
                         <button key={a.status} onClick={() => onItemStatus(item.id, a.status)}
                           className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-gray-200 hover:bg-gray-100 transition-colors">
