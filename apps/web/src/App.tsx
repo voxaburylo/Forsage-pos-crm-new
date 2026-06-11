@@ -64,6 +64,7 @@ const OrderDetailPage      = lazyWithRetry(() => import('@/features/orders/Order
 const QuoteEditorPage      = lazyWithRetry(() => import('@/features/quotes/QuoteEditorPage'))
 const CashflowPage         = lazyWithRetry(() => import('@/features/cashflow/CashflowPage'))
 const ReservesList         = lazyWithRetry(() => import('@/features/inventory/ReservesList'))
+const CoreReturnsPage      = lazyWithRetry(() => import('@/features/inventory/CoreReturnsPage'))
 const WarehousePicking     = lazyWithRetry(() => import('@/features/inventory/WarehousePicking'))
 const WarehouseMovementPage = lazyWithRetry(() => import('@/features/inventory/WarehouseMovementPage'))
 const InboxPage             = lazyWithRetry(() => import('@/features/notifications/InboxPage'))
@@ -139,6 +140,7 @@ function App() {
           <Route path="/inventory/picking"       element={<ProtectedRoute><WarehousePicking /></ProtectedRoute>} />
           <Route path="/inventory/:id"          element={<ProtectedRoute><ActiveSession /></ProtectedRoute>} />
           <Route path="/inventory/reserves"      element={<ProtectedRoute><ReservesList /></ProtectedRoute>} />
+          <Route path="/inventory/core-returns" element={<ProtectedRoute><CoreReturnsPage /></ProtectedRoute>} />
           <Route path="/inventory/movements"     element={<ProtectedRoute><WarehouseMovementPage /></ProtectedRoute>} />
           <Route path="/inventory/writeoffs"     element={<ProtectedRoute><WriteoffsPage /></ProtectedRoute>} />
           <Route path="/inventory/writeoffs/new" element={<ProtectedRoute><WriteoffFormPage /></ProtectedRoute>} />

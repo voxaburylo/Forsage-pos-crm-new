@@ -15,6 +15,8 @@ interface OrderItem {
   sell_price: number
   qty: number
   item_status: string
+  core_deposit_amount?: number
+  core_return_status?: string
 }
 
 interface ReadyOrder {
@@ -81,6 +83,8 @@ export function ReadyOrdersPanel() {
         unitPrice:  i.sell_price,
         discount:   0,
         qtyOnHand:  999,
+        requiresCoreReturn: !!((i.core_deposit_amount ?? 0) > 0 || (i.core_return_status && i.core_return_status !== 'none')),
+        coreDepositAmount: i.core_deposit_amount ?? 0,
       }
       store.addItem(posItem)
     }

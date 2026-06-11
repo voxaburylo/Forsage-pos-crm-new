@@ -115,7 +115,7 @@ export async function getFavorites(_req: Request, res: Response, next: NextFunct
   try {
     const { data, error } = await db
       .from('products')
-      .select('id, sku, name, retail_price, unit, qty_on_hand, storage_bin, brand:brands(name)')
+      .select('id, sku, name, retail_price, unit, qty_on_hand, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
       .eq('is_favorite', true)
       .eq('is_active', true)
       .is('deleted_at', null)

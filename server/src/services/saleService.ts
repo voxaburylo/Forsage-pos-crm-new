@@ -220,7 +220,7 @@ async function executeSaleTransaction(
 
       // Select and lock row
       const prodRes = await client.query(
-        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price FROM products WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price, requires_core_return, core_deposit_amount FROM products WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
         [item.product_id]
       )
       if (prodRes.rowCount === 0) {
@@ -231,8 +231,20 @@ async function executeSaleTransaction(
       const qtyOnHand = parseFloat(product.qty_on_hand)
       const isService = !!product.is_service
       const costPrice = parseInt(product.cost_price, 10)
+      const requiresCoreReturn = !!product.requires_core_return
+      const coreDepositAmount = parseInt(product.core_deposit_amount, 10) || 0
 
-      productsInfo.set(item.product_id, { qty_on_hand: qtyOnHand, is_service: isService, cost_price: costPrice })
+      // Add to subtotal: item price + core deposit (if applicable)
+      const itemCoreDeposit = requiresCoreReturn ? coreDepositAmount : 0
+      subtotal += (itemCoreDeposit * item.qty)
+
+      productsInfo.set(item.product_id, {
+        qty_on_hand: qtyOnHand,
+        is_service: isService,
+        cost_price: costPrice,
+        requires_core_return: requiresCoreReturn,
+        core_deposit_amount: coreDepositAmount
+      })
 
       if (!isService) {
         const reserveRes = await client.query(
@@ -308,11 +320,15 @@ async function executeSaleTransaction(
     // 6. Insert items & update product stock
     for (const item of input.items) {
       const pInfo = productsInfo.get(item.product_id)
-      const itemTotal = item.unit_price * item.qty - item.discount
+      const requiresCore = pInfo.requires_core_return
+      const coreDeposit = requiresCore ? pInfo.core_deposit_amount : 0
+      const coreStatus = requiresCore ? 'pending' : 'none'
+      
+      const itemTotal = item.unit_price * item.qty - item.discount + (coreDeposit * item.qty)
 
       await client.query(
-        `INSERT INTO sale_items (tenant_id, sale_id, product_id, qty, unit_price, discount, total, cost_price)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO sale_items (tenant_id, sale_id, product_id, qty, unit_price, discount, total, cost_price, core_deposit_amount, core_return_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           tenantId,
           sale.id,
@@ -321,7 +337,9 @@ async function executeSaleTransaction(
           item.unit_price,
           item.discount,
           itemTotal,
-          pInfo.cost_price
+          pInfo.cost_price,
+          coreDeposit,
+          coreStatus
         ]
       )
 
@@ -503,7 +521,24 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     const subtotalItems = input.items.reduce((s, i) => s + i.unit_price * i.qty, 0)
     const discountedTotal = Math.max(0, subtotalItems - input.discount)
 
-    let { cashAmount, cardAmount, bonusesEarned } = calculateSaleAmounts(input, discountedTotal)
+    // Застава за старі деталі: входить у суму до оплати (готівка/карта/термінал),
+    // але НЕ в базу нарахування бонусів — це не виручка, а поворотний депозит
+    let coreDepositTotal = 0
+    const saleProductIds = input.items.map((i) => i.product_id)
+    if (saleProductIds.length > 0) {
+      const { data: coreProds } = await db
+        .from('products')
+        .select('id, requires_core_return, core_deposit_amount')
+        .in('id', saleProductIds)
+      const coreMap = new Map((coreProds ?? []).map((p: any) => [p.id, p]))
+      coreDepositTotal = input.items.reduce((s, i) => {
+        const p = coreMap.get(i.product_id)
+        return s + (p?.requires_core_return ? (p.core_deposit_amount ?? 0) * i.qty : 0)
+      }, 0)
+    }
+    const paymentTotal = discountedTotal + coreDepositTotal
+
+    let { cashAmount, cardAmount, bonusesEarned } = calculateSaleAmounts(input, paymentTotal)
 
     if (useBonusAtomic && input.customer_id && input.payment_method !== 'debt') {
       const { getSettings } = await import('./loyaltyService.js')

@@ -805,6 +805,8 @@ export default function POSPage() {
               unitPrice: item.unit_price,
               discount: item.discount,
               qtyOnHand: 0,
+              requiresCoreReturn: !!item.core_deposit_amount && item.core_deposit_amount > 0,
+              coreDepositAmount: item.core_deposit_amount ?? 0,
             })
           })
           if (sale.customer) {

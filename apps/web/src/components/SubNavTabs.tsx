@@ -107,7 +107,8 @@ export const INVENTORY_TABS = [
   { to: '/inventory/writeoffs', label: 'Списання' },
   { to: '/internal', label: 'Внутр. відпуск' },
   { to: '/inventory/movements', label: 'Переміщення' },
-  { to: '/inventory/reserves', label: 'Резерви товарів' }
+  { to: '/inventory/reserves', label: 'Резерви товарів' },
+  { to: '/inventory/core-returns', label: 'Повернення серцевин' }
 ]
 
 export const ANALYTICS_TABS = [

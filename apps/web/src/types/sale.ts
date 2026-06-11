@@ -6,6 +6,8 @@ export interface SaleItem {
   discount: number     // копійки
   total: number        // копійки
   product?: { id: string; sku: string; name: string; unit: string }
+  core_deposit_amount?: number
+  core_return_status?: string
 }
 
 export interface Sale {

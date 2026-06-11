@@ -297,8 +297,18 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                 >
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <div className="flex-1 min-w-0">
-                      <p className="text-white text-sm leading-tight truncate font-medium">{item.name}</p>
-                      <p className="text-gray-500 text-xs">{kopecksToHryvnia(item.unitPrice)} ₴ / {item.unit}</p>
+                      <p className="text-white text-sm leading-tight truncate font-medium flex items-center gap-1.5">
+                        {item.name}
+                        {item.requiresCoreReturn && (
+                          <span className="shrink-0 bg-yellow-950 border border-yellow-850 text-yellow-500 text-[8px] px-1 py-0.5 rounded font-bold uppercase tracking-wider">
+                            ♻️ Обмін
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-gray-500 text-xs mt-0.5">
+                        {kopecksToHryvnia(item.unitPrice)} ₴ / {item.unit}
+                        {item.requiresCoreReturn && ` • Застава: +${kopecksToHryvnia(item.coreDepositAmount ?? 0)} ₴`}
+                      </p>
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); store.removeItem(item.productId) }}
@@ -392,6 +402,22 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                 <span>-{formatMoney(store.totalDiscount)}</span>
               </div>
             )}
+            {store.totalCoreDeposit > 0 && (
+              <div className="flex justify-between text-yellow-500 font-medium">
+                <span>Застава за старі деталі:</span>
+                <span>+{formatMoney(store.totalCoreDeposit)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {store.totalCoreDeposit > 0 && (
+          <div className="p-3 bg-yellow-950/25 border border-yellow-800/40 rounded-xl flex items-start gap-2.5 text-yellow-500 text-xs mt-2">
+            <span className="mt-0.5 text-sm">⚠️</span>
+            <div>
+              <p className="font-bold">Необхідно обміняти старі деталі!</p>
+              <p className="text-[10px] text-yellow-600/90 leading-tight mt-0.5">Прийміть стару деталь від клієнта або візьміть заставну вартість.</p>
+            </div>
           </div>
         )}
 

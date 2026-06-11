@@ -22,6 +22,8 @@ interface SearchResult {
   unit: string
   storage_bin: string | null
   brand: { name: string } | null
+  requires_core_return?: boolean
+  core_deposit_amount?: number
   /** Яке поле знайшло товар */
   match_field: string
   /** Значення яке співпало */
@@ -171,7 +173,7 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
 
   const { data, error } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, oem_number, retail_price, qty_on_hand, unit, storage_bin, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, oem_number, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
     .is('deleted_at', null)
     .eq('is_active', true)
     .or(orString)
@@ -217,7 +219,7 @@ async function supplierCodeSearch(code: string, limit: number): Promise<SearchRe
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', productIds)
@@ -263,7 +265,7 @@ async function aliasSearch(terms: string[], originalQ: string, limit: number): P
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', productIds)
@@ -295,7 +297,7 @@ async function barcodeSearch(barcode: string, limit: number): Promise<SearchResu
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', productIds)
@@ -318,7 +320,7 @@ async function additionalBarcodesSearch(barcode: string, limit: number): Promise
   try {
     const { data, error } = await db
       .from(PRODUCTS_TABLE)
-      .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, brand:brands(name)')
+      .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
       .is('deleted_at', null)
       .eq('is_active', true)
       .contains('additional_barcodes', JSON.stringify([barcode]))
@@ -369,7 +371,7 @@ async function vinSearch(vin: string, limit: number): Promise<SearchResult[]> {
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', ids)

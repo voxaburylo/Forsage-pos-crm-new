@@ -23,6 +23,8 @@ export interface Product {
   category?: { id: string; name: string } | null
   qty_reserved?: number
   qty_available?: number
+  requires_core_return?: boolean
+  core_deposit_amount?: number
 }
 
 export interface ProductFormData {
@@ -42,6 +44,8 @@ export interface ProductFormData {
   is_favorite: boolean
   photo_url?: string | null
   specs: Record<string, string>   // технічні характеристики
+  requires_core_return?: boolean
+  core_deposit_amount?: string    // гривні (рядок форми)
 }
 
 export interface PaginatedProducts {

@@ -9,6 +9,7 @@ import { notifyStatusUpdate } from '../services/telegramBot.js'
 import { calculateAndRecordCommission } from '../services/commissionService.js'
 import { getTerminalAdapter, getFiscalAdapter } from '../services/integrations/adapterFactory.js'
 import { notifyWaitlistCustomers } from './waitlist.js'
+import { createSupplierPOsForOrder } from '../services/supplierService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -58,7 +59,19 @@ router.post('/', async (req, res, next) => {
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
     const input = parsed.data
-    const totalAmount = input.items.reduce((s, i) => s + i.sell_price * i.qty, 0)
+    
+    // Отримуємо інформацію про продукти для застав
+    const productIds = input.items.map(i => i.product_id).filter(Boolean) as string[]
+    const { data: prods } = productIds.length > 0
+      ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price').in('id', productIds)
+      : { data: [] }
+    const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
+
+    const totalAmount = input.items.reduce((s, i) => {
+      const prodData = i.product_id ? prodMap.get(i.product_id) : null
+      const coreDeposit = prodData?.requires_core_return ? (prodData.core_deposit_amount ?? 0) : 0
+      return s + (i.sell_price * i.qty) + (coreDeposit * i.qty)
+    }, 0)
 
     // Термінальна перевірка передоплати ПЕРЕД створенням замовлення в БД (Оновлено P2 Fix 13)
     let bankAuthCode: string | null = null
@@ -97,22 +110,30 @@ router.post('/', async (req, res, next) => {
     if (orderErr || !order) throw new AppError('DB_ERROR', orderErr?.message ?? 'Create failed', 500)
 
     // Додаємо позиції (підтримка variants для чернеток)
-    const itemsToInsert = input.items.map((item) => ({
-      order_id: order.id,
-      product_id: item.product_id ?? null,
-      sku: item.sku ?? null,
-      name: item.name,
-      supplier_id: item.supplier_id ?? null,
-      source_type: item.source_type,
-      item_type: item.item_type,
-      item_status: 'pending',
-      buy_price: item.buy_price,
-      sell_price: item.sell_price,
-      qty: item.qty,
-      is_draft_note: item.is_draft_note ?? false,
-      expected_date: item.expected_date ?? null,
-      variants: item.variants && item.variants.length > 0 ? item.variants : [],
-    }))
+    const itemsToInsert = input.items.map((item) => {
+      const prodData = item.product_id ? prodMap.get(item.product_id) : null
+      const requiresCore = prodData?.requires_core_return ?? false
+      const coreDeposit = requiresCore ? (prodData?.core_deposit_amount ?? 0) : 0
+      const coreStatus = requiresCore ? 'pending' : 'none'
+      return {
+        order_id: order.id,
+        product_id: item.product_id ?? null,
+        sku: item.sku ?? null,
+        name: item.name,
+        supplier_id: item.supplier_id ?? null,
+        source_type: item.source_type,
+        item_type: item.item_type,
+        item_status: 'pending',
+        buy_price: item.buy_price,
+        sell_price: item.sell_price,
+        qty: item.qty,
+        is_draft_note: item.is_draft_note ?? false,
+        expected_date: item.expected_date ?? null,
+        variants: item.variants && item.variants.length > 0 ? item.variants : [],
+        core_deposit_amount: coreDeposit,
+        core_return_status: coreStatus,
+      }
+    })
 
     const { error: itemsErr } = await db.from('customer_order_items').insert(itemsToInsert)
     if (itemsErr) {
@@ -269,6 +290,13 @@ router.post('/', async (req, res, next) => {
       }
     }
 
+    // Автоматично створюємо замовлення постачальникам, якщо замовлення активне
+    if (order.status === 'new' || order.status === 'in_progress') {
+      await createSupplierPOsForOrder(order.id, req.user!.tenant_id).catch((err) => {
+        logger.error({ error: err.message, orderId: order.id }, 'Failed to auto-create supplier POs on order create')
+      })
+    }
+
     res.status(201).json({ data: order })
   } catch (err) { next(err) }
 })
@@ -399,8 +427,26 @@ router.post('/:id/convert', async (req, res, next) => {
 
     if (!draftOrder) throw new AppError('NOT_FOUND', 'Чернетку не знайдено', 404)
 
-    // Розраховуємо загальну суму для нового замовлення
-    const totalAmount = parsed.data.items.reduce((sum, item) => sum + item.selected_variant.price, 0)
+    // Отримуємо інформацію про продукти для застав
+    const productIds = parsed.data.items.map(i => i.selected_variant.product_id).filter(Boolean) as string[]
+    const { data: prods } = productIds.length > 0
+      ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price').in('id', productIds)
+      : { data: [] }
+    const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
+
+    // Розраховуємо загальну суму для нового замовлення (включаючи заставу)
+    let totalAmount = parsed.data.items.reduce((sum, item) => sum + item.selected_variant.price, 0)
+    parsed.data.items.forEach((item) => {
+      const pId = item.selected_variant.product_id
+      if (pId) {
+        const prodData = prodMap.get(pId)
+        if (prodData?.requires_core_return) {
+          const draftItem = (draftOrder.items as any[]).find((di) => di.id === item.item_id)
+          const qty = draftItem ? draftItem.qty : 1
+          totalAmount += prodData.core_deposit_amount * qty
+        }
+      }
+    })
 
     // Створюємо нове замовлення
     const { data: newOrder, error: orderErr } = await db.from('customer_orders').insert({
@@ -427,6 +473,11 @@ router.post('/:id/convert', async (req, res, next) => {
 
       const pId = item.selected_variant.product_id || (draftItem ? draftItem.product_id : null);
       const sType = pId ? 'warehouse' : 'supplier';
+      const prodData = pId ? prodMap.get(pId) : null
+      const requiresCore = prodData?.requires_core_return ?? false
+      const coreDeposit = requiresCore ? (prodData?.core_deposit_amount ?? 0) : 0
+      const coreStatus = requiresCore ? 'pending' : 'none'
+      const buyPrice = prodData ? (prodData.purchase_price ?? 0) : (draftItem ? (draftItem.buy_price ?? 0) : 0);
       return {
         order_id:      newOrder.id,
         product_id:    pId,
@@ -434,10 +485,12 @@ router.post('/:id/convert', async (req, res, next) => {
         name:          name,
         source_type:   sType,
         item_status:   'pending',
-        buy_price:     0,
+        buy_price:     buyPrice,
         sell_price:    item.selected_variant.price,
         qty:           qty,
         is_draft_note: false,
+        core_deposit_amount: coreDeposit,
+        core_return_status: coreStatus,
       }
     })
 
@@ -459,6 +512,11 @@ router.post('/:id/convert', async (req, res, next) => {
       user_id:  req.user!.id,
       action:   'created_from_draft',
       details:  { parent_draft_id: draftId },
+    })
+
+    // Автоматично створюємо замовлення постачальникам
+    await createSupplierPOsForOrder(newOrder.id, req.user!.tenant_id).catch((err) => {
+      logger.error({ error: err.message, orderId: newOrder.id }, 'Failed to auto-create supplier POs on order convert')
     })
 
     res.status(201).json({ data: newOrder })
@@ -793,6 +851,13 @@ router.patch('/:id/status', async (req, res, next) => {
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний статус', 422)
 
+    // Отримуємо поточний статус перед оновленням
+    const { data: oldOrder } = await db
+      .from('customer_orders')
+      .select('status')
+      .eq('id', req.params.id)
+      .single()
+
     const { data: order, error } = await db.rpc('update_customer_order_status', {
       p_tenant_id: req.user!.tenant_id,
       p_order_id: req.params.id,
@@ -819,6 +884,14 @@ router.patch('/:id/status', async (req, res, next) => {
 
     // Сповіщення в Telegram при зміні статусу менеджером
     notifyStatusUpdate(req.params.id, parsed.data.status).catch(() => {})
+
+    // Автоматично створюємо замовлення постачальникам, якщо замовлення перейшло з чернетки
+    const isPromotedFromLead = oldOrder?.status === 'lead' && ['new', 'in_progress', 'ordered'].includes(parsed.data.status)
+    if (isPromotedFromLead) {
+      await createSupplierPOsForOrder(req.params.id, req.user!.tenant_id).catch((err) => {
+        logger.error({ error: err.message, orderId: req.params.id }, 'Failed to auto-create supplier POs on status change')
+      })
+    }
 
     res.json({ data: order })
   } catch (err) { next(err) }
@@ -1109,8 +1182,19 @@ router.put('/:id', async (req, res, next) => {
 
     // Оновлюємо позиції
     if (parsed.data.items) {
-      // Розраховуємо total_amount
-      const totalAmount = parsed.data.items.reduce((s, i) => s + i.sell_price * i.qty, 0)
+      // Отримуємо інформацію про продукти для застав
+      const productIds = parsed.data.items.map(i => i.product_id).filter(Boolean) as string[]
+      const { data: prods } = productIds.length > 0
+        ? await db.from('products').select('id, requires_core_return, core_deposit_amount').in('id', productIds)
+        : { data: [] }
+      const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
+
+      // Розраховуємо total_amount (включаючи заставу)
+      const totalAmount = parsed.data.items.reduce((s, i) => {
+        const prodData = i.product_id ? prodMap.get(i.product_id) : null
+        const coreDeposit = prodData?.requires_core_return ? (prodData.core_deposit_amount ?? 0) : 0
+        return s + (i.sell_price * i.qty) + (coreDeposit * i.qty)
+      }, 0)
       updateFields.total_amount = totalAmount
 
       // Видаляємо старі позиції
@@ -1118,21 +1202,29 @@ router.put('/:id', async (req, res, next) => {
 
       if (parsed.data.items.length > 0) {
         await db.from('customer_order_items').insert(
-          parsed.data.items.map((item) => ({
-            order_id: orderId,
-            product_id: item.product_id ?? null,
-            supplier_id: item.supplier_id ?? null,
-            name: item.name,
-            sku: item.sku ?? null,
-            qty: item.qty,
-            sell_price: item.sell_price,
-            buy_price: item.buy_price,
-            source_type: item.supplier_id ? 'supplier' : 'warehouse',
-            item_type: item.item_type,
-            item_status: 'pending',
-            is_draft_note: item.is_draft_note,
-            expected_date: item.expected_date ?? null,
-          }))
+          parsed.data.items.map((item) => {
+            const prodData = item.product_id ? prodMap.get(item.product_id) : null
+            const requiresCore = prodData?.requires_core_return ?? false
+            const coreDeposit = requiresCore ? (prodData?.core_deposit_amount ?? 0) : 0
+            const coreStatus = requiresCore ? 'pending' : 'none'
+            return {
+              order_id: orderId,
+              product_id: item.product_id ?? null,
+              supplier_id: item.supplier_id ?? null,
+              name: item.name,
+              sku: item.sku ?? null,
+              qty: item.qty,
+              sell_price: item.sell_price,
+              buy_price: item.buy_price,
+              source_type: item.supplier_id ? 'supplier' : 'warehouse',
+              item_type: item.item_type,
+              item_status: 'pending',
+              is_draft_note: item.is_draft_note,
+              expected_date: item.expected_date ?? null,
+              core_deposit_amount: coreDeposit,
+              core_return_status: coreStatus,
+            }
+          })
         )
       }
     }

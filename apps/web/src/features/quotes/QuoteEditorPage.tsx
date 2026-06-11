@@ -418,8 +418,9 @@ export default function QuoteEditorPage() {
   // Отримання аналогів для конкретної деталі
   async function loadAnalogs(productId: string) {
     try {
-      const { data } = await api.get<{ data: Product[] }>(`/api/v1/products/${productId}/analogs`)
-      setAnalogs((prev) => ({ ...prev, [productId]: data ?? [] }))
+      const { data } = await api.get<any>(`/api/v1/products/${productId}/analogs`)
+      const list = Array.isArray(data) ? data : data?.analogs ?? data?.data ?? []
+      setAnalogs((prev) => ({ ...prev, [productId]: list }))
     } catch {
       toast.error('Не вдалось завантажити аналоги')
     }

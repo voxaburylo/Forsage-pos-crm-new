@@ -24,7 +24,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
   const [loading, setLoading]   = useState(false)
-  const [analogs, setAnalogs]   = useState<Record<string, Product[]>>({})
+  const [analogs, setAnalogs]   = useState<Record<string, { analogs: Product[]; grouped: Record<string, Product[]> }>>({})
   const [analogsLoading, setAnalogsLoading] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
@@ -145,10 +145,11 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     if (analogs[productId]) return
     setAnalogsLoading(productId)
     try {
-      const { data } = await api.get<{ data: Product[] }>(`/api/v1/products/${productId}/analogs`)
-      const analogProducts: Product[] = Array.isArray(data) ? data : (data as any)?.data ?? []
-      setAnalogs((prev) => ({ ...prev, [productId]: analogProducts }))
-    } catch { setAnalogs((prev) => ({ ...prev, [productId]: [] })) }
+      const { data } = await api.get<any>(`/api/v1/products/${productId}/analogs`)
+      const list: Product[] = Array.isArray(data) ? data : data?.analogs ?? data?.data ?? []
+      const grouped: Record<string, Product[]> = data?.grouped ?? { standard: list }
+      setAnalogs((prev) => ({ ...prev, [productId]: { analogs: list, grouped } }))
+    } catch { setAnalogs((prev) => ({ ...prev, [productId]: { analogs: [], grouped: {} } })) }
     finally { setAnalogsLoading(null) }
   }
 
@@ -188,6 +189,8 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       unitPrice: p.retail_price,
       discount,
       qtyOnHand: p.qty_on_hand,
+      requiresCoreReturn: p.requires_core_return,
+      coreDepositAmount: p.core_deposit_amount,
     })
     inputRef.current?.focus()
   }
@@ -260,7 +263,9 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
 
         {results.map((p, idx) => {
           const storageBin = p.storage_bin
-          const productAnalogs = analogs[p.id] ?? []
+          const productAnalogsData = analogs[p.id]
+          const productAnalogs = productAnalogsData?.analogs ?? []
+          const groupedAnalogs = productAnalogsData?.grouped ?? {}
           const showAnalogs = (p.qty_available ?? p.qty_on_hand) <= 0
           return (
             <div key={p.id}>
@@ -339,25 +344,49 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
               {analogsLoading === p.id && (
                 <p className="text-gray-500 text-xs text-center py-2">Пошук аналогів...</p>
               )}
-              {productAnalogs.length > 0 && (
-                <div className="mx-3 mb-2 p-2 bg-yellow-500/10 border border-yellow-600/30 rounded-xl space-y-1">
-                  <p className="text-yellow-400 text-[10px] font-medium">🔗 Доступні аналоги:</p>
-                  {productAnalogs.map((a) => (
-                    <button key={a.id} onClick={(e) => { e.stopPropagation(); addToReceipt(a); setQuery(''); setResults([]) }}
-                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-yellow-500/20 transition-colors active:scale-[0.98]"
-                      style={{ minHeight: 52 }}>
-                      <div className="flex-1 min-w-0 text-left">
-                        <p className="text-white text-xs font-medium truncate">{a.name}</p>
-                        <p className="text-gray-500 text-[10px]">{a.sku}</p>
+              {productAnalogsData && Object.keys(groupedAnalogs).length > 0 && productAnalogs.length > 0 && (
+                <div className="mx-3 mb-3 p-3 bg-[#161616]/60 border border-gray-800 rounded-xl space-y-3">
+                  <p className="text-yellow-400 text-[10px] font-bold uppercase tracking-wider">🔗 Аналоги та кроси:</p>
+                  {Object.entries(groupedAnalogs).map(([tier, items]) => {
+                    const typedItems = items as Product[]
+                    if (!typedItems || typedItems.length === 0) return null
+                    
+                    const tierTitle = 
+                      tier === 'original' ? '🏭 Оригінал' :
+                      tier === 'premium' ? '⭐ Premium' :
+                      tier === 'standard' ? '✅ Standard' : '💵 Budget'
+
+                    const tierColor =
+                      tier === 'original' ? 'text-blue-400 border-blue-900/30 bg-blue-950/20' :
+                      tier === 'premium' ? 'text-yellow-400 border-yellow-950/30 bg-yellow-950/20' :
+                      tier === 'standard' ? 'text-gray-300 border-gray-800 bg-gray-900/30' : 'text-emerald-400 border-emerald-950/30 bg-emerald-950/20'
+
+                    return (
+                      <div key={tier} className="space-y-1.5">
+                        <div className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${tierColor} inline-block`}>
+                          {tierTitle}
+                        </div>
+                        <div className="space-y-1 pl-1">
+                          {typedItems.map((a) => (
+                            <button key={a.id} onClick={(e) => { e.stopPropagation(); addToReceipt(a); setQuery(''); setResults([]) }}
+                              className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-yellow-500/10 transition-colors active:scale-[0.98] border border-gray-800/45 hover:border-yellow-500/30 bg-gray-950/20"
+                              style={{ minHeight: 48 }}>
+                              <div className="flex-1 min-w-0 text-left">
+                                <p className="text-white text-xs font-medium truncate">{a.name}</p>
+                                <p className="text-gray-500 text-[10px]">{a.sku} {a.brand && `• ${a.brand.name}`}</p>
+                              </div>
+                              <div className="text-right shrink-0 ml-2">
+                                <p className="text-white text-xs font-semibold">{kopecksToHryvnia(a.retail_price)} ₴</p>
+                                <p className={`text-[10px] ${(a.qty_available ?? a.qty_on_hand) > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                  {(a.qty_available ?? a.qty_on_hand) > 0 ? `● ${(a.qty_available ?? a.qty_on_hand)}` : '✗ Нема'}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div className="text-right shrink-0 ml-2">
-                        <p className="text-white text-xs font-semibold">{kopecksToHryvnia(a.retail_price)} ₴</p>
-                        <p className={`text-[10px] ${(a.qty_available ?? a.qty_on_hand) > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {(a.qty_available ?? a.qty_on_hand) > 0 ? `● ${(a.qty_available ?? a.qty_on_hand)}` : '✗ Нема'}
-                        </p>
-                      </div>
-                    </button>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>

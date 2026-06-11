@@ -119,7 +119,7 @@ export async function listSupplyInvoices(query: SupplyInvoiceListQuery, tenantId
 export async function getSupplyInvoice(id: string, tenantId: string) {
   const { data, error } = await db
     .from(INVOICE_TABLE)
-    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode))')
+    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode,storage_bin,category_id))')
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .single()
@@ -176,7 +176,7 @@ export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoice
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', tenantId)
-    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode))')
+    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode,storage_bin,category_id))')
     .single()
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -247,4 +247,94 @@ export async function deleteSupplyInvoice(id: string, tenantId: string) {
     .eq('tenant_id', tenantId)
 
   if (delError) throw new AppError('DB_ERROR', delError.message, 500)
+}
+
+export async function createSupplierPOsForOrder(orderId: string, tenantId: string) {
+  // 1. Отримуємо позиції замовлення, які вимагають закупівлі у постачальника
+  const { data: items, error: itemsErr } = await db
+    .from('customer_order_items')
+    .select('*, order:customer_orders(tenant_id, order_number)')
+    .eq('order_id', orderId)
+
+  if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+  if (!items || items.length === 0) return
+
+  // Перевірка tenant_id (можна взяти з першого елемента)
+  const orderTenantId = (items[0] as any).order?.tenant_id
+  if (orderTenantId !== tenantId) {
+    throw new AppError('FORBIDDEN', 'Немає доступу до цього замовлення', 403)
+  }
+
+  const orderNumber = (items[0] as any).order?.order_number || '0'
+
+  // Фільтруємо позиції: тільки тип 'supplier', є supplier_id і product_id
+  // (supplier_purchase_order_items.product_id NOT NULL), і немає draft-нотатки
+  const supplierItems = items.filter(
+    (i) => i.source_type === 'supplier' && i.supplier_id && i.product_id && !i.is_draft_note
+  )
+
+  if (supplierItems.length === 0) return
+
+  // 2. Виключаємо позиції, для яких вже створено замовлення постачальнику
+  const itemIds = supplierItems.map((i) => i.id)
+  const { data: existingPoItems, error: existingErr } = await db
+    .from('supplier_purchase_order_items')
+    .select('customer_order_item_id')
+    .in('customer_order_item_id', itemIds)
+
+  if (existingErr) throw new AppError('DB_ERROR', existingErr.message, 500)
+
+  const existingIds = new Set((existingPoItems || []).map((x) => x.customer_order_item_id))
+  const itemsToOrder = supplierItems.filter((i) => !existingIds.has(i.id))
+
+  if (itemsToOrder.length === 0) return
+
+  // 3. Групуємо позиції за supplier_id
+  const groups: Record<string, typeof itemsToOrder> = {}
+  for (const item of itemsToOrder) {
+    const sId = item.supplier_id!
+    if (!groups[sId]) groups[sId] = []
+    groups[sId].push(item)
+  }
+
+  // 4. Для кожної групи створюємо замовлення постачальнику
+  for (const [supplierId, groupItems] of Object.entries(groups)) {
+    // Отримуємо ім'я постачальника для формування красивого номеру
+    const { data: supplier } = await db
+      .from('suppliers')
+      .select('name')
+      .eq('id', supplierId)
+      .single()
+
+    const supplierName = supplier?.name || 'SUPP'
+    const cleanName = supplierName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
+    const poNumber = `PO-${orderNumber}-${cleanName}-${Math.floor(1000 + Math.random() * 9000)}`
+
+    // Створюємо головний запис
+    const { data: po, error: poErr } = await db
+      .from('supplier_purchase_orders')
+      .insert({
+        tenant_id: tenantId,
+        supplier_id: supplierId,
+        status: 'ordered',
+        po_number: poNumber,
+        notes: `Автоматично створено для замовлення клієнта №${orderNumber}`
+      })
+      .select('id')
+      .single()
+
+    if (poErr || !po) throw new AppError('DB_ERROR', poErr?.message || 'Failed to create PO', 500)
+
+    // Створюємо позиції замовлення постачальнику
+    const poItemsToInsert = groupItems.map((item) => ({
+      tenant_id: tenantId,
+      po_id: po.id,
+      product_id: item.product_id,
+      qty: item.qty,
+      customer_order_item_id: item.id
+    }))
+
+    const { error: poItemsErr } = await db.from('supplier_purchase_order_items').insert(poItemsToInsert)
+    if (poItemsErr) throw new AppError('DB_ERROR', poItemsErr.message, 500)
+  }
 }

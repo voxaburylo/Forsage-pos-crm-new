@@ -38,6 +38,8 @@ export const createProductSchema = z.object({
   storage_bin: z.string().max(50).optional().nullable(),
   is_favorite: z.boolean().optional(),
   specs: z.record(z.string()).optional().nullable(),
+  requires_core_return: z.boolean().optional(),
+  core_deposit_amount: z.number().int().min(0).optional(),   // копійки
 })
 
 export const updateProductSchema = createProductSchema.partial()

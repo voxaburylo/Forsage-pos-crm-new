@@ -17,6 +17,7 @@ const EMPTY: ProductFormData = {
   unit: 'шт', purchase_price: '', retail_price: '',
   qty_on_hand: '0', reorder_point: '0', notes: '', is_active: true,
   storage_bin: '', is_favorite: false, specs: {},
+  requires_core_return: false, core_deposit_amount: '',
 }
 
 export default function ProductFormPage() {
@@ -75,6 +76,8 @@ export default function ProductFormPage() {
         is_favorite: data.is_favorite ?? false,
         photo_url: data.photo_url ?? undefined,
         specs: (data.specs as Record<string, string>) ?? {},
+        requires_core_return: data.requires_core_return ?? false,
+        core_deposit_amount: data.core_deposit_amount ? kopecksToHryvnia(data.core_deposit_amount) : '',
       })
     }).catch(() => {
       toast.error('Товар не знайдено')
@@ -354,6 +357,32 @@ export default function ProductFormPage() {
                 hint="Адреса на складі для пошуку"
               />
               <div></div>
+            </div>
+
+            {/* ── Застава за стару деталь (Core Exchange) ── */}
+            <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                <input type="checkbox" id="requires_core_return"
+                  checked={form.requires_core_return ?? false}
+                  onChange={(e) => set('requires_core_return', e.target.checked)}
+                  className="w-4 h-4 accent-yellow-400" />
+                <label htmlFor="requires_core_return" className="text-sm text-gray-700">
+                  Потребує обміну старої деталі (застава)
+                </label>
+              </div>
+              {form.requires_core_return && (
+                <div className="grid grid-cols-2 gap-4">
+                  <Input
+                    label="Сума застави, грн"
+                    type="number" min="0" step="0.01"
+                    value={form.core_deposit_amount ?? ''}
+                    onChange={(e) => set('core_deposit_amount', e.target.value)}
+                    placeholder="500.00"
+                    hint="Додається до чека, повертається при здачі старої деталі"
+                  />
+                  <div></div>
+                </div>
+              )}
             </div>
 
             <div>

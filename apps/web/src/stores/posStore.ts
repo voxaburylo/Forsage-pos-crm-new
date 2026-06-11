@@ -12,6 +12,8 @@ export interface POSItem {
   discount: number     // копійки
   total: number        // копійки
   qtyOnHand: number    // поточний залишок на складі
+  requiresCoreReturn?: boolean
+  coreDepositAmount?: number
 }
 
 export interface POSCustomer {
@@ -33,6 +35,7 @@ export interface ReceiptTab {
   notes: string
   subtotal: number
   totalDiscount: number
+  totalCoreDeposit: number
   total: number
   selectedProductId: string | null
   bonusToRedeem: number
@@ -52,7 +55,7 @@ function createEmptyTab(): ReceiptTab {
     id: generateTabId(),
     idempotencyKey: crypto.randomUUID(),
     items: [], customer: null, notes: '',
-    subtotal: 0, totalDiscount: 0, total: 0,
+    subtotal: 0, totalDiscount: 0, totalCoreDeposit: 0, total: 0,
     selectedProductId: null,
     bonusToRedeem: 0,
     customerOrderId: null,
@@ -62,7 +65,8 @@ function createEmptyTab(): ReceiptTab {
 function calcTotals(items: POSItem[]) {
   const subtotal = items.reduce((s, i) => s + i.unitPrice * i.qty, 0)
   const totalDiscount = items.reduce((s, i) => s + i.discount, 0)
-  return { subtotal, totalDiscount, total: subtotal - totalDiscount }
+  const totalCoreDeposit = items.reduce((s, i) => s + (i.requiresCoreReturn ? (i.coreDepositAmount ?? 0) * i.qty : 0), 0)
+  return { subtotal, totalDiscount, totalCoreDeposit, total: subtotal - totalDiscount + totalCoreDeposit }
 }
 
 interface POSState {
@@ -84,6 +88,7 @@ interface POSState {
   notes: string
   subtotal: number
   totalDiscount: number
+  totalCoreDeposit: number
   total: number
   selectedProductId: string | null
   bonusToRedeem: number
@@ -121,7 +126,7 @@ function getActiveTabGetters(tabs: ReceiptTab[], activeTabId: string | null) {
   const active = tabs.find((t) => t.id === activeTabId)
   if (!active) return {
     items: [], customer: null, notes: '',
-    subtotal: 0, totalDiscount: 0, total: 0,
+    subtotal: 0, totalDiscount: 0, totalCoreDeposit: 0, total: 0,
     selectedProductId: null, bonusToRedeem: 0,
     customerOrderId: null,
   }
@@ -131,6 +136,7 @@ function getActiveTabGetters(tabs: ReceiptTab[], activeTabId: string | null) {
     notes: active.notes,
     subtotal: active.subtotal,
     totalDiscount: active.totalDiscount,
+    totalCoreDeposit: active.totalCoreDeposit ?? 0,
     total: active.total,
     selectedProductId: active.selectedProductId,
     bonusToRedeem: active.bonusToRedeem,

@@ -56,6 +56,8 @@ function formToCreatePayload(form: ProductFormData) {
     is_favorite: form.is_favorite,
     specs: cleanSpecs(form.specs),
     photo_url: form.photo_url || null,
+    requires_core_return: form.requires_core_return ?? false,
+    core_deposit_amount: hryvniaToKopecks(form.core_deposit_amount),
   }
 }
 
@@ -81,6 +83,8 @@ function formToUpdatePayload(partial: Partial<ProductFormData>): Record<string, 
   if (partial.is_favorite !== undefined)    out.is_favorite = partial.is_favorite
   if (partial.specs !== undefined)          out.specs = cleanSpecs(partial.specs)
   if (partial.photo_url !== undefined)      out.photo_url = partial.photo_url || null
+  if (partial.requires_core_return !== undefined) out.requires_core_return = partial.requires_core_return
+  if (partial.core_deposit_amount !== undefined)  out.core_deposit_amount = hryvniaToKopecks(partial.core_deposit_amount)
   return out
 }
 

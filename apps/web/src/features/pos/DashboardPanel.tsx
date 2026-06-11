@@ -59,6 +59,8 @@ export function DashboardPanel({ onSearch }: Props) {
     store.addItem({
       productId: p.id, sku: p.sku, name: p.name, unit: p.unit,
       qty: 1, unitPrice: p.retail_price, discount, qtyOnHand: p.qty_on_hand,
+      requiresCoreReturn: p.requires_core_return,
+      coreDepositAmount: p.core_deposit_amount,
     })
     playSuccessBeep()
   }
