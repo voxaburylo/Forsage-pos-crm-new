@@ -438,16 +438,37 @@ async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fisca
     const settings = await (await import('./adminService.js')).getSettings(sale.tenant_id)
     const fiscalAdapter = getFiscalAdapter(settings)
     try {
+      // Назви товарів для чека (а не UUID) + застави за старі деталі окремими рядками,
+      // інакше сума рядків не зійдеться з payments і ПРРО відхилить чек
+      const { data: prods } = await db
+        .from('products')
+        .select('id, name, requires_core_return, core_deposit_amount')
+        .in('id', input.items.map((i) => i.product_id))
+      const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
+
+      const fiscalItems = input.items.map((i) => ({
+        name:       prodMap.get(i.product_id)?.name ?? i.product_id,
+        qty:        i.qty,
+        unit_price: i.unit_price,
+        discount:   i.discount,
+      }))
+      for (const i of input.items) {
+        const p = prodMap.get(i.product_id)
+        if (p?.requires_core_return && (p.core_deposit_amount ?? 0) > 0) {
+          fiscalItems.push({
+            name:       `Застава (обмін): ${p.name}`,
+            qty:        i.qty,
+            unit_price: p.core_deposit_amount,
+            discount:   0,
+          })
+        }
+      }
+
       const fiscalResult = await fiscalAdapter.fiscalize(
         sale.id,
         sale.sale_number ?? sale.id,
         sale.total,
-        input.items.map((i) => ({
-          name:       i.product_id,
-          qty:        i.qty,
-          unit_price: i.unit_price,
-          discount:   i.discount,
-        })),
+        fiscalItems,
         input.payment_method,
       )
 

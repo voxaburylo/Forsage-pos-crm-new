@@ -1197,6 +1197,18 @@ router.put('/:id', async (req, res, next) => {
       }, 0)
       updateFields.total_amount = totalAmount
 
+      // Зберігаємо стан застав старих позицій — інакше редагування замовлення
+      // скине returned/refunded назад у pending і заставу можна буде виплатити вдруге
+      const { data: oldItems } = await db
+        .from('customer_order_items')
+        .select('product_id, core_return_status, core_deposit_amount')
+        .eq('order_id', orderId)
+      const oldCoreMap = new Map(
+        (oldItems ?? [])
+          .filter((i) => i.product_id && i.core_return_status && i.core_return_status !== 'none')
+          .map((i) => [i.product_id as string, i])
+      )
+
       // Видаляємо старі позиції
       await db.from('customer_order_items').delete().eq('order_id', orderId)
 
@@ -1206,7 +1218,8 @@ router.put('/:id', async (req, res, next) => {
             const prodData = item.product_id ? prodMap.get(item.product_id) : null
             const requiresCore = prodData?.requires_core_return ?? false
             const coreDeposit = requiresCore ? (prodData?.core_deposit_amount ?? 0) : 0
-            const coreStatus = requiresCore ? 'pending' : 'none'
+            const oldCore = item.product_id ? oldCoreMap.get(item.product_id) : undefined
+            const coreStatus = oldCore ? oldCore.core_return_status : (requiresCore ? 'pending' : 'none')
             return {
               order_id: orderId,
               product_id: item.product_id ?? null,
@@ -1221,7 +1234,7 @@ router.put('/:id', async (req, res, next) => {
               item_status: 'pending',
               is_draft_note: item.is_draft_note,
               expected_date: item.expected_date ?? null,
-              core_deposit_amount: coreDeposit,
+              core_deposit_amount: oldCore ? oldCore.core_deposit_amount : coreDeposit,
               core_return_status: coreStatus,
             }
           })

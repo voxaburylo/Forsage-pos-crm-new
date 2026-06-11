@@ -105,45 +105,51 @@ router.post('/:type/:itemId/status', async (req, res, next) => {
       throw new AppError('VALIDATION_ERROR', 'Невідомий тип документа', 400)
     }
 
-    const table = type === 'sale' ? 'sale_items' : 'customer_order_items'
-
-    // 1. Отримуємо деталь
-    let itemQuery = db.from(table).select('*').eq('id', itemId)
-    if (type === 'sale') {
-      itemQuery = itemQuery.eq('tenant_id', tenantId)
-    } else {
-      itemQuery = itemQuery.select('*, order:customer_orders!inner(tenant_id, customer_id)')
+    // Дозволені переходи: pending → returned → refunded (+ відкат returned → pending).
+    // Умовний UPDATE по старому статусу робить перехід атомарним — повторний клік
+    // або паралельний запит не зарахує заставу двічі.
+    const expectedFrom: Record<string, string> = {
+      returned: 'pending',
+      refunded: 'returned',
+      pending: 'returned',
     }
 
-    const { data: item, error: itemErr } = await itemQuery.single()
-    if (itemErr || !item) throw new AppError('NOT_FOUND', 'Позицію не знайдено', 404)
+    const updatedItem = await runTransaction(async (pgClient) => {
+      const updateRes = type === 'sale'
+        ? await pgClient.query(
+            `UPDATE sale_items si SET core_return_status = $1
+             FROM sales s
+             WHERE si.id = $2 AND si.tenant_id = $3 AND si.sale_id = s.id
+               AND si.core_return_status = $4
+             RETURNING si.*, s.customer_id,
+               (SELECT name FROM products WHERE id = si.product_id) AS item_name`,
+            [status, itemId, tenantId, expectedFrom[status]]
+          )
+        : await pgClient.query(
+            `UPDATE customer_order_items coi SET core_return_status = $1
+             FROM customer_orders co
+             WHERE coi.id = $2 AND coi.order_id = co.id AND co.tenant_id = $3
+               AND coi.core_return_status = $4
+             RETURNING coi.*, co.customer_id, coi.name AS item_name`,
+            [status, itemId, tenantId, expectedFrom[status]]
+          )
 
-    // Перевірка прав tenant_id для замовлень
-    if (type === 'order' && (item.order as any)?.tenant_id !== tenantId) {
-      throw new AppError('FORBIDDEN', 'Немає доступу до цього документа', 403)
-    }
+      if (updateRes.rowCount === 0) {
+        throw new AppError('CONFLICT', 'Позицію не знайдено або статус вже змінено', 409)
+      }
 
-    const coreDepositAmount = item.core_deposit_amount || 0
+      const item = updateRes.rows[0]
+      const coreDepositAmount = parseInt(item.core_deposit_amount, 10) || 0
+      const customerId: string | null = item.customer_id || null
 
-    // Отримуємо customer_id
-    let customerId: string | null = null
-    if (type === 'sale') {
-      const { data: sale } = await db.from('sales').select('customer_id').eq('id', item.sale_id).single()
-      customerId = sale?.customer_id || null
-    } else {
-      customerId = (item.order as any)?.customer_id || null
-    }
-
-    // 2. Якщо статус 'refunded' та обрано повернення на баланс
-    if (status === 'refunded' && refund_method === 'balance' && coreDepositAmount > 0 && customerId) {
-      await runTransaction(async (pgClient) => {
-        // Оновлюємо бонусний баланс клієнта
+      // Виплата на баланс — у тій самій транзакції, що й зміна статусу
+      if (status === 'refunded' && refund_method === 'balance' && coreDepositAmount > 0 && customerId) {
         await pgClient.query(
-          `UPDATE customers SET bonus_balance = bonus_balance + $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
+          `UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1, updated_at = NOW()
+           WHERE id = $2 AND tenant_id = $3`,
           [coreDepositAmount, customerId, tenantId]
         )
 
-        // Додаємо запис про нарахування бонусів
         await pgClient.query(
           `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, description)
            VALUES ($1, $2, $3, 'manual', $4)`,
@@ -151,21 +157,13 @@ router.post('/:type/:itemId/status', async (req, res, next) => {
             tenantId,
             customerId,
             coreDepositAmount,
-            `Повернення застави за стару деталь (позиція: ${item.name || 'Запчастина'})`
+            `Повернення застави за стару деталь (позиція: ${item.item_name || 'Запчастина'})`
           ]
         )
-      })
-    }
+      }
 
-    // 3. Оновлюємо статус у БД
-    const { data: updatedItem, error: updateErr } = await db
-      .from(table)
-      .update({ core_return_status: status })
-      .eq('id', itemId)
-      .select('*')
-      .single()
-
-    if (updateErr) throw new AppError('DB_ERROR', updateErr.message, 500)
+      return item
+    })
 
     res.json({ data: updatedItem })
   } catch (err) { next(err) }
