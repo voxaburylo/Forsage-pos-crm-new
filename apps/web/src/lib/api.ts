@@ -70,6 +70,8 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
     try {
       const body = await res.json()
       errorMessage = body?.error?.message ?? errorMessage
+      // Технічні префікси кодів із БД-помилок (INSUFFICIENT_STOCK: ...) користувачу не потрібні
+      errorMessage = errorMessage.replace(/^[A-Z][A-Z_]{2,}:\s*/, '')
     } catch { /* response не JSON */ }
 
     if (!silent) {

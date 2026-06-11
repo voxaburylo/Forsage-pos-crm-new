@@ -376,8 +376,20 @@ export default function OrderFormPage() {
         toast.success('Клієнта створено!')
         handleCustomerSelect(res.data)
       }
-    } catch {
-      toast.error('Помилка при створенні клієнта')
+    } catch (err) {
+      // Телефон уже в базі — не глухий кут, а підставляємо існуючого клієнта
+      if (err instanceof Error && /вже існує/i.test(err.message)) {
+        try {
+          const found = await customerApi.list({ search: newCustPhone.trim(), page: 1, per_page: 1 })
+          const existing = found.data?.[0]
+          if (existing) {
+            toast.success(`Клієнт уже є в базі — вибрано: ${existing.full_name ?? existing.phone}`)
+            handleCustomerSelect(existing)
+            return
+          }
+        } catch { /* впадемо в загальну помилку нижче */ }
+      }
+      toast.error(err instanceof Error ? err.message : 'Помилка при створенні клієнта')
     } finally {
       setAddingCustomer(false)
     }
