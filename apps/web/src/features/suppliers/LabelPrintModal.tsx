@@ -118,6 +118,10 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
     const portal = document.createElement('div')
     portal.id = 'label-print-portal'
 
+    // Назви/артикули приходять з імпортованих прайсів — обов'язково екрануємо,
+    // інакше HTML у назві товару виконається прямо в основному вікні застосунку
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
     items.forEach((item) => {
       const count = getQty(item.id)
       const p = item.product
@@ -127,9 +131,9 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
         div.className = 'label-item'
         div.innerHTML = `
           <div class="label-shop">ФОРСАЖ</div>
-          <div class="label-name">${p.name}</div>
-          <div class="label-sku">Арт: ${p.sku}</div>
-          ${p.barcode ? '<div class="label-barcode">' + p.barcode + '</div>' : ''}
+          <div class="label-name">${esc(p.name)}</div>
+          <div class="label-sku">Арт: ${esc(p.sku)}</div>
+          ${p.barcode ? '<div class="label-barcode">' + esc(p.barcode) + '</div>' : ''}
           <div class="label-price">${formatMoney(p.retail_price)}</div>
           <div class="label-date">${today}</div>
         `

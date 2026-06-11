@@ -235,10 +235,12 @@ export default function StaffKPI() {
     const printWindow = window.open('', '_blank', 'width=800,height=600')
     if (!printWindow) return
 
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const safeName = esc(selectedUser.full_name || selectedUser.email || '')
     const html = `
       <html>
         <head>
-          <title>Звіт KPI - ${selectedUser.full_name || selectedUser.email}</title>
+          <title>Звіт KPI - ${safeName}</title>
           <style>
             body { font-family: system-ui, sans-serif; padding: 40px; color: #111827; }
             h1 { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
@@ -256,7 +258,7 @@ export default function StaffKPI() {
         </head>
         <body>
           <h1>Звіт з виконання цілей KPI</h1>
-          <div class="subtitle">Співробітник: <strong>${selectedUser.full_name || selectedUser.email}</strong> | Період: ${period}</div>
+          <div class="subtitle">Співробітник: <strong>${safeName}</strong> | Період: ${period}</div>
           
           <div class="grid">
             <div class="card">
