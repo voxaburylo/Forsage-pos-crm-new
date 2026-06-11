@@ -56,7 +56,23 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
     }
     setClosing(true)
     try {
-      await shiftApi.close(shiftId, cashReceived, comment || undefined)
+      try {
+        await shiftApi.close(shiftId, cashReceived, comment || undefined)
+      } catch (err) {
+        // Бек вимагає запис звірки каси перед закриттям. Фактичну суму касир
+        // щойно ввів у цій модалці — створюємо звірку з неї і повторюємо закриття,
+        // замість того щоб відправляти касира шукати окрему кнопку «Звірка».
+        if (err instanceof Error && /звірку каси/i.test(err.message)) {
+          const { api } = await import('@/lib/api')
+          await api.post('/api/v1/shifts/current/reconcile', {
+            actual_amount: cashReceived,
+            comment: comment.trim() || null,
+          })
+          await shiftApi.close(shiftId, cashReceived, comment || undefined)
+        } else {
+          throw err
+        }
+      }
       toast.success('Зміну закрито')
       onClosed()
     } catch (err) {
