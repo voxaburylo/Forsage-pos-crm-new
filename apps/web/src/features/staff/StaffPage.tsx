@@ -214,6 +214,28 @@ export default function StaffPage() {
     }
   }
 
+  // Зберегти лише ставку (з вкладки зарплати — щоб не шукати її в редагуванні профілю)
+  async function handleSaveRate() {
+    if (!selectedUser) return
+    setSaving(true)
+    try {
+      const rate = editForm.base_rate ? Math.round(parseFloat(editForm.base_rate) * 100) : 0
+      await adminApi.updateUser(selectedUser.id, {
+        role: selectedUser.role as UserRole,
+        is_active: selectedUser.is_active,
+        full_name: selectedUser.full_name,
+        base_rate: rate,
+      })
+      toast.success('Ставку збережено')
+      setSelectedUser({ ...selectedUser, base_rate: rate })
+      loadData()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Скинути пароль
   async function handleResetPassword(e: React.FormEvent) {
     e.preventDefault()
@@ -615,6 +637,26 @@ export default function StaffPage() {
                         {formatMoney(selectedUserSummary.balance)}
                       </p>
                     </div>
+                  </div>
+
+                  {/* Ставка — тут же, де призначаються відсотки, щоб не шукати в профілі */}
+                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-2">
+                    <h3 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+                      💵 Ставка (грн/місяць)
+                    </h3>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="number" min="0" step="0.01"
+                        value={editForm.base_rate}
+                        onChange={(e) => setEditForm({ ...editForm, base_rate: e.target.value })}
+                        placeholder="0.00"
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm font-semibold text-right focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                      />
+                      <Button size="sm" loading={saving} onClick={handleSaveRate}>Зберегти</Button>
+                    </div>
+                    <p className="text-[11px] text-gray-400">
+                      Фіксована частина зарплати. Відсотки з продажів додаються зверху — правилами нижче.
+                    </p>
                   </div>
 
                   {/* Додавання правила комісії */}
