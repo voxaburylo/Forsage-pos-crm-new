@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type {
   CreateSupplierInput, UpdateSupplierInput, SupplierListQuery,
@@ -297,44 +298,38 @@ export async function createSupplierPOsForOrder(orderId: string, tenantId: strin
     groups[sId].push(item)
   }
 
-  // 4. Для кожної групи створюємо замовлення постачальнику
-  for (const [supplierId, groupItems] of Object.entries(groups)) {
-    // Отримуємо ім'я постачальника для формування красивого номеру
-    const { data: supplier } = await db
-      .from('suppliers')
-      .select('name')
-      .eq('id', supplierId)
-      .single()
+  // 4. Для кожної групи створюємо замовлення постачальнику.
+  // Номер — із послідовності БД (unique-індекс tenant_id+po_number),
+  // PO разом із позиціями — в одній транзакції
+  const supplierIds = Object.keys(groups)
+  const { data: supplierRows } = await db
+    .from('suppliers')
+    .select('id, name')
+    .in('id', supplierIds)
+  const supplierNames = new Map((supplierRows ?? []).map((s) => [s.id, s.name]))
 
-    const supplierName = supplier?.name || 'SUPP'
-    const cleanName = supplierName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
-    const poNumber = `PO-${orderNumber}-${cleanName}-${Math.floor(1000 + Math.random() * 9000)}`
+  await runTransaction(async (client) => {
+    for (const [supplierId, groupItems] of Object.entries(groups)) {
+      const supplierName = supplierNames.get(supplierId) || 'SUPP'
+      const cleanName = supplierName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
+      const seqRes = await client.query("SELECT nextval('supplier_po_number_seq') AS n")
+      const poNumber = `PO-${orderNumber}-${cleanName}-${seqRes.rows[0].n}`
 
-    // Створюємо головний запис
-    const { data: po, error: poErr } = await db
-      .from('supplier_purchase_orders')
-      .insert({
-        tenant_id: tenantId,
-        supplier_id: supplierId,
-        status: 'ordered',
-        po_number: poNumber,
-        notes: `Автоматично створено для замовлення клієнта №${orderNumber}`
-      })
-      .select('id')
-      .single()
+      const poRes = await client.query(
+        `INSERT INTO supplier_purchase_orders (tenant_id, supplier_id, status, po_number, notes)
+         VALUES ($1, $2, 'ordered', $3, $4)
+         RETURNING id`,
+        [tenantId, supplierId, poNumber, `Автоматично створено для замовлення клієнта №${orderNumber}`]
+      )
+      const poId = poRes.rows[0].id
 
-    if (poErr || !po) throw new AppError('DB_ERROR', poErr?.message || 'Failed to create PO', 500)
-
-    // Створюємо позиції замовлення постачальнику
-    const poItemsToInsert = groupItems.map((item) => ({
-      tenant_id: tenantId,
-      po_id: po.id,
-      product_id: item.product_id,
-      qty: item.qty,
-      customer_order_item_id: item.id
-    }))
-
-    const { error: poItemsErr } = await db.from('supplier_purchase_order_items').insert(poItemsToInsert)
-    if (poItemsErr) throw new AppError('DB_ERROR', poItemsErr.message, 500)
-  }
+      for (const item of groupItems) {
+        await client.query(
+          `INSERT INTO supplier_purchase_order_items (tenant_id, po_id, product_id, qty, customer_order_item_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [tenantId, poId, item.product_id, item.qty, item.id]
+        )
+      }
+    }
+  })
 }

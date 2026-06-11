@@ -25,6 +25,8 @@ export interface SupplierCoreDebt {
   invoice_number: string | null
   posted_at: string | null
   qty: number
+  core_returned_qty: number
+  status: 'new' | 'partial' | 'paid'
   core_deposit_amount: number
 }
 
@@ -34,6 +36,7 @@ export default function CoreReturnsPage() {
   const [supplierDebts, setSupplierDebts] = useState<SupplierCoreDebt[]>([])
   const [loading, setLoading] = useState(false)
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
+  const [returnQty, setReturnQty] = useState<Record<string, string>>({})
 
   async function loadData() {
     setLoading(true)
@@ -74,6 +77,23 @@ export default function CoreReturnsPage() {
       loadData()
     } catch (err: any) {
       toast.error(err?.message || 'Помилка зміни статусу')
+    } finally {
+      setActionLoadingId(null)
+    }
+  }
+
+  async function handleSupplierReturn(item: SupplierCoreDebt) {
+    const remaining = item.qty - item.core_returned_qty
+    const qty = parseFloat(returnQty[item.id] || '') || remaining
+    if (qty <= 0) { toast.error('Кількість має бути більшою за нуль'); return }
+    setActionLoadingId(item.id)
+    try {
+      await api.post(`/api/v1/core-returns/supplier/${item.id}/return`, { qty })
+      toast.success('Повернення зараховано!')
+      setReturnQty((prev) => ({ ...prev, [item.id]: '' }))
+      loadData()
+    } catch (err: any) {
+      toast.error(err?.message || 'Помилка зарахування повернення')
     } finally {
       setActionLoadingId(null)
     }
@@ -227,6 +247,7 @@ export default function CoreReturnsPage() {
                     <th className="px-6 py-3 text-right">Кількість</th>
                     <th className="px-6 py-3 text-right">Сума застави</th>
                     <th className="px-6 py-3 text-center">Статус боргу</th>
+                    <th className="px-6 py-3 text-center">Дії</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -253,15 +274,49 @@ export default function CoreReturnsPage() {
                         </div>
                       </td>
                       <td className="px-6 py-4 text-right font-semibold text-gray-800">
-                        {parseFloat(item.qty as any)} шт
+                        {item.qty} шт
+                        {item.core_returned_qty > 0 && (
+                          <div className="text-xs text-gray-400 font-normal">повернуто {item.core_returned_qty}</div>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-right font-bold text-gray-900">
-                        {((item.core_deposit_amount * parseFloat(item.qty as any)) / 100).toLocaleString()} грн
+                        {((item.core_deposit_amount * (item.qty - item.core_returned_qty)) / 100).toLocaleString()} грн
                       </td>
                       <td className="px-6 py-4 text-center">
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-red-100 text-red-800">
-                          📍 Потрібно повернути
-                        </span>
+                        {item.status === 'paid' ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                            ✓ Оплачений
+                          </span>
+                        ) : item.status === 'partial' ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">
+                            ◐ Частково оплачений
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+                            📍 Новий
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4">
+                        {item.status !== 'paid' && (
+                          <div className="flex items-center justify-center gap-2">
+                            <input
+                              type="number" min="0.001" step="any"
+                              value={returnQty[item.id] ?? ''}
+                              onChange={(e) => setReturnQty((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                              placeholder={String(item.qty - item.core_returned_qty)}
+                              className="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                            />
+                            <Button
+                              onClick={() => handleSupplierReturn(item)}
+                              disabled={actionLoadingId === item.id}
+                              size="sm"
+                              className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-1.5 whitespace-nowrap"
+                            >
+                              <ArrowLeftRight size={13} /> Зарахувати
+                            </Button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}

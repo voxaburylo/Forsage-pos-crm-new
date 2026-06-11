@@ -68,19 +68,63 @@ router.get('/', async (req, res, next) => {
 
     if (supplierErr) throw new AppError('DB_ERROR', supplierErr.message, 500)
 
-    const supplierDebts = (supplierItems ?? []).map(item => ({
-      id: item.id,
-      product: item.product,
-      supplier: (item.invoice as any)?.supplier,
-      invoice_number: (item.invoice as any)?.invoice_number,
-      posted_at: (item.invoice as any)?.posted_at,
-      qty: item.qty,
-      core_deposit_amount: (item.product as any)?.core_deposit_amount || 0
-    }))
+    const supplierDebts = (supplierItems ?? []).map(item => {
+      const qty = parseFloat(item.qty) || 0
+      const returnedQty = parseFloat(item.core_returned_qty) || 0
+      const status = returnedQty >= qty ? 'paid' : returnedQty > 0 ? 'partial' : 'new'
+      return {
+        id: item.id,
+        product: item.product,
+        supplier: (item.invoice as any)?.supplier,
+        invoice_number: (item.invoice as any)?.invoice_number,
+        posted_at: (item.invoice as any)?.posted_at,
+        qty,
+        core_returned_qty: returnedQty,
+        status,
+        core_deposit_amount: (item.product as any)?.core_deposit_amount || 0
+      }
+    })
 
     res.json({
       clientReturns,
       supplierDebts
+    })
+  } catch (err) { next(err) }
+})
+
+// POST /api/v1/core-returns/supplier/:itemId/return — зарахувати повернення серцевин постачальнику
+router.post('/supplier/:itemId/return', async (req, res, next) => {
+  try {
+    const tenantId = req.user!.tenant_id
+    const schema = z.object({ qty: z.number().positive() })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна кількість', 422, parsed.error.flatten())
+
+    // Атомарний інкремент з обмеженням зверху — паралельні запити не "перевернуть" більше, ніж є
+    const { rows, rowCount } = await runTransaction((pgClient) =>
+      pgClient.query(
+        `UPDATE supply_invoice_items
+         SET core_returned_qty = LEAST(qty, core_returned_qty + $1)
+         WHERE id = $2 AND tenant_id = $3 AND core_returned_qty < qty
+         RETURNING id, qty, core_returned_qty`,
+        [parsed.data.qty, req.params.itemId, tenantId]
+      )
+    )
+
+    if (rowCount === 0) {
+      throw new AppError('CONFLICT', 'Позицію не знайдено або борг вже закрито', 409)
+    }
+
+    const item = rows[0]
+    const qty = parseFloat(item.qty) || 0
+    const returnedQty = parseFloat(item.core_returned_qty) || 0
+    res.json({
+      data: {
+        id: item.id,
+        qty,
+        core_returned_qty: returnedQty,
+        status: returnedQty >= qty ? 'paid' : returnedQty > 0 ? 'partial' : 'new',
+      }
     })
   } catch (err) { next(err) }
 })
