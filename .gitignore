@@ -38,3 +38,5 @@ server/test_*.js
 
 # Dev-скрипти з прямими DB підключеннями
 server/src/scratch/
+
+qa/
