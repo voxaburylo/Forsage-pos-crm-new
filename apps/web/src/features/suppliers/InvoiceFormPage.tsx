@@ -38,6 +38,8 @@ export default function InvoiceFormPage() {
   const [productSearch, setProductSearch] = useState('')
   const [productResults, setProductResults] = useState<Product[]>([])
   const [showSearch, setShowSearch] = useState(false)
+  // Порівняння закупівельних цін постачальників по доданих товарах
+  const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
 
   // Завантажуємо постачальників
   useEffect(() => {
@@ -101,6 +103,11 @@ export default function InvoiceFormPage() {
     setProductSearch('')
     setProductResults([])
     setShowSearch(false)
+
+    // Підтягуємо порівняння цін постачальників (закупник бачить «у кого дешевше»)
+    productApi.getSupplierPrices(product.id)
+      .then((r) => setSupplierPrices((prev) => ({ ...prev, [product.id]: r.data ?? [] })))
+      .catch(() => {})
   }
 
   function updateItem(index: number, field: keyof LineItem, value: string | number) {
@@ -283,9 +290,22 @@ export default function InvoiceFormPage() {
               </tr>
             </thead>
             <tbody>
-              {items.map((item, i) => (
+              {items.map((item, i) => {
+                const prices = supplierPrices[item.product_id] ?? []
+                const best = prices[0]
+                const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
+                return (
                 <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/50">
-                  <td className="px-4 py-2 font-medium">{item.product_name}</td>
+                  <td className="px-4 py-2 font-medium">
+                    {item.product_name}
+                    {best && (
+                      <div className={`text-[11px] mt-0.5 font-normal ${cheaperElsewhere ? 'text-orange-600 font-semibold' : 'text-gray-400'}`}
+                        title={prices.slice(0, 5).map((p) => `${p.supplier_name}: ${(p.price / 100).toFixed(2)} грн`).join('\n')}>
+                        🏷 найдешевше: {(best.price / 100).toFixed(2)} грн — {best.supplier_name}
+                        {cheaperElsewhere && ` (дешевше за поточну на ${((item.purchase_price - best.price) / 100).toFixed(2)} грн)`}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-2 py-2">
                     <input type="text" value={item.storage_bin ?? ''}
                       onChange={(e) => updateItem(i, 'storage_bin', e.target.value)}
@@ -327,7 +347,8 @@ export default function InvoiceFormPage() {
                     )}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
               {items.length === 0 && (
                 <tr><td colSpan={7} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}

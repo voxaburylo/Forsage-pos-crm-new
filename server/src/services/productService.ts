@@ -264,6 +264,38 @@ export async function deleteProduct(id: string) {
   await searchCache.clear()
 }
 
+/**
+ * Порівняння закупівельних цін постачальників по товару:
+ * остання ціна кожного постачальника з проведених накладних, від найдешевшої.
+ */
+export async function getSupplierPrices(productId: string, tenantId: string) {
+  const { data, error } = await db
+    .from('supply_invoice_items')
+    .select('purchase_price, created_at, invoice:supply_invoices!inner(tenant_id, status, posted_at, supplier:suppliers(id, name))')
+    .eq('product_id', productId)
+    .eq('invoice.tenant_id', tenantId)
+    .eq('invoice.status', 'posted')
+    .order('created_at', { ascending: false })
+    .limit(100)
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+  // остання ціна по кожному постачальнику
+  const bySupplier = new Map<string, { supplier_id: string; supplier_name: string; price: number; date: string }>()
+  for (const row of data ?? []) {
+    const supplier = (row.invoice as any)?.supplier
+    if (!supplier?.id || bySupplier.has(supplier.id)) continue
+    bySupplier.set(supplier.id, {
+      supplier_id: supplier.id,
+      supplier_name: supplier.name,
+      price: row.purchase_price,
+      date: (row.invoice as any)?.posted_at ?? row.created_at,
+    })
+  }
+
+  return [...bySupplier.values()].sort((a, b) => a.price - b.price)
+}
+
 export async function searchForPOS(q: string, limit: number) {
   // Делегуємо в searchService — там буде нарощуватись логіка пошуку
   const { searchProductsForPOS } = await import('./searchService.js')

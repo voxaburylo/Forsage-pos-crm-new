@@ -111,6 +111,13 @@ export async function search(req: Request, res: Response, next: NextFunction) {
   } catch (err) { next(err) }
 }
 
+export async function getSupplierPrices(req: Request, res: Response, next: NextFunction) {
+  try {
+    const data = await productService.getSupplierPrices(String(req.params.id), req.user!.tenant_id)
+    res.json({ data })
+  } catch (err) { next(err) }
+}
+
 export async function getFavorites(_req: Request, res: Response, next: NextFunction) {
   try {
     const { data, error } = await db

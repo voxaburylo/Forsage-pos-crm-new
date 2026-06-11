@@ -1,4 +1,4 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import * as productController from '../controllers/productController.js'
 
@@ -72,6 +72,9 @@ router.get('/:id/fitment', productController.getFitment)
 
 // GET /api/v1/products/:id/history — історія товару (ціни + рух)
 router.get('/:id/history', requireRole('owner', 'admin', 'manager'), productController.getHistory)
+
+// GET /api/v1/products/:id/supplier-prices — порівняння закупівельних цін постачальників
+router.get('/:id/supplier-prices', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.getSupplierPrices)
 
 // POST /api/v1/products/:id/generate-barcode — генерувати внутрішній штрих-код
 router.post('/:id/generate-barcode', requireRole('owner', 'admin', 'storekeeper'), productController.generateBarcode)

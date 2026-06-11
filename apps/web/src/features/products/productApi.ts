@@ -131,6 +131,9 @@ export const productApi = {
   getHistory: (id: string) =>
     api.get<{ data: any[] }>(`/api/v1/products/${id}/history`),
 
+  getSupplierPrices: (id: string) =>
+    api.get<{ data: Array<{ supplier_id: string; supplier_name: string; price: number; date: string }> }>(`/api/v1/products/${id}/supplier-prices`),
+
   getCobuy: (id: string) =>
     api.get<any[]>(`/api/v1/products/${id}/cobuy`),
 
