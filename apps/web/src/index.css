@@ -222,3 +222,46 @@ body {
     border-left: 1px solid #2a2a2a;
   }
 }
+
+
+/* ========== Mobile styling fixes (tap & autofill) ========== */
+
+/* Remove default dark tap highlight on mobile links/buttons/inputs */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Ensure inputs have default background and text colors to prevent dark mode system overrides */
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not(.pos-theme *),
+textarea:not(.pos-theme *),
+select:not(.pos-theme *) {
+  background-color: #ffffff !important;
+  color: #111827 !important;
+}
+
+/* Override browser default autofill backgrounds (avoiding ugly black/yellow/blue autofill styles) */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #111827 !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Dark theme (POS) overrides for inputs and autofill */
+.pos-theme input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]),
+.pos-theme textarea,
+.pos-theme select {
+  background-color: var(--color-surface-pos) !important;
+  color: #F5F5F5 !important;
+}
+
+.pos-theme input:-webkit-autofill,
+.pos-theme input:-webkit-autofill:hover, 
+.pos-theme input:-webkit-autofill:focus, 
+.pos-theme input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px var(--color-surface-pos) inset !important;
+  -webkit-text-fill-color: #F5F5F5 !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
