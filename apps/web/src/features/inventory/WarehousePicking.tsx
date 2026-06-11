@@ -135,7 +135,14 @@ export default function WarehousePicking() {
       )
     }
 
-    const warehouseItems = currentOrder.items.filter(i => i.source_type === 'warehouse')
+    const warehouseItems = currentOrder.items
+      .filter(i => i.source_type === 'warehouse')
+      .sort((a, b) => {
+        if (!a.storage_bin && !b.storage_bin) return 0
+        if (!a.storage_bin) return 1
+        if (!b.storage_bin) return -1
+        return a.storage_bin.localeCompare(b.storage_bin, undefined, { numeric: true, sensitivity: 'base' })
+      })
     const supplierItems = currentOrder.items.filter(i => i.source_type === 'supplier')
     
     const pickedCount = warehouseItems.filter(i => i.item_status === 'arrived').length

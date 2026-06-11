@@ -5,7 +5,20 @@ import type { EnrichedCustomerOrder, EnrichedOrderItem } from "@/features/invent
 export function printPickingList(order: EnrichedCustomerOrder, shopName = "ФОРСАЖ") {
   const groups: Record<string, EnrichedOrderItem[]> = {}
 
-  order.items.forEach(item => {
+  const sortedItems = [...order.items].sort((a, b) => {
+    if (a.source_type !== b.source_type) {
+      return a.source_type === "warehouse" ? -1 : 1
+    }
+    if (a.source_type === "warehouse") {
+      if (!a.storage_bin && !b.storage_bin) return 0
+      if (!a.storage_bin) return 1
+      if (!b.storage_bin) return -1
+      return a.storage_bin.localeCompare(b.storage_bin, undefined, { numeric: true, sensitivity: "base" })
+    }
+    return 0
+  })
+
+  sortedItems.forEach(item => {
     let key = ""
     if (item.source_type === "supplier") {
       key = "Під замовлення (Постачальник)"

@@ -42,9 +42,10 @@ interface ItemRow {
   product_id?: string | null
   stock?:      number
   item_type?:  'product' | 'service'
+  buy_price?:  string
 }
 
-const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product' }
+const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product', buy_price: '0' }
 
 export default function OrderFormPage() {
   const navigate = useNavigate()
@@ -215,6 +216,7 @@ export default function OrderFormPage() {
             expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
             product_id: item.product_id ?? null,
             item_type: item.item_type ?? 'product',
+            buy_price: item.buy_price ? (item.buy_price / 100).toString() : '0',
           })))
         }
       })
@@ -435,6 +437,7 @@ export default function OrderFormPage() {
         name: p.name,
         sku: p.sku ?? '',
         sell_price: kopecksToHryvnia(p.retail_price),
+        buy_price: p.purchase_price ? kopecksToHryvnia(p.purchase_price) : '0',
         product_id: p.id,
         stock: p.qty_available ?? p.qty_on_hand ?? 0,
         item_type: p.is_service ? 'service' : 'product',
@@ -451,12 +454,13 @@ export default function OrderFormPage() {
   }
 
   // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок + тип (ORD-24)
-  function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number; is_service?: boolean }) {
+  function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number; is_service?: boolean; purchase_price?: number }) {
     setItems((rows) => rows.map((row, idx) => idx === i ? {
       ...row,
       name: p.name,
       sku: p.sku ?? '',
       sell_price: kopecksToHryvnia(p.retail_price),
+      buy_price: p.purchase_price ? kopecksToHryvnia(p.purchase_price) : '0',
       product_id: p.id,
       stock: p.qty_available ?? p.qty_on_hand ?? 0,
       item_type: p.is_service ? 'service' : 'product',
@@ -560,7 +564,7 @@ export default function OrderFormPage() {
         product_id:  row.product_id || null,
         qty:         parseFloat(row.qty) || 1,
         sell_price:  Math.round(parseFloat(row.sell_price || '0') * 100),
-        buy_price:   0,
+        buy_price:   row.supplier_id ? Math.round(parseFloat(row.buy_price || '0') * 100) : 0,
         supplier_id: row.supplier_id || null,
         source_type: row.supplier_id ? 'supplier' : 'warehouse',
         item_type:   row.item_type ?? 'product',
@@ -987,6 +991,12 @@ export default function OrderFormPage() {
                       <input value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна"
                         className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
                     </div>
+                    {row.supplier_id && (
+                      <div className="mt-1">
+                        <input value={row.buy_price || ''} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна закупівлі (грн)"
+                          className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
+                      </div>
+                    )}
                     <select value={row.supplier_id} onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
                       className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400">
                       <option value="">Наявність на складі</option>
@@ -1009,7 +1019,8 @@ export default function OrderFormPage() {
                       <th className="px-4 py-3">Назва запчастини / роботи</th>
                       <th className="px-4 py-3 w-40">Артикул / SKU</th>
                       <th className="px-4 py-3 w-24">К-сть</th>
-                      <th className="px-4 py-3 w-36">Ціна (грн)</th>
+                      <th className="px-4 py-3 w-32">Ціна (грн)</th>
+                      <th className="px-4 py-3 w-32">Закупка (грн)</th>
                       <th className="px-4 py-3 w-48">Постачальник</th>
                       <th className="px-4 py-3 w-10 text-center"></th>
                     </tr>
@@ -1075,6 +1086,21 @@ export default function OrderFormPage() {
                             required
                             className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold"
                           />
+                        </td>
+                        <td className="px-4 py-3">
+                          {row.supplier_id ? (
+                            <input
+                              value={row.buy_price || ''}
+                              onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
+                              type="number"
+                              min="0"
+                              step="any"
+                              placeholder="Закупка"
+                              className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right"
+                            />
+                          ) : (
+                            <span className="text-gray-400 text-xs block text-center">-</span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <select
