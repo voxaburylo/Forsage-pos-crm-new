@@ -89,7 +89,7 @@ export const settingsSchema = z.object({
   return_days:               z.number().int().min(1).max(365).optional(),
   default_debt_limit_kopecks: z.number().int().min(0).optional(),
   label_settings:            labelSettingsSchema.optional(),
-  pos_quick_items:           z.array(quickItemSchema).optional().default([]),
+  pos_quick_items:           z.array(quickItemSchema).optional(),
   markup_rules:              z.array(markupRuleSchema).optional(),
   employee_discount_pct:     z.number().min(0).max(100).optional(),
 })
