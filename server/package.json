@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "seed": "tsx src/seed.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:core-returns": "node tests/core_returns.test.mjs"
   },
   "dependencies": {
     "@crm-forsage/shared": "workspace:*",
@@ -40,6 +41,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.1",
     "@types/ioredis": "^5.0.0",
     "@vitest/coverage-v8": "^4.1.8",
     "vitest": "^4.1.8"
