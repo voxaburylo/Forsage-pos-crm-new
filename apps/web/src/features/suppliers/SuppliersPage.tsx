@@ -1,11 +1,11 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Truck } from 'lucide-react'
+import { Plus, Truck, GitMerge } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import type { Supplier, PaginatedSuppliers, SupplierDebtsResult } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
 import { useAuthStore } from '@/stores/authStore'
-import { Button, Badge, Card, SearchInput, Table } from '@/components/ui'
+import { Button, Badge, Card, SearchInput, Table, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 
@@ -26,6 +26,12 @@ export default function SuppliersPage() {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [debts, setDebts]       = useState<SupplierDebtsResult | null>(null)
   const [showDebts, setShowDebts] = useState(false)
+  const [mergeOpen, setMergeOpen] = useState(false)
+  const [mergePrimary, setMergePrimary] = useState('')
+  const [mergeDuplicate, setMergeDuplicate] = useState('')
+  const [merging, setMerging] = useState(false)
+  const [allSuppliers, setAllSuppliers] = useState<Supplier[]>([])
+  const canManage = role === 'owner' || role === 'admin'
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -44,6 +50,29 @@ export default function SuppliersPage() {
   useEffect(() => {
     supplierApi.getDebts().then((r) => setDebts(r.data)).catch(() => {})
   }, [])
+
+  // Повний список для вибору в злитті дублів
+  function loadAllSuppliers() {
+    supplierApi.list({ per_page: 500 }).then((r) => setAllSuppliers(r.data)).catch(() => {})
+  }
+
+  async function handleMerge() {
+    if (!mergePrimary || !mergeDuplicate) { toast.error('Оберіть обох постачальників'); return }
+    if (mergePrimary === mergeDuplicate) { toast.error('Це той самий постачальник'); return }
+    setMerging(true)
+    try {
+      await supplierApi.merge(mergePrimary, mergeDuplicate)
+      toast.success('Постачальників об’єднано')
+      setMergeOpen(false)
+      setMergePrimary(''); setMergeDuplicate('')
+      load()
+      supplierApi.getDebts().then((r) => setDebts(r.data)).catch(() => {})
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка об’єднання')
+    } finally {
+      setMerging(false)
+    }
+  }
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Видалити постачальника "${name}"?`)) return
@@ -107,9 +136,17 @@ export default function SuppliersPage() {
     <Layout
       title={`Постачальники${total ? ` (${total})` : ''}`}
       actions={
-        <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/new')}>
-          Додати
-        </Button>
+        <div className="flex gap-2">
+          {canManage && (
+            <Button variant="outline" icon={<GitMerge size={16} />}
+              onClick={() => { setMergeOpen(true); loadAllSuppliers() }}>
+              Об’єднати дублі
+            </Button>
+          )}
+          <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/new')}>
+            Додати
+          </Button>
+        </div>
       }
     >
       {/* Борги перед постачальниками */}
@@ -181,6 +218,37 @@ export default function SuppliersPage() {
           </div>
         )}
       </Card>
+
+      {/* Об'єднання дублів постачальників */}
+      <Modal open={mergeOpen} onClose={() => setMergeOpen(false)} title="Об’єднати дублі постачальників" size="md">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Усі накладні, замовлення та борги дубліката перейдуть до основного постачальника. Дублікат буде прибрано зі списку.
+          </p>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Залишити (основний)</label>
+            <select value={mergePrimary} onChange={(e) => setMergePrimary(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
+              <option value="">— Оберіть —</option>
+              {allSuppliers.map((s) => <option key={s.id} value={s.id}>{s.name}{s.phone ? ` (${s.phone})` : ''}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Приєднати та видалити (дублікат)</label>
+            <select value={mergeDuplicate} onChange={(e) => setMergeDuplicate(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
+              <option value="">— Оберіть —</option>
+              {allSuppliers.filter((s) => s.id !== mergePrimary).map((s) => <option key={s.id} value={s.id}>{s.name}{s.phone ? ` (${s.phone})` : ''}</option>)}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setMergeOpen(false)}>Скасувати</Button>
+            <Button loading={merging} onClick={handleMerge} disabled={!mergePrimary || !mergeDuplicate}>
+              Об’єднати
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }

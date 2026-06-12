@@ -43,6 +43,12 @@ export const supplierApi = {
   delete: (id: string) =>
     api.delete<void>(`/api/v1/suppliers/${id}`),
 
+  merge: (primaryId: string, duplicateId: string) =>
+    api.post<{ data: Supplier }>('/api/v1/suppliers/merge', {
+      primary_supplier_id: primaryId,
+      duplicate_supplier_id: duplicateId,
+    }),
+
   // Борги перед постачальниками
   getDebts: () =>
     api.get<{ data: SupplierDebtsResult }>('/api/v1/suppliers/debts'),

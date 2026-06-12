@@ -81,6 +81,49 @@ export async function updateSupplier(id: string, input: UpdateSupplierInput, ten
   return data
 }
 
+/**
+ * Злиття дублікатів постачальників: усі посилання (накладні, замовлення, PO,
+ * прайси тощо) переносяться на основного, дублікат — soft-delete.
+ * Посилання знаходимо динамічно по всіх таблицях із колонкою supplier_id —
+ * щоб нічого не загубити при появі нових таблиць.
+ */
+export async function mergeSuppliers(primaryId: string, duplicateId: string, tenantId: string) {
+  if (primaryId === duplicateId) {
+    throw new AppError('SAME_SUPPLIER', 'Не можна злити постачальника з самим собою', 400)
+  }
+
+  const { data: both, error: bothErr } = await db
+    .from(SUPPLIER_TABLE)
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .in('id', [primaryId, duplicateId])
+  if (bothErr) throw new AppError('DB_ERROR', bothErr.message, 500)
+  if (!both || both.length !== 2) throw new AppError('NOT_FOUND', 'Постачальника не знайдено', 404)
+
+  await runTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT table_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND column_name = 'supplier_id'`
+    )
+    for (const row of rows) {
+      const table = String(row.table_name)
+      if (!/^[a-z_][a-z0-9_]*$/.test(table)) continue // захист від некоректних імен
+      await client.query(
+        `UPDATE public.${table} SET supplier_id = $1 WHERE supplier_id = $2`,
+        [primaryId, duplicateId]
+      )
+    }
+    await client.query(
+      `UPDATE suppliers SET deleted_at = NOW(), is_active = false, updated_at = NOW()
+       WHERE id = $1 AND tenant_id = $2`,
+      [duplicateId, tenantId]
+    )
+  })
+
+  return getSupplier(primaryId, tenantId)
+}
+
 export async function deleteSupplier(id: string, tenantId: string) {
   await getSupplier(id, tenantId)
   const { error } = await db

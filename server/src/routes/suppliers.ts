@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -131,6 +132,22 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
     const parsed = updateSupplierSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані постачальника', 422, parsed.error.flatten())
     const supplier = await supplierService.updateSupplier(String(req.params.id), parsed.data, req.user!.tenant_id)
+    res.json({ data: supplier })
+  } catch (err) { next(err) }
+})
+
+// POST /api/v1/suppliers/merge — злиття дублікатів
+router.post('/merge', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const schema = z.object({
+      primary_supplier_id: z.string().uuid(),
+      duplicate_supplier_id: z.string().uuid(),
+    })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    const supplier = await supplierService.mergeSuppliers(
+      parsed.data.primary_supplier_id, parsed.data.duplicate_supplier_id, req.user!.tenant_id,
+    )
     res.json({ data: supplier })
   } catch (err) { next(err) }
 })
