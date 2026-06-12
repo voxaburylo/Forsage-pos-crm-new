@@ -79,6 +79,33 @@ export default function ProductsPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [bulkPrintOpen, setBulkPrintOpen] = useState(false)
   const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
+  // Інлайн-редагування ціни прямо у списку (без переходу в картку)
+  const [editPriceId, setEditPriceId] = useState<string | null>(null)
+  const [priceDraft, setPriceDraft]   = useState('')
+  const [savingPrice, setSavingPrice] = useState(false)
+
+  function startEditPrice(p: Product) {
+    setEditPriceId(p.id)
+    setPriceDraft(kopecksToHryvnia(p.retail_price))
+  }
+
+  async function saveEditPrice(p: Product) {
+    const val = parseFloat(priceDraft.replace(',', '.'))
+    if (isNaN(val) || val < 0) { toast.error('Невірна ціна'); setEditPriceId(null); return }
+    if (kopecksToHryvnia(p.retail_price) === priceDraft.trim()) { setEditPriceId(null); return }
+    setSavingPrice(true)
+    try {
+      await productApi.update(p.id, { retail_price: String(val) })
+      // оновлюємо локально, без перезавантаження списку
+      setResult((prev) => prev ? { ...prev, data: prev.data.map((x) => x.id === p.id ? { ...x, retail_price: Math.round(val * 100) } : x) } : prev)
+      toast.success('Ціну оновлено')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка збереження')
+    } finally {
+      setSavingPrice(false)
+      setEditPriceId(null)
+    }
+  }
 
   // Завантаження категорій та брендів
   const loadMeta = useCallback(() => {
@@ -413,7 +440,24 @@ export default function ProductsPage() {
                             ? <span className="text-xs text-gray-500 font-mono bg-gray-50 px-1.5 py-0.5 rounded border border-gray-200">📍 {p.storage_bin}</span>
                             : <span className="text-gray-300 text-xs">—</span>}
                         </td>
-                        <td className="px-3 py-3 text-right font-bold text-sm text-gray-800">{kopecksToHryvnia(p.retail_price)} ₴</td>
+                        <td className="px-3 py-3 text-right font-bold text-sm text-gray-800">
+                          {editPriceId === p.id ? (
+                            <input
+                              type="number" min="0" step="0.01" autoFocus
+                              value={priceDraft}
+                              disabled={savingPrice}
+                              onChange={(e) => setPriceDraft(e.target.value)}
+                              onBlur={() => saveEditPrice(p)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') saveEditPrice(p); if (e.key === 'Escape') setEditPriceId(null) }}
+                              className="w-24 border border-yellow-400 rounded px-1.5 py-0.5 text-right text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                            />
+                          ) : (
+                            <button onClick={() => startEditPrice(p)} title="Клік — змінити ціну"
+                              className="hover:bg-yellow-50 rounded px-1.5 py-0.5 transition-colors cursor-text">
+                              {kopecksToHryvnia(p.retail_price)} ₴
+                            </button>
+                          )}
+                        </td>
                         <td className="px-3 py-3 text-right text-sm">
                           <div className="flex flex-col items-end">
                             <div className="flex items-center gap-1">
