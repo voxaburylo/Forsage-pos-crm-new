@@ -476,6 +476,14 @@ export default function WarehousePicking() {
           </Button>
         </div>
 
+        {/* Пояснення логіки збірки */}
+        <div className="bg-blue-50/60 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-900/80 leading-relaxed">
+          <span className="font-semibold">Як це працює:</span> комірник відкриває замовлення →
+          сканує або відмічає кожну позицію зі складу як «зібрано» (можна друкувати лист збірки з комірками) →
+          вкінці вводить № комірки видачі, куди поклав зібране. Після цього замовлення готове до видачі на касі.
+          «Очікують деталі» — позиції, які ще їдуть від постачальника.
+        </div>
+
         <Card className="shadow-sm border border-gray-100 bg-white">
           <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
             {/* Пошук по замовленнях */}
@@ -501,7 +509,7 @@ export default function WarehousePicking() {
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
-                Всі (${orders.length})
+                Всі ({orders.length})
               </button>
               <button
                 type="button"
@@ -512,7 +520,7 @@ export default function WarehousePicking() {
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
-                Готові (${orders.filter(o => getOrderReadyStatus(o) === 'ready').length})
+                Готові ({orders.filter(o => getOrderReadyStatus(o) === 'ready').length})
               </button>
               <button
                 type="button"
@@ -523,7 +531,7 @@ export default function WarehousePicking() {
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
-                Очікують деталі (${orders.filter(o => getOrderReadyStatus(o) === 'pending_supplier').length})
+                Очікують деталі ({orders.filter(o => getOrderReadyStatus(o) === 'pending_supplier').length})
               </button>
             </div>
           </div>
