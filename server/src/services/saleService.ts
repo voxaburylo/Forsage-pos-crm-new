@@ -662,6 +662,14 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       } catch (notifyErr: any) {
         logger.error({ orderId: input.customer_order_id, error: notifyErr?.message || String(notifyErr) }, 'Failed to send completion notification')
       }
+    } else {
+      // Прямий продаж на касі (без замовлення) — комісія за категоріями продавцям
+      try {
+        const { calculateSaleCommission } = await import('./commissionService.js')
+        await calculateSaleCommission(sale.id, tenantId, cashierId)
+      } catch (commErr: any) {
+        logger.error({ saleId: sale.id, error: commErr?.message || String(commErr) }, 'Failed to calculate sale commission')
+      }
     }
 
     return sale

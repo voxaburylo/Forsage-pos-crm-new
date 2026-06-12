@@ -284,6 +284,22 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
   }
 
   // ==================================================================
+  // 5.6. Сторно комісії за повернені позиції (щоб менеджеру не лишалась
+  //      зарплата за товар, який клієнт повернув)
+  // ==================================================================
+  try {
+    const { reverseCommissionForReturn } = await import('./commissionService.js')
+    await reverseCommissionForReturn(
+      input.sale_id,
+      input.items.map((i: any) => ({ product_id: i.product_id, quantity: i.quantity, sale_item_id: i.sale_item_id })),
+      tenantId,
+      userId,
+    )
+  } catch (err) {
+    logger.error({ error: err instanceof Error ? err.message : err, saleId: input.sale_id }, 'Failed to reverse commission on return')
+  }
+
+  // ==================================================================
   // 6. Аудит (await — гарантуємо запис)
   // ==================================================================
   await logAction({
