@@ -7,7 +7,7 @@ import { pricingApi } from '@/features/admin/pricingApi'
 import { adminApi } from '@/features/admin/adminApi'
 import type { Product, ProductFormData } from '@/types/product'
 import { Layout } from '@/components/Layout'
-import { Button, Input, Card } from '@/components/ui'
+import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 
@@ -42,6 +42,10 @@ export default function InvoiceFormPage() {
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
   const [quickPercents, setQuickPercents] = useState<number[]>([])
+  const [supplierModal, setSupplierModal] = useState(false)
+  const [newSupplierName, setNewSupplierName] = useState('')
+  const [newSupplierPhone, setNewSupplierPhone] = useState('')
+  const [creatingSupplier, setCreatingSupplier] = useState(false)
 
   // Завантажуємо постачальників
   useEffect(() => {
@@ -184,6 +188,31 @@ export default function InvoiceFormPage() {
     })
   }
 
+  async function handleCreateSupplier() {
+    if (!newSupplierName.trim()) {
+      toast.error('Назва постачальника обов’язкова')
+      return
+    }
+    setCreatingSupplier(true)
+    try {
+      const res = await supplierApi.create({
+        name: newSupplierName.trim(),
+        phone: newSupplierPhone.trim() || null
+      })
+      toast.success('Постачальника створено')
+      const newSup = res.data
+      setSuppliers((prev) => [...prev, newSup])
+      setSupplierId(newSup.id)
+      setSupplierModal(false)
+      setNewSupplierName('')
+      setNewSupplierPhone('')
+    } catch (err) {
+      toast.error('Помилка створення постачальника')
+    } finally {
+      setCreatingSupplier(false)
+    }
+  }
+
   function removeItem(index: number) {
     setItems((prev) => prev.filter((_, i) => i !== index))
   }
@@ -252,12 +281,21 @@ export default function InvoiceFormPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Постачальник *</label>
-                <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                  disabled={isEdit}>
-                  <option value="">— Оберіть —</option>
-                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                <div className="flex gap-2">
+                  <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                    disabled={isEdit}>
+                    <option value="">— Оберіть —</option>
+                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  {!isEdit && (
+                    <button type="button" onClick={() => setSupplierModal(true)}
+                      className="px-3.5 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold text-sm rounded-lg transition-colors"
+                      title="Швидке створення постачальника">
+                      +
+                    </button>
+                  )}
+                </div>
               </div>
               <Input label="№ накладної" value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="Номер від постачальника" />
             </div>
@@ -279,27 +317,38 @@ export default function InvoiceFormPage() {
             {!isEdit && (
               <div className="flex flex-wrap items-center gap-2">
                 {items.length > 0 && (
-                  <div className="flex items-center gap-2 mr-auto flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
-                    <button type="button" onClick={() => recalcRetail(undefined, true)}
-                      className="px-2 py-1 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-700 text-xs font-semibold rounded-lg transition-colors border border-yellow-500/20"
-                      title="Розрахувати роздрібні ціни за сіткою націнок (від-до з налаштувань)">
-                      📈 За сіткою
-                    </button>
-                    {quickPercents.length > 0 && (
-                      <div className="flex items-center gap-1 border-l border-gray-300 pl-2 ml-1">
-                        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mr-1">Швидкі %:</span>
-                        {quickPercents.map((pct, i) => (
-                          <button
-                            key={i}
-                            type="button"
-                            onClick={() => applyBulkQuickPercent(pct)}
-                            className="px-2 py-1 bg-white hover:bg-gray-100 text-gray-800 text-xs font-medium rounded transition-colors shadow-sm border border-gray-200"
-                          >
-                            {pct}%
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                  <div className="flex items-center gap-2 mr-auto flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5">
+                    <span className="text-xs text-gray-500 font-medium">Групова націнка:</span>
+                    <select
+                      onChange={(e) => {
+                        const val = e.target.value
+                        if (val === 'grid') {
+                          recalcRetail(undefined, true)
+                        } else if (val.startsWith('pct:')) {
+                          const pct = parseFloat(val.split(':')[1])
+                          applyBulkQuickPercent(pct)
+                        } else if (val === 'manual') {
+                          const customPct = prompt('Введіть свій відсоток націнки (%):')
+                          if (customPct !== null) {
+                            const pct = parseFloat(customPct)
+                            if (!isNaN(pct) && pct > 0) {
+                              applyBulkQuickPercent(pct)
+                            }
+                          }
+                        }
+                        e.target.value = '' // reset select
+                      }}
+                      className="border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white"
+                    >
+                      <option value="">— Застосувати до всіх —</option>
+                      <option value="grid">📈 Розрахувати за сіткою</option>
+                      {quickPercents.map((pct) => (
+                        <option key={pct} value={`pct:${pct}`}>
+                          ⚡ {pct}% націнки
+                        </option>
+                      ))}
+                      <option value="manual">✍️ Свій відсоток націнки...</option>
+                    </select>
                   </div>
                 )}
                 <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
@@ -407,18 +456,21 @@ export default function InvoiceFormPage() {
                         disabled={isEdit}
                         className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
                       {!isEdit && quickPercents.length > 0 && (
-                        <div className="flex flex-wrap justify-end gap-1">
-                          {quickPercents.map((pct, pIdx) => (
-                            <button
-                              key={pIdx}
-                              type="button"
-                              onClick={() => applySingleQuickPercent(i, pct)}
-                              className="text-[10px] leading-none px-1 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-200 hover:text-blue-700 rounded transition-colors"
-                            >
-                              {pct}%
-                            </button>
+                        <select
+                          onChange={(e) => {
+                            const val = e.target.value
+                            if (val) {
+                              applySingleQuickPercent(i, parseFloat(val))
+                              e.target.value = ''
+                            }
+                          }}
+                          className="mt-1 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white w-24"
+                        >
+                          <option value="">⚡ Швидкий %</option>
+                          {quickPercents.map((pct) => (
+                            <option key={pct} value={pct}>{pct}%</option>
                           ))}
-                        </div>
+                        </select>
                       )}
                     </div>
                   </td>
@@ -453,6 +505,20 @@ export default function InvoiceFormPage() {
           <Button type="button" variant="outline" onClick={() => navigate('/suppliers/invoices')}>Скасувати</Button>
         </div>
       </form>
+
+      {/* Швидке створення постачальника */}
+      <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
+        <div className="space-y-4">
+          <Input label="Назва постачальника *" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="ТОВ Запчастини..." required />
+          <Input label="Телефон" value={newSupplierPhone} onChange={(e) => setNewSupplierPhone(e.target.value)} placeholder="+380..." />
+          <div className="flex gap-3">
+            <Button loading={creatingSupplier} onClick={handleCreateSupplier} className="flex-1">
+              Створити
+            </Button>
+            <Button variant="secondary" onClick={() => setSupplierModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }
