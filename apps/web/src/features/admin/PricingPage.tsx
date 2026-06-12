@@ -43,6 +43,22 @@ export default function PricingPage() {
     setMarkupRules([...markupRules, { minPrice: 0, maxPrice: 99999, markupPct: 30 }])
   }
 
+  function applyDefaultTemplate() {
+    setMarkupRules([
+      { minPrice: 0, maxPrice: 10, markupPct: 200 },
+      { minPrice: 10, maxPrice: 20, markupPct: 150 },
+      { minPrice: 20, maxPrice: 30, markupPct: 100 },
+      { minPrice: 30, maxPrice: 40, markupPct: 80 },
+      { minPrice: 40, maxPrice: 50, markupPct: 70 },
+      { minPrice: 50, maxPrice: 60, markupPct: 60 },
+      { minPrice: 60, maxPrice: 70, markupPct: 50 },
+      { minPrice: 70, maxPrice: 80, markupPct: 45 },
+      { minPrice: 80, maxPrice: 90, markupPct: 40 },
+      { minPrice: 90, maxPrice: 100, markupPct: 35 },
+      { minPrice: 100, maxPrice: 999999, markupPct: 30 }
+    ])
+  }
+
   function updateRule(index: number, field: keyof MarkupRule, value: string) {
     const val = parseFloat(value) || 0
     const newRules = [...markupRules]
@@ -136,14 +152,19 @@ export default function PricingPage() {
 
         {/* Сітка цін */}
         <Card className="flex flex-col h-full">
-          <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+          <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="font-bold text-gray-900 text-lg">Сітка націнок</h2>
               <p className="text-sm text-gray-500 mt-1">Автоматична націнка залежно від закупівельної ціни</p>
             </div>
-            <Button variant="secondary" onClick={addMarkupRule} icon={<Plus size={16} />}>
-              Додати діапазон
-            </Button>
+            <div className="flex gap-2 shrink-0">
+              <Button variant="secondary" size="sm" onClick={applyDefaultTemplate}>
+                Шаблон 200%-30%
+              </Button>
+              <Button variant="secondary" size="sm" onClick={addMarkupRule} icon={<Plus size={16} />}>
+                Додати
+              </Button>
+            </div>
           </div>
           <div className="p-0 flex-1 overflow-x-auto">
             {markupRules.length === 0 ? (
