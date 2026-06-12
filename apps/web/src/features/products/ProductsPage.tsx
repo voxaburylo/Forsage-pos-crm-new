@@ -84,6 +84,9 @@ export default function ProductsPage() {
   const [editPriceId, setEditPriceId] = useState<string | null>(null)
   const [priceDraft, setPriceDraft]   = useState('')
   const [savingPrice, setSavingPrice] = useState(false)
+  const [editBinId, setEditBinId]     = useState<string | null>(null)
+  const [binDraft, setBinDraft]       = useState('')
+  const [savingBin, setSavingBin]     = useState(false)
 
   function startEditPrice(p: Product) {
     setEditPriceId(p.id)
@@ -105,6 +108,23 @@ export default function ProductsPage() {
     } finally {
       setSavingPrice(false)
       setEditPriceId(null)
+    }
+  }
+
+  // Інлайн-редагування комірки (місця зберігання) прямо у списку
+  async function saveEditBin(p: Product) {
+    const val = binDraft.trim()
+    if ((p.storage_bin ?? '') === val) { setEditBinId(null); return }
+    setSavingBin(true)
+    try {
+      await productApi.update(p.id, { storage_bin: val })
+      setResult((prev) => prev ? { ...prev, data: prev.data.map((x) => x.id === p.id ? { ...x, storage_bin: val } : x) } : prev)
+      toast.success('Комірку оновлено')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка збереження')
+    } finally {
+      setSavingBin(false)
+      setEditBinId(null)
     }
   }
 
@@ -437,9 +457,25 @@ export default function ProductsPage() {
                         </td>
                         <td className="px-3 py-3 text-sm text-gray-500">{p.brand?.name ?? '—'}</td>
                         <td className="px-3 py-3">
-                          {p.storage_bin
-                            ? <span className="text-xs text-gray-500 font-mono bg-gray-50 px-1.5 py-0.5 rounded border border-gray-200">📍 {p.storage_bin}</span>
-                            : <span className="text-gray-300 text-xs">—</span>}
+                          {editBinId === p.id ? (
+                            <input
+                              type="text" autoFocus
+                              value={binDraft}
+                              disabled={savingBin}
+                              onChange={(e) => setBinDraft(e.target.value)}
+                              onBlur={() => saveEditBin(p)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') saveEditBin(p); if (e.key === 'Escape') setEditBinId(null) }}
+                              placeholder="A-12"
+                              className="w-20 border border-yellow-400 rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                            />
+                          ) : (
+                            <button onClick={() => { setEditBinId(p.id); setBinDraft(p.storage_bin ?? '') }} title="Клік — змінити комірку"
+                              className="hover:bg-yellow-50 rounded transition-colors cursor-text">
+                              {p.storage_bin
+                                ? <span className="text-xs text-gray-500 font-mono bg-gray-50 px-1.5 py-0.5 rounded border border-gray-200">📍 {p.storage_bin}</span>
+                                : <span className="text-gray-300 text-xs px-1.5 py-0.5">+ комірка</span>}
+                            </button>
+                          )}
                         </td>
                         <td className="px-3 py-3 text-right font-bold text-sm text-gray-800">
                           {editPriceId === p.id ? (
