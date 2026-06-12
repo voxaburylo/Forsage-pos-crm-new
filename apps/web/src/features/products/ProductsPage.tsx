@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
   ChevronUp, ChevronDown, ChevronsUpDown, Search,
-  Trash2,
+  Trash2, Eye, GitMerge, ExternalLink,
 } from 'lucide-react'
 import { MergeModal } from './MergeModal'
 import { CategorySidebar } from './CategorySidebar'
@@ -15,7 +15,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import type { Product, PaginatedProducts } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { Layout } from '@/components/Layout'
-import { Button, Badge, Modal, ConfirmDialog } from '@/components/ui'
+import { Button, Badge, Modal, ConfirmDialog, Drawer, SplitButton } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
@@ -76,6 +76,7 @@ export default function ProductsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen]     = useState(false)
   const [mergeProduct, setMergeProduct] = useState<Product | null>(null)
+  const [quickView, setQuickView] = useState<Product | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [bulkPrintOpen, setBulkPrintOpen] = useState(false)
   const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
@@ -477,16 +478,21 @@ export default function ProductsPage() {
                           <Badge color={STATUS_COLOR[stock]}>{STATUS_LABEL[stock]}</Badge>
                         </td>
                         <td className="px-3 py-3">
-                          <div className="flex items-center justify-end gap-1 whitespace-nowrap">
-                            <button onClick={() => navigate(`/products/${p.id}/edit`)}
-                              className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">Ред.</button>
-                            {isAdmin && (
-                              <>
-                                <button onClick={() => setMergeProduct(p)}
-                                  className="text-xs px-2 py-1 rounded-lg bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors font-medium">Злити</button>
-                                <button onClick={() => askDelete(p)}
-                                  className="text-xs px-2 py-1 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors font-medium">Видал.</button>
-                              </>
+                          <div className="flex items-center justify-end whitespace-nowrap">
+                            {isAdmin ? (
+                              <SplitButton
+                                size="sm"
+                                primaryLabel="Ред."
+                                onPrimary={() => navigate(`/products/${p.id}/edit`)}
+                                actions={[
+                                  { label: 'Швидкий перегляд', icon: <Eye size={14} />, onClick: () => setQuickView(p) },
+                                  { label: 'Злити дублі', icon: <GitMerge size={14} />, onClick: () => setMergeProduct(p) },
+                                  { label: 'Видалити', icon: <Trash2 size={14} />, danger: true, onClick: () => askDelete(p) },
+                                ]}
+                              />
+                            ) : (
+                              <button onClick={() => navigate(`/products/${p.id}/edit`)}
+                                className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">Ред.</button>
                             )}
                           </div>
                         </td>
@@ -618,6 +624,56 @@ export default function ProductsPage() {
         confirmLabel="Видалити"
         danger
       />
+
+      {/* Швидкий перегляд товару — бічна панель, список лишається видимим */}
+      <Drawer
+        open={quickView !== null}
+        onClose={() => setQuickView(null)}
+        title={quickView?.name}
+        footer={quickView && (
+          <div className="flex gap-2">
+            <Button className="flex-1" icon={<ExternalLink size={15} />}
+              onClick={() => navigate(`/products/${quickView.id}`)}>Відкрити повністю</Button>
+            <Button variant="outline" onClick={() => navigate(`/products/${quickView.id}/edit`)}>Редагувати</Button>
+          </div>
+        )}
+      >
+        {quickView && (
+          <div className="space-y-4">
+            {quickView.photo_url && (
+              <img src={quickView.photo_url} alt={quickView.name} className="w-full h-44 object-contain rounded-xl bg-gray-50 border border-gray-100" />
+            )}
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <Info label="Артикул" value={quickView.sku} mono />
+              <Info label="Штрихкод" value={quickView.barcode || '—'} mono />
+              <Info label="Бренд" value={quickView.brand?.name || '—'} />
+              <Info label="Категорія" value={quickView.category?.name || '—'} />
+              <Info label="Комірка" value={quickView.storage_bin || '—'} mono />
+              <Info label="Од." value={quickView.unit} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-gray-50 rounded-xl p-3">
+                <p className="text-xs text-gray-400 mb-0.5">Роздрібна ціна</p>
+                <p className="text-xl font-bold text-gray-900 nums-tabular">{kopecksToHryvnia(quickView.retail_price)} ₴</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl p-3">
+                <p className="text-xs text-gray-400 mb-0.5">Залишок</p>
+                <p className="text-xl font-bold text-gray-900 nums-tabular">{quickView.qty_available ?? quickView.qty_on_hand} {quickView.unit}</p>
+              </div>
+            </div>
+            {quickView.notes && <p className="text-sm text-gray-500 border-t border-gray-100 pt-3">{quickView.notes}</p>}
+          </div>
+        )}
+      </Drawer>
     </Layout>
+  )
+}
+
+function Info({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400 mb-0.5">{label}</p>
+      <p className={`text-gray-800 ${mono ? 'font-mono' : ''}`}>{value}</p>
+    </div>
   )
 }

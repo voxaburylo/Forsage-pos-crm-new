@@ -1,3 +1,5 @@
+import { TableSkeleton } from './Skeleton'
+
 interface Column<T> {
   key: string
   header: string
@@ -28,11 +30,7 @@ export function Table<T>({ columns, data, keyFn, loading, empty }: Props<T>) {
         </thead>
         <tbody className="divide-y divide-gray-50">
           {loading ? (
-            <tr>
-              <td colSpan={columns.length} className="px-4 py-12 text-center text-gray-400 text-sm">
-                Завантаження...
-              </td>
-            </tr>
+            <TableSkeleton rows={6} cols={columns.length} />
           ) : data.length === 0 ? (
             <tr>
               <td colSpan={columns.length} className="px-4 py-12 text-center text-gray-400 text-sm">

@@ -56,6 +56,17 @@ body {
 }
 .animate-slide-left { animation: slide-left 0.2s ease-out; }
 
+/* Мерехтіння для skeleton-заглушок */
+@keyframes shimmer {
+  0%   { opacity: 1; }
+  50%  { opacity: 0.45; }
+  100% { opacity: 1; }
+}
+.animate-shimmer { animation: shimmer 1.3s ease-in-out infinite; }
+
+/* Рівні колонки чисел/грошей у таблицях */
+.nums-tabular { font-variant-numeric: tabular-nums; }
+
 /* POS dark theme */
 .pos-theme {
   background-color: var(--color-bg-pos);

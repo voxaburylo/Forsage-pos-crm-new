@@ -198,6 +198,7 @@ export default function InvoiceFormPage() {
   // Оплата постачальнику
   const [paidAmount, setPaidAmount] = useState('')          // гривні (рядок форми)
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
   const [generatingBarcode, setGeneratingBarcode] = useState(false)
 
@@ -605,7 +606,7 @@ export default function InvoiceFormPage() {
         await supplierApi.updateInvoice(id!, { invoice_number: body.invoice_number, notes: body.notes })
         toast.success('Накладну оновлено')
       } else {
-        await supplierApi.createInvoice({
+        const created = await supplierApi.createInvoice({
           ...body,
           paid_amount: paidAmount ? Math.round(parseFloat(paidAmount) * 100) : 0,
           payment_method: paidAmount ? paymentMethod : null,
@@ -623,7 +624,16 @@ export default function InvoiceFormPage() {
             await productApi.update(item.product_id!, patch)
           })
         )
-        if (results.some((r) => r.status === 'rejected')) {
+
+        // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
+        if (postImmediately && created?.data?.id) {
+          try {
+            await supplierApi.postInvoice(created.data.id)
+            toast.success('Накладну створено і проведено — залишки оновлено')
+          } catch {
+            toast.warning('Накладну створено, але не вдалось провести — проведіть вручну зі списку')
+          }
+        } else if (results.some((r) => r.status === 'rejected')) {
           toast.warning('Накладну створено, але не всі комірки/ціни товарів оновились')
         } else {
           toast.success('Накладну створено')
@@ -983,11 +993,18 @@ export default function InvoiceFormPage() {
           </Card>
         )}
 
-        <div className="flex gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={saving}>
-            {saving ? 'Збереження...' : isEdit ? 'Оновити' : 'Створити'}
+            {saving ? 'Збереження...' : isEdit ? 'Оновити' : postImmediately ? 'Створити і провести' : 'Створити чернетку'}
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/suppliers/invoices')}>Скасувати</Button>
+          {!isEdit && (
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-1">
+              <input type="checkbox" checked={postImmediately} onChange={(e) => setPostImmediately(e.target.checked)}
+                className="w-4 h-4 accent-yellow-400" />
+              Провести одразу (оновити залишки)
+            </label>
+          )}
         </div>
       </form>
 
