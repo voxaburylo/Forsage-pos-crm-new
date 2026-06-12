@@ -17,6 +17,8 @@ export interface Customer {
   bonus_balance: number  // копійки
   vip_level: 'standard' | 'bronze' | 'silver' | 'gold'
   risk_profile: 'low' | 'medium' | 'high'
+  discount_pct?: number
+  client_status?: 'client' | 'sto'
   card_barcode: string | null
   primary_vin: string | null  // VIN першого авто
   created_at: string

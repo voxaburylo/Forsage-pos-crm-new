@@ -11,6 +11,8 @@ export interface Customer {
   price_tier_id?: string | null
   deleted_at?: string | null
   tenant_id: string
+  discount_pct?: number
+  client_status?: string
 }
 
 export interface ICustomerRepository {

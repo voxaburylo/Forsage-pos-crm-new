@@ -17,11 +17,13 @@ interface FormData {
   tags:          string[]
   price_tier_id: string
   card_barcode:  string
+  discount_pct:  string
+  client_status: string
 }
 
 const EMPTY: FormData = {
   phone: '', full_name: '', email: '', notes: '', tags: [], price_tier_id: '',
-  card_barcode: '',
+  card_barcode: '', discount_pct: '0', client_status: 'client',
 }
 
 export default function CustomerFormPage() {
@@ -51,6 +53,8 @@ export default function CustomerFormPage() {
         tags:          d.tags,
         price_tier_id: d.price_tier_id ?? '',
         card_barcode:  (d as any).card_barcode ?? '',
+        discount_pct:  String((d as any).discount_pct ?? 0),
+        client_status: (d as any).client_status ?? 'client',
       })
     }).catch(() => {
       toast.error('Клієнта не знайдено')
@@ -82,6 +86,8 @@ export default function CustomerFormPage() {
         notes:         form.notes || undefined,
         tags:          form.tags,
         price_tier_id: (form.price_tier_id || null) as string | null | undefined,
+        discount_pct:  Number(form.discount_pct) || 0,
+        client_status: form.client_status,
       }
       if (isEdit) {
         await customerApi.update(id, body)
@@ -117,6 +123,23 @@ export default function CustomerFormPage() {
             <Input label="Email" type="email"
               value={form.email} onChange={(e) => set('email', e.target.value)}
               placeholder="ivan@example.com" />
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
+                <input type="number" min="0" max="100" step="0.1"
+                  value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
+                <select value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                  <option value="client">Звичайний клієнт</option>
+                  <option value="sto">СТО</option>
+                </select>
+              </div>
+            </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>

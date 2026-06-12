@@ -40,6 +40,10 @@ export default function CustomerDetailPage() {
   const [deleting, setDeleting]       = useState(false)
   const [confirmingCarId, setConfirmingCarId] = useState<string | null>(null)
   const [customerOrders, setCustomerOrders] = useState<any[]>([])
+  const [discountModal, setDiscountModal] = useState(false)
+  const [discountVal, setDiscountVal] = useState('0')
+  const [statusVal, setStatusVal] = useState('client')
+  const [savingDiscount, setSavingDiscount] = useState(false)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -64,6 +68,35 @@ export default function CustomerDetailPage() {
   }, [id, navigate])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (customer) {
+      setDiscountVal(String((customer as any).discount_pct ?? 0))
+      setStatusVal((customer as any).client_status ?? 'client')
+    }
+  }, [customer])
+
+  async function handleSaveDiscountStatus() {
+    if (!customer) return
+    setSavingDiscount(true)
+    try {
+      await customerApi.update(customer.id, {
+        discount_pct: Number(discountVal) || 0,
+        client_status: statusVal,
+      } as any)
+      setCustomer((prev) => prev ? {
+        ...prev,
+        discount_pct: Number(discountVal) || 0,
+        client_status: statusVal as any
+      } : prev)
+      setDiscountModal(false)
+      toast.success('Знижку та статус оновлено')
+    } catch {
+      toast.error('Помилка збереження')
+    } finally {
+      setSavingDiscount(false)
+    }
+  }
 
   async function handleSetTier(tierId: string) {
     if (!customer) return
@@ -120,6 +153,9 @@ export default function CustomerDetailPage() {
             onClick={() => navigate(`/orders/new?customer_id=${customer.id}`)}>
             Замовлення
           </Button>
+          <Button variant="secondary" size="sm" onClick={() => setDiscountModal(true)}>
+            🏷️ Знижка/Статус
+          </Button>
           <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/customers/${customer.id}/edit`)}>
             Редагувати
           </Button>
@@ -141,6 +177,19 @@ export default function CustomerDetailPage() {
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Email</p>
               <p className="text-sm text-gray-800">{customer.email ?? '—'}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t border-gray-100">
+            <div>
+              <p className="text-xs text-gray-400 mb-0.5">Статус клієнта</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {(customer as any).client_status === 'sto' ? '🔧 СТО' : '👤 Звичайний клієнт'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 mb-0.5">Персональна знижка</p>
+              <p className="text-sm font-semibold text-gray-900">{(customer as any).discount_pct ?? 0}%</p>
             </div>
           </div>
           {/* Ціновий рівень */}
@@ -398,6 +447,41 @@ export default function CustomerDetailPage() {
       </div>
 
       {/* Модалка додавання авто */}
+      {/* Модалка налаштування знижки та статусу */}
+      <Modal open={discountModal} onClose={() => setDiscountModal(false)} title="Налаштування знижки та статусу" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.1"
+              value={discountVal}
+              onChange={(e) => setDiscountVal(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
+            <select
+              value={statusVal}
+              onChange={(e) => setStatusVal(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              <option value="client">Звичайний клієнт</option>
+              <option value="sto">СТО</option>
+            </select>
+          </div>
+          <div className="flex gap-3">
+            <Button loading={savingDiscount} onClick={handleSaveDiscountStatus} className="flex-1">
+              Зберегти
+            </Button>
+            <Button variant="secondary" onClick={() => setDiscountModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal open={carModal} onClose={() => setCarModal(false)} title="Додати автомобіль" size="sm">
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">

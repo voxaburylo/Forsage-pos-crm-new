@@ -23,6 +23,8 @@ export const createCustomerSchema = z.object({
   price_tier_id: z.string().uuid().optional().nullable(),
   vip_level:     z.enum(['standard','bronze','silver','gold']).optional(),
   risk_profile:  z.enum(['low','medium','high']).optional(),
+  discount_pct:  z.number().min(0).max(100).optional(),
+  client_status: z.enum(['client','sto']).optional(),
 })
 
 export const quickCreateSchema = z.object({
