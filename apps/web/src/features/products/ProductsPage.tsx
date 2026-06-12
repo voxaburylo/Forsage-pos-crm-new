@@ -477,7 +477,7 @@ export default function ProductsPage() {
                             </button>
                           )}
                         </td>
-                        <td className="px-3 py-3 text-right font-bold text-sm text-gray-800">
+                        <td className="px-3 py-3 text-right font-bold text-sm text-gray-800 nums-tabular">
                           {editPriceId === p.id ? (
                             <input
                               type="number" min="0" step="0.01" autoFocus
@@ -495,7 +495,7 @@ export default function ProductsPage() {
                             </button>
                           )}
                         </td>
-                        <td className="px-3 py-3 text-right text-sm">
+                        <td className="px-3 py-3 text-right text-sm nums-tabular">
                           <div className="flex flex-col items-end">
                             <div className="flex items-center gap-1">
                               {stock === 'low' && <AlertTriangle size={12} className="text-orange-500 shrink-0" />}
