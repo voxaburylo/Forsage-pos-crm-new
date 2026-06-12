@@ -89,7 +89,7 @@ async function resolveEmployeeName(userId: string, isManager: boolean): Promise<
  * Модель «кожен за свої категорії»: правило user+category дає тому користувачу
  * % з усіх продажів цієї категорії; правило менеджера (user=null) — за його продаж.
  */
-function computeCommissionMap(
+export function computeCommissionMap(
   items: CommissionItem[],
   productsMap: ProductsMap,
   rules: any[],

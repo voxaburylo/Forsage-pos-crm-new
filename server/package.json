@@ -11,7 +11,8 @@
     "seed": "tsx src/seed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:core-returns": "node tests/core_returns.test.mjs"
+    "test:core-returns": "node tests/core_returns.test.mjs",
+    "test:commission": "node --env-file=.env tests/commission.test.mjs"
   },
   "dependencies": {
     "@crm-forsage/shared": "workspace:*",
