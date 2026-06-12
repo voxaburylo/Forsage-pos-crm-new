@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Plus, Camera, ImagePlus, Clipboard, Loader2 } from 'lucide-react'
-import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
+import { ProductPhotoUpload, compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
 import { supplierApi } from './supplierApi'
 import { productApi } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -188,6 +188,8 @@ export default function InvoiceFormPage() {
   const [newProductPurchase, setNewProductPurchase] = useState('')
   const [newProductRetail, setNewProductRetail] = useState('')
   const [creatingProduct, setCreatingProduct] = useState(false)
+  const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
+  const [generatingBarcode, setGeneratingBarcode] = useState(false)
 
   // Завантажуємо постачальників
   useEffect(() => {
@@ -354,6 +356,7 @@ export default function InvoiceFormPage() {
         is_favorite: false,
         brand_id: newProductBrandId || '',
         category_id: newProductCategoryId || '',
+        photo_url: newProductPhotoUrl,
         specs: {}
       }
       const res = await productApi.create(form)
@@ -367,6 +370,7 @@ export default function InvoiceFormPage() {
       setNewProductBrandId('')
       setNewProductPurchase('')
       setNewProductRetail('')
+      setNewProductPhotoUrl(null)
     } catch (err) {
       toast.error('Помилка створення товару')
     } finally {
@@ -710,40 +714,84 @@ export default function InvoiceFormPage() {
       </form>
 
       {/* Швидке створення товару */}
-      <Modal open={productModal} onClose={() => setProductModal(false)} title="Швидке створення товару" size="sm">
-        <div className="space-y-4">
-          <Input label="Назва товару *" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} placeholder="Амортизатор передній..." required />
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="Артикул (SKU) *" value={newProductSku} onChange={(e) => setNewProductSku(e.target.value)} required />
-            <Input label="Штрих-код" value={newProductBarcode} onChange={(e) => setNewProductBarcode(e.target.value)} placeholder="Сканувати..." />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Категорія</label>
-              <select value={newProductCategoryId} onChange={(e) => setNewProductCategoryId(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
-                <option value="">— Оберіть категорію —</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Бренд</label>
-              <select value={newProductBrandId} onChange={(e) => setNewProductBrandId(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
-                <option value="">— Оберіть бренд —</option>
-                {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+      <Modal open={productModal} onClose={() => setProductModal(false)} title="Швидке створення товару" size="md">
+        <div className="flex flex-col md:flex-row gap-6 max-h-[80vh] overflow-y-auto pr-1">
+          {/* Фото зліва */}
+          <div className="w-full md:w-1/3 flex flex-col items-center gap-2 shrink-0">
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider self-start">Зображення товару</label>
+            <div className="w-full bg-gray-50 border border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center min-h-[160px]">
+              <ProductPhotoUpload
+                currentPhotoUrl={newProductPhotoUrl}
+                onPhotoUrl={(url) => setNewProductPhotoUrl(url)}
+              />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="Закупка, грн" type="number" step="0.01" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
-            <Input label="Роздріб, грн" type="number" step="0.01" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
-          </div>
-          <div className="flex gap-3">
-            <Button loading={creatingProduct} onClick={handleCreateProduct} className="flex-1">
-              Створити товар
-            </Button>
-            <Button variant="secondary" onClick={() => setProductModal(false)}>Скасувати</Button>
+
+          {/* Поля форми справа */}
+          <div className="flex-1 space-y-4">
+            <div>
+              <Input label="Назва товару *" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} placeholder="Амортизатор передній..." required />
+            </div>
+            
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="Артикул (SKU) *" value={newProductSku} onChange={(e) => setNewProductSku(e.target.value)} required />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Штрих-код</label>
+                <div className="flex gap-1.5">
+                  <input type="text" value={newProductBarcode} onChange={(e) => setNewProductBarcode(e.target.value)} placeholder="Сканувати..."
+                    className="flex-1 min-w-0 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white" />
+                  <button type="button" disabled={generatingBarcode}
+                    onClick={async () => {
+                      setGeneratingBarcode(true)
+                      try {
+                        const res = await productApi.generateBarcodeOnly()
+                        if (res.data?.barcode) {
+                          setNewProductBarcode(res.data.barcode)
+                        }
+                      } catch {
+                        toast.error('Помилка генерації штрих-коду')
+                      } finally {
+                        setGeneratingBarcode(false)
+                      }
+                    }}
+                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 border border-gray-200 text-sm rounded-lg transition-colors font-medium shrink-0"
+                    title="Згенерувати штрих-код">
+                    {generatingBarcode ? '...' : '🧬'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Категорія</label>
+                <select value={newProductCategoryId} onChange={(e) => setNewProductCategoryId(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white">
+                  <option value="">— Оберіть категорію —</option>
+                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Бренд</label>
+                <select value={newProductBrandId} onChange={(e) => setNewProductBrandId(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white">
+                  <option value="">— Оберіть бренд —</option>
+                  {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="Закупка, грн" type="number" step="0.01" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
+              <Input label="Роздріб, грн" type="number" step="0.01" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <Button loading={creatingProduct} onClick={handleCreateProduct} className="flex-1">
+                Створити товар
+              </Button>
+              <Button variant="secondary" onClick={() => setProductModal(false)}>Скасувати</Button>
+            </div>
           </div>
         </div>
       </Modal>
