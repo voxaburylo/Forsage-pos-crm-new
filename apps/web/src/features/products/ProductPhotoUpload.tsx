@@ -14,7 +14,7 @@ const MAX_PX        = 1200   // максимальна сторона після
 const JPEG_QUALITY  = 0.82   // 82% — хороший баланс якість/розмір
 
 // ─── Стиснення через Canvas API (без залежностей) ────────────────────────────
-async function compressToJpeg(source: File | Blob): Promise<Blob> {
+export async function compressToJpeg(source: File | Blob): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const url = URL.createObjectURL(source)
@@ -39,7 +39,7 @@ async function compressToJpeg(source: File | Blob): Promise<Blob> {
 }
 
 // ─── Завантаження у Supabase Storage ─────────────────────────────────────────
-async function uploadToStorage(blob: Blob, folder: string): Promise<string> {
+export async function uploadToStorage(blob: Blob, folder: string): Promise<string> {
   const { supabase } = await import('@/lib/supabase')
   const ext  = 'jpg'
   const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`

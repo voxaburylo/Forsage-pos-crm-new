@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Trash2, Plus } from 'lucide-react'
+import { Trash2, Plus, Camera, ImagePlus, Clipboard, Loader2 } from 'lucide-react'
+import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
 import { supplierApi } from './supplierApi'
 import { productApi } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -18,8 +19,138 @@ interface LineItem {
   purchase_price: number
   retail_price: number      // роздрібна — авторозрахунок по наценці категорії, з ручним правом правки
   category_id: string | null
+  photo_url?: string | null
   total: number
   storage_bin?: string | null
+}
+
+interface RowPhotoCellProps {
+  photoUrl: string | null
+  productId: string
+  onPhotoUpdated: (url: string | null) => void
+}
+
+function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps) {
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await uploadPhoto(file)
+  }
+
+  const uploadPhoto = async (file: File | Blob) => {
+    setUploading(true)
+    try {
+      const blob = await compressToJpeg(file)
+      const url = await uploadToStorage(blob, productId)
+      await productApi.update(productId, { photo_url: url })
+      onPhotoUpdated(url)
+      toast.success('Фото оновлено')
+    } catch (err) {
+      toast.error('Не вдалося завантажити фото')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handlePaste = async () => {
+    try {
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        const imageType = item.types.find(type => type.startsWith('image/'))
+        if (imageType) {
+          const blob = await item.getType(imageType)
+          await uploadPhoto(blob)
+          return
+        }
+      }
+      toast.error('У буфері обміну немає зображення')
+    } catch (err) {
+      toast.error('Будь ласка, натисніть Ctrl+V при фокусі на кнопці або надайте доступ')
+    }
+  }
+
+  const handleKeyDown = async (e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+      e.preventDefault()
+      await handlePaste()
+    }
+  }
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm('Видалити фото?')) return
+    setUploading(true)
+    try {
+      await productApi.update(productId, { photo_url: null })
+      onPhotoUpdated(null)
+      toast.success('Фото видалено')
+    } catch {
+      toast.error('Помилка видалення')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="relative w-10 h-10 group bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center border border-gray-200 shrink-0">
+      {uploading ? (
+        <Loader2 size={16} className="animate-spin text-gray-400" />
+      ) : photoUrl ? (
+        <>
+          <img src={photoUrl} alt="Product" className="w-full h-full object-cover" />
+          <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="p-1 text-white hover:text-yellow-400"
+              title="Змінити фото"
+            >
+              <Camera size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="p-1 text-red-400 hover:text-red-500"
+              title="Видалити"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="flex flex-col items-center justify-center w-full h-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={handleKeyDown}
+            className="w-full h-full flex flex-col items-center justify-center"
+            title="Завантажити або вставити (Ctrl+V)"
+          >
+            <ImagePlus size={16} />
+            <span className="text-[7px] mt-0.5 font-bold uppercase tracking-wider">Додати</span>
+          </button>
+          <button
+            type="button"
+            onClick={handlePaste}
+            className="absolute bottom-0.5 right-0.5 p-0.5 bg-white/80 rounded border border-gray-200 hover:bg-white text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity"
+            title="Вставити з буфера"
+          >
+            <Clipboard size={8} />
+          </button>
+        </div>
+      )}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileChange}
+        accept="image/*"
+        className="hidden"
+      />
+    </div>
+  )
 }
 
 export default function InvoiceFormPage() {
@@ -46,11 +177,24 @@ export default function InvoiceFormPage() {
   const [newSupplierName, setNewSupplierName] = useState('')
   const [newSupplierPhone, setNewSupplierPhone] = useState('')
   const [creatingSupplier, setCreatingSupplier] = useState(false)
+  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
+  const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([])
+  const [productModal, setProductModal] = useState(false)
+  const [newProductName, setNewProductName] = useState('')
+  const [newProductSku, setNewProductSku] = useState('')
+  const [newProductBarcode, setNewProductBarcode] = useState('')
+  const [newProductCategoryId, setNewProductCategoryId] = useState('')
+  const [newProductBrandId, setNewProductBrandId] = useState('')
+  const [newProductPurchase, setNewProductPurchase] = useState('')
+  const [newProductRetail, setNewProductRetail] = useState('')
+  const [creatingProduct, setCreatingProduct] = useState(false)
 
   // Завантажуємо постачальників
   useEffect(() => {
     supplierApi.list({ per_page: 200 }).then((r) => setSuppliers(r.data)).catch(() => {})
     adminApi.getSettings().then((res) => setQuickPercents(res.data.quick_percents || [])).catch(() => {})
+    adminApi.listCategories().then((res) => setCategories(res.data)).catch(() => {})
+    adminApi.listBrands().then((res) => setBrands(res.data)).catch(() => {})
   }, [])
 
   // Якщо редагування — завантажуємо накладну
@@ -70,6 +214,7 @@ export default function InvoiceFormPage() {
           category_id: (i.product as any)?.category_id ?? null,
           total: i.total,
           storage_bin: i.product?.storage_bin ?? null,
+          photo_url: (i.product as any)?.photo_url ?? null,
         })))
       }).catch(() => {
         toast.error('Не вдалось завантажити накладну')
@@ -106,6 +251,7 @@ export default function InvoiceFormPage() {
       category_id: product.category_id ?? null,
       total: product.purchase_price,
       storage_bin: product.storage_bin,
+      photo_url: product.photo_url ?? null,
     }])
     setProductSearch('')
     setProductResults([])
@@ -186,6 +332,46 @@ export default function InvoiceFormPage() {
       next[index] = it
       return next
     })
+  }
+
+  async function handleCreateProduct() {
+    if (!newProductName.trim()) { toast.error('Назва обов’язкова'); return }
+    if (!newProductSku.trim()) { toast.error('Артикул (SKU) обов’язковий'); return }
+    setCreatingProduct(true)
+    try {
+      const form: ProductFormData = {
+        name: newProductName.trim(),
+        sku: newProductSku.trim(),
+        barcode: newProductBarcode.trim(),
+        unit: 'шт',
+        purchase_price: newProductPurchase.trim() || '0',
+        retail_price: newProductRetail.trim() || '0',
+        qty_on_hand: '0',
+        reorder_point: '0',
+        notes: '',
+        is_active: true,
+        storage_bin: '',
+        is_favorite: false,
+        brand_id: newProductBrandId || '',
+        category_id: newProductCategoryId || '',
+        specs: {}
+      }
+      const res = await productApi.create(form)
+      toast.success('Товар створено')
+      addItem(res.data)
+      setProductModal(false)
+      setNewProductName('')
+      setNewProductSku('')
+      setNewProductBarcode('')
+      setNewProductCategoryId('')
+      setNewProductBrandId('')
+      setNewProductPurchase('')
+      setNewProductRetail('')
+    } catch (err) {
+      toast.error('Помилка створення товару')
+    } finally {
+      setCreatingProduct(false)
+    }
   }
 
   async function handleCreateSupplier() {
@@ -355,6 +541,13 @@ export default function InvoiceFormPage() {
                   onClick={() => setShowSearch(!showSearch)}>
                   Додати товар
                 </Button>
+                <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
+                  onClick={() => {
+                    setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
+                    setProductModal(true)
+                  }}>
+                  Новий товар
+                </Button>
               </div>
             )}
             {isEdit && (
@@ -382,6 +575,7 @@ export default function InvoiceFormPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
+                <th className="w-12 px-2 py-2">Фото</th>
                 <th className="text-left px-4 py-2">Товар</th>
                 <th className="text-left px-2 py-2 w-28">Комірка</th>
                 <th className="text-right px-2 py-2 w-16">К-сть</th>
@@ -399,6 +593,15 @@ export default function InvoiceFormPage() {
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
                 return (
                 <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="px-2 py-2 w-12 text-center">
+                    <RowPhotoCell
+                      photoUrl={item.photo_url ?? null}
+                      productId={item.product_id}
+                      onPhotoUpdated={(newUrl) => {
+                        setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, photo_url: newUrl } : it))
+                      }}
+                    />
+                  </td>
                   <td className="px-4 py-2 font-medium">
                     {item.product_name}
                     {best && (
@@ -485,12 +688,12 @@ export default function InvoiceFormPage() {
                 )
               })}
               {items.length === 0 && (
-                <tr><td colSpan={8} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
+                <tr><td colSpan={9} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}
             </tbody>
             <tfoot>
               <tr className="font-semibold bg-gray-50">
-                <td colSpan={6} className="px-4 py-2 text-right">Всього:</td>
+                <td colSpan={7} className="px-4 py-2 text-right">Всього:</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(total)}</td>
                 <td></td>
               </tr>
@@ -505,6 +708,45 @@ export default function InvoiceFormPage() {
           <Button type="button" variant="outline" onClick={() => navigate('/suppliers/invoices')}>Скасувати</Button>
         </div>
       </form>
+
+      {/* Швидке створення товару */}
+      <Modal open={productModal} onClose={() => setProductModal(false)} title="Швидке створення товару" size="sm">
+        <div className="space-y-4">
+          <Input label="Назва товару *" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} placeholder="Амортизатор передній..." required />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Артикул (SKU) *" value={newProductSku} onChange={(e) => setNewProductSku(e.target.value)} required />
+            <Input label="Штрих-код" value={newProductBarcode} onChange={(e) => setNewProductBarcode(e.target.value)} placeholder="Сканувати..." />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Категорія</label>
+              <select value={newProductCategoryId} onChange={(e) => setNewProductCategoryId(e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
+                <option value="">— Оберіть категорію —</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Бренд</label>
+              <select value={newProductBrandId} onChange={(e) => setNewProductBrandId(e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
+                <option value="">— Оберіть бренд —</option>
+                {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Закупка, грн" type="number" step="0.01" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
+            <Input label="Роздріб, грн" type="number" step="0.01" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
+          </div>
+          <div className="flex gap-3">
+            <Button loading={creatingProduct} onClick={handleCreateProduct} className="flex-1">
+              Створити товар
+            </Button>
+            <Button variant="secondary" onClick={() => setProductModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Швидке створення постачальника */}
       <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
