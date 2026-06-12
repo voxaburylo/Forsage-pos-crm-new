@@ -136,6 +136,9 @@ export async function createSupplyInvoice(_userId: string, input: CreateSupplyIn
   }))
   const totalKopecks = itemsWithTotal.reduce((sum, item) => sum + item.total, 0)
 
+  // Оплата постачальнику не може перевищувати суму накладної
+  const paidAmount = Math.min(input.paid_amount ?? 0, totalKopecks)
+
   const { data: invoice, error: invError } = await db
     .from(INVOICE_TABLE)
     .insert({
@@ -144,6 +147,8 @@ export async function createSupplyInvoice(_userId: string, input: CreateSupplyIn
       notes:          input.notes ?? null,
       status:         'draft',
       total:          totalKopecks,
+      paid_amount:    paidAmount,
+      payment_method: paidAmount > 0 ? (input.payment_method ?? 'cash') : null,
       tenant_id:      tenantId,
     })
     .select('id')
@@ -225,6 +230,67 @@ export async function cancelSupplyInvoice(id: string, tenantId: string) {
   }
 
   return getSupplyInvoice(id, tenantId)
+}
+
+/**
+ * Доплата постачальнику по накладній (коли оплачуємо вже після приймання).
+ * Збільшує paid_amount, але не вище суми накладної.
+ */
+export async function addInvoicePayment(id: string, amount: number, method: string | null, tenantId: string) {
+  const invoice = await getSupplyInvoice(id, tenantId)
+  const newPaid = Math.min((invoice.paid_amount ?? 0) + amount, invoice.total)
+
+  const { data, error } = await db
+    .from(INVOICE_TABLE)
+    .update({
+      paid_amount: newPaid,
+      payment_method: method ?? invoice.payment_method ?? 'cash',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .select('*, supplier:suppliers(id,name)')
+    .single()
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return data
+}
+
+/**
+ * Борги перед постачальниками: по проведених накладних
+ * balance = total - paid_amount. >0 — ми винні постачальнику.
+ */
+export async function getSupplierDebts(tenantId: string) {
+  const { data, error } = await db
+    .from(INVOICE_TABLE)
+    .select('supplier_id, total, paid_amount, supplier:suppliers(id, name, phone)')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'posted')
+    .limit(5000)
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+  const map = new Map<string, { supplier_id: string; supplier_name: string; supplier_phone: string | null; total: number; paid: number; balance: number; invoices: number }>()
+  for (const row of data ?? []) {
+    const sid = row.supplier_id ?? 'none'
+    const supplier = (row.supplier as any)
+    const cur = map.get(sid) ?? {
+      supplier_id: sid,
+      supplier_name: supplier?.name ?? 'Без постачальника',
+      supplier_phone: supplier?.phone ?? null,
+      total: 0, paid: 0, balance: 0, invoices: 0,
+    }
+    cur.total += row.total ?? 0
+    cur.paid += row.paid_amount ?? 0
+    cur.balance = cur.total - cur.paid
+    cur.invoices += 1
+    map.set(sid, cur)
+  }
+
+  const list = [...map.values()].filter((s) => s.balance !== 0).sort((a, b) => b.balance - a.balance)
+  const totalDebt = list.reduce((s, x) => s + Math.max(0, x.balance), 0)
+  const totalCredit = list.reduce((s, x) => s + Math.max(0, -x.balance), 0)
+  return { suppliers: list, total_debt: totalDebt, total_credit: totalCredit }
 }
 
 export async function deleteSupplyInvoice(id: string, tenantId: string) {

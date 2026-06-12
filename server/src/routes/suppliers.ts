@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler.js'
 import {
   supplierListSchema, createSupplierSchema, updateSupplierSchema,
   supplyInvoiceListSchema, createSupplyInvoiceSchema, updateSupplyInvoiceSchema,
+  invoicePaymentSchema,
 } from '../validators/supplierSchema.js'
 import * as supplierService from '../services/supplierService.js'
 
@@ -58,6 +59,18 @@ router.post('/invoices/:id/post', requireRole('owner', 'admin', 'manager', 'stor
   } catch (err) { next(err) }
 })
 
+// POST /api/v1/suppliers/invoices/:id/pay — доплата постачальнику
+router.post('/invoices/:id/pay', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+  try {
+    const parsed = invoicePaymentSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна сума оплати', 422, parsed.error.flatten())
+    const invoice = await supplierService.addInvoicePayment(
+      String(req.params.id), parsed.data.amount, parsed.data.payment_method ?? null, req.user!.tenant_id,
+    )
+    res.json({ data: invoice })
+  } catch (err) { next(err) }
+})
+
 // POST /api/v1/suppliers/invoices/:id/cancel — скасування
 router.post('/invoices/:id/cancel', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
@@ -75,6 +88,14 @@ router.delete('/invoices/:id', requireRole('owner', 'admin'), async (req, res, n
 })
 
 // ===================== Постачальники =====================
+
+// GET /api/v1/suppliers/debts — борги перед постачальниками (ДО /:id!)
+router.get('/debts', async (req, res, next) => {
+  try {
+    const result = await supplierService.getSupplierDebts(req.user!.tenant_id)
+    res.json({ data: result })
+  } catch (err) { next(err) }
+})
 
 // GET /api/v1/suppliers
 router.get('/', async (req, res, next) => {

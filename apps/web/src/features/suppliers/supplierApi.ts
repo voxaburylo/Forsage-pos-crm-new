@@ -1,7 +1,7 @@
 ﻿import { api } from '@/lib/api'
 import type {
   Supplier, PaginatedSuppliers,
-  SupplyInvoice, PaginatedInvoices,
+  SupplyInvoice, PaginatedInvoices, SupplierDebtsResult,
 } from '@/types/supplier'
 
 export interface SupplierFilters {
@@ -43,6 +43,10 @@ export const supplierApi = {
   delete: (id: string) =>
     api.delete<void>(`/api/v1/suppliers/${id}`),
 
+  // Борги перед постачальниками
+  getDebts: () =>
+    api.get<{ data: SupplierDebtsResult }>('/api/v1/suppliers/debts'),
+
   // Приходні накладні
   listInvoices: (filters: InvoiceFilters = {}) =>
     api.get<PaginatedInvoices>(`/api/v1/suppliers/invoices${buildQuery(filters)}`),
@@ -50,11 +54,14 @@ export const supplierApi = {
   getInvoice: (id: string) =>
     api.get<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`),
 
-  createInvoice: (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) =>
+  createInvoice: (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) =>
     api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices', body),
 
   updateInvoice: (id: string, body: { invoice_number?: string | null; notes?: string | null }) =>
     api.put<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`, body),
+
+  payInvoice: (id: string, amount: number, payment_method?: 'cash' | 'card' | 'transfer') =>
+    api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/pay`, { amount, payment_method }),
 
   postInvoice: (id: string) =>
     api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/post`, {}),

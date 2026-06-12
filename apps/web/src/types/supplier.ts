@@ -37,6 +37,8 @@ export interface SupplyInvoice {
   invoice_number: string | null
   status: SupplyInvoiceStatus
   total: number
+  paid_amount?: number
+  payment_method?: 'cash' | 'card' | 'transfer' | null
   notes: string | null
   posted_by: string | null
   posted_at: string | null
@@ -44,6 +46,22 @@ export interface SupplyInvoice {
   updated_at: string
   supplier?: { id: string; name: string } | null
   items?: SupplyInvoiceItem[]
+}
+
+export interface SupplierDebt {
+  supplier_id: string
+  supplier_name: string
+  supplier_phone: string | null
+  total: number
+  paid: number
+  balance: number
+  invoices: number
+}
+
+export interface SupplierDebtsResult {
+  suppliers: SupplierDebt[]
+  total_debt: number
+  total_credit: number
 }
 
 export interface PaginatedSuppliers {

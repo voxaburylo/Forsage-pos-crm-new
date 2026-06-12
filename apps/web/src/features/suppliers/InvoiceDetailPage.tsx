@@ -186,6 +186,40 @@ export default function InvoiceDetailPage() {
         {invoice.notes && (
           <p className="text-sm text-gray-600 mt-4 pt-4 border-t border-gray-100">{invoice.notes}</p>
         )}
+        {/* Оплата постачальнику */}
+        {(() => {
+          const paid = invoice.paid_amount ?? 0
+          const debt = Math.max(0, invoice.total - paid)
+          return (
+            <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+              <span className="text-gray-600">Оплачено: <strong className="text-green-600">{formatMoney(paid)}</strong></span>
+              {debt > 0 ? (
+                <>
+                  <span className="text-gray-600">Борг постачальнику: <strong className="text-red-600">{formatMoney(debt)}</strong></span>
+                  <Button size="sm" variant="outline" disabled={actionLoading}
+                    onClick={async () => {
+                      const input = prompt(`Сума доплати постачальнику (грн). Залишок боргу: ${(debt / 100).toFixed(2)}`, (debt / 100).toFixed(2))
+                      if (!input) return
+                      const amount = Math.round(parseFloat(input) * 100)
+                      if (!amount || amount <= 0) { toast.error('Невірна сума'); return }
+                      setActionLoading(true)
+                      try {
+                        await supplierApi.payInvoice(id!, amount)
+                        toast.success('Оплату записано')
+                        load()
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : 'Помилка оплати')
+                      } finally { setActionLoading(false) }
+                    }}>
+                    💵 Доплатити
+                  </Button>
+                </>
+              ) : (
+                <span className="text-green-600 font-semibold">✓ Оплачено повністю</span>
+              )}
+            </div>
+          )
+        })()}
       </Card>
 
       {/* Позиції */}

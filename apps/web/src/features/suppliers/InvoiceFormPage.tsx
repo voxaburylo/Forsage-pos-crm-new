@@ -195,6 +195,9 @@ export default function InvoiceFormPage() {
   const [creatingProduct, setCreatingProduct] = useState(false)
   const [importTab, setImportTab] = useState<'manual' | 'file' | 'clipboard'>('manual')
   const [clipboardText, setClipboardText] = useState('')
+  // Оплата постачальнику
+  const [paidAmount, setPaidAmount] = useState('')          // гривні (рядок форми)
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
   const [generatingBarcode, setGeneratingBarcode] = useState(false)
 
@@ -602,7 +605,11 @@ export default function InvoiceFormPage() {
         await supplierApi.updateInvoice(id!, { invoice_number: body.invoice_number, notes: body.notes })
         toast.success('Накладну оновлено')
       } else {
-        await supplierApi.createInvoice(body)
+        await supplierApi.createInvoice({
+          ...body,
+          paid_amount: paidAmount ? Math.round(parseFloat(paidAmount) * 100) : 0,
+          payment_method: paidAmount ? paymentMethod : null,
+        })
 
         // Оновлюємо комірки, роздрібні ціни та назву/артикул (якщо міняли в таблиці)
         const results = await Promise.allSettled(
@@ -927,6 +934,54 @@ export default function InvoiceFormPage() {
             </tfoot>
           </table>
         </Card>
+
+        {/* Оплата постачальнику (тільки при створенні) */}
+        {!isEdit && (
+          <Card className="mb-6">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-sm font-bold text-gray-800">💵 Оплата постачальнику</span>
+              <span className="text-xs text-gray-400">скільки заплатили зараз — решта піде в борг</span>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-44">
+                <label className="block text-xs font-medium text-gray-500 mb-1">Сума оплати, грн</label>
+                <input
+                  type="number" min="0" step="0.01"
+                  value={paidAmount}
+                  onChange={(e) => setPaidAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-semibold text-right focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                />
+              </div>
+              <div className="w-36">
+                <label className="block text-xs font-medium text-gray-500 mb-1">Спосіб</label>
+                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as 'cash' | 'card' | 'transfer')}
+                  className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
+                  <option value="cash">Готівка</option>
+                  <option value="card">Картка</option>
+                  <option value="transfer">Переказ</option>
+                </select>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => setPaidAmount((total / 100).toFixed(2))}>
+                Оплатити повністю
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setPaidAmount('0')}>
+                Без оплати (в борг)
+              </Button>
+            </div>
+            {(() => {
+              const paid = paidAmount ? Math.round(parseFloat(paidAmount) * 100) : 0
+              const debt = Math.max(0, total - Math.min(paid, total))
+              if (debt > 0) return (
+                <p className="text-xs text-orange-600 font-semibold mt-2.5">
+                  Залишок боргу постачальнику: {formatMoney(debt)}
+                </p>
+              )
+              if (total > 0) return <p className="text-xs text-green-600 font-semibold mt-2.5">Оплачено повністю — боргу немає</p>
+              return null
+            })()}
+          </Card>
+        )}
 
         <div className="flex gap-3">
           <Button type="submit" disabled={saving}>

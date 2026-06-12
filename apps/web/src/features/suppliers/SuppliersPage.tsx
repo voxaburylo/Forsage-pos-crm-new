@@ -2,11 +2,12 @@
 import { useNavigate } from 'react-router-dom'
 import { Plus, Truck } from 'lucide-react'
 import { supplierApi } from './supplierApi'
-import type { Supplier, PaginatedSuppliers } from '@/types/supplier'
+import type { Supplier, PaginatedSuppliers, SupplierDebtsResult } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
 import { useAuthStore } from '@/stores/authStore'
 import { Button, Badge, Card, SearchInput, Table } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { formatMoney } from '@/lib/utils'
 
 export default function SuppliersPage() {
   const session = useAuthStore((s) => s.session)
@@ -23,6 +24,8 @@ export default function SuppliersPage() {
   const [page, setPage]         = useState(1)
   const [loading, setLoading]   = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [debts, setDebts]       = useState<SupplierDebtsResult | null>(null)
+  const [showDebts, setShowDebts] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -38,6 +41,9 @@ export default function SuppliersPage() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setPage(1) }, [search])
+  useEffect(() => {
+    supplierApi.getDebts().then((r) => setDebts(r.data)).catch(() => {})
+  }, [])
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Видалити постачальника "${name}"?`)) return
@@ -106,6 +112,45 @@ export default function SuppliersPage() {
         </Button>
       }
     >
+      {/* Борги перед постачальниками */}
+      {debts && (debts.total_debt > 0 || debts.total_credit > 0) && (
+        <Card className="mb-4">
+          <button type="button" onClick={() => setShowDebts((v) => !v)} className="w-full flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-4 text-sm">
+              {debts.total_debt > 0 && (
+                <span className="font-semibold text-red-600">
+                  Ми винні постачальникам: {formatMoney(debts.total_debt)}
+                </span>
+              )}
+              {debts.total_credit > 0 && (
+                <span className="font-semibold text-green-600">
+                  Передоплата (нам винні): {formatMoney(debts.total_credit)}
+                </span>
+              )}
+            </div>
+            <span className="text-xs text-gray-400">{showDebts ? '▲ згорнути' : '▼ деталі'}</span>
+          </button>
+          {showDebts && (
+            <div className="mt-3 border-t border-gray-100 pt-3 divide-y divide-gray-50">
+              {debts.suppliers.map((d) => (
+                <button key={d.supplier_id} type="button"
+                  onClick={() => d.supplier_id !== 'none' && navigate(`/suppliers/${d.supplier_id}`)}
+                  className="w-full flex items-center justify-between py-2 text-sm hover:bg-gray-50/50 px-1 rounded">
+                  <div className="text-left">
+                    <span className="font-medium text-gray-800">{d.supplier_name}</span>
+                    {d.supplier_phone && <span className="text-xs text-gray-400 ml-2 font-mono">{d.supplier_phone}</span>}
+                    <span className="text-[11px] text-gray-400 ml-2">накладних: {d.invoices}</span>
+                  </div>
+                  <span className={`font-semibold ${d.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {d.balance > 0 ? `винні ${formatMoney(d.balance)}` : `передоплата ${formatMoney(-d.balance)}`}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
       <div className="mb-4 flex items-center gap-3">
         <SearchInput value={search} onChange={setSearch} placeholder="Пошук за назвою, контактом..." className="max-w-sm" />
       </div>

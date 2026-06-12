@@ -44,12 +44,19 @@ export const createSupplyInvoiceSchema = z.object({
   supplier_id:    z.string().uuid().optional().nullable(),
   invoice_number: z.string().max(100).optional().nullable(),
   notes:          z.string().max(2000).optional().nullable(),
+  paid_amount:    z.number().int().min(0).optional(),            // копійки, оплачено постачальнику
+  payment_method: z.enum(['cash', 'card', 'transfer']).optional().nullable(),
   items:          z.array(supplyInvoiceItemSchema).min(1),
 })
 
 export const updateSupplyInvoiceSchema = z.object({
   invoice_number: z.string().max(100).optional().nullable(),
   notes:          z.string().max(2000).optional().nullable(),
+})
+
+export const invoicePaymentSchema = z.object({
+  amount:         z.number().int().positive(),                   // копійки доплати
+  payment_method: z.enum(['cash', 'card', 'transfer']).optional().nullable(),
 })
 
 export const supplyInvoiceListSchema = z.object({
