@@ -183,13 +183,6 @@ export default function ImportPage() {
           <Card>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-gray-800">Вставити таблицю з буфера</h3>
-              <Button
-                variant="outline"
-                onClick={() => navigate('/suppliers/bulk-import')}
-                className="text-xs shrink-0"
-              >
-                Пакетний імпорт прайсів (CSV)
-              </Button>
             </div>
 
             <p className="text-xs text-gray-500 mb-3">

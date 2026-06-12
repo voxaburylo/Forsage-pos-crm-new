@@ -38,8 +38,6 @@ const InvoicesPage         = lazyWithRetry(() => import('@/features/suppliers/In
 const InvoiceFormPage      = lazyWithRetry(() => import('@/features/suppliers/InvoiceFormPage'))
 const InvoiceDetailPage    = lazyWithRetry(() => import('@/features/suppliers/InvoiceDetailPage'))
 const ImportPage           = lazyWithRetry(() => import('@/features/suppliers/ImportPage'))
-const BulkImportPage       = lazyWithRetry(() => import('@/features/suppliers/BulkImportPage'))
-const OnecImportPage       = lazyWithRetry(() => import('@/features/suppliers/OnecImportPage'))
 const AuditLogPage         = lazyWithRetry(() => import('@/features/admin/AuditLogPage'))
 const PricingPage          = lazyWithRetry(() => import('@/features/admin/PricingPage'))
 const StockIntegrityPage   = lazyWithRetry(() => import('@/features/admin/StockIntegrityPage'))
@@ -65,13 +63,11 @@ const CashflowPage         = lazyWithRetry(() => import('@/features/cashflow/Cas
 const ReservesList         = lazyWithRetry(() => import('@/features/inventory/ReservesList'))
 const CoreReturnsPage      = lazyWithRetry(() => import('@/features/inventory/CoreReturnsPage'))
 const SupplierPOsPage      = lazyWithRetry(() => import('@/features/suppliers/SupplierPOsPage'))
-const SupplierPricesPage  = lazyWithRetry(() => import('@/features/suppliers/SupplierPricesPage'))
 const WarehousePicking     = lazyWithRetry(() => import('@/features/inventory/WarehousePicking'))
 const WarehouseMovementPage = lazyWithRetry(() => import('@/features/inventory/WarehouseMovementPage'))
 const InboxPage             = lazyWithRetry(() => import('@/features/notifications/InboxPage'))
 const TemplateEditor        = lazyWithRetry(() => import('@/features/notifications/TemplateEditor'))
 const PrintCenterPage       = lazyWithRetry(() => import('@/features/print/PrintCenterPage'))
-const AutoPurchasePage      = lazyWithRetry(() => import('@/features/autoPurchase/AutoPurchasePage'))
 
 function Loader() {
   return (
@@ -117,13 +113,10 @@ function App() {
           <Route path="/suppliers/:id/edit" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
           <Route path="/suppliers/pos" element={<ProtectedRoute><SupplierPOsPage /></ProtectedRoute>} />
-          <Route path="/suppliers/prices" element={<ProtectedRoute><SupplierPricesPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/new" element={<ProtectedRoute><InvoiceFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute><InvoiceFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/import"            element={<ProtectedRoute><ImportPage /></ProtectedRoute>} />
-          <Route path="/suppliers/bulk-import"       element={<ProtectedRoute><BulkImportPage /></ProtectedRoute>} />
-          <Route path="/suppliers/1c-import"         element={<ProtectedRoute><OnecImportPage /></ProtectedRoute>} />
 
           <Route path="/staff"          element={<ProtectedRoute><StaffPage /></ProtectedRoute>} />
           
@@ -136,7 +129,6 @@ function App() {
           <Route path="/notifications"  element={<ProtectedRoute><InboxPage /></ProtectedRoute>} />
           <Route path="/settings/templates" element={<ProtectedRoute><TemplateEditor /></ProtectedRoute>} />
           <Route path="/print-center"   element={<ProtectedRoute><PrintCenterPage /></ProtectedRoute>} />
-          <Route path="/auto-purchase"  element={<ProtectedRoute><AutoPurchasePage /></ProtectedRoute>} />
 
           <Route path="/inventory"               element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
           <Route path="/inventory/picking"       element={<ProtectedRoute><WarehousePicking /></ProtectedRoute>} />
