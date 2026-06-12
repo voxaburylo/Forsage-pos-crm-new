@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, Clock, AlertTriangle, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
+import { Edit, Trash2, Clock, AlertTriangle, Search, Trash, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
 import { productApi } from './productApi'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
@@ -44,6 +44,77 @@ export default function ProductDetailPage() {
   const [savingPhoto, setSavingPhoto] = useState(false)
   const [printModalOpen, setPrintModalOpen] = useState(false)
   const [printCopies, setPrintCopies] = useState(1)
+
+  
+  // Inline Analogs state
+  const [analogSearch, setAnalogSearch] = useState('')
+  const [analogSearchLoading, setAnalogSearchLoading] = useState(false)
+  const [analogSuggestions, setAnalogSuggestions] = useState<Product[]>([])
+  const [selectedAnalogType, setSelectedAnalogType] = useState<'substitute' | 'oem' | 'cross'>('substitute')
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
+  const suggestionsRef = useRef<HTMLDivElement>(null)
+
+  // Close suggestions dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (suggestionsRef.current && !suggestionsRef.current.contains(e.target as Node)) {
+        setSuggestionsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // Auto-search for analog suggestions
+  useEffect(() => {
+    if (!analogSearch.trim()) {
+      setAnalogSuggestions([])
+      return
+    }
+    const delayDebounce = setTimeout(async () => {
+      setAnalogSearchLoading(true)
+      try {
+        const { data } = await productApi.list({ search: analogSearch, per_page: 5 })
+        // Filter out current product
+        setAnalogSuggestions(((data as any).data || []).filter((p: any) => p.id !== id))
+        setSuggestionsOpen(true)
+      } catch (err) {
+        console.error(err)
+      } finally {
+        setAnalogSearchLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(delayDebounce)
+  }, [analogSearch, id])
+
+  const handleAddAnalog = async (analogProductId: string) => {
+    if (!id) return
+    try {
+      await productApi.addAnalog(id, analogProductId, selectedAnalogType)
+      toast.success('Аналог успішно додано')
+      // Refresh analogs
+      const analogsData = await productApi.getAnalogs(id).then(r => r as any).catch(() => null)
+      if (analogsData) setAnalogs(analogsData as any)
+      setAnalogSearch('')
+      setSuggestionsOpen(false)
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Помилка додавання аналога')
+    }
+  }
+
+  const handleRemoveAnalog = async (analogId: string) => {
+    if (!id) return
+    if (!confirm('Ви впевнені, що хочете видалити цей аналог?')) return
+    try {
+      await productApi.removeAnalog(id, analogId)
+      toast.success('Аналог видалено')
+      // Refresh analogs
+      const analogsData = await productApi.getAnalogs(id).then(r => r as any).catch(() => null)
+      if (analogsData) setAnalogs(analogsData as any)
+    } catch {
+      toast.error('Помилка видалення аналога')
+    }
+  }
 
   async function handlePhotoUrl(url: string | null) {
     if (!product || !id) return
@@ -318,37 +389,102 @@ export default function ProductDetailPage() {
         )}
 
 
-        {/* Аналоги */}
-        {analogs && Object.keys(analogs.grouped).length > 0 && (
-          <Card>
-            <h3 className="font-semibold text-gray-800 mb-3">Аналоги</h3>
-            {Object.entries(analogs.grouped).map(([tier, items]) =>
-              (items as any[]).length > 0 && (
-                <div key={tier} className="mb-3 last:mb-0">
-                  <p className="text-xs text-gray-400 uppercase font-bold mb-1">
-                    {tier === 'original' ? '🏭 Оригінал' : tier === 'premium' ? '⭐ Premium' : tier === 'standard' ? '✅ Standard' : '💵 Budget'}
-                  </p>
-                  <div className="space-y-1">
-                    {(items as any[]).map((a: any) => (
-                      <div key={a.id} className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg text-sm">
-                        <div>
-                          <button onClick={() => navigate('/products/' + a.id)} className="font-medium text-blue-600 hover:text-blue-800">{a.name}</button>
-                          <span className="text-xs text-gray-400 ml-2">{a.sku}</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-semibold">{a.retail_price != null ? kopecksToHryvnia(a.retail_price) + ' ₴' : '—'}</span>
-                          <span className={'text-xs px-2 py-0.5 rounded-full ' + ((a.qty_available ?? a.qty_on_hand) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>
-                            {(a.qty_available ?? a.qty_on_hand) > 0 ? 'Є (' + (a.qty_available ?? a.qty_on_hand) + ')' : 'Нема'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                {/* ?Аналоги? */}
+        <Card>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <h3 className="font-semibold text-gray-800">🔗 Аналоги та крос-номери</h3>
+            
+            {/* Inline search bar for adding analogs */}
+            <div className="relative flex items-center gap-2" ref={suggestionsRef}>
+              <select
+                value={selectedAnalogType}
+                onChange={(e) => setSelectedAnalogType(e.target.value as any)}
+                className="border border-gray-200 rounded-lg px-2 py-1 text-xs bg-gray-50 focus:outline-none"
+              >
+                <option value="substitute">Замінник</option>
+                <option value="oem">Оригінал (OEM)</option>
+                <option value="cross">Крос-номер</option>
+              </select>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Додати аналог..."
+                  value={analogSearch}
+                  onChange={(e) => {
+                    setAnalogSearch(e.target.value)
+                    setSuggestionsOpen(true)
+                  }}
+                  className="border border-gray-200 rounded-lg pl-8 pr-3 py-1 text-xs w-48 focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                />
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                {analogSearchLoading && (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-gray-300 border-t-yellow-400 rounded-full animate-spin"></div>
+                )}
+              </div>
+
+              {/* Suggestions Popup */}
+              {suggestionsOpen && analogSuggestions.length > 0 && (
+                <div className="absolute right-0 top-full mt-1 w-64 bg-white border border-gray-100 rounded-lg shadow-lg z-50 overflow-hidden divide-y divide-gray-50 animate-fadeIn">
+                  {analogSuggestions.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => handleAddAnalog(s.id)}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-50 transition flex flex-col cursor-pointer"
+                      type="button"
+                    >
+                      <span className="font-medium text-xs text-gray-800 truncate">{s.name}</span>
+                      <span className="text-[10px] text-gray-400 font-mono">{s.sku} • {s.brand?.name || 'Без бренду'}</span>
+                    </button>
+                  ))}
                 </div>
-              )
-            )}
-          </Card>
-        )}
+              )}
+            </div>
+          </div>
+
+          {analogs && Object.keys(analogs.grouped).length > 0 && (
+            <div className="space-y-4">
+              {Object.entries(analogs.grouped).map(([tier, items]) =>
+                (items as any[]).length > 0 && (
+                  <div key={tier} className="mb-3 last:mb-0">
+                    <p className="text-xs text-gray-400 uppercase font-bold mb-1">
+                      {tier === 'original' ? 'Original' : tier === 'premium' ? 'Premium' : tier === 'standard' ? 'Standard' : 'Budget'}
+                    </p>
+                    <div className="space-y-1">
+                      {(items as any[]).map((a: any) => (
+                        <div key={a.id} className="flex items-center justify-between px-3 py-1.5 bg-gray-50 rounded-lg text-sm group hover:bg-gray-100 transition">
+                          <div>
+                            <button onClick={() => navigate('/products/' + a.id)} className="font-medium text-blue-600 hover:text-blue-800 text-xs">{a.name}</button>
+                            <span className="text-[10px] text-gray-400 ml-2 font-mono">{a.sku}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-semibold text-xs">{a.retail_price != null ? kopecksToHryvnia(a.retail_price) + ' ₴' : '—'}</span>
+                            <span className={'text-[10px] px-1.5 py-0.5 rounded-full ' + ((a.qty_available ?? a.qty_on_hand) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>
+                              {(a.qty_available ?? a.qty_on_hand) > 0 ? 'Є (' + (a.qty_available ?? a.qty_on_hand) + ')' : 'Нема'}
+                            </span>
+                            <button
+                              onClick={() => handleRemoveAnalog(a.id)}
+                              className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition p-0.5"
+                              title="Видалити зв'язок аналога"
+                              type="button"
+                            >
+                              <Trash size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+
+          {(!analogs || Object.values(analogs.grouped).every(arr => (arr as any[]).length === 0)) && (
+            <div className="text-xs text-center py-6 text-gray-400">
+              Немає пов'язаних аналогів для цього товару. Використовуйте поле пошуку вище для швидкого додавання.
+            </div>
+          )}
+        </Card>
 
         {/* Fitment — сумісність з авто */}
         {fitment && Object.keys(fitment.grouped).length > 0 && (

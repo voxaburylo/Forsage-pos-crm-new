@@ -125,6 +125,15 @@ export const productApi = {
   getAnalogs: (id: string) =>
     api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`),
 
+  addAnalog: (id: string, analogProductId: string, analogType: 'substitute' | 'oem' | 'cross') =>
+    api.post(`/api/v1/products/${id}/analogs`, {
+      analog_product_id: analogProductId,
+      analog_type: analogType,
+    }),
+
+  removeAnalog: (id: string, analogId: string) =>
+    api.delete(`/api/v1/products/${id}/analogs/${analogId}`),
+
   getFitment: (id: string) =>
     api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),
 
