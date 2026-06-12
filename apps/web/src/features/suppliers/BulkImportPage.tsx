@@ -13,7 +13,7 @@ import { supplierImportsApi } from './supplierImportsApi'
 import type { SupplierPriceImport } from './supplierImportsApi'
 import { supplierApi } from './supplierApi'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Badge, toast } from '@/components/ui'
+import { Button, Card, Badge, toast, Input, Modal } from '@/components/ui'
 import { useAuthStore } from '@/stores/authStore'
 
 export default function BulkImportPage() {
@@ -27,6 +27,36 @@ export default function BulkImportPage() {
 
   // Form State
   const [supplierId, setSupplierId] = useState<string>('')
+  
+  const [supplierModal, setSupplierModal] = useState(false)
+  const [newSupplierName, setNewSupplierName] = useState('')
+  const [newSupplierPhone, setNewSupplierPhone] = useState('')
+  const [creatingSupplier, setCreatingSupplier] = useState(false)
+
+  async function handleCreateSupplier() {
+    if (!newSupplierName.trim()) {
+      toast.error('Назва постачальника обов’язкова')
+      return
+    }
+    setCreatingSupplier(true)
+    try {
+      const res = await supplierApi.create({
+        name: newSupplierName.trim(),
+        phone: newSupplierPhone.trim() || null
+      })
+      toast.success('Постачальника створено')
+      const newSup = res.data
+      setSuppliers((prev: any) => [...prev, newSup])
+      setSupplierId(newSup.id)
+      setSupplierModal(false)
+      setNewSupplierName('')
+      setNewSupplierPhone('')
+    } catch (err) {
+      toast.error('Помилка створення постачальника')
+    } finally {
+      setCreatingSupplier(false)
+    }
+  }
   const [updateRetail, setUpdateRetail] = useState<boolean>(true)
   const [mode, setMode] = useState<'replace' | 'add'>('replace')
   const [warehouseName, setWarehouseName] = useState<string>('')
@@ -221,16 +251,22 @@ export default function BulkImportPage() {
                 <label className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wider">
                   Постачальник
                 </label>
-                <select 
-                  value={supplierId} 
-                  onChange={(e) => setSupplierId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
-                >
-                  <option value="">— Без прив'язки до постачальника —</option>
-                  {suppliers.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
+                <div className="flex gap-2">
+                  <select 
+                    value={supplierId} 
+                    onChange={(e) => setSupplierId(e.target.value)}
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 transition min-w-0"
+                  >
+                    <option value="">— Без прив'язки до постачальника —</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => setSupplierModal(true)}
+                    className="px-3 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold text-sm rounded-lg transition-colors shrink-0">
+                    +
+                  </button>
+                </div>
               </div>
 
               {/* Warehouse / Source Selection */}
@@ -651,6 +687,19 @@ export default function BulkImportPage() {
           </div>
         </Card>
       </div>
+      {/* Швидке створення постачальника */}
+      <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
+        <div className="space-y-4">
+          <Input label="Назва постачальника *" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="ТОВ Запчастини..." required />
+          <Input label="Телефон" value={newSupplierPhone} onChange={(e) => setNewSupplierPhone(e.target.value)} placeholder="+380..." />
+          <div className="flex gap-3">
+            <Button loading={creatingSupplier} onClick={handleCreateSupplier} className="flex-1">
+              Створити
+            </Button>
+            <Button variant="secondary" onClick={() => setSupplierModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }

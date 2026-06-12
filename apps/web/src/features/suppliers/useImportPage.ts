@@ -256,6 +256,7 @@ export function useImportPage() {
     parsing,
     confirming,
     suppliers,
+    setSuppliers,
     priceStrategy,
     setPriceStrategy,
     customMarkupPct,

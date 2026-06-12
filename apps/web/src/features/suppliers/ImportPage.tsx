@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Upload, CheckCircle, XCircle, AlertCircle } from 'lucide-react'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Input } from '@/components/ui'
+import { Button, Card, Input, Modal } from '@/components/ui'
+import { supplierApi } from './supplierApi'
+import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { useImportPage } from './useImportPage'
 
@@ -26,6 +28,7 @@ export default function ImportPage() {
     parsing,
     confirming,
     suppliers,
+    setSuppliers,
     priceStrategy,
     setPriceStrategy,
     customMarkupPct,
@@ -41,6 +44,36 @@ export default function ImportPage() {
     fuzzy,
     totalKop,
   } = useImportPage()
+
+  const [supplierModal, setSupplierModal] = useState(false)
+  const [newSupplierName, setNewSupplierName] = useState('')
+  const [newSupplierPhone, setNewSupplierPhone] = useState('')
+  const [creatingSupplier, setCreatingSupplier] = useState(false)
+
+  async function handleCreateSupplier() {
+    if (!newSupplierName.trim()) {
+      toast.error('Назва постачальника обов’язкова')
+      return
+    }
+    setCreatingSupplier(true)
+    try {
+      const res = await supplierApi.create({
+        name: newSupplierName.trim(),
+        phone: newSupplierPhone.trim() || null
+      })
+      toast.success('Постачальника створено')
+      const newSup = res.data
+      setSuppliers((prev: any) => [...prev, newSup])
+      setSupplierId(newSup.id)
+      setSupplierModal(false)
+      setNewSupplierName('')
+      setNewSupplierPhone('')
+    } catch (err) {
+      toast.error('Помилка створення постачальника')
+    } finally {
+      setCreatingSupplier(false)
+    }
+  }
 
   const navigate = useNavigate()
   const [isDragging, setIsDragging] = useState(false)
@@ -73,18 +106,24 @@ export default function ImportPage() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex-1">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Постачальник</label>
-                <select
-                  value={supplierId}
-                  onChange={(e) => setSupplierId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                >
-                  <option value="">— Виберіть постачальника —</option>
-                  {suppliers.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex gap-2">
+                  <select
+                    value={supplierId}
+                    onChange={(e) => setSupplierId(e.target.value)}
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                  >
+                    <option value="">— Виберіть постачальника —</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => setSupplierModal(true)}
+                    className="px-3.5 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold text-sm rounded-lg transition-colors shrink-0">
+                    +
+                  </button>
+                </div>
               </div>
               <div className="flex flex-col gap-2 shrink-0 sm:pt-6">
                 <Button
@@ -547,18 +586,24 @@ export default function ImportPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Постачальник</label>
-                <select
-                  value={supplierId}
-                  onChange={(e) => setSupplierId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                >
-                  <option value="">— Без постачальника —</option>
-                  {suppliers.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex gap-2">
+                  <select
+                    value={supplierId}
+                    onChange={(e) => setSupplierId(e.target.value)}
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                  >
+                    <option value="">— Без постачальника —</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => setSupplierModal(true)}
+                    className="px-3.5 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold text-sm rounded-lg transition-colors shrink-0">
+                    +
+                  </button>
+                </div>
               </div>
               <Input
                 label="Номер накладної"
@@ -584,6 +629,19 @@ export default function ImportPage() {
           </div>
         </div>
       )}
+      {/* Швидке створення постачальника */}
+      <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
+        <div className="space-y-4">
+          <Input label="Назва постачальника *" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="ТОВ Запчастини..." required />
+          <Input label="Телефон" value={newSupplierPhone} onChange={(e) => setNewSupplierPhone(e.target.value)} placeholder="+380..." />
+          <div className="flex gap-3">
+            <Button loading={creatingSupplier} onClick={handleCreateSupplier} className="flex-1">
+              Створити
+            </Button>
+            <Button variant="secondary" onClick={() => setSupplierModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }
