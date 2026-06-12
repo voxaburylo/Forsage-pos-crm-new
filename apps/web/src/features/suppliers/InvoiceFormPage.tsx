@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Trash2, Plus, Camera, ImagePlus, Clipboard, Loader2 } from 'lucide-react'
+import { Trash2, Camera, ImagePlus, Clipboard, Loader2 } from 'lucide-react'
 import { ProductPhotoUpload, compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
+import { read, utils } from 'xlsx'
+import Papa from 'papaparse'
 import { supplierApi } from './supplierApi'
 import { productApi } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -13,15 +15,18 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 
 interface LineItem {
-  product_id: string
+  product_id?: string
   product_name: string
+  sku: string
+  barcode?: string | null
   qty: number
   purchase_price: number
-  retail_price: number      // роздрібна — авторозрахунок по наценці категорії, з ручним правом правки
+  retail_price: number
   category_id: string | null
-  photo_url?: string | null
   total: number
   storage_bin?: string | null
+  photo_url?: string | null
+  is_new?: boolean
 }
 
 interface RowPhotoCellProps {
@@ -169,7 +174,7 @@ export default function InvoiceFormPage() {
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
   const [productSearch, setProductSearch] = useState('')
   const [productResults, setProductResults] = useState<Product[]>([])
-  const [showSearch, setShowSearch] = useState(false)
+
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
   const [quickPercents, setQuickPercents] = useState<number[]>([])
@@ -188,6 +193,8 @@ export default function InvoiceFormPage() {
   const [newProductPurchase, setNewProductPurchase] = useState('')
   const [newProductRetail, setNewProductRetail] = useState('')
   const [creatingProduct, setCreatingProduct] = useState(false)
+  const [importTab, setImportTab] = useState<'manual' | 'file' | 'clipboard'>('manual')
+  const [clipboardText, setClipboardText] = useState('')
   const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
   const [generatingBarcode, setGeneratingBarcode] = useState(false)
 
@@ -216,6 +223,7 @@ export default function InvoiceFormPage() {
           category_id: (i.product as any)?.category_id ?? null,
           total: i.total,
           storage_bin: i.product?.storage_bin ?? null,
+          sku: i.product?.sku ?? '',
           photo_url: (i.product as any)?.photo_url ?? null,
         })))
       }).catch(() => {
@@ -254,10 +262,11 @@ export default function InvoiceFormPage() {
       total: product.purchase_price,
       storage_bin: product.storage_bin,
       photo_url: product.photo_url ?? null,
+      sku: product.sku,
     }])
     setProductSearch('')
     setProductResults([])
-    setShowSearch(false)
+
 
     // Підтягуємо порівняння цін постачальників (закупник бачить «у кого дешевше»)
     productApi.getSupplierPrices(product.id)
@@ -278,7 +287,7 @@ export default function InvoiceFormPage() {
       } else if (field === 'retail_price') {
         item.retail_price = Number(value) || 0
       } else {
-        (item as Record<string, string | number | null>)[field] = value as string | number | null
+        (item as any)[field] = value
       }
       next[index] = item
       return next
@@ -378,6 +387,129 @@ export default function InvoiceFormPage() {
     }
   }
 
+  function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    
+    if (file.name.endsWith('.csv')) {
+      Papa.parse(file, {
+        header: false,
+        skipEmptyLines: true,
+        complete: (results: any) => {
+          processRawRows(results.data)
+        }
+      })
+    } else {
+      const reader = new FileReader()
+      reader.onload = (evt) => {
+        try {
+          const data = new Uint8Array(evt.target?.result as ArrayBuffer)
+          const workbook = read(data, { type: 'array' })
+          const sheet = workbook.Sheets[workbook.SheetNames[0]]
+          const json = utils.sheet_to_json(sheet, { header: 1 }) as any[][]
+          processRawRows(json)
+        } catch {
+          toast.error('Помилка читання Excel файлу')
+        }
+      }
+      reader.readAsArrayBuffer(file)
+    }
+    e.target.value = '' // Reset
+  }
+
+  function processRawRows(rawRows: any[][]) {
+    if (!rawRows || rawRows.length === 0) return
+    const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase())
+    
+    let nameIdx = headers.findIndex(h => /(name|назва|наименование|товар|модель)/.test(h))
+    let skuIdx = headers.findIndex(h => /(sku|артикул|код|арт)/.test(h))
+    let qtyIdx = headers.findIndex(h => /(qty|кол|кільк|количество)/.test(h))
+    let purchaseIdx = headers.findIndex(h => /(purchase|закуп|ціна|цена|вхідна)/.test(h))
+    let retailIdx = headers.findIndex(h => /(retail|роздріб|розница|продаж)/.test(h))
+    let binIdx = headers.findIndex(h => /(bin|комірка|ячейка|ящик)/.test(h))
+
+    if (nameIdx === -1) nameIdx = 1
+    if (skuIdx === -1) skuIdx = 0
+    if (qtyIdx === -1) qtyIdx = 2
+    if (purchaseIdx === -1) purchaseIdx = 3
+    if (retailIdx === -1) retailIdx = 4
+
+    const newItems: LineItem[] = []
+    const startRow = (skuIdx === 0 || nameIdx === 1) ? 1 : 0
+    
+    for (let r = startRow; r < rawRows.length; r++) {
+      const row = rawRows[r]
+      if (!row || row.length === 0) continue
+      const sku = String(row[skuIdx] || '').trim()
+      const name = String(row[nameIdx] || '').trim()
+      if (!sku && !name) continue
+
+      const qty = parseFloat(row[qtyIdx]) || 1
+      const purchase = Math.round((parseFloat(row[purchaseIdx]) || 0) * 100)
+      const retail = Math.round((parseFloat(row[retailIdx]) || 0) * 100)
+      const bin = binIdx !== -1 ? String(row[binIdx] || '').trim() : null
+
+      newItems.push({
+        product_name: name || `Товар (${sku})`,
+        sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
+        qty,
+        purchase_price: purchase,
+        retail_price: retail,
+        category_id: null,
+        total: qty * purchase,
+        storage_bin: bin || null,
+        is_new: true,
+      })
+    }
+    
+    if (newItems.length > 0) {
+      setItems(prev => [...prev, ...newItems])
+      toast.success(`Імпортовано ${newItems.length} товарів`)
+    } else {
+      toast.warning('Не знайдено товарів для імпорту')
+    }
+  }
+
+  function handleClipboardPaste() {
+    if (!clipboardText.trim()) return
+    const lines = clipboardText.split('\n').filter(line => line.trim())
+    const newItems: LineItem[] = []
+    
+    lines.forEach(line => {
+      const cols = line.split('\t')
+      if (cols.length < 2) return
+      
+      const sku = cols[0]?.trim() || ''
+      const name = cols[1]?.trim() || ''
+      if (!sku && !name) return
+      
+      const qty = parseFloat(cols[2]) || 1
+      const purchase = Math.round((parseFloat(cols[3]) || 0) * 100)
+      const retail = Math.round((parseFloat(cols[4]) || 0) * 100)
+      const bin = cols[5]?.trim() || null
+
+      newItems.push({
+        product_name: name || `Товар (${sku})`,
+        sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
+        qty,
+        purchase_price: purchase,
+        retail_price: retail,
+        category_id: null,
+        total: qty * purchase,
+        storage_bin: bin || null,
+        is_new: true,
+      })
+    })
+    
+    if (newItems.length > 0) {
+      setItems(prev => [...prev, ...newItems])
+      toast.success(`Імпортовано ${newItems.length} товарів з буфера`)
+      setClipboardText('')
+    } else {
+      toast.error('Не вдалося розпарсити буфер. Скопіюйте таблицю з Excel.')
+    }
+  }
+
   async function handleCreateSupplier() {
     if (!newSupplierName.trim()) {
       toast.error('Назва постачальника обов’язкова')
@@ -416,12 +548,51 @@ export default function InvoiceFormPage() {
 
     setSaving(true)
     try {
+      // 1. Create missing products first
+      const resolvedItems = await Promise.all(
+        items.map(async (item) => {
+          if (item.product_id && !item.is_new) {
+            return item
+          }
+          // Search if SKU exists to avoid duplication
+          try {
+            const existing = await productApi.list({ search: item.sku })
+            const match = existing.data.find(p => p.sku === item.sku)
+            if (match) {
+              return { ...item, product_id: match.id, is_new: false }
+            }
+          } catch {}
+
+          // Create new product
+          const form: ProductFormData = {
+            name: item.product_name,
+            sku: item.sku,
+            barcode: item.barcode || '',
+            unit: 'шт',
+            purchase_price: (item.purchase_price / 100).toFixed(2),
+            retail_price: (item.retail_price / 100).toFixed(2),
+            qty_on_hand: '0',
+            reorder_point: '0',
+            notes: '',
+            is_active: true,
+            storage_bin: item.storage_bin ?? '',
+            is_favorite: false,
+            brand_id: '',
+            category_id: '',
+            photo_url: item.photo_url || null,
+            specs: {}
+          }
+          const res = await productApi.create(form)
+          return { ...item, product_id: res.data.id, is_new: false }
+        })
+      )
+
       const body = {
         supplier_id: supplierId,
         invoice_number: invoiceNumber.trim() || null,
         notes: notes.trim() || null,
-        items: items.map((i) => ({
-          product_id: i.product_id,
+        items: resolvedItems.map((i) => ({
+          product_id: i.product_id!,
           qty: i.qty,
           purchase_price: i.purchase_price,
           total: i.total,
@@ -433,15 +604,16 @@ export default function InvoiceFormPage() {
       } else {
         await supplierApi.createInvoice(body)
 
-        // Комірки та роздрібні ціни (сітка цін на приході) — ПІСЛЯ успішного
-        // створення накладної, щоб невдале збереження не міняло товари
+        // Оновлюємо комірки, роздрібні ціни та назву/артикул (якщо міняли в таблиці)
         const results = await Promise.allSettled(
-          items.map(async (item) => {
+          resolvedItems.map(async (item) => {
             const patch: Partial<ProductFormData> = {
+              name: item.product_name,
+              sku: item.sku,
               storage_bin: item.storage_bin ?? '',
             }
             if (item.retail_price > 0) patch.retail_price = (item.retail_price / 100).toFixed(2)
-            await productApi.update(item.product_id, patch)
+            await productApi.update(item.product_id!, patch)
           })
         )
         if (results.some((r) => r.status === 'rejected')) {
@@ -500,6 +672,70 @@ export default function InvoiceFormPage() {
           </Card>
         </div>
 
+        {/* Спосіб додавання товарів */}
+        {!isEdit && (
+          <Card className="mb-6">
+            <div className="flex gap-1.5 border-b border-gray-100 pb-3 mb-4">
+              <button type="button" onClick={() => setImportTab('manual')}
+                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'manual' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
+                🔎 Пошук та сканер
+              </button>
+              <button type="button" onClick={() => setImportTab('file')}
+                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'file' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
+                📄 Імпорт Excel / CSV
+              </button>
+              <button type="button" onClick={() => setImportTab('clipboard')}
+                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'clipboard' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
+                📋 З буфера обміну
+              </button>
+            </div>
+
+            {importTab === 'manual' && (
+              <div className="flex gap-2 items-center">
+                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="Пошук товарів за назвою, штрихкодом або SKU..." className="flex-1" autoFocus />
+                <Button type="button" variant="outline" onClick={() => {
+                  setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
+                  setProductModal(true)
+                }}>
+                  Новий товар
+                </Button>
+              </div>
+            )}
+
+            {importTab === 'file' && (
+              <div className="border border-dashed border-gray-200 rounded-xl p-6 text-center hover:bg-gray-50/50 transition-colors">
+                <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFileImport} id="file-import" className="hidden" />
+                <label htmlFor="file-import" className="cursor-pointer flex flex-col items-center justify-center gap-2">
+                  <span className="p-3 bg-yellow-100 text-yellow-700 rounded-full">📁</span>
+                  <span className="font-semibold text-sm text-gray-700">Оберіть Excel (.xlsx) або CSV файл</span>
+                  <span className="text-xs text-gray-400">Перший рядок файлу має містити заголовки: SKU, Назва, Кількість, Закупка...</span>
+                </label>
+              </div>
+            )}
+
+            {importTab === 'clipboard' && (
+              <div className="space-y-3">
+                <textarea value={clipboardText} onChange={(e) => setClipboardText(e.target.value)} rows={4}
+                  placeholder="Вставте скопійовану таблицю з Excel/Google Sheets сюди. Колонка 1: Артикул, Колонка 2: Назва, Колонка 3: К-сть, Колонка 4: Закупка..."
+                  className="w-full border border-gray-200 rounded-lg p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 resize-none" />
+                <Button type="button" onClick={handleClipboardPaste}>Імпортувати дані</Button>
+              </div>
+            )}
+
+            {importTab === 'manual' && productResults.length > 0 && (
+              <div className="mt-2 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
+                {productResults.map((p) => (
+                  <button key={p.id} type="button" onClick={() => addItem(p)}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-yellow-50 flex items-center justify-between">
+                    <span>{p.name}</span>
+                    <span className="text-gray-400 text-xs">{p.sku} — {formatMoney(p.retail_price)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+
         {/* Позиції */}
         <Card padding="none" className="mb-6">
           <div className="px-4 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -541,17 +777,7 @@ export default function InvoiceFormPage() {
                     </select>
                   </div>
                 )}
-                <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
-                  onClick={() => setShowSearch(!showSearch)}>
-                  Додати товар
-                </Button>
-                <Button type="button" size="sm" variant="outline" icon={<Plus size={14} />}
-                  onClick={() => {
-                    setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
-                    setProductModal(true)
-                  }}>
-                  Новий товар
-                </Button>
+                
               </div>
             )}
             {isEdit && (
@@ -559,22 +785,7 @@ export default function InvoiceFormPage() {
             )}
           </div>
 
-          {showSearch && !isEdit && (
-            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-              <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="Пошук товарів за назвою..." className="max-w-md" autoFocus />
-              {productResults.length > 0 && (
-                <div className="mt-2 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
-                  {productResults.map((p) => (
-                    <button key={p.id} type="button" onClick={() => addItem(p)}
-                      className="w-full px-3 py-2 text-left text-sm hover:bg-yellow-50 flex items-center justify-between">
-                      <span>{p.name}</span>
-                      <span className="text-gray-400 text-xs">{p.sku} — {formatMoney(p.retail_price)}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+
 
           <table className="w-full text-sm">
             <thead>
@@ -592,7 +803,7 @@ export default function InvoiceFormPage() {
             </thead>
             <tbody>
               {items.map((item, i) => {
-                const prices = supplierPrices[item.product_id] ?? []
+                const prices = item.product_id ? (supplierPrices[item.product_id] ?? []) : []
                 const best = prices[0]
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
                 return (
@@ -600,17 +811,29 @@ export default function InvoiceFormPage() {
                   <td className="px-2 py-2 w-12 text-center">
                     <RowPhotoCell
                       photoUrl={item.photo_url ?? null}
-                      productId={item.product_id}
+                      productId={item.product_id || 'new_' + i}
                       onPhotoUpdated={(newUrl) => {
                         setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, photo_url: newUrl } : it))
                       }}
                     />
                   </td>
-                  <td className="px-4 py-2 font-medium">
-                    {item.product_name}
+                  <td className="px-4 py-2 font-medium min-w-[200px]">
+                    <input type="text" value={item.product_name}
+                      onChange={(e) => updateItem(i, 'product_name', e.target.value)}
+                      disabled={isEdit}
+                      placeholder="Назва товару"
+                      className="w-full border border-transparent hover:border-gray-200 focus:border-yellow-400 rounded px-2 py-1 text-sm bg-transparent focus:bg-white font-medium" />
+                    <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
+                      <span className="text-gray-400 font-semibold uppercase text-[10px]">SKU:</span>
+                      <input type="text" value={item.sku}
+                        onChange={(e) => updateItem(i, 'sku', e.target.value)}
+                        disabled={isEdit}
+                        placeholder="Артикул"
+                        className="w-32 border border-transparent hover:border-gray-200 focus:border-yellow-400 rounded px-1.5 py-0.5 text-xs bg-transparent focus:bg-white font-mono" />
+                    </div>
                     {best && (
                       <div className={`text-[11px] mt-0.5 font-normal ${cheaperElsewhere ? 'text-orange-600 font-semibold' : 'text-gray-400'}`}
-                        title={prices.slice(0, 5).map((p) => `${p.supplier_name}: ${(p.price / 100).toFixed(2)} грн`).join('\n')}>
+                        title={prices.slice(0, 5).map((p: any) => `${p.supplier_name}: ${(p.price / 100).toFixed(2)} грн`).join('\n')}>
                         🏷 найдешевше: {(best.price / 100).toFixed(2)} грн — {best.supplier_name}
                         {cheaperElsewhere && ` (дешевше за поточну на ${((item.purchase_price - best.price) / 100).toFixed(2)} грн)`}
                       </div>
