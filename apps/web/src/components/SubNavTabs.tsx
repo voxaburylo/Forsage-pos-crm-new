@@ -110,7 +110,6 @@ export const INVENTORY_TABS = [
   { to: '/internal', label: 'Внутр. відпуск' },
   { to: '/inventory/movements', label: 'Переміщення' },
   { to: '/inventory/reserves', label: 'Резерви товарів' },
-  { to: '/inventory/core-returns', label: 'Повернення серцевин' }
 ]
 
 export const ANALYTICS_TABS = [
@@ -127,8 +126,5 @@ export const STAFF_TABS = [
 export const SETTINGS_TABS = [
   { to: '/settings', label: 'Загальні', roles: ['owner', 'admin'] },
   { to: '/settings/channels', label: 'Канали зв\'язку', roles: ['owner', 'admin'] },
-  { to: '/settings/templates', label: 'Шаблони', roles: ['owner', 'admin'] },
-  { to: '/print-center', label: 'Центр друку', roles: ['owner', 'admin', 'manager'] },
-  { to: '/audit', label: 'Журнал дій', roles: ['owner', 'admin'] },
   { to: '/stock-integrity', label: 'Цілісність залишків', roles: ['owner', 'admin'] }
 ]

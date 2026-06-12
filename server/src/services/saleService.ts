@@ -24,15 +24,38 @@ export async function listSales(query: SaleListQuery) {
   if (customer_id) q = q.eq('customer_id', customer_id)
   if (sale_number) q = q.eq('sale_number', sale_number)
 
-  // Universal search: sale_number, customer phone, customer name
   if (search) {
-    q = q.or(`sale_number.ilike.%${search}%,customer.phone.ilike.%${search}%,customer.full_name.ilike.%${search}%`)
+    // 1. Пошук клієнтів за телефоном або ім'ям
+    const { data: cust } = await db
+      .from('customers')
+      .select('id')
+      .or(`phone.ilike.%${search}%,full_name.ilike.%${search}%`)
+
+    const customerIds: string[] = (cust || []).map((c: any) => c.id)
+
+    // 2. Пошук за VIN-кодом у обох таблицях авто
+    const { data: vehs } = await db
+      .from('customer_vehicles')
+      .select('customer_id')
+      .ilike('vin', `%${search}%`)
+    vehs?.forEach((v: any) => customerIds.push(v.customer_id))
+
+    const { data: cars } = await db
+      .from('customer_cars')
+      .select('customer_id')
+      .ilike('vin', `%${search}%`)
+    cars?.forEach((c: any) => customerIds.push(c.customer_id))
+
+    const uniqueIds = Array.from(new Set(customerIds.filter(Boolean)))
+
+    // 3. Фільтруємо продажі за номером чека або за знайденими клієнтами
+    if (uniqueIds.length > 0) {
+      q = q.or(`sale_number.ilike.%${search}%,customer_id.in.(${uniqueIds.join(',')})`)
+    } else {
+      q = q.ilike('sale_number', `%${search}%`)
+    }
   }
 
-  // Universal search: sale_number, customer phone, customer name
-  if (search) {
-    q = q.or(`sale_number.ilike.%${search}%,customer.phone.ilike.%${search}%,customer.full_name.ilike.%${search}%`)
-  }
   if (date_from) q = q.gte('completed_at', date_from)
   if (date_to) q = q.lte('completed_at', date_to)
 
