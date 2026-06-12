@@ -111,6 +111,20 @@ router.delete('/brands/:id', requireRole('owner', 'admin'), async (req, res, nex
   try { await adminService.deleteBrand(String(req.params.id), req.user!.tenant_id); res.status(204).send() } catch (err) { next(err) }
 })
 
+
+// Повне очищення всіх даних тенанта. Тільки власник.
+router.post('/reset-all-data', requireRole('owner'), async (req, res, next) => {
+  try {
+    const schema = z.object({ confirmation: z.literal('ВИДАЛИТИ ВСЕ') })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) {
+      throw new AppError('CONFIRMATION_REQUIRED', 'Введіть "ВИДАЛИТИ ВСЕ" для підтвердження', 400)
+    }
+    const currentUserId = req.user!.id
+    res.json({ data: await adminService.resetAllData(req.user!.tenant_id, currentUserId) })
+  } catch (err) { next(err) }
+})
+
 export default router
 
 // ===================== SETTINGS ROUTER (/api/v1/settings) =====================

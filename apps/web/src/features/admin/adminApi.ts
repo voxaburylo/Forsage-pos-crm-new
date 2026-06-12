@@ -126,6 +126,13 @@ export const adminApi = {
       { confirmation: 'ВИДАЛИТИ ВСЕ' },
     ),
 
+  // Повне очищення всіх даних
+  resetAllData: () =>
+    api.post<{ data: { success: boolean } }>(
+      '/api/v1/admin/reset-all-data',
+      { confirmation: 'ВИДАЛИТИ ВСЕ' },
+    ),
+
   // Settings
   getSettings: () => api.get<{ data: ShopSettings }>('/api/v1/settings'),
   updateSettings: (body: Partial<ShopSettings>) =>

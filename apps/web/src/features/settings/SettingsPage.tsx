@@ -29,6 +29,28 @@ export default function SettingsPage() {
   const [isInfinity, setIsInfinity] = useState(false)
 
   // Quick item edit modal
+  
+  // Full reset state
+  const [resetModalOpen, setResetModalOpen] = useState(false)
+  const [resetConfirmText, setResetConfirmText] = useState('')
+  const [resetting, setResetting] = useState(false)
+
+  async function handleResetAllData() {
+    if (resetConfirmText !== 'ВИДАЛИТИ ВСЕ') return
+    setResetting(true)
+    try {
+      await adminApi.resetAllData()
+      toast.success('Усі дані програми успішно скинуто')
+      setResetModalOpen(false)
+      setResetConfirmText('')
+      window.location.reload()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка скидання даних')
+    } finally {
+      setResetting(false)
+    }
+  }
+
   const [editIdx, setEditIdx]             = useState<number | null>(null)
   const [editItem, setEditItem]           = useState<QuickItemConfig | null>(null)
   const [addChildOpen, setAddChildOpen]   = useState(false)
@@ -454,8 +476,69 @@ export default function SettingsPage() {
               Зберегти налаштування
             </Button>
           </div>
+        
         </form>
+
+        {/* ========== Небезпечна зона (Скидання всіх даних) ========== */}
+        <Card className="mt-6 border-red-200 bg-red-50/50 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-red-100">
+            <Trash2 size={18} className="text-red-600" />
+            <h3 className="text-sm font-semibold text-red-800">Небезпечна зона</h3>
+          </div>
+          <p className="text-xs text-red-700 font-medium">
+            Ця дія безповоротно видалить усі дані: товари, категорії, бренди, постачальників, клієнтів, продажі, замовлення, повернення, виписки, касові операції, витрати, а також усіх інших менеджерів/працівників.
+            Ваш поточний акаунт власника буде збережено.
+          </p>
+          <div>
+            <Button type="button" variant="danger" onClick={() => setResetModalOpen(true)}>
+              Скинути всі дані програми
+            </Button>
+          </div>
+        </Card>
       </div>
+
+      {/* Модальне вікно підтвердження повного скидання */}
+      <Modal
+        open={resetModalOpen}
+        onClose={() => { setResetModalOpen(false); setResetConfirmText('') }}
+        title="Повне скидання даних"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Ви впевнені, що хочете видалити всі дані? Цю дію неможливо скасувати.
+          </p>
+          <div className="bg-red-50 p-3 rounded-lg text-xs text-red-700">
+            Для підтвердження введіть фразу <strong className="font-bold">ВИДАЛИТИ ВСЕ</strong> нижче.
+          </div>
+          <Input
+            label="Підтвердження"
+            value={resetConfirmText}
+            onChange={(e) => setResetConfirmText(e.target.value)}
+            placeholder="ВИДАЛИТИ ВСЕ"
+          />
+          <div className="flex gap-3">
+            <Button
+              type="button"
+              variant="danger"
+              className="flex-1"
+              loading={resetting}
+              disabled={resetConfirmText !== 'ВИДАЛИТИ ВСЕ'}
+              onClick={handleResetAllData}
+            >
+              Видалити все
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => { setResetModalOpen(false); setResetConfirmText('') }}
+            >
+              Скасувати
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
 
       {/* ═══════════════════════════════════════════════════════════
            Модальне вікно — Редагування кнопки
