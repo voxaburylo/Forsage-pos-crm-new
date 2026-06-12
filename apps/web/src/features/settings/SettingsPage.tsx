@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
@@ -18,6 +19,7 @@ const COLOR_OPTIONS = [
 ]
 
 export default function SettingsPage() {
+  const navigate = useNavigate()
   const [form, setForm]     = useState<Partial<ShopSettings>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving]   = useState(false)
@@ -213,6 +215,15 @@ export default function SettingsPage() {
               <h3 className="text-sm font-semibold text-gray-800">Основна інформація</h3>
             </div>
 
+            <div className="pt-2 pb-2 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-700">Чернова номенклатура</p>
+                <p className="text-xs text-gray-400">Переглянути, додати вручную або імпортувати прайс-листи постачальників</p>
+              </div>
+              <Button type="button" variant="secondary" onClick={() => navigate('/settings/draft-nomenclature')} className="text-xs">
+                Керувати
+              </Button>
+            </div>
             <Input label="Назва магазину *" value={form.shop_name ?? ''}
               onChange={(e) => set('shop_name', e.target.value)}
               placeholder="Форсаж Авто" required />

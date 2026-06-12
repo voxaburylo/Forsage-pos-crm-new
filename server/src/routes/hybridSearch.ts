@@ -131,4 +131,78 @@ router.post('/import-on-demand', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+
+// POST /api/v1/search/catalog — додати вручну
+router.post('/catalog', async (req, res, next) => {
+  try {
+    const { sku, brand, name, price_kopecks, qty, warehouse_name, supplier_id } = req.body
+    const tenantId = req.user!.tenant_id
+
+    if (!sku || !name) {
+      throw new AppError('VALIDATION_ERROR', "Артикул та назва є обов'язковими", 400)
+    }
+
+    const { data, error } = await db
+      .from('supplier_price_items')
+      .insert({
+        tenant_id: tenantId,
+        sku: normalizeArticle(sku),
+        brand: brand || null,
+        name,
+        price_kopecks: Number(price_kopecks) || 0,
+        qty: qty || '0',
+        warehouse_name: warehouse_name || null,
+        supplier_id: supplier_id || null,
+      })
+      .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)')
+      .single()
+
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.status(201).json({ data })
+  } catch (err) { next(err) }
+})
+
+// PUT /api/v1/search/catalog/:id — редагувати
+router.put('/catalog/:id', async (req, res, next) => {
+  try {
+    const { sku, brand, name, price_kopecks, qty, warehouse_name, supplier_id } = req.body
+    const tenantId = req.user!.tenant_id
+
+    const { data, error } = await db
+      .from('supplier_price_items')
+      .update({
+        sku: sku ? normalizeArticle(sku) : undefined,
+        brand: brand !== undefined ? (brand || null) : undefined,
+        name: name || undefined,
+        price_kopecks: price_kopecks !== undefined ? (Number(price_kopecks) || 0) : undefined,
+        qty: qty !== undefined ? (qty || '0') : undefined,
+        warehouse_name: warehouse_name !== undefined ? (warehouse_name || null) : undefined,
+        supplier_id: supplier_id !== undefined ? (supplier_id || null) : undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', req.params.id)
+      .eq('tenant_id', tenantId)
+      .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)')
+      .single()
+
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.json({ data })
+  } catch (err) { next(err) }
+})
+
+// DELETE /api/v1/search/catalog/:id — видалити
+router.delete('/catalog/:id', async (req, res, next) => {
+  try {
+    const tenantId = req.user!.tenant_id
+    const { error } = await db
+      .from('supplier_price_items')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('tenant_id', tenantId)
+
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.status(204).send()
+  } catch (err) { next(err) }
+})
+
 export default router

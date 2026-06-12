@@ -2,6 +2,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { ToastContainer } from '@/components/ui'
+import { CommandPalette } from '@/components/CommandPalette'
 import '@/stores/authStore'
 
 function lazyWithRetry(componentImport: () => Promise<any>) {
@@ -38,6 +39,8 @@ const InvoicesPage         = lazyWithRetry(() => import('@/features/suppliers/In
 const InvoiceFormPage      = lazyWithRetry(() => import('@/features/suppliers/InvoiceFormPage'))
 const InvoiceDetailPage    = lazyWithRetry(() => import('@/features/suppliers/InvoiceDetailPage'))
 const ImportPage           = lazyWithRetry(() => import('@/features/suppliers/ImportPage'))
+const BulkImportPage       = lazyWithRetry(() => import('@/features/suppliers/BulkImportPage'))
+const SupplierPricesPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierPricesPage'))
 const AuditLogPage         = lazyWithRetry(() => import('@/features/admin/AuditLogPage'))
 const PricingPage          = lazyWithRetry(() => import('@/features/admin/PricingPage'))
 const StockIntegrityPage   = lazyWithRetry(() => import('@/features/admin/StockIntegrityPage'))
@@ -106,6 +109,8 @@ function App() {
 <Route path="/staff-analytics" element={<ProtectedRoute><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+          <Route path="/settings/draft-nomenclature" element={<ProtectedRoute><SupplierPricesPage /></ProtectedRoute>} />
+          <Route path="/settings/draft-nomenclature/import" element={<ProtectedRoute><BulkImportPage /></ProtectedRoute>} />
           
           <Route path="/suppliers" element={<ProtectedRoute><SuppliersPage /></ProtectedRoute>} />
           <Route path="/suppliers/new" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
@@ -156,6 +161,7 @@ function App() {
         </Routes>
       </Suspense>
       <ToastContainer />
+      <CommandPalette />
     </BrowserRouter>
   )
 }

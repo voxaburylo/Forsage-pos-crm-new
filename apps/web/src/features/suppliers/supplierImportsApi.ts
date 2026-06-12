@@ -58,6 +58,25 @@ export const supplierImportsApi = {
   list: () =>
     request<{ data: SupplierPriceImport[] }>('/api/v1/supplier-imports'),
 
+  createCatalogItem: (body: { sku: string; brand?: string; name: string; price_kopecks: number; qty?: string; warehouse_name?: string; supplier_id?: string | null }) =>
+    request<{ data: SupplierCatalogItem }>('/api/v1/search/catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  updateCatalogItem: (id: string, body: Partial<SupplierCatalogItem> & { supplier_id?: string | null }) =>
+    request<{ data: SupplierCatalogItem }>('/api/v1/search/catalog/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  deleteCatalogItem: (id: string) =>
+    request<void>('/api/v1/search/catalog/' + id, {
+      method: 'DELETE',
+    }),
+
   getCatalog: (params: { q?: string; supplier_id?: string; page?: number; limit?: number }) => {
     const query = new URLSearchParams()
     if (params.q) query.append('q', params.q)

@@ -233,7 +233,7 @@ export default function BulkImportPage() {
   return (
     <Layout
       title="Пакетний імпорт прайс-листів (CSV)"
-      onBack={() => navigate('/suppliers/import')}
+      onBack={() => navigate('/settings/draft-nomenclature')}
     >
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
