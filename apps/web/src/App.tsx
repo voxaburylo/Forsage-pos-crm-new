@@ -41,7 +41,6 @@ const InvoiceDetailPage    = lazyWithRetry(() => import('@/features/suppliers/In
 const ImportPage           = lazyWithRetry(() => import('@/features/suppliers/ImportPage'))
 const BulkImportPage       = lazyWithRetry(() => import('@/features/suppliers/BulkImportPage'))
 const SupplierPricesPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierPricesPage'))
-const AuditLogPage         = lazyWithRetry(() => import('@/features/admin/AuditLogPage'))
 const PricingPage          = lazyWithRetry(() => import('@/features/admin/PricingPage'))
 const StockIntegrityPage   = lazyWithRetry(() => import('@/features/admin/StockIntegrityPage'))
 const WriteoffsPage        = lazyWithRetry(() => import('@/features/inventory/WriteoffsPage'))
@@ -64,13 +63,10 @@ const OrderDetailPage      = lazyWithRetry(() => import('@/features/orders/Order
 const QuoteEditorPage      = lazyWithRetry(() => import('@/features/quotes/QuoteEditorPage'))
 const CashflowPage         = lazyWithRetry(() => import('@/features/cashflow/CashflowPage'))
 const ReservesList         = lazyWithRetry(() => import('@/features/inventory/ReservesList'))
-const CoreReturnsPage      = lazyWithRetry(() => import('@/features/inventory/CoreReturnsPage'))
 const SupplierPOsPage      = lazyWithRetry(() => import('@/features/suppliers/SupplierPOsPage'))
 const WarehousePicking     = lazyWithRetry(() => import('@/features/inventory/WarehousePicking'))
 const WarehouseMovementPage = lazyWithRetry(() => import('@/features/inventory/WarehouseMovementPage'))
 const InboxPage             = lazyWithRetry(() => import('@/features/notifications/InboxPage'))
-const TemplateEditor        = lazyWithRetry(() => import('@/features/notifications/TemplateEditor'))
-const PrintCenterPage       = lazyWithRetry(() => import('@/features/print/PrintCenterPage'))
 
 function Loader() {
   return (
@@ -126,20 +122,16 @@ function App() {
           <Route path="/staff"          element={<ProtectedRoute><StaffPage /></ProtectedRoute>} />
           
           <Route path="/internal"       element={<ProtectedRoute><InternalConsumptionsPage /></ProtectedRoute>} />
-          <Route path="/audit"            element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
           <Route path="/settings/channels" element={<ProtectedRoute><SettingsChannels /></ProtectedRoute>} />
           <Route path="/labels"  element={<ProtectedRoute><LabelDesigner /></ProtectedRoute>} />
           <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
           <Route path="/stock-integrity" element={<ProtectedRoute><StockIntegrityPage /></ProtectedRoute>} />
           <Route path="/notifications"  element={<ProtectedRoute><InboxPage /></ProtectedRoute>} />
-          <Route path="/settings/templates" element={<ProtectedRoute><TemplateEditor /></ProtectedRoute>} />
-          <Route path="/print-center"   element={<ProtectedRoute><PrintCenterPage /></ProtectedRoute>} />
 
           <Route path="/inventory"               element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
           <Route path="/inventory/picking"       element={<ProtectedRoute><WarehousePicking /></ProtectedRoute>} />
           <Route path="/inventory/:id"          element={<ProtectedRoute><ActiveSession /></ProtectedRoute>} />
           <Route path="/inventory/reserves"      element={<ProtectedRoute><ReservesList /></ProtectedRoute>} />
-          <Route path="/inventory/core-returns" element={<ProtectedRoute><CoreReturnsPage /></ProtectedRoute>} />
           <Route path="/inventory/movements"     element={<ProtectedRoute><WarehouseMovementPage /></ProtectedRoute>} />
           <Route path="/inventory/writeoffs"     element={<ProtectedRoute><WriteoffsPage /></ProtectedRoute>} />
           <Route path="/inventory/writeoffs/new" element={<ProtectedRoute><WriteoffFormPage /></ProtectedRoute>} />

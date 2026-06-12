@@ -26,7 +26,7 @@ export default function SalesPage() {
     setLoading(true)
     try {
       const params: Record<string, string | number> = { page, per_page: 20 }
-      if (search) params.sale_number = search
+      if (search) params.search = search
       const result = await saleApi.list(params)
       const r = result as unknown as { data: Sale[]; pagination: { total: number; total_pages: number } }
       setSales(r.data ?? [])
@@ -87,7 +87,7 @@ export default function SalesPage() {
         <SearchInput
           value={search}
           onChange={setSearch}
-          placeholder="Пошук за номером чека..."
+          placeholder="Пошук за чеком, телефоном або ім'ям клієнта..."
           className="max-w-sm"
         />
       </div>

@@ -11,7 +11,7 @@ const TABLE = 'sales'
 
 
 export async function listSales(query: SaleListQuery) {
-  const { shift_id, customer_id, sale_number, date_from, date_to, page, per_page } = query
+  const { shift_id, customer_id, sale_number, search, date_from, date_to, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
@@ -23,6 +23,16 @@ export async function listSales(query: SaleListQuery) {
   if (shift_id) q = q.eq('shift_id', shift_id)
   if (customer_id) q = q.eq('customer_id', customer_id)
   if (sale_number) q = q.eq('sale_number', sale_number)
+
+  // Universal search: sale_number, customer phone, customer name
+  if (search) {
+    q = q.or(`sale_number.ilike.%${search}%,customer.phone.ilike.%${search}%,customer.full_name.ilike.%${search}%`)
+  }
+
+  // Universal search: sale_number, customer phone, customer name
+  if (search) {
+    q = q.or(`sale_number.ilike.%${search}%,customer.phone.ilike.%${search}%,customer.full_name.ilike.%${search}%`)
+  }
   if (date_from) q = q.gte('completed_at', date_from)
   if (date_to) q = q.lte('completed_at', date_to)
 
