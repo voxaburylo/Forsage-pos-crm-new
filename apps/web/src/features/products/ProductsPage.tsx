@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
   ChevronUp, ChevronDown, ChevronsUpDown, Search,
-  Trash2, Eye, GitMerge, ExternalLink,
+  Trash2, Eye, GitMerge, ExternalLink, Copy,
 } from 'lucide-react'
 import { MergeModal } from './MergeModal'
 import { CategorySidebar } from './CategorySidebar'
@@ -522,6 +522,7 @@ export default function ProductsPage() {
                                 onPrimary={() => navigate(`/products/${p.id}/edit`)}
                                 actions={[
                                   { label: 'Швидкий перегляд', icon: <Eye size={14} />, onClick: () => setQuickView(p) },
+                                  { label: 'Дублювати', icon: <Copy size={14} />, onClick: () => navigate(`/products/new?clone=${p.id}`) },
                                   { label: 'Злити дублі', icon: <GitMerge size={14} />, onClick: () => setMergeProduct(p) },
                                   { label: 'Видалити', icon: <Trash2 size={14} />, danger: true, onClick: () => askDelete(p) },
                                 ]}

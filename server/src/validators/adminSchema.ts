@@ -94,6 +94,8 @@ export const settingsSchema = z.object({
   markup_rules:              z.array(markupRuleSchema).optional(),
   quick_percents:            z.array(z.number().min(0).max(1000)).optional(),
   employee_discount_pct:     z.number().min(0).max(100).optional(),
+  vin_decoder_url:           z.string().max(500).optional().nullable(),
+  vin_decoder_api_key:       z.string().max(300).optional().nullable(),
 })
 
 export type CreateUserInput  = z.infer<typeof createUserSchema>

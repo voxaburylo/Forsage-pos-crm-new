@@ -50,6 +50,7 @@ import printRouter from './routes/print.js'
 import autoPurchaseRouter from './routes/autoPurchase.js'
 import onecImportRouter from './routes/onecImport.js'
 import jobsRouter from './routes/jobs.js'
+import vinRouter from './routes/vin.js'
 import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
 import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
@@ -70,6 +71,8 @@ app.use(cors({
   credentials: true,
 }))
 
+// Більший ліміт тіла лише для OCR VIN (фото в base64) — до глобального парсера
+app.use('/api/v1/vin/ocr', express.json({ limit: '10mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)
@@ -142,6 +145,7 @@ app.use('/api/v1/salary', salaryRouter)
 app.use('/api/v1/core-returns', coreReturnsRouter)
 app.use('/api/v1/supplier-pos', supplierPOsRouter)
 app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
+app.use('/api/v1/vin', vinRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

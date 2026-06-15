@@ -11,6 +11,7 @@ import { Button, Badge, Card, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
+import { api } from '@/lib/api'
 
 function StockBadge({ product }: { product: Product }) {
   const status = stockStatus(product)
@@ -192,6 +193,33 @@ export default function ProductDetailPage() {
   }, [id, navigate])
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [reserveOpen, setReserveOpen] = useState(false)
+  const [reserveQty, setReserveQty] = useState('1')
+  const [reserving, setReserving] = useState(false)
+
+  async function handleReserve() {
+    if (!product) return
+    const qty = parseFloat(reserveQty)
+    if (isNaN(qty) || qty <= 0) { toast.error('Вкажіть коректну кількість'); return }
+    setReserving(true)
+    try {
+      const expires = new Date(); expires.setDate(expires.getDate() + 3)
+      await api.post('/api/v1/reserves', {
+        product_id: product.id,
+        qty,
+        customer_id: null,
+        order_id: null,
+        expires_at: expires.toISOString(),
+      })
+      toast.success('Товар зарезервовано на 3 дні')
+      setReserveOpen(false)
+      setReserveQty('1')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося зарезервувати')
+    } finally {
+      setReserving(false)
+    }
+  }
 
   async function handleDelete() {
     if (!product) return
@@ -216,6 +244,9 @@ export default function ProductDetailPage() {
       actions={
         <div className="flex gap-2 items-center">
           {product.is_active === false && <Badge color="red">🚫 Неактивний</Badge>}
+          <Button variant="secondary" size="sm" onClick={() => setReserveOpen(true)}>
+            📌 Резерв
+          </Button>
           <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/products/${product.id}/edit`)}>
             Редагувати
           </Button>
@@ -647,6 +678,23 @@ export default function ProductDetailPage() {
         confirmLabel="Видалити"
         danger
       />
+
+      <Modal open={reserveOpen} onClose={() => setReserveOpen(false)} title="Зарезервувати товар" size="sm">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Резерв «{product.name}» на 3 дні. Клієнта можна додати пізніше в розділі «Склад → Резерви».
+          </p>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Кількість</label>
+            <input type="number" min={1} value={reserveQty} onChange={(e) => setReserveQty(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" autoFocus />
+          </div>
+          <div className="flex gap-3">
+            <Button className="flex-1" loading={reserving} onClick={handleReserve}>Зарезервувати</Button>
+            <Button variant="secondary" onClick={() => setReserveOpen(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }

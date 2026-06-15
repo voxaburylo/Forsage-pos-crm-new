@@ -67,6 +67,8 @@ export interface ShopSettings {
   quick_percents?: number[]
   markup_rules?: MarkupRule[]
   employee_discount_pct?: number
+  vin_decoder_url?: string | null
+  vin_decoder_api_key?: string | null
   // ПРРО
   prro_enabled:           boolean
   prro_provider:          string   // 'mock' | 'kashalot'

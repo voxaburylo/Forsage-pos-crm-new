@@ -8,7 +8,6 @@ import { api } from '@/lib/api'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { orderApi, type CustomerOrder } from '@/features/orders/orderApi'
-import { productApi } from '@/features/products/productApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -399,15 +398,24 @@ export default function QuoteEditorPage() {
     if (!catalogQuery.trim()) return
     setSearchingCatalog(true)
     try {
-      const { data } = await productApi.search(catalogQuery.trim(), 20)
-      
-      // Сортування: власний склад з qty_on_hand > 0 на самий верх
-      const sorted = (data ?? []).sort((a, b) => {
-        const aHasStock = a.qty_on_hand > 0 ? 1 : 0
-        const bHasStock = b.qty_on_hand > 0 ? 1 : 0
-        return bHasStock - aHasStock
+      // Гібридний пошук: і власний склад, і чорнова номенклатура (прайси постачальників)
+      const { data } = await api.get<{ data: { warehouse: Product[]; supplier_catalog: any[] } }>(
+        `/api/v1/search/hybrid?q=${encodeURIComponent(catalogQuery.trim())}&limit=20`,
+      )
+      // Склад: спершу те, що в наявності
+      const warehouse = (data?.warehouse ?? []).sort((a, b) => {
+        return (b.qty_on_hand > 0 ? 1 : 0) - (a.qty_on_hand > 0 ? 1 : 0)
       })
-      setCatalogResults(sorted)
+      // Каталог-підказки (замовні) — у вигляді Product-подібних позицій, в кінці списку
+      const catalog = (data?.supplier_catalog ?? []).map((s: any) => ({
+        id: `catalog:${s.id}`,
+        name: s.name,
+        sku: s.sku ?? '',
+        retail_price: s.price_kopecks ?? 0,
+        qty_on_hand: 0,
+        storage_bin: null,
+      } as unknown as Product))
+      setCatalogResults([...warehouse, ...catalog])
     } catch {
       toast.error('Помилка пошуку деталей')
     } finally {
@@ -417,6 +425,7 @@ export default function QuoteEditorPage() {
 
   // Отримання аналогів для конкретної деталі
   async function loadAnalogs(productId: string) {
+    if (productId.startsWith('catalog:')) return  // замовні позиції аналогів не мають
     try {
       const { data } = await api.get<any>(`/api/v1/products/${productId}/analogs`)
       const list = Array.isArray(data) ? data : data?.analogs ?? data?.data ?? []

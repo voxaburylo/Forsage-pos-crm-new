@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { ShoppingCart, RotateCcw } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { ShoppingCart, RotateCcw, Printer } from 'lucide-react'
 import { saleApi } from '@/features/pos/saleApi'
+import { ReceiptPrint } from '@/features/pos/ReceiptPrint'
 import type { Sale } from '@/types/sale'
 import { Layout } from '@/components/Layout'
 import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
@@ -17,8 +18,9 @@ const PAY_LABEL: Record<string, string> = {
 
 export default function SalesPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [sales, setSales]     = useState<Sale[]>([])
-  const [search, setSearch]   = useState('')
+  const [search, setSearch]   = useState(() => searchParams.get('search') ?? '')
   const [page, setPage]       = useState(1)
   const [total, setTotal]     = useState(0)
   const [pages, setPages]     = useState(1)
@@ -215,11 +217,17 @@ export default function SalesPage() {
                   Оформити повернення
                 </Button>
               )}
+              <Button variant="secondary" icon={<Printer size={15} />} onClick={() => window.print()}>
+                Друк чека
+              </Button>
               <Button variant="secondary" onClick={() => setDetail(null)}>Закрити</Button>
             </div>
           </div>
         ) : null}
       </Modal>
+
+      {/* Прихований чек для друку (видно лише при window.print()) */}
+      {detail && <ReceiptPrint sale={detail} />}
     </Layout>
   )
 }

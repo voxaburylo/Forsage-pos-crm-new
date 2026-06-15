@@ -417,6 +417,59 @@ export default function OrderFormPage() {
     }
   }
 
+  const [decodingVin, setDecodingVin] = useState(false)
+  async function handleDecodeVin() {
+    const vin = newVehVin.trim()
+    if (vin.length < 11) { toast.error('Введіть VIN (мінімум 11 символів)'); return }
+    setDecodingVin(true)
+    try {
+      const { data } = await api.get<{ data: { make: string; model: string; year: string } }>(
+        `/api/v1/vin/decode?vin=${encodeURIComponent(vin)}`,
+      )
+      if (data.make) setNewVehBrand(data.make)
+      if (data.model) setNewVehModel(data.model)
+      if (data.year) setNewVehYear(String(data.year))
+      if (data.make || data.model) toast.success('VIN декодовано')
+      else toast.warning('Сервіс не повернув марку/модель за цим VIN')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка декодування VIN')
+    } finally {
+      setDecodingVin(false)
+    }
+  }
+
+  const [ocrLoading, setOcrLoading] = useState(false)
+  async function handleVinPhoto(file: File) {
+    setOcrLoading(true)
+    try {
+      // Стискаємо фото перед відправкою (швидше + дешевше для OCR)
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const img = new Image()
+        const url = URL.createObjectURL(file)
+        img.onload = () => {
+          URL.revokeObjectURL(url)
+          const scale = Math.min(1, 1280 / Math.max(img.width, img.height))
+          const w = Math.round(img.width * scale), h = Math.round(img.height * scale)
+          const canvas = document.createElement('canvas')
+          canvas.width = w; canvas.height = h
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return reject(new Error('canvas'))
+          ctx.drawImage(img, 0, 0, w, h)
+          resolve(canvas.toDataURL('image/jpeg', 0.7))
+        }
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Не вдалося прочитати фото')) }
+        img.src = url
+      })
+      const { data } = await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', { image: dataUrl, mimeType: 'image/jpeg' })
+      setNewVehVin(data.vin)
+      toast.success('VIN розпізнано: ' + data.vin)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося розпізнати VIN')
+    } finally {
+      setOcrLoading(false)
+    }
+  }
+
   async function handleCreateVehicle(e: React.FormEvent) {
     e.preventDefault()
     if (!newVehBrand.trim() || !newVehModel.trim()) {
@@ -898,6 +951,17 @@ export default function OrderFormPage() {
                       onChange={(e) => setNewVehVin(e.target.value.toUpperCase())}
                       placeholder="KNEDE241260000300"
                     />
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <label className="text-xs font-semibold text-blue-600 hover:text-blue-700 cursor-pointer">
+                        {ocrLoading ? 'Розпізнавання…' : '📷 VIN з фото'}
+                        <input type="file" accept="image/*" capture="environment" className="hidden"
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleVinPhoto(f); e.target.value = '' }} />
+                      </label>
+                      <button type="button" onClick={handleDecodeVin} disabled={decodingVin || newVehVin.trim().length < 11}
+                        className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                        {decodingVin ? 'Декодування…' : '✨ Декодувати (марка/модель/рік)'}
+                      </button>
+                    </div>
                     {getRecentItems('recent_vins').length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
                         <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Нещодавні:</span>
@@ -957,6 +1021,12 @@ export default function OrderFormPage() {
                   <h3 className="font-bold text-gray-900">Специфікація замовлення</h3>
                   <p className="text-xs text-gray-400 mt-0.5">
                     Клієнт: <span className="font-bold text-gray-700">{selectedCustomer ? (selectedCustomer.full_name ?? 'Без імені') : 'Гість'}</span>
+                    {selectedCustomer && (selectedCustomer as any).debt_balance > 0 && (
+                      <span className="ml-2 inline-flex items-center gap-1 text-[11px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700"
+                        title="У клієнта є непогашений борг">
+                        ⚠ Борг: {formatMoney((selectedCustomer as any).debt_balance)}
+                      </span>
+                    )}
                     {selectedCustomer && (
                       <> | Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}${selectedVehicle.year ? ` (${selectedVehicle.year})` : ''}` : 'Не обрано'}</span>
                         <button type="button" onClick={() => setStep(2)} className="ml-1.5 text-yellow-600 hover:text-yellow-700 font-semibold underline">змінити</button>

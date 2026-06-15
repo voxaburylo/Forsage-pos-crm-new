@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { customerGroupsApi, type CustomerGroup } from './customerGroupsApi'
@@ -12,9 +12,10 @@ import { formatMoney } from '@/lib/utils'
 
 export default function CustomersPage() {
   const navigate = useNavigate()
+  const [sp] = useSearchParams()
   const [result, setResult]       = useState<PaginatedCustomers | null>(null)
   const [search, setSearch]       = useState('')
-  const [hasDebt, setHasDebt]     = useState(false)
+  const [hasDebt, setHasDebt]     = useState(sp.get('has_debt') === 'true')
   const [page, setPage]           = useState(1)
   const [loading, setLoading]     = useState(false)
   const [groups, setGroups]       = useState<CustomerGroup[]>([])

@@ -87,6 +87,8 @@ export default function SettingsPage() {
         quick_percents:     form.quick_percents,
         pos_quick_items:    form.pos_quick_items,
         employee_discount_pct: form.employee_discount_pct,
+        vin_decoder_url:     form.vin_decoder_url,
+        vin_decoder_api_key: form.vin_decoder_api_key,
       })
       toast.success('Налаштування збережено')
     } catch (e) {
@@ -538,6 +540,27 @@ export default function SettingsPage() {
                 Додати кнопку
               </button>
             )}
+          </Card>
+
+          {/* ========== Декодер VIN (інтеграція) ========== */}
+          <Card className="mt-6 space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
+              <Zap size={18} className="text-blue-500" />
+              <h3 className="text-sm font-semibold text-gray-800">Декодер VIN (інтеграція)</h3>
+            </div>
+            <p className="text-xs text-gray-400">
+              Зовнішній сервіс для визначення марки/моделі/року за VIN. Лишіть порожнім — кнопка
+              «Декодувати» повідомить, що інтеграцію не налаштовано. У URL можна вказати <code>{'{vin}'}</code> —
+              туди підставиться код (інакше додається в кінець).
+            </p>
+            <Input label="URL API декодера"
+              value={form.vin_decoder_url ?? ''}
+              onChange={(e) => set('vin_decoder_url', e.target.value)}
+              placeholder="https://api.example.com/vin/{vin}" />
+            <Input label="API-ключ (необов'язково)"
+              value={form.vin_decoder_api_key ?? ''}
+              onChange={(e) => set('vin_decoder_api_key', e.target.value)}
+              placeholder="лишіть порожнім, якщо не потрібен" />
           </Card>
 
           {/* ========== Зберегти ========== */}

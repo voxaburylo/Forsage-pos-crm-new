@@ -50,6 +50,8 @@ export default function DashboardPage() {
   const [totals, setTotals] = useState({ products: 0, customers: 0, suppliers: 0, openOrders: 0 })
   const [forecast, setForecast] = useState<{ data: ForecastItem[]; trend: string } | null>(null)
   const [anomalies, setAnomalies] = useState<Anomaly[]>([])
+  const [overdueCount, setOverdueCount] = useState(0)
+  const [debt, setDebt] = useState({ count: 0, total: 0 })
   const [loading, setLoading] = useState(true)
 
   const range = useMemo(() => getRange(period), [period])
@@ -68,11 +70,27 @@ export default function DashboardPage() {
         ])
         setAnalytics(a.data)
         setLowStock(l.data?.length ?? 0)
-        const openOrders = (o.data ?? []).filter((ord: any) => !['completed', 'canceled'].includes(ord.status)).length
+        const activeOrders = (o.data ?? []).filter((ord: any) => !['completed', 'canceled'].includes(ord.status))
         setTotals({
           products: p.pagination?.total ?? 0, customers: c.pagination?.total ?? 0,
-          suppliers: s.pagination?.total ?? 0, openOrders,
+          suppliers: s.pagination?.total ?? 0, openOrders: activeOrders.length,
         })
+
+        // Прострочені замовлення (дедлайн видачі минув)
+        const nowTs = Date.now()
+        setOverdueCount(activeOrders.filter((ord: any) =>
+          ord.pickup_deadline_at && new Date(ord.pickup_deadline_at).getTime() < nowTs).length)
+
+        // Борги клієнтів (кількість — з пагінації; сума — по завантаженій сторінці)
+        api.get<{ data: Array<{ debt_balance: number }>; pagination?: { total: number } }>('/api/v1/customers?has_debt=true&per_page=100')
+          .then((r) => {
+            const list = r.data ?? []
+            setDebt({
+              count: r.pagination?.total ?? list.length,
+              total: list.reduce((s2, x) => s2 + (x.debt_balance ?? 0), 0),
+            })
+          })
+          .catch(() => {})
 
         // Завантаження прогнозу та аномалій (не блокують основне завантаження)
         api.get<{ data: ForecastItem[]; trend: string }>('/api/v1/analytics/forecast?months=3')
@@ -174,6 +192,30 @@ export default function DashboardPage() {
               <p className="text-orange-600 text-xs mt-0.5">Залишок нижче мінімального рівня</p>
               <Button variant="ghost" size="sm" className="text-orange-700 hover:bg-orange-100 mt-2 px-0"
                 onClick={() => navigate('/products?low_stock=true')}>Переглянути →</Button>
+            </div>
+          </Card>
+        )}
+
+        {overdueCount > 0 && (
+          <Card className="border-red-200 bg-red-50 flex items-start gap-3">
+            <ClipboardList size={20} className="text-red-500 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-red-800 text-sm">{overdueCount} прострочен{overdueCount > 1 ? 'их' : 'е'} замовлен{overdueCount > 1 ? 'ь' : 'ня'}</p>
+              <p className="text-red-600 text-xs mt-0.5">Минув дедлайн видачі</p>
+              <Button variant="ghost" size="sm" className="text-red-700 hover:bg-red-100 mt-2 px-0"
+                onClick={() => navigate('/needs-action')}>Переглянути →</Button>
+            </div>
+          </Card>
+        )}
+
+        {debt.count > 0 && (
+          <Card className="border-amber-200 bg-amber-50 flex items-start gap-3">
+            <Receipt size={20} className="text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-amber-800 text-sm">Борги клієнтів: {formatMoney(debt.total)}</p>
+              <p className="text-amber-600 text-xs mt-0.5">{debt.count} клієнт{debt.count > 1 ? 'ів' : ''} із заборгованістю</p>
+              <Button variant="ghost" size="sm" className="text-amber-700 hover:bg-amber-100 mt-2 px-0"
+                onClick={() => navigate('/customers?has_debt=true')}>Переглянути →</Button>
             </div>
           </Card>
         )}

@@ -427,6 +427,24 @@ export default function OrderDetailPage() {
                 >
                   🖨 Квитанція
                 </button>
+                <button
+                  onClick={() => {
+                    const text = [
+                      `Замовлення ${formatOrderNo(order)}`,
+                      order.customer ? `Клієнт: ${order.customer.full_name ?? order.customer.phone}` : '',
+                      ...order.items.map((i) => `• ${i.name}${i.sku ? ` (${i.sku})` : ''} — ${i.qty} × ${formatMoney(i.sell_price)}`),
+                      `Разом: ${formatMoney(order.total_amount)}`,
+                      remaining > 0 ? `До сплати: ${formatMoney(remaining)}` : '',
+                    ].filter(Boolean).join('\n')
+                    navigator.clipboard.writeText(text)
+                      .then(() => toast.success('Реквізити скопійовано'))
+                      .catch(() => toast.error('Не вдалося скопіювати'))
+                    setActionsOpen(false)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  📋 Копіювати реквізити
+                </button>
                 {order.chat_id && (
                   <button
                     onClick={() => navigate(`/orders?tab=bots&chat_id=${order.chat_id}`)}

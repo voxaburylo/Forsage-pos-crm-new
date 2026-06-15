@@ -26,7 +26,15 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
 
   if (search) {
     const normalized = normalizePhone(search)
-    q = q.or(`phone.ilike.%${normalized}%,full_name.ilike.%${search}%`)
+    const orParts = [`phone.ilike.%${normalized}%`, `full_name.ilike.%${search}%`]
+    // Пошук також за VIN авто клієнта
+    const { data: vinMatches } = await db
+      .from('customer_vehicles')
+      .select('customer_id')
+      .ilike('vin', `%${search}%`)
+    const vinIds = [...new Set((vinMatches ?? []).map((v: any) => v.customer_id).filter(Boolean))]
+    if (vinIds.length > 0) orParts.push(`id.in.(${vinIds.join(',')})`)
+    q = q.or(orParts.join(','))
   }
   if (has_debt === 'true')  q = q.gt('debt_balance', 0)
   if (has_debt === 'false') q = q.eq('debt_balance', 0)

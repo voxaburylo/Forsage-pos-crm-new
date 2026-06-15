@@ -127,6 +127,9 @@ export default function InvoiceDetailPage() {
       onBack={() => navigate('/suppliers/invoices')}
       actions={
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => navigate(`/suppliers/invoices/new?clone=${id}`)}>
+            Дублювати
+          </Button>
           {invoice.status === 'draft' && (
             <>
               {canDelete && (

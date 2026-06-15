@@ -237,6 +237,33 @@ export default function InvoiceFormPage() {
     }
   }, [id])
 
+  // Дублювання: /suppliers/invoices/new?clone=<id> — копіюємо постачальника й позиції,
+  // номер лишаємо порожнім (новий), статус — чернетка.
+  const cloneId = searchParams.get('clone')
+  useEffect(() => {
+    if (id || !cloneId) return
+    setLoading(true)
+    supplierApi.getInvoice(cloneId).then((res) => {
+      const inv = res.data
+      setSupplierId(inv.supplier_id ?? '')
+      setItems((inv.items ?? []).map((i) => ({
+        product_id: i.product_id,
+        product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
+        qty: i.qty,
+        purchase_price: i.purchase_price,
+        retail_price: i.product?.retail_price ?? 0,
+        category_id: (i.product as any)?.category_id ?? null,
+        total: i.total,
+        storage_bin: i.product?.storage_bin ?? null,
+        sku: i.product?.sku ?? '',
+        photo_url: (i.product as any)?.photo_url ?? null,
+      })))
+      toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
+    }).catch(() => toast.error('Не вдалось завантажити накладну для копіювання'))
+      .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloneId, id])
+
   // Пошук товарів
   const searchProducts = useCallback(async (q: string) => {
     if (!q.trim()) { setProductResults([]); return }

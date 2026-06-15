@@ -172,7 +172,11 @@ export default function CustomerDetailPage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Телефон</p>
-              <p className="font-mono font-semibold text-gray-900">{customer.phone}</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <a href={`tel:${customer.phone}`} className="font-mono font-semibold text-blue-600 hover:underline" title="Подзвонити">{customer.phone}</a>
+                <a href={`viber://chat?number=${encodeURIComponent(customer.phone)}`}
+                  className="text-[11px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 hover:bg-purple-100 font-semibold" title="Написати у Viber">Viber</a>
+              </div>
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Email</p>

@@ -1,6 +1,15 @@
+import qrcode from 'qrcode-generator'
 import type { Sale } from '@/types/sale'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatDateTime } from '@/lib/utils'
+
+// Синхронна генерація QR (SVG) — щоб був готовий одразу на момент друку
+function qrSvg(text: string): string {
+  const qr = qrcode(0, 'M')
+  qr.addData(text)
+  qr.make()
+  return qr.createSvgTag({ cellSize: 2, margin: 0 })
+}
 
 interface Props {
   sale: Sale
@@ -12,6 +21,8 @@ const PAY_LABEL: Record<string, string> = {
 }
 
 export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
+  const qrLink = `${window.location.origin}/sales?search=${encodeURIComponent(sale.sale_number)}`
+  const qr = qrSvg(qrLink)
   return (
     <div className="receipt-print">
       <style>{`
@@ -110,6 +121,13 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
       </div>
 
       <hr className="rp-thin" />
+
+      {/* QR — швидке відкриття чека */}
+      <div className="rp-center" style={{ marginTop: '2mm' }}>
+        <div style={{ display: 'inline-block', width: '22mm', height: '22mm' }}
+          dangerouslySetInnerHTML={{ __html: qr }} />
+        <div className="rp-small">Скануйте, щоб відкрити чек</div>
+      </div>
 
       {/* Нижній колонтитул */}
       <div className="rp-thanks">

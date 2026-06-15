@@ -9,6 +9,7 @@ import {
   Settings, 
   RefreshCw 
 } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { supplierImportsApi } from './supplierImportsApi'
 import type { SupplierPriceImport } from './supplierImportsApi'
 import { supplierApi } from './supplierApi'
@@ -143,24 +144,44 @@ export default function BulkImportPage() {
     setIsDragging(false)
   }
 
+  // Excel (.xlsx/.xls) конвертуємо в CSV прямо в браузері — сервер далі читає CSV
+  // як і раніше. Роздільник ';' (стандарт для українського Excel).
+  async function toCsvFile(f: File): Promise<File> {
+    const buf = await f.arrayBuffer()
+    const wb = XLSX.read(buf, { type: 'array' })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    const csv = XLSX.utils.sheet_to_csv(ws, { FS: ';' })
+    return new File([csv], f.name.replace(/\.(xlsx|xls)$/i, '.csv'), { type: 'text/csv' })
+  }
+
+  async function acceptFile(f: File) {
+    const ext = f.name.split('.').pop()?.toLowerCase()
+    if (ext === 'xlsx' || ext === 'xls') {
+      try {
+        setFile(await toCsvFile(f))
+      } catch {
+        toast.error('Не вдалося прочитати Excel-файл. Спробуйте зберегти як CSV.')
+      }
+    } else if (ext === 'csv') {
+      setFile(f)
+    } else {
+      toast.error('Підтримуються файли .xlsx, .xls або .csv')
+    }
+  }
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
     const droppedFiles = e.dataTransfer.files
     if (droppedFiles && droppedFiles.length > 0) {
-      const selectedFile = droppedFiles[0]
-      if (selectedFile.name.endsWith('.csv')) {
-        setFile(selectedFile)
-      } else {
-        toast.error('Будь ласка, завантажуйте файли тільки у форматі CSV (.csv)')
-      }
+      acceptFile(droppedFiles[0])
     }
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files
     if (selectedFiles && selectedFiles.length > 0) {
-      setFile(selectedFiles[0])
+      acceptFile(selectedFiles[0])
     }
   }
 
@@ -344,8 +365,8 @@ export default function BulkImportPage() {
                 type="file" 
                 ref={fileInputRef} 
                 onChange={handleFileChange} 
-                accept=".csv" 
-                className="hidden" 
+                accept=".csv,.xlsx,.xls"
+                className="hidden"
               />
               
               {file ? (
@@ -359,7 +380,7 @@ export default function BulkImportPage() {
               ) : (
                 <>
                   <Upload className={`mb-3 ${isDragging ? 'text-yellow-500' : 'text-gray-400'}`} size={42} />
-                  <p className="text-sm font-semibold text-gray-700">Перетягніть CSV файл сюди</p>
+                  <p className="text-sm font-semibold text-gray-700">Перетягніть файл Excel (.xlsx) або CSV сюди</p>
                   <p className="text-xs text-gray-400 mt-1">або натисніть для вибору на комп'ютері</p>
                   <div className="mt-3 px-3 py-1 bg-yellow-100/60 rounded text-[11px] font-medium text-yellow-800">
                     Максимум 50,000+ рядків

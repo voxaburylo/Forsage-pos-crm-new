@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Save, Wand2, Plus } from 'lucide-react'
 import { productApi } from './productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -23,6 +23,8 @@ const EMPTY: ProductFormData = {
 export default function ProductFormPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
+  const cloneId = searchParams.get('clone')
   const isEdit = !!id && id !== 'new'
 
   const [form, setForm] = useState<ProductFormData>(EMPTY)
@@ -84,6 +86,36 @@ export default function ProductFormPage() {
       navigate('/products')
     }).finally(() => setLoading(false))
   }, [id, isEdit, navigate])
+
+  // Дублювання: /products/new?clone=<id> — копіюємо все, крім унікальних
+  // (артикул, штрих-код) та залишку; назву позначаємо «(копія)».
+  useEffect(() => {
+    if (isEdit || !cloneId) return
+    setLoading(true)
+    productApi.get(cloneId).then(({ data }) => {
+      setForm({
+        sku: '',
+        name: `${data.name} (копія)`,
+        barcode: '',
+        brand_id: data.brand_id ?? '',
+        category_id: data.category_id ?? '',
+        unit: data.unit as ProductFormData['unit'],
+        purchase_price: kopecksToHryvnia(data.purchase_price),
+        retail_price: kopecksToHryvnia(data.retail_price),
+        qty_on_hand: '0',
+        reorder_point: String(data.reorder_point),
+        notes: data.notes ?? '',
+        is_active: data.is_active,
+        storage_bin: data.storage_bin ?? '',
+        is_favorite: false,
+        specs: (data.specs as Record<string, string>) ?? {},
+        requires_core_return: data.requires_core_return ?? false,
+        core_deposit_amount: data.core_deposit_amount ? kopecksToHryvnia(data.core_deposit_amount) : '',
+      })
+    }).catch(() => toast.error('Не вдалося завантажити товар для копіювання'))
+      .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloneId, isEdit])
 
   function set(field: keyof ProductFormData, value: string | boolean) {
     setForm((f) => ({ ...f, [field]: value }))

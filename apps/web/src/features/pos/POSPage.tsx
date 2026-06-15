@@ -126,6 +126,7 @@ export default function POSPage() {
   const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
+  const [bigFont, setBigFont]           = useState(() => localStorage.getItem('pos_big_font') === '1')
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
@@ -457,7 +458,7 @@ export default function POSPage() {
   }
 
   return (
-    <div className="h-screen-pos flex flex-col bg-[#1A1A1A] overflow-hidden">
+    <div className="h-screen-pos flex flex-col bg-[#1A1A1A] overflow-hidden" style={{ zoom: bigFont ? 1.18 : undefined }}>
       {/* Lock Screen */}
       {isLockedPIN && (
         <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />
@@ -621,6 +622,11 @@ export default function POSPage() {
             className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
             title="Довідка (F1)">
             <Keyboard size={16} />
+          </button>
+          <button onClick={() => { const v = !bigFont; setBigFont(v); localStorage.setItem('pos_big_font', v ? '1' : '0') }}
+            className={`flex items-center justify-center rounded-xl hover:bg-gray-800 w-11 h-11 font-bold ${bigFont ? 'text-yellow-400' : 'text-gray-500 hover:text-white'}`}
+            title="Великий шрифт">
+            A+
           </button>
           <button onClick={toggleFullscreen}
             className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"

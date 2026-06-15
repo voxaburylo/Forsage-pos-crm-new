@@ -78,6 +78,7 @@ export const CUSTOMERS_TABS = [
 
 export const PRODUCTS_TABS = [
   { to: '/products', label: 'Товари' },
+  { to: '/settings/draft-nomenclature', label: 'Чорнова номенклатура', roles: ['owner', 'admin', 'manager'] },
   { to: '/labels', label: 'Друк етикеток', roles: ['owner', 'admin'] }
 ]
 
