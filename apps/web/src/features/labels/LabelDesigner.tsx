@@ -1113,7 +1113,7 @@ export default function LabelDesigner() {
                   <div className="flex gap-3 items-end pt-1">
                     <div className="w-24">
                       <label className="block text-[10px] text-gray-400 mb-1">Кількість копій</label>
-                      <input type="number" min={1} value={groupCopies} onChange={(e) => setGroupCopies(Math.max(1, parseInt(e.target.value) || 1))}
+                      <input type="number" min={1} value={groupCopies === 0 ? '' : groupCopies} onChange={(e) => setGroupCopies(e.target.value === '' ? 0 : Math.max(1, parseInt(e.target.value) || 1))}
                         className="w-full border border-gray-200 rounded-lg px-3 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
                     </div>
                     <Button size="sm" onClick={handleAddGroup} loading={groupLoading} className="flex-1">
@@ -1152,12 +1152,12 @@ export default function LabelDesigner() {
                     </div>
                     <div>
                       <label className="block text-[10px] text-gray-400 mb-1">Початок (№)</label>
-                      <input type="number" min={1} value={binStart} onChange={(e) => setBinStart(Math.max(1, parseInt(e.target.value) || 1))}
+                      <input type="number" min={1} value={binStart === 0 ? '' : binStart} onChange={(e) => setBinStart(e.target.value === '' ? 0 : Math.max(1, parseInt(e.target.value) || 1))}
                         className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
                     </div>
                     <div>
                       <label className="block text-[10px] text-gray-400 mb-1">Кінець (№)</label>
-                      <input type="number" min={1} value={binEnd} onChange={(e) => setBinEnd(Math.max(1, parseInt(e.target.value) || 1))}
+                      <input type="number" min={1} value={binEnd === 0 ? '' : binEnd} onChange={(e) => setBinEnd(e.target.value === '' ? 0 : Math.max(1, parseInt(e.target.value) || 1))}
                         className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]" />
                     </div>
                   </div>
@@ -1312,7 +1312,7 @@ export default function LabelDesigner() {
                     Фіксована кількість:
                   </label>
                   {invoiceCopiesStrategy === 'fixed' && (
-                    <input type="number" min={1} value={invoiceFixedCopies} onChange={(e) => setInvoiceFixedCopies(Math.max(1, parseInt(e.target.value) || 1))}
+                    <input type="number" min={1} value={invoiceFixedCopies === 0 ? '' : invoiceFixedCopies} onChange={(e) => setInvoiceFixedCopies(e.target.value === '' ? 0 : Math.max(1, parseInt(e.target.value) || 1))}
                       className="w-14 border border-gray-200 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[26px]" />
                   )}
                 </div>
