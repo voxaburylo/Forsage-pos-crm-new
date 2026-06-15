@@ -1,4 +1,9 @@
 import { api } from '@/lib/api'
+// Єдиний канонічний тип етикетки — з LabelDesigner (повний). import type
+// стирається при збірці, тож рантайм-циклу з adminApi не виникає.
+import type { LabelSettings } from '@/features/labels/LabelDesigner'
+
+export type { LabelSettings }
 
 // Users
 export interface AdminUser {
@@ -24,20 +29,6 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 }
 
 // Settings
-export interface LabelSettings {
-  width_mm: number
-  height_mm: number
-  padding_mm: number
-  font_size: number
-  barcode_height: number
-  show_shop_name: boolean
-  show_product_name: boolean
-  show_barcode: boolean
-  show_sku: boolean
-  show_price: boolean
-  show_storage_bin: boolean
-}
-
 export interface QuickChildItem {
   label: string
   sku: string

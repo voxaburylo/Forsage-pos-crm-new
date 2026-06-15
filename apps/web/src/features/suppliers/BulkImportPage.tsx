@@ -77,6 +77,35 @@ export default function BulkImportPage() {
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
   const [loadingHistory, setLoadingHistory] = useState<boolean>(false)
 
+  // Функції оголошуємо ДО ефектів, що їх викликають (інакше — звернення до
+  // змінної до її ініціалізації). Без useCallback: React Compiler мемоїзує сам.
+  const fetchHistory = async () => {
+    setLoadingHistory(true)
+    try {
+      const res = await supplierImportsApi.list()
+      setHistory(res.data || [])
+    } catch {
+      toast.error('Не вдалося завантажити історію імпортів')
+    } finally {
+      setLoadingHistory(false)
+    }
+  }
+
+  const fetchActiveStatus = async (id: string) => {
+    try {
+      const res = await supplierImportsApi.getStatus(id)
+      const data = res.data
+      setActiveImport(data)
+
+      // If finished (completed/failed), stop active monitoring (optionally update history)
+      if (data.status === 'completed' || data.status === 'failed') {
+        fetchHistory()
+      }
+    } catch {
+      toast.error('Не вдалося отримати статус імпорту')
+    }
+  }
+
   // Load suppliers and history on mount
   useEffect(() => {
     if (!isAllowed) return
@@ -84,8 +113,9 @@ export default function BulkImportPage() {
     supplierApi.list({ per_page: 200 })
       .then((r) => setSuppliers(r.data))
       .catch(() => {})
-    
+
     fetchHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAllowed])
 
   // Poll active import status
@@ -100,34 +130,8 @@ export default function BulkImportPage() {
     }, 2000)
 
     return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeImportId, isAllowed])
-
-  const fetchHistory = async () => {
-    setLoadingHistory(true)
-    try {
-      const res = await supplierImportsApi.list()
-      setHistory(res.data || [])
-    } catch (err: any) {
-      toast.error('Не вдалося завантажити історію імпортів')
-    } finally {
-      setLoadingHistory(false)
-    }
-  }
-
-  const fetchActiveStatus = async (id: string) => {
-    try {
-      const res = await supplierImportsApi.getStatus(id)
-      const data = res.data
-      setActiveImport(data)
-      
-      // If finished (completed/failed), stop active monitoring (optionally update history)
-      if (data.status === 'completed' || data.status === 'failed') {
-        fetchHistory()
-      }
-    } catch (err: any) {
-      toast.error('Не вдалося отримати статус імпорту')
-    }
-  }
 
   // Handle Drag & Drop
   const handleDragOver = (e: React.DragEvent) => {

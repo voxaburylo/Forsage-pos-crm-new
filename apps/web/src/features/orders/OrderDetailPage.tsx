@@ -429,7 +429,7 @@ export default function OrderDetailPage() {
                 </button>
                 {order.chat_id && (
                   <button
-                    onClick={() => navigate(`/chats?chat_id=${order.chat_id}`)}
+                    onClick={() => navigate(`/orders?tab=bots&chat_id=${order.chat_id}`)}
                     className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                   >
                     💬 Чат

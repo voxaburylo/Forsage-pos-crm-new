@@ -292,7 +292,21 @@ export async function updateSettings(input: SettingsInput, tenantId: string) {
     .eq('tenant_id', tenantId)
     .select('*')
     .single()
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    // Найчастіша причина — schema drift: колонки немає в БД (PostgREST код PGRST204
+    // / "Could not find the 'X' column"). Робимо помилку явною, щоб drift було видно
+    // одразу, а не "німо" як загальний DB_ERROR.
+    const isMissingColumn = error.code === 'PGRST204'
+      || /could not find .* column|column .* does not exist/i.test(error.message)
+    if (isMissingColumn) {
+      throw new AppError(
+        'SETTINGS_SCHEMA_DRIFT',
+        `Не вдалося зберегти: у БД бракує колонки. ${error.message}. Застосуйте міграції shop_settings.`,
+        500,
+      )
+    }
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
   return data
 }
 

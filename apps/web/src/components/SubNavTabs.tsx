@@ -78,7 +78,6 @@ export const CUSTOMERS_TABS = [
 
 export const PRODUCTS_TABS = [
   { to: '/products', label: 'Товари' },
-  { to: '/pricing', label: 'Ціноутворення', roles: ['owner', 'admin'] },
   { to: '/labels', label: 'Друк етикеток', roles: ['owner', 'admin'] }
 ]
 
@@ -100,6 +99,8 @@ export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Список постачальників', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/invoices', label: 'Прихідні накладні' },
   { to: '/suppliers/pos', label: 'Замовлення постачальникам' },
+  { to: '/auto-purchase', label: 'Автозакупівля', roles: ['owner', 'admin', 'manager'] },
+  { to: '/core-returns', label: 'Застава (core)', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/import', label: 'Імпорт прайсу' }
 ]
 
@@ -126,5 +127,8 @@ export const STAFF_TABS = [
 export const SETTINGS_TABS = [
   { to: '/settings', label: 'Загальні', roles: ['owner', 'admin'] },
   { to: '/settings/channels', label: 'Канали зв\'язку', roles: ['owner', 'admin'] },
+  { to: '/settings/templates', label: 'Шаблони сповіщень', roles: ['owner', 'admin'] },
+  { to: '/audit', label: 'Журнал аудиту', roles: ['owner', 'admin'] },
+  { to: '/print-center', label: 'Центр друку', roles: ['owner', 'admin'] },
   { to: '/stock-integrity', label: 'Цілісність залишків', roles: ['owner', 'admin'] }
 ]

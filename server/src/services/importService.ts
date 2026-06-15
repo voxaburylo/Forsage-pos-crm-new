@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { applyMarkup, type MarkupRule } from '../lib/markup.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { createSupplyInvoice } from './supplierService.js'
@@ -514,14 +515,9 @@ export async function previewImport(input: PreviewImportInput, tenantId: string)
   }
 }
 async function getCalculatedRetailPrice(purchasePrice: number, tenantId: string): Promise<number> {
-  let markupPct = 30
   const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
-  const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined
-  if (rules) {
-    const rule = rules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice)
-    if (rule) markupPct = rule.markupPct
-  }
-  return Math.round(purchasePrice * (1 + markupPct / 100))
+  const rules = (settings as any)?.markup_rules as MarkupRule[] | undefined
+  return applyMarkup(purchasePrice, rules, 30)
 }
 
 export async function confirmImport(input: ConfirmImportInput, userId: string, tenantId: string) {

@@ -84,6 +84,7 @@ export default function SettingsPage() {
         return_days:        form.return_days,
         default_debt_limit_kopecks: form.default_debt_limit_kopecks,
         markup_rules:       form.markup_rules,
+        quick_percents:     form.quick_percents,
         pos_quick_items:    form.pos_quick_items,
         employee_discount_pct: form.employee_discount_pct,
       })
@@ -122,6 +123,25 @@ export default function SettingsPage() {
     const currentRules = form.markup_rules ?? []
     const updated = currentRules.filter((_, i) => i !== index)
     set('markup_rules', updated)
+  }
+
+  // ─── Швидкі відсотки (quick_percents) ──────────────────────────
+  // Перенесено зі сторінки «Ціноутворення» (/pricing). Кнопки швидкої націнки
+  // читає форма прихідної накладної (InvoiceFormPage).
+  function addQuickPercent() {
+    const current = form.quick_percents ?? []
+    if (current.length >= 10) { toast.warning('Максимум 10 швидких відсотків'); return }
+    set('quick_percents', [...current, 0])
+  }
+
+  function updateQuickPercent(index: number, value: string) {
+    const current = [...(form.quick_percents ?? [])]
+    current[index] = parseFloat(value) || 0
+    set('quick_percents', current)
+  }
+
+  function removeQuickPercent(index: number) {
+    set('quick_percents', (form.quick_percents ?? []).filter((_, i) => i !== index))
   }
 
   // ─── POS Quick Items helpers ───────────────────────────────────
@@ -406,6 +426,45 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+          </Card>
+
+          {/* ========== Швидкі відсотки ========== */}
+          <Card className="mt-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Percent size={18} className="text-green-500" />
+                <h3 className="text-sm font-semibold text-gray-800">Швидкі відсотки</h3>
+              </div>
+              <Button type="button" variant="secondary" onClick={addQuickPercent}
+                disabled={(form.quick_percents?.length ?? 0) >= 10} className="text-xs">
+                <Plus size={14} className="mr-1" /> Додати
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400">
+              До 10 кнопок швидкої націнки (%). Використовуються при введенні прихідної накладної.
+            </p>
+            {(form.quick_percents?.length ?? 0) === 0 ? (
+              <div className="text-center py-6 text-gray-400 text-xs bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                Немає налаштованих відсотків. Натисніть «Додати».
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {(form.quick_percents ?? []).map((pct, i) => (
+                  <div key={i} className="flex items-center gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200">
+                    <div className="flex-1 relative">
+                      <input type="number" min={0} step={0.1} value={pct || ''}
+                        onChange={(e) => updateQuickPercent(i, e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 pr-6 text-sm text-center font-bold focus:outline-none focus:ring-2 focus:ring-accent" />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold">%</span>
+                    </div>
+                    <button type="button" onClick={() => removeQuickPercent(i)}
+                      className="text-gray-400 hover:text-red-500 transition-colors p-1.5 rounded-lg hover:bg-red-50" title="Видалити">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
 
           {/* ========== Швидкі кнопки POS ========== */}

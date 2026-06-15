@@ -430,7 +430,7 @@ export default function InvoiceFormPage() {
     let qtyIdx = headers.findIndex(h => /(qty|кол|кільк|количество)/.test(h))
     let purchaseIdx = headers.findIndex(h => /(purchase|закуп|ціна|цена|вхідна)/.test(h))
     let retailIdx = headers.findIndex(h => /(retail|роздріб|розница|продаж)/.test(h))
-    let binIdx = headers.findIndex(h => /(bin|комірка|ячейка|ящик)/.test(h))
+    const binIdx = headers.findIndex(h => /(bin|комірка|ячейка|ящик)/.test(h))
 
     if (nameIdx === -1) nameIdx = 1
     if (skuIdx === -1) skuIdx = 0
@@ -565,7 +565,7 @@ export default function InvoiceFormPage() {
             if (match) {
               return { ...item, product_id: match.id, is_new: false }
             }
-          } catch {}
+          } catch { /* товар не знайдено в базі — створимо новий нижче */ }
 
           // Create new product
           const form: ProductFormData = {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { RotateCcw, Search, Package, AlertTriangle, Info } from 'lucide-react'
 import { returnApi } from './returnApi'
 import { saleApi } from './saleApi'
@@ -70,6 +71,7 @@ export default function ReturnForm() {
 
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
+  const [searchParams] = useSearchParams()
 
   // Коли змінюється condition — автопідбираємо stock_action
   useEffect(() => {
@@ -93,9 +95,14 @@ export default function ReturnForm() {
   )
 
   // Step 1: search sale
-  async function handleSearch(e: React.FormEvent) {
+  function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    if (!saleNumber.trim()) return
+    searchSale(saleNumber)
+  }
+
+  async function searchSale(num: string) {
+    const q = num.trim()
+    if (!q) return
 
     setSearching(true)
     setFound(null)
@@ -104,7 +111,7 @@ export default function ReturnForm() {
     setStep(1)
 
     try {
-      const result = await saleApi.list({ sale_number: saleNumber.trim() })
+      const result = await saleApi.list({ sale_number: q })
       const sales = (result as unknown as { data: FoundSale[] }).data ?? []
       const sale = sales[0] ?? null
       if (!sale) {
@@ -138,6 +145,16 @@ export default function ReturnForm() {
       setLoadingItems(false)
     }
   }
+
+  // Авто-пошук, якщо прийшли з картки продажу (/returns?sale=НОМЕР)
+  useEffect(() => {
+    const presale = searchParams.get('sale')
+    if (presale) {
+      setSaleNumber(presale)
+      searchSale(presale)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function updateQty(id: string, qty: number) {
     setSelected((prev) =>

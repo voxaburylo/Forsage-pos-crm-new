@@ -55,7 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
     roles: ['owner','admin','manager'],
     items: [
       { to: '/dashboard',           icon: <LayoutDashboard size={18} />, label: 'Дашборд',              roles: ['owner','admin','manager'] },
-      { to: '/reports',             icon: <BarChart2 size={18} />,       label: 'Аналітика',            roles: ['owner','admin','manager'] },
+      { to: '/reports',             icon: <BarChart2 size={18} />,       label: 'Денний звіт',          roles: ['owner','admin','manager'] },
     ],
   },
   {

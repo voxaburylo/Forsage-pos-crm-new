@@ -1,4 +1,5 @@
 ﻿import { db } from '../db/supabase.js'
+import { applyMarkup, type MarkupRule } from '../lib/markup.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
@@ -688,16 +689,11 @@ export async function importFromCatalog(
     .eq('tenant_id', tenantId)
     .single()
 
-  const markupRules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined
+  const markupRules = (settings as any)?.markup_rules as MarkupRule[] | undefined
 
   let retailPrice = input.retailPrice
   if (retailPrice === undefined || retailPrice === null) {
-    let markupPct = 30
-    if (markupRules) {
-      const rule = markupRules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice)
-      if (rule) markupPct = rule.markupPct
-    }
-    retailPrice = Math.round(purchasePrice * (1 + markupPct / 100))
+    retailPrice = applyMarkup(purchasePrice, markupRules, 30)
   }
 
   const normalized = {

@@ -51,7 +51,7 @@ export default function StockIntegrityPage() {
     } finally {
       setLoading(false)
     }
-  }, [session?.access_token])
+  }, [session])
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: '#0f1117' }}>

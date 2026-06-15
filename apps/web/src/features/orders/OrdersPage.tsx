@@ -298,7 +298,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
       setVehicles([]); setOrders([])
     }
     Promise.all(promises).finally(() => setLoading(false))
-  }, [chat.id, customer?.id])
+  }, [chat.id, customer])
 
   useEffect(() => { loadData() }, [loadData])
 

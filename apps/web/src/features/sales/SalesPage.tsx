@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ShoppingCart } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ShoppingCart, RotateCcw } from 'lucide-react'
 import { saleApi } from '@/features/pos/saleApi'
 import type { Sale } from '@/types/sale'
 import { Layout } from '@/components/Layout'
-import { Card, Table, Badge, SearchInput } from '@/components/ui'
+import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
 
@@ -15,12 +16,30 @@ const PAY_LABEL: Record<string, string> = {
 }
 
 export default function SalesPage() {
+  const navigate = useNavigate()
   const [sales, setSales]     = useState<Sale[]>([])
   const [search, setSearch]   = useState('')
   const [page, setPage]       = useState(1)
   const [total, setTotal]     = useState(0)
   const [pages, setPages]     = useState(1)
   const [loading, setLoading] = useState(false)
+
+  // Картка продажу
+  const [detail, setDetail]   = useState<Sale | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  async function openDetail(id: string) {
+    setDetailLoading(true)
+    setDetail(null)
+    try {
+      const { data } = await saleApi.get(id)
+      setDetail(data)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чек')
+    } finally {
+      setDetailLoading(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -45,7 +64,12 @@ export default function SalesPage() {
   const columns = [
     {
       key: 'num', header: 'Чек',
-      render: (s: Sale) => <span className="font-mono text-xs text-gray-600">#{s.sale_number}</span>,
+      render: (s: Sale) => (
+        <button onClick={() => openDetail(s.id)}
+          className="font-mono text-xs text-yellow-700 hover:text-yellow-800 hover:underline font-semibold">
+          #{s.sale_number}
+        </button>
+      ),
     },
     {
       key: 'customer', header: 'Клієнт',
@@ -118,6 +142,84 @@ export default function SalesPage() {
           </div>
         )}
       </Card>
+
+      {/* Картка продажу */}
+      <Modal
+        open={detailLoading || !!detail}
+        onClose={() => { setDetail(null); setDetailLoading(false) }}
+        title={detail ? `Чек #${detail.sale_number}` : 'Завантаження...'}
+        size="md"
+      >
+        {detailLoading && !detail ? (
+          <div className="py-8 text-center text-gray-400 text-sm">Завантаження...</div>
+        ) : detail ? (
+          <div className="space-y-4">
+            {/* Шапка */}
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="text-gray-500">Дата</div>
+              <div className="text-right text-gray-800">{formatDateTime(detail.completed_at)}</div>
+              <div className="text-gray-500">Клієнт</div>
+              <div className="text-right text-gray-800">{detail.customer?.full_name ?? detail.customer?.phone ?? 'Анонім'}</div>
+              <div className="text-gray-500">Оплата</div>
+              <div className="text-right">
+                <Badge color={PAY_COLOR[detail.payment_method] ?? 'gray'}>
+                  {PAY_LABEL[detail.payment_method] ?? detail.payment_method}
+                </Badge>
+              </div>
+              <div className="text-gray-500">Статус</div>
+              <div className="text-right">
+                <Badge color={detail.status === 'returned' ? 'red' : detail.status === 'completed' ? 'green' : 'gray'}>
+                  {detail.status === 'returned' ? 'Повернено' : detail.status === 'completed' ? 'Виконано' : detail.status}
+                </Badge>
+              </div>
+            </div>
+
+            {/* Позиції */}
+            <div className="border border-gray-100 rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-gray-400 text-[11px] uppercase">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Товар</th>
+                    <th className="px-3 py-2 text-right">К-сть</th>
+                    <th className="px-3 py-2 text-right">Ціна</th>
+                    <th className="px-3 py-2 text-right">Сума</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {(detail.sale_items ?? []).map((it) => (
+                    <tr key={it.id}>
+                      <td className="px-3 py-2 text-gray-800">{it.product?.name ?? it.product_id}</td>
+                      <td className="px-3 py-2 text-right">{it.qty}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(it.unit_price)}</td>
+                      <td className="px-3 py-2 text-right font-medium">{formatMoney(it.total)}</td>
+                    </tr>
+                  ))}
+                  {(detail.sale_items?.length ?? 0) === 0 && (
+                    <tr><td colSpan={4} className="px-3 py-4 text-center text-gray-400 text-xs">Позиції недоступні</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Підсумок */}
+            <div className="flex justify-between items-center text-sm">
+              {detail.discount > 0 && <span className="text-gray-500">Знижка: {formatMoney(detail.discount)}</span>}
+              <span className="ml-auto font-bold text-gray-900">Разом: {formatMoney(detail.total)}</span>
+            </div>
+
+            {/* Дії */}
+            <div className="flex gap-2 pt-2 border-t border-gray-100">
+              {detail.status === 'completed' && (
+                <Button icon={<RotateCcw size={15} />} className="flex-1"
+                  onClick={() => navigate(`/returns?sale=${detail.sale_number}`)}>
+                  Оформити повернення
+                </Button>
+              )}
+              <Button variant="secondary" onClick={() => setDetail(null)}>Закрити</Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </Layout>
   )
 }

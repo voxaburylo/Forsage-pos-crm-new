@@ -235,7 +235,7 @@ export default function ReservesList() {
             </div>
           )}
           {r.order ? (
-            <Link to={`/customer-orders/${r.order.id}`} className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium bg-amber-50 px-1.5 py-0.5 rounded">
+            <Link to={`/orders/${r.order.id}`} className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium bg-amber-50 px-1.5 py-0.5 rounded">
               <ShoppingBag size={11} />
               Замовлення #{r.order.number}
             </Link>

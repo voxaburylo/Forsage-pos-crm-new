@@ -1,5 +1,6 @@
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { findMarkupPct, type MarkupRule } from '../lib/markup.js'
 
 // No fallback TENANT_ID
 
@@ -166,12 +167,10 @@ export async function calculatePrice(params: PriceCalcParams, tenantId: string):
       retailPrice = Math.round(params.purchasePrice * (1 + markupPct / 100));
     } else {
       const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single();
-      const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined;
-      if (rules && rules.length > 0) {
-        const rule = rules.find((r) => params.purchasePrice >= r.minPrice && params.purchasePrice < r.maxPrice);
-        if (rule) {
-          retailPrice = Math.round(params.purchasePrice * (1 + rule.markupPct / 100));
-        }
+      const rules = (settings as any)?.markup_rules as MarkupRule[] | undefined;
+      const pct = findMarkupPct(rules, params.purchasePrice);
+      if (pct !== null) {
+        retailPrice = Math.round(params.purchasePrice * (1 + pct / 100));
       }
     }
   }
