@@ -695,17 +695,17 @@ export default function LabelDesigner() {
     try {
       const sanitized = {
         ...settings,
-        width_mm: settings.width_mm || 40,
-        height_mm: settings.height_mm || 30,
-        padding_mm: settings.padding_mm || 0,
-        font_size_shop: settings.font_size_shop || 6,
-        font_size_title: settings.font_size_title || 7,
-        font_size_sku: settings.font_size_sku || 5,
-        font_size_price: settings.font_size_price || 12,
-        max_name_lines: settings.max_name_lines || 2,
-        barcode_width_factor: settings.barcode_width_factor || 1.0,
-        font_size: settings.font_size || 7,
-        barcode_height: settings.barcode_height || 28,
+        width_mm: Math.max(20, Math.min(120, settings.width_mm || 40)),
+        height_mm: Math.max(15, Math.min(100, settings.height_mm || 30)),
+        padding_mm: Math.max(0, Math.min(10, settings.padding_mm || 0)),
+        font_size_shop: Math.max(4, Math.min(20, settings.font_size_shop || 6)),
+        font_size_title: Math.max(4, Math.min(20, settings.font_size_title || 7)),
+        font_size_sku: Math.max(4, Math.min(20, settings.font_size_sku || 5)),
+        font_size_price: Math.max(4, Math.min(30, settings.font_size_price || 12)),
+        max_name_lines: Math.max(1, Math.min(5, settings.max_name_lines || 2)),
+        barcode_width_factor: Math.max(0.5, Math.min(2.5, settings.barcode_width_factor || 1.0)),
+        font_size: Math.max(4, Math.min(20, settings.font_size || 7)),
+        barcode_height: Math.max(10, Math.min(60, settings.barcode_height || 28)),
       }
       await adminApi.updateSettings({ label_settings: sanitized as any })
       setSettings(sanitized)
@@ -905,12 +905,12 @@ export default function LabelDesigner() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Ширина (мм)" type="number" min={20} max={120} step={0.1} value={settings.width_mm === 0 ? '' : settings.width_mm}
+                <Input label="Ширина (мм)" type="number" step={0.1} value={settings.width_mm === 0 ? '' : settings.width_mm}
                   onChange={(e) => updateSetting('width_mm', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-                <Input label="Висота (мм)" type="number" min={15} max={100} step={0.1} value={settings.height_mm === 0 ? '' : settings.height_mm}
+                <Input label="Висота (мм)" type="number" step={0.1} value={settings.height_mm === 0 ? '' : settings.height_mm}
                   onChange={(e) => updateSetting('height_mm', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
               </div>
-              <Input label="Відступ (мм)" type="number" min={0} max={10} step={0.1} value={settings.padding_mm === 0 ? '' : settings.padding_mm}
+              <Input label="Відступ (мм)" type="number" step={0.1} value={settings.padding_mm === 0 ? '' : settings.padding_mm}
                 onChange={(e) => {
                   const val = parseFloat(e.target.value)
                   updateSetting('padding_mm', (isNaN(val) ? 0 : val) as any)
@@ -920,26 +920,26 @@ export default function LabelDesigner() {
             <Card className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Шрифти та штрих-код</h3>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Назва магазину" type="number" min={4} max={20} step={0.1} value={settings.font_size_shop === 0 ? '' : settings.font_size_shop}
+                <Input label="Назва магазину" type="number" step={0.1} value={settings.font_size_shop === 0 ? '' : settings.font_size_shop}
                   onChange={(e) => updateSetting('font_size_shop', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-                <Input label="Назва товару" type="number" min={4} max={20} step={0.1} value={settings.font_size_title === 0 ? '' : settings.font_size_title}
+                <Input label="Назва товару" type="number" step={0.1} value={settings.font_size_title === 0 ? '' : settings.font_size_title}
                   onChange={(e) => updateSetting('font_size_title', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Артикул / SKU" type="number" min={4} max={20} step={0.1} value={settings.font_size_sku === 0 ? '' : settings.font_size_sku}
+                <Input label="Артикул / SKU" type="number" step={0.1} value={settings.font_size_sku === 0 ? '' : settings.font_size_sku}
                   onChange={(e) => updateSetting('font_size_sku', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-                <Input label="Ціна" type="number" min={4} max={30} step={0.1} value={settings.font_size_price === 0 ? '' : settings.font_size_price}
+                <Input label="Ціна" type="number" step={0.1} value={settings.font_size_price === 0 ? '' : settings.font_size_price}
                   onChange={(e) => updateSetting('font_size_price', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Рядків назви (макс)" type="number" min={1} max={5} value={settings.max_name_lines === 0 ? '' : settings.max_name_lines}
+                <Input label="Рядків назви (макс)" type="number" value={settings.max_name_lines === 0 ? '' : settings.max_name_lines}
                   onChange={(e) => updateSetting('max_name_lines', (e.target.value === '' ? 0 : (parseInt(e.target.value) || 0)) as any)} />
-                <Input label="Ширина штрих-коду" type="number" min={0.5} max={2.5} step={0.1} value={settings.barcode_width_factor === 0 ? '' : settings.barcode_width_factor}
+                <Input label="Ширина штрих-коду" type="number" step={0.1} value={settings.barcode_width_factor === 0 ? '' : settings.barcode_width_factor}
                   onChange={(e) => updateSetting('barcode_width_factor', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
               </div>
-              <Input label="Розмір цифр штрих-коду (px)" type="number" min={4} max={20} step={0.1} value={settings.font_size === 0 ? '' : settings.font_size}
+              <Input label="Розмір цифр штрих-коду (px)" type="number" step={0.1} value={settings.font_size === 0 ? '' : settings.font_size}
                 onChange={(e) => updateSetting('font_size', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-              <Input label="Висота штрих-коду (px)" type="number" min={10} max={60} step={0.5} value={settings.barcode_height === 0 ? '' : settings.barcode_height}
+              <Input label="Висота штрих-коду (px)" type="number" step={0.5} value={settings.barcode_height === 0 ? '' : settings.barcode_height}
                 onChange={(e) => updateSetting('barcode_height', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
             </Card>
 
