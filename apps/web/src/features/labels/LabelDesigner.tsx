@@ -577,17 +577,19 @@ export default function LabelDesigner() {
   const [binEnd, setBinEnd] = useState<number | ''>(10)
 
   function handleGenerateBinSeries() {
-    if (binStart > binEnd) {
+    const startVal = typeof binStart === 'number' ? binStart : 0;
+    const endVal = typeof binEnd === 'number' ? binEnd : 0;
+    if (startVal > endVal) {
       toast.error('Початковий номер має бути меншим за кінцевий')
       return
     }
-    const count = binEnd - binStart + 1
+    const count = endVal - startVal + 1
     if (count > 200) {
       toast.error('За один раз можна згенерувати не більше 200 ячейок')
       return
     }
     const newBins: string[] = []
-    for (let i = binStart; i <= binEnd; i++) {
+    for (let i = startVal; i <= endVal; i++) {
       newBins.push(`${binPrefix}${i}`)
     }
     setBinLabels((prev) => [...prev, ...newBins])
@@ -751,7 +753,7 @@ export default function LabelDesigner() {
 
       const fullProducts = await Promise.all(
         validItems.map(async (item) => {
-          const qty = invoiceCopiesStrategy === 'invoice_qty' ? item.qty : invoiceFixedCopies
+          const qty = invoiceCopiesStrategy === 'invoice_qty' ? item.qty : (typeof invoiceFixedCopies === 'number' ? invoiceFixedCopies : 1)
           try {
             const res = await productApi.get(item.product!.id)
             return { ...res.data, copies: qty }
@@ -766,9 +768,9 @@ export default function LabelDesigner() {
         fullProducts.forEach((prod) => {
           const existing = merged.find((p) => p.id === prod.id)
           if (existing) {
-            existing.copies += prod.copies
+            existing.copies += typeof prod.copies === 'number' ? prod.copies : 1
           } else {
-            merged.push(prod as any)
+            merged.push({ ...prod, copies: typeof prod.copies === 'number' ? prod.copies : 1 } as any)
           }
         })
         return merged
@@ -804,12 +806,13 @@ export default function LabelDesigner() {
 
       setPrintItems((prev) => {
         const merged = [...prev]
+        const numGroupCopies = typeof groupCopies === 'number' ? groupCopies : 1
         data.forEach((prod) => {
           const existing = merged.find((p) => p.id === prod.id)
           if (existing) {
-            existing.copies += groupCopies
+            existing.copies += numGroupCopies
           } else {
-            merged.push({ ...prod, copies: groupCopies })
+            merged.push({ ...prod, copies: numGroupCopies })
           }
         })
         return merged
