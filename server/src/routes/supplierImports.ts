@@ -5,7 +5,7 @@ import { createWriteStream, promises as fs } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { db } from '../db/supabase.js'
-import { TaskQueue } from '../services/taskQueue.js'
+import { processImport } from '../services/supplierImportService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -58,22 +58,22 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
           throw new AppError('DB_ERROR', 'Помилка створення запису імпорту: ' + dbErr?.message, 500)
         }
 
-        // Ставимо задачу в чергу sys_background_jobs
-        const job = await TaskQueue.enqueue('import_supplier_price', {
+        // Обробляємо ОДРАЗУ в цьому ж процесі. Раніше ставили фонову задачу,
+        // але на Render (ефемерний диск + засинання free-tier) між постановкою
+        // задачі та її виконанням temp-файл зникав → ENOENT. Інлайн читає файл,
+        // поки він гарантовано існує.
+        await processImport('inline-' + importRecord.id, {
           importId: importRecord.id,
           tempPath,
           supplierId,
           updateRetail,
           mode,
           warehouseName,
-        }, {
-          tenantId: req.user!.tenant_id
         })
 
         res.status(201).json({
           success: true,
           importId: importRecord.id,
-          jobId: job.id,
         })
       } catch (err) {
         // Очищаємо темповий файл при помилці

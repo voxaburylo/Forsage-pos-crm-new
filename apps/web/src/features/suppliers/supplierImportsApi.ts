@@ -39,7 +39,7 @@ export const supplierImportsApi = {
     query.append('mode', mode)
     if (warehouseName) query.append('warehouse_name', warehouseName)
 
-    return request<{ success: boolean; importId: string; jobId: string }>(
+    return request<{ success: boolean; importId: string }>(
       '/api/v1/supplier-imports/upload?' + query.toString(),
       {
         method: 'POST',
