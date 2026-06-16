@@ -10,15 +10,6 @@
       "VITE_API_URL": "https://forsage-pos-crm-new.onrender.com"
     }
   },
-  "experimentalServices": {
-    "forsage-api": {
-      "type": "web",
-      "root": "server",
-      "entrypoint": "src/index.ts",
-      "routePrefix": "/",
-      "buildCommand": "npm install --include=dev && npm run build"
-    }
-  },
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
