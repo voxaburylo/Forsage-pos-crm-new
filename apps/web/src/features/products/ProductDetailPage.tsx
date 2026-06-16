@@ -9,7 +9,7 @@ import { ProductPhotoUpload } from './ProductPhotoUpload'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
+import { printLabels, DEFAULT_LABEL, DEFAULT_BIN_LABEL } from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
 import { api } from '@/lib/api'
 
@@ -168,7 +168,8 @@ export default function ProductDetailPage() {
     try {
       const settingsRes = await adminApi.getSettings()
       const settings = settingsRes.data.label_settings || DEFAULT_LABEL
-      printLabels(settings as any, [{ label: product.storage_bin }], true)
+      const binSettings = settings.bin_settings || DEFAULT_BIN_LABEL
+      printLabels(binSettings as any, [{ label: product.storage_bin }], true)
       toast.success('Етикетку комірки відправлено на друк')
     } catch {
       toast.error('Помилка друку')

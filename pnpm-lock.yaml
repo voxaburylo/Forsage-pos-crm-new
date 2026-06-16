@@ -129,7 +129,7 @@ importers:
   server:
     dependencies:
       '@crm-forsage/shared':
-        specifier: workspace:*
+        specifier: file:../shared
         version: link:../shared
       '@google-cloud/vision':
         specifier: ^5.3.6

@@ -47,6 +47,29 @@ export interface LabelSettings {
   align_price?: 'left' | 'center' | 'right'
   align_sku?: 'left' | 'center' | 'right'
   align_barcode?: 'left' | 'center' | 'right'
+  bin_settings?: LabelSettings
+}
+
+export const DEFAULT_BIN_LABEL: LabelSettings = {
+  width_mm: 40, height_mm: 30, padding_mm: 2,
+  font_size: 7, barcode_height: 28,
+  show_shop_name: true, show_product_name: false, show_barcode: true,
+  show_sku: false, show_price: false, show_storage_bin: false,
+  font_size_shop: 6, font_size_title: 10, font_size_sku: 5, font_size_price: 12,
+  pos_shop_name: { x: 5, y: 5 },
+  pos_product_name: { x: 5, y: 25 },
+  pos_barcode: { x: 10, y: 40 },
+  pos_sku: { x: 5, y: 75 },
+  pos_price: { x: 50, y: 75 },
+  pos_bin: { x: 5, y: 25 },
+  show_barcode_text: true,
+  barcode_width_factor: 1.0,
+  max_name_lines: 1,
+  align_shop_name: 'center',
+  align_product_name: 'center',
+  align_price: 'center',
+  align_sku: 'center',
+  align_barcode: 'center',
 }
 
 export const DEFAULT_LABEL: LabelSettings = {
@@ -611,7 +634,6 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
 // ================================================================
 export default function LabelDesigner() {
   const [tab, setTab] = useState<Tab>('design')
-  const [settings, setSettings] = useState<LabelSettings>(DEFAULT_LABEL)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -622,6 +644,9 @@ export default function LabelDesigner() {
   const [binMode, setBinMode] = useState(false)
   const [binInput, setBinInput] = useState('')
   const [binLabels, setBinLabels] = useState<string[]>([])
+  const [productSettings, setProductSettings] = useState<LabelSettings>(DEFAULT_LABEL)
+  const [binSettings, setBinSettings] = useState<LabelSettings>(DEFAULT_BIN_LABEL)
+  const settings = binMode ? binSettings : productSettings
 
   // Стан для масового створення ячейок
   const [binPrefix, setBinPrefix] = useState('A-')
@@ -712,7 +737,13 @@ export default function LabelDesigner() {
     adminApi.getSettings()
       .then((res) => {
         if (res.data.label_settings) {
-          setSettings({ ...DEFAULT_LABEL, ...res.data.label_settings })
+          const loaded = res.data.label_settings
+          setProductSettings({ ...DEFAULT_LABEL, ...loaded })
+          if (loaded.bin_settings) {
+            setBinSettings({ ...DEFAULT_BIN_LABEL, ...loaded.bin_settings })
+          } else {
+            setBinSettings(DEFAULT_BIN_LABEL)
+          }
         }
       })
       .catch(() => toast.error('Помилка завантаження налаштувань'))
@@ -735,38 +766,65 @@ export default function LabelDesigner() {
   }, [searchQuery, binMode])
 
   const updateSetting = useCallback(<K extends keyof LabelSettings>(key: K, value: LabelSettings[K]) => {
-    setSettings((prev) => ({ ...prev, [key]: value }))
-  }, [])
+    if (binMode) {
+      setBinSettings((prev) => ({ ...prev, [key]: value }))
+    } else {
+      setProductSettings((prev) => ({ ...prev, [key]: value }))
+    }
+  }, [binMode])
 
   const handlePosChange = useCallback((key: PosKey, pos: { x: number; y: number }) => {
-    setSettings((prev) => ({ ...prev, [key]: pos }))
-  }, [])
+    if (binMode) {
+      setBinSettings((prev) => ({ ...prev, [key]: pos }))
+    } else {
+      setProductSettings((prev) => ({ ...prev, [key]: pos }))
+    }
+  }, [binMode])
 
   async function handleSave() {
     setSaving(true)
     try {
-      const sanitized = {
-        ...settings,
-        width_mm: Math.max(20, Math.min(120, settings.width_mm || 40)),
-        height_mm: Math.max(15, Math.min(100, settings.height_mm || 30)),
-        padding_mm: Math.max(0, Math.min(10, settings.padding_mm || 0)),
-        font_size_shop: Math.max(4, Math.min(20, settings.font_size_shop || 6)),
-        font_size_title: Math.max(4, Math.min(20, settings.font_size_title || 7)),
-        font_size_sku: Math.max(4, Math.min(20, settings.font_size_sku || 5)),
-        font_size_price: Math.max(4, Math.min(30, settings.font_size_price || 12)),
-        max_name_lines: Math.max(1, Math.min(5, settings.max_name_lines || 2)),
-        barcode_width_factor: Math.max(0.5, Math.min(2.5, settings.barcode_width_factor || 1.0)),
-        font_size: Math.max(4, Math.min(20, settings.font_size || 7)),
-        barcode_height: Math.max(10, Math.min(60, settings.barcode_height || 28)),
+      const sanitizedProduct = {
+        ...productSettings,
+        width_mm: Math.max(20, Math.min(120, productSettings.width_mm || 40)),
+        height_mm: Math.max(15, Math.min(100, productSettings.height_mm || 30)),
+        padding_mm: Math.max(0, Math.min(10, productSettings.padding_mm || 0)),
+        font_size_shop: Math.max(4, Math.min(20, productSettings.font_size_shop || 6)),
+        font_size_title: Math.max(4, Math.min(20, productSettings.font_size_title || 7)),
+        font_size_sku: Math.max(4, Math.min(20, productSettings.font_size_sku || 5)),
+        font_size_price: Math.max(4, Math.min(30, productSettings.font_size_price || 12)),
+        max_name_lines: Math.max(1, Math.min(5, productSettings.max_name_lines || 2)),
+        barcode_width_factor: Math.max(0.5, Math.min(2.5, productSettings.barcode_width_factor || 1.0)),
+        font_size: Math.max(4, Math.min(20, productSettings.font_size || 7)),
+        barcode_height: Math.max(10, Math.min(60, productSettings.barcode_height || 28)),
       }
-      await adminApi.updateSettings({ label_settings: sanitized as any }, { silent: true })
-      setSettings(sanitized)
+      const sanitizedBin = {
+        ...binSettings,
+        width_mm: Math.max(20, Math.min(120, binSettings.width_mm || 40)),
+        height_mm: Math.max(15, Math.min(100, binSettings.height_mm || 30)),
+        padding_mm: Math.max(0, Math.min(10, binSettings.padding_mm || 0)),
+        font_size_shop: Math.max(4, Math.min(20, binSettings.font_size_shop || 6)),
+        font_size_title: Math.max(4, Math.min(20, binSettings.font_size_title || 7)),
+        font_size_sku: Math.max(4, Math.min(20, binSettings.font_size_sku || 5)),
+        font_size_price: Math.max(4, Math.min(30, binSettings.font_size_price || 12)),
+        max_name_lines: Math.max(1, Math.min(5, binSettings.max_name_lines || 2)),
+        barcode_width_factor: Math.max(0.5, Math.min(2.5, binSettings.barcode_width_factor || 1.0)),
+        font_size: Math.max(4, Math.min(20, binSettings.font_size || 7)),
+        barcode_height: Math.max(10, Math.min(60, binSettings.barcode_height || 28)),
+      }
+      const payload = {
+        ...sanitizedProduct,
+        bin_settings: sanitizedBin
+      }
+      await adminApi.updateSettings({ label_settings: payload as any }, { silent: true })
+      setProductSettings(sanitizedProduct)
+      setBinSettings(sanitizedBin)
       toast.success('Налаштування етикеток збережено')
     } catch {
-      // Технічні помилки БД користувачу не показуємо — лише зрозуміле повідомлення
       toast.error('Не вдалося зберегти налаштування. Спробуйте ще раз.')
+    } finally {
+      setSaving(false)
     }
-    finally { setSaving(false) }
   }
 
   function addToPrint(product: Product) {
@@ -945,7 +1003,11 @@ export default function LabelDesigner() {
                     onChange={(e) => {
                       const key = e.target.value
                       if (key && LABEL_PRESETS[key]) {
-                        setSettings((prev) => ({ ...prev, ...LABEL_PRESETS[key] }))
+                        if (binMode) {
+                          setBinSettings((prev) => ({ ...prev, ...LABEL_PRESETS[key] }))
+                        } else {
+                          setProductSettings((prev) => ({ ...prev, ...LABEL_PRESETS[key] }))
+                        }
                         toast.success('Завантажено шаблон: ' + LABEL_PRESETS[key].name)
                       }
                     }}
