@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Rnd } from 'react-rnd'
 import { Save, Printer, Plus, Trash2, Copy, Settings, Tag, Move, FileText, Loader2 } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
@@ -72,6 +72,51 @@ export const DEFAULT_LABEL: LabelSettings = {
 }
 
 type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' | 'pos_price' | 'pos_bin'
+
+// ─── Числове поле з вільним редагуванням, дробами (крок 0.5), комою/крапкою та ± ───
+function NumberField({ label, value, min, max, step = 0.5, onChange }: {
+  label: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void
+}) {
+  const [text, setText] = useState(String(value))
+  const focused = useRef(false)
+  // Синхронізуємо текст із зовнішнім значенням (пресети, ±, перезавантаження) — лише поза фокусом
+  useEffect(() => { if (!focused.current) setText(String(value)) }, [value])
+
+  const norm = (n: number) => Math.round(Math.max(min, Math.min(max, n)) * 100) / 100
+
+  function commit(raw: string) {
+    const n = parseFloat(raw.replace(',', '.'))
+    if (isNaN(n)) { setText(String(value)); return }  // порожнє/некоректне — повертаємо попереднє
+    const c = norm(n)
+    onChange(c); setText(String(c))
+  }
+  function bump(delta: number) {
+    const base = parseFloat(text.replace(',', '.'))
+    const cur = isNaN(base) ? value : base
+    const next = norm(cur + delta)
+    onChange(next); setText(String(next))
+  }
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      <div className="flex items-stretch">
+        <button type="button" onClick={() => bump(-step)}
+          className="w-8 shrink-0 border border-gray-200 rounded-l-lg bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold text-lg leading-none"
+          aria-label="Зменшити">−</button>
+        <input
+          type="text" inputMode="decimal" value={text}
+          onFocus={() => { focused.current = true }}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={(e) => { focused.current = false; commit(e.target.value) }}
+          className="w-full min-w-0 border-y border-gray-200 px-2 py-2 text-sm text-center focus:outline-none focus:ring-1 focus:ring-accent" />
+        <button type="button" onClick={() => bump(step)}
+          className="w-8 shrink-0 border border-gray-200 rounded-r-lg bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold text-lg leading-none"
+          aria-label="Збільшити">+</button>
+      </div>
+    </div>
+  )
+}
 
 // ================================================================
 // Малюємо фейковий штрих-код для попереднього перегляду
@@ -707,10 +752,13 @@ export default function LabelDesigner() {
         font_size: Math.max(4, Math.min(20, settings.font_size || 7)),
         barcode_height: Math.max(10, Math.min(60, settings.barcode_height || 28)),
       }
-      await adminApi.updateSettings({ label_settings: sanitized as any })
+      await adminApi.updateSettings({ label_settings: sanitized as any }, { silent: true })
       setSettings(sanitized)
       toast.success('Налаштування етикеток збережено')
-    } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+    } catch {
+      // Технічні помилки БД користувачу не показуємо — лише зрозуміле повідомлення
+      toast.error('Не вдалося зберегти налаштування. Спробуйте ще раз.')
+    }
     finally { setSaving(false) }
   }
 
@@ -905,42 +953,39 @@ export default function LabelDesigner() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Ширина (мм)" type="number" step={0.1} value={settings.width_mm === 0 ? '' : settings.width_mm}
-                  onChange={(e) => updateSetting('width_mm', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-                <Input label="Висота (мм)" type="number" step={0.1} value={settings.height_mm === 0 ? '' : settings.height_mm}
-                  onChange={(e) => updateSetting('height_mm', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
+                <NumberField label="Ширина (мм)" value={settings.width_mm} min={20} max={120}
+                  onChange={(v) => updateSetting('width_mm', v)} />
+                <NumberField label="Висота (мм)" value={settings.height_mm} min={15} max={100}
+                  onChange={(v) => updateSetting('height_mm', v)} />
               </div>
-              <Input label="Відступ (мм)" type="number" step={0.1} value={settings.padding_mm === 0 ? '' : settings.padding_mm}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value)
-                  updateSetting('padding_mm', (isNaN(val) ? 0 : val) as any)
-                }} />
+              <NumberField label="Відступ (мм)" value={settings.padding_mm} min={0} max={10}
+                onChange={(v) => updateSetting('padding_mm', v)} />
             </Card>
 
             <Card className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Шрифти та штрих-код</h3>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Назва магазину" type="number" step={0.1} value={settings.font_size_shop === 0 ? '' : settings.font_size_shop}
-                  onChange={(e) => updateSetting('font_size_shop', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-                <Input label="Назва товару" type="number" step={0.1} value={settings.font_size_title === 0 ? '' : settings.font_size_title}
-                  onChange={(e) => updateSetting('font_size_title', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
+                <NumberField label="Назва магазину" value={settings.font_size_shop} min={4} max={20}
+                  onChange={(v) => updateSetting('font_size_shop', v)} />
+                <NumberField label="Назва товару" value={settings.font_size_title} min={4} max={20}
+                  onChange={(v) => updateSetting('font_size_title', v)} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Артикул / SKU" type="number" step={0.1} value={settings.font_size_sku === 0 ? '' : settings.font_size_sku}
-                  onChange={(e) => updateSetting('font_size_sku', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-                <Input label="Ціна" type="number" step={0.1} value={settings.font_size_price === 0 ? '' : settings.font_size_price}
-                  onChange={(e) => updateSetting('font_size_price', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
+                <NumberField label="Артикул / SKU" value={settings.font_size_sku} min={4} max={20}
+                  onChange={(v) => updateSetting('font_size_sku', v)} />
+                <NumberField label="Ціна" value={settings.font_size_price} min={4} max={30}
+                  onChange={(v) => updateSetting('font_size_price', v)} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Рядків назви (макс)" type="number" value={settings.max_name_lines === 0 ? '' : settings.max_name_lines}
-                  onChange={(e) => updateSetting('max_name_lines', (e.target.value === '' ? 0 : (parseInt(e.target.value) || 0)) as any)} />
-                <Input label="Ширина штрих-коду" type="number" step={0.1} value={settings.barcode_width_factor === 0 ? '' : settings.barcode_width_factor}
-                  onChange={(e) => updateSetting('barcode_width_factor', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
+                <NumberField label="Рядків назви (макс)" value={settings.max_name_lines} min={1} max={5} step={1}
+                  onChange={(v) => updateSetting('max_name_lines', v)} />
+                <NumberField label="Ширина штрих-коду" value={settings.barcode_width_factor} min={0.5} max={2.5}
+                  onChange={(v) => updateSetting('barcode_width_factor', v)} />
               </div>
-              <Input label="Розмір цифр штрих-коду (px)" type="number" step={0.1} value={settings.font_size === 0 ? '' : settings.font_size}
-                onChange={(e) => updateSetting('font_size', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
-              <Input label="Висота штрих-коду (px)" type="number" step={0.5} value={settings.barcode_height === 0 ? '' : settings.barcode_height}
-                onChange={(e) => updateSetting('barcode_height', (e.target.value === '' ? 0 : (parseFloat(e.target.value) || 0)) as any)} />
+              <NumberField label="Розмір цифр штрих-коду (px)" value={settings.font_size} min={4} max={20}
+                onChange={(v) => updateSetting('font_size', v)} />
+              <NumberField label="Висота штрих-коду (px)" value={settings.barcode_height} min={10} max={60}
+                onChange={(v) => updateSetting('barcode_height', v)} />
             </Card>
 
             <Card className="space-y-4">

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
-  Plus, Trash2, Send,
+  Plus, Trash2, Send, Copy,
   Star, Car, User, Save, ArrowRight, ScanLine, Search, MapPin
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -938,6 +938,32 @@ export default function QuoteEditorPage() {
 
           {/* Панель Дій */}
           <div className="flex gap-2 justify-end flex-wrap">
+            <Button
+              variant="secondary"
+              icon={<Copy size={14} />}
+              onClick={() => {
+                const cust = selectedCustomer?.full_name || customerSearch
+                const veh = [vehicleMake, vehicleModel, vehicleYear].filter(Boolean).join(' ')
+                const lines = ['Комерційна пропозиція']
+                if (cust) lines.push('Клієнт: ' + cust)
+                if (veh || vehicleVin) lines.push('Авто: ' + veh + (vehicleVin ? ` (${vehicleVin})` : ''))
+                lines.push('')
+                let total = 0
+                totalItems.forEach((it, i) => {
+                  const qty = parseInt(it.qty) || 1
+                  const price = parseFloat(it.sell_price) || 0
+                  total += qty * price
+                  lines.push(`${i + 1}. ${it.name} — ${qty} шт` + (price > 0 ? ` × ${price.toFixed(2)} = ${(qty * price).toFixed(2)} грн` : ''))
+                })
+                lines.push('', `Разом: ${total.toFixed(2)} грн`)
+                if (comment.trim()) lines.push('', comment.trim())
+                navigator.clipboard.writeText(lines.join('\n'))
+                  .then(() => toast.success('КП скопійовано — вставте в месенджер'))
+                  .catch(() => toast.error('Не вдалося скопіювати'))
+              }}
+            >
+              Скопіювати текстом
+            </Button>
             {!isNew && mode === 'draft' && (
               <Button
                 variant="secondary"

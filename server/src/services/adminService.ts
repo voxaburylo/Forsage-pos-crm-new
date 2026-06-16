@@ -286,45 +286,20 @@ export async function getSettings(tenantId: string) {
 }
 
 export async function updateSettings(input: SettingsInput, tenantId: string) {
-  const fields = { ...input, updated_at: new Date().toISOString() }
-  const keys = Object.keys(fields)
-  
-  if (keys.length === 0) {
-    // Nothing to update
-    const { data, error } = await db
-      .from('shop_settings')
-      .select('*')
-      .eq('tenant_id', tenantId)
-      .single()
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
-    return data
-  }
-  
-  const setClause = keys.map((key, index) => `"${key}" = ${index + 2}`).join(', ')
-  const values = keys.map((key) => {
-    const val = (fields as any)[key]
-    if (val !== null && (typeof val === 'object' || Array.isArray(val))) {
-      return JSON.stringify(val)
-    }
-    return val
-  })
-  
-  const query = `
-    UPDATE shop_settings
-    SET ${setClause}
-    WHERE tenant_id = $1
-    RETURNING *
-  `
-  
-  try {
-    const res = await pool.query(query, [tenantId, ...values])
-    if (res.rows.length === 0) {
-      throw new AppError('DB_ERROR', 'Налаштування не знайдено', 500)
-    }
-    return res.rows[0]
-  } catch (error: any) {
-    // Check for schema drift or missing columns in error message
-    const isMissingColumn = /could not find .* column|column .* does not exist|does not exist/i.test(error.message)
+  // Гарантований WHERE через .eq(tenant_id) — щоб НІКОЛИ не було update без фільтра.
+  if (!tenantId) throw new AppError('VALIDATION_ERROR', 'Не визначено магазин (tenant)', 400)
+
+  const { data, error } = await db
+    .from('shop_settings')
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .select('*')
+    .single()
+
+  if (error) {
+    // Schema drift (немає колонки) — робимо помилку зрозумілою для логів/розробника.
+    const isMissingColumn = error.code === 'PGRST204'
+      || /could not find .* column|column .* does not exist/i.test(error.message)
     if (isMissingColumn) {
       throw new AppError(
         'SETTINGS_SCHEMA_DRIFT',
@@ -334,6 +309,7 @@ export async function updateSettings(input: SettingsInput, tenantId: string) {
     }
     throw new AppError('DB_ERROR', error.message, 500)
   }
+  return data
 }
 
 export async function resetAllData(tenantId: string, currentUserId: string) {

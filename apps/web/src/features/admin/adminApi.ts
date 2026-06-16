@@ -128,6 +128,6 @@ export const adminApi = {
 
   // Settings
   getSettings: () => api.get<{ data: ShopSettings }>('/api/v1/settings'),
-  updateSettings: (body: Partial<ShopSettings>) =>
-    api.put<{ data: ShopSettings }>('/api/v1/settings', body),
+  updateSettings: (body: Partial<ShopSettings>, opts?: { silent?: boolean }) =>
+    api.put<{ data: ShopSettings }>('/api/v1/settings', body, opts),
 }
