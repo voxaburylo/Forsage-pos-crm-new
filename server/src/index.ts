@@ -97,6 +97,10 @@ app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
+app.get('/api/v1/version', (_req, res) => {
+  res.json({ version: '2.0.0-direct-sql' })
+})
+
 // Rate limit на login — підключаємо ДО роутера
 app.use('/api/v1/auth/login', loginLimiter)
 
