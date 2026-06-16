@@ -286,44 +286,20 @@ export async function getSettings(tenantId: string) {
 }
 
 export async function updateSettings(input: SettingsInput, tenantId: string) {
+  // Гарантований WHERE через .eq(tenant_id). ВАЖЛИВО: використовуємо Supabase REST
+  // клієнт (db), а НЕ прямий pool.query — пряме PG-з'єднання (DATABASE_URL) на
+  // продакшні (Render) не працює/висне, тоді як REST-клієнт працює всюди.
   if (!tenantId) throw new AppError('VALIDATION_ERROR', 'Не визначено магазин (tenant)', 400)
 
-  const fields = Object.keys(input)
-  if (fields.length === 0) {
-    return getSettings(tenantId)
-  }
+  const { data, error } = await db
+    .from('shop_settings')
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .select('*')
+    .single()
 
-  const setClauses: string[] = []
-  const values: any[] = []
-  let paramIdx = 1
-
-  for (const field of fields) {
-    let val = (input as any)[field]
-    if (val !== null && typeof val === 'object') {
-      val = JSON.stringify(val)
-    }
-    setClauses.push('"' + field + '" = $' + paramIdx)
-    values.push(val)
-    paramIdx++
-  }
-
-  setClauses.push('"updated_at" = $' + paramIdx)
-  values.push(new Date().toISOString())
-  paramIdx++
-
-  values.push(tenantId)
-  const whereIdx = paramIdx
-
-  const queryText = 'UPDATE "shop_settings" SET ' + setClauses.join(', ') + ' WHERE "tenant_id" = $' + whereIdx + ' RETURNING *;'
-
-  try {
-    const res = await pool.query(queryText, values)
-    if (res.rows.length === 0) {
-      throw new AppError('DB_ERROR', 'Налаштування не знайдено', 404)
-    }
-    return res.rows[0]
-  } catch (error: any) {
-    const isMissingColumn = error.code === '42703'
+  if (error) {
+    const isMissingColumn = error.code === 'PGRST204'
       || /could not find .* column|column .* does not exist/i.test(error.message)
     if (isMissingColumn) {
       throw new AppError(
@@ -334,6 +310,7 @@ export async function updateSettings(input: SettingsInput, tenantId: string) {
     }
     throw new AppError('DB_ERROR', error.message, 500)
   }
+  return data
 }
 
 export async function resetAllData(tenantId: string, currentUserId: string) {
