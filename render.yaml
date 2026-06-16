@@ -2,7 +2,7 @@ services:
   - type: web
     name: forsage-api
     runtime: node
-    buildCommand: npm install -g pnpm && pnpm install --no-frozen-lockfile && pnpm --filter server build
+    buildCommand: npx pnpm install --no-frozen-lockfile && npx pnpm --filter server build
     startCommand: node server/dist/index.js
     envVars:
       - key: NODE_ENV
