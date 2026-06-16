@@ -107,7 +107,14 @@ function NumberField({ label, value, min, max, step = 0.5, onChange }: {
         <input
           type="text" inputMode="decimal" value={text}
           onFocus={() => { focused.current = true }}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            const val = e.target.value;
+            setText(val);
+            const n = parseFloat(val.replace(',', '.'));
+            if (!isNaN(n)) {
+              onChange(Math.max(0, n));
+            }
+          }}
           onBlur={(e) => { focused.current = false; commit(e.target.value) }}
           className="w-full min-w-0 border-y border-gray-200 px-2 py-2 text-sm text-center focus:outline-none focus:ring-1 focus:ring-accent" />
         <button type="button" onClick={() => bump(step)}
