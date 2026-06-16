@@ -146,6 +146,7 @@ app.use('/api/v1/core-returns', coreReturnsRouter)
 app.use('/api/v1/supplier-pos', supplierPOsRouter)
 app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
 app.use('/api/v1/vin', vinRouter)
+app.use('/api/v1/in', vinRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)
