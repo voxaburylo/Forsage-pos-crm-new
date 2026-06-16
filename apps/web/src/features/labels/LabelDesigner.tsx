@@ -519,7 +519,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
 
     if (settings.show_shop_name) {
       const pShop = settings.pos_shop_name || { x: 5, y: 5 }
-      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${100 - pShop.x}%; font-size: ${settings.font_size_shop}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_shop_name || 'left'};">${shopName}</div>`
+      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${100 - pShop.x}%; font-size: ${settings.font_size_shop}px; line-height: 1; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_shop_name || 'left'};">${shopName}</div>`
     }
 
     if (binLabel) {
@@ -547,11 +547,11 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         let skuText = ''
         if (settings.show_sku) skuText += product.sku
         if (settings.show_storage_bin && (product as any).storage_bin) skuText += ` · ${(product as any).storage_bin}`
-        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${100 - pSku.x}%; font-size: ${settings.font_size_sku}px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_sku || 'left'};">${skuText}</div>`
+        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${100 - pSku.x}%; font-size: ${settings.font_size_sku}px; line-height: 1; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_sku || 'left'};">${skuText}</div>`
       }
       if (settings.show_price) {
         const pPrice = settings.pos_price || { x: 50, y: 75 }
-        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${100 - pPrice.x}%; font-size: ${settings.font_size_price}px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_price || 'left'};">${kopecksToHryvnia(product.retail_price)} ₴</div>`
+        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${100 - pPrice.x}%; font-size: ${settings.font_size_price}px; line-height: 0.9; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_price || 'left'};">${kopecksToHryvnia(product.retail_price)} ₴</div>`
       }
     }
 
