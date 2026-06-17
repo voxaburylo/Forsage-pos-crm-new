@@ -64,10 +64,25 @@ import { db } from './db/supabase.js'
 const app = express()
 const PORT = process.env.PORT ?? 3001
 
-const corsOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173,https://forsage-pos-crm-new.vercel.app,https://forsage-pos-crm-new-web.vercel.app').split(',').map((s) => s.trim())
+const corsEnv = (process.env.CORS_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+const allowedOrigins = new Set<string>([
+  'http://localhost:5173',
+  'https://crm-forsage.vercel.app',
+  'https://forsage-pos-crm-new.vercel.app',
+  'https://forsage-pos-crm-new-web.vercel.app',
+  ...corsEnv,
+])
 
 app.use(cors({
-  origin: corsOrigins,
+  // Дозволяємо локалхост, явні домени та БУДЬ-ЯКИЙ *.vercel.app (прод + прев'ю),
+  // щоб зміна домену Vercel не ламала CORS. Запити без Origin (health/curl) — теж.
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true)
+    let host = ''
+    try { host = new URL(origin).hostname } catch { /* ignore */ }
+    if (allowedOrigins.has(origin) || host.endsWith('.vercel.app')) return cb(null, true)
+    return cb(null, false)
+  },
   credentials: true,
 }))
 
