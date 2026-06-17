@@ -1033,111 +1033,115 @@ export default function LabelDesigner() {
 
             <Card className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Шрифти та штрих-код</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <NumberField label="Назва магазину" value={settings.font_size_shop} min={4} max={20}
-                  onChange={(v) => updateSetting('font_size_shop', v)} />
-                <NumberField label="Назва товару" value={settings.font_size_title} min={4} max={20}
+              {!binMode ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <NumberField label="Назва магазину" value={settings.font_size_shop} min={4} max={20}
+                      onChange={(v) => updateSetting('font_size_shop', v)} />
+                    <NumberField label="Назва товару" value={settings.font_size_title} min={4} max={20}
+                      onChange={(v) => updateSetting('font_size_title', v)} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <NumberField label="Артикул / SKU" value={settings.font_size_sku} min={4} max={20}
+                      onChange={(v) => updateSetting('font_size_sku', v)} />
+                    <NumberField label="Ціна" value={settings.font_size_price} min={4} max={30}
+                      onChange={(v) => updateSetting('font_size_price', v)} />
+                  </div>
+                  <NumberField label="Рядків назви (макс)" value={settings.max_name_lines} min={1} max={5} step={1}
+                    onChange={(v) => updateSetting('max_name_lines', v)} />
+                </>
+              ) : (
+                <NumberField label="Розмір тексту (номер комірки)" value={settings.font_size_title} min={4} max={30}
                   onChange={(v) => updateSetting('font_size_title', v)} />
-              </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
-                <NumberField label="Артикул / SKU" value={settings.font_size_sku} min={4} max={20}
-                  onChange={(v) => updateSetting('font_size_sku', v)} />
-                <NumberField label="Ціна" value={settings.font_size_price} min={4} max={30}
-                  onChange={(v) => updateSetting('font_size_price', v)} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <NumberField label="Рядків назви (макс)" value={settings.max_name_lines} min={1} max={5} step={1}
-                  onChange={(v) => updateSetting('max_name_lines', v)} />
                 <NumberField label="Ширина штрих-коду" value={settings.barcode_width_factor} min={0.5} max={2.5}
                   onChange={(v) => updateSetting('barcode_width_factor', v)} />
+                <NumberField label="Висота штрих-коду (px)" value={settings.barcode_height} min={10} max={60}
+                  onChange={(v) => updateSetting('barcode_height', v)} />
               </div>
               <NumberField label="Розмір цифр штрих-коду (px)" value={settings.font_size} min={4} max={20}
                 onChange={(v) => updateSetting('font_size', v)} />
-              <NumberField label="Висота штрих-коду (px)" value={settings.barcode_height} min={10} max={60}
-                onChange={(v) => updateSetting('barcode_height', v)} />
             </Card>
 
             <Card className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Вирівнювання тексту</h3>
-              <div className="grid grid-cols-2 gap-3">
+              {!binMode ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Назва магазину</label>
+                      <select value={settings.align_shop_name || 'left'}
+                        onChange={(e) => updateSetting('align_shop_name', e.target.value as any)}
+                        className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent">
+                        <option value="left">Ліворуч</option><option value="center">По центру</option><option value="right">Праворуч</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Назва товару</label>
+                      <select value={settings.align_product_name || 'left'}
+                        onChange={(e) => updateSetting('align_product_name', e.target.value as any)}
+                        className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent">
+                        <option value="left">Ліворуч</option><option value="center">По центру</option><option value="right">Праворуч</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Артикул / SKU</label>
+                      <select value={settings.align_sku || 'left'}
+                        onChange={(e) => updateSetting('align_sku', e.target.value as any)}
+                        className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent">
+                        <option value="left">Ліворуч</option><option value="center">По центру</option><option value="right">Праворуч</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Ціна</label>
+                      <select value={settings.align_price || 'left'}
+                        onChange={(e) => updateSetting('align_price', e.target.value as any)}
+                        className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent">
+                        <option value="left">Ліворуч</option><option value="center">По центру</option><option value="right">Праворуч</option>
+                      </select>
+                    </div>
+                  </div>
+                </>
+              ) : (
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Назва магазину</label>
-                  <select
-                    value={settings.align_shop_name || 'left'}
-                    onChange={(e) => updateSetting('align_shop_name', e.target.value as any)}
-                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                  >
-                    <option value="left">Ліворуч</option>
-                    <option value="center">По центру</option>
-                    <option value="right">Праворуч</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Назва товару</label>
-                  <select
-                    value={settings.align_product_name || 'left'}
+                  <label className="block text-xs text-gray-500 mb-1">Номер комірки</label>
+                  <select value={settings.align_product_name || 'center'}
                     onChange={(e) => updateSetting('align_product_name', e.target.value as any)}
-                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                  >
-                    <option value="left">Ліворуч</option>
-                    <option value="center">По центру</option>
-                    <option value="right">Праворуч</option>
+                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent">
+                    <option value="left">Ліворуч</option><option value="center">По центру</option><option value="right">Праворуч</option>
                   </select>
                 </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Артикул / SKU</label>
-                  <select
-                    value={settings.align_sku || 'left'}
-                    onChange={(e) => updateSetting('align_sku', e.target.value as any)}
-                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                  >
-                    <option value="left">Ліворуч</option>
-                    <option value="center">По центру</option>
-                    <option value="right">Праворуч</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Ціна</label>
-                  <select
-                    value={settings.align_price || 'left'}
-                    onChange={(e) => updateSetting('align_price', e.target.value as any)}
-                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                  >
-                    <option value="left">Ліворуч</option>
-                    <option value="center">По центру</option>
-                    <option value="right">Праворуч</option>
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Штрих-код</label>
-                  <select
-                    value={settings.align_barcode || 'center'}
-                    onChange={(e) => updateSetting('align_barcode', e.target.value as any)}
-                    className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                  >
-                    <option value="left">Ліворуч</option>
-                    <option value="center">По центру</option>
-                    <option value="right">Праворуч</option>
-                  </select>
-                </div>
+              )}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Штрих-код</label>
+                <select value={settings.align_barcode || 'center'}
+                  onChange={(e) => updateSetting('align_barcode', e.target.value as any)}
+                  className="w-full border border-gray-200 rounded px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-accent">
+                  <option value="left">Ліворуч</option><option value="center">По центру</option><option value="right">Праворуч</option>
+                </select>
               </div>
             </Card>
 
             <Card className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-800 border-b border-gray-100 pb-2">Елементи етикетки</h3>
-              {[
-                { key: 'show_shop_name', label: 'Назва магазину' },
-                { key: 'show_product_name', label: 'Назва товару' },
-                { key: 'show_barcode', label: 'Штрих-код' },
-                { key: 'show_barcode_text', label: 'Текст під штрих-кодом' },
-                { key: 'show_sku', label: 'Артикул' },
-                { key: 'show_price', label: 'Ціна' },
-                { key: 'show_storage_bin', label: 'Місце зберігання' },
-              ].map(({ key, label }) => (
+              {(binMode
+                ? [
+                    { key: 'show_barcode', label: 'Штрих-код' },
+                    { key: 'show_barcode_text', label: 'Текст під штрих-кодом' },
+                  ]
+                : [
+                    { key: 'show_shop_name', label: 'Назва магазину' },
+                    { key: 'show_product_name', label: 'Назва товару' },
+                    { key: 'show_barcode', label: 'Штрих-код' },
+                    { key: 'show_barcode_text', label: 'Текст під штрих-кодом' },
+                    { key: 'show_sku', label: 'Артикул' },
+                    { key: 'show_price', label: 'Ціна' },
+                    { key: 'show_storage_bin', label: 'Місце зберігання' },
+                  ]
+              ).map(({ key, label }) => (
                 <div key={key} className="flex items-center justify-between py-1">
                   <span className="text-sm text-gray-700">{label}</span>
                   <label className="relative inline-flex items-center cursor-pointer">
