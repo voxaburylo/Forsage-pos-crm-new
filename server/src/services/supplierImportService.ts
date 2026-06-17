@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { createReadStream, promises as fs } from 'fs'
 import readline from 'readline'
@@ -16,7 +17,7 @@ function guessColumns(header: string, sep: string): ColMap {
   const map: ColMap = {}
   parts.forEach((p, i) => {
     if (/артикул|sku|код|article/i.test(p))                         map.sku   = i
-    else if (/назв|товар|наймен|name|product|description/i.test(p)) map.name  = i
+    else if (/назв|товар|наймен|номенклат|детал|запчаст|опис|позиц|наименован|name|product|description|item|title/i.test(p)) map.name  = i
     else if (/кільк|к-сть|qty|кол-во|quantity/i.test(p))           map.qty   = i
     else if (/цін|price|cost|вартість|purchase/i.test(p))           map.price = i
     else if (/бренд|виробн|brand|manufacturer|mfr/i.test(p))        map.brand = i
@@ -164,7 +165,11 @@ export async function processImport(
         sep = detectSeparator(trimmed)
         colMap = guessColumns(trimmed, sep)
         if (colMap.name === undefined) {
-          throw new Error('Не вдалося знайти заголовок з назвою товару. Стовпці мають містити назву (Name/Найменування)')
+          throw new AppError(
+            'IMPORT_NO_NAME_COLUMN',
+            `Перший рядок файлу має бути ЗАГОЛОВКОМ зі стовпцями. Не знайдено стовпець із назвою товару — назвіть його «Назва» (або «Номенклатура», «Найменування», «Name»). Очікувані стовпці: Назва, Артикул, Ціна, Кількість.`,
+            400,
+          )
         }
         continue
       }
