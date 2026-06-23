@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users } from 'lucide-react'
+import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
 import { DEFAULT_QUICK_ITEMS } from '@/features/pos/FavoritesPanel'
@@ -89,6 +89,7 @@ export default function SettingsPage() {
         employee_discount_pct: form.employee_discount_pct,
         vin_decoder_url:     form.vin_decoder_url,
         vin_decoder_api_key: form.vin_decoder_api_key,
+        auto_print_receipt: form.auto_print_receipt,
       })
       toast.success('Налаштування збережено')
     } catch (e) {
@@ -297,6 +298,24 @@ export default function SettingsPage() {
                 <input type="checkbox"
                   checked={form.allow_negative_qty ?? true}
                   onChange={(e) => set('allow_negative_qty', e.target.checked)}
+                  className="sr-only peer" />
+                <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-yellow-400 peer-focus:ring-2 peer-focus:ring-yellow-200 after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+              </label>
+            </div>
+
+            {/* Авто-друк чека */}
+            <div className="flex items-center justify-between py-2 border-t border-gray-100">
+              <div className="flex items-start gap-3">
+                <Printer size={18} className="text-gray-400 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-gray-700">Авто-друк чека після продажу</p>
+                  <p className="text-xs text-gray-400">Одразу відкривати друк чека щойно завершено продаж</p>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox"
+                  checked={form.auto_print_receipt ?? false}
+                  onChange={(e) => set('auto_print_receipt', e.target.checked)}
                   className="sr-only peer" />
                 <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-yellow-400 peer-focus:ring-2 peer-focus:ring-yellow-200 after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
               </label>

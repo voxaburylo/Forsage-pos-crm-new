@@ -69,6 +69,7 @@ export interface ShopSettings {
   employee_discount_pct?: number
   vin_decoder_url?: string | null
   vin_decoder_api_key?: string | null
+  auto_print_receipt?: boolean
   // ПРРО
   prro_enabled:           boolean
   prro_provider:          string   // 'mock' | 'kashalot'

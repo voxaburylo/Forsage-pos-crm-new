@@ -96,6 +96,7 @@ export const settingsSchema = z.object({
   employee_discount_pct:     z.number().min(0).max(100).optional(),
   vin_decoder_url:           z.string().max(500).optional().nullable(),
   vin_decoder_api_key:       z.string().max(300).optional().nullable(),
+  auto_print_receipt:        z.boolean().optional(),
 })
 
 export type CreateUserInput  = z.infer<typeof createUserSchema>

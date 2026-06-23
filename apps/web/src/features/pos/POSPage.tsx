@@ -123,6 +123,7 @@ export default function POSPage() {
   const [suspendedOpen, setSuspendedOpen] = useState(false)
   const [suspendedCount, setSuspendedCount] = useState(0)
   const [lastSale, setLastSale]         = useState<Sale | null>(null)
+  const autoPrintRef                    = useRef(false)
   const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
@@ -176,7 +177,7 @@ export default function POSPage() {
       .then((res: any) => {
         const data = res.data
         setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
-        
+        autoPrintRef.current = data.auto_print_receipt ?? false
       })
       .catch(() => {})
 
@@ -193,6 +194,15 @@ export default function POSPage() {
     const id = setInterval(loadReadyCount, 30000)
     return () => clearInterval(id)
   }, [])
+
+  // Авто-друк чека після продажу (вмикається в Налаштуваннях).
+  // Чекаємо рендер прихованого <ReceiptPrint> перед window.print().
+  useEffect(() => {
+    if (lastSale && autoPrintRef.current) {
+      const t = setTimeout(() => printReceipt(), 250)
+      return () => clearTimeout(t)
+    }
+  }, [lastSale])
 
   // Ініціалізація аудіо при першій взаємодії (через гарячі клавіші)
   useEffect(() => {

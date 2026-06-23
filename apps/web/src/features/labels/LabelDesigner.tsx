@@ -542,12 +542,12 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
 
     if (settings.show_shop_name) {
       const pShop = settings.pos_shop_name || { x: 5, y: 5 }
-      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${100 - pShop.x}%; font-size: ${settings.font_size_shop}px; line-height: 1; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_shop_name || 'left'};">${shopName}</div>`
+      body += `<div style="position: absolute; left: ${pShop.x}%; top: ${pShop.y}%; width: ${100 - pShop.x}%; font-size: ${settings.font_size_shop}mm; line-height: 1; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_shop_name || 'left'};">${shopName}</div>`
     }
 
     if (binLabel) {
       const pBin = settings.pos_bin || { x: 5, y: 88 }
-      body += `<div style="position: absolute; left: ${pBin.x}%; top: ${pBin.y}%; width: ${100 - pBin.x}%; font-size: ${settings.font_size_title + 2}px; font-weight: 700; text-align: ${settings.align_product_name || 'center'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${binLabel}</div>`
+      body += `<div style="position: absolute; left: ${pBin.x}%; top: ${pBin.y}%; width: ${100 - pBin.x}%; font-size: ${Math.min(settings.font_size_title, settings.width_mm * 0.3)}mm; font-weight: 700; text-align: ${settings.align_product_name || 'center'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${binLabel}</div>`
       if (settings.show_barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const alignBc = settings.align_barcode || 'center'
@@ -557,7 +557,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     } else if (product) {
       if (settings.show_product_name) {
         const pName = settings.pos_product_name || { x: 5, y: 25 }
-        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${100 - pName.x}%; font-size: ${settings.font_size_title}px; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: ${settings.max_name_lines ?? 2}; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; text-align: ${settings.align_product_name || 'left'};">${product.name}</div>`
+        body += `<div style="position: absolute; left: ${pName.x}%; top: ${pName.y}%; width: ${100 - pName.x}%; font-size: ${settings.font_size_title}mm; font-weight: 700; word-break: break-word; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: ${settings.max_name_lines ?? 2}; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; text-align: ${settings.align_product_name || 'left'};">${product.name}</div>`
       }
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
@@ -570,11 +570,11 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         let skuText = ''
         if (settings.show_sku) skuText += product.sku
         if (settings.show_storage_bin && (product as any).storage_bin) skuText += ` · ${(product as any).storage_bin}`
-        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${100 - pSku.x}%; font-size: ${settings.font_size_sku}px; line-height: 1; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_sku || 'left'};">${skuText}</div>`
+        body += `<div style="position: absolute; left: ${pSku.x}%; top: ${pSku.y}%; width: ${100 - pSku.x}%; font-size: ${settings.font_size_sku}mm; line-height: 1; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_sku || 'left'};">${skuText}</div>`
       }
       if (settings.show_price) {
         const pPrice = settings.pos_price || { x: 50, y: 75 }
-        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${100 - pPrice.x}%; font-size: ${settings.font_size_price}px; line-height: 0.9; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_price || 'left'};">${kopecksToHryvnia(product.retail_price)} ₴</div>`
+        body += `<div style="position: absolute; left: ${pPrice.x}%; top: ${pPrice.y}%; width: ${100 - pPrice.x}%; font-size: ${settings.font_size_price}mm; line-height: 0.9; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: ${settings.align_price || 'left'};">${kopecksToHryvnia(product.retail_price)} ₴</div>`
       }
     }
 

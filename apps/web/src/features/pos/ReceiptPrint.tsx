@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import qrcode from 'qrcode-generator'
 import type { Sale } from '@/types/sale'
 import { kopecksToHryvnia } from '@/types/product'
@@ -23,7 +24,7 @@ const PAY_LABEL: Record<string, string> = {
 export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
   const qrLink = `${window.location.origin}/sales?search=${encodeURIComponent(sale.sale_number)}`
   const qr = qrSvg(qrLink)
-  return (
+  return createPortal(
     <div className="receipt-print">
       <style>{`
         /* ======= Термопринтер 58/80мм чек ======= */
@@ -136,7 +137,8 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
           Товар підлягає поверненню протягом 14 днів
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
