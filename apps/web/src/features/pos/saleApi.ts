@@ -19,7 +19,9 @@ interface CreateSaleBody {
 export const saleApi = {
   create: (body: CreateSaleBody, idempotencyKey?: string) => {
     const headers = idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : undefined
-    return api.post<{ data: Sale }>('/api/v1/sales', body, headers)
+    // Таймаут, щоб вікно оплати не зависало назавжди. Достатньо для інтегрованого
+    // терміналу (агент чекає до ~2 хв) + запас. Повтор безпечний завдяки idempotency key.
+    return api.post<{ data: Sale }>('/api/v1/sales', body, headers, { timeoutMs: 150_000 })
   },
 
   get: (id: string) =>

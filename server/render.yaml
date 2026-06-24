@@ -25,5 +25,3 @@ services:
         sync: false
       - key: USE_BONUS_ATOMIC_SALE
         value: "true"
-      - key: USE_RESERVE_AWARE_SALE
-        value: "true"

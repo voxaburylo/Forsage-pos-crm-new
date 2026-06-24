@@ -4,6 +4,9 @@ export interface TerminalPaymentResult {
   rrn:        string | null
   panMasked?: string | null
   error?:     string
+  // true = результат НЕВІДОМИЙ (таймаут/обрив зв'язку): картку могли списати.
+  // Не можна трактувати як відмову й не можна мовчки списувати повторно.
+  unknown?:   boolean
 }
 
 export interface TerminalAdapter {

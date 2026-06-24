@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users } from 'lucide-react'
+import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users, Receipt } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
 import { PaymentModal } from './PaymentModal'
 import { ShiftCloseModal } from './ShiftCloseModal'
 import { ReceiptPrint, printReceipt } from './ReceiptPrint'
+import { ReceiptFinderModal } from './ReceiptFinderModal'
 import { saleApi } from './saleApi'
 import { QuickCustomerModal } from '@/features/customers/QuickCustomerModal'
 import { CashOperationModal } from './CashOperationModal'
@@ -124,6 +125,22 @@ export default function POSPage() {
   const [suspendedCount, setSuspendedCount] = useState(0)
   const [lastSale, setLastSale]         = useState<Sale | null>(null)
   const autoPrintRef                    = useRef(false)
+  const skipNextAutoPrintRef            = useRef(false)
+  const [findReceiptOpen, setFindReceiptOpen] = useState(false)
+
+  // Повторний друк будь-якого чека, обраного у вікні пошуку (ReceiptFinderModal).
+  // Реюз єдиного слота lastSale + ReceiptPrint, щоб не монтувати два чеки одночасно
+  // (інакше window.print() надрукував би обидва — селектор друку не прив'язаний до екземпляра).
+  async function handleReprintSale(saleId: string) {
+    try {
+      const { data } = await saleApi.get(saleId)
+      skipNextAutoPrintRef.current = true   // це повторний друк, не новий продаж — не плутати з авто-друком
+      setLastSale(data as Sale)
+      setTimeout(() => printReceipt(), 300)
+    } catch {
+      toast.error('Не вдалося завантажити чек')
+    }
+  }
   const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
@@ -198,7 +215,10 @@ export default function POSPage() {
   // Авто-друк чека після продажу (вмикається в Налаштуваннях).
   // Чекаємо рендер прихованого <ReceiptPrint> перед window.print().
   useEffect(() => {
-    if (lastSale && autoPrintRef.current) {
+    if (!lastSale) return
+    // Повторний друк зі списку чеків сам викликає друк — не дублюємо авто-друком
+    if (skipNextAutoPrintRef.current) { skipNextAutoPrintRef.current = false; return }
+    if (autoPrintRef.current) {
       const t = setTimeout(() => printReceipt(), 250)
       return () => clearTimeout(t)
     }
@@ -266,7 +286,7 @@ export default function POSPage() {
       const isFKey = e.key.startsWith('F')
 
       // Escape закриває відкриті модалки
-      const anyModalOpen = payOpen || customerOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen
+      const anyModalOpen = payOpen || customerOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen
       if (e.key === 'Escape' && anyModalOpen) {
         e.preventDefault()
         setPayOpen(false)
@@ -278,6 +298,7 @@ export default function POSPage() {
         setSuspendOpen(false)
         setSuspendedOpen(false)
         setHelpOpen(false)
+        setFindReceiptOpen(false)
         return
       }
 
@@ -300,6 +321,10 @@ export default function POSPage() {
       if (e.key === 'F5') {
         e.preventDefault()
         setSuspendedOpen(true)
+      }
+      if (e.key === 'F6') {
+        e.preventDefault()
+        setFindReceiptOpen(true)
       }
       if (e.key === 'F7') {
         e.preventDefault()
@@ -360,7 +385,7 @@ export default function POSPage() {
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen])
+  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen])
 
   if (store.isInitializing) {
     return (
@@ -410,10 +435,12 @@ export default function POSPage() {
     isFiscal?: boolean,
     terminalAuthCode?: string,
   ) {
-    // Офлайн-режим: тільки готівкові продажі без ПРРО
+    // Офлайн-режим: лише повноготівкові/переказ без ПРРО.
+    // Картка, борг і змішана (має карткову частину) недоступні — термінал/звірку
+    // офлайн не провести, інакше продаж синхронізується з неповними даними.
     if (!serverOnline) {
-      if (method === 'card' || method === 'debt') {
-        toast.error('Оплата карткою та в борг недоступна в офлайн-режимі')
+      if (method === 'card' || method === 'debt' || method === 'mixed') {
+        toast.error('Офлайн доступні лише готівка та переказ')
         return
       }
       const { currentShift, items, customer, notes, managerId, total, getActiveTab } = store
@@ -513,14 +540,26 @@ export default function POSPage() {
 
       {/* Crash Recovery — знайдено продаж після можливого краша */}
       {crashSale && (
-        <div className="bg-blue-900/20 border-b border-blue-500/30 px-4 py-2 flex items-center justify-between shrink-0">
+        <div className="bg-blue-900/20 border-b border-blue-500/30 px-4 py-2 flex items-center justify-between gap-3 shrink-0">
           <span className="text-blue-300 text-sm">
-            Знайдено продаж <strong>#{crashSale.sale_number}</strong> на {((crashSale.total ?? 0) / 100).toFixed(2)} ₴ — можливо він пройшов після збою
+            Знайдено продаж <strong>#{crashSale.sale_number}</strong> на {((crashSale.total ?? 0) / 100).toFixed(2)} ₴ — схоже, він пройшов після збою. Не пробивайте повторно, якщо це той самий чек.
           </span>
-          <button onClick={() => setCrashSale(null)}
-            className="ml-4 px-3 py-1 bg-gray-700 text-gray-300 text-xs rounded-lg hover:text-white transition-colors">
-            Зрозуміло
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => { handleReprintSale(crashSale.id); setCrashSale(null) }}
+              className="px-3 py-1 bg-blue-700 text-white text-xs rounded-lg hover:bg-blue-600 transition-colors">
+              Друк чека
+            </button>
+            <button
+              onClick={() => { store.clearReceipt(); clearSavedCart(); setRecoverCart(null); setCrashSale(null) }}
+              className="px-3 py-1 bg-emerald-700 text-white text-xs rounded-lg hover:bg-emerald-600 transition-colors">
+              Це той самий — очистити кошик
+            </button>
+            <button onClick={() => setCrashSale(null)}
+              className="px-3 py-1 bg-gray-700 text-gray-300 text-xs rounded-lg hover:text-white transition-colors">
+              Це інший продаж
+            </button>
+          </div>
         </div>
       )}
 
@@ -559,10 +598,15 @@ export default function POSPage() {
           {lastSale && (
             <button onClick={printReceipt}
               className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
-              title="Друк чека">
+              title="Друк останнього чека">
               <Printer size={16} />
             </button>
           )}
+          <button onClick={() => setFindReceiptOpen(true)}
+            className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
+            title="Знайти і надрукувати чек (F6)">
+            <Receipt size={16} />
+          </button>
           <ReadyOrdersPanel />
           <button onClick={() => { if (store.items.length > 0) setSuspendOpen(true) }}
             disabled={store.items.length === 0}
@@ -851,6 +895,7 @@ export default function POSPage() {
       />
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ReceiptFinderModal open={findReceiptOpen} onClose={() => setFindReceiptOpen(false)} onSelect={handleReprintSale} />
       <SuspendModal open={suspendOpen} onClose={() => setSuspendOpen(false)} onSuspended={() => setSuspendOpen(false)} />
       <SuspendedListModal open={suspendedOpen} onClose={() => setSuspendedOpen(false)}
         onResume={(sale) => {
@@ -891,6 +936,7 @@ export default function POSPage() {
           ['F3', '+Вкладка'],
           ['F4', 'Пошук'],
           ['F5', 'Відкладені'],
+          ['F6', 'Знайти чек'],
           ['F7', 'Відкласти'],
           ['F8', 'Сканер'],
           ['Del', 'Видалити'],

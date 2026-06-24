@@ -4,6 +4,7 @@ export interface RequestOptions extends Omit<RequestInit, 'headers'> {
   headers?: Record<string, string>
   silent?: boolean   // true = не показувати автоматичний toast
   _retry?: boolean   // внутрішній прапор — запобігає infinite loop при refresh
+  timeoutMs?: number // якщо задано — запит переривається через цей час (щоб UI не зависав назавжди)
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -29,12 +30,17 @@ async function refreshToken(): Promise<string | null> {
 
 export async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const token = await getAccessToken()
-  const { silent, _retry, ...fetchOptions } = options ?? {}
+  const { silent, _retry, timeoutMs, ...fetchOptions } = options ?? {}
+
+  // Опціональний таймаут — щоб UI (зокрема вікно оплати) не зависав, якщо сервер не відповідає
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
 
   let res: Response
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...fetchOptions,
+      signal: controller ? controller.signal : fetchOptions.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -42,12 +48,16 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
       },
     })
   } catch (networkErr) {
-    // Network error (сервер недоступний або DNS не резолвиться)
-    const msg = 'Сервер недоступний. Перевірте підключення до мережі.'
+    const aborted = (networkErr as any)?.name === 'AbortError'
+    const msg = aborted
+      ? 'Сервер не відповів вчасно. Перевірте, чи продаж пройшов, перш ніж повторювати.'
+      : 'Сервер недоступний. Перевірте підключення до мережі.'
     if (!silent) {
       import('@/components/ui/Toast').then(({ toast }) => toast.error(msg))
     }
     throw new Error(msg)
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 
   // При 401 — спробуємо оновити токен і повторити запит один раз
@@ -88,7 +98,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
 
 export const api = {
   get:    <T>(path: string, opts?: Pick<RequestOptions, 'silent'>) => request<T>(path, opts),
-  post:   <T>(path: string, body: unknown, headers?: Record<string, string>) => request<T>(path, { method: 'POST',  body: JSON.stringify(body), headers }),
+  post:   <T>(path: string, body: unknown, headers?: Record<string, string>, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, { method: 'POST',  body: JSON.stringify(body), headers, ...opts }),
   put:    <T>(path: string, body: unknown, opts?: Pick<RequestOptions, 'silent'>) => request<T>(path, { method: 'PUT',   body: JSON.stringify(body), ...opts }),
   patch:  <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string)               => request<T>(path, { method: 'DELETE' }),

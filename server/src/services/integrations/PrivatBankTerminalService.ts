@@ -21,6 +21,7 @@ export interface TerminalResult {
   rrn:        string | null   // Reference Retrieval Number
   pan_masked: string | null   // Маскований номер картки (наприклад 4444****1111)
   error?:     string
+  unknown?:   boolean         // таймаут/обрив — результат невідомий (картку могли списати)
 }
 
 interface TerminalConfig {
@@ -102,8 +103,10 @@ export async function privatbankProcessPayment(
       ? 'Термінал не відповів за 2 хвилини (клієнт не завершив операцію або збій зв\'язку)'
       : `Помилка зв\'язку з терміналом: ${err.message}`
 
-    logger.error({ saleNumber, error: err.message }, 'Термінал: помилка зв\'язку')
-    return { success: false, auth_code: null, rrn: null, pan_masked: null, error: msg }
+    // ВАЖЛИВО: таймаут/обрив — це НЕ відмова. Картку могли списати, але відповідь
+    // не дійшла. Повертаємо unknown, щоб не записати продаж і не списати повторно.
+    logger.error({ saleNumber, error: err.message }, 'Термінал: невідомий результат (таймаут/обрив)')
+    return { success: false, unknown: true, auth_code: null, rrn: null, pan_masked: null, error: msg }
   }
 }
 

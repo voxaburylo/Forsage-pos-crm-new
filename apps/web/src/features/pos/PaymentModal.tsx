@@ -34,6 +34,7 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
   const [loading, setLoading]       = useState(false)
   const [terminalStep, setTerminalStep] = useState<'none' | 'waiting_auth'>('none')
   const [terminalAuthCode, setTerminalAuthCode] = useState('')
+  const [terminalIntegrated, setTerminalIntegrated] = useState(false)
   const [bonusBalance, setBonusBalance]   = useState(0)
   const [maxBonus, setMaxBonus]           = useState(0)
   const [bonusInput, setBonusInput]       = useState('')
@@ -45,6 +46,18 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
   useEffect(() => {
     if (method === 'card') setFiscal(true)
   }, [method])
+
+  // Чи активний інтегрований термінал — тоді сервер проводить оплату сам,
+  // і касир НЕ вводить код вручну (інакше можливе подвійне списання).
+  useEffect(() => {
+    if (!open) return
+    api.get<{ data: { bank_terminal_enabled?: boolean; terminal_provider?: string } }>('/api/v1/settings')
+      .then((res) => {
+        const d = res.data
+        setTerminalIntegrated(!!d.bank_terminal_enabled && (d.terminal_provider ?? 'manual') !== 'manual')
+      })
+      .catch(() => setTerminalIntegrated(false))
+  }, [open])
 
   useEffect(() => {
     if (!open || !store.customer) {
@@ -146,8 +159,15 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
 
     setLoading(true)
 
-    // Картка або Split → спочатку показуємо діалог термінала
+    // Картка або Split із картковою частиною
     if (method === 'card' || (method === 'mixed' && splitCardKopecks > 0)) {
+      if (terminalIntegrated) {
+        // Інтегрований термінал: сервер сам проведе оплату. Без ручного коду — щоб
+        // не списати двічі. Касир лише дає клієнту прикласти картку.
+        await submitSale()
+        return
+      }
+      // Ручний режим: касир проводить картку і вводить код авторизації
       setTerminalStep('waiting_auth')
       return
     }

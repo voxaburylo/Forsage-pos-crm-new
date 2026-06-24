@@ -34,6 +34,7 @@ export class PrivatBankTerminalAdapter implements TerminalAdapter {
       rrn: res.rrn,
       panMasked: res.pan_masked,
       error: res.error,
+      unknown: res.unknown,
     }
   }
 

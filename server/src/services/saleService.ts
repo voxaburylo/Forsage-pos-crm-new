@@ -122,12 +122,51 @@ interface TerminalResult {
   terminalRrn: string | null;
   activeTerminalAdapter: TerminalAdapter | null;
   isCharged: boolean;
+  paymentRef: string | null;
+}
+
+/**
+ * Записує платіж, що потребує ручної звірки (термінал міг списати кошти, але
+ * результат невідомий або не вдалось автоскасувати). Раніше це лише губилось у логах.
+ */
+async function recordReconciliation(params: {
+  tenantId: string
+  paymentRef: string | null
+  saleId?: string | null
+  amountKopecks: number
+  rrn?: string | null
+  authCode?: string | null
+  panMasked?: string | null
+  status: 'unknown' | 'charged_not_reversed'
+  reason: string
+}): Promise<void> {
+  try {
+    await db.from('payment_reconciliation').insert({
+      tenant_id:      params.tenantId,
+      payment_ref:    params.paymentRef,
+      sale_id:        params.saleId ?? null,
+      amount_kopecks: params.amountKopecks,
+      rrn:            params.rrn ?? null,
+      auth_code:      params.authCode ?? null,
+      pan_masked:     params.panMasked ?? null,
+      status:         params.status,
+      reason:         params.reason,
+    })
+    logger.error({ paymentRef: params.paymentRef, status: params.status, amount: params.amountKopecks },
+      'PAYMENT RECONCILIATION — потрібна ручна звірка платежу на терміналі')
+  } catch (e: any) {
+    logger.error({ err: e.message }, 'КРИТИЧНО: не вдалося записати payment_reconciliation')
+  }
 }
 
 async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): Promise<any> {
+  // Скільки часу «processing»-лок вважається живим. Якщо сервер упав/зник струм
+  // між блокуванням і завершенням — старий лок інакше блокував би цю вкладку НАЗАВЖДИ.
+  const PROCESSING_TTL_MS = 2 * 60 * 1000
+
   const { data: cached } = await db
     .from('idempotency_keys')
-    .select('status, response')
+    .select('status, response, created_at')
     .eq('key', idempotencyKey)
     .eq('tenant_id', tenantId)
     .maybeSingle()
@@ -138,8 +177,16 @@ async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): P
       return cached.response as any
     }
     if (cached.status === 'processing') {
-      logger.warn({ idempotencyKey }, 'Idempotency hit (processing) — паралельний запит відхилено')
-      throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
+      const ageMs = Date.now() - new Date(cached.created_at).getTime()
+      if (ageMs < PROCESSING_TTL_MS) {
+        logger.warn({ idempotencyKey }, 'Idempotency hit (processing) — паралельний запит відхилено')
+        throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
+      }
+      // Лок «завис» (попередній запит не завершився через збій/струм) — прибираємо й пробуємо знову
+      logger.warn({ idempotencyKey, ageMs }, 'Idempotency stale processing lock — очищаємо застряглий лок')
+      try {
+        await db.from('idempotency_keys').delete().eq('key', idempotencyKey).eq('tenant_id', tenantId)
+      } catch {}
     }
     if (cached.status === 'failed') {
       try {
@@ -190,6 +237,7 @@ async function processTerminalPayment(input: CreateSaleInput, cardAmount: number
   let activeTerminalAdapter: TerminalAdapter | null = null
   let bankAuthCode: string | null = null
   let terminalRrn:  string | null = null
+  let paymentRef:   string | null = null
 
   if (input.payment_method === 'card' || input.payment_method === 'mixed') {
     const settings = await (await import('./adminService.js')).getSettings(tenantId)
@@ -201,23 +249,37 @@ async function processTerminalPayment(input: CreateSaleInput, cardAmount: number
     } else {
       activeTerminalAdapter = getTerminalAdapter(settings)
       if (activeTerminalAdapter) {
-        logger.info({ provider, cardAmount }, 'Ініціюємо оплату через інтегрований термінал...')
-        const terminalResult = await activeTerminalAdapter.processPayment(
-          cardAmount,
-          `TMP-${Date.now()}`
-        )
+        // Стабільний референс для кореляції зі звіркою в банку (замість TMP-timestamp)
+        paymentRef = `POS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        logger.info({ provider, cardAmount, paymentRef }, 'Ініціюємо оплату через інтегрований термінал...')
+        const terminalResult = await activeTerminalAdapter.processPayment(cardAmount, paymentRef)
+
+        // Невідомий результат (таймаут/обрив): картку могли списати. НЕ записуємо продаж,
+        // НЕ списуємо повторно — фіксуємо для ручної звірки й просимо касира перевірити.
+        if (terminalResult.unknown) {
+          await recordReconciliation({
+            tenantId, paymentRef, amountKopecks: cardAmount,
+            rrn: terminalResult.rrn, authCode: terminalResult.authCode, panMasked: terminalResult.panMasked,
+            status: 'unknown', reason: terminalResult.error ?? 'Невідомий результат оплати на терміналі',
+          })
+          throw new AppError(
+            'TERMINAL_UNKNOWN',
+            'Невідомий результат оплати на терміналі. Перевірте чек термінала: якщо кошти списано — НЕ повторюйте продаж; якщо ні — повторіть.',
+            409,
+          )
+        }
         if (!terminalResult.success) {
           throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
         }
         bankAuthCode = terminalResult.authCode
         terminalRrn  = terminalResult.rrn ?? null
         isCharged = true
-        logger.info({ rrn: terminalRrn }, 'Оплата успішна.')
+        logger.info({ rrn: terminalRrn, paymentRef }, 'Оплата успішна.')
       }
     }
   }
 
-  return { bankAuthCode, terminalRrn, activeTerminalAdapter, isCharged }
+  return { bankAuthCode, terminalRrn, activeTerminalAdapter, isCharged, paymentRef }
 }
 
 async function executeSaleTransaction(
@@ -590,6 +652,8 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   let activeTerminalAdapter: TerminalAdapter | null = null
   let bankAuthCode: string | null = null
   let terminalRrn:  string | null = null
+  let terminalPaymentRef: string | null = null
+  let cardChargeAmount = 0   // сума картки — для запису звірки при невдалому відкаті
 
   try {
     await verifyActiveShift(cashierId, input.shift_id)
@@ -616,6 +680,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     const paymentTotal = discountedTotal + coreDepositTotal
 
     let { cashAmount, cardAmount, bonusesEarned } = calculateSaleAmounts(input, paymentTotal)
+    cardChargeAmount = cardAmount
 
     if (useBonusAtomic && input.customer_id && input.payment_method !== 'debt') {
       const { getSettings } = await import('./loyaltyService.js')
@@ -630,6 +695,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     terminalRrn = termResult.terminalRrn
     activeTerminalAdapter = termResult.activeTerminalAdapter
     isCharged = termResult.isCharged
+    terminalPaymentRef = termResult.paymentRef
 
     const sale = await executeSaleTransaction(cashierId, tenantId, input, useBonusAtomic, bonusesEarned, cashAmount, cardAmount)
 
@@ -717,9 +783,19 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
           logger.info('Транзакцію успішно скасовано.')
         } else {
           logger.error('КРИТИЧНО: Не вдалося автоматично скасувати транзакцію на терміналі! Потрібне ручне втручання.')
+          await recordReconciliation({
+            tenantId, paymentRef: terminalPaymentRef, amountKopecks: cardChargeAmount,
+            rrn: terminalRrn, authCode: bankAuthCode, status: 'charged_not_reversed',
+            reason: `Списано на терміналі, автоскасування повернуло false. Помилка продажу: ${err.message}`,
+          })
         }
       } catch (cancelErr: any) {
         logger.error({ cancelError: cancelErr.message }, 'КРИТИЧНО: Помилка при спробі скасування транзакції на терміналі!')
+        await recordReconciliation({
+          tenantId, paymentRef: terminalPaymentRef, amountKopecks: cardChargeAmount,
+          rrn: terminalRrn, authCode: bankAuthCode, status: 'charged_not_reversed',
+          reason: `Списано на терміналі, помилка скасування: ${cancelErr.message}. Помилка продажу: ${err.message}`,
+        })
       }
     }
 
