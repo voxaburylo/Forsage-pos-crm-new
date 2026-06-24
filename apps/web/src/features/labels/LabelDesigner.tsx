@@ -552,7 +552,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const alignBc = settings.align_barcode || 'center'
         const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
-        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%; display: flex; flex-direction: column; align-items: ${flexBc};"><svg id="bin-bc-${index}"></svg></div>`
+        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%; display: flex; flex-direction: column; align-items: ${flexBc};"><svg id="bin-bc-${index}"></svg>${(settings.show_barcode_text ?? true) ? `<span style="font-size: ${settings.font_size}mm; font-family: monospace; letter-spacing: 0.5mm; margin-top: 0.5mm; line-height: 1; color: #333;">${binLabel}</span>` : ''}</div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
@@ -563,7 +563,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const alignBc = settings.align_barcode || 'center'
         const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
-        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%; display: flex; flex-direction: column; align-items: ${flexBc};"><svg id="bc-${product.id}-${index}"></svg></div>`
+        body += `<div style="position: absolute; left: ${pBc.x}%; top: ${pBc.y}%; display: flex; flex-direction: column; align-items: ${flexBc};"><svg id="bc-${product.id}-${index}"></svg>${(settings.show_barcode_text ?? true) ? `<span style="font-size: ${settings.font_size}mm; font-family: monospace; letter-spacing: 0.5mm; margin-top: 0.5mm; line-height: 1; color: #333;">${product.barcode}</span>` : ''}</div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
         const pSku = settings.pos_sku || { x: 5, y: 75 }
@@ -616,11 +616,11 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
       if (isBins) {
         const bin = (i as any).label
         if (!bin || !settings.show_barcode) return ''
-        return `JsBarcode('#bin-bc-${idx}', '${bin}', { width: ${(settings.barcode_width_factor ?? 1.0) * 1.2}, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: ${settings.show_barcode_text ?? true} });`
+        return `JsBarcode('#bin-bc-${idx}', '${bin}', { width: ${(settings.barcode_width_factor ?? 1.0) * 1.2}, height: ${settings.barcode_height}, margin: 0, displayValue: false });`
       }
       const p = i as Product
       if (!p.barcode) return ''
-      return `JsBarcode('#bc-${p.id}-${idx}', '${p.barcode}', { width: ${(settings.barcode_width_factor ?? 1.0) * 1.2}, height: ${settings.barcode_height}, fontSize: ${settings.font_size + 1}, margin: 0, displayValue: ${settings.show_barcode_text ?? true} });`
+      return `JsBarcode('#bc-${p.id}-${idx}', '${p.barcode}', { width: ${(settings.barcode_width_factor ?? 1.0) * 1.2}, height: ${settings.barcode_height}, margin: 0, displayValue: false });`
     }).filter(Boolean).join('\n')} } catch(e) {}
     window.onload = function() { setTimeout(function() { window.print(); window.close(); }, 500); };
   </script>
