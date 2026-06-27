@@ -26,9 +26,18 @@ export default function CustomersPage() {
   const [bulkOperating, setBulkOperating] = useState(false)
   const selectAllRef = useRef<HTMLInputElement>(null)
 
-  // Завантажуємо групи
+  // Завантажуємо групи. Захист від дублів за назвою (у БД трапляються повторні
+  // рядки сегментів) — інакше фільтри-таби показуються двічі.
   useEffect(() => {
-    customerGroupsApi.list().then((res) => setGroups(res.data)).catch(() => {})
+    customerGroupsApi.list().then((res) => {
+      const seen = new Set<string>()
+      const unique = (res.data ?? []).filter((g) => {
+        if (seen.has(g.name)) return false
+        seen.add(g.name)
+        return true
+      })
+      setGroups(unique)
+    }).catch(() => {})
   }, [])
 
   const load = useCallback(async () => {
