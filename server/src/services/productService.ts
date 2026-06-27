@@ -201,6 +201,20 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     if (dup) throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує`, 409)
   }
 
+  // Перевірка унікальності штрихкоду (індекс products.barcode НЕ unique — стережемо в коді,
+  // інакше два товари з однаковим ШК → неоднозначне сканування в касі).
+  if (input.barcode !== undefined && input.barcode !== null && input.barcode !== '' && input.barcode !== existing.barcode) {
+    const { data: bdup } = await db
+      .from(TABLE)
+      .select('id, name')
+      .eq('barcode', input.barcode)
+      .eq('tenant_id', existing.tenant_id)
+      .neq('id', id)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (bdup) throw new AppError('BARCODE_TAKEN', `Штрихкод "${input.barcode}" вже у товара "${bdup.name}"`, 409)
+  }
+
   const priceChanges: Array<{ price_type: string; old_price: number; new_price: number }> = []
   if (input.retail_price !== undefined && input.retail_price !== existing.retail_price) {
     priceChanges.push({ price_type: 'retail', old_price: existing.retail_price, new_price: input.retail_price })

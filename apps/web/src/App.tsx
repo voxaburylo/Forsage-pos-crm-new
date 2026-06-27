@@ -33,6 +33,7 @@ const AdminPage            = lazyWithRetry(() => import('@/features/admin/AdminP
 const SettingsPage         = lazyWithRetry(() => import('@/features/settings/SettingsPage'))
 // CommissionRulesPage merged
 const SuppliersPage        = lazyWithRetry(() => import('@/features/suppliers/SuppliersPage'))
+const ReceivingPage        = lazyWithRetry(() => import('@/features/receiving/ReceivingPage'))
 const SupplierFormPage     = lazyWithRetry(() => import('@/features/suppliers/SupplierFormPage'))
 const SupplierDetailPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierDetailPage'))
 const InvoicesPage         = lazyWithRetry(() => import('@/features/suppliers/InvoicesPage'))
@@ -116,6 +117,7 @@ function App() {
           <Route path="/suppliers/new" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id" element={<ProtectedRoute><SupplierDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id/edit" element={<ProtectedRoute><SupplierFormPage /></ProtectedRoute>} />
+          <Route path="/receiving" element={<ProtectedRoute><ReceivingPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
           <Route path="/suppliers/pos" element={<ProtectedRoute><SupplierPOsPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/new" element={<ProtectedRoute><InvoiceFormPage /></ProtectedRoute>} />

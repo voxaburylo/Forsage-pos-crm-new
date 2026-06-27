@@ -101,8 +101,8 @@ export const productApi = {
   create: (form: ProductFormData) =>
     api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form)),
 
-  update: (id: string, form: Partial<ProductFormData>) =>
-    api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form)),
+  update: (id: string, form: Partial<ProductFormData>, opts?: { silent?: boolean }) =>
+    api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts),
 
   delete: (id: string) =>
     api.delete<void>(`/api/v1/products/${id}`),

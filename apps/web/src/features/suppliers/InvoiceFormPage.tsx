@@ -278,6 +278,44 @@ export default function InvoiceFormPage() {
     return () => clearTimeout(timer)
   }, [productSearch, searchProducts])
 
+  // Швидке сканування штрихкодів: реф на кожен інпут ШК + режим-гід «по черзі»
+  const barcodeRefs = useRef<(HTMLInputElement | null)[]>([])
+  const [scanGuide, setScanGuide] = useState(false)
+
+  function focusBarcodeRow(idx: number) {
+    const el = barcodeRefs.current[idx]
+    if (el) { el.focus(); el.select() }
+  }
+
+  // Старт гіда: фокус на перший рядок без ШК (або перший)
+  function startScanGuide() {
+    if (items.length === 0) { toast.error('Спочатку додайте товари'); return }
+    const firstEmpty = items.findIndex((it) => !it.barcode)
+    if (firstEmpty === -1) { toast.success('Усі позиції вже мають штрихкод'); return }
+    setScanGuide(true)
+    focusBarcodeRow(firstEmpty)
+  }
+
+  // Сканер = клавіатура: вводить код + Enter. На Enter — перехід на наступний рядок.
+  // Наступний порожній шукаємо за фактичним value інпутів (а не за стейтом — уникаємо stale).
+  function onBarcodeKeyDown(e: React.KeyboardEvent<HTMLInputElement>, i: number) {
+    if (e.key === 'Escape' && scanGuide) {
+      e.preventDefault(); setScanGuide(false); barcodeRefs.current[i]?.blur(); return
+    }
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    let next = -1
+    for (let k = i + 1; k < barcodeRefs.current.length; k++) {
+      if (!barcodeRefs.current[k]?.value) { next = k; break }
+    }
+    if (next === -1) {
+      if (scanGuide) { setScanGuide(false); toast.success('Штрихкоди прописано') }
+      barcodeRefs.current[i]?.blur()
+    } else {
+      focusBarcodeRow(next)
+    }
+  }
+
   function addItem(product: Product) {
     if (items.some((i) => i.product_id === product.id)) {
       toast.warning('Товар вже додано')
@@ -294,6 +332,7 @@ export default function InvoiceFormPage() {
       storage_bin: product.storage_bin,
       photo_url: product.photo_url ?? null,
       sku: product.sku,
+      barcode: product.barcode ?? '',
     }])
     setProductSearch('')
     setProductResults([])
@@ -652,6 +691,24 @@ export default function InvoiceFormPage() {
           })
         )
 
+        // Запис штрихкодів у товари (окремим проходом — щоб конфлікт ШК не зривав
+        // оновлення назви/комірки/ціни; бекенд стереже унікальність ШК).
+        const barcodeConflicts: string[] = []
+        await Promise.all(resolvedItems.map(async (item) => {
+          const bc = (item.barcode ?? '').toString().trim()
+          if (!item.product_id || !bc) return
+          try {
+            await productApi.update(item.product_id, { barcode: bc } as Partial<ProductFormData>, { silent: true })
+          } catch (err: any) {
+            if (err?.status === 409 || /вже у товара/.test(String(err?.message || ''))) {
+              barcodeConflicts.push(item.product_name)
+            }
+          }
+        }))
+        if (barcodeConflicts.length > 0) {
+          toast.warning(`Штрихкод не збережено (вже зайнятий) для: ${barcodeConflicts.join(', ')}`)
+        }
+
         // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
         if (postImmediately && created?.data?.id) {
           try {
@@ -831,11 +888,24 @@ export default function InvoiceFormPage() {
 
 
 
+          {!isEdit && items.length > 0 && (
+            <div className="flex items-center gap-2 mb-2">
+              <button type="button" onClick={startScanGuide}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${scanGuide ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+                ▶ Прописати ШК по черзі
+              </button>
+              {scanGuide
+                ? <span className="text-xs text-gray-500">Скануйте — фокус сам переходить на наступний рядок без ШК. Esc — вийти.</span>
+                : <span className="text-xs text-gray-400">Помаранчеві поля — без штрихкоду</span>}
+            </div>
+          )}
+
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
                 <th className="w-12 px-2 py-2">Фото</th>
                 <th className="text-left px-4 py-2">Товар</th>
+                <th className="text-left px-2 py-2 w-40">Штрихкод</th>
                 <th className="text-left px-2 py-2 w-28">Комірка</th>
                 <th className="text-right px-2 py-2 w-16">К-сть</th>
                 <th className="text-right px-2 py-2 w-24">Закупка, грн</th>
@@ -882,6 +952,17 @@ export default function InvoiceFormPage() {
                         {cheaperElsewhere && ` (дешевше за поточну на ${((item.purchase_price - best.price) / 100).toFixed(2)} грн)`}
                       </div>
                     )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <input
+                      ref={(el) => { barcodeRefs.current[i] = el }}
+                      type="text" value={item.barcode ?? ''}
+                      onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+                      onKeyDown={(e) => onBarcodeKeyDown(e, i)}
+                      disabled={isEdit}
+                      placeholder="скан / ввід"
+                      autoComplete="off"
+                      className={`w-36 border rounded px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
                   </td>
                   <td className="px-2 py-2">
                     <input type="text" value={item.storage_bin ?? ''}
