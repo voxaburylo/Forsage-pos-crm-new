@@ -377,9 +377,12 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
               const showAnalogs = (p.qty_available ?? p.qty_on_hand) <= 0
               return (
                 <div key={p.id}>
-                  <button
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => { addToReceipt(p); setQuery(''); setResults([]); setSupplierResults([]) }}
-                    className={`w-full text-left p-4 rounded-xl border-2 transition-all active:scale-[0.98] active:bg-gray-700/50 ${
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); addToReceipt(p); setQuery(''); setResults([]); setSupplierResults([]) } }}
+                    className={`block w-full text-left p-4 rounded-xl border-2 transition-all cursor-pointer active:scale-[0.98] active:bg-gray-700/50 ${
                       idx === 0
                         ? 'bg-[#2C2C2C] border-yellow-400/50 hover:border-yellow-400'
                         : 'bg-[#242424] border-gray-700 hover:border-gray-500'
@@ -448,7 +451,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
                         <Link2 size={12} /> Аналоги
                       </button>
                     </div>
-                  </button>
+                  </div>
 
                   {/* Аналоги для товарів без залишку */}
                   {showAnalogs && analogsLoading !== p.id && productAnalogs.length === 0 && (
