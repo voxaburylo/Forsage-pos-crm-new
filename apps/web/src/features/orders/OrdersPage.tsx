@@ -921,6 +921,8 @@ interface OrdersTableProps {
   onNextPage: () => void
   hasMore: boolean
   onQuickView: (o: CustomerOrder) => void
+  statusTab: Tab
+  onStatusTab: (t: Tab) => void
 }
 
 // Перша позиція або «N позицій» для рядка списку (ORD-9)
@@ -931,8 +933,15 @@ function itemsSummary(o: CustomerOrder): string {
   return `${real[0].name} +${real.length - 1}`
 }
 
-function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView }: OrdersTableProps) {
+function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, statusTab, onStatusTab }: OrdersTableProps) {
   const navigate = useNavigate()
+
+  const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
+    { id: 'all',       label: 'Усі активні' },
+    { id: 'active',    label: 'В дорозі' },
+    { id: 'ready',     label: 'До видачі', accent: true },
+    { id: 'completed', label: 'Завершені' },
+  ]
 
   return (
     <div className="flex-1 p-4 md:p-6 overflow-y-auto bg-gray-50/50">
@@ -961,6 +970,20 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
               Нове замовлення
             </Button>
           </div>
+        </div>
+
+        {/* Фільтр за статусом — доступний прямо у списку (раніше був лише в інбоксі чатів) */}
+        <div className="flex gap-1.5 flex-wrap -mt-2">
+          {statusFilters.map((f) => (
+            <button key={f.id} onClick={() => onStatusTab(f.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                statusTab === f.id
+                  ? f.accent ? 'bg-green-500 text-white' : 'bg-yellow-400 text-black'
+                  : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
+              }`}>
+              {f.label}
+            </button>
+          ))}
         </div>
 
         {/* Mobile card layout (ORD-12) */}
@@ -1775,6 +1798,8 @@ export default function OrdersPage() {
               onNextPage={() => setOffset(offset + 50)}
               hasMore={orders.length >= 50}
               onQuickView={(o) => setQuickOrderId(o.id)}
+              statusTab={tab}
+              onStatusTab={setTab}
             />
           )}
         </div>
