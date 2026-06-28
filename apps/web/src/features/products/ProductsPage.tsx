@@ -402,7 +402,7 @@ export default function ProductsPage() {
                     <SortTh field="retail_price" label="Ціна"    className="w-28 text-right" sort={sort} onSort={toggleSort} />
                     <SortTh field="qty_on_hand"  label="Залишок" className="w-28 text-right" sort={sort} onSort={toggleSort} />
                     <th className="px-3 py-3 w-20 text-center text-xs font-bold text-gray-500 uppercase tracking-wide">Статус</th>
-                    <th className="px-3 py-3 w-44" />
+                    <th className="px-3 py-3 w-44 sticky right-0 bg-gray-50 z-20" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -426,7 +426,7 @@ export default function ProductsPage() {
                     const stock = stockStatus(p)
                     return (
                       <tr key={p.id}
-                        className={`hover:bg-gray-50 transition-colors ${selectedIds.has(p.id) ? 'bg-yellow-50/60' : ''} ${p.is_active === false ? 'opacity-50' : ''}`}>
+                        className={`group hover:bg-gray-50 transition-colors ${selectedIds.has(p.id) ? 'bg-yellow-50/60' : ''} ${p.is_active === false ? 'opacity-50' : ''}`}>
                         <td className="px-3 py-3 text-center">
                           <input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)}
                             className="accent-yellow-500 cursor-pointer" />
@@ -513,7 +513,7 @@ export default function ProductsPage() {
                         <td className="px-3 py-3 text-center">
                           <Badge color={STATUS_COLOR[stock]}>{STATUS_LABEL[stock]}</Badge>
                         </td>
-                        <td className="px-3 py-3">
+                        <td className="px-3 py-3 sticky right-0 z-10 bg-white group-hover:bg-gray-50 border-l border-gray-100">
                           <div className="flex items-center justify-end whitespace-nowrap">
                             {isAdmin ? (
                               <SplitButton
