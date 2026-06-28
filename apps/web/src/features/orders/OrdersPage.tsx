@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, Truck, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
-  Trash2, X, Check, RefreshCw, Pencil, Copy, ArrowRight,
+  Trash2, X, Check, RefreshCw, Pencil, Copy, ArrowRight, Clock,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -1014,7 +1014,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                   </p>
                 )}
                 {itemsSummary(o) && (
-                  <p className="text-xs text-gray-600 truncate">🧩 {itemsSummary(o)}</p>
+                  <p className="text-xs text-gray-600 truncate">{itemsSummary(o)}</p>
                 )}
                 <div className="flex items-end justify-between pt-2 border-t border-gray-50">
                   <div className="text-xs space-y-0.5">
@@ -1027,7 +1027,9 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                     <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
                   </div>
                 </div>
-                <div className="text-[10px] text-gray-300 text-right">{formatDateTime(o.created_at)}</div>
+                <div className="text-[11px] text-gray-400 flex items-center justify-end gap-1">
+                  <Clock size={10} className="shrink-0" /> {formatDateTime(o.created_at)}
+                </div>
               </div>
             )
           })}
@@ -1060,19 +1062,22 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                   return (
                     <tr key={o.id} onClick={() => onQuickView(o)} className="hover:bg-gray-50/30 transition-colors cursor-pointer">
                       {/* Замовлення */}
-                      <td className="px-5 py-4">
-                        <div className="font-bold text-gray-900">{formatOrderNo(o)}</div>
-                        <div className="text-[11px] text-gray-400 mt-0.5 font-mono">
+                      <td className="px-5 py-4 align-top">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-gray-900">{formatOrderNo(o)}</span>
+                          <span className="text-[10px] text-gray-500 bg-gray-100 rounded px-1.5 py-0.5 font-medium">
+                            {o.source === 'walk_in' ? 'Магазин' : o.source === 'phone' ? 'Телефон' : 'Чат'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                          <Clock size={11} className="text-gray-400 shrink-0" />
                           {formatDateTime(o.created_at)}
                         </div>
                         {itemsSummary(o) && (
-                          <div className="text-[11px] text-gray-600 mt-1 truncate max-w-[200px]" title={itemsSummary(o)}>
-                            🧩 {itemsSummary(o)}
+                          <div className="text-xs text-gray-700 mt-1 truncate max-w-[220px]" title={itemsSummary(o)}>
+                            {itemsSummary(o)}
                           </div>
                         )}
-                        <div className="text-[10px] text-gray-500 mt-1 font-semibold flex items-center gap-1">
-                          <span>📦 {o.source === 'walk_in' ? 'Магазин' : o.source === 'phone' ? 'Телефон' : 'Чат'}</span>
-                        </div>
                       </td>
 
                       {/* Клієнт */}
