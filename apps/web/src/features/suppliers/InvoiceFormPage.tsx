@@ -45,20 +45,14 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
     await uploadPhoto(file)
   }
 
-  // Новий товар ще не створено в БД (id = 'new_…') — тоді фото лише зберігаємо в
-  // позиції накладної; воно піде в товар при збереженні. Для наявного — оновлюємо одразу.
-  const isRealProduct = !!productId && !productId.startsWith('new_')
-
+  // Фото в накладній — ТИМЧАСОВЕ: висить у позиції, а в товар записується лише при
+  // збереженні/проведенні накладної. Закрив без проведення → нічого не змінилось/створилось.
   const uploadPhoto = async (file: File | Blob) => {
     setUploading(true)
     try {
       const blob = await compressToJpeg(file)
       const url = await uploadToStorage(blob, productId)
-      onPhotoUpdated(url)   // завжди зберігаємо фото в позиції (піде в товар при збереженні накладної)
-      // Для наявного товару пробуємо оновити одразу, але БЕЗ помилки, якщо не вийшло
-      if (isRealProduct) {
-        try { await productApi.update(productId, { photo_url: url }, { silent: true }) } catch { /* збережеться при збереженні */ }
-      }
+      onPhotoUpdated(url)   // лише в позицію; у товар — при проведенні накладної
       toast.success('Фото додано')
     } catch (err) {
       toast.error('Не вдалося завантажити фото')
@@ -96,10 +90,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
     if (!confirm('Видалити фото?')) return
     setUploading(true)
     try {
-      onPhotoUpdated(null)
-      if (isRealProduct) {
-        try { await productApi.update(productId, { photo_url: null }, { silent: true }) } catch { /* ignore */ }
-      }
+      onPhotoUpdated(null)   // прибираємо лише з позиції; товар не чіпаємо до проведення
       toast.success('Фото видалено')
     } catch {
       toast.error('Помилка видалення')
@@ -715,6 +706,7 @@ export default function InvoiceFormPage() {
               storage_bin: item.storage_bin ?? '',
             }
             if (item.retail_price > 0) patch.retail_price = (item.retail_price / 100).toFixed(2)
+            if (item.photo_url) patch.photo_url = item.photo_url   // фото з накладної → у товар при проведенні
             await productApi.update(item.product_id!, patch)
           })
         )
