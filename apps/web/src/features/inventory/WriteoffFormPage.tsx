@@ -1,13 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Trash2 } from 'lucide-react'
 import { writeoffApi } from './writeoffApi'
-import { productApi } from '@/features/products/productApi'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
 import type { Product } from '@/types/product'
 import { Layout } from '@/components/Layout'
-import { Button, Card, SearchInput } from '@/components/ui'
+import { Button, Card } from '@/components/ui'
+import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { toast } from '@/components/ui/Toast'
 
 
@@ -28,21 +28,7 @@ export default function WriteoffFormPage() {
   const [notes, setNotes]     = useState('')
   const [items, setItems]     = useState<LineItem[]>([])
   const [search, setSearch]   = useState('')
-  const [results, setResults] = useState<Product[]>([])
   const [saving, setSaving]   = useState(false)
-
-  const searchProducts = useCallback(async (q: string) => {
-    if (!q.trim()) { setResults([]); return }
-    try {
-      const res = await productApi.list({ search: q, per_page: 10 })
-      setResults(res.data)
-    } catch { setResults([]) }
-  }, [])
-
-  useEffect(() => {
-    const t = setTimeout(() => searchProducts(search), 300)
-    return () => clearTimeout(t)
-  }, [search, searchProducts])
 
   function addProduct(p: Product) {
     if (items.some((i) => i.product_id === p.id)) {
@@ -53,12 +39,11 @@ export default function WriteoffFormPage() {
       product_id:   p.id,
       product_name: p.name,
       product_sku:  p.sku,
-      unit:         p.unit,
-      qty_on_hand:  p.qty_on_hand,
+      unit:         p.unit ?? 'шт',
+      qty_on_hand:  (p as any).qty_available ?? p.qty_on_hand ?? 0,
       qty:          1,
     }])
     setSearch('')
-    setResults([])
   }
 
   function updateQty(index: number, value: string) {
@@ -135,18 +120,13 @@ export default function WriteoffFormPage() {
             <span className="text-sm font-semibold text-gray-800">Товари ({items.length})</span>
           </div>
           <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-            <SearchInput value={search} onChange={setSearch} placeholder="Пошук товару для списання..." />
-            {results.length > 0 && (
-              <div className="mt-2 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
-                {results.map((p) => (
-                  <button key={p.id} type="button" onClick={() => addProduct(p)}
-                    className="w-full px-3 py-2 text-left text-sm hover:bg-yellow-50 flex items-center justify-between">
-                    <span className="font-medium">{p.name}</span>
-                    <span className="text-gray-400 text-xs">{p.sku} — залишок: {p.qty_on_hand} {p.unit}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <ProductAutocomplete
+              value={search}
+              onChange={setSearch}
+              onSelect={addProduct}
+              warehouseOnly
+              placeholder="Пошук товару для списання..."
+            />
           </div>
 
           <table className="w-full text-sm">

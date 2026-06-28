@@ -13,11 +13,16 @@ interface ProductAutocompleteProps {
   placeholder?: string
   className?: string
   required?: boolean
+  /** Лише товари зі складу (без прайсів постачальників і замовного імпорту).
+   *  Для контекстів складу: списання, переміщення, внутр. відпуск тощо. */
+  warehouseOnly?: boolean
 }
 
 /**
- * Поле назви/артикула з автопідказкою по товарній базі (ORD-1).
- * Друк → випадають збіги (назва, артикул, ціна, залишок) + прайси постачальників.
+ * Спільний пікер товару з автопідказкою по базі (общий модуль пошуку).
+ * Друк → випадають збіги (назва, артикул, ціна, залишок).
+ * За замовчуванням показує і прайси постачальників (замовний імпорт);
+ * з warehouseOnly — лише склад.
  */
 export function ProductAutocomplete({
   value,
@@ -26,6 +31,7 @@ export function ProductAutocomplete({
   placeholder = 'Введіть назву або артикул...',
   className = '',
   required,
+  warehouseOnly = false,
 }: ProductAutocompleteProps) {
   const [results, setResults] = useState<Product[]>([])
   const [supplierResults, setSupplierResults] = useState<any[]>([])
@@ -62,7 +68,7 @@ export function ProductAutocomplete({
       api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(`/api/v1/search/hybrid?q=${encodeURIComponent(q)}&limit=8`)
         .then((res) => {
           const warehouse = res.data?.warehouse || []
-          const catalog = res.data?.supplier_catalog || []
+          const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
           setResults(warehouse)
           setSupplierResults(catalog)
           setOpen(warehouse.length > 0 || catalog.length > 0)
