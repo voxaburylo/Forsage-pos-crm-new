@@ -348,7 +348,8 @@ export default function OrderDetailPage() {
   const conf = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'gray' as const }
   const discount = order.discount_amount ?? 0
   const totalPaid = order.total_paid ?? order.prepayment
-  const remaining = order.total_amount - discount - totalPaid
+  // Скасоване замовлення не має «залишку до сплати» — обов'язань немає
+  const remaining = order.status === 'canceled' ? 0 : order.total_amount - discount - totalPaid
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled', 'returned'].includes(i.item_status))
   const allHanded  = order.items.every((i) => ['handed', 'canceled', 'returned'].includes(i.item_status))
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)

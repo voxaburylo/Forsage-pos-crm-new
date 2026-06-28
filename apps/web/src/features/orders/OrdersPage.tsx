@@ -994,7 +994,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
             </div>
           ) : orders.map((o: CustomerOrder) => {
             const paid = o.total_paid ?? o.prepayment ?? 0
-            const hasDebt = o.total_amount > paid
+            const hasDebt = o.status !== 'canceled' && o.total_amount > paid
             const conf = STATUS_CONFIG[o.status] ?? { label: o.status, color: 'gray' as BadgeColor }
             return (
               <div key={o.id} onClick={() => onQuickView(o)}
@@ -1058,7 +1058,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
               <tbody className="divide-y divide-gray-100">
                 {orders.map((o: CustomerOrder) => {
                   const paid = o.total_paid ?? o.prepayment ?? 0
-                  const hasDebt = o.total_amount > paid
+                  const hasDebt = o.status !== 'canceled' && o.total_amount > paid
                   return (
                     <tr key={o.id} onClick={() => onQuickView(o)} className="hover:bg-gray-50/30 transition-colors cursor-pointer">
                       {/* Замовлення */}
@@ -1238,7 +1238,8 @@ export default function OrdersPage() {
   useEffect(() => {
     if (chatMode) { setTab('bots'); return }   // у режимі чатів вкладка завжди «чати»
     const urlTab = searchParams.get('tab') as Tab
-    if (urlTab && ['all', 'leads', 'drafts', 'bots', 'active', 'ready', 'completed'].includes(urlTab)) {
+    // «bots» свідомо НЕ дозволений у блоці /orders — чати живуть лише на /chats (меню «Чат-боти»)
+    if (urlTab && ['all', 'leads', 'drafts', 'active', 'ready', 'completed'].includes(urlTab)) {
       setTab(urlTab)
     }
   }, [searchParams, chatMode])
@@ -2003,7 +2004,7 @@ export default function OrdersPage() {
                 now={now}
                 onOpenFull={() => navigate('/orders/' + quickOrder.id)}
                 onEditDraft={() => navigate('/quotes/' + quickOrder.id)}
-                onOpenChat={(chatId) => { setQuickOrderId(null); navigate('/orders?tab=bots&chat_id=' + chatId) }}
+                onOpenChat={(chatId) => { setQuickOrderId(null); navigate('/chats?chat_id=' + chatId) }}
                 onChangeStatus={(s) => changeOrderStatus(quickOrder.id, s)}
                 onItemStatus={(itemId, s) => updateItemStatus(quickOrder.id, itemId, s)}
                 onPay={() => setPayModal(quickOrder)}
@@ -2041,7 +2042,8 @@ function OrderInlineView({
   const srcConf = SOURCE_CONFIG[order.source] ?? { label: order.source, icon: <AlertCircle size={10} /> }
   const draft = isDraft(order)
   const totalPaid = order.total_paid ?? order.prepayment
-  const remaining = order.total_amount - totalPaid
+  // Скасоване замовлення не має «залишку до сплати» — обов'язань немає
+  const remaining = order.status === 'canceled' ? 0 : order.total_amount - totalPaid
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled'].includes(i.item_status))
   const allHanded = order.items.every((i) => ['handed', 'canceled'].includes(i.item_status))
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
