@@ -147,8 +147,8 @@ function App() {
           <Route path="/inventory/writeoffs/new" element={<ProtectedRoute><WriteoffFormPage /></ProtectedRoute>} />
           <Route path="/inventory/writeoffs/:id" element={<ProtectedRoute><WriteoffDetailPage /></ProtectedRoute>} />
 
-          {/* Старий URL /chats — тепер усе в /orders */}
-          <Route path="/chats" element={<Navigate to="/orders" replace />} />
+          {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
+          <Route path="/chats" element={<ProtectedRoute><OrdersPage /></ProtectedRoute>} />
           <Route path="/orders"          element={<ProtectedRoute><OrdersPage /></ProtectedRoute>} />
           <Route path="/orders/new"      element={<ProtectedRoute><OrderFormPage /></ProtectedRoute>} />
           <Route path="/orders/:id"      element={<ProtectedRoute><OrderDetailPage /></ProtectedRoute>} />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, Truck, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
@@ -1185,6 +1185,9 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
 
 export default function OrdersPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  // Режим «Чат-боти» (маршрут /chats) — лише чати; режим замовлень (/orders) — лише замовлення.
+  const chatMode = location.pathname.startsWith('/chats')
   const [searchParams, setSearchParams] = useSearchParams()
   const urlChatId = searchParams.get('chat_id')
 
@@ -1196,7 +1199,7 @@ export default function OrdersPage() {
   const [loadingOrders, setLoadingOrders] = useState(true)
 
   // ui
-  const [tab, setTab] = useState<Tab>('all')
+  const [tab, setTab] = useState<Tab>(chatMode ? 'bots' : 'all')
   const [offset, setOffset] = useState(0)
 
   // Reset offset on tab changes
@@ -1205,11 +1208,12 @@ export default function OrdersPage() {
   }, [tab])
 
   useEffect(() => {
+    if (chatMode) { setTab('bots'); return }   // у режимі чатів вкладка завжди «чати»
     const urlTab = searchParams.get('tab') as Tab
     if (urlTab && ['all', 'leads', 'drafts', 'bots', 'active', 'ready', 'completed'].includes(urlTab)) {
       setTab(urlTab)
     }
-  }, [searchParams])
+  }, [searchParams, chatMode])
   const [search, setSearch] = useState('')
   const [selection, setSelection] = useState<Selection>(null)
   const [now] = useState(() => new Date())
@@ -1319,9 +1323,10 @@ export default function OrdersPage() {
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   // ── фільтрація ──
-  const chatsShown = tab === 'all' || tab === 'leads' || tab === 'bots'
+  const chatsShown = chatMode
 
   const filteredOrders = useMemo(() => {
+    if (chatMode) return [] as CustomerOrder[]
     return orders.filter((o) => {
       if (tab === 'bots')      return false
       if (tab === 'all')       return !['completed', 'canceled'].includes(o.status)
@@ -1332,7 +1337,7 @@ export default function OrdersPage() {
       if (tab === 'completed') return ['completed', 'canceled'].includes(o.status)
       return true
     })
-  }, [orders, tab])
+  }, [orders, tab, chatMode])
 
   const sq = search.toLowerCase().trim()
 
@@ -1370,22 +1375,25 @@ export default function OrdersPage() {
 
   // ── статистика ──
   const stats = useMemo(() => ({
-    leads:     orders.filter(isLead).length + chats.length,
+    leads:     orders.filter(isLead).length,
     drafts:    orders.filter(isDraft).length,
     active:    orders.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)).length,
     ready:     orders.filter((o) => o.status === 'ready').length,
     completed: orders.filter((o) => ['completed', 'canceled'].includes(o.status)).length,
   }), [orders, chats])
 
-  const TABS: Array<{ id: Tab; label: string; count: number; accent?: boolean }> = [
-    { id: 'all',       label: 'Усі',           count: chats.length + filteredOrders.length },
-    { id: 'leads',     label: 'Ліди',          count: stats.leads },
-    { id: 'drafts',    label: 'Чернетки',      count: stats.drafts },
-    { id: 'bots',      label: 'Месенджер',     count: chats.length },
-    { id: 'active',    label: 'В дорозі',      count: stats.active },
-    { id: 'ready',     label: 'До видачі',     count: stats.ready, accent: true },
-    { id: 'completed', label: 'Завершені',     count: stats.completed },
-  ]
+  const TABS: Array<{ id: Tab; label: string; count: number; accent?: boolean }> = chatMode
+    ? [
+        { id: 'bots', label: 'Усі чати', count: chats.length },
+      ]
+    : [
+        { id: 'all',       label: 'Усі',       count: filteredOrders.length },
+        { id: 'leads',     label: 'Ліди',      count: stats.leads },
+        { id: 'drafts',    label: 'Чернетки',  count: stats.drafts },
+        { id: 'active',    label: 'В дорозі',  count: stats.active },
+        { id: 'ready',     label: 'До видачі', count: stats.ready, accent: true },
+        { id: 'completed', label: 'Завершені', count: stats.completed },
+      ]
 
   // ── дії ──
   async function doSend() {
@@ -1524,8 +1532,9 @@ export default function OrdersPage() {
                 ←
               </button>
             ) : null}
-            <h1 className="font-bold text-gray-900 text-sm md:text-lg truncate">Замовлення</h1>
+            <h1 className="font-bold text-gray-900 text-sm md:text-lg truncate">{chatMode ? 'Чат-боти' : 'Замовлення'}</h1>
           </div>
+          {!chatMode && (
           <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
             <Button variant="secondary" size="sm" icon={<FilePen size={14} />}
               className="!hidden md:!inline-flex" onClick={() => navigate('/quotes/new')}>
@@ -1545,8 +1554,9 @@ export default function OrdersPage() {
               <span className="hidden sm:inline">Нове замовлення</span>
             </Button>
           </div>
+          )}
         </header>
-        <SubNavTabs tabs={ORDERS_TABS} currentRole={role} />
+        {!chatMode && <SubNavTabs tabs={ORDERS_TABS} currentRole={role} />}
 
         {/* робоча площина */}
         <div className="flex-1 flex min-h-0 min-w-0">

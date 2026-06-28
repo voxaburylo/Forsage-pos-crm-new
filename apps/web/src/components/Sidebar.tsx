@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
   ChevronDown, UserCog, Users,
-  Bell, X, PackagePlus,
+  Bell, X, PackagePlus, MessageSquare,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -43,6 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
+      { to: '/chats',               icon: <MessageSquare size={18} />,   label: 'Чат-боти',             roles: ['owner','admin','manager'] },
       { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
       { to: '/inventory/picking',   icon: <Package size={18} />,         label: 'Склад та Збірка',      roles: ['owner','admin','manager','storekeeper'] },
