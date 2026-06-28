@@ -54,9 +54,12 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
     try {
       const blob = await compressToJpeg(file)
       const url = await uploadToStorage(blob, productId)
-      if (isRealProduct) await productApi.update(productId, { photo_url: url })
-      onPhotoUpdated(url)
-      toast.success('Фото оновлено')
+      onPhotoUpdated(url)   // завжди зберігаємо фото в позиції (піде в товар при збереженні накладної)
+      // Для наявного товару пробуємо оновити одразу, але БЕЗ помилки, якщо не вийшло
+      if (isRealProduct) {
+        try { await productApi.update(productId, { photo_url: url }, { silent: true }) } catch { /* збережеться при збереженні */ }
+      }
+      toast.success('Фото додано')
     } catch (err) {
       toast.error('Не вдалося завантажити фото')
     } finally {
@@ -93,8 +96,10 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
     if (!confirm('Видалити фото?')) return
     setUploading(true)
     try {
-      if (isRealProduct) await productApi.update(productId, { photo_url: null })
       onPhotoUpdated(null)
+      if (isRealProduct) {
+        try { await productApi.update(productId, { photo_url: null }, { silent: true }) } catch { /* ignore */ }
+      }
       toast.success('Фото видалено')
     } catch {
       toast.error('Помилка видалення')
