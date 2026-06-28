@@ -798,7 +798,7 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
                     {/* Client info */}
                     <div>
                       <h4 className="font-bold text-gray-900 leading-tight">
-                        {d.customer?.full_name ?? 'Не відомо'}
+                        {d.customer?.full_name ?? 'Без клієнта'}
                       </h4>
                       {d.customer?.phone && (
                         <p className="text-xs text-gray-400 mt-0.5">{d.customer.phone}</p>
@@ -860,7 +860,7 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
                         variant="secondary"
                         size="sm"
                         className="text-red-600 hover:text-red-700"
-                        onClick={() => handleDelete(d.id, d.customer?.full_name ?? 'Не відомо')}
+                        onClick={() => handleDelete(d.id, d.customer?.full_name ?? 'Без клієнта')}
                         icon={<Trash2 size={12} />}
                         title="Видалити"
                       />
@@ -1326,10 +1326,13 @@ export default function OrdersPage() {
   const chatsShown = chatMode
 
   const filteredOrders = useMemo(() => {
-    if (chatMode) return [] as CustomerOrder[]
+    // У режимі «Чат-боти» показуємо ЛІДИ (запити з чатів) поряд із самими чатами
+    if (chatMode) return orders.filter(isLead)
     return orders.filter((o) => {
       if (tab === 'bots')      return false
-      if (tab === 'all')       return !['completed', 'canceled'].includes(o.status)
+      // «Список замовлень» — лише реальні замовлення: без лідів (вони в Чат-ботах)
+      // і без чернеток (вони у вкладці «Чернетки / КП»)
+      if (tab === 'all')       return !['completed', 'canceled', 'lead'].includes(o.status)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
       if (tab === 'active')    return ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
@@ -1613,7 +1616,7 @@ export default function OrdersPage() {
                 <>
                   {chatsShown && displayChats.length > 0 && (
                     <p className="px-3 pt-3 pb-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-                      Замовлення ({displayOrders.length})
+                      Ліди — запити ({displayOrders.length})
                     </p>
                   )}
                   {displayOrders.map((o) => (
