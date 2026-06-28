@@ -68,8 +68,11 @@ function clearSavedCart() {
   localStorage.removeItem(CART_KEY)
 }
 
+const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
+
 function OpenShiftScreen({ onOpened }: { onOpened: () => void }) {
-  const [cash, setCash]       = useState('')
+  // Підставляємо залишок із закриття попередньої зміни (та сама каса)
+  const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
   const [loading, setLoading] = useState(false)
 
   async function handleOpen() {
@@ -277,6 +280,37 @@ export default function POSPage() {
     }
     clearSavedCart()
   }, [store])
+
+  // Глобальний сканер ШК: ловимо штрихкод навіть коли фокус НЕ в полі пошуку
+  // (модалка/кнопка/порожньо). Безпечно: спрацьовує лише коли активний елемент —
+  // НЕ поле вводу (інакше поле саме отримує ввід), і лише для швидкої серії символів
+  // + Enter (сканер = клавіатура). Ручний набір не зачіпається (захист таймінгом).
+  useEffect(() => {
+    let buf = ''
+    let last = 0
+    function onScanKey(e: KeyboardEvent) {
+      const now = Date.now()
+      if (e.key === 'Enter') {
+        const ae = document.activeElement as HTMLElement | null
+        const editable = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
+        if (!editable && buf.length >= 6 && (now - last) < 80) {
+          e.preventDefault()
+          searchRef.current?.scanBarcode(buf)
+        }
+        buf = ''
+        return
+      }
+      if (e.key.length === 1) {
+        if (now - last > 80) buf = ''   // повільний набір/нова серія
+        buf += e.key
+        last = now
+      } else {
+        buf = ''
+      }
+    }
+    window.addEventListener('keydown', onScanKey)
+    return () => window.removeEventListener('keydown', onScanKey)
+  }, [])
 
   // Гарячі клавіші
   useEffect(() => {

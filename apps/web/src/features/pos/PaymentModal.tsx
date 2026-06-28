@@ -18,6 +18,7 @@ interface Props {
 type Method = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
 
 const FISCAL_KEY = 'forsage_pos_fiscal_enabled'
+const LAST_METHOD_KEY = 'forsage_pos_last_method'
 
 const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string; requireCustomer?: boolean }[] = [
   { id: 'cash',     label: 'Готівка',         icon: <Banknote size={20} />,                 color: 'bg-green-500 hover:bg-green-400' },
@@ -29,7 +30,10 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
 
 export function PaymentModal({ open, onClose, onConfirm }: Props) {
   const store             = usePOSStore()
-  const [method, setMethod]         = useState<Method>('cash')
+  const [method, setMethod]         = useState<Method>(() => {
+    const m = localStorage.getItem(LAST_METHOD_KEY) as Method | null
+    return m && m !== 'debt' ? m : 'cash'   // борг не запам'ятовуємо (потрібен клієнт)
+  })
   const [cashInput, setCash]        = useState('')
   const [loading, setLoading]       = useState(false)
   const [terminalStep, setTerminalStep] = useState<'none' | 'waiting_auth'>('none')
@@ -191,7 +195,8 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
       }
     } finally {
       setLoading(false)
-      setCash(''); setMethod('cash'); setBonusInput(''); setSplitCash('')
+      if (method !== 'debt') localStorage.setItem(LAST_METHOD_KEY, method)
+      setCash(''); setMethod((m) => m === 'debt' ? 'cash' : m); setBonusInput(''); setSplitCash('')
     }
   }
 
@@ -269,6 +274,24 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
                 onChange={(e) => setCash(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm() }}
                 placeholder="0.00"
                 className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-yellow-400" />
+              {/* Швидкі суми готівки — щоб не вбивати вручну щоразу */}
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {(() => {
+                  const t = toPay / 100
+                  const opts = [...new Set([t, Math.ceil(t / 50) * 50, Math.ceil(t / 100) * 100, Math.ceil(t / 500) * 500, 1000])]
+                    .filter((v) => v >= t).sort((a, b) => a - b).slice(0, 5)
+                  return opts.map((v, i) => (
+                    <button key={v} type="button" onClick={() => setCash(v.toFixed(2))}
+                      className={`flex-1 min-w-[64px] py-2 rounded-lg text-sm font-semibold transition-colors ${
+                        i === 0
+                          ? 'bg-green-600/25 text-green-300 border border-green-600/40 hover:bg-green-600/40'
+                          : 'bg-[#2C2C2C] text-gray-200 hover:bg-gray-700 border border-gray-700'
+                      }`}>
+                      {i === 0 ? 'Без решти' : `${v} ₴`}
+                    </button>
+                  ))
+                })()}
+              </div>
               {cashReceived >= toPay && cashReceived > 0 && <p className="text-green-400 text-center text-sm mt-2 font-medium">Решта: {formatMoney(change)}</p>}
               {cashInput && cashReceived < toPay && <p className="text-red-400 text-center text-sm mt-2">Не вистачає: {formatMoney(toPay - cashReceived)}</p>}
             </div>

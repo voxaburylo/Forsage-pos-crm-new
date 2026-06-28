@@ -73,6 +73,8 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
           throw err
         }
       }
+      // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
+      try { localStorage.setItem('forsage_last_shift_close_cash', (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }
       toast.success('Зміну закрито')
       onClosed()
     } catch (err) {

@@ -38,6 +38,7 @@ export interface SearchPanelHandle {
   clear: () => void
   search: (q: string) => void
   openCamera: () => void
+  scanBarcode: (code: string) => void
 }
 
 export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
@@ -71,6 +72,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       setSupplierResults([])
     },
     openCamera: () => setCameraOpen(true),
+    scanBarcode: (code: string) => handleBarcodeScan(code),
   }))
 
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([])

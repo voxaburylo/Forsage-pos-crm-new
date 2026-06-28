@@ -34,6 +34,8 @@ interface FoundSale {
   sale_number: string
   total: number
   status: string
+  completed_at?: string
+  customer?: { full_name?: string | null; phone?: string } | null
 }
 
 interface SelectedItem {
@@ -54,6 +56,7 @@ export default function ReturnForm() {
   const [step, setStep] = useState(1)
   const [saleNumber, setSaleNumber] = useState('')
   const [found, setFound] = useState<FoundSale | null>(null)
+  const [candidates, setCandidates] = useState<FoundSale[]>([])
   const [saleItems, setSaleItems] = useState<SaleItemForReturn[]>([])
   const [selected, setSelected] = useState<SelectedItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
@@ -108,23 +111,37 @@ export default function ReturnForm() {
     setFound(null)
     setSaleItems([])
     setSelected([])
+    setCandidates([])
     setStep(1)
 
     try {
-      const result = await saleApi.list({ sale_number: q })
+      // Широкий пошук: за номером чека, телефоном або ім'ям клієнта
+      const result = await saleApi.list({ search: q, per_page: 12 })
       const sales = (result as unknown as { data: FoundSale[] }).data ?? []
-      const sale = sales[0] ?? null
-      if (!sale) {
-        toast.error('Чек не знайдено')
+      if (sales.length === 0) {
+        toast.error('Нічого не знайдено (чек / телефон / ім\'я)')
         return
       }
-      setFound(sale)
+      if (sales.length > 1) {
+        setCandidates(sales)   // кілька чеків — даємо обрати
+        return
+      }
+      await selectSale(sales[0])
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка пошуку чека')
+    } finally {
+      setSearching(false)
+    }
+  }
 
+  async function selectSale(sale: FoundSale) {
+    setFound(sale)
+    setCandidates([])
+    try {
       setLoadingItems(true)
       const itemsResult = await returnApi.getSaleItems(sale.id)
       const data = itemsResult.data
       setSaleItems(data.items)
-
       const initSelected: SelectedItem[] = data.items.map((item) => ({
         id: item.id,
         product_id: item.product_id,
@@ -139,9 +156,8 @@ export default function ReturnForm() {
       setSelected(initSelected)
       setStep(2)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка пошуку чека')
+      toast.error(err instanceof Error ? err.message : 'Помилка завантаження чека')
     } finally {
-      setSearching(false)
       setLoadingItems(false)
     }
   }
@@ -256,7 +272,7 @@ export default function ReturnForm() {
             <Input
               value={saleNumber}
               onChange={(e) => setSaleNumber(e.target.value)}
-              placeholder="Номер чека (напр. 000001)"
+              placeholder="Номер чека, телефон або ім'я клієнта"
               className="flex-1"
               autoFocus
             />
@@ -265,6 +281,23 @@ export default function ReturnForm() {
               Знайти
             </Button>
           </form>
+
+          {candidates.length > 0 && (
+            <div className="mt-3 border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
+              <p className="px-4 py-2 text-xs text-gray-500 bg-gray-50">Знайдено {candidates.length} чеків — оберіть потрібний:</p>
+              {candidates.map((c) => (
+                <button key={c.id} type="button" onClick={() => selectSale(c)}
+                  className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-yellow-50 text-sm">
+                  <span className="min-w-0 truncate">
+                    <span className="font-mono font-semibold text-yellow-700">#{c.sale_number}</span>
+                    {c.customer?.full_name ? ` · ${c.customer.full_name}` : c.customer?.phone ? ` · ${c.customer.phone}` : ''}
+                    {c.completed_at ? ` · ${new Date(c.completed_at).toLocaleDateString('uk-UA')}` : ''}
+                  </span>
+                  <span className="font-semibold text-gray-700 shrink-0">{formatMoney(c.total)}</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {found && (
             <div

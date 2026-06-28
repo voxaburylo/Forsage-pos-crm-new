@@ -276,7 +276,7 @@ export default function ProductsPage() {
       actions={
         <div className="flex gap-1.5">
           {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
-            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => navigate('/receiving')}>
+            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => navigate('/suppliers/invoices/new')}>
               <span className="hidden sm:inline">Прийняти товар (накладна)</span>
               <span className="inline sm:hidden">Прийняти товар</span>
             </Button>
