@@ -44,17 +44,17 @@ const PLATFORM_LABELS: Record<string, string> = { telegram: 'TG', viber: 'VB', w
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 
-const STATUS_CONFIG: Record<string, { label: string; color: BadgeColor }> = {
-  lead:       { label: 'Лід',         color: 'blue'   },
-  new:        { label: 'Нове',         color: 'gray'   },
-  in_progress:{ label: 'В роботі',     color: 'yellow' },
-  ordered:    { label: 'Замовлено',    color: 'yellow' },
-  arrived:    { label: 'Прибуло',      color: 'green'  },
-  called:     { label: 'Повідомл.',    color: 'blue'   },
-  no_answer:  { label: 'Не відповів',  color: 'orange' },
-  ready:      { label: 'До видачі',    color: 'green'  },
-  completed:  { label: 'Видано',       color: 'green'  },
-  canceled:   { label: 'Скасовано',    color: 'red'    },
+const STATUS_CONFIG: Record<string, { label: string; color: BadgeColor; hint?: string }> = {
+  lead:       { label: 'Лід',         color: 'blue',   hint: 'Запит із чату чи дзвінка — ще не оформлене замовлення' },
+  new:        { label: 'Нове',         color: 'gray',   hint: 'Нове замовлення, ще не опрацьоване менеджером' },
+  in_progress:{ label: 'В роботі',     color: 'yellow', hint: 'Замовлення в роботі' },
+  ordered:    { label: 'Замовлено',    color: 'yellow', hint: 'Замовлено в постачальника — очікуємо надходження' },
+  arrived:    { label: 'Прибуло',      color: 'green',  hint: 'Товар прибув на склад — можна повідомити клієнта' },
+  called:     { label: 'Повідомл.',    color: 'blue',   hint: 'Клієнта повідомлено про готовність' },
+  no_answer:  { label: 'Не відповів',  color: 'orange', hint: 'Клієнт не відповів — передзвонити' },
+  ready:      { label: 'До видачі',    color: 'green',  hint: 'Готове до видачі клієнту' },
+  completed:  { label: 'Видано',       color: 'green',  hint: 'Видано клієнту — угоду закрито' },
+  canceled:   { label: 'Скасовано',    color: 'red',    hint: 'Замовлення скасовано' },
 }
 
 // Кольорові статуси позицій замовлення (ORD-18)
@@ -151,7 +151,7 @@ interface CustomerSearchResult {
 
 type Vehicle = CustomerVehicle
 
-type Tab = 'all' | 'leads' | 'drafts' | 'bots' | 'active' | 'ready' | 'completed'
+type Tab = 'all' | 'leads' | 'drafts' | 'bots' | 'active' | 'ready' | 'completed' | 'canceled'
 
 type Selection = { kind: 'chat'; id: string } | { kind: 'order'; id: string } | null
 
@@ -773,8 +773,12 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
         </div>
 
         {drafts.length === 0 ? (
-          <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-gray-400">
-            Немає активних чернеток
+          <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
+            <p className="text-gray-500 text-sm font-medium">Активних чернеток немає</p>
+            <p className="text-gray-400 text-xs mt-1">Чернетка — це незавершене замовлення чи КП, яке можна дооформити пізніше</p>
+            <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/quotes/new')}>
+              Створити чернетку
+            </Button>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -940,7 +944,8 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
     { id: 'all',       label: 'Усі активні' },
     { id: 'active',    label: 'В дорозі' },
     { id: 'ready',     label: 'До видачі', accent: true },
-    { id: 'completed', label: 'Завершені' },
+    { id: 'completed', label: 'Виконані' },
+    { id: 'canceled',  label: 'Скасовані' },
   ]
 
   return (
@@ -955,7 +960,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Пошук замовлення..."
+                placeholder="Пошук: № замовлення, клієнт, телефон, авто…"
                 className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
               />
             </div>
@@ -989,8 +994,14 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
         {/* Mobile card layout (ORD-12) */}
         <div className="md:hidden space-y-3">
           {orders.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center text-gray-400 text-sm">
-              Замовлень не знайдено
+            <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center">
+              <p className="text-gray-500 text-sm font-medium">{search ? 'Нічого не знайдено' : 'Тут поки порожньо'}</p>
+              <p className="text-gray-400 text-xs mt-1">{search ? 'Спробуйте інший запит — №, ім’я, телефон чи авто' : 'Створіть перше замовлення, щоб воно з’явилося тут'}</p>
+              {!search && (
+                <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/orders/new')}>
+                  Нове замовлення
+                </Button>
+              )}
             </div>
           ) : orders.map((o: CustomerOrder) => {
             const paid = o.total_paid ?? o.prepayment ?? 0
@@ -1033,7 +1044,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
               </div>
             )
           })}
-          {orders.length > 0 && (
+          {(offset > 0 || hasMore) && (
             <div className="flex items-center justify-between gap-2 pt-1">
               <Button variant="secondary" size="sm" disabled={offset === 0} onClick={onPrevPage} className="flex-1">← Назад</Button>
               <Button variant="secondary" size="sm" disabled={!hasMore} onClick={onNextPage} className="flex-1">Далі →</Button>
@@ -1056,6 +1067,19 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
+                {orders.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-14 text-center">
+                      <p className="text-gray-500 text-sm font-medium">{search ? 'Нічого не знайдено' : 'Тут поки порожньо'}</p>
+                      <p className="text-gray-400 text-xs mt-1">{search ? 'Спробуйте інший запит — №, ім’я, телефон чи авто' : 'Створіть перше замовлення, щоб воно з’явилося тут'}</p>
+                      {!search && (
+                        <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/orders/new')}>
+                          Нове замовлення
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                )}
                 {orders.map((o: CustomerOrder) => {
                   const paid = o.total_paid ?? o.prepayment ?? 0
                   const hasDebt = o.status !== 'canceled' && o.total_amount > paid
@@ -1135,7 +1159,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
 
                       {/* Статус */}
                       <td className="px-5 py-4">
-                        <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                        <span title={STATUS_CONFIG[o.status]?.hint} className={`px-2.5 py-1 rounded-full text-xs font-semibold cursor-help ${
                           STATUS_CONFIG[o.status]?.color === 'green' ? 'bg-green-50 text-green-700' :
                           STATUS_CONFIG[o.status]?.color === 'red' ? 'bg-red-50 text-red-700' :
                           STATUS_CONFIG[o.status]?.color === 'yellow' ? 'bg-yellow-50 text-yellow-700' :
@@ -1180,30 +1204,32 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
             </table>
           </div>
 
-          {/* Пагінація замовлень */}
-          <div className="flex items-center justify-between px-5 py-4 bg-white border-t border-gray-100">
-            <span className="text-xs text-gray-500">
-              Показано {orders.length} замовлень
-            </span>
-            <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={offset === 0}
-                onClick={onPrevPage}
-              >
-                Попередня сторінка
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={!hasMore}
-                onClick={onNextPage}
-              >
-                Наступна сторінка
-              </Button>
+          {/* Пагінація замовлень — ховаємо, коли все вміщається на одну сторінку */}
+          {(offset > 0 || hasMore) && (
+            <div className="flex items-center justify-between px-5 py-4 bg-white border-t border-gray-100">
+              <span className="text-xs text-gray-500">
+                Показано {orders.length} замовлень
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={offset === 0}
+                  onClick={onPrevPage}
+                >
+                  Попередня сторінка
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!hasMore}
+                  onClick={onNextPage}
+                >
+                  Наступна сторінка
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
 
         </Card>
       </div>
@@ -1239,7 +1265,7 @@ export default function OrdersPage() {
     if (chatMode) { setTab('bots'); return }   // у режимі чатів вкладка завжди «чати»
     const urlTab = searchParams.get('tab') as Tab
     // «bots» свідомо НЕ дозволений у блоці /orders — чати живуть лише на /chats (меню «Чат-боти»)
-    if (urlTab && ['all', 'leads', 'drafts', 'active', 'ready', 'completed'].includes(urlTab)) {
+    if (urlTab && ['all', 'leads', 'drafts', 'active', 'ready', 'completed', 'canceled'].includes(urlTab)) {
       setTab(urlTab)
     }
   }, [searchParams, chatMode])
@@ -1297,7 +1323,8 @@ export default function OrdersPage() {
     const p = new URLSearchParams({ per_page: '50', offset: currentOffset.toString() })
     if (t === 'active')    p.set('status', 'new,ordered,arrived,called,no_answer')
     if (t === 'ready')     p.set('status', 'ready')
-    if (t === 'completed') p.set('status', 'completed,canceled')
+    if (t === 'completed') p.set('status', 'completed')
+    if (t === 'canceled')  p.set('status', 'canceled')
     if (t === 'leads' || t === 'drafts') p.set('status', 'lead')
     return p.toString()
   }
@@ -1366,7 +1393,8 @@ export default function OrdersPage() {
       if (tab === 'drafts')    return isDraft(o)
       if (tab === 'active')    return ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
       if (tab === 'ready')     return o.status === 'ready'
-      if (tab === 'completed') return ['completed', 'canceled'].includes(o.status)
+      if (tab === 'completed') return o.status === 'completed'
+      if (tab === 'canceled')  return o.status === 'canceled'
       return true
     })
   }, [orders, tab, chatMode])
