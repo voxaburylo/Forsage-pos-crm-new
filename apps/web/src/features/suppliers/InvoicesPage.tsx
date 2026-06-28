@@ -81,7 +81,7 @@ export default function InvoicesPage() {
   return (
     <Layout
       title={`Приходні накладні${total ? ` (${total})` : ''}`}
-      onBack={() => navigate('/suppliers')}
+      onBack={() => navigate('/receiving')}
       actions={
         <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new')}>
           Накладна

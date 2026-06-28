@@ -98,11 +98,17 @@ export const FINANCE_TABS = [
 
 export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Список постачальників', roles: ['owner', 'admin', 'manager'] },
-  { to: '/suppliers/invoices', label: 'Прихідні накладні' },
   { to: '/suppliers/pos', label: 'Замовлення постачальникам' },
   { to: '/auto-purchase', label: 'Автозакупівля', roles: ['owner', 'admin', 'manager'] },
   { to: '/core-returns', label: 'Застава (core)', roles: ['owner', 'admin', 'manager'] },
-  { to: '/suppliers/import', label: 'Імпорт прайсу' }
+]
+
+// Поступлення товарів — єдиний дім для приходу (накладні + імпорт), щоб не дублювати
+// з керуванням постачальниками.
+export const RECEIVING_TABS = [
+  { to: '/receiving', label: 'Огляд' },
+  { to: '/suppliers/invoices', label: 'Прихідні накладні' },
+  { to: '/suppliers/import', label: 'Імпорт накладної' },
 ]
 
 export const INVENTORY_TABS = [
