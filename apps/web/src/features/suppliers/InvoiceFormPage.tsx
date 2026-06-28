@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Trash2, Camera, ImagePlus, Clipboard, Loader2 } from 'lucide-react'
+import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode } from 'lucide-react'
 import { ProductPhotoUpload, compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
 import { read, utils } from 'xlsx'
 import Papa from 'papaparse'
@@ -45,12 +45,16 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
     await uploadPhoto(file)
   }
 
+  // Новий товар ще не створено в БД (id = 'new_…') — тоді фото лише зберігаємо в
+  // позиції накладної; воно піде в товар при збереженні. Для наявного — оновлюємо одразу.
+  const isRealProduct = !!productId && !productId.startsWith('new_')
+
   const uploadPhoto = async (file: File | Blob) => {
     setUploading(true)
     try {
       const blob = await compressToJpeg(file)
       const url = await uploadToStorage(blob, productId)
-      await productApi.update(productId, { photo_url: url })
+      if (isRealProduct) await productApi.update(productId, { photo_url: url })
       onPhotoUpdated(url)
       toast.success('Фото оновлено')
     } catch (err) {
@@ -89,7 +93,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
     if (!confirm('Видалити фото?')) return
     setUploading(true)
     try {
-      await productApi.update(productId, { photo_url: null })
+      if (isRealProduct) await productApi.update(productId, { photo_url: null })
       onPhotoUpdated(null)
       toast.success('Фото видалено')
     } catch {
@@ -313,6 +317,16 @@ export default function InvoiceFormPage() {
       barcodeRefs.current[i]?.blur()
     } else {
       focusBarcodeRow(next)
+    }
+  }
+
+  // Згенерувати унікальний штрихкод прямо в рядку накладної (як у картці товару)
+  async function generateBarcodeForRow(i: number) {
+    try {
+      const r = await productApi.generateBarcodeOnly()
+      if (r.data?.barcode) updateItem(i, 'barcode', r.data.barcode)
+    } catch {
+      toast.error('Не вдалося згенерувати штрихкод')
     }
   }
 
@@ -624,19 +638,27 @@ export default function InvoiceFormPage() {
           if (item.product_id && !item.is_new) {
             return item
           }
-          // Search if SKU exists to avoid duplication
-          try {
-            const existing = await productApi.list({ search: item.sku })
-            const match = existing.data.find(p => p.sku === item.sku)
-            if (match) {
-              return { ...item, product_id: match.id, is_new: false }
-            }
-          } catch { /* товар не знайдено в базі — створимо новий нижче */ }
+          // Search if SKU exists to avoid duplication (лише якщо артикул заданий)
+          const skuTrim = (item.sku || '').trim()
+          if (skuTrim) {
+            try {
+              const existing = await productApi.list({ search: skuTrim })
+              const match = existing.data.find(p => p.sku === skuTrim)
+              if (match) {
+                return { ...item, product_id: match.id, is_new: false }
+              }
+            } catch { /* товар не знайдено в базі — створимо новий нижче */ }
+          }
+
+          // Бракує даних — не блокуємо збереження/проведення: підставляємо авто-артикул/назву
+          // (товар створюється з плейсхолдером, який можна допиляти пізніше в картці).
+          const genSku  = skuTrim || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 100)}`
+          const genName = (item.product_name || '').trim() || `Товар ${genSku}`
 
           // Create new product
           const form: ProductFormData = {
-            name: item.product_name,
-            sku: item.sku,
+            name: genName,
+            sku: genSku,
             barcode: item.barcode || '',
             unit: 'шт',
             purchase_price: (item.purchase_price / 100).toFixed(2),
@@ -653,7 +675,8 @@ export default function InvoiceFormPage() {
             specs: {}
           }
           const res = await productApi.create(form)
-          return { ...item, product_id: res.data.id, is_new: false }
+          // Повертаємо згенеровані артикул/назву, щоб подальший патч не затер їх порожніми
+          return { ...item, product_id: res.data.id, is_new: false, sku: genSku, product_name: genName }
         })
       )
 
@@ -954,15 +977,22 @@ export default function InvoiceFormPage() {
                     )}
                   </td>
                   <td className="px-2 py-2">
-                    <input
-                      ref={(el) => { barcodeRefs.current[i] = el }}
-                      type="text" value={item.barcode ?? ''}
-                      onChange={(e) => updateItem(i, 'barcode', e.target.value)}
-                      onKeyDown={(e) => onBarcodeKeyDown(e, i)}
-                      disabled={isEdit}
-                      placeholder="скан / ввід"
-                      autoComplete="off"
-                      className={`w-36 border rounded px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
+                    <div className="flex items-center gap-1">
+                      <input
+                        ref={(el) => { barcodeRefs.current[i] = el }}
+                        type="text" value={item.barcode ?? ''}
+                        onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+                        onKeyDown={(e) => onBarcodeKeyDown(e, i)}
+                        disabled={isEdit}
+                        placeholder="скан / ввід"
+                        autoComplete="off"
+                        className={`w-28 border rounded px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
+                      <button type="button" disabled={isEdit} onClick={() => generateBarcodeForRow(i)}
+                        title="Згенерувати штрихкод"
+                        className="shrink-0 p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40">
+                        <Barcode size={14} />
+                      </button>
+                    </div>
                   </td>
                   <td className="px-2 py-2">
                     <input type="text" value={item.storage_bin ?? ''}
