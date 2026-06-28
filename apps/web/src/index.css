@@ -242,6 +242,15 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Брендована рамка фокуса замість потворного чорного outline браузера.
+   Лишається лише при навігації клавіатурою (:focus-visible), тож доступність збережена,
+   а кліки мишею не лишають чорних прямокутників. Інпути з власним focus:ring-* не чіпаються —
+   у них вищий за специфічністю .focus\:outline-none:focus. */
+:focus-visible {
+  outline: 2px solid #FFD000;
+  outline-offset: 2px;
+}
+
 /* Ensure inputs have default background and text colors to prevent dark mode system overrides */
 input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not(.pos-theme *),
 textarea:not(.pos-theme *),
