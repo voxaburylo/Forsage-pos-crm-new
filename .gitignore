@@ -40,3 +40,4 @@ server/test_*.js
 server/src/scratch/
 
 qa/
+server/package-lock.json
