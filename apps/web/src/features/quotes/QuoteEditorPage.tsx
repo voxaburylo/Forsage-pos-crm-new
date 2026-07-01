@@ -542,6 +542,11 @@ export default function QuoteEditorPage() {
   }
 
   async function handleSave() {
+    if (!items.some((item) => item.name.trim())) {
+      toast.error('Додайте хоча б одну позицію з назвою')
+      nameRef.current?.focus()
+      return
+    }
     setSaving(true)
     try {
       const payload = buildPayload()

@@ -20,12 +20,13 @@ function buildSummary(sales: Array<{ total: number; payment_method: string }>) {
   }
 }
 
-export async function getSalesToday() {
+export async function getSalesToday(tenantId: string) {
   const { from, to } = todayRange()
 
   const { data, error } = await db
     .from('sales')
     .select('total, payment_method')
+    .eq('tenant_id', tenantId)
     .gte('completed_at', from)
     .lte('completed_at', to)
     .eq('status', 'completed')
@@ -34,7 +35,7 @@ export async function getSalesToday() {
   return buildSummary(data ?? [])
 }
 
-export async function getSalesPeriod(query: PeriodQuery) {
+export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
   const { from, to } = todayRange()
   const dateFrom = query.from ? `${query.from}T00:00:00.000Z` : from
   const dateTo   = query.to   ? `${query.to}T23:59:59.999Z`   : to
@@ -43,6 +44,7 @@ export async function getSalesPeriod(query: PeriodQuery) {
   const { data: sales, error: salesErr } = await db
     .from('sales')
     .select('id, sale_number, total, payment_method, status, completed_at, customer:customers(id,phone,full_name)')
+    .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
     .eq('status', 'completed')
@@ -60,6 +62,7 @@ export async function getSalesPeriod(query: PeriodQuery) {
     const { data: items, error: itemsErr } = await db
       .from('sale_items')
       .select('qty, unit_price, product:products!inner(purchase_price)')
+      .eq('tenant_id', tenantId)
       .in('sale_id', saleIds)
 
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
@@ -74,11 +77,12 @@ export async function getSalesPeriod(query: PeriodQuery) {
   return { ...buildSummary(list), profit, sales: list }
 }
 
-export async function getLowStockProducts() {
+export async function getLowStockProducts(tenantId: string) {
   // PostgREST не вміє порівнювати дві колонки → фільтруємо в JS
   const { data, error } = await db
     .from('products')
     .select('id, sku, name, qty_on_hand, reorder_point, unit, brand:brands(name), category:categories(name)')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
 
@@ -88,10 +92,11 @@ export async function getLowStockProducts() {
     .sort((a, b) => a.qty_on_hand - b.qty_on_hand)
 }
 
-export async function getDebtors() {
+export async function getDebtors(tenantId: string) {
   const { data, error } = await db
     .from('customers')
     .select('id, phone, full_name, debt_balance')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .gt('debt_balance', 0)
     .order('debt_balance', { ascending: false })
@@ -100,7 +105,7 @@ export async function getDebtors() {
   return data ?? []
 }
 
-export async function getWeeklySales() {
+export async function getWeeklySales(tenantId: string) {
   // Один запит замість 7 — групуємо в JS
   const weekAgo = new Date()
   weekAgo.setDate(weekAgo.getDate() - 6)
@@ -110,6 +115,7 @@ export async function getWeeklySales() {
   const { data, error } = await db
     .from('sales')
     .select('completed_at, total')
+    .eq('tenant_id', tenantId)
     .gte('completed_at', fromDate)
     .lte('completed_at', to)
     .eq('status', 'completed')
@@ -139,7 +145,7 @@ export async function getWeeklySales() {
   return result
 }
 
-export async function getTopProducts(query: PeriodQuery) {
+export async function getTopProducts(query: PeriodQuery, tenantId: string) {
   const { to } = todayRange()
   const dateFrom = query.from ? `${query.from}T00:00:00.000Z` : '1970-01-01T00:00:00.000Z'
   const dateTo   = query.to   ? `${query.to}T23:59:59.999Z`   : to
@@ -148,6 +154,7 @@ export async function getTopProducts(query: PeriodQuery) {
   const { data: sales, error: salesErr } = await db
     .from('sales')
     .select('id')
+    .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
     .eq('status', 'completed')
@@ -161,6 +168,7 @@ export async function getTopProducts(query: PeriodQuery) {
   const { data: items, error: itemsErr } = await db
     .from('sale_items')
     .select('product_id, qty, unit_price, total, product:products!inner(sku, name)')
+    .eq('tenant_id', tenantId)
     .in('sale_id', saleIds)
 
   if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
@@ -194,7 +202,7 @@ export async function getTopProducts(query: PeriodQuery) {
     .slice(0, 10)
 }
 
-export async function getWriteoffsSummary() {
+export async function getWriteoffsSummary(tenantId: string) {
   const now = new Date()
   const year  = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
@@ -203,6 +211,7 @@ export async function getWriteoffsSummary() {
   const { data, error } = await db
     .from('inventory_writeoffs')
     .select('id, reason, created_at, items:inventory_writeoff_items(cost_kopecks)')
+    .eq('tenant_id', tenantId)
     .gte('created_at', from)
     .order('created_at', { ascending: false })
 
@@ -217,11 +226,12 @@ export async function getWriteoffsSummary() {
   return { count: list.length, total_cost: totalCost, writeoffs: list }
 }
 
-export async function getShiftReport(shiftId: string) {
+export async function getShiftReport(shiftId: string, tenantId: string) {
   const { data: shift, error: shiftError } = await db
     .from('shifts')
     .select('*')
     .eq('id', shiftId)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (shiftError || !shift) throw new AppError('SHIFT_NOT_FOUND', 'Зміну не знайдено', 404)
@@ -230,6 +240,7 @@ export async function getShiftReport(shiftId: string) {
     .from('sales')
     .select('id, sale_number, total, payment_method, status, completed_at, is_fiscal, cash_amount, card_amount')
     .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
     .order('completed_at', { ascending: true })
 
   const list = sales ?? []
@@ -240,6 +251,7 @@ export async function getShiftReport(shiftId: string) {
     .from('cash_operations')
     .select('type, amount, created_by')
     .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
 
   // Розбивка: фіскальні / нефіскальні по кожному методу
   function filterSales(method: string) { return completed.filter((s) => s.payment_method === method) }

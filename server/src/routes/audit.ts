@@ -28,6 +28,7 @@ router.get('/', async (req, res, next) => {
     let query = db
       .from('audit_log')
       .select('*', { count: 'exact' })
+      .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
       .range(offset, offset + per_page - 1)
 

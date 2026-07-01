@@ -35,8 +35,8 @@ router.get('/customer/:id', async (req, res, next) => {
   try {
     const customerId = String(req.params.id)
     const [balance, transactions, settings] = await Promise.all([
-      loyaltyService.getBalance(customerId),
-      loyaltyService.getTransactions(customerId),
+      loyaltyService.getBalance(customerId, req.user!.tenant_id),
+      loyaltyService.getTransactions(customerId, req.user!.tenant_id),
       loyaltyService.getSettings(req.user!.tenant_id),
     ])
     res.json({ data: { balance, transactions, settings } })
@@ -48,7 +48,7 @@ router.get('/customer/:id/max-redeem', async (req, res, next) => {
   try {
     const customerId = String(req.params.id)
     const total = parseInt(String(req.query.total) || '0', 10)
-    const balance    = await loyaltyService.getBalance(customerId)
+    const balance    = await loyaltyService.getBalance(customerId, req.user!.tenant_id)
     const maxAllowed = await loyaltyService.maxRedeem(total, req.user!.tenant_id)
     res.json({ data: { balance, max_redeem: Math.min(balance, maxAllowed) } })
   } catch (err) { next(err) }
@@ -68,6 +68,7 @@ router.post('/customer/:id/redeem', requireRole('owner', 'admin', 'manager', 'ca
       amount:     parsed.data.amount,
       saleId:     parsed.data.sale_id,
       userId:     req.user!.id,
+      tenantId:   req.user!.tenant_id,
     })
     res.json({ data: { success: true } })
   } catch (err) { next(err) }

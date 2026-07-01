@@ -34,6 +34,7 @@ export const createProductSchema = z.object({
   reorder_point: z.number().min(0).default(0),
   notes: z.string().max(2000).optional().nullable(),
   is_active: z.boolean().default(true),
+  is_service: z.boolean().default(false),
   status: statusSchema.optional().default('active'),
   storage_bin: z.string().max(50).optional().nullable(),
   is_favorite: z.boolean().optional(),

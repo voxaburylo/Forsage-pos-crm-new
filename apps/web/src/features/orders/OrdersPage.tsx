@@ -19,7 +19,6 @@ import { Card, Badge, Button, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import type { CustomerVehicle } from '@/types/customer'
-import { ToastContainer } from '@/components/ui'
 
 // ───────────────────────── Constants ─────────────────────────
 
@@ -171,6 +170,42 @@ function isDraft(o: CustomerOrder) {
 }
 function isLead(o: CustomerOrder) {
   return o.status === 'lead' && !isDraft(o)
+}
+
+function draftCountLabel(count: number) {
+  const mod10 = count % 10
+  const mod100 = count % 100
+  if (mod10 === 1 && mod100 !== 11) return 'чернетка'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'чернетки'
+  return 'чернеток'
+}
+
+function uniqueNamed<T extends { name: string }>(list: T[]): T[] {
+  const seen = new Set<string>()
+  return list.filter((item) => {
+    const key = item.name.trim().toLocaleLowerCase('uk-UA')
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function LoadingCards({ count = 3 }: { count?: number }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Завантаження">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="bg-white rounded-2xl border border-gray-100 p-5 space-y-4 animate-pulse">
+          <div className="flex justify-between">
+            <div className="h-4 w-20 rounded bg-gray-100" />
+            <div className="h-4 w-16 rounded bg-gray-100" />
+          </div>
+          <div className="h-5 w-2/3 rounded bg-gray-100" />
+          <div className="h-4 w-full rounded bg-gray-100" />
+          <div className="h-9 w-full rounded-lg bg-gray-100" />
+        </div>
+      ))}
+    </div>
+  )
 }
 
 // ───────────────────────── Left list rows ─────────────────────────
@@ -729,6 +764,7 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
 // ─── DraftsGrid Component ───
 interface DraftsGridProps {
   orders: CustomerOrder[]
+  loading: boolean
   onLoad: () => void
   onEdit: (id: string) => void
   offset: number
@@ -737,11 +773,12 @@ interface DraftsGridProps {
   hasMore: boolean
 }
 
-function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, hasMore }: DraftsGridProps) {
+function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNextPage, hasMore }: DraftsGridProps) {
   const navigate = useNavigate()
   const drafts = orders.filter(isDraft)
 
   async function handleConvertToOrder(orderId: string) {
+    if (!confirm('Перевести цю чернетку в активне замовлення?')) return
     try {
       await orderApi.updateStatus(orderId, 'new')
       toast.success('Чернетку переведено в замовлення!')
@@ -772,7 +809,9 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
           </Button>
         </div>
 
-        {drafts.length === 0 ? (
+        {loading && drafts.length === 0 ? (
+          <LoadingCards />
+        ) : drafts.length === 0 ? (
           <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
             <p className="text-gray-500 text-sm font-medium">Активних чернеток немає</p>
             <p className="text-gray-400 text-xs mt-1">Чернетка — це незавершене замовлення чи КП, яке можна дооформити пізніше</p>
@@ -848,6 +887,13 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
                         </ul>
                       </div>
                     )}
+
+                    <div className="flex items-center justify-between border-t border-gray-100 pt-3 text-xs">
+                      <span className="text-gray-400">
+                        {d.items?.length ?? 0} {(d.items?.length ?? 0) === 1 ? 'позиція' : 'позицій'}
+                      </span>
+                      <span className="font-bold text-gray-900">{formatMoney(d.total_amount)}</span>
+                    </div>
                   </div>
 
                   {/* Actions */}
@@ -885,9 +931,10 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
         )}
 
         {/* Пагінація чернеток */}
+        {(offset > 0 || hasMore) && (
         <div className="flex items-center justify-between px-5 py-4 bg-white border border-gray-100 rounded-2xl shadow-sm">
           <span className="text-xs text-gray-500">
-            Показано {drafts.length} чернеток
+            Показано {drafts.length} {draftCountLabel(drafts.length)}
           </span>
           <div className="flex gap-2">
             <Button
@@ -908,6 +955,7 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
             </Button>
           </div>
         </div>
+        )}
 
       </div>
     </div>
@@ -917,6 +965,7 @@ function DraftsGrid({ orders, onLoad, onEdit, offset, onPrevPage, onNextPage, ha
 // ─── OrdersTable Component ───
 interface OrdersTableProps {
   orders: CustomerOrder[]
+  loading: boolean
   search: string
   setSearch: (s: string) => void
   onRefresh: () => void
@@ -937,7 +986,7 @@ function itemsSummary(o: CustomerOrder): string {
   return `${real[0].name} +${real.length - 1}`
 }
 
-function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, statusTab, onStatusTab }: OrdersTableProps) {
+function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, statusTab, onStatusTab }: OrdersTableProps) {
   const navigate = useNavigate()
 
   const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
@@ -966,10 +1015,12 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
             </div>
             <button
               onClick={onRefresh}
-              className="p-2 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 text-gray-500 cursor-pointer"
+              disabled={loading}
+              className="p-2 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 text-gray-500 cursor-pointer disabled:cursor-wait disabled:opacity-60"
               title="Оновити"
+              aria-label={loading ? 'Оновлення замовлень' : 'Оновити замовлення'}
             >
-              <RefreshCw size={15} />
+              <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
             </button>
             <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/orders/new')}>
               Нове замовлення
@@ -993,7 +1044,9 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
 
         {/* Mobile card layout (ORD-12) */}
         <div className="md:hidden space-y-3">
-          {orders.length === 0 ? (
+          {loading && orders.length === 0 ? (
+            <LoadingCards count={2} />
+          ) : orders.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center">
               <p className="text-gray-500 text-sm font-medium">{search ? 'Нічого не знайдено' : 'Тут поки порожньо'}</p>
               <p className="text-gray-400 text-xs mt-1">{search ? 'Спробуйте інший запит — №, ім’я, телефон чи авто' : 'Створіть перше замовлення, щоб воно з’явилося тут'}</p>
@@ -1012,7 +1065,10 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                 className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-2.5 cursor-pointer active:bg-gray-50">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-bold text-gray-900 text-sm">{formatOrderNo(o)}</span>
-                  <Badge color={conf.color}>{conf.label}</Badge>
+                  <div className="flex items-center gap-1.5">
+                    {o.status === 'completed' && hasDebt && <Badge color="red">Є борг</Badge>}
+                    <Badge color={conf.color}>{conf.label}</Badge>
+                  </div>
                 </div>
                 <div>
                   <p className="font-semibold text-gray-900 text-sm">{o.customer?.full_name ?? '—'}</p>
@@ -1067,7 +1123,17 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {orders.length === 0 && (
+                {loading && orders.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-8">
+                      <div className="space-y-3 animate-pulse" aria-label="Завантаження замовлень">
+                        {Array.from({ length: 4 }, (_, i) => (
+                          <div key={i} className="h-11 rounded-lg bg-gray-100" />
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ) : orders.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-5 py-14 text-center">
                       <p className="text-gray-500 text-sm font-medium">{search ? 'Нічого не знайдено' : 'Тут поки порожньо'}</p>
@@ -1159,6 +1225,7 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
 
                       {/* Статус */}
                       <td className="px-5 py-4">
+                        <div className="flex flex-col items-start gap-1.5">
                         <span title={STATUS_CONFIG[o.status]?.hint} className={`px-2.5 py-1 rounded-full text-xs font-semibold cursor-help ${
                           STATUS_CONFIG[o.status]?.color === 'green' ? 'bg-green-50 text-green-700' :
                           STATUS_CONFIG[o.status]?.color === 'red' ? 'bg-red-50 text-red-700' :
@@ -1169,6 +1236,12 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                         }`}>
                           {STATUS_CONFIG[o.status]?.label ?? o.status}
                         </span>
+                        {o.status === 'completed' && hasDebt && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-700">
+                            Є борг
+                          </span>
+                        )}
+                        </div>
                       </td>
 
                       {/* Дії */}
@@ -1193,13 +1266,6 @@ function OrdersTable({ orders, search, setSearch, onRefresh, offset, onPrevPage,
                     </tr>
                   )
                 })}
-                {orders.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
-                      Замовлень не знайдено
-                    </td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
@@ -1305,6 +1371,7 @@ export default function OrdersPage() {
   const [bulkItems, setBulkItems] = useState<any[]>([])
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
+  const orderCacheRef = useRef(new Map<string, CustomerOrder[]>())
 
   // ── завантаження чатів ──
   const loadChats = useCallback(() => {
@@ -1328,23 +1395,37 @@ export default function OrdersPage() {
     if (t === 'leads' || t === 'drafts') p.set('status', 'lead')
     return p.toString()
   }
-  const loadOrders = useCallback(() => {
-    setLoadingOrders(true)
+  const loadOrders = useCallback((showLoading = true) => {
+    const cacheKey = `${tab}:${offset}`
+    const cached = orderCacheRef.current.get(cacheKey)
+    if (cached) setOrders(cached)
+    setLoadingOrders(showLoading || !cached)
     api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?${tabParams(tab, offset)}`, { silent: true })
-      .then((r) => setOrders(r.data ?? []))
+      .then((r) => {
+        const next = r.data ?? []
+        orderCacheRef.current.set(cacheKey, next)
+        if (tab === 'all') {
+          orderCacheRef.current.set(`active:${offset}`, next.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)))
+          orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => o.status === 'ready'))
+          orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => o.status === 'completed'))
+          orderCacheRef.current.set(`canceled:${offset}`, next.filter((o) => o.status === 'canceled'))
+          orderCacheRef.current.set(`drafts:${offset}`, next.filter(isDraft))
+        }
+        setOrders(next)
+      })
       .catch(() => toast.error('Помилка завантаження замовлень'))
       .finally(() => setLoadingOrders(false))
   }, [tab, offset])
   useEffect(() => {
     loadOrders()
-    const t = setInterval(loadOrders, 15_000)
+    const t = setInterval(() => loadOrders(false), 15_000)
     return () => clearInterval(t)
   }, [loadOrders])
 
   // ── постачальники (для масового приймання) ──
   useEffect(() => {
     api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true })
-      .then((r) => setSuppliers(r.data ?? []))
+      .then((r) => setSuppliers(uniqueNamed(r.data ?? [])))
       .catch(() => {})
   }, [])
 
@@ -1588,7 +1669,9 @@ export default function OrdersPage() {
             </button>
             {selection ? (
               <button onClick={() => setSelection(null)}
-                className="md:hidden shrink-0 text-gray-400 hover:text-gray-600 transition-colors text-xl leading-none">
+                className="md:hidden shrink-0 text-gray-400 hover:text-gray-600 transition-colors text-xl leading-none"
+                aria-label="Повернутися до списку"
+                title="Повернутися до списку">
                 ←
               </button>
             ) : null}
@@ -1610,7 +1693,7 @@ export default function OrdersPage() {
             <Button variant="secondary" size="sm" icon={<Truck size={14} />}
               className="md:hidden !px-2" onClick={() => setBulkOpen(true)}
               title="Приймання" />
-            <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')}>
+            <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')} title="Нове замовлення">
               <span className="hidden sm:inline">Нове замовлення</span>
             </Button>
           </div>
@@ -1814,6 +1897,7 @@ export default function OrdersPage() {
           ) : tab === 'drafts' ? (
             <DraftsGrid 
               orders={orders} 
+              loading={loadingOrders}
               onLoad={loadOrders} 
               onEdit={(id) => navigate('/quotes/' + id)} 
               offset={offset}
@@ -1824,6 +1908,7 @@ export default function OrdersPage() {
           ) : (
             <OrdersTable 
               orders={displayOrders} 
+              loading={loadingOrders}
               search={search} 
               setSearch={setSearch} 
               onRefresh={() => { loadChats(); loadOrders() }} 
@@ -1963,7 +2048,12 @@ export default function OrdersPage() {
           <div className="absolute right-0 top-0 bottom-0 w-80 max-w-[90%] bg-gray-50 shadow-xl flex flex-col animate-in slide-in-from-right duration-200 z-50">
             <div className="flex items-center justify-between p-4 border-b bg-white">
               <span className="font-bold text-gray-900">Картка клієнта</span>
-              <button onClick={() => setShowCustPanelMobile(false)} className="text-gray-400 hover:text-gray-600 p-1">
+              <button
+                onClick={() => setShowCustPanelMobile(false)}
+                className="text-gray-400 hover:text-gray-600 p-1"
+                aria-label="Закрити картку клієнта"
+                title="Закрити"
+              >
                 <X size={20} />
               </button>
             </div>
@@ -2044,7 +2134,6 @@ export default function OrdersPage() {
         </div>
       )}
 
-      <ToastContainer />
     </div>
   )
 }

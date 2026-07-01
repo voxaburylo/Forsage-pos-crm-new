@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { signIn } from '@/lib/auth'
+import { homePathForRole } from '@/components/ProtectedRoute'
 
 const PHONE_REGEX = /^\+?380\d{9}$/
 
@@ -56,8 +57,8 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      await signIn(normalized, password)
-      navigate('/dashboard')
+      const session = await signIn(normalized, password)
+      navigate(homePathForRole(session.user.user_metadata?.role as string | undefined))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Помилка входу')
     } finally {

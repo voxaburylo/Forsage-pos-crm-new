@@ -447,6 +447,7 @@ export async function createSupplierPOsForOrder(orderId: string, tenantId: strin
   const { data: supplierRows } = await db
     .from('suppliers')
     .select('id, name')
+    .eq('tenant_id', tenantId)
     .in('id', supplierIds)
   const supplierNames = new Map((supplierRows ?? []).map((s) => [s.id, s.name]))
 

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
   ChevronDown, UserCog, Users,
-  Bell, X, PackagePlus, MessageSquare,
+  Bell, X, PackagePlus, MessageSquare, Sparkles,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -35,6 +35,7 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/pos',                 icon: <Zap size={18} />,             label: 'Каса (POS)' },
+      { to: '/ai-assistant',        icon: <Sparkles size={18} />,        label: 'Допомога АІ',          roles: ['owner','admin','manager'] },
       { to: '/notifications',       icon: <Bell size={18} />,            label: 'Сповіщення',           roles: ['owner','admin','manager'] },
     ],
   },

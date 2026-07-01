@@ -78,7 +78,7 @@ router.post('/:id/notify', requireRole('owner', 'admin', 'manager'), async (req,
       .single()
     if (error || !entry) throw new AppError('NOT_FOUND', 'Запис не знайдено', 404)
 
-    await notifyCustomer(entry as any)
+    await notifyCustomer(entry as any, req.user!.tenant_id)
     res.json({ data: { success: true } })
   } catch (err) { next(err) }
 })
@@ -99,23 +99,24 @@ router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res,
 /**
  * Авто-сповіщення клієнтів, які чекають на товар
  */
-export async function notifyWaitlistCustomers(productId: string) {
+export async function notifyWaitlistCustomers(productId: string, tenantId: string) {
   try {
     const { data: entries } = await db
       .from('product_waitlist')
       .select('*, product:products(id, sku, name, retail_price), customer:customers(id, phone, full_name)')
       .eq('product_id', productId)
+      .eq('tenant_id', tenantId)
       .eq('status', 'waiting')
 
     for (const entry of entries ?? []) {
-      await notifyCustomer(entry as any)
+      await notifyCustomer(entry as any, tenantId)
     }
   } catch (err) {
     logger.error({ productId, error: err instanceof Error ? err.message : err }, 'Waitlist notification error')
   }
 }
 
-async function notifyCustomer(entry: any) {
+async function notifyCustomer(entry: any, tenantId: string) {
   if (!entry.product || !entry.customer) return
 
   const productName = entry.product.name
@@ -126,6 +127,7 @@ async function notifyCustomer(entry: any) {
   const { data: chat } = await db.from('messenger_chats')
     .select('platform_chat_id, channel:messenger_channels(id, platform, credentials)')
     .eq('customer_id', entry.customer.id)
+    .eq('tenant_id', tenantId)
     .maybeSingle()
 
   if (chat) {
@@ -136,7 +138,8 @@ async function notifyCustomer(entry: any) {
         const { Telegraf } = await import('telegraf')
         const bot = new Telegraf(channel.credentials.token)
         await bot.telegram.sendMessage(chatData.platform_chat_id, msg, { parse_mode: 'Markdown' })
-        await db.from('product_waitlist').update({ status: 'notified', notified_at: new Date().toISOString() }).eq('id', entry.id)
+        await db.from('product_waitlist').update({ status: 'notified', notified_at: new Date().toISOString() })
+          .eq('id', entry.id).eq('tenant_id', tenantId)
         logger.info({ entryId: entry.id, productId: entry.product_id }, 'Waitlist: клієнта сповіщено')
       } catch {}
     }

@@ -80,6 +80,7 @@ router.post('/generate-invoices', async (req, res, next) => {
     const { data: products, error: prodError } = await db
       .from('products')
       .select('id, purchase_price')
+      .eq('tenant_id', req.user!.tenant_id)
       .in('id', productIds)
     
     if (prodError) throw new AppError('DB_ERROR', prodError.message, 500)

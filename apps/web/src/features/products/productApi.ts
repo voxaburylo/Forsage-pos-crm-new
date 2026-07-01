@@ -52,6 +52,7 @@ function formToCreatePayload(form: ProductFormData) {
     reorder_point: parseFloat(form.reorder_point || '0'),
     notes: form.notes || null,
     is_active: form.is_active,
+    is_service: form.is_service ?? false,
     storage_bin: form.storage_bin || null,
     is_favorite: form.is_favorite,
     specs: cleanSpecs(form.specs),
@@ -79,6 +80,7 @@ function formToUpdatePayload(partial: Partial<ProductFormData>): Record<string, 
   if (partial.reorder_point !== undefined)  out.reorder_point = parseFloat(partial.reorder_point || '0')
   if (partial.notes !== undefined)          out.notes = partial.notes || null
   if (partial.is_active !== undefined)      out.is_active = partial.is_active
+  if (partial.is_service !== undefined)     out.is_service = partial.is_service
   if (partial.storage_bin !== undefined)    out.storage_bin = partial.storage_bin || null
   if (partial.is_favorite !== undefined)    out.is_favorite = partial.is_favorite
   if (partial.specs !== undefined)          out.specs = cleanSpecs(partial.specs)

@@ -40,27 +40,30 @@ export interface SaleItem {
 }
 
 export interface ISaleRepository {
-  findById(id: string): Promise<any | null>
-  findItemsBySaleId(saleId: string): Promise<any[]>
-  insertSale(data: Partial<Sale>): Promise<Sale>
+  findById(id: string, tenantId: string): Promise<any | null>
+  findItemsBySaleId(saleId: string, tenantId: string): Promise<any[]>
+  insertSale(data: Partial<Sale>, tenantId: string): Promise<Sale>
   insertSaleItems(items: Partial<SaleItem>[]): Promise<SaleItem[]>
-  updateSale(id: string, data: Partial<Sale>): Promise<Sale>
-  resumeSale(saleId: string): Promise<any>
-  markReadyForPickup(saleId: string): Promise<any>
+  updateSale(id: string, data: Partial<Sale>, tenantId: string): Promise<Sale>
+  resumeSale(saleId: string, tenantId: string): Promise<any>
+  markReadyForPickup(saleId: string, tenantId: string): Promise<any>
 }
 
 export class SaleRepository implements ISaleRepository {
-  async findById(id: string): Promise<any | null> {
+  async findById(id: string, tenantId: string): Promise<any | null> {
     const { data, error } = await db
       .from('sales')
       .select('*')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
     if (error) throw error
     return data
   }
 
-  async findItemsBySaleId(saleId: string): Promise<any[]> {
+  async findItemsBySaleId(saleId: string, tenantId: string): Promise<any[]> {
+    const sale = await this.findById(saleId, tenantId)
+    if (!sale) return []
     const { data, error } = await db
       .from('sale_items')
       .select('*, product:products(id,sku,name,unit)')
@@ -69,10 +72,10 @@ export class SaleRepository implements ISaleRepository {
     return data || []
   }
 
-  async insertSale(data: Partial<Sale>): Promise<Sale> {
+  async insertSale(data: Partial<Sale>, tenantId: string): Promise<Sale> {
     const { data: inserted, error } = await db
       .from('sales')
-      .insert(data)
+      .insert({ ...data, tenant_id: tenantId })
       .select()
       .single()
     if (error) throw error
@@ -88,22 +91,24 @@ export class SaleRepository implements ISaleRepository {
     return data || []
   }
 
-  async updateSale(id: string, data: Partial<Sale>): Promise<Sale> {
+  async updateSale(id: string, data: Partial<Sale>, tenantId: string): Promise<Sale> {
     const { data: updated, error } = await db
       .from('sales')
       .update(data)
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .select()
       .single()
     if (error) throw error
     return updated
   }
 
-  async resumeSale(saleId: string): Promise<any> {
+  async resumeSale(saleId: string, tenantId: string): Promise<any> {
     const { data, error } = await db
       .from('sales')
       .update({ status: 'draft', updated_at: new Date().toISOString() })
       .eq('id', saleId)
+      .eq('tenant_id', tenantId)
       .eq('status', 'suspended')
       .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)')
       .single()
@@ -111,11 +116,12 @@ export class SaleRepository implements ISaleRepository {
     return data
   }
 
-  async markReadyForPickup(saleId: string): Promise<any> {
+  async markReadyForPickup(saleId: string, tenantId: string): Promise<any> {
     const { data, error } = await db
       .from('sales')
       .update({ status: 'ready_for_pickup', updated_at: new Date().toISOString() })
       .eq('id', saleId)
+      .eq('tenant_id', tenantId)
       .select('*, customer:customers(id, full_name, phone)')
       .single()
     if (error) throw error

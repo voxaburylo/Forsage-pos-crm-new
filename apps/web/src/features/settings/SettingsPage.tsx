@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer } from 'lucide-react'
+import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
+import { aiApi, AI_MODELS, AI_MODEL_LABELS } from '@/features/ai/aiApi'
+import type { AiStatus, AiModel } from '@/features/ai/aiApi'
 import { DEFAULT_QUICK_ITEMS } from '@/features/pos/FavoritesPanel'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
@@ -50,6 +52,51 @@ export default function SettingsPage() {
       toast.error(e instanceof Error ? e.message : 'Помилка скидання даних')
     } finally {
       setResetting(false)
+    }
+  }
+
+  // ─── Помічник АІ (Gemini) ──────────────────────────────────────
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
+  const [aiKey, setAiKey]       = useState('')          // порожньо = не змінювати
+  const [aiModel, setAiModel]   = useState<AiModel>('gemini-2.5-flash')
+  const [aiEnabled, setAiEnabled] = useState(false)
+  const [aiSaving, setAiSaving]   = useState(false)
+  const [aiTesting, setAiTesting] = useState(false)
+
+  useEffect(() => {
+    aiApi.status()
+      .then(({ data }) => { setAiStatus(data); setAiModel(data.model); setAiEnabled(data.enabled) })
+      .catch(() => {})
+  }, [])
+
+  async function saveAiConfig() {
+    setAiSaving(true)
+    try {
+      const { data } = await aiApi.saveConfig({
+        model: aiModel,
+        enabled: aiEnabled,
+        ...(aiKey.trim() ? { api_key: aiKey.trim() } : {}),
+      })
+      setAiStatus((s) => s ? { ...s, ...data } : { ...data, usage: { month: '', requests: 0, total_tokens: 0, cost_usd: 0 } })
+      setAiKey('')
+      toast.success('Налаштування AI збережено')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка')
+    } finally {
+      setAiSaving(false)
+    }
+  }
+
+  async function testAiKey() {
+    setAiTesting(true)
+    try {
+      // якщо ключ ще не збережено, але введено — перевіримо введений
+      await aiApi.test(aiKey.trim() ? { api_key: aiKey.trim(), model: aiModel } : { model: aiModel })
+      toast.success('Звʼязок з Gemini працює ✓')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Ключ не працює')
+    } finally {
+      setAiTesting(false)
     }
   }
 
@@ -258,6 +305,7 @@ export default function SettingsPage() {
               </label>
               <input value={form.shop_address ?? ''}
                 onChange={(e) => set('shop_address', e.target.value)}
+                aria-label="Адреса магазину"
                 placeholder="м. Київ, вул. Автозапчастин, 1"
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
             </div>
@@ -280,6 +328,7 @@ export default function SettingsPage() {
                 Максимальна знижка (%)
               </label>
               <input type="number" min={0} max={100} step={0.1}
+                aria-label="Максимальна знижка у відсотках"
                 value={form.max_discount_pct ?? 0}
                 onChange={(e) => set('max_discount_pct', parseFloat(e.target.value))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
@@ -296,6 +345,7 @@ export default function SettingsPage() {
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox"
+                  aria-label="Дозволити продаж при відсутності товару"
                   checked={form.allow_negative_qty ?? true}
                   onChange={(e) => set('allow_negative_qty', e.target.checked)}
                   className="sr-only peer" />
@@ -314,6 +364,7 @@ export default function SettingsPage() {
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox"
+                  aria-label="Автоматично друкувати чек після продажу"
                   checked={form.auto_print_receipt ?? false}
                   onChange={(e) => set('auto_print_receipt', e.target.checked)}
                   className="sr-only peer" />
@@ -328,6 +379,7 @@ export default function SettingsPage() {
                 Знижка для працівників (%)
               </label>
               <input type="number" min={0} max={100} step={1}
+                aria-label="Знижка для працівників у відсотках"
                 value={form.employee_discount_pct ?? 0}
                 onChange={(e) => set('employee_discount_pct', parseFloat(e.target.value) || 0)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
@@ -350,6 +402,7 @@ export default function SettingsPage() {
                 Днів на повернення
               </label>
               <input type="number" min={1} max={365}
+                aria-label="Кількість днів на повернення"
                 value={form.return_days ?? 14}
                 onChange={(e) => set('return_days', parseInt(e.target.value) || 14)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
@@ -362,6 +415,7 @@ export default function SettingsPage() {
                 Ліміт боргу за замовчуванням
               </label>
               <input type="number" min={0}
+                aria-label="Ліміт боргу за замовчуванням у гривнях"
                 value={((form.default_debt_limit_kopecks ?? 100000) / 100).toFixed(0)}
                 onChange={(e) => set('default_debt_limit_kopecks', Math.round(parseFloat(e.target.value) * 100))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
@@ -424,6 +478,7 @@ export default function SettingsPage() {
                 <div className="flex-1 w-full">
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Ціна від (грн)</label>
                   <input type="number" min={0} step={0.01} value={newMin} onChange={(e) => setNewMin(e.target.value)}
+                    aria-label="Ціна від у гривнях"
                     className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300" />
                 </div>
                 <div className="flex-1 w-full">
@@ -435,11 +490,13 @@ export default function SettingsPage() {
                     </label>
                   </div>
                   <input type="number" min={0} step={0.01} disabled={isInfinity} value={isInfinity ? '' : newMax} onChange={(e) => setNewMax(e.target.value)}
+                    aria-label="Ціна до у гривнях"
                     className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300 disabled:bg-gray-100 disabled:text-gray-400" />
                 </div>
                 <div className="flex-1 w-full">
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Націнка (%)</label>
                   <input type="number" min={0} step={1} value={newPct} onChange={(e) => setNewPct(e.target.value)}
+                    aria-label="Націнка у відсотках"
                     className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300" />
                 </div>
                 <button type="button" onClick={addRule} className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-bold px-4 py-2 rounded-lg text-sm transition-colors w-full md:w-auto h-[38px] shrink-0 cursor-pointer">
@@ -474,6 +531,7 @@ export default function SettingsPage() {
                   <div key={i} className="flex items-center gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200">
                     <div className="flex-1 relative">
                       <input type="number" min={0} step={0.1} value={pct || ''}
+                        aria-label={`Швидка націнка ${i + 1} у відсотках`}
                         onChange={(e) => updateQuickPercent(i, e.target.value)}
                         className="w-full border border-gray-200 rounded-lg px-3 py-2 pr-6 text-sm text-center font-bold focus:outline-none focus:ring-2 focus:ring-accent" />
                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold">%</span>
@@ -588,8 +646,85 @@ export default function SettingsPage() {
               Зберегти налаштування
             </Button>
           </div>
-        
+
         </form>
+
+        {/* ========== Помічник АІ (Gemini) ========== */}
+        {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}
+        <Card className="mt-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} className="text-purple-500" />
+              <h3 className="text-sm font-semibold text-gray-800">Помічник АІ «Директор» (Gemini)</h3>
+            </div>
+            {aiStatus?.has_key && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-50 text-green-600 font-semibold">
+                Ключ збережено
+              </span>
+            )}
+          </div>
+
+          <p className="text-xs text-gray-400">
+            AI-помічник у розділі «Допомога АІ»: розбирає товар, перекладає назви, пише описи, аналізує прайси.
+            Ключ Gemini зберігається зашифрованим на сервері й не показується назад. Отримати ключ:{' '}
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-500 underline">
+              aistudio.google.com/apikey
+            </a>.
+          </p>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">API-ключ Gemini</label>
+            <input
+              type="password"
+              value={aiKey}
+              onChange={(e) => setAiKey(e.target.value)}
+              aria-label="API-ключ Gemini"
+              placeholder={aiStatus?.has_key ? '•••••••••• (лишіть порожнім, щоб не змінювати)' : 'AIza...'}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent font-mono"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Модель</label>
+            <select
+              value={aiModel}
+              onChange={(e) => setAiModel(e.target.value as AiModel)}
+              aria-label="Модель Gemini"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent bg-white"
+            >
+              {AI_MODELS.map((m) => (
+                <option key={m} value={m}>{AI_MODEL_LABELS[m]}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between py-1">
+            <div>
+              <p className="text-sm font-medium text-gray-700">Увімкнути помічника</p>
+              <p className="text-xs text-gray-400">Без цього розділ «Допомога АІ» не відповідатиме</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" aria-label="Увімкнути AI-помічника" checked={aiEnabled} onChange={(e) => setAiEnabled(e.target.checked)} className="sr-only peer" />
+              <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-yellow-400 peer-focus:ring-2 peer-focus:ring-yellow-200 after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+            </label>
+          </div>
+
+          {aiStatus && (
+            <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2 flex items-center justify-between">
+              <span>Витрати за поточний місяць</span>
+              <span className="font-bold text-gray-700">≈ ${aiStatus.usage.cost_usd.toFixed(4)} · {aiStatus.usage.requests} запитів</span>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Button type="button" onClick={saveAiConfig} loading={aiSaving} icon={<Save size={16} />}>
+              Зберегти AI
+            </Button>
+            <Button type="button" variant="secondary" onClick={testAiKey} loading={aiTesting}>
+              Перевірити звʼязок
+            </Button>
+          </div>
+        </Card>
 
         {/* ========== Небезпечна зона (Скидання всіх даних) ========== */}
         <Card className="mt-6 border-red-200 bg-red-50/50 space-y-4">

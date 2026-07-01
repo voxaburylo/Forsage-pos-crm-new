@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
 import { ReserveService } from '../services/reserveService.js'
@@ -8,6 +8,7 @@ import * as adminService from '../services/adminService.js'
 
 const router = Router()
 router.use(requireAuth)
+router.use(requireRole('owner', 'admin', 'manager', 'storekeeper'))
 
 const createManualReserveSchema = z.object({
   product_id: z.string().uuid(),
@@ -43,7 +44,7 @@ router.get('/', async (req, res, next) => {
     }
 
     // Fetch users (staff)
-    const users = await adminService.listUsers().catch(() => [])
+    const users = await adminService.listUsers(req.user!.tenant_id).catch(() => [])
     const usersMap = new Map(users.map(u => [u.id, u]))
 
     const result = (reserves ?? []).map(r => ({

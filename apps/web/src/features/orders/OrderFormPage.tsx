@@ -53,6 +53,16 @@ function vinMake(vin: string): string {
 
 interface Supplier { id: string; name: string }
 
+function uniqueSuppliers(list: Supplier[]): Supplier[] {
+  const seen = new Set<string>()
+  return list.filter((supplier) => {
+    const key = supplier.name.trim().toLocaleLowerCase('uk-UA')
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 interface ItemRow {
   name:        string
   sku:         string
@@ -91,6 +101,8 @@ export default function OrderFormPage() {
   const [customerSearch, setCustomerSearch] = useState('')
   const [defaultCustomers, setDefaultCustomers] = useState<Customer[]>([])
   const [searchedCustomers, setSearchedCustomers] = useState<Customer[]>([])
+  const [defaultCustomersLoading, setDefaultCustomersLoading] = useState(true)
+  const [searchCustomersLoading, setSearchCustomersLoading] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   
   // Inline Create Customer
@@ -315,9 +327,10 @@ export default function OrderFormPage() {
     customerApi.list({ per_page: 5, sort: 'recent' })
       .then((r) => setDefaultCustomers((r as any).data ?? []))
       .catch(() => {})
+      .finally(() => setDefaultCustomersLoading(false))
 
     api.get<{ data: Supplier[] }>('/api/v1/suppliers?per_page=200&is_active=true')
-      .then((r) => setSuppliers((r as any).data ?? []))
+      .then((r) => setSuppliers(uniqueSuppliers((r as any).data ?? [])))
       .catch(() => {})
   }, [])
 
@@ -325,12 +338,15 @@ export default function OrderFormPage() {
   useEffect(() => {
     if (customerSearch.trim().length < 2) {
       setSearchedCustomers([])
+      setSearchCustomersLoading(false)
       return
     }
+    setSearchCustomersLoading(true)
     const t = setTimeout(() => {
       customerApi.list({ search: customerSearch.trim(), per_page: 8 })
         .then((r) => setSearchedCustomers((r as any).data ?? []))
-        .catch(() => {})
+        .catch(() => setSearchedCustomers([]))
+        .finally(() => setSearchCustomersLoading(false))
     }, 300)
     return () => clearTimeout(t)
   }, [customerSearch])
@@ -714,6 +730,8 @@ export default function OrderFormPage() {
 
   // Customer List to show
   const customerList = customerSearch.trim().length >= 2 ? searchedCustomers : defaultCustomers
+  const customerListLoading = customerSearch.trim().length >= 2 ? searchCustomersLoading : defaultCustomersLoading
+  const hasValidItems = items.some((item) => item.name.trim().length > 0)
 
   if (loading) {
     return (
@@ -731,7 +749,7 @@ export default function OrderFormPage() {
         
         {/* Step Indicator — лише в покроковому (мобільному) режимі */}
         {!isDesktop && (
-        <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center justify-between">
+        <div className="bg-white border border-gray-100 rounded-2xl p-3 shadow-sm grid grid-cols-4 gap-1">
           {[
             { s: 1, label: 'Клієнт' },
             { s: 2, label: 'Автомобіль' },
@@ -741,7 +759,7 @@ export default function OrderFormPage() {
             const isActive = step === item.s
             const isCompleted = step > item.s
             return (
-              <div key={item.s} className="flex items-center gap-2 flex-1 last:flex-initial">
+              <div key={item.s} className="flex flex-col items-center gap-1 min-w-0">
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-colors ${
                   isActive ? 'bg-yellow-400 text-black' :
                   isCompleted ? 'bg-green-500 text-white' :
@@ -749,12 +767,9 @@ export default function OrderFormPage() {
                 }`}>
                   {isCompleted ? <Check size={14} /> : item.s}
                 </div>
-                <span className={`text-xs md:text-sm font-semibold hidden sm:inline ${isActive ? 'text-gray-900' : 'text-gray-400'}`}>
+                <span className={`text-[10px] sm:text-xs font-semibold text-center truncate w-full ${isActive ? 'text-gray-900' : 'text-gray-400'}`}>
                   {item.label}
                 </span>
-                {item.s < 4 && (
-                  <div className="h-0.5 bg-gray-100 flex-1 mx-2 hidden sm:block" />
-                )}
               </div>
             )
           })}
@@ -782,7 +797,19 @@ export default function OrderFormPage() {
               </div>
 
               {/* Customers list */}
-              {customerList.length > 0 ? (
+              {customerListLoading ? (
+                <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-6 bg-white" aria-label="Завантаження клієнтів">
+                  {Array.from({ length: 3 }, (_, i) => (
+                    <div key={i} className="px-4 py-3.5 flex items-center gap-3 animate-pulse">
+                      <div className="w-9 h-9 rounded-full bg-gray-100" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-4 w-1/2 rounded bg-gray-100" />
+                        <div className="h-3 w-1/3 rounded bg-gray-100" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : customerList.length > 0 ? (
                 <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-6 bg-white shadow-sm">
                   {customerList.map((c) => (
                     <button
@@ -891,7 +918,7 @@ export default function OrderFormPage() {
           <div className="space-y-6 max-w-2xl mx-auto lg:max-w-none">
             <Card>
               <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-4">
-                {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft size={14} />} />}
+                {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft size={14} />} title="Назад до вибору клієнта" />}
                 <div>
                   <h3 className="font-bold text-gray-900 text-base">Оберіть автомобіль для замовлення</h3>
                   <p className="text-xs text-gray-400 mt-0.5">Клієнт: {selectedCustomer.full_name ?? 'Без імені'} ({selectedCustomer.phone})</p>
@@ -1016,7 +1043,7 @@ export default function OrderFormPage() {
             {/* Header info */}
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-wrap justify-between items-center gap-4">
               <div className="flex items-center gap-3">
-                {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(selectedCustomer ? 2 : 1)} icon={<ArrowLeft size={14} />} />}
+                {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(selectedCustomer ? 2 : 1)} icon={<ArrowLeft size={14} />} title="Назад до даних клієнта" />}
                 <div>
                   <h3 className="font-bold text-gray-900">Специфікація замовлення</h3>
                   <p className="text-xs text-gray-400 mt-0.5">
@@ -1300,17 +1327,15 @@ export default function OrderFormPage() {
                 {!isDesktop && (
                 <div className="flex gap-2">
                   <Button variant="secondary" onClick={() => setStep(selectedCustomer ? 2 : 1)}>Назад</Button>
-                  <Button onClick={() => {
-                    const filled = items.filter(i => i.name.trim())
-                    if (filled.length === 0) {
-                      toast.error('Додайте хоча б одну позицію з назвою')
-                    } else {
-                      setStep(4)
-                    }
-                  }}>Далі</Button>
+                  <Button disabled={!hasValidItems} onClick={() => setStep(4)}>Далі</Button>
                 </div>
                 )}
               </div>
+              {!isDesktop && !hasValidItems && (
+                <p className="px-4 pb-3 text-xs text-orange-600">
+                  Додайте назву хоча б однієї позиції, щоб перейти далі.
+                </p>
+              )}
             </Card>
           </div>
         )}
@@ -1320,7 +1345,7 @@ export default function OrderFormPage() {
           <div className="space-y-6 max-w-3xl mx-auto lg:max-w-none">
             {/* Header info */}
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex items-center gap-3">
-              {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(3)} icon={<ArrowLeft size={14} />} />}
+              {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(3)} icon={<ArrowLeft size={14} />} title="Назад до позицій" />}
               <div>
                 <h3 className="font-bold text-gray-900">Завершення оформлення</h3>
                 <p className="text-xs text-gray-400 mt-0.5">Перевірте деталі замовлення та виберіть дію збереження</p>

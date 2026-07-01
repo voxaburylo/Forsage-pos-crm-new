@@ -1,10 +1,8 @@
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 
-const MVP_TENANT_ID = '00000000-0000-0000-0000-000000000001'
-
 interface AuditParams {
-  tenantId?:    string
+  tenantId:     string
   userId:       string
   userRole:     string
   action:       string
@@ -21,7 +19,7 @@ export async function logAction(p: AuditParams): Promise<void> {
   try {
     const userName = p.userRole + ':' + p.userId.slice(0, 8)
     const { error } = await db.from('audit_log').insert({
-      tenant_id:    p.tenantId ?? MVP_TENANT_ID,
+      tenant_id:    p.tenantId,
       user_id:      p.userId,
       user_name:    userName,
       action:       p.action,

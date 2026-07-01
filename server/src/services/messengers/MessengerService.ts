@@ -41,8 +41,13 @@ export async function initMessengers(): Promise<void> {
         logger.info({ channelId: existing.id }, 'Messengers: токен каналу синхронізовано з env')
       }
     } else {
+      const tenantId = process.env.DEFAULT_TENANT_ID
+      if (!tenantId) {
+        logger.error('Messengers: канал не створено — задайте DEFAULT_TENANT_ID або створіть канал у налаштуваннях')
+        return
+      }
       const { data: created } = await db.from('messenger_channels').insert({
-        tenant_id: '00000000-0000-0000-0000-000000000001',
+        tenant_id: tenantId,
         name: 'Telegram Bot',
         platform: 'telegram',
         credentials: { token: envToken },
@@ -69,22 +74,24 @@ export async function getOrCreateChat(
   username?: string,
   firstName?: string,
 ): Promise<{ chatId: string; isNew: boolean }> {
+  const { data: channel } = await db
+    .from('messenger_channels')
+    .select('tenant_id')
+    .eq('id', channelId)
+    .maybeSingle()
+  if (!channel?.tenant_id) throw new Error('Messenger channel not found')
+  const tenantId = channel.tenant_id
+
   const { data: existing } = await db
     .from('messenger_chats')
     .select('id')
     .eq('channel_id', channelId)
+    .eq('tenant_id', tenantId)
     .eq('platform_chat_id', platformChatId)
     .eq('status', 'open')
     .maybeSingle()
 
   if (existing) return { chatId: existing.id, isNew: false }
-
-  const { data: channel } = await db
-    .from('messenger_channels')
-    .select('tenant_id')
-    .eq('id', channelId)
-    .single()
-  const tenantId = channel?.tenant_id || '00000000-0000-0000-0000-000000000001'
 
   const { data: newChat, error } = await db
     .from('messenger_chats')
@@ -105,12 +112,13 @@ export async function getOrCreateChat(
 /**
  * Надсилає повідомлення менеджера клієнту через канал.
  */
-export async function sendMessageToChat(chatId: string, text: string): Promise<boolean> {
+export async function sendMessageToChat(chatId: string, text: string, tenantId: string): Promise<boolean> {
   const { data: chat, error: chatErr } = await db
     .from('messenger_chats')
     .select('*, channel:messenger_channels(id, platform, credentials)')
     .eq('id', chatId)
-    .single()
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
 
   if (chatErr || !chat) {
     logger.error({ chatId }, 'Messengers: чат не знайдено')
@@ -134,6 +142,7 @@ export async function sendMessageToChat(chatId: string, text: string): Promise<b
   }
 
   await db.from('messenger_messages').insert({ chat_id: chatId, sender_type: 'manager', text })
-  await db.from('messenger_chats').update({ last_message_at: new Date().toISOString(), unread_count: 0 }).eq('id', chatId)
+  await db.from('messenger_chats').update({ last_message_at: new Date().toISOString(), unread_count: 0 })
+    .eq('id', chatId).eq('tenant_id', tenantId)
   return true
 }

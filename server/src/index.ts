@@ -51,6 +51,7 @@ import autoPurchaseRouter from './routes/autoPurchase.js'
 import onecImportRouter from './routes/onecImport.js'
 import jobsRouter from './routes/jobs.js'
 import vinRouter from './routes/vin.js'
+import aiRouter from './routes/ai.js'
 import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
 import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
@@ -88,6 +89,8 @@ app.use(cors({
 
 // Більший ліміт тіла лише для OCR VIN (фото в base64) — до глобального парсера
 app.use('/api/v1/vin/ocr', express.json({ limit: '10mb' }))
+// AI-чат може містити вставлені таблиці/прайси (file_text) — більший ліміт
+app.use('/api/v1/ai/chat', express.json({ limit: '2mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)
@@ -166,6 +169,7 @@ app.use('/api/v1/supplier-pos', supplierPOsRouter)
 app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
 app.use('/api/v1/vin', vinRouter)
 app.use('/api/v1/in', vinRouter)
+app.use('/api/v1/ai', aiRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)
@@ -199,24 +203,24 @@ jobWorker.register('validate_stock_integrity', async (_payload, jobInfo) => {
   logger.info({ issuesCount: result.count }, 'Completed validate_stock_integrity job')
   await StockValidatorService.enqueueNextCheck(jobInfo.tenantId)
 })
-jobWorker.register('close_stale_shifts', async (_payload, _jobInfo) => {
+jobWorker.register('close_stale_shifts', async (_payload, jobInfo) => {
   logger.info('Running close_stale_shifts background job...')
   const closed = await closeStaleShifts()
   logger.info({ closed }, 'Completed close_stale_shifts job')
   await TaskQueue.enqueue('close_stale_shifts', {}, {
     scheduledAt: new Date(Date.now() + 6 * 3600 * 1000),
-    tenantId: '00000000-0000-0000-0000-000000000001',
+    tenantId: jobInfo.tenantId,
     priority: JOB_PRIORITY.BACKGROUND,
   })
 })
-jobWorker.register('cleanup_suspended_sales', async (_payload, _jobInfo) => {
+jobWorker.register('cleanup_suspended_sales', async (_payload, jobInfo) => {
   logger.info('Running cleanup_suspended_sales background job...')
   const { data } = await db.rpc('cleanup_expired_suspended_sales' as any)
   logger.info({ cancelled: data ?? 0 }, 'Completed cleanup_suspended_sales job')
   // Re-enqueue кожні 6 годин
   await TaskQueue.enqueue('cleanup_suspended_sales', {}, {
     scheduledAt: new Date(Date.now() + 6 * 3600 * 1000),
-    tenantId: '00000000-0000-0000-0000-000000000001',
+    tenantId: jobInfo.tenantId,
     priority: JOB_PRIORITY.BACKGROUND,
   })
 })
@@ -235,6 +239,16 @@ const server = app.listen(PORT, () => {
   // Ensure initial cleanup job is enqueued
   ;(async () => {
     try {
+      const configuredTenantId = process.env.DEFAULT_TENANT_ID
+      const { data: tenantSettings } = configuredTenantId
+        ? { data: { tenant_id: configuredTenantId } }
+        : await db.from('shop_settings').select('tenant_id').not('tenant_id', 'is', null).limit(1).maybeSingle()
+      const schedulerTenantId = tenantSettings?.tenant_id
+      if (!schedulerTenantId) {
+        logger.warn('Initial background jobs skipped: DEFAULT_TENANT_ID and shop tenant are unavailable')
+        return
+      }
+
       const { data: existing } = await db.from('sys_background_jobs')
         .select('id')
         .eq('job_type', 'cleanup_expired_reserves')
@@ -245,7 +259,7 @@ const server = app.listen(PORT, () => {
       if (!existing) {
         await TaskQueue.enqueue('cleanup_expired_reserves', {}, {
           scheduledAt: new Date(),
-          tenantId: '00000000-0000-0000-0000-000000000001',
+          tenantId: schedulerTenantId,
           priority: JOB_PRIORITY.NORMAL,
         })
         logger.info('Enqueued initial cleanup_expired_reserves job')
@@ -256,7 +270,7 @@ const server = app.listen(PORT, () => {
       if (!existingIntegrity) {
         await TaskQueue.enqueue('validate_stock_integrity', {}, {
           scheduledAt: new Date(Date.now() + 60 * 1000),
-          tenantId: '00000000-0000-0000-0000-000000000001',
+          tenantId: schedulerTenantId,
           priority: JOB_PRIORITY.LOW,
         })
         logger.info('Enqueued initial validate_stock_integrity job')
@@ -267,7 +281,7 @@ const server = app.listen(PORT, () => {
       if (!existingStaleShift) {
         await TaskQueue.enqueue('close_stale_shifts', {}, {
           scheduledAt: new Date(Date.now() + 5 * 60 * 1000),
-          tenantId: '00000000-0000-0000-0000-000000000001',
+          tenantId: schedulerTenantId,
           priority: JOB_PRIORITY.BACKGROUND,
         })
         logger.info('Enqueued initial close_stale_shifts job')
@@ -278,7 +292,7 @@ const server = app.listen(PORT, () => {
       if (!existingSuspended) {
         await TaskQueue.enqueue('cleanup_suspended_sales', {}, {
           scheduledAt: new Date(Date.now() + 10 * 60 * 1000),
-          tenantId: '00000000-0000-0000-0000-000000000001',
+          tenantId: schedulerTenantId,
           priority: JOB_PRIORITY.BACKGROUND,
         })
         logger.info('Enqueued initial cleanup_suspended_sales job')

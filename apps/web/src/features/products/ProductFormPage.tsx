@@ -16,7 +16,7 @@ const EMPTY: ProductFormData = {
   sku: '', name: '', barcode: '', brand_id: '', category_id: '',
   unit: 'шт', purchase_price: '', retail_price: '',
   qty_on_hand: '0', reorder_point: '0', notes: '', is_active: true,
-  storage_bin: '', is_favorite: false, specs: {},
+  is_service: false, storage_bin: '', is_favorite: false, specs: {},
   requires_core_return: false, core_deposit_amount: '',
 }
 
@@ -74,6 +74,7 @@ export default function ProductFormPage() {
         reorder_point: String(data.reorder_point),
         notes: data.notes ?? '',
         is_active: data.is_active,
+        is_service: data.is_service ?? false,
         storage_bin: data.storage_bin ?? '',
         is_favorite: data.is_favorite ?? false,
         photo_url: data.photo_url ?? undefined,
@@ -106,6 +107,7 @@ export default function ProductFormPage() {
         reorder_point: String(data.reorder_point),
         notes: data.notes ?? '',
         is_active: data.is_active,
+        is_service: data.is_service ?? false,
         storage_bin: data.storage_bin ?? '',
         is_favorite: false,
         specs: (data.specs as Record<string, string>) ?? {},
@@ -487,8 +489,8 @@ export default function ProductFormPage() {
             </div>
             <div className="flex items-center gap-3">
               <input type="checkbox" id="is_service"
-                checked={(form as any).is_service ?? false}
-                onChange={(e) => set('is_service' as any, e.target.checked)}
+                checked={form.is_service ?? false}
+                onChange={(e) => set('is_service', e.target.checked)}
                 className="w-4 h-4 accent-blue-400" />
               <label htmlFor="is_service" className="text-sm text-gray-700">
                 ☕ Сервісний товар — кава, їжа (без обліку залишків)

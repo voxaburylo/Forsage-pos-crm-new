@@ -18,7 +18,7 @@ interface Props {
 }
 
 const PAY_LABEL: Record<string, string> = {
-  cash: 'Готівка', card: 'Картка', debt: 'Борг',
+  cash: 'Готівка', card: 'Картка', debt: 'Борг', mixed: 'Змішано', transfer: 'Переказ',
 }
 
 export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {

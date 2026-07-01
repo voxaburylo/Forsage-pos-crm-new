@@ -13,8 +13,8 @@ const router = Router()
 router.use(requireAuth)
 
 // Users
-router.get('/users', requireRole('owner', 'admin'), async (_req, res, next) => {
-  try { res.json({ data: await adminService.listUsers() }) } catch (err) { next(err) }
+router.get('/users', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.json({ data: await adminService.listUsers(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
 router.post('/users', requireRole('owner', 'admin'), async (req, res, next) => {
@@ -29,12 +29,12 @@ router.put('/users/:id', requireRole('owner', 'admin'), async (req, res, next) =
   try {
     const parsed = updateUserSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    res.json({ data: await adminService.updateUser(String(req.params.id), parsed.data) })
+    res.json({ data: await adminService.updateUser(String(req.params.id), parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
 router.delete('/users/:id', requireRole('owner', 'admin'), async (req, res, next) => {
-  try { await adminService.deleteUser(String(req.params.id)); res.status(204).send() } catch (err) { next(err) }
+  try { await adminService.deleteUser(String(req.params.id), req.user!.tenant_id); res.status(204).send() } catch (err) { next(err) }
 })
 
 // PUT /api/v1/admin/users/:id/password — скидання пароля адміном
@@ -43,7 +43,7 @@ router.put('/users/:id/password', requireRole('owner', 'admin'), async (req, res
     const schema = z.object({ password: z.string().min(6, 'Пароль мінімум 6 символів') })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    await adminService.resetPassword(String(req.params.id), parsed.data.password)
+    await adminService.resetPassword(String(req.params.id), parsed.data.password, req.user!.tenant_id)
     res.json({ data: { success: true } })
   } catch (err) { next(err) }
 })

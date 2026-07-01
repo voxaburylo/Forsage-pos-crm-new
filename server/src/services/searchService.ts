@@ -20,6 +20,7 @@ interface SearchResult {
   qty_on_hand: number
   qty_reserved: number
   qty_available: number
+  is_service: boolean
   unit: string
   storage_bin: string | null
   brand: { name: string } | null
@@ -106,7 +107,7 @@ async function enrichWithAvailability(results: SearchResult[]): Promise<SearchRe
     }
   })
 }
-export async function searchProductsForPOS(q: string, limit: number): Promise<SearchResult[]> {
+export async function searchProductsForPOS(q: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const searchTerms = [q]
 
   // [00] Виправлення розкладки клавіатури
@@ -126,28 +127,28 @@ export async function searchProductsForPOS(q: string, limit: number): Promise<Se
   }
 
   // [1] Прямий пошук по товарах
-  const results = await directProductSearch(searchTerms, q, limit)
+  const results = await directProductSearch(searchTerms, q, limit, tenantId)
   if (results && results.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(results))
 
   // [2] Пошук по коду постачальника
-  const supplierResults = await supplierCodeSearch(q, limit)
+  const supplierResults = await supplierCodeSearch(q, limit, tenantId)
   if (supplierResults && supplierResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(supplierResults))
 
   // [3] Пошук по аліасах
-  const aliasResults = await aliasSearch(searchTerms, q, limit)
+  const aliasResults = await aliasSearch(searchTerms, q, limit, tenantId)
   if (aliasResults && aliasResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(aliasResults))
 
   // [4] Пошук по додаткових штрихкодах (таблиця product_barcodes)
-  const barcodeResults = await barcodeSearch(q, limit)
+  const barcodeResults = await barcodeSearch(q, limit, tenantId)
   if (barcodeResults && barcodeResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(barcodeResults))
 
   // [4b] Пошук по additional_barcodes JSONB колонці products
-  const additionalBarcodeResults = await additionalBarcodesSearch(q, limit)
+  const additionalBarcodeResults = await additionalBarcodesSearch(q, limit, tenantId)
   if (additionalBarcodeResults && additionalBarcodeResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(additionalBarcodeResults))
 
   // [5] Пошук по VIN (тільки від 6 символів)
   if (q.length >= 6) {
-    const vinResults = await vinSearch(q, limit)
+    const vinResults = await vinSearch(q, limit, tenantId)
     if (vinResults && vinResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(vinResults))
   }
 
@@ -155,7 +156,7 @@ export async function searchProductsForPOS(q: string, limit: number): Promise<Se
 }
 
 /** [1] Прямий пошук по товарах (sku, name, barcode, oem_number) */
-async function directProductSearch(terms: string[], originalQ: string, limit: number): Promise<SearchResult[]> {
+async function directProductSearch(terms: string[], originalQ: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const conditions = terms.flatMap((t) => {
     const normalized = normalizeArticle(t)
     return [
@@ -174,7 +175,8 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
 
   const { data, error } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, oem_number, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, oem_number, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
     .or(orString)
@@ -204,12 +206,13 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
 }
 
 /** [2] Пошук по коду постачальника (product_supplier_codes) */
-async function supplierCodeSearch(code: string, limit: number): Promise<SearchResult[]> {
+async function supplierCodeSearch(code: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const normalized = normalizeArticle(code)
 
   const { data: scResults, error: scError } = await db
     .from('product_supplier_codes')
     .select('product_id, supplier_code')
+    .eq('tenant_id', tenantId)
     .or(`supplier_code.ilike.%${normalized}%,normalized_supplier_article.eq.${normalized}`)
     .limit(limit)
 
@@ -220,7 +223,8 @@ async function supplierCodeSearch(code: string, limit: number): Promise<SearchRe
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', productIds)
@@ -239,13 +243,14 @@ async function supplierCodeSearch(code: string, limit: number): Promise<SearchRe
 }
 
 /** [3] Пошук по аліасах */
-async function aliasSearch(terms: string[], originalQ: string, limit: number): Promise<SearchResult[]> {
+async function aliasSearch(terms: string[], originalQ: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const conditions = terms.map((t) => `alias.ilike.%${t}%`).join(',')
   if (!conditions) return []
 
   const { data: aliasResults, error: aliasError } = await db
     .from('product_aliases')
     .select('product_id, alias')
+    .eq('tenant_id', tenantId)
     .or(conditions)
     .limit(limit)
 
@@ -266,7 +271,8 @@ async function aliasSearch(terms: string[], originalQ: string, limit: number): P
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', productIds)
@@ -284,10 +290,11 @@ async function aliasSearch(terms: string[], originalQ: string, limit: number): P
 }
 
 /** [4] Пошук по додаткових штрихкодах */
-async function barcodeSearch(barcode: string, limit: number): Promise<SearchResult[]> {
+async function barcodeSearch(barcode: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const { data: barcodeResults, error: bcError } = await db
     .from('product_barcodes')
     .select('product_id, barcode')
+    .eq('tenant_id', tenantId)
     .eq('barcode', barcode)
     .limit(limit)
 
@@ -298,7 +305,8 @@ async function barcodeSearch(barcode: string, limit: number): Promise<SearchResu
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', productIds)
@@ -317,11 +325,12 @@ async function barcodeSearch(barcode: string, limit: number): Promise<SearchResu
 }
 
 /** [4b] Пошук по additional_barcodes JSONB колонці на таблиці products */
-async function additionalBarcodesSearch(barcode: string, limit: number): Promise<SearchResult[]> {
+async function additionalBarcodesSearch(barcode: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   try {
     const { data, error } = await db
       .from(PRODUCTS_TABLE)
-      .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+      .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+      .eq('tenant_id', tenantId)
       .is('deleted_at', null)
       .eq('is_active', true)
       .contains('additional_barcodes', JSON.stringify([barcode]))
@@ -337,12 +346,13 @@ async function additionalBarcodesSearch(barcode: string, limit: number): Promise
 }
 
 /** [5] Пошук по VIN — знайти товари сумісні з авто */
-async function vinSearch(vin: string, limit: number): Promise<SearchResult[]> {
+async function vinSearch(vin: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   if (vin.length < 6) return []
 
   const { data: vehicles, error: vehError } = await db
     .from('customer_vehicles')
     .select('brand, model, year')
+    .eq('tenant_id', tenantId)
     .ilike('vin', `${vin}%`)
     .limit(5)
 
@@ -355,6 +365,7 @@ async function vinSearch(vin: string, limit: number): Promise<SearchResult[]> {
     const { data: fitments } = await db
       .from('product_fitment')
       .select('product_id')
+      .eq('tenant_id', tenantId)
       .eq('make', v.brand)
       .eq('model', v.model)
       .lte('year_from', v.year ?? 9999)
@@ -372,7 +383,8 @@ async function vinSearch(vin: string, limit: number): Promise<SearchResult[]> {
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
     .in('id', ids)

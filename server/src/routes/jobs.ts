@@ -15,7 +15,7 @@ router.get('/:queueName/:jobId', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid queue name' })
     }
 
-    const status = await getJobStatus(queueName, jobId)
+    const status = await getJobStatus(queueName, jobId, req.user!.tenant_id)
     if (!status) {
       return res.status(404).json({ error: 'Job not found' })
     }

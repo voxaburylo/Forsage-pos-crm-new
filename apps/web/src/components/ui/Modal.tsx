@@ -27,7 +27,12 @@ export function Modal({ open, onClose, title, children, size = 'md' }: Props) {
       <div className={`relative bg-white rounded-2xl shadow-xl w-full ${SIZES[size]} animate-slide-up flex flex-col max-h-[92vh]`}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 shrink-0">
           <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 transition-colors p-1"
+            aria-label="Закрити"
+            title="Закрити"
+          >
             <X size={20} />
           </button>
         </div>

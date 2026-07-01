@@ -12,11 +12,7 @@ router.use(requireAuth)
 // GET /api/v1/shifts/current — поточна відкрита зміна
 router.get('/current', async (req, res, next) => {
   try {
-    const shift = await shiftService.getCurrentShift(req.user!.id)
-    if (shift && shift.tenant_id !== req.user!.tenant_id) {
-      res.json({ data: null })
-      return
-    }
+    const shift = await shiftService.getCurrentShift(req.user!.id, req.user!.tenant_id)
     res.json({ data: shift })
   } catch (err) { next(err) }
 })
@@ -44,8 +40,8 @@ router.post('/:id/close', async (req, res, next) => {
 // GET /api/v1/shifts/current/expected-cash — розрахунок очікуваної готівки
 router.get('/current/expected-cash', async (req, res, next) => {
   try {
-    const shift = await shiftService.getCurrentShift(req.user!.id)
-    if (!shift || shift.tenant_id !== req.user!.tenant_id) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
+    const shift = await shiftService.getCurrentShift(req.user!.id, req.user!.tenant_id)
+    if (!shift) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
 
     // Початковий залишок
     const openingCash = shift.opening_cash
@@ -98,8 +94,8 @@ router.get('/current/expected-cash', async (req, res, next) => {
 // POST /api/v1/shifts/current/reconcile — зберегти звірку каси
 router.post('/current/reconcile', async (req, res, next) => {
   try {
-    const shift = await shiftService.getCurrentShift(req.user!.id)
-    if (!shift || shift.tenant_id !== req.user!.tenant_id) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
+    const shift = await shiftService.getCurrentShift(req.user!.id, req.user!.tenant_id)
+    if (!shift) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
 
     const schema = z.object({
       actual_amount: z.number().int().min(0),

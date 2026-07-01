@@ -16,71 +16,76 @@ export interface Customer {
 }
 
 export interface ICustomerRepository {
-  findById(id: string): Promise<Customer | null>
-  findByPhone(phone: string): Promise<Customer | null>
-  findByTelegramChatId(chatId: string): Promise<Customer | null>
-  insert(data: Partial<Customer>): Promise<Customer>
-  update(id: string, data: Partial<Customer>): Promise<Customer>
-  getBonusBalance(id: string): Promise<number>
+  findById(id: string, tenantId: string): Promise<Customer | null>
+  findByPhone(phone: string, tenantId: string): Promise<Customer | null>
+  findByTelegramChatId(chatId: string, tenantId: string): Promise<Customer | null>
+  insert(data: Partial<Customer>, tenantId: string): Promise<Customer>
+  update(id: string, data: Partial<Customer>, tenantId: string): Promise<Customer>
+  getBonusBalance(id: string, tenantId: string): Promise<number>
 }
 
 export class CustomerRepository implements ICustomerRepository {
-  async findById(id: string): Promise<Customer | null> {
+  async findById(id: string, tenantId: string): Promise<Customer | null> {
     const { data, error } = await db
       .from('customers')
       .select('*')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
     if (error) throw error
     return data
   }
 
-  async findByPhone(phone: string): Promise<Customer | null> {
+  async findByPhone(phone: string, tenantId: string): Promise<Customer | null> {
     const { data, error } = await db
       .from('customers')
       .select('*')
       .eq('phone', phone)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
     if (error) throw error
     return data
   }
 
-  async findByTelegramChatId(chatId: string): Promise<Customer | null> {
+  async findByTelegramChatId(chatId: string, tenantId: string): Promise<Customer | null> {
     const { data, error } = await db
       .from('customers')
       .select('*')
       .eq('telegram_chat_id', chatId)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
     if (error) throw error
     return data
   }
 
-  async insert(data: Partial<Customer>): Promise<Customer> {
+  async insert(data: Partial<Customer>, tenantId: string): Promise<Customer> {
     const { data: inserted, error } = await db
       .from('customers')
-      .insert(data)
+      .insert({ ...data, tenant_id: tenantId })
       .select()
       .single()
     if (error) throw error
     return inserted
   }
 
-  async update(id: string, data: Partial<Customer>): Promise<Customer> {
+  async update(id: string, data: Partial<Customer>, tenantId: string): Promise<Customer> {
     const { data: updated, error } = await db
       .from('customers')
       .update(data)
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .select()
       .single()
     if (error) throw error
     return updated
   }
 
-  async getBonusBalance(id: string): Promise<number> {
+  async getBonusBalance(id: string, tenantId: string): Promise<number> {
     const { data, error } = await db
       .from('customers')
       .select('bonus_balance')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
     if (error) throw error
     return data?.bonus_balance ?? 0

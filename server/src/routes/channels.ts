@@ -13,12 +13,12 @@ router.get('/', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const { data, error } = await db
       .from('messenger_channels')
-      .select('*')
+      .select('id, name, platform, is_active, created_at')
       .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-    res.json({ data: data ?? [] })
+    res.json({ data: (data ?? []).map((channel) => ({ ...channel, credentials: { token: '********' } })) })
   } catch (err) { next(err) }
 })
 
@@ -51,7 +51,8 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
     stopMessengers()
     initMessengers()
 
-    res.status(201).json({ data })
+    const { credentials: _credentials, ...safeData } = data as any
+    res.status(201).json({ data: { ...safeData, credentials: { token: '********' } } })
   } catch (err) { next(err) }
 })
 
@@ -69,6 +70,7 @@ router.put('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
       .from('messenger_channels')
       .update({ ...parsed.data, updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .select()
       .single()
 
@@ -89,6 +91,7 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
       .from('messenger_channels')
       .delete()
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 

@@ -110,7 +110,7 @@ function parseRows(text: string): RawRow[] {
 
 interface MatchedProduct { id: string; sku: string; name: string }
 
-export async function matchProduct(sku: string, name: string): Promise<{
+export async function matchProduct(sku: string, name: string, tenantId: string): Promise<{
   matched:       boolean
   product_id:    string | null
   match_quality: 'exact' | 'fuzzy' | 'new'
@@ -120,13 +120,13 @@ export async function matchProduct(sku: string, name: string): Promise<{
 
   if (sku) {
     const { data } = await db.from('products').select('id, sku, name')
-      .is('deleted_at', null).eq('sku', normalizeArticle(sku)).maybeSingle()
+      .eq('tenant_id', tenantId).is('deleted_at', null).eq('sku', normalizeArticle(sku)).maybeSingle()
     if (data) return { matched: true, product_id: data.id, match_quality: 'exact', warnings: [] }
   }
 
   if (name) {
     const { data } = await db.from('products').select('id, sku, name')
-      .is('deleted_at', null).eq('name', name.trim()).maybeSingle()
+      .eq('tenant_id', tenantId).is('deleted_at', null).eq('name', name.trim()).maybeSingle()
     if (data) {
       warnings.push('Знайдено за назвою (артикул не збігається)')
       return { matched: true, product_id: data.id, match_quality: 'fuzzy', warnings }
@@ -136,7 +136,7 @@ export async function matchProduct(sku: string, name: string): Promise<{
   if (name) {
     const searchTerm = name.trim().slice(0, 60)
     const { data: results } = await db.from('products').select('id, sku, name')
-      .is('deleted_at', null).ilike('name', '%' + searchTerm + '%').limit(5)
+      .eq('tenant_id', tenantId).is('deleted_at', null).ilike('name', '%' + searchTerm + '%').limit(5)
 
     if (results && results.length > 0) {
       const normName = normalizeForMatch(name)
@@ -587,13 +587,13 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
   if (productIds.length > 0 || skus.length > 0 || barcodes.length > 0) {
     const promises = []
     if (productIds.length > 0) {
-      promises.push(db.from('products').select('id, sku, barcode, retail_price').in('id', productIds))
+      promises.push(db.from('products').select('id, sku, barcode, retail_price').eq('tenant_id', tenantId).in('id', productIds))
     }
     if (skus.length > 0) {
-      promises.push(db.from('products').select('id, sku, barcode, retail_price').in('sku', skus))
+      promises.push(db.from('products').select('id, sku, barcode, retail_price').eq('tenant_id', tenantId).in('sku', skus))
     }
     if (barcodes.length > 0) {
-      promises.push(db.from('products').select('id, sku, barcode, retail_price').in('barcode', barcodes))
+      promises.push(db.from('products').select('id, sku, barcode, retail_price').eq('tenant_id', tenantId).in('barcode', barcodes))
     }
     const results = await Promise.all(promises)
     for (const r of results) {

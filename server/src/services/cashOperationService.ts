@@ -18,6 +18,7 @@ export async function createCashOperation(
       .from('shifts')
       .select('id, status')
       .eq('id', shiftId)
+      .eq('tenant_id', tenantId)
       .single()
     if (!shift) throw new AppError('SHIFT_NOT_FOUND', 'Зміну не знайдено', 404)
     if (shift.status === 'closed') throw new AppError('SHIFT_CLOSED', 'Зміна вже закрита', 409)
@@ -53,10 +54,11 @@ export async function createCashOperation(
   return data
 }
 
-export async function listCashOperations(query: CashOpListQuery) {
+export async function listCashOperations(query: CashOpListQuery, tenantId: string) {
   let q = db
     .from(TABLE)
     .select('*', { count: 'exact' })
+    .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
 
   if (query.shift_id) q = q.eq('shift_id', query.shift_id)
@@ -75,11 +77,13 @@ export async function listCashOperations(query: CashOpListQuery) {
   }
 }
 
-export async function getShiftCashSummary(shiftId: string) {
-  const { data, error } = await db
+export async function getShiftCashSummary(shiftId: string | null, tenantId: string) {
+  let query = db
     .from(TABLE)
     .select('type, amount')
-    .eq('shift_id', shiftId)
+    .eq('tenant_id', tenantId)
+  if (shiftId) query = query.eq('shift_id', shiftId)
+  const { data, error } = await query
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 

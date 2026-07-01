@@ -208,7 +208,7 @@ router.post('/:id/send', requireRole('owner', 'admin', 'manager'), async (req, r
       throw new AppError('CHANNEL_NOT_SUPPORTED', `Канал ${platform} ще не підключено для відправки. Наразі працює лише Telegram.`, 400)
     }
 
-    const ok = await sendMessageToChat(chatId, parsed.data.text)
+    const ok = await sendMessageToChat(chatId, parsed.data.text, req.user!.tenant_id)
     if (!ok) throw new AppError('SEND_FAILED', 'Не вдалося відправити повідомлення', 502)
 
     res.json({ data: { success: true } })

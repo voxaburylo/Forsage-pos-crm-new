@@ -20,6 +20,14 @@ export function formatDateTime(iso: string): string {
   })
 }
 
+/** YYYY-MM-DD у локальному часовому поясі, без UTC-зсуву на сусідній день. */
+export function localDateKey(value: Date = new Date()): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 // Нормалізація артикулу (по ТЗ розділ 13.1)
 export function normalizeArticle(raw: string): string {
   return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()

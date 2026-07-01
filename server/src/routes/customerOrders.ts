@@ -1,7 +1,7 @@
-import { Router } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
 import * as adminService from '../services/adminService.js'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
@@ -13,6 +13,24 @@ import { createSupplierPOsForOrder } from '../services/supplierService.js'
 
 const router = Router()
 router.use(requireAuth)
+
+async function requireTenantOrder(req: Request, _res: Response, next: NextFunction, orderId: string) {
+  try {
+    const { data, error } = await db.from('customer_orders')
+      .select('id')
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    if (!data) throw new AppError('ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
+    next()
+  } catch (error) {
+    next(error)
+  }
+}
+
+router.param('id', requireTenantOrder)
+router.param('orderId', requireTenantOrder)
 
 const createOrderSchema = z.object({
   customer_id:           z.string().uuid().optional().nullable(),
@@ -53,18 +71,47 @@ const createOrderSchema = z.object({
 })
 
 // POST /api/v1/customer-orders — створити замовлення
-router.post('/', async (req, res, next) => {
+router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const parsed = createOrderSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
     const input = parsed.data
+
+    if (input.customer_id) {
+      const { data } = await db.from('customers').select('id')
+        .eq('id', input.customer_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+      if (!data) throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+    }
+    if (input.chat_id) {
+      const { data } = await db.from('messenger_chats').select('id')
+        .eq('id', input.chat_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+      if (!data) throw new AppError('CHAT_NOT_FOUND', 'Чат не знайдено', 404)
+    }
+    if (input.parent_draft_id) {
+      const { data } = await db.from('customer_orders').select('id')
+        .eq('id', input.parent_draft_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+      if (!data) throw new AppError('ORDER_NOT_FOUND', 'Батьківську чернетку не знайдено', 404)
+    }
+
+    const supplierIds = [...new Set(input.items.map((item) => item.supplier_id).filter(Boolean) as string[])]
+    if (supplierIds.length > 0) {
+      const { data } = await db.from('suppliers').select('id')
+        .in('id', supplierIds).eq('tenant_id', req.user!.tenant_id)
+      if ((data?.length ?? 0) !== supplierIds.length) {
+        throw new AppError('SUPPLIER_NOT_FOUND', 'Один або кілька постачальників не знайдено', 404)
+      }
+    }
     
     // Отримуємо інформацію про продукти для застав
     const productIds = input.items.map(i => i.product_id).filter(Boolean) as string[]
     const { data: prods } = productIds.length > 0
-      ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price').in('id', productIds)
+      ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price')
+          .in('id', productIds).eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
       : { data: [] }
+    if ((prods?.length ?? 0) !== new Set(productIds).size) {
+      throw new AppError('PRODUCT_NOT_FOUND', 'Один або кілька товарів не знайдено', 404)
+    }
     const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
 
     const totalAmount = input.items.reduce((s, i) => {
@@ -348,7 +395,7 @@ router.get('/', async (req, res, next) => {
 })
 
 // PUT /api/v1/customer-orders/:id/draft — оновити чернетку (items + comment)
-router.put('/:id/draft', async (req, res, next) => {
+router.put('/:id/draft', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
       comment:     z.string().max(2000).optional().nullable(),
@@ -416,7 +463,7 @@ router.put('/:id/draft', async (req, res, next) => {
 })
 
 // POST /api/v1/customer-orders/:id/convert — конвертувати чернетку в замовлення з вибраними варіантами
-router.post('/:id/convert', async (req, res, next) => {
+router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const convertSchema = z.object({
       items: z.array(z.object({
@@ -446,6 +493,7 @@ router.post('/:id/convert', async (req, res, next) => {
     const productIds = parsed.data.items.map(i => i.selected_variant.product_id).filter(Boolean) as string[]
     const { data: prods } = productIds.length > 0
       ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price').in('id', productIds)
+          .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
       : { data: [] }
     const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
 
@@ -539,7 +587,7 @@ router.post('/:id/convert', async (req, res, next) => {
 })
 
 // POST /api/v1/customer-orders/:id/send-telegram — відправити КП в Telegram
-router.post('/:id/send-telegram', async (req, res, next) => {
+router.post('/:id/send-telegram', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const { data: order } = await db
       .from('customer_orders')
@@ -722,17 +770,19 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
   else if (hasPending) newStatus = 'new'
   else newStatus = 'new'
 
-  const { data: currentOrder } = await db.from('customer_orders').select('status').eq('id', orderId).single()
+  const { data: currentOrder } = await db.from('customer_orders').select('status')
+    .eq('id', orderId).eq('tenant_id', tenantId).single()
   if (!currentOrder || currentOrder.status === newStatus) return
 
   // Встановлюємо дедлайн при переході в ready
   if (newStatus === 'ready') {
-    const { data: settings } = await db.from('shop_settings').select('pickup_deadline_days').maybeSingle()
+    const { data: settings } = await db.from('shop_settings').select('pickup_deadline_days')
+      .eq('tenant_id', tenantId).maybeSingle()
     const days = (settings as any)?.pickup_deadline_days ?? 14
     const deadline = new Date(Date.now() + days * 86400000).toISOString()
     await db.from('customer_orders').update({
       pickup_deadline_at: deadline,
-    }).eq('id', orderId)
+    }).eq('id', orderId).eq('tenant_id', tenantId)
   }
 
   // Оновлюємо статус через RPC
@@ -749,7 +799,7 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
   }
 
   // Сповіщення в Telegram про зміну статусу
-  notifyStatusUpdate(orderId, newStatus).catch(() => {})
+  notifyStatusUpdate(orderId, newStatus, tenantId).catch(() => {})
 
   // Авто-Telegram при готовності
   if (newStatus === 'ready') {
@@ -758,6 +808,7 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
         .from('customer_orders')
         .select('*, customer:customers(id, full_name, phone)')
         .eq('id', orderId)
+        .eq('tenant_id', tenantId)
         .single()
 
       if (order?.customer) {
@@ -765,6 +816,7 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
           .from('messenger_chats')
           .select('platform_chat_id, channel:messenger_channels(id, platform, credentials)')
           .eq('customer_id', order.customer.id)
+          .eq('tenant_id', tenantId)
           .maybeSingle()
 
         if (chat) {
@@ -790,7 +842,7 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
 }
 
 // PATCH /api/v1/customer-orders/:id/items/:itemId/status — змінити статус позиції
-router.patch('/:id/items/:itemId/status', async (req, res, next) => {
+router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
   try {
     const schema = z.object({
       item_status: z.enum(['pending', 'ordered', 'arrived', 'handed', 'canceled']),
@@ -806,7 +858,8 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
       updateData.expected_date = parsed.data.supplier_expected_date
     }
 
-    const { error } = await db.from('customer_order_items').update(updateData).eq('id', req.params.itemId)
+    const { error } = await db.from('customer_order_items').update(updateData)
+      .eq('id', req.params.itemId).eq('order_id', req.params.id)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 
     // Логуємо
@@ -824,6 +877,7 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
           .from('customer_order_items')
           .select('product_id, order:customer_orders!inner(customer_id)')
           .eq('id', req.params.itemId)
+          .eq('order_id', req.params.id)
           .maybeSingle()
         const productId = (item as any)?.product_id
         const customerId = (item as any)?.order?.customer_id
@@ -841,7 +895,7 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
             }
           } else if (parsed.data.item_status === 'arrived') {
             // Надходження очікуваного товару — авто-сповіщення тих, хто чекав (ORD-14)
-            notifyWaitlistCustomers(productId).catch(() => {})
+            notifyWaitlistCustomers(productId, req.user!.tenant_id).catch(() => {})
           }
         }
       } catch (chainErr) {
@@ -872,14 +926,14 @@ router.patch('/:id/items/:itemId/status', async (req, res, next) => {
     }
 
     // Авто-оновлення загального статусу
-    await updateOrderStatus(req.params.id, req.user!.tenant_id, req.user!.id)
+    await updateOrderStatus(String(req.params.id), req.user!.tenant_id, req.user!.id)
 
     res.json({ data: { success: true } })
   } catch (err) { next(err) }
 })
 
 // PATCH /api/v1/customer-orders/:id/status — змінити статус замовлення
-router.patch('/:id/status', async (req, res, next) => {
+router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
       status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled', 'archived']),
@@ -920,12 +974,12 @@ router.patch('/:id/status', async (req, res, next) => {
     })
 
     // Сповіщення в Telegram при зміні статусу менеджером
-    notifyStatusUpdate(req.params.id, parsed.data.status).catch(() => {})
+    notifyStatusUpdate(String(req.params.id), parsed.data.status, req.user!.tenant_id).catch(() => {})
 
     // Автоматично створюємо замовлення постачальникам, якщо замовлення перейшло з чернетки
     const isPromotedFromLead = oldOrder?.status === 'lead' && ['new', 'in_progress', 'ordered'].includes(parsed.data.status)
     if (isPromotedFromLead) {
-      await createSupplierPOsForOrder(req.params.id, req.user!.tenant_id).catch((err) => {
+      await createSupplierPOsForOrder(String(req.params.id), req.user!.tenant_id).catch((err) => {
         logger.error({ error: err.message, orderId: req.params.id }, 'Failed to auto-create supplier POs on status change')
       })
     }
@@ -987,7 +1041,7 @@ router.post('/:id/complete', async (req, res, next) => {
     })
 
     // Сповіщення клієнту про завершення
-    notifyStatusUpdate(order.id, 'completed').catch(() => {})
+    notifyStatusUpdate(order.id, 'completed', req.user!.tenant_id).catch(() => {})
 
     // Розрахунок та запис комісійних менеджера
     try {
@@ -1039,7 +1093,7 @@ router.get('/:id', async (req, res, next) => {
 
     // JOIN profile details for activity log (P1 Fix 11)
     try {
-      const users = await adminService.listUsers()
+      const users = await adminService.listUsers(req.user!.tenant_id)
       const usersMap = new Map(users.map(u => [u.id, u]))
       if (data.activity) {
         data.activity = data.activity.map((act: any) => {
@@ -1060,7 +1114,7 @@ router.get('/:id', async (req, res, next) => {
 })
 
 // POST /api/v1/customer-orders/bulk-arrival — масове приймання
-router.post('/bulk-arrival', async (req, res, next) => {
+router.post('/bulk-arrival', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
   try {
     const schema = z.object({ item_ids: z.array(z.string().uuid()).min(1) })
     const parsed = schema.safeParse(req.body)
@@ -1085,7 +1139,7 @@ router.post('/bulk-arrival', async (req, res, next) => {
 
     // ORD-14: надходження очікуваних товарів — авто-сповіщення клієнтів з листа очікування
     for (const pid of productIds) {
-      notifyWaitlistCustomers(pid).catch(() => {})
+      notifyWaitlistCustomers(pid, req.user!.tenant_id).catch(() => {})
     }
 
     // Авто-перерахунок статусів замовлень
@@ -1102,7 +1156,7 @@ router.post('/bulk-arrival', async (req, res, next) => {
 })
 
 // POST /api/v1/customer-orders/:id/cancel — скасувати з можливістю повернення
-router.post('/:id/cancel', async (req, res, next) => {
+router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
       refund_prepayment: z.boolean().default(false),
@@ -1155,7 +1209,7 @@ router.post('/:id/cancel', async (req, res, next) => {
     })
 
     // Сповіщення клієнту про скасування
-    notifyStatusUpdate(order.id, 'canceled').catch(() => {})
+    notifyStatusUpdate(order.id, 'canceled', req.user!.tenant_id).catch(() => {})
 
     res.json({ data: { success: true } })
   } catch (err) { next(err) }
@@ -1163,7 +1217,7 @@ router.post('/:id/cancel', async (req, res, next) => {
 
 
 // PUT /api/v1/customer-orders/:id — оновити замовлення
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
       comment:               z.string().max(2000).optional().nullable(),
@@ -1222,7 +1276,8 @@ router.put('/:id', async (req, res, next) => {
       // Отримуємо інформацію про продукти для застав
       const productIds = parsed.data.items.map(i => i.product_id).filter(Boolean) as string[]
       const { data: prods } = productIds.length > 0
-        ? await db.from('products').select('id, requires_core_return, core_deposit_amount').in('id', productIds)
+        ? await db.from('products').select('id, requires_core_return, core_deposit_amount')
+            .in('id', productIds).eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
         : { data: [] }
       const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
 
@@ -1307,7 +1362,7 @@ router.put('/:id', async (req, res, next) => {
 })
 
 // DELETE /api/v1/customer-orders/:id — видалити чернетку/замовлення
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const orderId = req.params.id
 

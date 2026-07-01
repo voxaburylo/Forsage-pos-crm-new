@@ -11,11 +11,12 @@ import {
 } from '../validators/productValidator.js'
 import * as productService from '../services/productService.js'
 
-export async function exportCsv(_req: Request, res: Response, next: NextFunction) {
+export async function exportCsv(req: Request, res: Response, next: NextFunction) {
   try {
     const { data, error } = await db
       .from('products')
       .select('id, sku, name, barcode, retail_price, purchase_price, qty_on_hand, unit, storage_bin, brand:brands(name), category:categories(name)')
+      .eq('tenant_id', req.user!.tenant_id)
       .is('deleted_at', null)
       .order('name')
 
@@ -33,9 +34,9 @@ export async function exportCsv(_req: Request, res: Response, next: NextFunction
   } catch (err) { next(err) }
 }
 
-export async function generateBarcodeOnly(_req: Request, res: Response, next: NextFunction) {
+export async function generateBarcodeOnly(req: Request, res: Response, next: NextFunction) {
   try {
-    const barcode = await productService.generateBarcode()
+    const barcode = await productService.generateBarcode(req.user!.tenant_id)
     res.json({ data: { barcode } })
   } catch (err) { next(err) }
 }
@@ -90,7 +91,7 @@ export async function importBulk(req: Request, res: Response, next: NextFunction
           updated++
           if (resObj.old_qty <= 0 && resObj.new_qty > 0) {
             const { notifyWaitlistCustomers } = await import('../routes/waitlist.js').catch(() => ({ notifyWaitlistCustomers: null }))
-            if (notifyWaitlistCustomers) void notifyWaitlistCustomers(resObj.id)
+            if (notifyWaitlistCustomers) void notifyWaitlistCustomers(resObj.id, req.user!.tenant_id)
           }
         }
       } catch {
@@ -106,7 +107,7 @@ export async function search(req: Request, res: Response, next: NextFunction) {
   try {
     const query = posSearchSchema.safeParse(req.query)
     if (!query.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри пошуку', 400, query.error.flatten())
-    const results = await productService.searchForPOS(query.data.q, query.data.limit)
+    const results = await productService.searchForPOS(query.data.q, query.data.limit, req.user!.tenant_id)
     res.json({ data: results })
   } catch (err) { next(err) }
 }
@@ -118,11 +119,12 @@ export async function getSupplierPrices(req: Request, res: Response, next: NextF
   } catch (err) { next(err) }
 }
 
-export async function getFavorites(_req: Request, res: Response, next: NextFunction) {
+export async function getFavorites(req: Request, res: Response, next: NextFunction) {
   try {
     const { data, error } = await db
       .from('products')
       .select('id, sku, name, retail_price, unit, qty_on_hand, storage_bin, requires_core_return, core_deposit_amount, brand:brands(name)')
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('is_favorite', true)
       .eq('is_active', true)
       .is('deleted_at', null)
@@ -136,7 +138,7 @@ export async function getList(req: Request, res: Response, next: NextFunction) {
   try {
     const query = productListSchema.safeParse(req.query)
     if (!query.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметры', 400, query.error.flatten())
-    const result = await productService.listProducts(query.data)
+    const result = await productService.listProducts(query.data, req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 }
@@ -167,6 +169,7 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
         .from('products')
         .select('id, retail_price, purchase_price')
         .in('id', product_ids)
+        .eq('tenant_id', req.user!.tenant_id)
       if (fetchErr) throw new AppError('DB_ERROR', fetchErr.message, 500)
 
       await Promise.all((prods ?? []).map(async (prod: any) => {
@@ -192,6 +195,7 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
           .from('products')
           .update(prodUpdates)
           .eq('id', prod.id)
+          .eq('tenant_id', req.user!.tenant_id)
 
         if (updateError) throw new AppError('DB_ERROR', updateError.message, 500)
       }))
@@ -201,6 +205,7 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
         .from('products')
         .update(updateData)
         .in('id', product_ids)
+        .eq('tenant_id', req.user!.tenant_id)
         .is('deleted_at', null)
 
       if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -220,21 +225,21 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
 
 export async function getOne(req: Request, res: Response, next: NextFunction) {
   try {
-    const product = await productService.getProduct(String(req.params.id))
+    const product = await productService.getProduct(String(req.params.id), req.user!.tenant_id)
     res.json({ data: product })
   } catch (err) { next(err) }
 }
 
 export async function getPriceHistory(req: Request, res: Response, next: NextFunction) {
   try {
-    const history = await productService.getPriceHistory(String(req.params.id))
+    const history = await productService.getPriceHistory(String(req.params.id), req.user!.tenant_id)
     res.json({ data: history })
   } catch (err) { next(err) }
 }
 
 export async function getAnalogs(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await productService.getProductAnalogs(String(req.params.id))
+    const result = await productService.getProductAnalogs(String(req.params.id), req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 }
@@ -256,6 +261,7 @@ export async function removeAnalog(req: Request, res: Response, next: NextFuncti
       .delete()
       .eq('product_id', req.params.id)
       .eq('analog_product_id', req.params.analogId)
+      .eq('tenant_id', req.user!.tenant_id)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     res.status(204).send()
   } catch (err) { next(err) }
@@ -263,6 +269,7 @@ export async function removeAnalog(req: Request, res: Response, next: NextFuncti
 
 export async function getCobuy(req: Request, res: Response, next: NextFunction) {
   try {
+    await productService.getProduct(String(req.params.id), req.user!.tenant_id)
     const { data, error } = await db
       .from('product_cobuy')
       .select('recommended_product_id, recommended:recommended_product_id!inner(id, sku, name, retail_price, qty_on_hand, unit)')
@@ -278,6 +285,10 @@ export async function addCobuy(req: Request, res: Response, next: NextFunction) 
     const { z } = await import('zod')
     const parsed = z.object({ product_ids: z.array(z.string().uuid()).min(1) }).safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Масив product_ids обов\'язковий', 422)
+    await productService.getProduct(String(req.params.id), req.user!.tenant_id)
+    for (const productId of parsed.data.product_ids) {
+      await productService.getProduct(productId, req.user!.tenant_id)
+    }
     const rows = parsed.data.product_ids.map((pid: string) => ({
       product_id: req.params.id,
       recommended_product_id: pid,
@@ -290,6 +301,8 @@ export async function addCobuy(req: Request, res: Response, next: NextFunction) 
 
 export async function removeCobuy(req: Request, res: Response, next: NextFunction) {
   try {
+    await productService.getProduct(String(req.params.id), req.user!.tenant_id)
+    await productService.getProduct(String(req.params.recommendedId), req.user!.tenant_id)
     const { error } = await db.from('product_cobuy').delete()
       .eq('product_id', req.params.id)
       .eq('recommended_product_id', req.params.recommendedId)
@@ -311,21 +324,21 @@ export async function updateOne(req: Request, res: Response, next: NextFunction)
   try {
     const parsed = updateProductSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані товару', 422, parsed.error.flatten())
-    const product = await productService.updateProduct(String(req.params.id), parsed.data, req.user!.id)
+    const product = await productService.updateProduct(String(req.params.id), parsed.data, req.user!.id, req.user!.tenant_id)
     res.json({ data: product })
   } catch (err) { next(err) }
 }
 
 export async function deleteOne(req: Request, res: Response, next: NextFunction) {
   try {
-    await productService.deleteProduct(String(req.params.id))
+    await productService.deleteProduct(String(req.params.id), req.user!.tenant_id)
     res.status(204).send()
   } catch (err) { next(err) }
 }
 
 export async function getStock(req: Request, res: Response, next: NextFunction) {
   try {
-    const breakdown = await productService.getStockBreakdown(String(req.params.id))
+    const breakdown = await productService.getStockBreakdown(String(req.params.id), req.user!.tenant_id)
     res.json({ data: breakdown })
   } catch (err) { next(err) }
 }
@@ -334,14 +347,14 @@ export async function updateStock(req: Request, res: Response, next: NextFunctio
   try {
     const parsed = stockCorrectionSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
-    const product = await productService.updateStock(String(req.params.id), parsed.data, req.user!.id)
+    const product = await productService.updateStock(String(req.params.id), parsed.data, req.user!.id, req.user!.tenant_id)
     res.json({ data: product })
   } catch (err) { next(err) }
 }
 
 export async function getFitment(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await productService.getProductFitment(String(req.params.id))
+    const result = await productService.getProductFitment(String(req.params.id), req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 }
@@ -355,8 +368,8 @@ export async function getHistory(req: Request, res: Response, next: NextFunction
 
 export async function generateBarcode(req: Request, res: Response, next: NextFunction) {
   try {
-    const barcode = await productService.generateBarcode()
-    const updated = await productService.updateProduct(String(req.params.id), { barcode }, req.user!.id)
+    const barcode = await productService.generateBarcode(req.user!.tenant_id)
+    const updated = await productService.updateProduct(String(req.params.id), { barcode }, req.user!.id, req.user!.tenant_id)
     res.json({ data: updated })
   } catch (err) { next(err) }
 }
@@ -373,6 +386,8 @@ export async function merge(req: Request, res: Response, next: NextFunction) {
     if (parsed.data.primary_product_id === parsed.data.duplicate_product_id) {
       throw new AppError('SAME_PRODUCT', 'Не можна злити товар з самим собою', 400)
     }
+    await productService.getProduct(parsed.data.primary_product_id, req.user!.tenant_id)
+    await productService.getProduct(parsed.data.duplicate_product_id, req.user!.tenant_id)
     const { data, error } = await db.rpc('merge_products', {
       p_primary_id: parsed.data.primary_product_id,
       p_duplicate_id: parsed.data.duplicate_product_id,

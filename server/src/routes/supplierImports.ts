@@ -19,6 +19,15 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
     const updateRetail = req.query.update_retail === 'true'
     const mode = (req.query.mode as 'replace' | 'add') || 'replace'
     const warehouseName = (req.query.warehouse_name as string) || null
+
+    if (supplierId) {
+      const { data: supplier } = await db.from('suppliers')
+        .select('id')
+        .eq('id', supplierId)
+        .eq('tenant_id', req.user!.tenant_id)
+        .maybeSingle()
+      if (!supplier) throw new AppError('SUPPLIER_NOT_FOUND', 'Постачальника не знайдено', 404)
+    }
     
     // Декодуємо ім'я файлу з заголовків
     let filename = req.headers['x-filename'] as string || 'import.csv'
@@ -44,6 +53,7 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
         const { data: importRecord, error: dbErr } = await db
           .from('supplier_price_imports')
           .insert({
+            tenant_id: req.user!.tenant_id,
             supplier_id: supplierId,
             filename,
             status: 'pending',
@@ -89,11 +99,12 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
 })
 
 // 2. Список імпортів
-router.get('/', requireRole(...ALLOWED), async (_req, res, next) => {
+router.get('/', requireRole(...ALLOWED), async (req, res, next) => {
   try {
     const { data, error } = await db
       .from('supplier_price_imports')
       .select('*, suppliers(id, name)')
+      .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
       .limit(50)
 
@@ -111,6 +122,7 @@ router.get('/status/:id', requireRole(...ALLOWED), async (req, res, next) => {
       .from('supplier_price_imports')
       .select('*, suppliers(id, name)')
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .maybeSingle()
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)

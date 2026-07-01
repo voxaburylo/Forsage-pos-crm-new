@@ -13,11 +13,11 @@ export class TaskQueue {
   static async enqueue(
     jobType: string,
     payload: Record<string, any>,
-    options?: { scheduledAt?: Date; maxAttempts?: number; tenantId?: string; priority?: number }
+    options: { scheduledAt?: Date; maxAttempts?: number; tenantId: string; priority?: number }
   ) {
     const scheduledAt = options?.scheduledAt || new Date()
     const maxAttempts = options?.maxAttempts || 3
-    const tenantId    = options?.tenantId    || '00000000-0000-0000-0000-000000000001'
+    const tenantId    = options.tenantId
     const priority    = options?.priority    ?? JOB_PRIORITY.NORMAL
 
     const { data, error } = await db

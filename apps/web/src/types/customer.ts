@@ -21,6 +21,7 @@ export interface Customer {
   client_status?: 'client' | 'sto'
   card_barcode: string | null
   primary_vin: string | null  // VIN першого авто
+  car_count?: number          // скільки авто у клієнта
   created_at: string
   updated_at: string
   deleted_at: string | null

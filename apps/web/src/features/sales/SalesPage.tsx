@@ -9,11 +9,11 @@ import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
 
-const PAY_COLOR: Record<string, 'green' | 'blue' | 'red'> = {
-  cash: 'green', card: 'blue', debt: 'red',
+const PAY_COLOR: Record<string, 'green' | 'blue' | 'red' | 'gray'> = {
+  cash: 'green', card: 'blue', debt: 'red', mixed: 'gray', transfer: 'blue',
 }
 const PAY_LABEL: Record<string, string> = {
-  cash: 'Готівка', card: 'Картка', debt: 'Борг',
+  cash: 'Готівка', card: 'Картка', debt: 'Борг', mixed: 'Змішано', transfer: 'Переказ',
 }
 
 export default function SalesPage() {
@@ -119,18 +119,59 @@ export default function SalesPage() {
       </div>
 
       <Card padding="none">
-        <Table
-          columns={columns}
-          data={sales}
-          keyFn={(s) => s.id}
-          loading={loading}
-          empty={
-            <div className="flex flex-col items-center gap-2 text-gray-400 py-4">
-              <ShoppingCart size={40} className="opacity-30" />
+        <div className="hidden md:block">
+          <Table
+            columns={columns}
+            data={sales}
+            keyFn={(s) => s.id}
+            loading={loading}
+            empty={
+              <div className="flex flex-col items-center gap-2 text-gray-400 py-4">
+                <ShoppingCart size={40} className="opacity-30" />
+                <p className="text-sm">Продажів не знайдено</p>
+              </div>
+            }
+          />
+        </div>
+        <div className="md:hidden divide-y divide-gray-100">
+          {loading ? (
+            <div className="py-12 text-center text-sm text-gray-400">Завантаження...</div>
+          ) : sales.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 text-gray-400 py-12">
+              <ShoppingCart size={36} className="opacity-30" />
               <p className="text-sm">Продажів не знайдено</p>
             </div>
-          }
-        />
+          ) : sales.map((sale) => (
+            <button
+              key={sale.id}
+              type="button"
+              onClick={() => openDetail(sale.id)}
+              className="w-full p-4 text-left hover:bg-gray-50 active:bg-gray-100 transition-colors"
+              aria-label={`Відкрити чек #${sale.sale_number}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-mono text-xs font-bold text-yellow-700">#{sale.sale_number}</p>
+                  <p className="mt-1 text-sm font-medium text-gray-800">
+                    {sale.customer?.full_name ?? sale.customer?.phone ?? 'Анонім'}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-400">{formatDateTime(sale.completed_at)}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-bold text-gray-900">{formatMoney(sale.total)}</p>
+                  <div className="mt-1.5 flex justify-end gap-1">
+                    <Badge color={PAY_COLOR[sale.payment_method] ?? 'gray'}>
+                      {PAY_LABEL[sale.payment_method] ?? sale.payment_method}
+                    </Badge>
+                    <Badge color={sale.status === 'returned' ? 'red' : sale.status === 'completed' ? 'green' : 'gray'}>
+                      {sale.status === 'returned' ? 'Повернено' : sale.status === 'completed' ? 'Виконано' : sale.status}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
         {pages > 1 && (
           <div className="border-t border-gray-100 px-4 py-3 flex items-center justify-between text-sm text-gray-500">
             <span>Показано {(page - 1) * 20 + 1}–{Math.min(page * 20, total)} з {total}</span>

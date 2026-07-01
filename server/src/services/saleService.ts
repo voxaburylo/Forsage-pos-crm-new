@@ -9,14 +9,34 @@ import { getTerminalAdapter, getFiscalAdapter, TerminalAdapter } from './integra
 
 const TABLE = 'sales'
 
+export async function allocateSaleNumber(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> },
+  tenantId: string,
+): Promise<string> {
+  // Серіалізуємо нумерацію в межах магазину. Sequence міг відстати після
+  // імпорту/відновлення БД, через що новий чек отримував уже наявний номер.
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`sale_number:${tenantId}`])
+  const result = await client.query(
+    `SELECT COALESCE(MAX(
+       CASE WHEN sale_number ~ '^[0-9]+$' THEN sale_number::bigint ELSE 0 END
+     ), 0) AS max_number
+     FROM sales
+     WHERE tenant_id = $1`,
+    [tenantId],
+  )
+  const nextNumber = Number(result.rows[0]?.max_number ?? 0) + 1
+  return String(nextNumber).padStart(6, '0')
+}
 
-export async function listSales(query: SaleListQuery) {
+
+export async function listSales(query: SaleListQuery, tenantId: string) {
   const { shift_id, customer_id, sale_number, search, date_from, date_to, page, per_page } = query
   const offset = (page - 1) * per_page
 
   let q = db
     .from(TABLE)
     .select('*, customer:customers(id,phone,full_name)', { count: 'exact' })
+    .eq('tenant_id', tenantId)
     .order('completed_at', { ascending: false })
     .range(offset, offset + per_page - 1)
 
@@ -29,6 +49,7 @@ export async function listSales(query: SaleListQuery) {
     const { data: cust } = await db
       .from('customers')
       .select('id')
+      .eq('tenant_id', tenantId)
       .or(`phone.ilike.%${search}%,full_name.ilike.%${search}%`)
 
     const customerIds: string[] = (cust || []).map((c: any) => c.id)
@@ -37,12 +58,14 @@ export async function listSales(query: SaleListQuery) {
     const { data: vehs } = await db
       .from('customer_vehicles')
       .select('customer_id')
+      .eq('tenant_id', tenantId)
       .ilike('vin', `%${search}%`)
     vehs?.forEach((v: any) => customerIds.push(v.customer_id))
 
     const { data: cars } = await db
       .from('customer_cars')
       .select('customer_id')
+      .eq('tenant_id', tenantId)
       .ilike('vin', `%${search}%`)
     cars?.forEach((c: any) => customerIds.push(c.customer_id))
 
@@ -68,11 +91,12 @@ export async function listSales(query: SaleListQuery) {
   }
 }
 
-export async function getSale(id: string) {
+export async function getSale(id: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .single()
 
   if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Продаж не знайдено', 404)
@@ -209,8 +233,8 @@ async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): P
   }
 }
 
-async function verifyActiveShift(cashierId: string, shiftId: string): Promise<any> {
-  const shift = await getCurrentShift(cashierId)
+async function verifyActiveShift(cashierId: string, shiftId: string, tenantId: string): Promise<any> {
+  const shift = await getCurrentShift(cashierId, tenantId)
   if (!shift) throw new AppError('NO_OPEN_SHIFT', 'Спочатку відкрийте зміну', 400)
   if (shift.id !== shiftId) throw new AppError('WRONG_SHIFT', 'Невірна зміна', 400)
   return shift
@@ -302,9 +326,8 @@ async function executeSaleTransaction(
     )
     const allowNeg = settingsRes.rows[0]?.allow_negative_qty ?? true
 
-    // 2. Generate next sale number
-    const seqRes = await client.query("SELECT nextval('sale_number_seq')")
-    const saleNumber = String(seqRes.rows[0].nextval).padStart(6, '0')
+    // 2. Generate next sale number without colliding with imported/restored data
+    const saleNumber = await allocateSaleNumber(client, tenantId)
 
     // 3. sum subtotal and verify products/stock (Pass 1)
     let subtotal = 0
@@ -315,8 +338,8 @@ async function executeSaleTransaction(
 
       // Select and lock row
       const prodRes = await client.query(
-        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price, requires_core_return, core_deposit_amount FROM products WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
-        [item.product_id]
+        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price, requires_core_return, core_deposit_amount FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE',
+        [item.product_id, tenantId]
       )
       if (prodRes.rowCount === 0) {
         throw new AppError('PRODUCT_NOT_FOUND', `Товар ${item.product_id} не знайдено`, 404)
@@ -344,8 +367,8 @@ async function executeSaleTransaction(
       if (!isService) {
         const reserveRes = await client.query(
           `SELECT COALESCE(SUM(qty), 0) as reserved FROM inventory_reserves 
-           WHERE product_id = $1 AND released_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,
-          [item.product_id]
+           WHERE product_id = $1 AND tenant_id = $2 AND released_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,
+          [item.product_id, tenantId]
         )
         const qtyReserved = parseFloat(reserveRes.rows[0].reserved)
         const qtyAvailable = qtyOnHand - qtyReserved
@@ -364,8 +387,8 @@ async function executeSaleTransaction(
     const bonusesSpent = input.bonuses_spent ?? 0
     if (useBonusAtomic && bonusesSpent > 0 && input.customer_id) {
       const custRes = await client.query(
-        'SELECT COALESCE(bonus_balance, 0) as bonus_balance FROM customers WHERE id = $1 FOR UPDATE',
-        [input.customer_id]
+        'SELECT COALESCE(bonus_balance, 0) as bonus_balance FROM customers WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        [input.customer_id, tenantId]
       )
       if (custRes.rowCount === 0) {
         throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
@@ -440,8 +463,8 @@ async function executeSaleTransaction(
 
       if (!pInfo.is_service) {
         await client.query(
-          'UPDATE products SET qty_on_hand = qty_on_hand - $1, updated_at = NOW() WHERE id = $2',
-          [item.qty, item.product_id]
+          'UPDATE products SET qty_on_hand = qty_on_hand - $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          [item.qty, item.product_id, tenantId]
         )
       }
     }
@@ -449,16 +472,16 @@ async function executeSaleTransaction(
     // 7. Update customer debt if payment_method === 'debt'
     if (input.payment_method === 'debt' && input.customer_id) {
       await client.query(
-        'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = NOW() WHERE id = $2',
-        [total, input.customer_id]
+        'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+        [total, input.customer_id, tenantId]
       )
     }
 
     // 8. Atomic loyalty bonus spent
     if (useBonusAtomic && bonusesSpent > 0 && input.customer_id) {
       await client.query(
-        'UPDATE customers SET bonus_balance = bonus_balance - $1 WHERE id = $2',
-        [bonusesSpent, input.customer_id]
+        'UPDATE customers SET bonus_balance = bonus_balance - $1 WHERE id = $2 AND tenant_id = $3',
+        [bonusesSpent, input.customer_id, tenantId]
       )
 
       await client.query(
@@ -538,6 +561,7 @@ async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fisca
       const { data: prods } = await db
         .from('products')
         .select('id, name, requires_core_return, core_deposit_amount')
+        .eq('tenant_id', sale.tenant_id)
         .in('id', input.items.map((i) => i.product_id))
       const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
 
@@ -635,7 +659,7 @@ async function processLegacyBonuses(sale: any, input: CreateSaleInput): Promise<
     await db.from('sales').update({
       bonuses_spent: bonusSpent,
       bonuses_earned: bonusEarned,
-    }).eq('id', sale.id)
+    }).eq('id', sale.id).eq('tenant_id', sale.tenant_id)
     sale.bonuses_spent = bonusSpent
     sale.bonuses_earned = bonusEarned
   }
@@ -656,7 +680,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   let cardChargeAmount = 0   // сума картки — для запису звірки при невдалому відкаті
 
   try {
-    await verifyActiveShift(cashierId, input.shift_id)
+    await verifyActiveShift(cashierId, input.shift_id, tenantId)
 
     // Calculate sums
     const subtotalItems = input.items.reduce((s, i) => s + i.unit_price * i.qty, 0)
@@ -671,6 +695,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
         .from('products')
         .select('id, requires_core_return, core_deposit_amount')
         .in('id', saleProductIds)
+        .eq('tenant_id', tenantId)
       const coreMap = new Map((coreProds ?? []).map((p: any) => [p.id, p]))
       coreDepositTotal = input.items.reduce((s, i) => {
         const p = coreMap.get(i.product_id)
@@ -709,7 +734,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     if (terminalRrn)     extraData.terminal_rrn    = terminalRrn
 
     if (Object.keys(extraData).length > 0) {
-      await db.from('sales').update(extraData).eq('id', sale.id)
+      await db.from('sales').update(extraData).eq('id', sale.id).eq('tenant_id', tenantId)
       Object.assign(sale, extraData)
     }
 
@@ -729,7 +754,8 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     })
 
     if (input.pickup_cell) {
-      await db.from('sales').update({ pickup_cell: input.pickup_cell }).eq('id', sale.id)
+      await db.from('sales').update({ pickup_cell: input.pickup_cell })
+        .eq('id', sale.id).eq('tenant_id', tenantId)
       sale.pickup_cell = input.pickup_cell
     }
 
@@ -757,7 +783,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
 
       try {
         const { notifyStatusUpdate } = await import('./telegramBot.js')
-        notifyStatusUpdate(input.customer_order_id, 'completed').catch(() => {})
+        notifyStatusUpdate(input.customer_order_id, 'completed', tenantId).catch(() => {})
       } catch (notifyErr: any) {
         logger.error({ orderId: input.customer_order_id, error: notifyErr?.message || String(notifyErr) }, 'Failed to send completion notification')
       }
@@ -818,11 +844,12 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   }
 }
 
-export async function resumeSale(saleId: string) {
+export async function resumeSale(saleId: string, tenantId: string) {
   const { data, error } = await db
     .from('sales')
     .update({ status: 'draft', updated_at: new Date().toISOString() })
     .eq('id', saleId)
+    .eq('tenant_id', tenantId)
     .eq('status', 'suspended')
     .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)')
     .single()
@@ -832,11 +859,12 @@ export async function resumeSale(saleId: string) {
 }
 
 /** Позначити чек як готовий до видачі + надіслати сповіщення */
-export async function markReadyForPickup(saleId: string) {
+export async function markReadyForPickup(saleId: string, tenantId: string) {
   const { data: sale, error: saleErr } = await db
     .from('sales')
     .update({ status: 'ready_for_pickup', updated_at: new Date().toISOString() })
     .eq('id', saleId)
+    .eq('tenant_id', tenantId)
     .select('*, customer:customers(id, full_name, phone)')
     .single()
 
@@ -844,11 +872,12 @@ export async function markReadyForPickup(saleId: string) {
 
   // Авто-сповіщення через месенджер
   if (sale.customer) {
-    const { data: settings } = await db.from('shop_settings').select('auto_notify_order_ready').single() as any
+    const { data: settings } = await db.from('shop_settings').select('auto_notify_order_ready').eq('tenant_id', tenantId).single() as any
     if (settings?.auto_notify_order_ready !== false) {
       const { data: chat } = await db.from('messenger_chats')
         .select('platform_chat_id, channel:messenger_channels(id, platform, credentials)')
         .eq('customer_id', sale.customer.id)
+        .eq('tenant_id', tenantId)
         .maybeSingle()
 
       if (chat) {

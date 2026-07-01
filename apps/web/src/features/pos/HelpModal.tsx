@@ -33,7 +33,7 @@ export function HelpModal({ open, onClose }: Props) {
             <Keyboard size={20} className="text-yellow-400" />
             <h2 className="text-white text-lg font-bold">Гарячі клавіші</h2>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
+          <button onClick={onClose} aria-label="Закрити довідку" className="text-gray-500 hover:text-white transition-colors">
             <X size={20} />
           </button>
         </div>

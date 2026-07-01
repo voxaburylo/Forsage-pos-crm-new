@@ -24,6 +24,8 @@ export function CashReconciliationModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return
+    setActual('')
+    setComment('')
     setLoading(true)
     api.get<{ data: Record<string, number> }>('/api/v1/shifts/current/expected-cash')
       .then((res) => {
@@ -38,7 +40,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
 
   const actualKopecks = Math.round(parseFloat(actual || '0') * 100)
   const difference = actualKopecks - expected
-  const hasDiff = difference !== 0
+  const hasDiff = actual !== '' && difference !== 0
   const needsComment = isOwnerOrAdmin && hasDiff && !comment.trim()
 
   async function handleSave() {
@@ -68,7 +70,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
             <DollarSign size={20} className="text-yellow-400" />
             <h2 className="text-white text-lg font-bold">Звірка каси</h2>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={onClose} aria-label="Закрити звірку" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
         {loading ? (

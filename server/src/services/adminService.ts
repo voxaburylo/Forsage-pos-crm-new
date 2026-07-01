@@ -33,11 +33,13 @@ function mapSupabaseUser(u: any) {
   }
 }
 
-export async function listUsers() {
+export async function listUsers(tenantId: string) {
   const { data, error } = await supabaseAdmin.auth.admin.listUsers()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
-  return (data.users ?? []).map(mapSupabaseUser)
+  return (data.users ?? [])
+    .filter((user) => user.user_metadata?.tenant_id === tenantId)
+    .map(mapSupabaseUser)
 }
 
 export async function createUser(input: CreateUserInput, tenantId: string) {
@@ -65,9 +67,12 @@ export async function createUser(input: CreateUserInput, tenantId: string) {
   return mapSupabaseUser(data.user)
 }
 
-export async function updateUser(id: string, input: UpdateUserInput) {
+export async function updateUser(id: string, input: UpdateUserInput, tenantId: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
   if (!existing.user) throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  if (existing.user.user_metadata?.tenant_id !== tenantId) {
+    throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  }
 
   const currentMeta = existing.user.user_metadata ?? {}
   
@@ -99,14 +104,21 @@ export async function updateUser(id: string, input: UpdateUserInput) {
   return data.user
 }
 
-export async function resetPassword(id: string, newPassword: string) {
+export async function resetPassword(id: string, newPassword: string, tenantId: string) {
+  const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
+  if (!existing.user || existing.user.user_metadata?.tenant_id !== tenantId) {
+    throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  }
   const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password: newPassword })
   if (error) throw new AppError('AUTH_ERROR', error.message, 500)
 }
 
-export async function deactivateUser(id: string) {
+export async function deactivateUser(id: string, tenantId: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
   if (!existing.user) throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  if (existing.user.user_metadata?.tenant_id !== tenantId) {
+    throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  }
 
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, {
     user_metadata: { ...existing.user.user_metadata, is_active: false },
@@ -116,11 +128,15 @@ export async function deactivateUser(id: string) {
   return data.user
 }
 
-export async function deleteUser(id: string) {
+export async function deleteUser(id: string, tenantId: string) {
+  const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
+  if (!existing.user || existing.user.user_metadata?.tenant_id !== tenantId) {
+    throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  }
   // 1. Clean up references
-  await db.from('warehouse_movements').update({ moved_by: null }).eq('moved_by', id)
-  await db.from('print_jobs').update({ printed_by: null }).eq('printed_by', id)
-  await db.from('staff_kpi_targets').delete().eq('user_id', id)
+  await db.from('warehouse_movements').update({ moved_by: null }).eq('moved_by', id).eq('tenant_id', tenantId)
+  await db.from('print_jobs').update({ printed_by: null }).eq('printed_by', id).eq('tenant_id', tenantId)
+  await db.from('staff_kpi_targets').delete().eq('user_id', id).eq('tenant_id', tenantId)
 
   // 2. Delete user from supabase auth
   const { error } = await supabaseAdmin.auth.admin.deleteUser(id)
@@ -282,7 +298,9 @@ export async function getSettings(tenantId: string) {
     .eq('tenant_id', tenantId)
     .single()
   if (error || !data) throw new AppError('DB_ERROR', 'Налаштування не знайдено', 500)
-  return data
+  // Зашифрований ключ AI ніколи не віддаємо клієнту — статус ключа є в /api/v1/ai/status
+  const { ai_api_key_encrypted: _omit, ...safe } = data as Record<string, any>
+  return safe
 }
 
 export async function updateSettings(input: SettingsInput, tenantId: string) {

@@ -68,7 +68,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
         <h3 className="text-white font-semibold text-sm flex items-center gap-2">
           <Camera size={16} /> Сканування штрих-коду
         </h3>
-        <button onClick={onClose} className="text-gray-400 hover:text-white">
+        <button onClick={onClose} aria-label="Закрити сканер" className="text-gray-400 hover:text-white">
           <X size={20} />
         </button>
       </div>

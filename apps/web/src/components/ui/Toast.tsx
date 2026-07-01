@@ -44,7 +44,11 @@ export function ToastContainer() {
         <div key={t.id} className="flex items-center gap-3 bg-white border border-gray-200 shadow-lg rounded-xl px-4 py-3 min-w-[280px]">
           {ICONS[t.type]}
           <span className="text-sm text-gray-800 flex-1">{t.message}</span>
-          <button onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}>
+          <button
+            onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+            aria-label="Закрити повідомлення"
+            title="Закрити повідомлення"
+          >
             <X size={14} className="text-gray-400 hover:text-gray-600" />
           </button>
         </div>

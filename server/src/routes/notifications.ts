@@ -1,10 +1,25 @@
 import { Router } from 'express'
-import { requireAuth } from '../middleware/auth.js'
+import { z } from 'zod'
+import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
 
 const router = Router()
 router.use(requireAuth)
+
+const templateUpdateSchema = z.object({
+  title_template: z.string().max(300),
+  body_template: z.string().min(1).max(5000),
+  is_active: z.boolean(),
+})
+
+const preferencesSchema = z.object({
+  preferences: z.array(z.object({
+    channel: z.enum(['sms', 'telegram']),
+    event_type: z.string().trim().min(1).max(100),
+    is_enabled: z.boolean(),
+  })).max(100),
+})
 
 // GET /api/v1/notifications/inbox — непрочитані сповіщення для поточного юзера
 router.get('/inbox', async (req, res, next) => {
@@ -45,6 +60,7 @@ router.patch('/inbox/:id/read', async (req, res, next) => {
       .from('in_app_notifications')
       .update({ is_read: true })
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('user_id', req.user!.id)
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -82,9 +98,11 @@ router.get('/templates', async (req, res, next) => {
 })
 
 // PUT /api/v1/notifications/templates/:id — оновити шаблон
-router.put('/templates/:id', async (req, res, next) => {
+router.put('/templates/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const { title_template, body_template, is_active } = req.body
+    const parsed = templateUpdateSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані шаблону', 422, parsed.error.flatten())
+    const { title_template, body_template, is_active } = parsed.data
     const { data, error } = await db
       .from('notification_templates')
       .update({ title_template, body_template, is_active })
@@ -102,6 +120,9 @@ router.put('/templates/:id', async (req, res, next) => {
 router.get('/preferences/:customerId', async (req, res, next) => {
   try {
     const { customerId } = req.params
+    const { data: customer } = await db.from('customers').select('id')
+      .eq('id', customerId).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+    if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
     const { data, error } = await db
       .from('customer_notification_preferences')
       .select('*')
@@ -117,13 +138,14 @@ router.get('/preferences/:customerId', async (req, res, next) => {
 router.put('/preferences/:customerId', async (req, res, next) => {
   try {
     const { customerId } = req.params
-    const { preferences } = req.body
+    const parsed = preferencesSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні налаштування сповіщень', 422, parsed.error.flatten())
+    const { preferences } = parsed.data
+    const { data: customer } = await db.from('customers').select('id')
+      .eq('id', customerId).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+    if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
 
-    if (!Array.isArray(preferences)) {
-      throw new AppError('VALIDATION_ERROR', 'preferences must be an array', 400)
-    }
-
-    const rows = preferences.map((p: any) => ({
+    const rows = preferences.map((p) => ({
       tenant_id: req.user!.tenant_id,
       customer_id: customerId,
       channel: p.channel,

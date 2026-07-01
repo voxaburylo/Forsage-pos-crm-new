@@ -72,7 +72,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
             <DollarSign size={18} className="text-red-400" />
             <h2 className="text-white text-lg font-bold">Оплата боргу</h2>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={onClose} aria-label="Закрити оплату боргу" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
         <div className="space-y-4">

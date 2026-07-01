@@ -40,6 +40,7 @@ export interface ProductFormData {
   reorder_point: string
   notes: string
   is_active: boolean
+  is_service?: boolean
   storage_bin: string
   is_favorite: boolean
   photo_url?: string | null

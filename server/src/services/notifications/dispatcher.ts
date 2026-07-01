@@ -7,6 +7,7 @@ import { sendMessageToChat } from '../messengers/MessengerService.js'
 
 export interface NotificationEvent {
   eventType: string
+  tenantId?: string
   userId?: string     // for staff In-App notifications
   customerId?: string // for customer SMS/Telegram notifications
   vars?: Record<string, string | number>
@@ -19,7 +20,7 @@ function renderTemplate(tpl: string, vars: Record<string, string | number> = {})
 
 export async function dispatch(event: NotificationEvent): Promise<void> {
   try {
-    let tenantId = (event as any).tenantId
+    let tenantId = event.tenantId
     if (!tenantId && event.customerId) {
       const { data: cust } = await db
         .from('customers')
@@ -35,7 +36,10 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
         tenantId = userData?.user?.user_metadata?.tenant_id
       } catch {}
     }
-    tenantId = tenantId || '00000000-0000-0000-0000-000000000001'
+    if (!tenantId) {
+      logger.warn({ eventType: event.eventType }, 'Notification skipped: tenant could not be resolved')
+      return
+    }
 
     const { data: templates } = await db
       .from('notification_templates')
@@ -53,6 +57,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
         .from('customers')
         .select('phone, telegram_chat_id')
         .eq('id', event.customerId)
+        .eq('tenant_id', tenantId)
         .maybeSingle()
       customer = data
     }
@@ -79,6 +84,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
         const { data: pref } = await db
           .from('customer_notification_preferences')
           .select('is_enabled')
+          .eq('tenant_id', tenantId)
           .eq('customer_id', event.customerId)
           .eq('channel', 'sms')
           .eq('event_type', event.eventType)
@@ -101,6 +107,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
         const { data: pref } = await db
           .from('customer_notification_preferences')
           .select('is_enabled')
+          .eq('tenant_id', tenantId)
           .eq('customer_id', event.customerId)
           .eq('channel', 'telegram')
           .eq('event_type', event.eventType)
@@ -120,7 +127,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
             .maybeSingle()
 
           if (chat) {
-            await sendMessageToChat(chat.id, fullText)
+            await sendMessageToChat(chat.id, fullText, tenantId)
             logger.info({ customerId: event.customerId, eventType: event.eventType }, 'Telegram notification dispatched via MessengerService')
           } else {
             logger.warn({ platformChatId: customer.telegram_chat_id }, 'Telegram dispatch skipped: chat not found in messenger_chats')

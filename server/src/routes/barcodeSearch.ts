@@ -15,7 +15,7 @@ router.get('/barcode/:code', async (req, res, next) => {
     // 1. Шукаємо товар
     const { data: product } = await db
       .from('products')
-      .select('id, sku, name, retail_price, qty_on_hand, unit, barcode, storage_bin, brand:brands(name)')
+      .select('id, sku, name, retail_price, qty_on_hand, unit, barcode, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
       .is('deleted_at', null)
       .eq('is_active', true)
       .eq('tenant_id', req.user!.tenant_id)
@@ -23,13 +23,19 @@ router.get('/barcode/:code', async (req, res, next) => {
       .maybeSingle()
 
     if (product) {
-      return res.json({ data: { type: 'product', data: product } })
+      const qtyOnHand = Number(product.qty_on_hand ?? 0)
+      return res.json({
+        data: {
+          type: 'product',
+          data: { ...product, qty_available: qtyOnHand },
+        },
+      })
     }
 
     // 2. Шукаємо клієнта
     const { data: customer } = await db
       .from('customers')
-      .select('id, phone, full_name, card_barcode, bonus_balance, vip_level, risk_profile, price_tier:price_tiers!left(id, name, discount_pct)')
+      .select('id, phone, full_name, card_barcode, debt_balance, bonus_balance, vip_level, risk_profile, price_tier:price_tiers!left(id, name, discount_pct)')
       .is('deleted_at', null)
       .eq('card_barcode', code)
       .eq('tenant_id', req.user!.tenant_id)

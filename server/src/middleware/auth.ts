@@ -29,7 +29,9 @@ export async function requireAuth(
 
   // 1. Спроба локальної валідації JWT підпису для прискорення запитів на 150-300мс
   const jwtSecret = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET
-  if (jwtSecret) {
+  const tokenHeader = jwt.decode(token, { complete: true })?.header
+  const usesSharedSecret = tokenHeader?.alg?.startsWith('HS') ?? false
+  if (jwtSecret && usesSharedSecret) {
     try {
       const decoded = jwt.verify(token, jwtSecret) as SupabaseJwtPayload
       userPayload = {

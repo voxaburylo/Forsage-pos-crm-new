@@ -117,12 +117,34 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
     return item.price ?? 0
   }
 
-  function addToReceipt(sku: string, label: string, price: number) {
+  async function addToReceipt(sku: string, label: string, price: number) {
     initAudio()
-    if (price <= 0) { toast.warning(`❌ ${label} відсутній в базі`); return }
-    store.addItem({ productId: `quick_${sku}`, sku, name: label, unit: 'шт', qty: 1, unitPrice: price, discount: 0, qtyOnHand: 999 })
-    playSuccessBeep()
-    setPopupItem(null)
+    try {
+      const result = await productApi.search(sku, 10)
+      const product = result.data?.find((item) => item.sku.toLowerCase() === sku.toLowerCase())
+        ?? result.data?.[0]
+      if (!product) {
+        toast.warning(`❌ ${label} відсутній в каталозі. Додайте товар із SKU ${sku}.`)
+        return
+      }
+      const qtyAvailable = product.qty_available ?? product.qty_on_hand
+      store.addItem({
+        productId: product.id,
+        sku: product.sku,
+        name: product.name,
+        unit: product.unit,
+        qty: 1,
+        unitPrice: price > 0 ? price : product.retail_price,
+        discount: 0,
+        qtyOnHand: qtyAvailable,
+        requiresCoreReturn: product.requires_core_return,
+        coreDepositAmount: product.core_deposit_amount,
+      })
+      playSuccessBeep()
+      setPopupItem(null)
+    } catch {
+      toast.error(`Не вдалося завантажити ${label} з каталогу`)
+    }
   }
 
   function addFoodProduct(p: FoodItem) {

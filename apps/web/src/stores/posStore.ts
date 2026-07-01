@@ -10,6 +10,7 @@ export interface POSItem {
   qty: number
   unitPrice: number    // копійки
   discount: number     // копійки
+  discountPct?: number // автоматична знижка, що масштабується разом із кількістю
   total: number        // копійки
   qtyOnHand: number    // поточний залишок на складі
   requiresCoreReturn?: boolean
@@ -40,6 +41,7 @@ export interface ReceiptTab {
   selectedProductId: string | null
   bonusToRedeem: number
   customerOrderId: string | null
+  automaticDiscountPct: number
 }
 
 const MAX_TABS = 5
@@ -59,6 +61,7 @@ function createEmptyTab(): ReceiptTab {
     selectedProductId: null,
     bonusToRedeem: 0,
     customerOrderId: null,
+    automaticDiscountPct: 0,
   }
 }
 
@@ -67,6 +70,10 @@ function calcTotals(items: POSItem[]) {
   const totalDiscount = items.reduce((s, i) => s + i.discount, 0)
   const totalCoreDeposit = items.reduce((s, i) => s + (i.requiresCoreReturn ? (i.coreDepositAmount ?? 0) * i.qty : 0), 0)
   return { subtotal, totalDiscount, totalCoreDeposit, total: subtotal - totalDiscount + totalCoreDeposit }
+}
+
+function automaticDiscount(unitPrice: number, qty: number, pct: number) {
+  return Math.round(unitPrice * qty * Math.max(0, Math.min(100, pct)) / 100)
 }
 
 interface POSState {
@@ -93,6 +100,7 @@ interface POSState {
   selectedProductId: string | null
   bonusToRedeem: number
   customerOrderId: string | null
+  automaticDiscountPct: number
 
   // Менеджер для комісійних (глобальний на всю зміну)
   managerId: string | null
@@ -109,6 +117,7 @@ interface POSState {
   removeItem: (productId: string) => void
   updateQty: (productId: string, qty: number) => void
   setDiscount: (productId: string, discount: number) => void
+  setAutomaticDiscountPct: (pct: number) => void
   setCustomer: (customer: POSCustomer | null) => void
   setNotes: (notes: string) => void
   setBonusToRedeem: (amount: number) => void
@@ -129,6 +138,7 @@ function getActiveTabGetters(tabs: ReceiptTab[], activeTabId: string | null) {
     subtotal: 0, totalDiscount: 0, totalCoreDeposit: 0, total: 0,
     selectedProductId: null, bonusToRedeem: 0,
     customerOrderId: null,
+    automaticDiscountPct: 0,
   }
   return {
     items: active.items,
@@ -141,6 +151,7 @@ function getActiveTabGetters(tabs: ReceiptTab[], activeTabId: string | null) {
     selectedProductId: active.selectedProductId,
     bonusToRedeem: active.bonusToRedeem,
     customerOrderId: active.customerOrderId ?? null,
+    automaticDiscountPct: active.automaticDiscountPct ?? 0,
   }
 }
 
@@ -226,10 +237,20 @@ export const usePOSStore = create<POSState>((set, get) => {
       if (!tab) return
       const existing = tab.items.find((i) => i.productId === item.productId)
       const updatedItems = existing
-        ? tab.items.map((i) => i.productId === item.productId
-            ? { ...i, qty: i.qty + item.qty, total: (i.qty + item.qty) * i.unitPrice - i.discount }
-            : i)
-        : [...tab.items, { ...item, total: item.qty * item.unitPrice - item.discount }]
+        ? tab.items.map((i) => {
+            if (i.productId !== item.productId) return i
+            const qty = i.qty + item.qty
+            const discount = i.discountPct !== undefined
+              ? automaticDiscount(i.unitPrice, qty, i.discountPct)
+              : Math.min(i.discount, i.unitPrice * qty)
+            return { ...i, qty, discount, total: qty * i.unitPrice - discount }
+          })
+        : (() => {
+            const discount = item.discountPct !== undefined
+              ? automaticDiscount(item.unitPrice, item.qty, item.discountPct)
+              : Math.min(item.discount, item.qty * item.unitPrice)
+            return [...tab.items, { ...item, discount, total: item.qty * item.unitPrice - discount }]
+          })()
       const totals = calcTotals(updatedItems)
       updateTabInStore(set, get, activeTabId!, { items: updatedItems, ...totals })
     },
@@ -249,7 +270,14 @@ export const usePOSStore = create<POSState>((set, get) => {
       if (!tab) return
       if (qty <= 0) { get().removeItem(productId); return }
       const updated = tab.items.map((i) =>
-        i.productId === productId ? { ...i, qty, total: qty * i.unitPrice - i.discount } : i)
+        i.productId === productId
+          ? (() => {
+              const discount = i.discountPct !== undefined
+                ? automaticDiscount(i.unitPrice, qty, i.discountPct)
+                : Math.min(i.discount, qty * i.unitPrice)
+              return { ...i, qty, discount, total: qty * i.unitPrice - discount }
+            })()
+          : i)
       const totals = calcTotals(updated)
       updateTabInStore(set, get, activeTabId!, { items: updated, ...totals })
     },
@@ -263,10 +291,37 @@ export const usePOSStore = create<POSState>((set, get) => {
         const role = session?.user?.user_metadata?.role as string | undefined
         if (role && !['owner', 'admin', 'manager'].includes(role)) return
       }
-      const updated = tab.items.map((i) =>
-        i.productId === productId ? { ...i, discount, total: i.qty * i.unitPrice - discount } : i)
+      const updated = tab.items.map((i) => {
+        if (i.productId !== productId) return i
+        const safeDiscount = Math.max(0, Math.min(discount, i.qty * i.unitPrice))
+        return { ...i, discount: safeDiscount, discountPct: undefined, total: i.qty * i.unitPrice - safeDiscount }
+      })
       const totals = calcTotals(updated)
       updateTabInStore(set, get, activeTabId!, { items: updated, ...totals })
+    },
+
+    setAutomaticDiscountPct: (pct) => {
+      const { tabs, activeTabId } = get()
+      const tab = tabs.find((t) => t.id === activeTabId)
+      if (!tab || !activeTabId) return
+      const safePct = Math.max(0, Math.min(100, pct))
+      const updated = tab.items.map((item) => {
+        // Ручну знижку менеджера не перезаписуємо автоматичною.
+        if (item.discount > 0 && item.discountPct === undefined) return item
+        const discount = automaticDiscount(item.unitPrice, item.qty, safePct)
+        return {
+          ...item,
+          discount,
+          discountPct: safePct > 0 ? safePct : undefined,
+          total: item.qty * item.unitPrice - discount,
+        }
+      })
+      const totals = calcTotals(updated)
+      updateTabInStore(set, get, activeTabId, {
+        items: updated,
+        automaticDiscountPct: safePct,
+        ...totals,
+      })
     },
 
     setCustomer: (customer) => {

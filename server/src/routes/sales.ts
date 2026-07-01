@@ -39,6 +39,18 @@ router.post('/suspend', async (req, res, next) => {
     const totalDiscount = items.reduce((s, i) => s + i.discount, 0)
     const total = Math.max(0, subtotal - totalDiscount)
 
+    const productIds = [...new Set(items.map((item) => item.product_id))]
+    const { data: tenantProducts, error: productErr } = await db
+      .from('products')
+      .select('id')
+      .in('id', productIds)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+    if (productErr) throw new AppError('DB_ERROR', productErr.message, 500)
+    if ((tenantProducts?.length ?? 0) !== productIds.length) {
+      throw new AppError('PRODUCT_NOT_FOUND', 'Один або кілька товарів не знайдено', 404)
+    }
+
     // Унікальний номер через sequence (гарантована унікальність)
     const { data: seqRow, error: seqErr } = await db.rpc('next_suspend_number' as any)
     if (seqErr) throw new AppError('DB_ERROR', seqErr.message, 500)
@@ -109,6 +121,7 @@ router.get('/check-after-payment', async (req, res, next) => {
       .select('id, sale_number, total, payment_method, completed_at, status')
       .eq('shift_id', shiftId)
       .eq('cashier_id', req.user!.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('status', 'completed')
       .order('completed_at', { ascending: false })
       .limit(1)
@@ -127,7 +140,7 @@ router.get('/', async (req, res, next) => {
   try {
     const q = saleListSchema.safeParse(req.query)
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри', 400, q.error.flatten())
-    const result = await saleService.listSales(q.data)
+    const result = await saleService.listSales(q.data, req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 })
@@ -156,12 +169,13 @@ router.post('/', async (req, res, next) => {
 })
 
 // GET /api/v1/sales/suspended — відкладені чеки (ОБОВ'ЯЗКОВО перед /:id!)
-router.get('/suspended', async (_req, res, next) => {
+router.get('/suspended', async (req, res, next) => {
   try {
     const { db } = await import('../db/supabase.js')
     const { data, error } = await db
       .from('sales')
       .select('*, customer:customers(id,phone,full_name), shift:shifts(id)')
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('status', 'suspended')
       .order('completed_at', { ascending: false })
       .limit(50)
@@ -174,7 +188,7 @@ router.get('/suspended', async (_req, res, next) => {
 // POST /api/v1/sales/:id/resume — відновити чек
 router.post('/:id/resume', async (req, res, next) => {
   try {
-    const sale = await saleService.resumeSale(String(req.params.id))
+    const sale = await saleService.resumeSale(String(req.params.id), req.user!.tenant_id)
     res.json({ data: sale })
   } catch (err) { next(err) }
 })
@@ -182,18 +196,19 @@ router.post('/:id/resume', async (req, res, next) => {
 // POST /api/v1/sales/:id/ready-for-pickup — позначити як готовий до видачі
 router.post('/:id/ready-for-pickup', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    const sale = await saleService.markReadyForPickup(String(req.params.id))
+    const sale = await saleService.markReadyForPickup(String(req.params.id), req.user!.tenant_id)
     res.json({ data: sale })
   } catch (err) { next(err) }
 })
 
 // GET /api/v1/sales/ready-for-pickup — список готових до видачі
-router.get('/ready-for-pickup', async (_req, res, next) => {
+router.get('/ready-for-pickup', async (req, res, next) => {
   try {
     const { db } = await import('../db/supabase.js')
     const { data, error } = await db
       .from('sales')
       .select('*, customer:customers(id,phone,full_name)')
+      .eq('tenant_id', req.user!.tenant_id)
       .eq('status', 'ready_for_pickup')
       .order('updated_at', { ascending: false })
       .limit(50)
@@ -205,7 +220,7 @@ router.get('/ready-for-pickup', async (_req, res, next) => {
 // GET /api/v1/sales/:id — деталі продажу (в КІНЦІ, після всіх статичних роутів)
 router.get('/:id', async (req, res, next) => {
   try {
-    const sale = await saleService.getSale(String(req.params.id))
+    const sale = await saleService.getSale(String(req.params.id), req.user!.tenant_id)
     res.json({ data: sale })
   } catch (err) { next(err) }
 })

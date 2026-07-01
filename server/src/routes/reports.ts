@@ -8,9 +8,9 @@ const router = Router()
 router.use(requireAuth)
 
 // GET /api/v1/reports/sales/today — продажі за сьогодні
-router.get('/sales/today', requireRole('owner', 'admin', 'manager'), async (_req, res, next) => {
+router.get('/sales/today', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    const data = await reportService.getSalesToday()
+    const data = await reportService.getSalesToday(req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -20,7 +20,7 @@ router.get('/sales/period', requireRole('owner', 'admin', 'manager'), async (req
   try {
     const q = periodSchema.safeParse(req.query)
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри', 400, q.error.flatten())
-    const data = await reportService.getSalesPeriod(q.data)
+    const data = await reportService.getSalesPeriod(q.data, req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -30,39 +30,39 @@ router.get('/products/top', requireRole('owner', 'admin', 'manager'), async (req
   try {
     const q = periodSchema.safeParse(req.query)
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри', 400, q.error.flatten())
-    const data = await reportService.getTopProducts(q.data)
+    const data = await reportService.getTopProducts(q.data, req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
 
 // GET /api/v1/reports/products/low-stock — товари з низьким залишком
-router.get('/products/low-stock', requireRole('owner', 'admin'), async (_req, res, next) => {
+router.get('/products/low-stock', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const data = await reportService.getLowStockProducts()
+    const data = await reportService.getLowStockProducts(req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
 
 // GET /api/v1/reports/customers/debtors — клієнти з боргом
-router.get('/customers/debtors', requireRole('owner', 'admin', 'manager'), async (_req, res, next) => {
+router.get('/customers/debtors', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    const data = await reportService.getDebtors()
+    const data = await reportService.getDebtors(req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
 
 // GET /api/v1/reports/sales/weekly — виручка за 7 днів
-router.get('/sales/weekly', requireRole('owner', 'admin', 'manager'), async (_req, res, next) => {
+router.get('/sales/weekly', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    const data = await reportService.getWeeklySales()
+    const data = await reportService.getWeeklySales(req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
 
 // GET /api/v1/reports/writeoffs/summary — списання за поточний місяць
-router.get('/writeoffs/summary', requireRole('owner', 'admin', 'manager'), async (_req, res, next) => {
+router.get('/writeoffs/summary', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    const data = await reportService.getWriteoffsSummary()
+    const data = await reportService.getWriteoffsSummary(req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -70,7 +70,7 @@ router.get('/writeoffs/summary', requireRole('owner', 'admin', 'manager'), async
 // GET /api/v1/reports/shift/:id — звіт по зміні
 router.get('/shift/:id', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   try {
-    const data = await reportService.getShiftReport(String(req.params.id))
+    const data = await reportService.getShiftReport(String(req.params.id), req.user!.tenant_id)
     res.json({ data })
   } catch (err) { next(err) }
 })

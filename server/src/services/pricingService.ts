@@ -197,6 +197,7 @@ export async function calculatePrice(params: PriceCalcParams, tenantId: string):
       .from('customers')
       .select('price_tier_id')
       .eq('id', params.customerId)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
 
     if (customer?.price_tier_id) {

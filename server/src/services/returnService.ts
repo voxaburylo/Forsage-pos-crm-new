@@ -259,6 +259,7 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
       .from('customer_orders')
       .select('id')
       .eq('sale_id', input.sale_id)
+      .eq('tenant_id', tenantId)
       .single()
 
     if (order) {

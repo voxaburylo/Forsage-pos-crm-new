@@ -14,7 +14,7 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
 
   let q = db
     .from(TABLE)
-    .select('*, price_tier:price_tiers(id,name,discount_pct), customer_vehicles(vin)', { count: 'exact' })
+    .select('*, price_tier:price_tiers(id,name,discount_pct), customer_cars(vin)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .range(offset, offset + per_page - 1)
@@ -29,7 +29,7 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
     const orParts = [`phone.ilike.%${normalized}%`, `full_name.ilike.%${search}%`]
     // Пошук також за VIN авто клієнта
     const { data: vinMatches } = await db
-      .from('customer_vehicles')
+      .from('customer_cars')
       .select('customer_id')
       .ilike('vin', `%${search}%`)
     const vinIds = [...new Set((vinMatches ?? []).map((v: any) => v.customer_id).filter(Boolean))]
@@ -64,8 +64,9 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
   // Додаємо VIN першого авто до кожного клієнта
   const enriched = (data ?? []).map((c: any) => ({
     ...c,
-    primary_vin: c.customer_vehicles?.find((v: any) => v.vin)?.vin ?? null,
-    customer_vehicles: undefined,
+    primary_vin: c.customer_cars?.find((v: any) => v.vin)?.vin ?? null,
+    car_count: Array.isArray(c.customer_cars) ? c.customer_cars.length : 0,
+    customer_cars: undefined,
   }))
 
   return {

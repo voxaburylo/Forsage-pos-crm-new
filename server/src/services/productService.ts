@@ -45,7 +45,7 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
   })
 }
 
-export async function listProducts(query: ProductListQuery) {
+export async function listProducts(query: ProductListQuery, tenantId: string) {
   const { search, category_id, brand_id, is_active, low_stock, page, per_page, sort_field, sort_dir } = query
   const offset = (page - 1) * per_page
 
@@ -55,6 +55,7 @@ export async function listProducts(query: ProductListQuery) {
     let allQ = db
       .from(TABLE)
       .select('*, brand:brands(id,name), category:categories(id,name)')
+      .eq('tenant_id', tenantId)
       .is('deleted_at', null)
 
     if (search) {
@@ -95,7 +96,7 @@ export async function listProducts(query: ProductListQuery) {
 
   // Звичайний запит — перевіряємо кеш (тільки для пошукових запитів)
   const isCacheable = !!search && !category_id && !brand_id && is_active === undefined
-  const cacheKey = isCacheable ? JSON.stringify({ search, page, per_page, sort_field, sort_dir }) : null
+  const cacheKey = isCacheable ? JSON.stringify({ tenantId, search, page, per_page, sort_field, sort_dir }) : null
   if (cacheKey) {
     const cached = await searchCache.get(cacheKey)
     if (cached) return cached
@@ -107,6 +108,7 @@ export async function listProducts(query: ProductListQuery) {
   let q = db
     .from(TABLE)
     .select('*, brand:brands(id,name), category:categories(id,name)', { count: 'exact' })
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .order(orderCol, { ascending: orderAsc })
     .range(offset, offset + per_page - 1)
@@ -144,11 +146,12 @@ export async function listProducts(query: ProductListQuery) {
   return result
 }
 
-export async function getProduct(id: string) {
+export async function getProduct(id: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .single()
 
@@ -185,8 +188,8 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
   return data
 }
 
-export async function updateProduct(id: string, input: UpdateProductInput, userId: string) {
-  const existing = await getProduct(id)
+export async function updateProduct(id: string, input: UpdateProductInput, userId: string, tenantId: string) {
+  const existing = await getProduct(id, tenantId)
 
   // Перевірка унікальності SKU при зміні артикулу
   if (input.sku !== undefined && input.sku !== existing.sku) {
@@ -235,6 +238,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     .from(TABLE)
     .update(updateData)
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .single()
@@ -244,6 +248,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
   if (priceChanges.length > 0) {
     await db.from('product_price_history').insert(
       priceChanges.map((c) => ({
+        tenant_id: existing.tenant_id,
         product_id: id,
         price_type: c.price_type,
         old_price: c.old_price,
@@ -268,12 +273,13 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
   return data
 }
 
-export async function deleteProduct(id: string) {
-  await getProduct(id)
+export async function deleteProduct(id: string, tenantId: string) {
+  await getProduct(id, tenantId)
   const { error } = await db
     .from(TABLE)
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('tenant_id', tenantId)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   await searchCache.clear()
@@ -311,10 +317,10 @@ export async function getSupplierPrices(productId: string, tenantId: string) {
   return [...bySupplier.values()].sort((a, b) => a.price - b.price)
 }
 
-export async function searchForPOS(q: string, limit: number) {
+export async function searchForPOS(q: string, limit: number, tenantId: string) {
   // Делегуємо в searchService — там буде нарощуватись логіка пошуку
   const { searchProductsForPOS } = await import('./searchService.js')
-  return searchProductsForPOS(q, limit)
+  return searchProductsForPOS(q, limit, tenantId)
 }
 
 
@@ -329,12 +335,13 @@ export async function searchForPOS(q: string, limit: number) {
  * Корекція залишку товару (ТЗ Product CRUD API — PUT /products/:id/stock)
  * Оновлює qty_on_hand та записує в аудит
  */
-export async function updateStock(productId: string, input: { qty_on_hand: number; reason?: string }, userId: string) {
+export async function updateStock(productId: string, input: { qty_on_hand: number; reason?: string }, userId: string, tenantId: string) {
   // 1. Поточний стан
   const { data: current, error: getError } = await db
     .from(TABLE)
     .select('id, sku, name, qty_on_hand, tenant_id')
     .eq('id', productId)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .single()
 
@@ -349,6 +356,7 @@ export async function updateStock(productId: string, input: { qty_on_hand: numbe
     .from(TABLE)
     .update({ qty_on_hand: newQty, updated_at: new Date().toISOString() })
     .eq('id', productId)
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .select('id, sku, name, qty_on_hand')
     .single()
@@ -358,7 +366,7 @@ export async function updateStock(productId: string, input: { qty_on_hand: numbe
   // 3a. Авто-сповіщення з листа очікування
   if (oldQty <= 0 && newQty > 0) {
     const { notifyWaitlistCustomers } = await import('../routes/waitlist.js').catch(() => ({ notifyWaitlistCustomers: null }))
-    if (notifyWaitlistCustomers) void notifyWaitlistCustomers(productId)
+    if (notifyWaitlistCustomers) void notifyWaitlistCustomers(productId, tenantId)
   }
 
   // 3. Аудит
@@ -392,6 +400,7 @@ export async function addProductAnalog(
     .from(TABLE)
     .select('id, sku, name')
     .in('id', [productId, input.analog_product_id])
+    .eq('tenant_id', tenantId)
     .is('deleted_at', null)
 
   if (checkError) throw new AppError('DB_ERROR', checkError.message, 500)
@@ -435,7 +444,8 @@ export async function addProductAnalog(
 
   return data
 }
-export async function getProductAnalogs(productId: string) {
+export async function getProductAnalogs(productId: string, tenantId: string) {
+  await getProduct(productId, tenantId)
   // 1. Отримуємо всі аналоги з brand.tier
   const { data: analogs, error } = await db
     .from('product_analogs')
@@ -449,6 +459,7 @@ export async function getProductAnalogs(productId: string) {
       )
     `)
     .eq('product_id', productId)
+    .eq('tenant_id', tenantId)
     .order('priority', { ascending: true })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -484,11 +495,13 @@ export async function getProductAnalogs(productId: string) {
  * Отримати сумісність товару з автомобілями (ТЗ — GET /products/:id/fitment)
  * Читає з product_fitment для конкретного товару
  */
-export async function getProductFitment(productId: string) {
+export async function getProductFitment(productId: string, tenantId: string) {
+  await getProduct(productId, tenantId)
   const { data, error } = await db
     .from('product_fitment')
     .select('id, make, model, year_from, year_to, engine_code, body_code, source')
     .eq('product_id', productId)
+    .eq('tenant_id', tenantId)
     .order('make', { ascending: true })
     .order('model', { ascending: true })
 
@@ -508,7 +521,8 @@ export async function getProductFitment(productId: string) {
  * Отримати історію товару: зміни цін, продажі, повернення, списання (ТЗ — GET /products/:id/history)
  * Об'єднує дані з 4 джерел в єдиний хронологічний список
  */
-export async function getProductHistory(productId: string, tenantId?: string) {
+export async function getProductHistory(productId: string, tenantId: string) {
+  await getProduct(productId, tenantId)
   const results: Array<{
     type: 'price_change' | 'sale' | 'return' | 'writeoff'
     date: string
@@ -522,7 +536,7 @@ export async function getProductHistory(productId: string, tenantId?: string) {
     .eq('product_id', productId)
     .order('created_at', { ascending: false })
     .limit(50)
-  if (tenantId) salesQ = salesQ.eq('tenant_id', tenantId)
+  salesQ = salesQ.eq('tenant_id', tenantId)
 
   const { data: sales } = await salesQ
 
@@ -541,7 +555,7 @@ export async function getProductHistory(productId: string, tenantId?: string) {
     .eq('product_id', productId)
     .order('created_at', { ascending: false })
     .limit(50)
-  if (tenantId) returnsQ = returnsQ.eq('tenant_id', tenantId)
+  returnsQ = returnsQ.eq('tenant_id', tenantId)
 
   const { data: returns } = await returnsQ
 
@@ -573,12 +587,13 @@ export async function getProductHistory(productId: string, tenantId?: string) {
   results.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
   return results
 }
-export async function getPriceHistory(productId: string) {
-  await getProduct(productId)
+export async function getPriceHistory(productId: string, tenantId: string) {
+  await getProduct(productId, tenantId)
   const { data, error } = await db
     .from('product_price_history')
     .select('*')
     .eq('product_id', productId)
+    .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .limit(50)
 
@@ -591,7 +606,7 @@ export async function getPriceHistory(productId: string) {
  * Формат: 200 + 9 цифр унікального номера + контрольна цифра.
  * Перевіряє унікальність у БД.
  */
-export async function generateBarcode(): Promise<string> {
+export async function generateBarcode(tenantId: string): Promise<string> {
   const EAN_PREFIX = '200'
   let attempts = 0
 
@@ -615,6 +630,7 @@ export async function generateBarcode(): Promise<string> {
       .from('products')
       .select('id')
       .eq('barcode', barcode)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
 
     if (!data) return barcode
@@ -623,7 +639,8 @@ export async function generateBarcode(): Promise<string> {
   throw new AppError('BARCODE_GEN_FAILED', 'Не вдалося згенерувати унікальний штрих-код', 500)
 }
 
-export async function getStockBreakdown(productId: string) {
+export async function getStockBreakdown(productId: string, tenantId: string) {
+  await getProduct(productId, tenantId)
   const { data, error } = await db
     .from('v_product_stock')
     .select('qty_on_hand, qty_reserved, qty_available')

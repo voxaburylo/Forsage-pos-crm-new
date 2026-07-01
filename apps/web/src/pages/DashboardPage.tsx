@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { orderApi } from '@/features/orders/orderApi'
 import { Layout } from '@/components/Layout'
 import { Card, Button } from '@/components/ui'
-import { formatMoney } from '@/lib/utils'
+import { formatMoney, localDateKey } from '@/lib/utils'
 
 interface DailyData {
   date: string
@@ -30,14 +30,14 @@ type Period = 'today' | 'week' | 'month'
 
 function getRange(period: Period): { startDate: string; endDate: string } {
   const now = new Date()
-  const end = now.toISOString().split('T')[0]
+  const end = localDateKey(now)
   if (period === 'today') return { startDate: end, endDate: end }
   if (period === 'week') {
     const start = new Date(now); start.setDate(start.getDate() - 6)
-    return { startDate: start.toISOString().split('T')[0], endDate: end }
+    return { startDate: localDateKey(start), endDate: end }
   }
   const start = new Date(now.getFullYear(), now.getMonth(), 1)
-  return { startDate: start.toISOString().split('T')[0], endDate: end }
+  return { startDate: localDateKey(start), endDate: end }
 }
 
 const PERIOD_LABELS: Record<Period, string> = { today: 'Сьогодні', week: '7 днів', month: 'Цей місяць' }
@@ -237,7 +237,7 @@ export default function DashboardPage() {
                 {forecast.data.map((f) => (
                   <div key={f.month} className="flex justify-between items-center text-sm">
                     <span className="text-gray-600">{f.month}</span>
-                    <span className="font-semibold text-gray-900">{formatMoney(f.projected)} ₴</span>
+                    <span className="font-semibold text-gray-900">{formatMoney(f.projected)}</span>
                   </div>
                 ))}
               </div>

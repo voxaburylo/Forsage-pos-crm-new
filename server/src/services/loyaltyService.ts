@@ -60,22 +60,24 @@ export async function updateSettings(input: {
 
 // ── Баланс клієнта ────────────────────────────────────────
 
-export async function getBalance(customerId: string): Promise<number> {
+export async function getBalance(customerId: string, tenantId: string): Promise<number> {
   const { data, error } = await db
     .from('customers')
     .select('bonus_balance')
     .eq('id', customerId)
+    .eq('tenant_id', tenantId)
     .maybeSingle()
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data?.bonus_balance ?? 0
 }
 
-export async function getTransactions(customerId: string) {
+export async function getTransactions(customerId: string, tenantId: string) {
   const { data, error } = await db
     .from('bonus_transactions')
     .select('*')
     .eq('customer_id', customerId)
+    .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .limit(50)
 
@@ -112,17 +114,17 @@ export async function accrueBonus(params: {
   saleId:     string
   saleTotal:  number
   userId:     string
+  tenantId:   string
 }): Promise<void> {
-  // Resolve tenant_id dynamically from customer record
   const { data: customer } = await db
     .from('customers')
-    .select('tenant_id')
+    .select('id')
     .eq('id', params.customerId)
-    .single()
+    .eq('tenant_id', params.tenantId)
+    .maybeSingle()
 
   if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
-  const tenantId = customer.tenant_id
-  const settings = await getSettings(tenantId)
+  const settings = await getSettings(params.tenantId)
 
   if (!settings.is_enabled) return
   if (params.saleTotal < settings.min_purchase_kopecks) return
@@ -148,6 +150,7 @@ export async function accrueBonus(params: {
     await db.from('bonus_transactions')
       .update({ created_by: params.userId, expires_at: expiresAt })
       .eq('customer_id', params.customerId)
+      .eq('tenant_id', params.tenantId)
       .eq('source_sale_id', params.saleId)
       .eq('transaction_type', 'earn')
   }
@@ -160,27 +163,32 @@ export async function redeemBonus(params: {
   amount:     number
   saleId?:    string
   userId:     string
+  tenantId:   string
 }): Promise<void> {
-  // Resolve tenant_id dynamically from customer record
   const { data: customer } = await db
     .from('customers')
-    .select('tenant_id')
+    .select('id')
     .eq('id', params.customerId)
-    .single()
+    .eq('tenant_id', params.tenantId)
+    .maybeSingle()
 
   if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
-  const tenantId = customer.tenant_id
-  const settings = await getSettings(tenantId)
+  const settings = await getSettings(params.tenantId)
   if (!settings.is_enabled) {
     throw new AppError('LOYALTY_DISABLED', 'Програма лояльності вимкнена', 400)
   }
 
-  const balance = await getBalance(params.customerId)
+  const balance = await getBalance(params.customerId, params.tenantId)
   if (params.amount > balance) {
     throw new AppError('INSUFFICIENT_BONUS', 'Недостатньо бонусів', 400)
   }
 
   const saleId = params.saleId ?? null
+  if (saleId) {
+    const { data: sale } = await db.from('sales').select('id')
+      .eq('id', saleId).eq('tenant_id', params.tenantId).maybeSingle()
+    if (!sale) throw new AppError('NOT_FOUND', 'Продаж не знайдено', 404)
+  }
 
   const { error } = await db.rpc('process_bonus_spend', {
     p_customer_id: params.customerId,
@@ -199,6 +207,7 @@ export async function redeemBonus(params: {
     await db.from('bonus_transactions')
       .update({ created_by: params.userId })
       .eq('customer_id', params.customerId)
+      .eq('tenant_id', params.tenantId)
       .eq('source_sale_id', saleId)
       .eq('transaction_type', 'spend')
   }

@@ -16,7 +16,6 @@ import {
   STAFF_TABS,
   SETTINGS_TABS
 } from './SubNavTabs'
-import { ToastContainer } from './ui'
 
 interface Props {
   children: React.ReactNode
@@ -79,6 +78,8 @@ export function Layout({ children, title, actions, onBack }: Props) {
               <button
                 onClick={onBack}
                 className="text-gray-400 hover:text-gray-600 transition-colors shrink-0 text-xl leading-none"
+                aria-label="Повернутися назад"
+                title="Повернутися назад"
               >
                 ←
               </button>
@@ -99,7 +100,6 @@ export function Layout({ children, title, actions, onBack }: Props) {
         </main>
       </div>
 
-      <ToastContainer />
     </div>
   )
 }

@@ -208,6 +208,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); store.closeTab(tab.id) }}
+                aria-label={`Закрити ${tabLabel}`}
                 className="opacity-60 hover:opacity-100 hover:text-red-400 transition-all shrink-0 flex items-center justify-center rounded-lg hover:bg-red-900/30"
                 style={{ minWidth: 36, minHeight: 36 }}
               >
@@ -313,6 +314,8 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                     <button
                       onClick={(e) => { e.stopPropagation(); store.removeItem(item.productId) }}
                       className="text-gray-700 hover:text-red-400 transition-colors shrink-0 touch-target ripple rounded-lg flex items-center justify-center"
+                      aria-label={`Видалити ${item.name}`}
+                      title="Видалити позицію"
                     >
                       <Trash2 size={16} />
                     </button>
@@ -323,6 +326,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                         onClick={(e) => { e.stopPropagation(); store.updateQty(item.productId, +(item.qty - 1).toFixed(3)) }}
                         className="w-12 h-12 rounded-xl bg-[#2C2C2C] text-white hover:bg-gray-600 flex items-center justify-center active-press ripple touch-target"
                         style={{ minWidth: 48, minHeight: 48 }}
+                        aria-label={`Зменшити кількість ${item.name}`}
                       >
                         <Minus size={20} />
                       </button>
@@ -333,6 +337,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                         }}
                         className="text-white text-lg font-semibold w-16 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
                         style={{ minHeight: 48 }}
+                        aria-label={`Змінити кількість ${item.name}`}
                       >
                         {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
                       </button>
@@ -350,6 +355,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                         }}
                         className="w-12 h-12 rounded-xl bg-[#2C2C2C] text-white hover:bg-gray-600 flex items-center justify-center active-press ripple touch-target"
                         style={{ minWidth: 48, minHeight: 48 }}
+                        aria-label={`Збільшити кількість ${item.name}`}
                       >
                         <PlusIcon size={20} />
                       </button>

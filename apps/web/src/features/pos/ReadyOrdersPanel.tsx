@@ -177,7 +177,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
           <span className="text-base font-bold tracking-wide">Видача готових замовлень</span>
           {onCloseMobile && (
-            <button onClick={onCloseMobile} className="text-gray-400 hover:text-white p-1">
+            <button onClick={onCloseMobile} aria-label="Закрити видачу" className="text-gray-400 hover:text-white p-1">
               <X size={20} />
             </button>
           )}
@@ -203,7 +203,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
           {!loading && orders.length === 0 && (
             <div className="text-center py-12 text-gray-500 text-sm">
-              Немає готових замовлень
+              {search.trim() ? 'Нічого не знайдено' : 'Немає готових замовлень'}
             </div>
           )}
 
@@ -211,6 +211,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             const remaining = order.total_amount - (order.total_paid ?? 0)
             const isCompleting = completing === order.id
             const hasArrivedItems = order.items.some((i) => i.item_status === 'arrived' && i.source_type === 'warehouse')
+            const canAcceptPayment = remaining > 0 && !['completed', 'canceled'].includes(order.status)
             
             let statusLabel = order.status
             let statusColor = 'bg-gray-700 text-gray-300'
@@ -254,7 +255,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                 </div>
 
                 <div className="flex gap-2">
-                  {remaining > 0 && (
+                  {canAcceptPayment && (
                     <button
                       onClick={() => {
                         setPayOrder(order);
@@ -403,7 +404,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                         rounded-xl shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700">
             <span className="text-sm font-semibold text-white">Управління замовленнями</span>
-            <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-white">
+            <button onClick={() => setOpen(false)} aria-label="Закрити видачу" className="text-gray-400 hover:text-white">
               <X size={15} />
             </button>
           </div>
@@ -428,7 +429,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
             {!loading && orders.length === 0 && (
               <div className="text-center py-8 text-gray-500 text-sm">
-                Немає готових замовлень
+                {search.trim() ? 'Нічого не знайдено' : 'Немає готових замовлень'}
               </div>
             )}
 
@@ -436,6 +437,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               const remaining = order.total_amount - (order.total_paid ?? 0)
               const isCompleting = completing === order.id
               const hasArrivedItems = order.items.some((i: any) => i.item_status === 'arrived' && i.source_type === 'warehouse')
+              const canAcceptPayment = remaining > 0 && !['completed', 'canceled'].includes(order.status)
               
               // Helper to style status label
               let statusLabel = order.status
@@ -480,7 +482,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                   </div>
 
                   <div className="flex gap-2">
-                    {remaining > 0 && (
+                    {canAcceptPayment && (
                       <button
                         onClick={() => {
                           setPayOrder(order);

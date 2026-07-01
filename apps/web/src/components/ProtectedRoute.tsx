@@ -3,9 +3,16 @@ import { useAuthStore } from '@/stores/authStore'
 
 interface Props {
   children: React.ReactNode
+  roles?: string[]
 }
 
-export default function ProtectedRoute({ children }: Props) {
+export function homePathForRole(role?: string): string {
+  if (role === 'cashier') return '/pos'
+  if (role === 'storekeeper') return '/inventory/picking'
+  return '/dashboard'
+}
+
+export default function ProtectedRoute({ children, roles }: Props) {
   const { session, loading } = useAuthStore()
 
   if (loading) {
@@ -18,6 +25,11 @@ export default function ProtectedRoute({ children }: Props) {
 
   if (!session) {
     return <Navigate to="/login" replace />
+  }
+
+  const role = (session.user.user_metadata?.role as string | undefined) ?? 'cashier'
+  if (roles && !roles.includes(role)) {
+    return <Navigate to={homePathForRole(role)} replace />
   }
 
   return <>{children}</>

@@ -62,10 +62,11 @@ export async function deleteCommissionRule(id: string, tenantId: string) {
 interface CommissionItem { product_id: string | null; item_status?: string | null; sell_price: number; buy_price: number; qty: number }
 type ProductsMap = Record<string, { brand_id: string | null; category_id: string | null }>
 
-async function fetchProductsMap(productIds: (string | null)[]): Promise<ProductsMap> {
+async function fetchProductsMap(productIds: (string | null)[], tenantId: string): Promise<ProductsMap> {
   const ids = productIds.filter((id): id is string => !!id)
   if (ids.length === 0) return {}
-  const { data } = await db.from('products').select('id, brand_id, category_id').in('id', ids)
+  const { data } = await db.from('products').select('id, brand_id, category_id')
+    .eq('tenant_id', tenantId).in('id', ids)
   const map: ProductsMap = {}
   for (const p of data ?? []) map[p.id] = { brand_id: p.brand_id, category_id: p.category_id }
   return map
@@ -155,7 +156,7 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
   const { data: rules } = await db.from(TABLE).select('*').eq('tenant_id', tenantId)
   if (!rules || rules.length === 0) return
 
-  const productsMap = await fetchProductsMap(items.map((i) => i.product_id))
+  const productsMap = await fetchProductsMap(items.map((i) => i.product_id), tenantId)
   const commItems: CommissionItem[] = items.map((i) => ({
     product_id: i.product_id, sell_price: i.unit_price, buy_price: i.cost_price ?? 0, qty: Number(i.qty),
   }))
@@ -194,7 +195,8 @@ export async function reverseCommissionForReturn(
 
   // активний менеджер як при нарахуванні: для продажу по замовленню — менеджер замовлення
   const { data: order } = await db
-    .from('customer_orders').select('manager_id').eq('sale_id', saleId).maybeSingle()
+    .from('customer_orders').select('manager_id')
+    .eq('sale_id', saleId).eq('tenant_id', tenantId).maybeSingle()
   const activeManagerId = order?.manager_id ?? sale.manager_id
 
   const { data: rules } = await db.from(TABLE).select('*').eq('tenant_id', tenantId)
@@ -208,7 +210,7 @@ export async function reverseCommissionForReturn(
     const si = priceMap.get(ri.sale_item_id)
     return { product_id: ri.product_id, sell_price: si?.unit_price ?? 0, buy_price: si?.cost_price ?? 0, qty: Number(ri.quantity) }
   })
-  const productsMap = await fetchProductsMap(commItems.map((i) => i.product_id))
+  const productsMap = await fetchProductsMap(commItems.map((i) => i.product_id), tenantId)
   const commMap = computeCommissionMap(commItems, productsMap, rules, activeManagerId)
   const period = currentPeriod()
 
@@ -267,6 +269,7 @@ export async function calculateAndRecordCommission(
     const { data: products, error: productsErr } = await db
       .from('products')
       .select('id, brand_id, category_id')
+      .eq('tenant_id', tenantId)
       .in('id', productIds)
 
     if (productsErr) {

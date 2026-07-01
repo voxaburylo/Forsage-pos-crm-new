@@ -42,7 +42,7 @@ export function SuspendedListModal({ open, onClose, onResume }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 shrink-0">
           <h2 className="text-white text-lg font-bold">Відкладені чеки</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={onClose} aria-label="Закрити відкладені чеки" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
         {/* Search */}

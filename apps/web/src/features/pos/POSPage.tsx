@@ -70,13 +70,16 @@ function clearSavedCart() {
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 
-function OpenShiftScreen({ onOpened }: { onOpened: () => void }) {
+function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: () => void }) {
   // Підставляємо залишок із закриття попередньої зміни (та сама каса)
   const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
   const [loading, setLoading] = useState(false)
+  const parsedCash = cash.trim() === '' ? 0 : Number(cash)
+  const cashValid = Number.isFinite(parsedCash) && parsedCash >= 0
 
   async function handleOpen() {
-    const kopecks = Math.round(parseFloat(cash || '0') * 100)
+    if (loading || !cashValid) return
+    const kopecks = Math.round(parsedCash * 100)
     setLoading(true)
     try {
       await shiftApi.open(kopecks)
@@ -92,6 +95,13 @@ function OpenShiftScreen({ onOpened }: { onOpened: () => void }) {
   return (
     <div className="min-h-screen bg-[#1A1A1A] flex items-center justify-center">
       <div className="bg-[#2C2C2C] rounded-2xl p-10 w-full max-w-sm text-center border border-gray-700">
+        <button
+          type="button"
+          onClick={onBack}
+          className="mb-5 text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          ← На головну
+        </button>
         <Zap size={40} className="text-yellow-400 mx-auto mb-4" />
         <h1 className="text-white text-2xl font-bold mb-1">Відкрити зміну</h1>
         <p className="text-gray-500 text-sm mb-6">Введіть початковий залишок готівки в касі</p>
@@ -99,11 +109,13 @@ function OpenShiftScreen({ onOpened }: { onOpened: () => void }) {
           type="number" min="0" step="0.01" autoFocus
           value={cash}
           onChange={(e) => setCash(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleOpen() }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !loading && cashValid) handleOpen() }}
           placeholder="0.00 ₴"
+          aria-label="Початковий залишок готівки"
           className="w-full bg-[#1A1A1A] text-white text-2xl font-bold text-center rounded-xl px-4 py-4 border border-gray-700 focus:outline-none focus:border-yellow-400 mb-4"
         />
-        <button onClick={handleOpen} disabled={loading} style={{ minHeight: 56 }}
+        {!cashValid && <p className="text-red-400 text-xs -mt-2 mb-3">Вкажіть невід’ємну суму</p>}
+        <button onClick={handleOpen} disabled={loading || !cashValid} style={{ minHeight: 56 }}
           className="w-full bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-lg rounded-xl py-4 disabled:opacity-50 transition-colors">
           {loading ? 'Відкриваємо...' : 'Відкрити зміну'}
         </button>
@@ -454,6 +466,7 @@ export default function POSPage() {
   if (!shift) {
     return (
       <OpenShiftScreen
+        onBack={() => navigate('/dashboard')}
         onOpened={() => {
           shiftApi.current().then(({ data }) => store.setCurrentShift(data))
         }}
@@ -515,7 +528,10 @@ export default function POSPage() {
     cart.tabs.forEach((savedTab, idx) => {
       if (idx > 0) store.addTab()
       savedTab.items.forEach(item => store.addItem(item))
-      if (savedTab.customer) store.setCustomer(savedTab.customer)
+      if (savedTab.customer) {
+        store.setCustomer(savedTab.customer)
+        if (!isEmployeeSale) store.setAutomaticDiscountPct(savedTab.customer.tierDiscountPct ?? 0)
+      }
       if (savedTab.notes) store.setNotes(savedTab.notes)
     })
     setRecoverCart(null)
@@ -614,6 +630,7 @@ export default function POSPage() {
           {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}
             onChange={(e) => store.setManagerId(e.target.value || null)}
+            aria-label="Менеджер продажу"
             className="hidden md:block bg-transparent text-gray-400 text-xs border border-gray-800 rounded-lg px-2 py-1.5 focus:outline-none focus:border-yellow-400/50 max-w-[110px] cursor-pointer hover:text-gray-300 appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}>
             {staffUsers.filter((u) => ['owner','admin','manager','cashier'].includes(u.role)).map((u) => (
@@ -678,15 +695,7 @@ export default function POSPage() {
               onClick={() => {
                 const next = !isEmployeeSale
                 setIsEmployeeSale(next)
-                // Застосовуємо або знімаємо знижку з усіх товарів
-                store.items.forEach((item) => {
-                  if (next) {
-                    const disc = Math.round(item.unitPrice * item.qty * employeeDiscountPct / 100)
-                    store.setDiscount(item.productId, disc)
-                  } else {
-                    store.setDiscount(item.productId, 0)
-                  }
-                })
+                store.setAutomaticDiscountPct(next ? employeeDiscountPct : (store.customer?.tierDiscountPct ?? 0))
                 toast.success(next
                   ? `Знижка працівника ${employeeDiscountPct}% увімкнена`
                   : 'Знижку працівника вимкнено')
@@ -900,16 +909,18 @@ export default function POSPage() {
         open={customerOpen}
         onClose={() => setCustomerOpen(false)}
         onCreated={(c: Customer) => {
+          const tierDiscountPct = c.price_tier?.discount_pct ?? 0
           store.setCustomer({
             id:              c.id,
             phone:           c.phone,
             name:            c.full_name,
             debtBalance:     c.debt_balance,
-            tierDiscountPct: c.price_tier?.discount_pct ?? 0,
+            tierDiscountPct,
             tierName:        c.price_tier?.name ?? null,
             vipLevel:        c.vip_level ?? 'standard',
             riskProfile:     c.risk_profile ?? 'low',
           })
+          if (!isEmployeeSale) store.setAutomaticDiscountPct(tierDiscountPct)
         }}
       />
 

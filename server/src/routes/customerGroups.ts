@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
 
@@ -23,7 +23,7 @@ router.get('/', async (req, res, next) => {
 })
 
 // POST /api/v1/customer-groups — створити групу
-router.post('/', async (req, res, next) => {
+router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
       name: z.string().min(1).max(100),
@@ -45,7 +45,7 @@ router.post('/', async (req, res, next) => {
 })
 
 // PATCH /api/v1/customer-groups/:id — оновити групу
-router.patch('/:id', async (req, res, next) => {
+router.patch('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
       name: z.string().min(1).max(100).optional(),
@@ -69,7 +69,7 @@ router.patch('/:id', async (req, res, next) => {
 })
 
 // DELETE /api/v1/customer-groups/:id — видалити групу
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     // Спочатку перевіряємо чи належить група тененту
     const { data: group } = await db
@@ -87,7 +87,7 @@ router.delete('/:id', async (req, res, next) => {
 })
 
 // POST /api/v1/customer-groups/:groupId/members — додати клієнтів до групи
-router.post('/:groupId/members', async (req, res, next) => {
+router.post('/:groupId/members', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({ customer_ids: z.array(z.string().uuid()).min(1) })
     const parsed = schema.safeParse(req.body)
@@ -128,7 +128,7 @@ router.post('/:groupId/members', async (req, res, next) => {
 })
 
 // DELETE /api/v1/customer-groups/:groupId/members/:customerId — видалити клієнта з групи
-router.delete('/:groupId/members/:customerId', async (req, res, next) => {
+router.delete('/:groupId/members/:customerId', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     // 1. Перевіряємо що група належить тененту
     const { data: group } = await db

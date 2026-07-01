@@ -7,12 +7,11 @@ import * as cashOpService from '../services/cashOperationService.js'
 const router = Router()
 router.use(requireAuth)
 
-// GET /api/v1/cash-operations/summary?shift_id= — ПЕРЕД /:id
+// GET /api/v1/cash-operations/summary?shift_id= — без shift_id підсумовує весь журнал
 router.get('/summary', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   try {
-    const shiftId = String(req.query.shift_id ?? '')
-    if (!shiftId) throw new AppError('VALIDATION_ERROR', 'Потрібен shift_id', 400)
-    const summary = await cashOpService.getShiftCashSummary(shiftId)
+    const shiftId = req.query.shift_id ? String(req.query.shift_id) : null
+    const summary = await cashOpService.getShiftCashSummary(shiftId, req.user!.tenant_id)
     res.json({ data: summary })
   } catch (err) { next(err) }
 })
@@ -22,7 +21,7 @@ router.get('/', requireRole('owner', 'admin', 'manager', 'cashier'), async (req,
   try {
     const q = cashOpListSchema.safeParse(req.query)
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри', 400, q.error.flatten())
-    const result = await cashOpService.listCashOperations(q.data)
+    const result = await cashOpService.listCashOperations(q.data, req.user!.tenant_id)
     res.json(result)
   } catch (err) { next(err) }
 })

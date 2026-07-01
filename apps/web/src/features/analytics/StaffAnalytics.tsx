@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Card, Badge } from '@/components/ui'
-import { formatMoney } from '@/lib/utils'
+import { formatMoney, localDateKey } from '@/lib/utils'
 import { TrendingUp, DollarSign, Users, Award, Calendar, AlertCircle, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { toast } from '@/components/ui/Toast'
@@ -38,22 +38,22 @@ export default function StaffAnalytics() {
   const range = useMemo(() => {
     if (isCustom) {
       return {
-        startDate: customRange.startDate || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
-        endDate: customRange.endDate || new Date().toISOString().split('T')[0]
+        startDate: customRange.startDate || localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1)),
+        endDate: customRange.endDate || localDateKey()
       }
     }
 
     const now = new Date()
-    const end = now.toISOString().split('T')[0]
+    const end = localDateKey(now)
     if (period === 'month') {
       const start = new Date(now.getFullYear(), now.getMonth(), 1)
-      return { startDate: start.toISOString().split('T')[0], endDate: end }
+      return { startDate: localDateKey(start), endDate: end }
     } else if (period === 'quarter') {
       const start = new Date(now.getFullYear(), now.getMonth() - 2, 1)
-      return { startDate: start.toISOString().split('T')[0], endDate: end }
+      return { startDate: localDateKey(start), endDate: end }
     } else {
       const start = new Date(now.getFullYear(), 0, 1)
-      return { startDate: start.toISOString().split('T')[0], endDate: end }
+      return { startDate: localDateKey(start), endDate: end }
     }
   }, [period, isCustom, customRange])
 

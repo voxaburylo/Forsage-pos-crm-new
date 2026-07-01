@@ -13,6 +13,7 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 // GET /api/v1/analytics/dashboard?startDate=&endDate=
 router.get('/dashboard', async (req, res, next) => {
   try {
+    const tenantId = req.user!.tenant_id
     const now = new Date()
     const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
     const defaultEnd = now.toISOString().split('T')[0]
@@ -32,6 +33,7 @@ router.get('/dashboard', async (req, res, next) => {
     const { data: sales } = await db
       .from('sales')
       .select('id, total, completed_at')
+      .eq('tenant_id', tenantId)
       .eq('status', 'completed')
       .gte('completed_at', dateFrom)
       .lte('completed_at', dateTo)
@@ -47,6 +49,7 @@ router.get('/dashboard', async (req, res, next) => {
       const { data: items } = await db
         .from('sale_items')
         .select('qty, unit_price, product:products!inner(purchase_price)')
+        .eq('tenant_id', tenantId)
         .in('sale_id', saleIds)
 
       for (const item of items ?? []) {
@@ -62,6 +65,7 @@ router.get('/dashboard', async (req, res, next) => {
     const { data: dailySales } = await db
       .from('sales')
       .select('total, completed_at')
+      .eq('tenant_id', tenantId)
       .eq('status', 'completed')
       .gte('completed_at', dateFrom)
       .lte('completed_at', dateTo)
@@ -95,6 +99,7 @@ router.get('/dashboard', async (req, res, next) => {
     const { data: expenses } = await db
       .from('cash_operations')
       .select('amount')
+      .eq('tenant_id', tenantId)
       .eq('type', 'out')
       .not('expense_category_id', 'is', null)
       .gte('created_at', dateFrom)
@@ -189,6 +194,7 @@ router.get('/abc', async (req, res, next) => {
 // GET /api/v1/analytics/staff-kpi — KPI персоналу
 router.get('/staff-kpi', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
+    const tenantId = req.user!.tenant_id
     const now = new Date()
     const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
     const defaultEnd = now.toISOString().split('T')[0]
@@ -202,6 +208,7 @@ router.get('/staff-kpi', requireRole('owner', 'admin'), async (req, res, next) =
     const { data: sales } = await db
       .from('sales')
       .select('id, manager_id, total, discount, subtotal')
+      .eq('tenant_id', tenantId)
       .eq('status', 'completed')
       .gte('completed_at', dateFrom)
       .lte('completed_at', dateTo)
@@ -226,6 +233,7 @@ router.get('/staff-kpi', requireRole('owner', 'admin'), async (req, res, next) =
       const { data: returns } = await db
         .from('returns')
         .select('refund_kopecks')
+        .eq('tenant_id', tenantId)
         .in('sale_id', saleIds)
       returnsCount = returns?.length ?? 0
       returnsAmount = (returns ?? []).reduce((s, r) => s + (r.refund_kopecks ?? 0), 0)
@@ -298,6 +306,7 @@ router.get('/staff-profitability', requireRole('owner', 'admin'), async (req, re
       const { data: saleItems, error: itemsErr } = await db
         .from('sale_items')
         .select('sale_id, qty, product:products!inner(purchase_price)')
+        .eq('tenant_id', tenantId)
         .in('sale_id', saleIds)
 
       if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
@@ -361,7 +370,7 @@ router.get('/staff-profitability', requireRole('owner', 'admin'), async (req, re
     let usersList: any[] = []
     try {
       const adminService = await import('../services/adminService.js')
-      usersList = await adminService.listUsers()
+      usersList = await adminService.listUsers(tenantId)
     } catch (uErr: any) {
       // Ігноруємо помилку, використаємо ім'я за замовчуванням
     }

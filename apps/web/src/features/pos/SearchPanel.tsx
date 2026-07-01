@@ -158,10 +158,11 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         const c = result.data
         store.setCustomer({
           id: c.id, phone: c.phone, name: c.full_name ?? null,
-          debtBalance: c.bonus_balance ?? 0, tierDiscountPct: c.price_tier?.discount_pct ?? 0,
+          debtBalance: c.debt_balance ?? 0, tierDiscountPct: c.price_tier?.discount_pct ?? 0,
           tierName: c.price_tier?.name ?? null,
           vipLevel: c.vip_level ?? 'standard', riskProfile: c.risk_profile ?? 'low',
         })
+        store.setAutomaticDiscountPct(c.price_tier?.discount_pct ?? 0)
         toast.success(`Клієнт ${c.full_name ?? c.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', code)
         playSuccessBeep()
@@ -203,7 +204,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   function addToReceipt(p: Product) {
     initAudio()
 
-    const tierPct = store.customer?.tierDiscountPct ?? 0
+    const tierPct = store.automaticDiscountPct
     const discount = tierPct > 0
       ? Math.round(p.retail_price * tierPct / 100)
       : 0
@@ -234,7 +235,8 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       qty:       1,
       unitPrice: p.retail_price,
       discount,
-      qtyOnHand: p.qty_on_hand,
+      discountPct: tierPct > 0 ? tierPct : undefined,
+      qtyOnHand: qtyAvailable,
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
     })
@@ -376,7 +378,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
               const productAnalogsData = analogs[p.id]
               const productAnalogs = productAnalogsData?.analogs ?? []
               const groupedAnalogs = productAnalogsData?.grouped ?? {}
-              const showAnalogs = (p.qty_available ?? p.qty_on_hand) <= 0
+              const showAnalogs = !p.is_service && (p.qty_available ?? p.qty_on_hand) <= 0
               return (
                 <div key={p.id}>
                   <div

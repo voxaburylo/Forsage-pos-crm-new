@@ -3,9 +3,18 @@ import { requireAuth } from '../../middleware/auth.js'
 import { listSuppliers } from '../supplierService.js'
 import { listCustomers, getCustomer } from '../customerService.js'
 import { listReturns, getReturn, getSaleItems } from '../returnService.js'
-import { getShift, getShiftReport } from '../shiftService.js'
+import { getCurrentShift, getShift, getShiftReport } from '../shiftService.js'
+import { allocateSaleNumber, getSale, listSales } from '../saleService.js'
+import { getShiftCashSummary, listCashOperations } from '../cashOperationService.js'
+import { getProduct, listProducts } from '../productService.js'
+import { getSalesToday } from '../reportService.js'
+import { getBalance, getTransactions } from '../loyaltyService.js'
 import { db } from '../../db/supabase.js'
 import jwt from 'jsonwebtoken'
+
+vi.mock('../../db/pg.js', () => ({
+  runTransaction: vi.fn(),
+}))
 
 // Set up mock function slots on global before hoisting runs
 vi.mock('../../db/supabase.js', () => {
@@ -14,6 +23,12 @@ vi.mock('../../db/supabase.js', () => {
   const mockOrder = vi.fn().mockReturnThis()
   const mockRange = vi.fn().mockReturnThis()
   const mockOr = vi.fn().mockReturnThis()
+  const mockGte = vi.fn().mockReturnThis()
+  const mockLte = vi.fn().mockReturnThis()
+  const mockGt = vi.fn().mockReturnThis()
+  const mockLimit = vi.fn().mockReturnThis()
+  const mockIn = vi.fn().mockReturnThis()
+  const mockNeq = vi.fn().mockReturnThis()
   
   // Store them globally to access in test blocks
   ;(global as any).__mockEq = mockEq
@@ -25,6 +40,12 @@ vi.mock('../../db/supabase.js', () => {
     order: mockOrder,
     range: mockRange,
     or: mockOr,
+    gte: mockGte,
+    lte: mockLte,
+    gt: mockGt,
+    limit: mockLimit,
+    in: mockIn,
+    neq: mockNeq,
     maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
     single: vi.fn().mockResolvedValue({ data: { id: 'some-id', tenant_id: 'store-abc-tenant-id' }, error: null }),
     then: (resolve: any) => resolve({ data: [], error: null })
@@ -211,12 +232,86 @@ describe('Multi-Tenant Data Isolation Tests', () => {
       expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
     })
 
+    it('should apply tenant_id query filter when getting the current shift', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await getCurrentShift('cashier-uuid', tenantId)
+      expect(db.from).toHaveBeenCalledWith('shifts')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
     it('should apply tenant_id query filter when getting a shift report', async () => {
       const tenantId = 'store-abc-tenant-id'
       try {
         await getShiftReport('shift-uuid', tenantId)
       } catch {}
       expect(db.from).toHaveBeenCalledWith('shifts')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter when listing sales', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await listSales({ page: 1, per_page: 20 }, tenantId)
+      expect(db.from).toHaveBeenCalledWith('sales')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter when getting a sale', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await getSale('sale-uuid', tenantId)
+      expect(db.from).toHaveBeenCalledWith('sales')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should allocate the next number after the highest existing tenant sale', async () => {
+      const query = vi.fn()
+        .mockResolvedValueOnce({ rows: [{}] })
+        .mockResolvedValueOnce({ rows: [{ max_number: '50' }] })
+
+      await expect(allocateSaleNumber({ query }, 'store-abc-tenant-id')).resolves.toBe('000051')
+      expect(query).toHaveBeenLastCalledWith(expect.stringContaining('WHERE tenant_id = $1'), ['store-abc-tenant-id'])
+    })
+
+    it('should apply tenant_id query filter when listing cash operations', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await listCashOperations({ page: 1, per_page: 20 }, tenantId)
+      expect(db.from).toHaveBeenCalledWith('cash_operations')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter when summarizing shift cash', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await getShiftCashSummary('shift-uuid', tenantId)
+      expect(db.from).toHaveBeenCalledWith('cash_operations')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter when listing products', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await listProducts({ page: 1, per_page: 20, sort_dir: 'asc' }, tenantId)
+      expect(db.from).toHaveBeenCalledWith('products')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter when getting a product', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await getProduct('product-uuid', tenantId)
+      expect(db.from).toHaveBeenCalledWith('products')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter to daily sales reports', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await getSalesToday(tenantId)
+      expect(db.from).toHaveBeenCalledWith('sales')
+      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+    })
+
+    it('should apply tenant_id query filter to loyalty balances and transactions', async () => {
+      const tenantId = 'store-abc-tenant-id'
+      await getBalance('customer-uuid', tenantId)
+      await getTransactions('customer-uuid', tenantId)
+      expect(db.from).toHaveBeenCalledWith('customers')
+      expect(db.from).toHaveBeenCalledWith('bonus_transactions')
       expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
     })
   })

@@ -83,18 +83,27 @@ export default function SettingsChannels() {
     )},
     { key: 'token', header: 'Токен', render: (ch: Channel) => (
       <span className="font-mono text-xs text-gray-400">
-        {ch.credentials?.token ? `${ch.credentials.token.slice(0, 20)}...` : '—'}
+        {ch.credentials?.token ? '••••••••' : '—'}
       </span>
     )},
     { key: 'status', header: 'Статус', className: 'w-20', render: (ch: Channel) => (
-      <button onClick={() => toggleChannel(ch)} title={ch.is_active ? 'Вимкнути' : 'Увімкнути'}>
+      <button
+        onClick={() => toggleChannel(ch)}
+        title={ch.is_active ? 'Вимкнути' : 'Увімкнути'}
+        aria-label={`${ch.is_active ? 'Вимкнути' : 'Увімкнути'} канал ${ch.name}`}
+      >
         {ch.is_active
           ? <ToggleRight size={20} className="text-green-500" />
           : <ToggleLeft size={20} className="text-gray-400" />}
       </button>
     )},
     { key: 'actions', header: '', className: 'w-12 text-right', render: (ch: Channel) => (
-      <button onClick={() => deleteChannel(ch)} className="text-red-400 hover:text-red-600">
+      <button
+        onClick={() => deleteChannel(ch)}
+        className="text-red-400 hover:text-red-600"
+        aria-label={`Видалити канал ${ch.name}`}
+        title={`Видалити канал ${ch.name}`}
+      >
         <Trash2 size={14} />
       </button>
     )},
@@ -127,7 +136,7 @@ export default function SettingsChannels() {
           <Input label="Назва каналу *" value={form.name}
             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             placeholder="ТГ Київстар / Viber Бізнес" required />
-          <Input label="Токен бота *" value={form.token}
+          <Input label="Токен бота *" type="password" value={form.token}
             onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
             placeholder="123456:ABCdefGHIjklmNOpqrsTUVwxyz" required />
           <div className="flex gap-3 pt-2">

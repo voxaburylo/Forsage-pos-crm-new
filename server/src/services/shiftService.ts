@@ -5,11 +5,12 @@ import type { OpenShiftInput, CloseShiftInput } from '../validators/shiftSchema.
 
 const TABLE = 'shifts'
 
-export async function getCurrentShift(cashierId: string) {
+export async function getCurrentShift(cashierId: string, tenantId: string) {
   const { data } = await db
     .from(TABLE)
     .select('*')
     .eq('cashier_id', cashierId)
+    .eq('tenant_id', tenantId)
     .eq('status', 'open')
     .maybeSingle()
   return data  // null якщо немає відкритої зміни
@@ -28,7 +29,7 @@ export async function getShift(id: string, tenantId: string) {
 }
 
 export async function openShift(cashierId: string, tenantId: string, input: OpenShiftInput) {
-  const existing = await getCurrentShift(cashierId)
+  const existing = await getCurrentShift(cashierId, tenantId)
   if (existing) throw new AppError('SHIFT_ALREADY_OPEN', 'У вас вже є відкрита зміна', 409)
 
   const { data, error } = await db

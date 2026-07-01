@@ -21,7 +21,7 @@ router.get('/hybrid', async (req, res, next) => {
     }
 
     // 1. Пошук по основному складу
-    const warehouseResults = await searchProductsForPOS(q, limit)
+    const warehouseResults = await searchProductsForPOS(q, limit, tenantId)
 
     // 2. Пошук по прайсах постачальників
     const normalized = normalizeArticle(q)

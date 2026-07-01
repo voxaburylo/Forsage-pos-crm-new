@@ -349,6 +349,7 @@ export default function ProductsPage() {
             <select
               value={brandFilter}
               onChange={(e) => { setBrandFilter(e.target.value); setPage(1) }}
+              aria-label="Фільтр за брендом"
               className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 text-gray-700 cursor-pointer"
             >
               <option value="">Всі бренди</option>
@@ -393,6 +394,7 @@ export default function ProductsPage() {
                   <tr>
                     <th className="px-3 py-3 w-10">
                       <input type="checkbox" checked={allSelected} onChange={toggleSelectAll}
+                        aria-label="Обрати всі товари"
                         className="accent-yellow-500 cursor-pointer" />
                     </th>
                     <SortTh field="sku"          label="Артикул"  className="w-32"         sort={sort} onSort={toggleSort} />
@@ -429,6 +431,7 @@ export default function ProductsPage() {
                         className={`group hover:bg-gray-50 transition-colors ${selectedIds.has(p.id) ? 'bg-yellow-50/60' : ''} ${p.is_active === false ? 'opacity-50' : ''}`}>
                         <td className="px-3 py-3 text-center">
                           <input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)}
+                            aria-label={`Обрати товар ${p.name}`}
                             className="accent-yellow-500 cursor-pointer" />
                         </td>
                         <td className="px-3 py-3">

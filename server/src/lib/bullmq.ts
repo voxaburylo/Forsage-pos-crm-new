@@ -7,7 +7,10 @@ const QUEUE_NAMES = {
 } as const
 
 function getRedisOpts(): { host: string; port: number } {
-  const url = process.env.REDIS_URL || 'redis://localhost:6379'
+  const url = process.env.REDIS_URL
+  if (!url) {
+    throw new Error('REDIS_URL is not configured; background imports use synchronous fallback')
+  }
   try {
     const parsed = new URL(url)
     return { host: parsed.hostname, port: parseInt(parsed.port || '6379', 10) }
@@ -19,6 +22,7 @@ function getRedisOpts(): { host: string; port: number } {
 const queues = new Map<string, Queue>()
 
 function getQueue(name: string): Queue {
+  getRedisOpts()
   if (!queues.has(name)) {
     const q = new Queue(name, {
       connection: getRedisOpts(),
@@ -61,7 +65,7 @@ async function enqueueOnecImportJob(payload: {
   return job.id!
 }
 
-async function getJobStatus(queueName: string, jobId: string): Promise<{
+async function getJobStatus(queueName: string, jobId: string, tenantId: string): Promise<{
   id: string
   state: string
   progress: number
@@ -71,6 +75,7 @@ async function getJobStatus(queueName: string, jobId: string): Promise<{
   const queue = getQueue(queueName)
   const job = await queue.getJob(jobId)
   if (!job) return null
+  if (job.data?.tenantId !== tenantId) return null
   const state = await job.getState()
   return {
     id: job.id!,
@@ -82,11 +87,12 @@ async function getJobStatus(queueName: string, jobId: string): Promise<{
 }
 
 function createImportWorker(handler: (data: any) => Promise<any>): Worker {
+  const connection = getRedisOpts()
   const worker = new Worker(QUEUE_NAMES.IMPORT, async (job) => {
     logger.info({ jobId: job.id, type: job.name }, 'Processing import job')
     return handler(job.data)
   }, {
-    connection: getRedisOpts(),
+    connection,
     concurrency: 2,
   })
   worker.on('completed', (job) => { logger.info({ jobId: job.id }, 'Import job completed') })
@@ -95,11 +101,12 @@ function createImportWorker(handler: (data: any) => Promise<any>): Worker {
 }
 
 function createOnecImportWorker(handler: (data: any) => Promise<any>): Worker {
+  const connection = getRedisOpts()
   const worker = new Worker(QUEUE_NAMES.ONEC_IMPORT, async (job) => {
     logger.info({ jobId: job.id, type: job.name }, 'Processing 1C import job')
     return handler(job.data)
   }, {
-    connection: getRedisOpts(),
+    connection,
     concurrency: 2,
   })
   worker.on('completed', (job) => { logger.info({ jobId: job.id }, '1C import job completed') })
