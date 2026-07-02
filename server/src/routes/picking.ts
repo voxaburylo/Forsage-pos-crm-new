@@ -7,18 +7,18 @@ import { updateOrderStatus } from './customerOrders.js'
 
 const router = Router()
 router.use(requireAuth)
-router.use(requireRole('owner', 'admin', 'manager'))
+router.use(requireRole('owner', 'admin', 'manager', 'storekeeper'))
 
 // GET /api/v1/picking/orders — Отримати список замовлень, які потребують збірки на складі
 router.get('/orders', async (req, res, next) => {
   try {
-    // Шукаємо замовлення у статусах 'new' або 'in_progress', 
-    // у яких є позиції зі складу ('warehouse') у статусі 'pending' (очікує збірки)
+    // Беремо всі замовлення зі складськими позиціями, доки їм не призначено
+    // місце видачі. Це не дає повністю зібраному замовленню зникнути з черги
+    // між останнім скануванням і збереженням комірки.
     const { data: items, error: itemsErr } = await db
       .from('customer_order_items')
       .select('order_id')
       .eq('source_type', 'warehouse')
-      .eq('item_status', 'pending')
 
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
 
@@ -32,8 +32,9 @@ router.get('/orders', async (req, res, next) => {
       .from('customer_orders')
       .select('*, customer:customers(id, full_name, phone), items:customer_order_items(*)')
       .eq('tenant_id', req.user!.tenant_id)
-      .in('status', ['new', 'ordered'])
+      .in('status', ['new', 'ordered', 'ready'])
       .in('id', orderIds)
+      .is('pickup_cell', null)
       .order('created_at', { ascending: false })
 
     if (ordersErr) throw new AppError('DB_ERROR', ordersErr.message, 500)
@@ -113,11 +114,14 @@ router.patch('/items/:itemId', async (req, res, next) => {
     // Знаходимо позицію замовлення
     const { data: item, error: findError } = await db
       .from('customer_order_items')
-      .select('order_id, name, qty')
+      .select('order_id, name, qty, source_type')
       .eq('id', itemId)
       .single()
 
     if (findError || !item) throw new AppError('NOT_FOUND', 'Позицію замовлення не знайдено', 404)
+    if (item.source_type !== 'warehouse') {
+      throw new AppError('VALIDATION_ERROR', 'У збірці можна змінювати лише складські позиції', 422)
+    }
 
     // Перевіряємо що замовлення належить нашому тененту
     const { data: order, error: orderErr } = await db
@@ -161,6 +165,28 @@ router.patch('/orders/:id/pickup-cell', async (req, res, next) => {
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна назва ячейки', 422)
+
+    const { data: order, error: orderError } = await db
+      .from('customer_orders')
+      .select('id, items:customer_order_items(id, source_type, item_status)')
+      .eq('id', id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+
+    if (orderError || !order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
+
+    const items = (order.items ?? []) as Array<{ id: string; source_type: string; item_status: string }>
+    const warehouseItems = items.filter(item => item.source_type === 'warehouse')
+    const allItemsReady = items.every(item =>
+      item.item_status === 'arrived' || item.item_status === 'handed' || item.item_status === 'canceled'
+    )
+    if (warehouseItems.length === 0 || !allItemsReady) {
+      throw new AppError(
+        'ORDER_NOT_READY',
+        'Не всі позиції готові. Завершіть збірку складу та дочекайтеся постачальника.',
+        409,
+      )
+    }
 
     const { error } = await db
       .from('customer_orders')

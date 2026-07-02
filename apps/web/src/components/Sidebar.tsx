@@ -47,7 +47,8 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/chats',               icon: <MessageSquare size={18} />,   label: 'Чат-боти',             roles: ['owner','admin','manager'] },
       { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
-      { to: '/inventory/picking',   icon: <Package size={18} />,         label: 'Склад та Збірка',      roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/inventory',           icon: <Package size={18} />,         label: 'Складські операції',   roles: ['owner','admin','storekeeper'] },
       { to: '/receiving',           icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','storekeeper'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
       { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
@@ -91,6 +92,11 @@ function SidebarLink({ item, badge, onClose }: { item: NavItem; badge?: number; 
 
     if (item.to === '/dashboard') {
       return location.pathname === '/dashboard' || location.pathname === '/'
+    }
+
+    if (item.to === '/inventory') {
+      return location.pathname === '/inventory'
+        || (location.pathname.startsWith('/inventory/') && location.pathname !== '/inventory/picking')
     }
 
     return location.pathname === item.to || (item.to !== '/' && location.pathname.startsWith(item.to + '/'))
@@ -186,6 +192,7 @@ function NavSection({
 
 export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const { session } = useAuthStore()
   const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
 
@@ -212,7 +219,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     fetchPicking(); fetchNotif()
     const t = setInterval(() => { fetchPicking(); fetchNotif() }, 120_000)
     return () => clearInterval(t)
-  }, [role])
+  }, [role, location.pathname, location.search])
 
   const badgeMap: Record<string, number> = {
     '/inventory/picking': pickingCount,

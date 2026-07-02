@@ -168,14 +168,17 @@ export default function InternalConsumptionsPage() {
 
   return (
     <Layout
-      title="Внутрішній відпуск (по собівартості)"
+      title="Товари для потреб магазину"
       actions={
         <Button icon={<Plus size={16} />} onClick={() => { setFormItems([{ product_id: null, product_name: '', sku: null, qty: '1', buy_price: 0, search: '', results: [] }]); setModal(true) }}>
-          Видати запчастини
+          Видати товар
         </Button>
       }
     >
       <div className="max-w-5xl space-y-5">
+        <p className="text-sm text-gray-500">
+          Для товарів, які використали всередині магазину: витратні матеріали, господарські потреби або видача співробітнику. Залишок зменшується за собівартістю.
+        </p>
 
         {/* Period selector */}
         <div className="flex items-center gap-3">

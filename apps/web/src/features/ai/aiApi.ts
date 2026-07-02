@@ -39,6 +39,13 @@ export interface AiPendingAction {
   count?: number
   columns?: string[]
   items?: Array<Record<string, string>>
+  // замовлення з фото: поля, розпізнані невпевнено
+  uncertain?: string[]
+}
+
+export interface AiChatImage {
+  mime_type: 'image/jpeg' | 'image/png' | 'image/webp'
+  data_base64: string
 }
 
 export interface AiApplyResult {
@@ -71,8 +78,8 @@ export const aiApi = {
   test: (body?: { api_key?: string; model?: AiModel }) =>
     api.post<{ data: { ok: boolean } }>('/api/v1/ai/test', body ?? {}),
 
-  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string }) =>
-    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', body, undefined, { timeoutMs: 120000 }),
+  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }) =>
+    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', body, undefined, { timeoutMs: 180000 }),
 
   applyAction: (body: { tool: string; payload: Record<string, any> }) =>
     api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),

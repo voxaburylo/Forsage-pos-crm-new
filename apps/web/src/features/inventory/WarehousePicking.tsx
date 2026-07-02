@@ -9,6 +9,39 @@ import { pickingApi, type EnrichedCustomerOrder, type EnrichedOrderItem } from '
 import { printPickingList } from '@/features/orders/PickingListPrint'
 import { playSuccessBeep, playWarning, playErrorTone } from '@/lib/audioService'
 
+function PickingSteps({ active }: { active: 1 | 2 | 3 }) {
+  const steps = [
+    ['1', 'Оберіть замовлення', 'Відкрийте замовлення, яке можна збирати'],
+    ['2', 'Зберіть товари', 'Йдіть за комірками та підтверджуйте позиції'],
+    ['3', 'Покладіть у комірку видачі', 'Вкажіть, де касир знайде готове замовлення'],
+  ] as const
+
+  return (
+    <div className="grid gap-2 md:grid-cols-3">
+      {steps.map(([number, title, description], index) => {
+        const step = (index + 1) as 1 | 2 | 3
+        const done = step < active
+        const current = step === active
+        return (
+          <div key={number} className={`rounded-xl border px-3 py-3 ${
+            current ? 'border-yellow-300 bg-yellow-50' : done ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-white'
+          }`}>
+            <div className="flex items-start gap-2.5">
+              <span className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                current ? 'bg-yellow-400 text-gray-900' : done ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-600'
+              }`}>{done ? '✓' : number}</span>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">{title}</p>
+                <p className="mt-0.5 text-[11px] leading-snug text-gray-500">{description}</p>
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function WarehousePicking() {
   const [searchParams, setSearchParams] = useSearchParams()
   const orderId = searchParams.get('orderId')
@@ -85,16 +118,24 @@ export default function WarehousePicking() {
         i.id === item.id ? { ...i, item_status: newStatus } : i
       )
       
-      // Перевіряємо, чи всі товари складу зібрані
-      const allPicked = updatedItems
+      // Завершувати збірку можна лише коли зібрано склад і вже надійшли
+      // всі позиції постачальників.
+      const allWarehousePicked = updatedItems
         .filter(i => i.source_type === 'warehouse')
-        .every(i => i.item_status === 'arrived')
+        .every(i => i.item_status === 'arrived' || i.item_status === 'handed')
+      const allSupplierItemsReady = updatedItems
+        .filter(i => i.source_type === 'supplier')
+        .every(i => i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled')
 
       setCurrentOrder({ ...currentOrder, items: updatedItems })
 
-      if (allPicked && isPicked) {
-        // Якщо це був останній складський товар, відкриваємо модалку для ячейки
-        setCellModalOpen(true)
+      if (allWarehousePicked && isPicked) {
+        if (allSupplierItemsReady) {
+          setCellModalOpen(true)
+        } else {
+          playWarning()
+          toast.warning('Складські товари зібрані. Завершити замовлення можна після надходження позицій постачальника.')
+        }
       }
     } catch (err: any) {
       playErrorTone()
@@ -114,10 +155,18 @@ export default function WarehousePicking() {
         await pickingApi.pickItem(item.id, 'arrived')
       }
       playSuccessBeep()
-      toast.success('Всі позиції зі складу відмічено як зібрані!')
+      toast.success('Усі складські позиції позначено як зібрані')
       
       await loadOrderDetail(currentOrder.id)
-      setCellModalOpen(true)
+      const supplierReady = currentOrder.items
+        .filter(i => i.source_type === 'supplier')
+        .every(i => i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled')
+      if (supplierReady) {
+        setCellModalOpen(true)
+      } else {
+        playWarning()
+        toast.warning('Очікуємо позиції постачальника. Комірку видачі можна буде вказати після їх надходження.')
+      }
     } catch (err: any) {
       playErrorTone()
       toast.error(err?.message || 'Не вдалося зібрати всі позиції')
@@ -154,8 +203,20 @@ export default function WarehousePicking() {
   function getOrderReadyStatus(order: EnrichedCustomerOrder) {
     const supplierItems = order.items.filter(i => i.source_type === 'supplier')
     if (supplierItems.length === 0) return 'ready'
-    const allArrived = supplierItems.every(i => i.item_status === 'arrived' || i.item_status === 'handed')
+    const allArrived = supplierItems.every(i =>
+      i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled'
+    )
     return allArrived ? 'ready' : 'pending_supplier'
+  }
+
+  function getItemStatusLabel(status: EnrichedOrderItem['item_status']) {
+    return {
+      pending: 'Очікує',
+      ordered: 'Замовлено',
+      arrived: 'Надійшло',
+      handed: 'Видано',
+      canceled: 'Скасовано',
+    }[status]
   }
 
   // Зберегти ячейку видачі
@@ -163,6 +224,13 @@ export default function WarehousePicking() {
     e.preventDefault()
     if (!currentOrder || !pickupCell.trim()) {
       toast.error('Вкажіть ячейку видачі')
+      return
+    }
+    const allReady = currentOrder.items.every(i =>
+      i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled'
+    )
+    if (!allReady) {
+      toast.error('Не всі позиції готові. Спочатку зберіть складські товари та дочекайтеся постачальника.')
       return
     }
     setSavingCell(true)
@@ -214,13 +282,17 @@ export default function WarehousePicking() {
       })
     const supplierItems = currentOrder.items.filter(i => i.source_type === 'supplier')
     
-    const pickedCount = warehouseItems.filter(i => i.item_status === 'arrived').length
+    const pickedCount = warehouseItems.filter(i => i.item_status === 'arrived' || i.item_status === 'handed').length
     const totalCount = warehouseItems.length
-    const isFinished = pickedCount === totalCount && totalCount > 0
+    const warehouseFinished = pickedCount === totalCount && totalCount > 0
+    const suppliersReady = supplierItems.every(i =>
+      i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled'
+    )
+    const isFinished = warehouseFinished && suppliersReady
 
     return (
       <Layout 
-        title={`Збірка замовлення #${currentOrder.id.slice(0, 8)}`}
+        title={`Комплектація #${currentOrder.id.slice(0, 8)}`}
         onBack={() => setSearchParams({})}
         actions={
           <div className="flex gap-2">
@@ -235,7 +307,9 @@ export default function WarehousePicking() {
           </div>
         }
       >
-        <div className="max-w-3xl space-y-6">
+        <div className="max-w-4xl space-y-6">
+          <PickingSteps active={isFinished ? 3 : 2} />
+
           {/* Картка замовлення */}
           <Card>
             <div className="flex justify-between items-start flex-wrap gap-4">
@@ -259,7 +333,7 @@ export default function WarehousePicking() {
                 )}
               </div>
               <div className="text-right shrink-0">
-                <span className="text-xs text-gray-400 block mb-1">Прогрес збірки</span>
+                <span className="text-xs text-gray-400 block mb-1">Взято зі складу</span>
                 <div className="text-2xl font-bold text-gray-900">
                   {pickedCount} / {totalCount}
                 </div>
@@ -311,11 +385,11 @@ export default function WarehousePicking() {
               {warehouseItems.filter(i => i.item_status === 'pending').length > 0 && (
                 <Button
                   size="sm"
-                  variant="primary"
+                  variant="secondary"
                   onClick={handlePickAll}
-                  className="bg-green-600 hover:bg-green-700 text-white font-semibold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1"
+                  className="font-semibold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1"
                 >
-                  ⚡ Зібрати всі товари
+                  Позначити всі як зібрані
                 </Button>
               )}
             </div>
@@ -366,14 +440,14 @@ export default function WarehousePicking() {
                             className="bg-green-100 hover:bg-green-200 text-green-800 border-none flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
                             onClick={() => handlePickItem(item, false)}
                           >
-                            <CheckCircle size={14} /> Зібрано
+                            <CheckCircle size={14} /> Взято
                           </Button>
                         ) : (
                           <Button 
                             onClick={() => handlePickItem(item, true)}
                             className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold px-4 py-2 text-xs flex items-center gap-1"
                           >
-                            <CheckSquare size={14} /> Зібрати
+                            <CheckSquare size={14} /> Підтвердити
                           </Button>
                         )}
                       </div>
@@ -398,11 +472,11 @@ export default function WarehousePicking() {
                       <div className="flex gap-4 mt-1.5 text-xs text-gray-400">
                         {item.sku && <span>Арт: <strong className="font-mono">{item.sku}</strong></span>}
                         <span>Кількість: <strong>{item.qty} шт</strong></span>
-                        <span>Статус: <Badge color={item.item_status === 'arrived' ? 'green' : 'yellow'}>{item.item_status}</Badge></span>
+                        <span>Статус: <Badge color={item.item_status === 'arrived' ? 'green' : 'yellow'}>{getItemStatusLabel(item.item_status)}</Badge></span>
                       </div>
                     </div>
                     <div className="text-xs text-gray-400 italic">
-                      Не потребує збірки зі складу
+                      Надходить через постачальника
                     </div>
                   </div>
                 ))}
@@ -420,7 +494,7 @@ export default function WarehousePicking() {
         >
           <form onSubmit={handleSaveCell} className="space-y-4">
             <p className="text-sm text-gray-600">
-              Всі позиції зі складу зібрано! Вкажіть комірку, в яку ви поклали це замовлення, щоб менеджер міг швидко знайти його при видачі.
+              Усі позиції готові. Покладіть замовлення в окрему комірку або на полицю видачі та вкажіть її номер — касир побачить це місце під час видачі.
             </p>
             <Input 
               label="Комірка видачі *" 
@@ -465,23 +539,23 @@ export default function WarehousePicking() {
 
   // ЕКРАН СПИСКУ ЗАМОВЛЕНЬ НА ЗБІРКУ
   return (
-    <Layout title="Збірка замовлень (WMS)">
-      <div className="max-w-4xl space-y-4">
+    <Layout title="Збірка замовлень">
+      <div className="max-w-5xl space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-sm text-gray-500">
-            Тут відображаються замовлення, які містять складські товари та потребують комплектації.
+            Черга для комірника: взяти товари зі складу, скласти одне замовлення разом і передати його в зону видачі.
           </p>
           <Button size="sm" variant="secondary" onClick={loadOrders} loading={loadingOrders}>
             Оновити
           </Button>
         </div>
 
-        {/* Пояснення логіки збірки */}
-        <div className="bg-blue-50/60 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-900/80 leading-relaxed">
-          <span className="font-semibold">Як це працює:</span> комірник відкриває замовлення →
-          сканує або відмічає кожну позицію зі складу як «зібрано» (можна друкувати лист збірки з комірками) →
-          вкінці вводить № комірки видачі, куди поклав зібране. Після цього замовлення готове до видачі на касі.
-          «Очікують деталі» — позиції, які ще їдуть від постачальника.
+        <PickingSteps active={1} />
+
+        <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-xs leading-relaxed text-blue-900">
+          <strong>Важливо:</strong> товари постачальника тут не потрібно шукати на складі.
+          Якщо замовлення «очікує постачальника», складську частину можна підготувати, але завершити комплектацію —
+          лише після надходження всіх позицій.
         </div>
 
         <Card className="shadow-sm border border-gray-100 bg-white">
@@ -520,7 +594,7 @@ export default function WarehousePicking() {
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
-                Готові ({orders.filter(o => getOrderReadyStatus(o) === 'ready').length})
+                Можна збирати ({orders.filter(o => getOrderReadyStatus(o) === 'ready').length})
               </button>
               <button
                 type="button"
@@ -531,7 +605,7 @@ export default function WarehousePicking() {
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
-                Очікують деталі ({orders.filter(o => getOrderReadyStatus(o) === 'pending_supplier').length})
+                Очікують постачальника ({orders.filter(o => getOrderReadyStatus(o) === 'pending_supplier').length})
               </button>
             </div>
           </div>
@@ -549,8 +623,9 @@ export default function WarehousePicking() {
             <div className="divide-y divide-gray-100">
               {filteredOrders.map(order => {
                 const warehouseItems = order.items.filter(i => i.source_type === 'warehouse')
-                const pendingWarehouseItems = warehouseItems.filter(i => i.item_status === 'pending')
-                const pickedCount = warehouseItems.length - pendingWarehouseItems.length
+                const pickedCount = warehouseItems.filter(i =>
+                  i.item_status === 'arrived' || i.item_status === 'handed'
+                ).length
                 const isReady = getOrderReadyStatus(order) === 'ready'
 
                 return (
@@ -568,11 +643,11 @@ export default function WarehousePicking() {
                         </Badge>
                         {isReady ? (
                           <Badge color="green">
-                            Готово до комплектації
+                            Можна збирати
                           </Badge>
                         ) : (
                           <Badge color="yellow">
-                            Очікує деталей
+                            Очікує постачальника
                           </Badge>
                         )}
                       </div>
@@ -600,7 +675,7 @@ export default function WarehousePicking() {
                         onClick={() => setSearchParams({ orderId: order.id })}
                         className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold text-xs"
                       >
-                        Складати
+                        {pickedCount > 0 ? 'Продовжити збірку' : 'Почати збірку'}
                       </Button>
                     </div>
                   </div>

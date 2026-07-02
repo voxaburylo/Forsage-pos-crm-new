@@ -80,6 +80,9 @@ export default function CashflowPage() {
   return (
     <Layout title="Каса та витрати">
       <div className="max-w-4xl space-y-4">
+        <p className="text-sm text-gray-500">
+          Ручні внесення та витрати готівки. Продажі й повернення дивіться у сусідніх вкладках — вони не дублюються в цьому журналі.
+        </p>
         {/* Картки */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Card className="bg-green-50 border-green-200">

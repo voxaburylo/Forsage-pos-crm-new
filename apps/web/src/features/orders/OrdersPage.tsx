@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, Truck, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
-  Trash2, X, Check, RefreshCw, Pencil, Copy, ArrowRight, Clock,
+  Trash2, X, Check, RefreshCw, Pencil, Copy, ArrowRight, Clock, Camera,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -1022,9 +1022,6 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
             >
               <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
             </button>
-            <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/orders/new')}>
-              Нове замовлення
-            </Button>
           </div>
         </div>
 
@@ -1679,6 +1676,14 @@ export default function OrdersPage() {
           </div>
           {!chatMode && (
           <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+            <Button variant="secondary" size="sm" icon={<Camera size={14} />}
+              className="!hidden md:!inline-flex" onClick={() => navigate('/ai-assistant')}
+              title="Сфотографуйте рукописне замовлення з зошита — ШІ розпізнає його і заведе клієнта, авто та позиції">
+              З фото (ШІ)
+            </Button>
+            <Button variant="secondary" size="sm" icon={<Camera size={14} />}
+              className="md:hidden !px-2" onClick={() => navigate('/ai-assistant')}
+              title="Замовлення з фото (ШІ)" />
             <Button variant="secondary" size="sm" icon={<FilePen size={14} />}
               className="!hidden md:!inline-flex" onClick={() => navigate('/quotes/new')}>
               Чернетка

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users, Receipt } from 'lucide-react'
+import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users, Receipt, LayoutGrid, PauseCircle, Inbox, Scale, MoreVertical } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
@@ -186,6 +186,7 @@ export default function POSPage() {
   const shift = store.currentShift
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
   
@@ -639,98 +640,131 @@ export default function POSPage() {
           </select>
         </div>
 
-        {/* Desktop права частина — всі кнопки */}
+        {/* Desktop права частина — щоденні дії з підписами, решта в меню «Ще» */}
         <div className="hidden md:flex items-center gap-0.5">
           <button onClick={() => setQuickOpen(true)}
-            className="h-8 md:h-10 px-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 font-bold rounded-lg transition-colors flex items-center gap-2 border border-indigo-600/30"
-            title="Швидкий доступ">
-            🍔 Товари
+            className="h-10 px-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-indigo-600/30 text-xs"
+            title="Швидкий доступ до товарів">
+            <LayoutGrid size={15} /> Товари
           </button>
+
+          <div className="w-px h-7 bg-gray-800 mx-1" />
+
+          {/* Чеки */}
           {lastSale && (
             <button onClick={printReceipt}
-              className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
-              title="Друк останнього чека">
-              <Printer size={16} />
+              className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
+              title="Надрукувати останній чек">
+              <Printer size={15} /><span className="hidden xl:inline">Друк</span>
             </button>
           )}
           <button onClick={() => setFindReceiptOpen(true)}
-            className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
             title="Знайти і надрукувати чек (F6)">
-            <Receipt size={16} />
+            <Receipt size={15} /><span className="hidden xl:inline">Знайти чек</span>
           </button>
           <ReadyOrdersPanel />
           <button onClick={() => { if (store.items.length > 0) setSuspendOpen(true) }}
             disabled={store.items.length === 0}
-            className="flex items-center justify-center text-gray-500 hover:text-white rounded-lg hover:bg-gray-800 w-9 h-9 disabled:opacity-30 relative"
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium disabled:opacity-30"
             title="Відкласти поточний чек (F7)">
-            <span className="text-base leading-none">📥</span>
+            <PauseCircle size={15} /><span className="hidden xl:inline">Відкласти</span>
           </button>
           <button onClick={() => setSuspendedOpen(true)}
-            className="flex items-center justify-center text-gray-500 hover:text-white rounded-lg hover:bg-gray-800 w-9 h-9 relative"
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium relative"
             title="Відкладені чеки (F5)">
-            <span className="text-base leading-none">📦</span>
+            <Inbox size={15} /><span className="hidden xl:inline">Відкладені</span>
             {suspendedCount > 0 && (
               <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
                 {suspendedCount > 9 ? '9+' : suspendedCount}
               </span>
             )}
           </button>
+
+          <div className="w-px h-7 bg-gray-800 mx-1" />
+
+          {/* Гроші */}
           <button onClick={() => setCashOpen(true)}
-            className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
-            title="Касові операції">
-            <ArrowLeftRight size={16} />
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Внесення та витрата готівки">
+            <ArrowLeftRight size={15} /><span className="hidden xl:inline">Каса</span>
           </button>
           <button onClick={() => setDebtPayOpen(true)}
-            className="flex items-center justify-center text-red-500 hover:text-red-400 rounded-xl hover:bg-gray-800 w-11 h-11"
-            title="Оплата боргу">
-            <DollarSign size={16} />
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-red-400 hover:text-red-300 hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Прийняти оплату боргу клієнта">
+            <DollarSign size={15} /><span className="hidden xl:inline">Борг</span>
+          </button>
+          <button onClick={() => navigate('/returns')}
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-orange-400 hover:text-orange-300 hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Повернення товару за чеком">
+            <RotateCcw size={15} /><span className="hidden xl:inline">Повернення</span>
           </button>
           <button onClick={() => setReconcileOpen(true)}
-            className="flex items-center justify-center text-gray-500 hover:text-yellow-400 rounded-xl hover:bg-gray-800 w-11 h-11"
-            title="Звірка">
-            <span className="text-sm leading-none">📊</span>
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-yellow-400 hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Звірка готівки в касі">
+            <Scale size={15} /><span className="hidden xl:inline">Звірка</span>
           </button>
-          {employeeDiscountPct > 0 && (
-            <button
-              onClick={() => {
-                const next = !isEmployeeSale
-                setIsEmployeeSale(next)
-                store.setAutomaticDiscountPct(next ? employeeDiscountPct : (store.customer?.tierDiscountPct ?? 0))
-                toast.success(next
-                  ? `Знижка працівника ${employeeDiscountPct}% увімкнена`
-                  : 'Знижку працівника вимкнено')
-              }}
-              className={`flex items-center justify-center rounded-xl w-11 h-11 transition-colors ${
-                isEmployeeSale
-                  ? 'bg-green-900/50 text-green-400 hover:bg-green-800/60 ring-1 ring-green-600/50'
-                  : 'text-gray-500 hover:text-white hover:bg-gray-800'
+
+          <div className="w-px h-7 bg-gray-800 mx-1" />
+
+          {/* Рідковживане — меню «Ще» */}
+          <div className="relative">
+            <button onClick={() => setMoreOpen((v) => !v)}
+              className={`flex items-center justify-center rounded-lg w-10 h-10 transition-colors ${
+                moreOpen || isEmployeeSale || bigFont
+                  ? 'text-yellow-400 bg-gray-800'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
               }`}
-              title={`Продаж працівнику (${employeeDiscountPct}%)`}
-            >
-              <Users size={16} />
+              title="Ще: блокування, довідка, шрифт, повний екран">
+              <MoreVertical size={17} />
             </button>
-          )}
-          <button onClick={handleLock}
-            className="flex items-center justify-center text-gray-500 hover:text-yellow-400 rounded-xl hover:bg-gray-800 w-11 h-11"
-            title="Заблокувати">
-            <Lock size={16} />
-          </button>
-          <button onClick={() => setHelpOpen(true)}
-            className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
-            title="Довідка (F1)">
-            <Keyboard size={16} />
-          </button>
-          <button onClick={() => { const v = !bigFont; setBigFont(v); localStorage.setItem('pos_big_font', v ? '1' : '0') }}
-            className={`flex items-center justify-center rounded-xl hover:bg-gray-800 w-11 h-11 font-bold ${bigFont ? 'text-yellow-400' : 'text-gray-500 hover:text-white'}`}
-            title="Великий шрифт">
-            A+
-          </button>
-          <button onClick={toggleFullscreen}
-            className="flex items-center justify-center text-gray-500 hover:text-white rounded-xl hover:bg-gray-800 w-11 h-11"
-            title="На весь екран">
-            {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
-          </button>
-          <div className="w-px h-7 bg-gray-800 mx-1.5" />
+            {moreOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 w-64 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden py-1">
+                  {employeeDiscountPct > 0 && (
+                    <button
+                      onClick={() => {
+                        const next = !isEmployeeSale
+                        setIsEmployeeSale(next)
+                        store.setAutomaticDiscountPct(next ? employeeDiscountPct : (store.customer?.tierDiscountPct ?? 0))
+                        toast.success(next
+                          ? `Знижка працівника ${employeeDiscountPct}% увімкнена`
+                          : 'Знижку працівника вимкнено')
+                        setMoreOpen(false)
+                      }}
+                      className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left transition-colors ${
+                        isEmployeeSale ? 'text-green-400 bg-green-900/20' : 'text-gray-300 hover:bg-gray-700'
+                      }`}>
+                      <Users size={15} /> Продаж працівнику ({employeeDiscountPct}%)
+                      {isEmployeeSale && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
+                    </button>
+                  )}
+                  <button onClick={() => { setMoreOpen(false); handleLock() }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
+                    <Lock size={15} /> Заблокувати касу
+                  </button>
+                  <button onClick={() => { setMoreOpen(false); setHelpOpen(true) }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
+                    <Keyboard size={15} /> Гарячі клавіші (F1)
+                  </button>
+                  <button onClick={() => { const v = !bigFont; setBigFont(v); localStorage.setItem('pos_big_font', v ? '1' : '0'); setMoreOpen(false) }}
+                    className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left transition-colors ${
+                      bigFont ? 'text-yellow-400 bg-yellow-900/10' : 'text-gray-300 hover:bg-gray-700'
+                    }`}>
+                    <span className="font-bold text-[15px] leading-none w-[15px]">A+</span> Великий шрифт
+                    {bigFont && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
+                  </button>
+                  <button onClick={() => { setMoreOpen(false); toggleFullscreen() }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
+                    {isFullscreen ? <Minimize size={15} /> : <Maximize size={15} />} {isFullscreen ? 'Вийти з повного екрана' : 'На весь екран'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="w-px h-7 bg-gray-800 mx-1" />
           <div className="flex items-center gap-2 mr-1">
             <span className="text-yellow-400 font-bold text-lg tabular-nums tracking-tight">{formatMoney(store.total)}</span>
             <button onClick={() => setCloseOpen(true)}
@@ -777,9 +811,12 @@ export default function POSPage() {
             <div className="grid grid-cols-4 gap-3 mb-4">
               {[
                 { icon: '🖨️', label: 'Друк', action: () => { printReceipt(); setMobileMenuOpen(false) }, disabled: !lastSale },
+                { icon: '🧾', label: 'Знайти чек', action: () => { setFindReceiptOpen(true); setMobileMenuOpen(false) } },
+                { icon: '⏸️', label: 'Відкласти', action: () => { setSuspendOpen(true); setMobileMenuOpen(false) }, disabled: store.items.length === 0 },
                 { icon: '📦', label: 'Відкладені', action: () => { setSuspendedOpen(true); setMobileMenuOpen(false) }, badge: suspendedCount },
                 { icon: '↔️', label: 'Каса', action: () => { setCashOpen(true); setMobileMenuOpen(false) } },
                 { icon: '💸', label: 'Борг', action: () => { setDebtPayOpen(true); setMobileMenuOpen(false) } },
+                { icon: '↩️', label: 'Повернення', action: () => { setMobileMenuOpen(false); navigate('/returns') } },
                 { icon: '📊', label: 'Звірка', action: () => { setReconcileOpen(true); setMobileMenuOpen(false) } },
                 { icon: '🔒', label: 'Блок', action: () => { handleLock(); setMobileMenuOpen(false) } },
                 { icon: '❓', label: 'Довідка', action: () => { setHelpOpen(true); setMobileMenuOpen(false) } },
@@ -819,7 +856,7 @@ export default function POSPage() {
             <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
               <SearchPanel ref={searchRef} />
               <div className="hidden md:flex md:flex-col min-h-0 min-w-0 flex-1">
-                <DashboardPanel onSearch={(q) => searchRef.current?.search(q)} />
+                <DashboardPanel />
               </div>
               <div className="hidden md:block">
                 <CrossSellPanel />

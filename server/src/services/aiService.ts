@@ -165,7 +165,7 @@ export async function getUsageSummary(tenantId: string) {
 // READ-інструменти виконуються одразу. WRITE-інструменти НЕ виконуються, а
 // повертаються користувачу як «пропозиція змін» (було → стане) на підтвердження.
 const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers'])
-const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category'])
+const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
 const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk'])
 
@@ -294,6 +294,47 @@ const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'create_order',
+    description: 'Запропонувати створення замовлення клієнта (з фото рукописного зошита або з тексту). НЕ застосовується одразу — користувач перевірить і підтвердить. Якщо на фото КІЛЬКА замовлень — виклич цей інструмент для КОЖНОГО окремо. Ціни у гривнях.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        customer_name: { type: SchemaType.STRING, description: 'Імʼя/назва клієнта як написано' },
+        customer_phone: { type: SchemaType.STRING, description: 'Телефон клієнта, нормалізуй у +380XXXXXXXXX' },
+        car_make: { type: SchemaType.STRING, description: 'Марка авто (Toyota, ВАЗ…)' },
+        car_model: { type: SchemaType.STRING },
+        car_year: { type: SchemaType.NUMBER },
+        vin: { type: SchemaType.STRING, description: 'VIN (17 символів), якщо є' },
+        plate: { type: SchemaType.STRING, description: 'Держномер авто (АА1234АА), якщо є' },
+        comment: { type: SchemaType.STRING, description: 'Коментарі/пометки з зошита, які не є позиціями' },
+        is_done: { type: SchemaType.BOOLEAN, description: 'true, якщо замовлення ПЕРЕКРЕСЛЕНЕ (= виконане, одразу в архів)' },
+        items: {
+          type: SchemaType.ARRAY,
+          description: 'Позиції замовлення (запчастини/роботи)',
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              name: { type: SchemaType.STRING, description: 'Назва запчастини як написано' },
+              part_number: { type: SchemaType.STRING, description: 'Каталожний номер, якщо вказано' },
+              qty: { type: SchemaType.NUMBER, description: 'Кількість (за замовч. 1)' },
+              sell_price_uah: { type: SchemaType.NUMBER, description: 'Ціна продажу, грн. Якщо не вказана — НЕ передавай' },
+              buy_price_uah: { type: SchemaType.NUMBER, description: 'Закупівельна ціна, грн. Якщо не вказана — НЕ передавай (залишиться порожньою)' },
+              arrived: { type: SchemaType.BOOLEAN, description: 'true, якщо навпроти позиції стоїть ГАЛОЧКА (= запчастина вже прибула)' },
+              note: { type: SchemaType.STRING, description: 'Помітка біля позиції' },
+            },
+            required: ['name'],
+          },
+        },
+        uncertain: {
+          type: SchemaType.ARRAY,
+          description: 'Поля, які розпізнано НЕВПЕВНЕНО, з фіксованого списку: customer_name, customer_phone, car, vin, plate, items, prices, status',
+          items: { type: SchemaType.STRING },
+        },
+      },
+      required: ['items'],
+    },
+  },
+  {
     name: 'create_customers_bulk',
     description: 'МАСОВЕ створення клієнтів зі списку (наприклад, перетягнутого Excel). Одна пропозиція на весь список, застосовується пакетом. Використовуй для 2+ клієнтів.',
     parameters: {
@@ -365,6 +406,22 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 - Товари: пошук, картка, створення (по одному або МАСОВО create_products_bulk).
 - Клієнти: пошук, створення (по одному або МАСОВО create_customers_bulk), редагування. Телефон НЕОБОВʼЯЗКОВИЙ — якщо його нема, все одно створюй клієнта (імʼя + авто). Прізвище та імʼя обʼєднуй у full_name. Якщо в клітинці кілька телефонів — бери перший. При наявності VIN — заведи авто клієнту (make/model/year/vin); марку/модель бери з рядка або визнач за WMI (перші символи VIN). Додаткові примітки (напр. «Такси», список деталей) клади в notes.
 - Категорії («папки»): створення по одній або МАСОВО create_categories_bulk.
+- Замовлення: create_order — з ФОТО рукописного зошита або з тексту. Кожне замовлення = окремий виклик create_order.
+
+ФОТО РУКОПИСНИХ ЗАМОВЛЕНЬ (зошит). Коли надіслано фото замовлення:
+- Уважно розпізнай УСІ замовлення на фото (їх може бути кілька — розділяй за лініями, відступами, іменами). Для КОЖНОГО виклич create_order.
+- З кожного замовлення витягни: імʼя клієнта, телефон (+380…), авто (марка/модель/рік), VIN (17 симв.), держномер, список запчастин з каталожними номерами, кількістю та цінами ПРОДАЖУ, коментарі/пометки.
+- ПЕРЕКРЕСЛЕНЕ замовлення (закреслено лініями/хрестом) → is_done=true (воно виконане, піде в архів).
+- ГАЛОЧКА (✓/V) навпроти запчастини → arrived=true для цієї позиції (вона вже прибула).
+- Закупівельної ціни в зошиті зазвичай НЕМАЄ — тоді НЕ передавай buy_price_uah (поле залишиться порожнім). НЕ вигадуй ціни.
+- Якщо щось розпізнано невпевнено (нерозбірливий почерк, обрізаний край) — додай відповідний ключ у uncertain (customer_name / customer_phone / car / vin / plate / items / prices / status), користувач перевірить підсвічені поля.
+- Клієнта та авто НЕ треба створювати окремо — create_order сам знайде клієнта за телефоном або створить нового разом з авто.
+
+ІНШІ ФОТО. Якщо на фото не замовлення, а:
+- прайс-лист / накладна з товарами → розпізнай таблицю і виклич create_products_bulk (артикул, назва, бренд, ціни в грн; закупівельну бери лише якщо явно вказана);
+- список клієнтів → create_customers_bulk;
+- візитка постачальника чи щось інше — опиши текстом, що бачиш, і спитай, що з цим зробити.
+Ціни на фото часто мають формат «1 890,00» — в аргументи інструментів передавай ЧИСЛО без пробілів, із крапкою: 1890.00.
 
 Правила:
 - Усі грошові суми — у гривнях (грн). Телефони клієнтів — у форматі +380XXXXXXXXX (нормалізуй сам), але вони НЕОБОВʼЯЗКОВІ. Дані можуть бути «брудною» таблицею через табуляцію (колонки: №, прізвище, імʼя, телефон, рік, обʼєм, VIN, марка, модель, примітки) — розбирай по колонках, порожні клітинки пропускай.
@@ -384,6 +441,8 @@ export interface PendingAction {
   count?: number
   columns?: string[]
   items?: Array<Record<string, string>>
+  // для замовлень з фото — ключі полів, розпізнаних невпевнено
+  uncertain?: string[]
 }
 
 const money = (kop: number) => (kop / 100).toFixed(2) + ' грн'
@@ -488,6 +547,38 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
     }
   }
 
+  // ── Замовлення (з фото зошита або тексту) ──────────────────────────────
+  if (name === 'create_order') {
+    const rawItems: any[] = Array.isArray(args?.items) ? args.items : []
+    const items = rawItems.map((it) => ({
+      'Позиція': String(it.name ?? '—'),
+      'Кат. номер': String(it.part_number ?? '—'),
+      'К-сть': String(it.qty ?? 1),
+      'Ціна': it.sell_price_uah !== undefined && it.sell_price_uah !== null
+        ? Number(it.sell_price_uah).toFixed(2) + ' грн' : '—',
+      'Прибула': it.arrived ? '✓' : '',
+    }))
+    const changes: PendingAction['changes'] = []
+    if (args.customer_name) changes.push({ label: 'Клієнт', old: null, next: String(args.customer_name) })
+    if (args.customer_phone) changes.push({ label: 'Телефон', old: null, next: String(args.customer_phone) })
+    const car = [args.car_make, args.car_model, args.car_year].filter(Boolean).join(' ')
+    if (car) changes.push({ label: 'Авто', old: null, next: car })
+    if (args.vin) changes.push({ label: 'VIN', old: null, next: String(args.vin) })
+    if (args.plate) changes.push({ label: 'Держномер', old: null, next: String(args.plate) })
+    if (args.comment) changes.push({ label: 'Коментар', old: null, next: String(args.comment) })
+    changes.push({ label: 'Статус', old: null, next: args.is_done ? 'Виконане (в архів)' : 'Нове' })
+
+    const uncertain = Array.isArray(args?.uncertain) ? args.uncertain.map((u: any) => String(u)) : []
+    return {
+      id, tool: name,
+      title: `Замовлення: ${args.customer_name ?? 'без клієнта'} (${rawItems.length} поз.)`,
+      changes, count: rawItems.length,
+      columns: ['Позиція', 'Кат. номер', 'К-сть', 'Ціна', 'Прибула'], items,
+      uncertain: uncertain.length ? uncertain : undefined,
+      payload: { ...args },
+    }
+  }
+
   // ── Одиничні клієнти / категорії ────────────────────────────────────────
   if (name === 'create_customer') {
     const changes: PendingAction['changes'] = [
@@ -566,6 +657,129 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
   }
 }
 
+// ─── Рятувальний прохід для фото (JSON-режим) ───────────────────────────────
+// gemini-2.5-flash іноді стабільно генерує НЕКОРЕКТНІ виклики інструментів на
+// табличних фото (finishReason=MALFORMED_FUNCTION_CALL, відповідь порожня).
+// Тоді робимо прохід БЕЗ інструментів зі строгою JSON-схемою відповіді —
+// текстова JSON-генерація цим багом не страждає — і збираємо пропозиції самі.
+const SALVAGE_ITEM_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    name: { type: SchemaType.STRING },
+    part_number: { type: SchemaType.STRING },
+    qty: { type: SchemaType.NUMBER },
+    sell_price_uah: { type: SchemaType.NUMBER },
+    buy_price_uah: { type: SchemaType.NUMBER },
+    arrived: { type: SchemaType.BOOLEAN },
+    note: { type: SchemaType.STRING },
+  },
+  required: ['name'],
+} as const
+
+const SALVAGE_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    orders: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          customer_name: { type: SchemaType.STRING },
+          customer_phone: { type: SchemaType.STRING },
+          car_make: { type: SchemaType.STRING },
+          car_model: { type: SchemaType.STRING },
+          car_year: { type: SchemaType.NUMBER },
+          vin: { type: SchemaType.STRING },
+          plate: { type: SchemaType.STRING },
+          comment: { type: SchemaType.STRING },
+          is_done: { type: SchemaType.BOOLEAN },
+          items: { type: SchemaType.ARRAY, items: SALVAGE_ITEM_SCHEMA as any },
+          uncertain: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        },
+        required: ['items'],
+      },
+    },
+    products: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          sku: { type: SchemaType.STRING },
+          name: { type: SchemaType.STRING },
+          brand_name: { type: SchemaType.STRING },
+          category_name: { type: SchemaType.STRING },
+          retail_price_uah: { type: SchemaType.NUMBER },
+          purchase_price_uah: { type: SchemaType.NUMBER },
+          oem_number: { type: SchemaType.STRING },
+        },
+        required: ['sku', 'name'],
+      },
+    },
+    customers: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          full_name: { type: SchemaType.STRING },
+          phone: { type: SchemaType.STRING },
+          vin: { type: SchemaType.STRING },
+          car_make: { type: SchemaType.STRING },
+          car_model: { type: SchemaType.STRING },
+          car_year: { type: SchemaType.NUMBER },
+        },
+      },
+    },
+  },
+} as const
+
+const SALVAGE_PROMPT = `Розпізнай дані з фото і поверни СТРОГО JSON за схемою (без коментарів).
+- Рукописні замовлення з зошита → orders[] (кожне замовлення окремо: клієнт, телефон +380…, авто, VIN, держномер, позиції; ПЕРЕКРЕСЛЕНЕ замовлення → is_done=true; ГАЛОЧКА біля позиції → arrived=true; невпевнено розпізнані поля перелічи в uncertain: customer_name/customer_phone/car/vin/plate/items/prices/status).
+- Прайс-лист або накладна з товарами → products[] (закупівельну ціну вказуй лише якщо вона явно є).
+- Список клієнтів → customers[].
+Ціни «1 890,00» передавай числом 1890.00. Не вигадуй даних, яких нема на фото. Порожні масиви не включай.`
+
+async function salvageFromImages(
+  genAI: GoogleGenerativeAI,
+  modelName: string,
+  userText: string,
+  imageParts: Part[],
+  tenantId: string,
+): Promise<{ actions: PendingAction[]; promptTokens: number; completionTokens: number }> {
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    systemInstruction: SALVAGE_PROMPT,
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: SALVAGE_SCHEMA as any,
+    },
+  })
+  const res = await model.generateContent([{ text: userText } as Part, ...imageParts])
+  const um = res.response.usageMetadata
+  const promptTokens = um?.promptTokenCount ?? 0
+  const completionTokens = um?.totalTokenCount != null
+    ? Math.max(um.totalTokenCount - promptTokens, 0)
+    : (um?.candidatesTokenCount ?? 0)
+
+  let parsed: any = {}
+  try { parsed = JSON.parse(res.response.text()) } catch { /* нижче повернемо порожньо */ }
+
+  const actions: PendingAction[] = []
+  if (Array.isArray(parsed.orders)) {
+    for (const order of parsed.orders) {
+      if (Array.isArray(order?.items) && order.items.length > 0) {
+        actions.push(await buildPendingAction('create_order', order, tenantId))
+      }
+    }
+  }
+  if (Array.isArray(parsed.products) && parsed.products.length > 0) {
+    actions.push(await buildPendingAction('create_products_bulk', { products: parsed.products }, tenantId))
+  }
+  if (Array.isArray(parsed.customers) && parsed.customers.length > 0) {
+    actions.push(await buildPendingAction('create_customers_bulk', { customers: parsed.customers }, tenantId))
+  }
+  return { actions, promptTokens, completionTokens }
+}
+
 // Транзієнтні помилки Gemini (перевантаження/мережа) — має сенс повторити.
 // Помилки ключа/квоти/валідації (400/401/403) не ретраїмо.
 function isQuotaError(e: any): boolean {
@@ -602,10 +816,12 @@ async function sendWithRetry(chat: any, parts: string | Part[], iter: number) {
 }
 
 // ─── Головний чат ────────────────────────────────────────────────────────────
+export interface ChatImage { mime_type: string; data_base64: string }
+
 export async function runChat(
   tenantId: string,
   userId: string | null,
-  params: { history?: ChatMessage[]; message: string; fileText?: string },
+  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[] },
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   const cfg = await getAiConfig(tenantId)
   if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Gemini не налаштовано. Додайте його в Налаштуваннях.', 400)
@@ -635,8 +851,15 @@ export async function runChat(
   let completionTokens = 0
   let reply = ''
 
-  // Надсилаємо або текст користувача, або відповіді інструментів (parts).
-  let nextParts: string | Part[] = userText
+  // Надсилаємо або текст користувача (+ фото, якщо є), або відповіді інструментів.
+  const images = (params.images ?? []).slice(0, 4)
+  const imageParts: Part[] = images.map((img): Part => ({
+    inlineData: { mimeType: img.mime_type, data: img.data_base64 },
+  }))
+  let nextParts: string | Part[] = imageParts.length > 0
+    ? [{ text: userText } as Part, ...imageParts]
+    : userText
+  let sawMalformedCall = false
   let corrections = 0
 
   for (let iter = 0; iter < 10; iter++) {
@@ -677,6 +900,26 @@ export async function runChat(
     if (calls.length === 0) {
       reply = resp.text()
 
+      // Порожня відповідь (буває, коли модель згенерувала некоректний виклик
+      // інструмента і SDK його відкинув — finishReason=MALFORMED_FUNCTION_CALL,
+      // або спрацював safety-фільтр). Один раз повторюємо із підказкою —
+      // фото/дані лишаються в історії чату.
+      const finishReason = (resp as any).candidates?.[0]?.finishReason
+      if (finishReason === 'MALFORMED_FUNCTION_CALL') sawMalformedCall = true
+      if (!reply.trim() && corrections < 2) {
+        corrections++
+        logger.warn({ finishReason, iter }, '[ai] empty model response, re-prompting')
+        const nudge = finishReason === 'MALFORMED_FUNCTION_CALL'
+          ? 'СИСТЕМА: Твій виклик інструмента був синтаксично НЕКОРЕКТНИЙ, тому його відкинуто. НЕ відповідай текстом і НЕ вибачайся — ЗАРАЗ повтори виклик потрібного інструмента з коректними аргументами: усі числа — БЕЗ пробілів-роздільників, дробова частина через крапку (напр. «1 890,00» → 1890.00), рядки без зайвих лапок усередині. Прайс/накладна → create_products_bulk; рукописне замовлення → create_order; список клієнтів → create_customers_bulk.'
+          : 'СИСТЕМА: Твоя попередня відповідь була порожньою'
+            + (finishReason ? ` (finishReason=${finishReason})` : '')
+            + '. Спробуй ще раз: якщо в повідомленні чи на фото є дані для заведення (замовлення → create_order, товари/прайс → create_products_bulk, клієнти → create_customers_bulk) — виклич відповідний інструмент. Якщо даних нема — відповідай текстом українською.'
+        // Після відкинутої відповіді SDK не зберігає фото в історії чату —
+        // надсилаємо його ще раз разом із підказкою, інакше модель "сліпне".
+        nextParts = imageParts.length > 0 ? [{ text: nudge } as Part, ...imageParts] : nudge
+        continue
+      }
+
       // Запобіжник галюцинації: модель написала, ніби виконала дію («готово»,
       // «створив/создал», «додав/добавил»…), але НЕ підготувала ЖОДНОЇ write-пропозиції
       // (actions порожні) — отже фактично нічого не зроблено. Це стосується і випадку,
@@ -714,6 +957,28 @@ export async function runChat(
       }
     }
     nextParts = responseParts
+  }
+
+  // Порожні масові пропозиції (0 рядків) прибираємо — вони лише плутають
+  for (let i = actions.length - 1; i >= 0; i--) {
+    if (actions[i].count === 0) actions.splice(i, 1)
+  }
+
+  // Якщо function-calling зламався на фото (MALFORMED_FUNCTION_CALL) і пропозицій
+  // немає — рятувальний прохід у JSON-режимі: розпізнаємо самі, без інструментів.
+  if (actions.length === 0 && sawMalformedCall && imageParts.length > 0) {
+    try {
+      const s = await salvageFromImages(genAI, cfg.model, userText, imageParts, tenantId)
+      promptTokens += s.promptTokens
+      completionTokens += s.completionTokens
+      if (s.actions.length > 0) {
+        actions.push(...s.actions)
+        reply = 'Розпізнав дані з фото — перевірте пропозиції нижче.'
+        logger.info({ actions: s.actions.length }, '[ai] salvage pass recovered actions')
+      }
+    } catch (e: any) {
+      logger.warn({ err: e?.message }, '[ai] salvage pass failed')
+    }
   }
 
   await logUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
@@ -813,6 +1078,161 @@ async function doCreateCustomer(c: any, tenantId: string) {
   return customer
 }
 
+// Створення замовлення з розпізнаного фото/тексту: знаходить клієнта за телефоном
+// (або створює нового разом з авто), досоздає авто в гаражі, створює замовлення
+// з позиціями. Перекреслене замовлення → одразу completed (архів) з історичним
+// записом оплати (без каси/фіскалізації — це минулі продажі з зошита).
+async function doCreateOrderFromAi(p: any, userId: string, tenantId: string) {
+  const phone = pickPhone(p.customer_phone)
+  const vinRaw = typeof p.vin === 'string' ? p.vin.trim().toUpperCase() : ''
+  const vin = vinRaw.length === 17 ? vinRaw : null
+  const plate = p.plate ? String(p.plate).trim().toUpperCase() : null
+
+  // 1) Клієнт: за телефоном → існуючий; без телефону — точний збіг за іменем; інакше створюємо
+  let customerId: string | null = null
+  let customerCreated = false
+  if (phone) {
+    const { data } = await db.from('customers').select('id')
+      .eq('tenant_id', tenantId).eq('phone', phone).is('deleted_at', null).maybeSingle()
+    if (data) customerId = data.id
+  }
+  if (!customerId && !phone && p.customer_name) {
+    const { data } = await db.from('customers').select('id')
+      .eq('tenant_id', tenantId).ilike('full_name', String(p.customer_name).trim())
+      .is('deleted_at', null).limit(2)
+    if (data?.length === 1) customerId = data[0].id
+  }
+  if (!customerId) {
+    const customer = await doCreateCustomer({
+      full_name: p.customer_name, phone: p.customer_phone,
+      vin: vinRaw || undefined, car_make: p.car_make, car_model: p.car_model, car_year: p.car_year,
+      notes: plate ? `Держномер: ${plate}` : undefined,
+    }, tenantId)
+    customerId = customer.id
+    customerCreated = true
+  } else if (vin || p.car_make || p.car_model) {
+    // Клієнт існує — переконаємось, що авто є в гаражі (дубль VIN не створюємо)
+    let exists = false
+    if (vin) {
+      const { data } = await db.from('customer_cars').select('id').eq('vin', vin).maybeSingle()
+      exists = !!data
+    } else {
+      const { data } = await db.from('customer_cars').select('id')
+        .eq('customer_id', customerId)
+        .ilike('make', String(p.car_make ?? '').trim() || 'Авто')
+        .ilike('model', String(p.car_model ?? '').trim() || '—')
+        .maybeSingle()
+      exists = !!data
+    }
+    if (!exists) {
+      const { error } = await db.from('customer_cars').insert({
+        tenant_id: tenantId,
+        customer_id: customerId,
+        make: p.car_make ? String(p.car_make) : 'Авто',
+        model: p.car_model ? String(p.car_model) : '—',
+        year: p.car_year ?? null,
+        vin,
+        notes: plate ? `Держномер: ${plate}` : null,
+      })
+      if (error) logger.warn({ err: error.message, customerId }, '[ai] order car insert skipped')
+    }
+  }
+
+  // 2) Замовлення
+  const isDone = !!p.is_done
+  const rawItems: any[] = Array.isArray(p.items) ? p.items : []
+  if (rawItems.length === 0) throw new AppError('VALIDATION_ERROR', 'У замовленні немає позицій', 422)
+
+  const itemsPrepared = rawItems.map((it) => {
+    const qty = Number(it.qty) > 0 ? Number(it.qty) : 1
+    const sell = it.sell_price_uah !== undefined && it.sell_price_uah !== null
+      ? Math.round(Number(it.sell_price_uah) * 100) : 0
+    const buy = it.buy_price_uah !== undefined && it.buy_price_uah !== null
+      ? Math.round(Number(it.buy_price_uah) * 100) : 0
+    return {
+      name: String(it.name),
+      sku: it.part_number ? String(it.part_number) : null,
+      qty, sell_price: sell, buy_price: buy,
+      item_status: isDone ? 'handed' : (it.arrived ? 'arrived' : 'pending'),
+      note: it.note ? String(it.note) : null,
+    }
+  })
+  const totalAmount = itemsPrepared.reduce((s, i) => s + i.sell_price * i.qty, 0)
+
+  const vehicleInfo = (p.car_make || p.car_model || vin || plate) ? {
+    make: p.car_make ? String(p.car_make) : undefined,
+    model: p.car_model ? String(p.car_model) : undefined,
+    year: p.car_year ?? undefined,
+    vin: vin ?? undefined,
+    plate: plate ?? undefined,
+  } : null
+
+  const commentParts = [p.comment ? String(p.comment) : null]
+  const itemNotes = itemsPrepared.filter((i) => i.note).map((i) => `${i.name}: ${i.note}`)
+  if (itemNotes.length) commentParts.push(itemNotes.join('; '))
+  const comment = commentParts.filter(Boolean).join('\n') || null
+
+  const { data: order, error: orderErr } = await db.from('customer_orders').insert({
+    tenant_id: tenantId,
+    customer_id: customerId,
+    manager_id: userId,
+    vehicle_info: vehicleInfo,
+    status: isDone ? 'completed' : 'new',
+    prepayment: 0,
+    total_amount: totalAmount,
+    total_paid: isDone ? totalAmount : 0,
+    comment,
+    source: 'walk_in',
+  }).select().single()
+  if (orderErr || !order) throw new AppError('DB_ERROR', orderErr?.message ?? 'Не вдалося створити замовлення', 500)
+
+  const { error: itemsErr } = await db.from('customer_order_items').insert(itemsPrepared.map((i) => ({
+    order_id: order.id,
+    product_id: null,
+    sku: i.sku,
+    name: i.name,
+    source_type: 'supplier',
+    item_type: 'product',
+    item_status: i.item_status,
+    buy_price: i.buy_price,
+    sell_price: i.sell_price,
+    qty: i.qty,
+  })))
+  if (itemsErr) {
+    await db.from('customer_orders').delete().eq('id', order.id)
+    throw new AppError('DB_ERROR', itemsErr.message, 500)
+  }
+
+  // Історичний запис оплати для виконаних (без каси/ПРРО — гроші отримано раніше)
+  if (isDone && totalAmount > 0) {
+    const { error } = await db.from('order_payments').insert({
+      tenant_id: tenantId,
+      order_id: order.id,
+      amount: totalAmount,
+      method: 'cash',
+      is_fiscal: false,
+      created_by: userId,
+      notes: 'Історичний запис — імпорт замовлення з фото зошита',
+    })
+    if (error) logger.warn({ err: error.message, orderId: order.id }, '[ai] historical payment insert failed')
+  }
+
+  await db.from('order_activity_log').insert({
+    order_id: order.id,
+    user_id: userId,
+    action: 'created',
+    details: { source: 'ai_photo', items_count: itemsPrepared.length, customer_created: customerCreated },
+  })
+
+  return {
+    order_id: order.id,
+    order_number: order.order_number ?? null,
+    status: order.status,
+    total_uah: totalAmount / 100,
+    customer_created: customerCreated,
+  }
+}
+
 export async function applyAction(
   action: { tool: string; payload: Record<string, any> },
   userId: string,
@@ -870,6 +1290,11 @@ export async function applyAction(
 
   if (tool === 'create_category') {
     const result = await createCategory({ name: String(payload.name), sort_order: 0 } as any, tenantId)
+    return { result }
+  }
+
+  if (tool === 'create_order') {
+    const result = await doCreateOrderFromAi(payload, userId, tenantId)
     return { result }
   }
 

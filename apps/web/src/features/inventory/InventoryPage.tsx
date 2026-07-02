@@ -125,8 +125,11 @@ export default function InventoryPage() {
   ]
 
   return (
-    <Layout title="Інвентаризація">
+    <Layout title="Ревізія залишків">
       <div className="max-w-3xl">
+        <p className="mb-4 text-sm text-gray-500">
+          Звірте фактичну кількість товарів із залишками в системі. Розбіжності буде видно під час ревізії.
+        </p>
         <div className="flex justify-end mb-4">
           <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>Нова ревізія</Button>
         </div>

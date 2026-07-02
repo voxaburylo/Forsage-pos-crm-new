@@ -86,6 +86,9 @@ export default function WriteoffsPage() {
         </Button>
       }
     >
+      <p className="mb-4 text-sm text-gray-500">
+        Списуйте тут пошкоджений, прострочений або втрачений товар. Продажі, збірка замовлень і потреби магазину обліковуються окремо.
+      </p>
       <div className="mb-4 flex gap-2 flex-wrap">
         {REASONS.map((r) => (
           <button key={r.value} onClick={() => setReason(r.value as WriteoffReason | '')}

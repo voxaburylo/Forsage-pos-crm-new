@@ -297,6 +297,9 @@ export default function ReservesList() {
   return (
     <Layout title="Резерви товарів">
       <div className="space-y-4">
+        <p className="text-sm text-gray-500">
+          Тут видно товар, відкладений під замовлення клієнтів. Резерв зменшує доступний залишок, але не списує товар зі складу.
+        </p>
         {/* Top Control Bar */}
         <div className="flex flex-col sm:flex-row gap-3 justify-between items-stretch sm:items-center">
           <div className="relative flex-1 max-w-md">

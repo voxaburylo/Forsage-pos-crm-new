@@ -4,6 +4,7 @@ import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, C
 import { customerApi } from './customerApi'
 import { customerGroupsApi, type CustomerGroup } from './customerGroupsApi'
 import { CustomerDrawer } from './CustomerDrawer'
+import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 import type { Customer } from '@/types/customer'
 import { Layout } from '@/components/Layout'
 import { Button, Card } from '@/components/ui'
@@ -32,6 +33,7 @@ export default function CustomersPage() {
   const [hasDebt, setHasDebt]     = useState(sp.get('has_debt') === 'true')
   const [groups, setGroups]       = useState<CustomerGroup[]>([])
   const [drawerId, setDrawerId]   = useState<string | null>(null)
+  const [quickEditCustomer, setQuickEditCustomer] = useState<Customer | null>(null)
   const [activeGroup, setActiveGroup] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkGroupId, setBulkGroupId] = useState('')
@@ -360,9 +362,9 @@ export default function CustomersPage() {
                         <Users size={14} />
                       </button>
                       {canManageCustomers && (
-                        <button onClick={() => navigate(`/customers/${c.id}/edit`)}
+                        <button onClick={() => setQuickEditCustomer(c)}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-                          title="Редагувати">
+                          title="Швидко змінити контакти">
                           <Edit size={14} />
                         </button>
                       )}
@@ -428,7 +430,22 @@ export default function CustomersPage() {
         </div>
       )}
 
-      <CustomerDrawer customerId={drawerId} onClose={() => setDrawerId(null)} />
+      <CustomerDrawer
+        customerId={drawerId}
+        canEdit={canManageCustomers}
+        onClose={() => setDrawerId(null)}
+        onCustomerUpdated={(updated) => {
+          setCustomers((current) => current.map((customer) => customer.id === updated.id ? updated : customer))
+        }}
+      />
+      <QuickCustomerEditModal
+        customer={quickEditCustomer}
+        open={!!quickEditCustomer}
+        onClose={() => setQuickEditCustomer(null)}
+        onSaved={(updated) => {
+          setCustomers((current) => current.map((customer) => customer.id === updated.id ? updated : customer))
+        }}
+      />
     </Layout>
   )
 }

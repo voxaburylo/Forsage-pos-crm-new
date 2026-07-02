@@ -30,8 +30,8 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
   })
 
   return (
-    <div className="flex border-b border-gray-100 overflow-x-auto mb-6 -mx-4 px-4 md:-mx-6 md:px-6 bg-white shrink-0 sticky top-0 z-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      <div className="flex space-x-6">
+    <div className="flex border-b border-gray-100 mb-6 -mx-4 px-4 md:-mx-6 md:px-6 bg-white shrink-0 sticky top-0 z-10">
+      <div className="flex flex-wrap gap-x-5 gap-y-0">
         {visibleTabs.map((tab) => {
           const isActive = (() => {
             if (tab.to.includes('?')) {
@@ -111,12 +111,11 @@ export const RECEIVING_TABS = [
 ]
 
 export const INVENTORY_TABS = [
-  { to: '/inventory', label: 'Інвентаризація' },
-  { to: '/inventory/picking', label: 'Збірка замовлень (WMS)' },
-  { to: '/inventory/writeoffs', label: 'Списання' },
-  { to: '/internal', label: 'Внутр. відпуск' },
-  { to: '/inventory/movements', label: 'Переміщення' },
-  { to: '/inventory/reserves', label: 'Резерви товарів' },
+  { to: '/inventory', label: 'Ревізія залишків', roles: ['owner', 'admin', 'storekeeper'] },
+  { to: '/inventory/movements', label: 'Між комірками', roles: ['owner', 'admin', 'storekeeper'] },
+  { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
+  { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },
+  { to: '/internal', label: 'Потреби магазину', roles: ['owner', 'admin', 'manager'] },
 ]
 
 export const ANALYTICS_TABS = [

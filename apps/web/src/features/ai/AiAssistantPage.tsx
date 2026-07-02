@@ -8,7 +8,8 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { aiApi } from './aiApi'
-import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange } from './aiApi'
+import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
+import { OrderConfirmModal } from './OrderConfirmModal'
 import { useAuthStore } from '@/stores/authStore'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
@@ -79,13 +80,21 @@ interface ChatEntry {
 const CHAT_STORAGE_KEY = 'forsage_ai_chat_v1'
 
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+const MAX_IMAGES = 4
 const ALLOWED_ATTACHMENT_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.txt']
+const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
+
+function isImageFile(file: File): boolean {
+  const name = file.name.toLowerCase()
+  return file.type.startsWith('image/') || IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))
+}
 
 // ── Читання прикріпленого файлу у текст (Excel/CSV/текст) ──────────────────────
 async function fileToText(file: File): Promise<string> {
   const name = file.name.toLowerCase()
   if (!ALLOWED_ATTACHMENT_EXTENSIONS.some((ext) => name.endsWith(ext))) {
-    throw new Error('Підтримуються лише Excel, CSV і TXT')
+    throw new Error('Підтримуються Excel, CSV, TXT та фото (JPG/PNG/WebP)')
   }
   if (file.size > MAX_ATTACHMENT_BYTES) {
     throw new Error('Файл завеликий — максимум 5 МБ')
@@ -104,6 +113,39 @@ async function fileToText(file: File): Promise<string> {
   return await file.text()
 }
 
+// ── Стиснення фото для відправки в Gemini (довша сторона ≤1800px, JPEG) ────────
+// Рукописний текст має лишатися читабельним, тому не тиснемо занадто сильно.
+async function fileToCompressedImage(file: File): Promise<{ name: string; dataUrl: string }> {
+  if (file.size > MAX_IMAGE_BYTES) throw new Error('Фото завелике — максимум 20 МБ')
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image()
+      el.onload = () => resolve(el)
+      el.onerror = () => reject(new Error('Не вдалося прочитати фото (спробуйте JPG або PNG)'))
+      el.src = objectUrl
+    })
+    const maxSide = 1800
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight))
+    const w = Math.max(1, Math.round(img.naturalWidth * scale))
+    const h = Math.max(1, Math.round(img.naturalHeight * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Canvas недоступний')
+    ctx.drawImage(img, 0, 0, w, h)
+    return { name: file.name, dataUrl: canvas.toDataURL('image/jpeg', 0.88) }
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+function dataUrlToChatImage(dataUrl: string): AiChatImage {
+  const [, base64] = dataUrl.split(',', 2)
+  return { mime_type: 'image/jpeg', data_base64: base64 ?? '' }
+}
+
 export default function AiAssistantPage() {
   const navigate = useNavigate()
   const role = useAuthStore((state) => state.session?.user.user_metadata?.role as string | undefined)
@@ -115,6 +157,8 @@ export default function AiAssistantPage() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null)
+  const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
+  const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
   const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>({})
   const [applyMsg, setApplyMsg] = useState<Record<string, string>>({})
   const [applyErrors, setApplyErrors] = useState<Record<string, Array<{ item: string; error: string }>>>({})
@@ -173,6 +217,16 @@ export default function AiAssistantPage() {
   async function handleAttach(file: File | undefined) {
     if (!file) return
     try {
+      if (isImageFile(file)) {
+        if (imageAttachments.length >= MAX_IMAGES) {
+          toast.error(`Максимум ${MAX_IMAGES} фото за раз`)
+          return
+        }
+        const img = await fileToCompressedImage(file)
+        setImageAttachments((prev) => [...prev, img])
+        toast.success(`Фото «${file.name}» прикріплено`)
+        return
+      }
       const text = await fileToText(file)
       setAttachment({ name: file.name, text })
       toast.success(`Файл «${file.name}» прикріплено`)
@@ -183,22 +237,29 @@ export default function AiAssistantPage() {
 
   async function send() {
     const message = input.trim()
-    if (!message && !attachment) return
+    if (!message && !attachment && imageAttachments.length === 0) return
     if (sending) return
 
     const history: AiChatMessage[] = entries.map((e) => ({ role: e.role, text: e.text }))
+    const attachmentNote = [
+      attachment ? `📎 ${attachment.name}` : null,
+      ...imageAttachments.map((img) => `🖼️ ${img.name}`),
+    ].filter(Boolean).join('\n')
     const userEntry: ChatEntry = {
       role: 'user',
-      text: message + (attachment ? `\n\n📎 ${attachment.name}` : ''),
+      text: message + (attachmentNote ? `\n\n${attachmentNote}` : ''),
     }
     setEntries((prev) => [...prev, userEntry])
     const fileText = attachment?.text
+    const images = imageAttachments.length > 0 ? imageAttachments.map((img) => dataUrlToChatImage(img.dataUrl)) : undefined
+    const fallbackPrompt = images ? 'Ось фото замовлення з зошита — додай замовлення в програму.' : 'Ось файл, розбери його.'
     setInput('')
     setAttachment(null)
+    setImageAttachments([])
     setSending(true)
 
     try {
-      const { data } = await aiApi.chat({ message: message || 'Ось файл, розбери його.', history, file_text: fileText })
+      const { data } = await aiApi.chat({ message: message || fallbackPrompt, history, file_text: fileText, images })
       setEntries((prev) => [...prev, { role: 'model', text: data.reply, actions: data.actions, cost: data.usage.cost_usd }])
       // оновимо лічильник у шапці
       setStatus((s) => s ? { ...s, usage: { ...s.usage, cost_usd: Number((s.usage.cost_usd + data.usage.cost_usd).toFixed(4)), requests: s.usage.requests + 1 } } : s)
@@ -209,11 +270,23 @@ export default function AiAssistantPage() {
     }
   }
 
-  async function applyAction(action: AiPendingAction) {
+  async function applyAction(action: AiPendingAction, payloadOverride?: Record<string, any>) {
     setApplyingId(action.id)
     try {
-      const { data } = await aiApi.applyAction({ tool: action.tool, payload: action.payload })
+      const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload })
       const r = data.result
+
+      if (action.tool === 'create_order') {
+        const num = r?.order_number != null ? `#${r.order_number}` : ''
+        const where = r?.status === 'completed' ? 'в архіві (Виконані)' : 'у розділі «Замовлення»'
+        const msg = `Замовлення ${num} створено — ${where}` + (r?.customer_created ? ', клієнта заведено' : '')
+        setApplyMsg((prev) => ({ ...prev, [action.id]: msg }))
+        setApplyStatus((prev) => ({ ...prev, [action.id]: 'ok' }))
+        setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
+        toast.success(msg)
+        return
+      }
+
       const errors = Array.isArray(r?.errors) ? r.errors : []
 
       if (r && typeof r.created === 'number') {
@@ -269,8 +342,8 @@ export default function AiAssistantPage() {
     e.preventDefault()
     setDragOver(false)
     if (notConfigured) return
-    const file = e.dataTransfer.files?.[0]
-    if (file) handleAttach(file)
+    const files = Array.from(e.dataTransfer.files ?? []).slice(0, MAX_IMAGES)
+    for (const file of files) handleAttach(file)
   }
 
   const notConfigured = !loadingStatus && status && (!status.has_key || !status.enabled)
@@ -290,7 +363,7 @@ export default function AiAssistantPage() {
           <div className="absolute inset-0 z-30 rounded-2xl border-2 border-dashed border-purple-400 bg-purple-50/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 pointer-events-none">
             <Paperclip size={28} className="text-purple-500" />
             <p className="text-sm font-semibold text-purple-700">Відпустіть файл, щоб прикріпити</p>
-            <p className="text-xs text-purple-400">Excel (.xlsx/.xls), CSV або текст</p>
+            <p className="text-xs text-purple-400">Фото замовлення (JPG/PNG), Excel, CSV або текст</p>
           </div>
         )}
 
@@ -355,8 +428,9 @@ export default function AiAssistantPage() {
               <Sparkles size={32} className="text-gray-300" />
               <p className="text-sm font-medium text-gray-500">Напишіть завдання директору</p>
               <p className="text-xs max-w-sm">
-                Наприклад: «переклади й додай опис до товару 0986452041», «розбери цей прайс»
-                (перетягніть Excel сюди або натисніть 📎), «знайди дублі в назвах фільтрів».
+                Наприклад: сфотографуйте рукописне замовлення з зошита й напишіть «додай замовлення
+                в програму» — клієнт, авто і запчастини заведуться самі. Або: «розбери цей прайс»
+                (перетягніть Excel/фото сюди чи натисніть 📎), «знайди дублі в назвах фільтрів».
               </p>
             </div>
           )}
@@ -377,7 +451,8 @@ export default function AiAssistantPage() {
                 {/* Картки пропозицій змін */}
                 {entry.actions?.map((action) => {
                   const state = applied[action.id]
-                  const isBulk = !!(action.items && action.columns)
+                  const isOrder = action.tool === 'create_order'
+                  const isBulk = !isOrder && !!(action.items && action.columns)
                   return (
                     <Card key={action.id} className="w-full border-blue-100 bg-blue-50/40 space-y-2">
                       <div className="flex items-center justify-between gap-2">
@@ -385,7 +460,17 @@ export default function AiAssistantPage() {
                         {isBulk && <span className="text-[11px] text-gray-400 shrink-0 whitespace-nowrap">{action.count} записів</span>}
                       </div>
 
-                      {isBulk
+                      {isOrder ? (
+                        <>
+                          <ChangesTable changes={action.changes} />
+                          <BulkPreviewTable action={action} maxRows={6} />
+                          {(action.uncertain?.length ?? 0) > 0 && state !== 'ok' && (
+                            <p className="text-[11px] font-medium text-amber-600 flex items-center gap-1">
+                              <AlertTriangle size={12} /> Деякі поля розпізнано невпевнено — перевірте їх у вікні підтвердження
+                            </p>
+                          )}
+                        </>
+                      ) : isBulk
                         ? <BulkPreviewTable action={action} maxRows={4} />
                         : <ChangesTable changes={action.changes} />}
 
@@ -418,7 +503,11 @@ export default function AiAssistantPage() {
                             <AlertTriangle size={12} /> Ще не збережено — потрібне ваше підтвердження
                           </div>
                           <div className="flex gap-2">
-                            {isBulk ? (
+                            {isOrder ? (
+                              <Button type="button" onClick={() => setOrderModalAction(action)} className="text-xs">
+                                <Eye size={14} className="mr-1" /> Перевірити та створити замовлення
+                              </Button>
+                            ) : isBulk ? (
                               <Button type="button" onClick={() => setModalAction(action)} className="text-xs">
                                 <Eye size={14} className="mr-1" /> Переглянути та підтвердити{action.count ? ` (${action.count})` : ''}
                               </Button>
@@ -470,21 +559,43 @@ export default function AiAssistantPage() {
               </button>
             </div>
           )}
+          {imageAttachments.length > 0 && (
+            <div className="flex gap-2 mb-2 px-1 flex-wrap">
+              {imageAttachments.map((img, i) => (
+                <div key={i} className="relative group">
+                  <img src={img.dataUrl} alt={img.name} className="h-16 w-16 object-cover rounded-lg border border-gray-200" />
+                  <button
+                    type="button"
+                    onClick={() => setImageAttachments((prev) => prev.filter((_, x) => x !== i))}
+                    className="absolute -top-1.5 -right-1.5 bg-white border border-gray-200 rounded-full p-0.5 text-gray-400 hover:text-red-500 shadow-sm"
+                    aria-label={`Видалити фото ${img.name}`}
+                    title="Видалити фото"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <input
               ref={fileRef}
               type="file"
-              accept=".xlsx,.xls,.csv,.txt"
+              accept=".xlsx,.xls,.csv,.txt,.jpg,.jpeg,.png,.webp,image/*"
+              multiple
               className="hidden"
-              onChange={(e) => { handleAttach(e.target.files?.[0]); if (fileRef.current) fileRef.current.value = '' }}
+              onChange={(e) => {
+                for (const f of Array.from(e.target.files ?? []).slice(0, MAX_IMAGES)) handleAttach(f)
+                if (fileRef.current) fileRef.current.value = ''
+              }}
             />
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
               disabled={!!notConfigured}
               className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 disabled:opacity-40 shrink-0"
-              title="Прикріпити Excel / CSV / текст"
-              aria-label="Прикріпити Excel, CSV або текстовий файл"
+              title="Прикріпити фото замовлення / Excel / CSV / текст"
+              aria-label="Прикріпити фото замовлення, Excel, CSV або текстовий файл"
             >
               <Paperclip size={18} />
             </button>
@@ -500,7 +611,7 @@ export default function AiAssistantPage() {
             <Button
               type="button"
               onClick={send}
-              disabled={sending || !!notConfigured || (!input.trim() && !attachment)}
+              disabled={sending || !!notConfigured || (!input.trim() && !attachment && imageAttachments.length === 0)}
               className="shrink-0"
               aria-label="Надіслати повідомлення"
               title="Надіслати повідомлення"
@@ -545,6 +656,19 @@ export default function AiAssistantPage() {
           </div>
         )}
       </Modal>
+
+      {/* Редаговане підтвердження замовлення з фото (сумнівні поля підсвічено) */}
+      {orderModalAction && (
+        <OrderConfirmModal
+          action={orderModalAction}
+          applying={applyingId === orderModalAction.id}
+          onClose={() => setOrderModalAction(null)}
+          onConfirm={async (editedPayload) => {
+            await applyAction(orderModalAction, editedPayload)
+            setOrderModalAction(null)
+          }}
+        />
+      )}
     </Layout>
   )
 }

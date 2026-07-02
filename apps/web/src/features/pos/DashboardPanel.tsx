@@ -1,20 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Star } from 'lucide-react'
 import { productApi } from '@/features/products/productApi'
-import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { playSuccessBeep, initAudio } from '@/lib/audioService'
-
-interface Category {
-  id: string
-  name: string
-}
-
-interface Props {
-  onSearch: (query: string) => void
-}
 
 // Кольори для тайлів — темні насичені відтінки як у реальних касах
 const TILE_COLORS = [
@@ -28,22 +18,16 @@ const TILE_COLORS = [
   '#2C2E6B', // індиго
 ]
 
-export function DashboardPanel({ onSearch }: Props) {
+export function DashboardPanel() {
   const store = usePOSStore()
   const [favorites, setFavorites] = useState<Product[]>([])
-  const [categories, setCategories] = useState<Category[]>([])
-  const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       try {
-        const [prodRes, catRes] = await Promise.all([
-          productApi.list({ is_active: 'true', per_page: 100 }),
-          api.get<{ data: Category[] }>('/api/v1/admin/categories'),
-        ])
-        setFavorites(prodRes.data.filter((p: any) => p.is_favorite).slice(0, 12))
-        setCategories(catRes.data.slice(0, 10))
+        const prodRes = await productApi.list({ is_active: 'true', per_page: 100 })
+        setFavorites(prodRes.data.filter((p) => p.is_favorite).slice(0, 12))
       } catch {
         /* ignore */
       }
@@ -65,16 +49,6 @@ export function DashboardPanel({ onSearch }: Props) {
     playSuccessBeep()
   }
 
-  function handleCategory(cat: Category) {
-    if (activeCategory === cat.id) {
-      setActiveCategory(null)
-      onSearch('')
-    } else {
-      setActiveCategory(cat.id)
-      onSearch(cat.name)
-    }
-  }
-
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -85,36 +59,9 @@ export function DashboardPanel({ onSearch }: Props) {
 
   return (
     <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
-
-      {/* Категорії — горизонтальний скрол */}
-      {categories.length > 0 && (
-        <div className="px-3 pt-3 pb-2 shrink-0">
-          <div className="flex gap-2 overflow-x-auto scrollbar-none pb-1">
-            {categories.map((cat) => {
-              const isActive = activeCategory === cat.id
-              return (
-                <button
-                  key={cat.id}
-                  onClick={() => handleCategory(cat)}
-                  className="shrink-0 px-5 rounded-xl font-semibold text-sm transition-all active:scale-[0.97] border"
-                  style={{
-                    minHeight: 44,
-                    background: isActive ? '#EAB308' : '#242424',
-                    color: isActive ? '#000' : '#CCC',
-                    borderColor: isActive ? '#EAB308' : '#444',
-                  }}
-                >
-                  {cat.name}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Швидкі товари — POS тайли */}
       {favorites.length > 0 && (
-        <div className="px-3 pb-3 flex-1">
+        <div className="px-3 py-3 flex-1">
           <div className="flex items-center gap-1.5 mb-2.5">
             <Star size={13} className="text-yellow-400" />
             <span className="text-gray-500 text-xs font-medium uppercase tracking-wider">Швидкий доступ</span>
@@ -174,11 +121,14 @@ export function DashboardPanel({ onSearch }: Props) {
         </div>
       )}
 
-      {!loading && favorites.length === 0 && categories.length === 0 && (
+      {!loading && favorites.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center px-6">
           <Star size={32} className="text-gray-700" />
-          <p className="text-gray-500 text-sm">Позначте товари як улюблені</p>
-          <p className="text-gray-600 text-xs">Вони з'являться тут для швидкого доступу</p>
+          <p className="text-gray-400 text-sm font-medium">Швидкі товари ще не налаштовані</p>
+          <p className="text-gray-600 text-xs max-w-sm">
+            Позначте найчастіші товари зіркою в каталозі — вони з’являться тут великими кнопками.
+            Категорії вже доступні одним рядком під пошуком.
+          </p>
         </div>
       )}
     </div>

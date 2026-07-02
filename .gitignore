@@ -35,6 +35,14 @@ google-key.json
 # Тимчасові test-скрипти з хардкодженими credentials (НЕ комітити)
 server/test_*.cjs
 server/test_*.js
+test_*.cjs
+test_*.js
+
+# Скріншоти живих UI-прогонів (Playwright)
+.ux-shots/
+
+# Білд-артефакти TypeScript
+*.tsbuildinfo
 
 # Dev-скрипти з прямими DB підключеннями
 server/src/scratch/

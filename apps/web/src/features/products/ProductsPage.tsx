@@ -61,7 +61,6 @@ export default function ProductsPage() {
   const session  = useAuthStore((s) => s.session)
   const role     = (session?.user?.user_metadata?.role as string) ?? 'cashier'
   const isAdmin  = ['owner', 'admin'].includes(role)
-  const isOwner  = role === 'owner'
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const [search, setSearch]         = useState('')
@@ -275,21 +274,10 @@ export default function ProductsPage() {
       title={`Товари${total ? ` (${total})` : ''}`}
       actions={
         <div className="flex gap-1.5">
-          {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
-            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => navigate('/suppliers/invoices/new')}>
-              <span className="hidden sm:inline">Прийняти товар (накладна)</span>
-              <span className="inline sm:hidden">Прийняти товар</span>
-            </Button>
-          )}
           <span className="hidden md:flex gap-1.5">
-            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт</Button>
+            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт каталогу</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>
           </span>
-          {isOwner && (
-            <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} onClick={() => navigate('/admin?tab=categories')}>
-              Очистити каталог
-            </Button>
-          )}
           <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/products/new')}>
             <span className="hidden sm:inline">Новий товар</span>
           </Button>

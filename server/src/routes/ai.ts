@@ -63,6 +63,11 @@ const chatSchema = z.object({
     text: z.string(),
   })).max(40).optional(),
   file_text: z.string().max(200000).optional(),
+  // Фото (рукописні замовлення тощо): стиснуті на клієнті JPEG/PNG/WebP у base64
+  images: z.array(z.object({
+    mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    data_base64: z.string().min(1).max(6_000_000),
+  })).max(4).optional(),
 })
 
 // POST /api/v1/ai/chat — діалог із «директором»
@@ -74,6 +79,7 @@ router.post('/chat', requireRole('owner', 'admin', 'manager'), async (req, res, 
       message: parsed.data.message,
       history: parsed.data.history,
       fileText: parsed.data.file_text,
+      images: parsed.data.images,
     })
     res.json({ data: out })
   } catch (err) { next(err) }
@@ -105,7 +111,31 @@ const productPayload = z.object({
   storage_bin: optionalText(100),
 })
 
+const orderItemPayload = z.object({
+  name: z.string().min(1).max(500),
+  part_number: optionalText(100),
+  qty: z.number().min(0.001).max(10000).optional(),
+  sell_price_uah: optionalMoney.nullable(),
+  buy_price_uah: optionalMoney.nullable(),
+  arrived: z.boolean().optional(),
+  note: optionalText(500),
+})
+const orderPayload = z.object({
+  customer_name: optionalText(200),
+  customer_phone: optionalText(40),
+  car_make: optionalText(100),
+  car_model: optionalText(100),
+  car_year: z.number().int().min(1900).max(2100).optional().nullable(),
+  vin: optionalText(50),
+  plate: optionalText(20),
+  comment: optionalText(2000),
+  is_done: z.boolean().optional(),
+  items: z.array(orderItemPayload).min(1).max(100),
+  uncertain: z.array(z.string().max(100)).max(30).optional(),
+})
+
 const applySchema = z.discriminatedUnion('tool', [
+  z.object({ tool: z.literal('create_order'), payload: orderPayload }),
   z.object({
     tool: z.literal('update_product'),
     payload: productPayload.partial().extend({ product_id: z.string().uuid() }),

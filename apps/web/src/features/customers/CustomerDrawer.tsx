@@ -6,19 +6,23 @@ import { customerVehiclesApi } from './customerVehiclesApi'
 import type { Customer, CustomerSale, CustomerVehicle } from '@/types/customer'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
+import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 
 interface Props {
   customerId: string | null
+  canEdit?: boolean
   onClose: () => void
+  onCustomerUpdated?: (customer: Customer) => void
 }
 
-export function CustomerDrawer({ customerId, onClose }: Props) {
+export function CustomerDrawer({ customerId, canEdit = false, onClose, onCustomerUpdated }: Props) {
   const navigate = useNavigate()
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [sales, setSales] = useState<CustomerSale[]>([])
   const [cars, setCars] = useState<CustomerVehicle[]>([])
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<'info' | 'orders' | 'chat'>('info')
+  const [quickEditOpen, setQuickEditOpen] = useState(false)
 
   useEffect(() => {
     if (!customerId) { setCustomer(null); return }
@@ -78,10 +82,23 @@ export function CustomerDrawer({ customerId, onClose }: Props) {
               )}
             </div>
           </div>
-          <button onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600">
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-1">
+            {canEdit && customer && (
+              <button
+                onClick={() => setQuickEditOpen(true)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-yellow-50 text-gray-400 hover:text-yellow-700"
+                aria-label="Швидко змінити контакти"
+                title="Швидко змінити контакти"
+              >
+                <Edit size={16} />
+              </button>
+            )}
+            <button onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600"
+              aria-label="Закрити швидкий перегляд">
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -188,7 +205,7 @@ export function CustomerDrawer({ customerId, onClose }: Props) {
                     className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg bg-gray-50 hover:bg-gray-100 text-sm text-gray-700 transition-colors text-left"
                   >
                     <Edit size={15} className="text-gray-400" />
-                    Редагувати клієнта
+                    Повна картка та налаштування
                   </button>
                   <a
                     href={`tel:${customer.phone}`}
@@ -249,6 +266,15 @@ export function CustomerDrawer({ customerId, onClose }: Props) {
           </div>
         )}
       </div>
+      <QuickCustomerEditModal
+        customer={customer}
+        open={quickEditOpen}
+        onClose={() => setQuickEditOpen(false)}
+        onSaved={(updated) => {
+          setCustomer(updated)
+          onCustomerUpdated?.(updated)
+        }}
+      />
     </>
   )
 }

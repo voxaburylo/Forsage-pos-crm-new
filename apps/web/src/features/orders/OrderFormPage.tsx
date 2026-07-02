@@ -779,6 +779,25 @@ export default function OrderFormPage() {
         {/* ─────────────── STEP 1: SELECT CUSTOMER ─────────────── */}
         {(isDesktop || step === 1) && (
           <div className="space-y-6">
+            {isDesktop && step > 1 ? (
+              <Card className="border-green-100 bg-green-50/40">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-green-500 text-white">
+                      <Check size={16} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-green-700">Клієнта обрано</p>
+                      <p className="truncate text-sm font-bold text-gray-900">
+                        {selectedCustomer?.full_name ?? selectedCustomer?.phone ?? 'Гість'}
+                      </p>
+                      {selectedCustomer?.phone && <p className="text-xs text-gray-500">{selectedCustomer.phone}</p>}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="secondary" onClick={() => setStep(1)}>Змінити</Button>
+                </div>
+              </Card>
+            ) : (
             <Card className="max-w-2xl mx-auto lg:max-w-none">
               <div className="text-center space-y-2 mb-6">
                 <h3 className="text-lg font-bold text-gray-900">Нове замовлення</h3>
@@ -910,12 +929,34 @@ export default function OrderFormPage() {
                 </form>
               )}
             </Card>
+            )}
           </div>
         )}
 
         {/* ─────────────── STEP 2: SELECT VEHICLE ─────────────── */}
         {(isDesktop || step === 2) && selectedCustomer && (
           <div className="space-y-6 max-w-2xl mx-auto lg:max-w-none">
+            {isDesktop && step > 2 ? (
+              <Card className="border-green-100 bg-green-50/40">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-green-500 text-white">
+                      <Check size={16} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-green-700">Автомобіль</p>
+                      <p className="truncate text-sm font-bold text-gray-900">
+                        {selectedVehicle
+                          ? `${selectedVehicle.brand} ${selectedVehicle.model}${selectedVehicle.year ? ` (${selectedVehicle.year})` : ''}`
+                          : 'Без прив’язаного автомобіля'}
+                      </p>
+                      {selectedVehicle?.vin && <p className="font-mono text-xs text-gray-500">{selectedVehicle.vin}</p>}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="secondary" onClick={() => setStep(2)}>Змінити</Button>
+                </div>
+              </Card>
+            ) : (
             <Card>
               <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-4">
                 {!isDesktop && <Button size="sm" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft size={14} />} title="Назад до вибору клієнта" />}
@@ -1034,6 +1075,7 @@ export default function OrderFormPage() {
                 </form>
               )}
             </Card>
+            )}
           </div>
         )}
 

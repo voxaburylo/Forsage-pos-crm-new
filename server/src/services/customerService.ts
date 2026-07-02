@@ -210,15 +210,21 @@ export async function payDebt(customerId: string, input: PayDebtInput, tenantId:
 }
 
 // ===================== VEHICLES =====================
+// Єдине джерело правди — customer_cars («Гараж»): туди пишуть Telegram-бот,
+// AI-імпорт і роут /customer-cars. Раніше тут була ПАРАЛЕЛЬНА таблиця
+// customer_vehicles — через це форма замовлення та картка клієнта не бачили
+// авто, заведені ботом/ШІ. API назовні не змінилось: колонка make у відповіді
+// мапиться в поле brand, яке очікує фронт.
 
-const VEHICLE_TABLE = 'customer_vehicles'
+const VEHICLE_TABLE = 'customer_cars'
+const VEHICLE_COLUMNS = 'id, customer_id, brand:make, model, year, vin, notes, created_at'
 
 export async function listCustomerVehicles(customerId: string, tenantId: string) {
   await getCustomer(customerId, tenantId)
 
   const { data, error } = await db
     .from(VEHICLE_TABLE)
-    .select('*')
+    .select(VEHICLE_COLUMNS)
     .eq('customer_id', customerId)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
@@ -234,18 +240,35 @@ export async function createCustomerVehicle(
 ) {
   await getCustomer(customerId, tenantId)
 
+  // VIN у customer_cars унікальний — перевіряємо заздалегідь, щоб дати
+  // зрозумілу помилку замість голої помилки БД
+  const vin = input.vin?.trim() ? input.vin.trim().toUpperCase() : null
+  if (vin) {
+    const { data: existing } = await db
+      .from(VEHICLE_TABLE)
+      .select('id, customer_id')
+      .eq('vin', vin)
+      .maybeSingle()
+    if (existing) {
+      throw new AppError('VIN_DUPLICATE',
+        existing.customer_id === customerId
+          ? 'Авто з таким VIN уже є в гаражі цього клієнта'
+          : 'Авто з таким VIN уже привʼязане до іншого клієнта', 409)
+    }
+  }
+
   const { data, error } = await db
     .from(VEHICLE_TABLE)
     .insert({
       tenant_id:   tenantId,
       customer_id: customerId,
-      brand:       input.brand,
+      make:        input.brand,
       model:       input.model,
       year:        input.year ?? null,
-      vin:         input.vin ?? null,
+      vin,
       notes:       input.notes ?? null,
     })
-    .select()
+    .select(VEHICLE_COLUMNS)
     .single()
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
