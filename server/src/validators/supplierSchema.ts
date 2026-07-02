@@ -46,6 +46,8 @@ export const createSupplyInvoiceSchema = z.object({
   notes:          z.string().max(2000).optional().nullable(),
   paid_amount:    z.number().int().min(0).optional(),            // копійки, оплачено постачальнику
   payment_method: z.enum(['cash', 'card', 'transfer']).optional().nullable(),
+  fund_source:    z.enum(['cashbox', 'owner_funds', 'bank_account', 'business_card']).optional().nullable(),
+  shift_id:       z.string().uuid().optional().nullable(),
   items:          z.array(supplyInvoiceItemSchema).min(1),
 })
 
@@ -56,7 +58,14 @@ export const updateSupplyInvoiceSchema = z.object({
 
 export const invoicePaymentSchema = z.object({
   amount:         z.number().int().positive(),                   // копійки доплати
-  payment_method: z.enum(['cash', 'card', 'transfer']).optional().nullable(),
+  payment_method: z.enum(['cash', 'card', 'transfer']).default('cash'),
+  fund_source:    z.enum(['cashbox', 'owner_funds', 'bank_account', 'business_card']),
+  shift_id:       z.string().uuid().optional().nullable(),
+  note:           z.string().max(500).optional().nullable(),
+}).superRefine((value, ctx) => {
+  if (value.fund_source === 'cashbox' && !value.shift_id) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['shift_id'], message: 'Для оплати з каси потрібна відкрита зміна' })
+  }
 })
 
 export const supplyInvoiceListSchema = z.object({

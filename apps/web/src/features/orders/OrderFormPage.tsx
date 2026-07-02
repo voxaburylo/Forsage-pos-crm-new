@@ -129,6 +129,15 @@ export default function OrderFormPage() {
   const [newVehVin, setNewVehVin] = useState('')
   const [addingVehicle, setAddingVehicle] = useState(false)
 
+  useEffect(() => {
+    if (id) return
+    const vinFromUrl = searchParams.get('vin')?.trim().toUpperCase()
+    if (vinFromUrl) {
+      setNewVehVin(vinFromUrl)
+      setShowAddVehicle(true)
+    }
+  }, [id, searchParams])
+
   // Duplicate order initialization (P1 Fix 9)
   useEffect(() => {
     if (id) return

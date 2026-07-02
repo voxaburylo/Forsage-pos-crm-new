@@ -16,12 +16,14 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
   const [type, setType]       = useState<CashOperationType>('in')
   const [amount, setAmount]   = useState('')
   const [note, setNote]       = useState('')
+  const [source, setSource]   = useState('change_fund')
   const [saving, setSaving]   = useState(false)
 
   function reset() {
     setAmount('')
     setNote('')
     setType('in')
+    setSource('change_fund')
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -31,7 +33,7 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
 
     setSaving(true)
     try {
-      await cashOperationApi.create(shiftId, type, kopecks, note.trim() || undefined)
+      await cashOperationApi.create(shiftId, type, kopecks, note.trim() || undefined, source)
       const label = type === 'in' ? 'Внесення' : 'Виймання'
       toast.success(label + ' ' + formatMoney(kopecks) + ' записано')
       reset()
@@ -77,6 +79,30 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
             <span className="text-sm font-semibold">Виймання</span>
             <span className="text-xs opacity-70">Вийняти готівку з каси</span>
           </button>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Звідки / для чого гроші</label>
+          <select value={source} onChange={(e) => setSource(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm">
+            {type === 'in' ? (
+              <>
+                <option value="change_fund">Розмін у касу</option>
+                <option value="owner_funds">Власні кошти власника</option>
+                <option value="cashbox">Повернення грошей у касу</option>
+                <option value="other">Інше внесення</option>
+              </>
+            ) : (
+              <>
+                <option value="cashbox">Виймання виручки з каси</option>
+                <option value="owner_funds">Повернення власнику</option>
+                <option value="other">Інше виймання</option>
+              </>
+            )}
+          </select>
+          <p className="mt-1.5 text-xs text-gray-500">
+            Це рух готівки, а не продаж. Він не додається до виручки чи зарплати менеджера.
+          </p>
         </div>
 
         {/* Сума */}

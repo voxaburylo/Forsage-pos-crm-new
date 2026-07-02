@@ -11,6 +11,7 @@ import { aiApi } from './aiApi'
 import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { useAuthStore } from '@/stores/authStore'
+import { api } from '@/lib/api'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
 function ChangesTable({ changes }: { changes: AiActionChange[] }) {
@@ -166,6 +167,8 @@ export default function AiAssistantPage() {
   const [applyingId, setApplyingId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [modalAction, setModalAction] = useState<AiPendingAction | null>(null)
+  const [recognizedVin, setRecognizedVin] = useState('')
+  const [recognizingVin, setRecognizingVin] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -344,6 +347,27 @@ export default function AiAssistantPage() {
     if (notConfigured) return
     const files = Array.from(e.dataTransfer.files ?? []).slice(0, MAX_IMAGES)
     for (const file of files) handleAttach(file)
+  }
+
+  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const image = Array.from(e.clipboardData.items).find((item) => item.type.startsWith('image/'))?.getAsFile()
+    if (!image) return
+    e.preventDefault()
+    setRecognizingVin(true)
+    try {
+      const compressed = await fileToCompressedImage(image)
+      const { data } = await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', {
+        image: compressed.dataUrl,
+        mimeType: 'image/jpeg',
+      })
+      setRecognizedVin(data.vin)
+      toast.success(`VIN розпізнано: ${data.vin}`)
+    } catch {
+      await handleAttach(image)
+      toast.warning('VIN окремо не знайдено — фото додано до повідомлення')
+    } finally {
+      setRecognizingVin(false)
+    }
   }
 
   const notConfigured = !loadingStatus && status && (!status.has_key || !status.enabled)
@@ -603,9 +627,10 @@ export default function AiAssistantPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
+              onPaste={onPaste}
               disabled={!!notConfigured}
               rows={1}
-              placeholder={notConfigured ? 'Спочатку налаштуйте ключ Gemini…' : 'Напишіть завдання… (Enter — надіслати, Shift+Enter — новий рядок)'}
+              placeholder={notConfigured ? 'Спочатку налаштуйте ключ Gemini…' : recognizingVin ? 'Розпізнаємо VIN…' : 'Напишіть завдання або вставте фото VIN з буфера…'}
               className="flex-1 resize-none max-h-40 py-2 px-1 text-sm focus:outline-none disabled:bg-transparent"
             />
             <Button
@@ -655,6 +680,23 @@ export default function AiAssistantPage() {
             </div>
           </div>
         )}
+      </Modal>
+      <Modal open={!!recognizedVin} onClose={() => setRecognizedVin('')} title="VIN розпізнано" size="sm">
+        <div className="space-y-4">
+          <div className="rounded-xl bg-gray-50 p-4 text-center">
+            <p className="text-xs text-gray-500">VIN-код</p>
+            <p className="mt-1 select-all font-mono text-lg font-bold tracking-wide text-gray-900">{recognizedVin}</p>
+          </div>
+          <p className="text-sm text-gray-600">Що відкрити з уже заповненим VIN?</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Button onClick={() => navigate(`/orders/new?vin=${encodeURIComponent(recognizedVin)}`)}>
+              Нове замовлення
+            </Button>
+            <Button variant="secondary" onClick={() => navigate(`/quotes/new?vin=${encodeURIComponent(recognizedVin)}`)}>
+              Швидка чернетка
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       {/* Редаговане підтвердження замовлення з фото (сумнівні поля підсвічено) */}

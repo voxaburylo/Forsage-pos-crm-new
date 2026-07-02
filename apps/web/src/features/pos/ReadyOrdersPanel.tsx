@@ -41,7 +41,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [search, setSearch] = useState('')
   const [payOrder, setPayOrder] = useState<ReadyOrder | null>(null)
   const [payAmount, setPayAmount] = useState('')
-  const [payMethod, setPayMethod] = useState<'cash' | 'card'>('cash')
+  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  const [payFiscal, setPayFiscal] = useState(false)
   const [paying, setPaying] = useState(false)
 
   const load = useCallback(async () => {
@@ -84,13 +85,14 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       await api.post(`/api/v1/customer-orders/${payOrder.id}/payments`, {
         amount: amountVal,
         method: payMethod,
-        is_fiscal: payMethod === 'card',
+        is_fiscal: payFiscal,
         shift_id: store.currentShift?.id || null,
         notes: 'Касова оплата замовлення',
       })
       toast.success('Оплату успішно внесено!')
       setPayOrder(null)
       setPayAmount('')
+      setPayFiscal(false)
       await load()
     } catch (e: any) {
       toast.error(e.message ?? 'Помилка внесення оплати')
@@ -277,7 +279,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Спосіб оплати</label>
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <button
                       type="button"
                       onClick={() => setPayMethod('cash')}
@@ -298,10 +300,27 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                           : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
                       }`}
                     >
-                      Картка
+                      Термінал
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPayMethod('transfer')}
+                      className={`py-3 text-sm font-semibold rounded-xl border transition-colors ${
+                        payMethod === 'transfer'
+                          ? 'bg-yellow-600 text-white border-yellow-500'
+                          : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
+                      }`}
+                    >
+                      Переказ
                     </button>
                   </div>
                 </div>
+
+                <label className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900 px-3 py-3 text-sm text-gray-300">
+                  <input type="checkbox" checked={payFiscal} onChange={(e) => setPayFiscal(e.target.checked)}
+                    className="h-4 w-4 accent-yellow-500" />
+                  Провести через ПРРО (фіскальний чек)
+                </label>
 
                 <div className="flex gap-2 pt-2">
                   <button
@@ -498,7 +517,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Спосіб оплати</label>
-                <div className="flex gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => setPayMethod('cash')}
@@ -519,10 +538,27 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                         : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
                     }`}
                   >
-                    Картка
+                    Термінал
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayMethod('transfer')}
+                    className={`py-3 text-sm font-semibold rounded-lg border transition-colors ${
+                      payMethod === 'transfer'
+                        ? 'bg-yellow-600 text-white border-yellow-500'
+                        : 'bg-gray-900 text-gray-400 border-gray-700 hover:bg-gray-750'
+                    }`}
+                  >
+                    Переказ
                   </button>
                 </div>
               </div>
+
+              <label className="flex items-center gap-3 rounded-lg border border-gray-700 bg-gray-900 px-3 py-3 text-sm text-gray-300">
+                <input type="checkbox" checked={payFiscal} onChange={(e) => setPayFiscal(e.target.checked)}
+                  className="h-4 w-4 accent-yellow-500" />
+                Провести через ПРРО (фіскальний чек)
+              </label>
 
               <div className="flex gap-2 pt-2">
                 <button

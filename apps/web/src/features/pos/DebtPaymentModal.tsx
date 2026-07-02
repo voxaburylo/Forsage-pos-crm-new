@@ -28,17 +28,28 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (!open) { setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([]) }
+    if (!open) {
+      setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([])
+      return
+    }
+    setLoading(true)
+    api.get<{ data: Customer[] }>('/api/v1/customers?has_debt=true&sort=debt&per_page=100')
+      .then((r) => setCustomers((r.data ?? []).filter((c) => c.debt_balance > 0)))
+      .catch(() => toast.error('Не вдалося завантажити список боргів'))
+      .finally(() => setLoading(false))
   }, [open])
 
   useEffect(() => {
-    if (search.length < 3) { setCustomers([]); return }
+    if (!open || search.length < 2) return
+    const timer = window.setTimeout(() => {
     setLoading(true)
-    api.get<{ data: Customer[] }>(`/api/v1/customers?search=${encodeURIComponent(search)}&per_page=10`)
+    api.get<{ data: Customer[] }>(`/api/v1/customers?search=${encodeURIComponent(search)}&has_debt=true&per_page=50`)
       .then((r) => setCustomers(r.data?.filter((c) => c.debt_balance > 0) ?? []))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [search])
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [search, open])
 
   async function handlePay() {
     if (!selected) return
@@ -66,7 +77,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6">
+      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <DollarSign size={18} className="text-red-400" />
@@ -77,7 +88,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
 
         <div className="space-y-4">
           <div>
-            <label className="text-gray-400 text-xs mb-1 block">Пошук клієнта</label>
+            <label className="text-gray-400 text-xs mb-1 block">Пошук у списку боржників</label>
             <input type="text" autoFocus value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Телефон або ПІБ..."
@@ -93,17 +104,25 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
                   <p className="text-white font-medium text-sm">{selected.full_name || '—'}</p>
                   <p className="text-gray-400 text-xs">{selected.phone}</p>
                 </div>
-                <div className="text-right">
+                <div className="flex items-start gap-3 text-right">
+                  <button onClick={() => { setSelected(null); setAmount('') }}
+                    className="text-xs text-gray-400 hover:text-white">Змінити</button>
+                  <div>
                   <p className="text-red-400 text-xs">Борг:</p>
                   <p className="text-red-400 font-bold text-lg">{formatMoney(selected.debt_balance)}</p>
+                  </div>
                 </div>
               </div>
             </div>
-          ) : customers.length > 0 && (
-            <div className="max-h-40 overflow-y-auto space-y-1">
+          ) : (
+            <div>
+              <p className="mb-2 text-xs text-gray-500">
+                {loading ? 'Завантаження...' : `Боржники (${customers.length}) — можна прокручувати та обрати без пошуку`}
+              </p>
+              <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
               {customers.map((c) => (
                 <button key={c.id}
-                  onClick={() => { setSelected(c); setCustomers([]) }}
+                  onClick={() => { setSelected(c); setAmount((c.debt_balance / 100).toFixed(2)) }}
                   className="w-full flex justify-between items-center px-3 py-2 rounded-xl bg-[#2C2C2C] hover:bg-gray-700 text-left">
                   <div>
                     <p className="text-white text-sm">{c.full_name || '—'}</p>
@@ -112,6 +131,10 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
                   <span className="text-red-400 font-bold text-sm">{formatMoney(c.debt_balance)}</span>
                 </button>
               ))}
+              {!loading && customers.length === 0 && (
+                <p className="py-6 text-center text-sm text-gray-500">Боргів не знайдено</p>
+              )}
+              </div>
             </div>
           )}
 

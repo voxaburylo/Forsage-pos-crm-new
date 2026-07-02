@@ -229,7 +229,7 @@ export default function SupplierPricesPage() {
             >
               {isImported ? (
                 <span className="flex items-center gap-1"><Check size={12} /> Імпортовано</span>
-              ) : 'В каталог'}
+              ) : 'Створити товар у каталозі'}
             </Button>
           </div>
         )

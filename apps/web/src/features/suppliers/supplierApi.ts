@@ -60,14 +60,19 @@ export const supplierApi = {
   getInvoice: (id: string) =>
     api.get<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`),
 
-  createInvoice: (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) =>
+  createInvoice: (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; fund_source?: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card' | null; shift_id?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) =>
     api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices', body),
 
   updateInvoice: (id: string, body: { invoice_number?: string | null; notes?: string | null }) =>
     api.put<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`, body),
 
-  payInvoice: (id: string, amount: number, payment_method?: 'cash' | 'card' | 'transfer') =>
-    api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/pay`, { amount, payment_method }),
+  payInvoice: (id: string, body: {
+    amount: number
+    payment_method: 'cash' | 'card' | 'transfer'
+    fund_source: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
+    shift_id?: string | null
+    note?: string | null
+  }) => api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/pay`, body),
 
   postInvoice: (id: string) =>
     api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/post`, {}),

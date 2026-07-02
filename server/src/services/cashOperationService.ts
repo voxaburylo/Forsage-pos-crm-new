@@ -33,6 +33,7 @@ export async function createCashOperation(
       amount:             input.amount,
       note:               input.note ?? null,
       expense_category_id: input.expense_category_id ?? null,
+      source:             input.source,
       created_by:         userId,
     })
     .select('*')

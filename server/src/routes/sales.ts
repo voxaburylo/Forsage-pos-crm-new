@@ -9,6 +9,44 @@ import { db } from '../db/supabase.js'
 const router = Router()
 router.use(requireAuth)
 
+const quickItemSchema = z.object({
+  kind: z.enum(['tire_service', 'free_sale', 'bag']),
+})
+
+// Системні позиції для платежів, які не мають складського товару.
+// Вони є сервісними, тому не змінюють залишки, але проходять через звичайний чек.
+router.post('/quick-item', async (req, res, next) => {
+  try {
+    const parsed = quickItemSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний тип швидкої позиції', 422)
+
+    const presets = {
+      tire_service: { sku: 'POS-TIRE-SERVICE', name: 'Послуги шиномонтажу', retail_price: 0 },
+      free_sale: { sku: 'POS-FREE-SALE', name: 'Вільний продаж / б·у товар', retail_price: 0 },
+      bag: { sku: 'POS-BAG', name: 'Пакет', retail_price: 500 },
+    } as const
+    const preset = presets[parsed.data.kind]
+
+    const { data, error } = await db
+      .from('products')
+      .upsert({
+        tenant_id: req.user!.tenant_id,
+        ...preset,
+        unit: 'шт',
+        purchase_price: 0,
+        qty_on_hand: 0,
+        is_active: true,
+        is_service: true,
+        deleted_at: null,
+      }, { onConflict: 'tenant_id,sku' })
+      .select('id,sku,name,unit,retail_price,qty_on_hand,is_service')
+      .single()
+
+    if (error || !data) throw new AppError('DB_ERROR', error?.message ?? 'Не вдалося створити позицію', 500)
+    res.json({ data })
+  } catch (err) { next(err) }
+})
+
 // POST /api/v1/sales/suspend — відкласти чек (без списання залишків і RPC)
 const suspendSaleSchema = z.object({
   shift_id:       z.string().uuid(),

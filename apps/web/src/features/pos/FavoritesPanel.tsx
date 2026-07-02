@@ -8,6 +8,7 @@ import { playSuccessBeep, initAudio } from '@/lib/audioService'
 import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
+import { useNavigate } from 'react-router-dom'
 
 interface FoodItem {
   id: string
@@ -32,6 +33,7 @@ export const DEFAULT_QUICK_ITEMS: QuickItemConfig[] = [
 ]
 
 export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: () => void }) {
+  const navigate = useNavigate()
   const store = usePOSStore()
   const [items, setItems]             = useState<QuickItemConfig[]>([])
   const [cam13BasePrice, setCam13]    = useState<number>(0)
@@ -120,6 +122,17 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
   async function addToReceipt(sku: string, label: string, price: number) {
     initAudio()
     try {
+      if (sku === 'PACKET') {
+        const { data: product } = await api.post<{ data: FoodItem }>('/api/v1/sales/quick-item', { kind: 'bag' })
+        store.addItem({
+          productId: product.id, sku: product.sku, name: product.name, unit: product.unit,
+          qty: 1, unitPrice: price > 0 ? price : product.retail_price, discount: 0,
+          qtyOnHand: 999999, requiresCoreReturn: false, coreDepositAmount: 0,
+        })
+        playSuccessBeep()
+        setPopupItem(null)
+        return
+      }
       const result = await productApi.search(sku, 10)
       const product = result.data?.find((item) => item.sku.toLowerCase() === sku.toLowerCase())
         ?? result.data?.[0]
@@ -195,7 +208,13 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
           <div className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl animate-slide-up pb-safe" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800">
               <span className="text-white font-bold text-lg">🍔 Швидкий доступ</span>
-              <button onClick={onClose} className="text-gray-500 text-2xl hover:text-white w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-800">&times;</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => { onClose?.(); navigate('/settings#pos-quick-settings') }}
+                  className="rounded-lg bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-300 hover:text-white">
+                  Налаштувати
+                </button>
+                <button onClick={onClose} className="text-gray-500 text-2xl hover:text-white w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-800">&times;</button>
+              </div>
             </div>
             <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 max-h-[60vh] overflow-y-auto">
               {items.map((item) => {

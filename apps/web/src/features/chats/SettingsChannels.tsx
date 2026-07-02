@@ -15,10 +15,10 @@ interface Channel {
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
-  telegram: 'Telegram', viber: 'Viber', whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
 }
 const PLATFORM_COLORS: Record<string, string> = {
-  telegram: 'blue', viber: 'purple', whatsapp: 'green',
+  telegram: 'blue',
 }
 
 export default function SettingsChannels() {
@@ -32,7 +32,7 @@ export default function SettingsChannels() {
     setLoading(true)
     try {
       const { data } = await api.get<{ data: Channel[] }>('/api/v1/channels')
-      setChannels(data)
+      setChannels(data.filter((channel) => channel.platform === 'telegram'))
     } catch { toast.error('Помилка завантаження') }
     finally { setLoading(false) }
   }
@@ -129,13 +129,11 @@ export default function SettingsChannels() {
               onChange={(e) => setForm((f) => ({ ...f, platform: e.target.value }))}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
               <option value="telegram">Telegram</option>
-              <option value="viber" disabled>Viber (невдовзі)</option>
-              <option value="whatsapp" disabled>WhatsApp (невдовзі)</option>
             </select>
           </div>
           <Input label="Назва каналу *" value={form.name}
             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            placeholder="ТГ Київстар / Viber Бізнес" required />
+            placeholder="Напр.: Telegram магазину" required />
           <Input label="Токен бота *" type="password" value={form.token}
             onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
             placeholder="123456:ABCdefGHIjklmNOpqrsTUVwxyz" required />

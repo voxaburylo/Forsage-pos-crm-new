@@ -8,6 +8,7 @@ export const createCashOperationSchema = z.object({
   amount:             z.number().int().positive('Сума має бути більше 0'),
   note:               z.string().max(500).optional().nullable(),
   expense_category_id: z.string().uuid().optional().nullable(),
+  source: z.enum(['cashbox', 'owner_funds', 'change_fund', 'bank_account', 'business_card', 'other']).default('cashbox'),
 })
 
 export const cashOpListSchema = z.object({

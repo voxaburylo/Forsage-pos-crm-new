@@ -163,7 +163,7 @@ export async function listSupplyInvoices(query: SupplyInvoiceListQuery, tenantId
 export async function getSupplyInvoice(id: string, tenantId: string) {
   const { data, error } = await db
     .from(INVOICE_TABLE)
-    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode,storage_bin,category_id))')
+    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode,storage_bin,category_id)), payments:supplier_payments(*)')
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .single()
@@ -172,7 +172,7 @@ export async function getSupplyInvoice(id: string, tenantId: string) {
   return data
 }
 
-export async function createSupplyInvoice(_userId: string, input: CreateSupplyInvoiceInput, tenantId: string) {
+export async function createSupplyInvoice(userId: string, input: CreateSupplyInvoiceInput, tenantId: string) {
   const itemsWithTotal = input.items.map((item) => ({
     ...item,
     total: Math.round(item.qty * item.purchase_price),
@@ -210,6 +210,36 @@ export async function createSupplyInvoice(_userId: string, input: CreateSupplyIn
 
   const { error: itemsError } = await db.from(ITEM_TABLE).insert(itemsToInsert)
   if (itemsError) throw new AppError('DB_ERROR', itemsError.message, 500)
+
+  if (paidAmount > 0) {
+    const method = input.payment_method ?? 'cash'
+    const fundSource = input.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
+    const { error: paymentError } = await db.from('supplier_payments').insert({
+      tenant_id: tenantId,
+      invoice_id: invoice.id,
+      supplier_id: input.supplier_id ?? null,
+      amount: paidAmount,
+      payment_method: method,
+      fund_source: fundSource,
+      shift_id: input.shift_id ?? null,
+      note: 'Оплата під час створення накладної',
+      created_by: userId,
+    })
+    if (paymentError) throw new AppError('DB_ERROR', paymentError.message, 500)
+
+    if (fundSource === 'cashbox') {
+      const { error: cashError } = await db.from('cash_operations').insert({
+        tenant_id: tenantId,
+        shift_id: input.shift_id ?? null,
+        type: 'out',
+        amount: paidAmount,
+        note: 'Оплата постачальнику під час створення накладної',
+        source: 'cashbox',
+        created_by: userId,
+      })
+      if (cashError) throw new AppError('DB_ERROR', cashError.message, 500)
+    }
+  }
 
   return getSupplyInvoice(invoice.id, tenantId)
 }
@@ -279,24 +309,43 @@ export async function cancelSupplyInvoice(id: string, tenantId: string) {
  * Доплата постачальнику по накладній (коли оплачуємо вже після приймання).
  * Збільшує paid_amount, але не вище суми накладної.
  */
-export async function addInvoicePayment(id: string, amount: number, method: string | null, tenantId: string) {
-  const invoice = await getSupplyInvoice(id, tenantId)
-  const newPaid = Math.min((invoice.paid_amount ?? 0) + amount, invoice.total)
+export async function addInvoicePayment(
+  id: string, amount: number, method: string, fundSource: string,
+  shiftId: string | null, note: string | null, userId: string, tenantId: string,
+) {
+  await runTransaction(async (client) => {
+    const invoiceResult = await client.query(
+      `SELECT id, supplier_id, total, COALESCE(paid_amount, 0) AS paid_amount
+       FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [id, tenantId],
+    )
+    const invoice = invoiceResult.rows[0]
+    if (!invoice) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
+    const remaining = Number(invoice.total) - Number(invoice.paid_amount)
+    if (amount > remaining) throw new AppError('PAYMENT_TOO_LARGE', 'Сума перевищує борг за накладною', 422)
 
-  const { data, error } = await db
-    .from(INVOICE_TABLE)
-    .update({
-      paid_amount: newPaid,
-      payment_method: method ?? invoice.payment_method ?? 'cash',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .select('*, supplier:suppliers(id,name)')
-    .single()
-
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data
+    await client.query(
+      `INSERT INTO supplier_payments
+       (tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [tenantId, id, invoice.supplier_id, amount, method, fundSource, shiftId, note, userId],
+    )
+    await client.query(
+      `UPDATE supply_invoices
+       SET paid_amount = COALESCE(paid_amount, 0) + $1, payment_method = $2, updated_at = NOW()
+       WHERE id = $3 AND tenant_id = $4`,
+      [amount, method, id, tenantId],
+    )
+    if (fundSource === 'cashbox') {
+      await client.query(
+        `INSERT INTO cash_operations
+         (tenant_id, shift_id, type, amount, note, created_by, source)
+         VALUES ($1,$2,'out',$3,$4,$5,'cashbox')`,
+        [tenantId, shiftId, amount, note || 'Оплата постачальнику', userId],
+      )
+    }
+  })
+  return getSupplyInvoice(id, tenantId)
 }
 
 /**

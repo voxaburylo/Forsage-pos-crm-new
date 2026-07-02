@@ -214,13 +214,6 @@ export function CustomerDrawer({ customerId, canEdit = false, onClose, onCustome
                     <span className="w-[15px] text-center leading-none">📞</span>
                     Подзвонити
                   </a>
-                  <a
-                    href={`viber://chat?number=${encodeURIComponent(customer.phone)}`}
-                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg bg-purple-50 hover:bg-purple-100 text-sm font-medium text-purple-800 transition-colors text-left"
-                  >
-                    <span className="w-[15px] text-center leading-none">💬</span>
-                    Написати у Viber
-                  </a>
                   <button
                     onClick={() => copy(`+${customer.phone.replace(/\D/g, '')}`, 'номер для дзвінка')}
                     className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg bg-gray-50 hover:bg-gray-100 text-sm text-gray-700 transition-colors text-left"

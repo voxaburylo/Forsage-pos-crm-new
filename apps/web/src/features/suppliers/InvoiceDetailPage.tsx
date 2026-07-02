@@ -9,6 +9,8 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
 import { LabelPrintModal } from './LabelPrintModal'
 import { useAuthStore } from '@/stores/authStore'
+import { Modal, Input } from '@/components/ui'
+import { shiftApi } from '@/features/pos/shiftApi'
 
 const STATUS_BADGE: Record<string, 'yellow' | 'green' | 'red'> = {
   draft: 'yellow', posted: 'green', cancelled: 'red',
@@ -24,6 +26,11 @@ export default function InvoiceDetailPage() {
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
   const [labelModal, setLabelModal]       = useState(false)
+  const [paymentOpen, setPaymentOpen] = useState(false)
+  const [paymentAmount, setPaymentAmount] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
+  const [paymentNote, setPaymentNote] = useState('')
 
   const userRole = useAuthStore((s) => s.session?.user?.user_metadata?.role as string | undefined)
   const canDelete = userRole === 'owner' || userRole === 'admin'
@@ -74,6 +81,42 @@ export default function InvoiceDetailPage() {
       load()
     } catch {
       toast.error('Помилка скасування')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handleSupplierPayment() {
+    if (!invoice) return
+    const amount = Math.round(Number(paymentAmount) * 100)
+    const debt = Math.max(0, invoice.total - (invoice.paid_amount ?? 0))
+    if (!amount || amount <= 0 || amount > debt) {
+      toast.error('Перевірте суму оплати')
+      return
+    }
+    setActionLoading(true)
+    try {
+      const currentShift = fundSource === 'cashbox'
+        ? await shiftApi.current().catch(() => null)
+        : null
+      const shiftId = (currentShift as any)?.data?.id ?? null
+      if (fundSource === 'cashbox' && !shiftId) {
+        toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
+        return
+      }
+      await supplierApi.payInvoice(id!, {
+        amount,
+        payment_method: paymentMethod,
+        fund_source: fundSource,
+        shift_id: shiftId,
+        note: paymentNote.trim() || null,
+      })
+      toast.success('Оплату постачальнику записано')
+      setPaymentOpen(false)
+      setPaymentNote('')
+      load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Помилка оплати')
     } finally {
       setActionLoading(false)
     }
@@ -200,19 +243,9 @@ export default function InvoiceDetailPage() {
                 <>
                   <span className="text-gray-600">Борг постачальнику: <strong className="text-red-600">{formatMoney(debt)}</strong></span>
                   <Button size="sm" variant="outline" disabled={actionLoading}
-                    onClick={async () => {
-                      const input = prompt(`Сума доплати постачальнику (грн). Залишок боргу: ${(debt / 100).toFixed(2)}`, (debt / 100).toFixed(2))
-                      if (!input) return
-                      const amount = Math.round(parseFloat(input) * 100)
-                      if (!amount || amount <= 0) { toast.error('Невірна сума'); return }
-                      setActionLoading(true)
-                      try {
-                        await supplierApi.payInvoice(id!, amount)
-                        toast.success('Оплату записано')
-                        load()
-                      } catch (err) {
-                        toast.error(err instanceof Error ? err.message : 'Помилка оплати')
-                      } finally { setActionLoading(false) }
+                    onClick={() => {
+                      setPaymentAmount((debt / 100).toFixed(2))
+                      setPaymentOpen(true)
                     }}>
                     💵 Доплатити
                   </Button>
@@ -279,6 +312,40 @@ export default function InvoiceDetailPage() {
         invoice={invoice}
       />
     )}
+    <Modal open={paymentOpen} onClose={() => setPaymentOpen(false)} title="Оплата постачальнику" size="sm">
+      <div className="space-y-4">
+        <Input label="Сума, грн" type="number" min="0.01" step="0.01"
+          value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Спосіб оплати</label>
+          <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as typeof paymentMethod)}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm">
+            <option value="cash">Готівка</option>
+            <option value="card">Картка / термінал</option>
+            <option value="transfer">Банківський переказ</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Звідки взяті гроші</label>
+          <select value={fundSource} onChange={(e) => setFundSource(e.target.value as typeof fundSource)}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm">
+            <option value="cashbox">З каси магазину</option>
+            <option value="owner_funds">Власні кошти власника</option>
+            <option value="bank_account">Розрахунковий рахунок</option>
+            <option value="business_card">Картка підприємства</option>
+          </select>
+          {fundSource === 'cashbox' && (
+            <p className="mt-1 text-xs text-gray-500">Сума буде записана як виймання з поточної касової зміни.</p>
+          )}
+        </div>
+        <Input label="Примітка (необов’язково)" value={paymentNote}
+          onChange={(e) => setPaymentNote(e.target.value)} placeholder="Номер платежу або пояснення" />
+        <div className="flex gap-3 pt-1">
+          <Button variant="secondary" onClick={() => setPaymentOpen(false)} className="flex-1">Скасувати</Button>
+          <Button onClick={handleSupplierPayment} loading={actionLoading} className="flex-1">Записати оплату</Button>
+        </div>
+      </div>
+    </Modal>
     </>
   )
 }

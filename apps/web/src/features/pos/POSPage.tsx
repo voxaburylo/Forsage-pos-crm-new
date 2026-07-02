@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users, Receipt, LayoutGrid, PauseCircle, Inbox, Scale, MoreVertical } from 'lucide-react'
+import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users, Receipt, LayoutGrid, PauseCircle, Inbox, Scale, MoreVertical, CircleDollarSign, Wrench } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
@@ -17,6 +17,7 @@ import { FavoritesPanel } from './FavoritesPanel'
 import { DashboardPanel } from './DashboardPanel'
 import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
+import { QuickChargeModal } from './QuickChargeModal'
 import { HelpModal } from './HelpModal'
 import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
@@ -188,6 +189,7 @@ export default function POSPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
+  const [quickCharge, setQuickCharge] = useState<'tire_service' | 'free_sale' | null>(null)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
   
 
@@ -631,10 +633,11 @@ export default function POSPage() {
           {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}
             onChange={(e) => store.setManagerId(e.target.value || null)}
-            aria-label="Менеджер продажу"
+            aria-label="Виконавець продажу або роботи"
+            title="Працівник, якому буде зараховано продаж або роботу"
             className="hidden md:block bg-transparent text-gray-400 text-xs border border-gray-800 rounded-lg px-2 py-1.5 focus:outline-none focus:border-yellow-400/50 max-w-[110px] cursor-pointer hover:text-gray-300 appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}>
-            {staffUsers.filter((u) => ['owner','admin','manager','cashier'].includes(u.role)).map((u) => (
+            {staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role)).map((u) => (
               <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
             ))}
           </select>
@@ -646,6 +649,16 @@ export default function POSPage() {
             className="h-10 px-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-indigo-600/30 text-xs"
             title="Швидкий доступ до товарів">
             <LayoutGrid size={15} /> Товари
+          </button>
+          <button onClick={() => setQuickCharge('tire_service')}
+            className="h-10 px-3 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-emerald-600/30 text-xs"
+            title="Прийняти оплату за роботу шиномонтажу">
+            <Wrench size={15} /> Шиномонтаж
+          </button>
+          <button onClick={() => setQuickCharge('free_sale')}
+            className="h-10 px-3 bg-orange-600/20 hover:bg-orange-600/40 text-orange-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-orange-600/30 text-xs"
+            title="Прийняти довільну суму за товар, якого немає в каталозі">
+            <CircleDollarSign size={15} /> Вільна сума
           </button>
 
           <div className="w-px h-7 bg-gray-800 mx-1" />
@@ -795,11 +808,11 @@ export default function POSPage() {
 
             {/* Вибір менеджера */}
             <div className="mb-4">
-              <p className="text-gray-500 text-xs mb-1.5 uppercase tracking-wider">Менеджер</p>
+              <p className="text-gray-500 text-xs mb-1.5 uppercase tracking-wider">Виконавець продажу / роботи</p>
               <select value={store.managerId ?? session?.user?.id ?? ''}
                 onChange={(e) => store.setManagerId(e.target.value || null)}
                 className="w-full bg-[#2C2C2C] text-gray-300 text-sm border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-yellow-400/50">
-                {staffUsers.filter((u) => ['owner','admin','manager','cashier'].includes(u.role)).map((u) => (
+                {staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role)).map((u) => (
                   <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
                 ))}
               </select>
@@ -810,6 +823,8 @@ export default function POSPage() {
             {/* Сітка дій */}
             <div className="grid grid-cols-4 gap-3 mb-4">
               {[
+                { icon: '🛞', label: 'Шиномонтаж', action: () => { setQuickCharge('tire_service'); setMobileMenuOpen(false) } },
+                { icon: '💰', label: 'Вільна сума', action: () => { setQuickCharge('free_sale'); setMobileMenuOpen(false) } },
                 { icon: '🖨️', label: 'Друк', action: () => { printReceipt(); setMobileMenuOpen(false) }, disabled: !lastSale },
                 { icon: '🧾', label: 'Знайти чек', action: () => { setFindReceiptOpen(true); setMobileMenuOpen(false) } },
                 { icon: '⏸️', label: 'Відкласти', action: () => { setSuspendOpen(true); setMobileMenuOpen(false) }, disabled: store.items.length === 0 },
@@ -922,6 +937,12 @@ export default function POSPage() {
       </div>
 
       <FavoritesPanel open={quickOpen} onClose={() => setQuickOpen(false)} />
+      <QuickChargeModal
+        open={quickCharge !== null}
+        kind={quickCharge ?? 'free_sale'}
+        staff={staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role))}
+        onClose={() => setQuickCharge(null)}
+      />
 
       {/* Модалки */}
       <ShiftCloseModal

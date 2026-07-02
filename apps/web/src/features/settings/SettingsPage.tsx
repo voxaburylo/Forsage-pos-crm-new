@@ -547,6 +547,7 @@ export default function SettingsPage() {
           </Card>
 
           {/* ========== Швидкі кнопки POS ========== */}
+          <div id="pos-quick-settings" className="scroll-mt-6">
           <Card className="mt-6 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
               <div className="flex items-center gap-2">
@@ -618,6 +619,7 @@ export default function SettingsPage() {
               </button>
             )}
           </Card>
+          </div>
 
           {/* ========== Декодер VIN (інтеграція) ========== */}
           <Card className="mt-6 space-y-4">

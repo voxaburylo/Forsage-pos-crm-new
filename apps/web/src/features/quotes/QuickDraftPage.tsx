@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ClipboardList, Save } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input } from '@/components/ui'
@@ -15,9 +15,10 @@ function digits(value: string) {
 export default function QuickDraftPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
   const [phone, setPhone] = useState('')
   const [customerName, setCustomerName] = useState('')
-  const [vin, setVin] = useState('')
+  const [vin, setVin] = useState(() => searchParams.get('vin')?.trim().toUpperCase() ?? '')
   const [partsText, setPartsText] = useState('')
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(!!id)

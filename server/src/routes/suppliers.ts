@@ -66,7 +66,9 @@ router.post('/invoices/:id/pay', requireRole('owner', 'admin', 'manager'), async
     const parsed = invoicePaymentSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна сума оплати', 422, parsed.error.flatten())
     const invoice = await supplierService.addInvoicePayment(
-      String(req.params.id), parsed.data.amount, parsed.data.payment_method ?? null, req.user!.tenant_id,
+      String(req.params.id), parsed.data.amount, parsed.data.payment_method,
+      parsed.data.fund_source, parsed.data.shift_id ?? null, parsed.data.note ?? null,
+      req.user!.id, req.user!.tenant_id,
     )
     res.json({ data: invoice })
   } catch (err) { next(err) }

@@ -12,6 +12,7 @@ import type { Product, ProductFormData } from '@/types/product'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
 
 interface LineItem {
@@ -198,6 +199,7 @@ export default function InvoiceFormPage() {
   // Оплата постачальнику
   const [paidAmount, setPaidAmount] = useState('')          // гривні (рядок форми)
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
   const [generatingBarcode, setGeneratingBarcode] = useState(false)
@@ -691,10 +693,20 @@ export default function InvoiceFormPage() {
         await supplierApi.updateInvoice(id!, { invoice_number: body.invoice_number, notes: body.notes })
         toast.success('Накладну оновлено')
       } else {
+        const shift = paidAmount && fundSource === 'cashbox'
+          ? await shiftApi.current().catch(() => null)
+          : null
+        const shiftId = (shift as any)?.data?.id ?? null
+        if (Number(paidAmount) > 0 && fundSource === 'cashbox' && !shiftId) {
+          toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
+          return
+        }
         const created = await supplierApi.createInvoice({
           ...body,
           paid_amount: paidAmount ? Math.round(parseFloat(paidAmount) * 100) : 0,
           payment_method: paidAmount ? paymentMethod : null,
+          fund_source: paidAmount ? fundSource : null,
+          shift_id: shiftId,
         })
 
         // Оновлюємо комірки, роздрібні ціни та назву/артикул (якщо міняли в таблиці)
@@ -1105,6 +1117,16 @@ export default function InvoiceFormPage() {
                   <option value="cash">Готівка</option>
                   <option value="card">Картка</option>
                   <option value="transfer">Переказ</option>
+                </select>
+              </div>
+              <div className="w-52">
+                <label className="block text-xs font-medium text-gray-500 mb-1">Звідки гроші</label>
+                <select value={fundSource} onChange={(e) => setFundSource(e.target.value as typeof fundSource)}
+                  className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
+                  <option value="cashbox">З каси магазину</option>
+                  <option value="owner_funds">Власні кошти власника</option>
+                  <option value="bank_account">Розрахунковий рахунок</option>
+                  <option value="business_card">Картка підприємства</option>
                 </select>
               </div>
               <Button type="button" variant="outline" size="sm" onClick={() => setPaidAmount((total / 100).toFixed(2))}>

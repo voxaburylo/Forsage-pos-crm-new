@@ -36,10 +36,8 @@ function vinMake(vin: string): string {
 
 const PLATFORM_COLORS: Record<string, string> = {
   telegram: 'bg-blue-500',
-  viber:    'bg-purple-500',
-  whatsapp: 'bg-green-500',
 }
-const PLATFORM_LABELS: Record<string, string> = { telegram: 'TG', viber: 'VB', whatsapp: 'WA' }
+const PLATFORM_LABELS: Record<string, string> = { telegram: 'TG' }
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 
@@ -1388,7 +1386,7 @@ export default function OrdersPage() {
   // ── завантаження чатів ──
   const loadChats = useCallback(() => {
     api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true })
-      .then((r) => { setChats(r.data ?? []); setLoadingChats(false) })
+      .then((r) => { setChats((r.data ?? []).filter((chat) => chat.channel.platform === 'telegram')); setLoadingChats(false) })
       .catch(() => setLoadingChats(false))
   }, [])
   useEffect(() => {
