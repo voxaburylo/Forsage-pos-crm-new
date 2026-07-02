@@ -278,7 +278,7 @@ function OrderRow({ order, active, onClick }: {
           <Badge color={conf.color}>{conf.label}</Badge>
           {draft && (
             <span className="text-[9px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-semibold">
-              КП
+              Чернетка
             </span>
           )}
           <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">
@@ -778,14 +778,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
   const drafts = orders.filter(isDraft)
 
   async function handleConvertToOrder(orderId: string) {
-    if (!confirm('Перевести цю чернетку в активне замовлення?')) return
-    try {
-      await orderApi.updateStatus(orderId, 'new')
-      toast.success('Чернетку переведено в замовлення!')
-      onLoad()
-    } catch {
-      toast.error('Помилка при переведенні замовлення')
-    }
+    navigate(`/orders/new?draftId=${orderId}`)
   }
 
   async function handleDelete(orderId: string, clientName: string) {
@@ -814,7 +807,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
         ) : drafts.length === 0 ? (
           <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
             <p className="text-gray-500 text-sm font-medium">Активних чернеток немає</p>
-            <p className="text-gray-400 text-xs mt-1">Чернетка — це незавершене замовлення чи КП, яке можна дооформити пізніше</p>
+            <p className="text-gray-400 text-xs mt-1">Телефон, VIN і список побажань клієнта — без цін та артикулів</p>
             <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/quotes/new')}>
               Створити чернетку
             </Button>
@@ -921,7 +914,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
                       icon={<ArrowRight size={12} />}
                       className="!bg-green-500 hover:!bg-green-600 text-white font-semibold text-xs py-1.5 px-3"
                     >
-                      В замовлення
+                      Оформити замовлення
                     </Button>
                   </div>
                 </div>
@@ -976,14 +969,6 @@ interface OrdersTableProps {
   onQuickView: (o: CustomerOrder) => void
   statusTab: Tab
   onStatusTab: (t: Tab) => void
-}
-
-// Перша позиція або «N позицій» для рядка списку (ORD-9)
-function itemsSummary(o: CustomerOrder): string {
-  const real = (o.items ?? []).filter((i) => !i.is_draft_note)
-  if (real.length === 0) return ''
-  if (real.length === 1) return real[0].name
-  return `${real[0].name} +${real.length - 1}`
 }
 
 function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, statusTab, onStatusTab }: OrdersTableProps) {
@@ -1069,7 +1054,19 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                 </div>
                 <div>
                   <p className="font-semibold text-gray-900 text-sm">{o.customer?.full_name ?? '—'}</p>
-                  {o.customer?.phone && <p className="text-xs text-gray-400">{o.customer.phone}</p>}
+                  {o.customer?.phone && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigator.clipboard.writeText(o.customer?.phone ?? '')
+                        toast.success('Телефон скопійовано')
+                      }}
+                      className="mt-0.5 inline-flex items-center gap-1 font-mono text-xs text-gray-600"
+                    >
+                      {o.customer.phone} <Copy size={11} />
+                    </button>
+                  )}
                 </div>
                 {o.vehicle_info?.make && (
                   <p className="text-xs text-gray-500 flex items-center gap-1">
@@ -1077,9 +1074,25 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                     {o.vehicle_info.make} {o.vehicle_info.model} {o.vehicle_info.year ? `(${o.vehicle_info.year})` : ''}
                   </p>
                 )}
-                {itemsSummary(o) && (
-                  <p className="text-xs text-gray-600 truncate">{itemsSummary(o)}</p>
+                {o.vehicle_info?.vin && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      navigator.clipboard.writeText(o.vehicle_info?.vin ?? '')
+                      toast.success('VIN скопійовано')
+                    }}
+                    className="flex w-fit items-center gap-1 rounded bg-gray-100 px-2 py-1 font-mono text-xs font-bold tracking-wide text-gray-800"
+                  >
+                    VIN {o.vehicle_info.vin} <Copy size={11} />
+                  </button>
                 )}
+                {o.items.filter((i) => !i.is_draft_note).slice(0, 3).map((item) => (
+                  <p key={item.id} className="truncate text-xs text-gray-600">
+                    {item.name}{item.sku ? ` · ${item.sku}` : ''} × {item.qty}
+                  </p>
+                ))}
+                {o.comment && <p className="line-clamp-2 text-xs italic text-amber-700">📝 {o.comment}</p>}
                 <div className="flex items-end justify-between pt-2 border-t border-gray-50">
                   <div className="text-xs space-y-0.5">
                     <div className="font-bold text-gray-900 text-sm">{formatMoney(o.total_amount)}</div>
@@ -1113,7 +1126,7 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                 <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
                   <th className="px-5 py-4">Замовлення</th>
                   <th className="px-5 py-4">Клієнт</th>
-                  <th className="px-5 py-4">Авто</th>
+                  <th className="px-5 py-4">Запчастини / VIN</th>
                   <th className="px-5 py-4">Сума</th>
                   <th className="px-5 py-4">Статус</th>
                   <th className="px-5 py-4 text-right">Дії</th>
@@ -1160,9 +1173,9 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                           <Clock size={11} className="text-gray-400 shrink-0" />
                           {formatDateTime(o.created_at)}
                         </div>
-                        {itemsSummary(o) && (
-                          <div className="text-xs text-gray-700 mt-1 truncate max-w-[220px]" title={itemsSummary(o)}>
-                            {itemsSummary(o)}
+                        {o.comment && (
+                          <div className="mt-1 max-w-[220px] truncate text-xs italic text-amber-700" title={o.comment}>
+                            📝 {o.comment}
                           </div>
                         )}
                       </td>
@@ -1173,36 +1186,45 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                           {o.customer?.full_name ?? '—'}
                         </div>
                         {o.customer?.phone && (
-                          <div className="text-xs text-gray-400 mt-0.5">{o.customer.phone}</div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              navigator.clipboard.writeText(o.customer?.phone ?? '')
+                              toast.success('Телефон скопійовано')
+                            }}
+                            className="mt-1 inline-flex items-center gap-1 font-mono text-xs text-gray-600 hover:text-gray-900"
+                            title="Скопіювати телефон"
+                          >
+                            {o.customer.phone} <Copy size={11} />
+                          </button>
                         )}
                       </td>
 
-                      {/* Авто */}
+                      {/* Запчастини та VIN */}
                       <td className="px-5 py-4">
-                        {o.vehicle_info ? (
-                          <div className="space-y-1">
-                            <div className="font-medium text-gray-700">
-                              {o.vehicle_info.make} {o.vehicle_info.model} {o.vehicle_info.year ? `(${o.vehicle_info.year})` : ''}
+                        <div className="max-w-[300px] space-y-1">
+                          {o.items.filter((i) => !i.is_draft_note).slice(0, 3).map((item) => (
+                            <div key={item.id} className="truncate text-xs text-gray-700" title={item.name}>
+                              {item.name}{item.sku ? <span className="font-mono text-gray-400"> · {item.sku}</span> : null}
+                              <span className="text-gray-400"> × {item.qty}</span>
                             </div>
-                            {o.vehicle_info.vin && (
-                              <div className="text-xs text-gray-400 font-mono flex items-center gap-1">
-                                <span>{o.vehicle_info.vin}</span>
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(o.vehicle_info?.vin ?? '')
-                                    toast.success('VIN скопійовано')
-                                  }}
-                                  className="text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
-                                  title="Скопіювати VIN"
-                                >
-                                  <Copy size={11} />
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-gray-200 text-xs">немає</span>
-                        )}
+                          ))}
+                          {o.vehicle_info?.vin && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                navigator.clipboard.writeText(o.vehicle_info?.vin ?? '')
+                                toast.success('VIN скопійовано')
+                              }}
+                              className="mt-1 inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-1 font-mono text-xs font-bold tracking-wide text-gray-800 hover:bg-gray-200"
+                              title="Скопіювати VIN"
+                            >
+                              {o.vehicle_info.vin} <Copy size={11} />
+                            </button>
+                          )}
+                        </div>
                       </td>
 
                       {/* Сума */}
@@ -1251,12 +1273,8 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                             title="Повторити замовлення"
                             onClick={() => startRepeatOrder(o, navigate)}
                           />
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => navigate('/orders/' + o.id)}
-                          >
-                            Перегляд
+                          <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>
+                            Відкрити
                           </Button>
                         </div>
                       </td>
@@ -1346,9 +1364,6 @@ export default function OrdersPage() {
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLInputElement>(null)
-
-  // швидкий перегляд замовлення (drawer зі списку)
-  const [quickOrderId, setQuickOrderId] = useState<string | null>(null)
 
   // модалки
   const [payModal, setPayModal] = useState<CustomerOrder | null>(null)
@@ -1465,7 +1480,7 @@ export default function OrdersPage() {
     return orders.filter((o) => {
       if (tab === 'bots')      return false
       // «Список замовлень» — лише реальні замовлення: без лідів (вони в Чат-ботах)
-      // і без чернеток (вони у вкладці «Чернетки / КП»)
+      // і без чернеток (вони у вкладці «Чернетки»)
       if (tab === 'all')       return !['completed', 'canceled', 'lead'].includes(o.status)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
@@ -1508,9 +1523,6 @@ export default function OrdersPage() {
   // ── похідні: вибраний чат/замовлення ──
   const selectedChat = selection?.kind === 'chat' ? chats.find((c) => c.id === selection.id) ?? null : null
   const selectedOrder = selection?.kind === 'order' ? orders.find((o) => o.id === selection.id) ?? null : null
-  // Живий об'єкт для drawer швидкого перегляду (оновлюється разом зі списком після дій)
-  const quickOrder = quickOrderId ? orders.find((o) => o.id === quickOrderId) ?? null : null
-
   // ── статистика ──
   const stats = useMemo(() => ({
     leads:     orders.filter(isLead).length,
@@ -1921,7 +1933,7 @@ export default function OrdersPage() {
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
               hasMore={orders.length >= 50}
-              onQuickView={(o) => setQuickOrderId(o.id)}
+              onQuickView={(o) => navigate('/orders/' + o.id)}
               statusTab={tab}
               onStatusTab={setTab}
             />
@@ -2110,35 +2122,6 @@ export default function OrdersPage() {
         </div>
       </Modal>
 
-      {/* Швидкий перегляд замовлення — drawer зі списку (без переходу на повну сторінку) */}
-      {quickOrder && (
-        <div className="fixed inset-0 z-40">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setQuickOrderId(null)} />
-          <div className="absolute right-0 top-0 bottom-0 w-full max-w-xl bg-gray-50 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white shrink-0">
-              <span className="font-bold text-gray-900">Швидкий перегляд</span>
-              <button onClick={() => setQuickOrderId(null)} className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100" title="Закрити">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
-              <OrderInlineView
-                order={quickOrder}
-                now={now}
-                onOpenFull={() => navigate('/orders/' + quickOrder.id)}
-                onEditDraft={() => navigate('/quotes/' + quickOrder.id)}
-                onOpenChat={(chatId) => { setQuickOrderId(null); navigate('/chats?chat_id=' + chatId) }}
-                onChangeStatus={(s) => changeOrderStatus(quickOrder.id, s)}
-                onItemStatus={(itemId, s) => updateItemStatus(quickOrder.id, itemId, s)}
-                onPay={() => setPayModal(quickOrder)}
-                onCancel={() => setCancelModal(quickOrder)}
-                onRepeat={() => startRepeatOrder(quickOrder, navigate)}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   )
 }
@@ -2234,7 +2217,7 @@ function OrderInlineView({
         {/* кнопки дій */}
         <div className="flex gap-2 flex-wrap">
           {draft ? (
-            <Button icon={<FilePen size={14} />} onClick={onEditDraft}>Редагувати КП</Button>
+            <Button icon={<FilePen size={14} />} onClick={onEditDraft}>Редагувати чернетку</Button>
           ) : canComplete && (
             <Button onClick={onPay} className="bg-green-600 hover:bg-green-700 text-white">💰 Видати</Button>
           )}

@@ -60,7 +60,7 @@ const OrdersPage           = lazyWithRetry(() => import('@/features/orders/Order
 const NeedsActionPage      = lazyWithRetry(() => import('@/features/orders/NeedsActionPage'))
 const OrderFormPage        = lazyWithRetry(() => import('@/features/orders/OrderFormPage'))
 const OrderDetailPage      = lazyWithRetry(() => import('@/features/orders/OrderDetailPage'))
-const QuoteEditorPage      = lazyWithRetry(() => import('@/features/quotes/QuoteEditorPage'))
+const QuickDraftPage       = lazyWithRetry(() => import('@/features/quotes/QuickDraftPage'))
 const CashflowPage         = lazyWithRetry(() => import('@/features/cashflow/CashflowPage'))
 const ReservesList         = lazyWithRetry(() => import('@/features/inventory/ReservesList'))
 const SupplierPOsPage      = lazyWithRetry(() => import('@/features/suppliers/SupplierPOsPage'))
@@ -163,8 +163,8 @@ function App() {
           <Route path="/orders/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute>} />
 
           <Route path="/quotes"          element={<Navigate to="/orders" replace />} />
-          <Route path="/quotes/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuoteEditorPage /></ProtectedRoute>} />
-          <Route path="/quotes/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuoteEditorPage /></ProtectedRoute>} />
+          <Route path="/quotes/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute>} />
+          <Route path="/quotes/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute>} />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

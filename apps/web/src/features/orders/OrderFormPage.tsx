@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
-import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search } from 'lucide-react'
-import { orderApi, type CreateOrderPayload } from './orderApi'
+import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
+import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
 import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { productApi } from '@/features/products/productApi'
 import { kopecksToHryvnia } from '@/types/product'
@@ -83,6 +83,9 @@ export default function OrderFormPage() {
   const [searchParams] = useSearchParams()
   const { id } = useParams()
   const [loading, setLoading] = useState(false)
+  const sourceDraftId = !id ? searchParams.get('draftId') : null
+  const [draftHint, setDraftHint] = useState<CustomerOrder | null>(null)
+  const [draftHintOpen, setDraftHintOpen] = useState(!!sourceDraftId)
 
   // ORD-3: на десктопі (≥1024px) показуємо всі секції на одному екрані без кроків
   const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
@@ -169,6 +172,37 @@ export default function OrderFormPage() {
       }
     }
   }, [id])
+
+  // Чернетка не перетворюється на напівготове замовлення автоматично.
+  // Вона висить поруч як список-підказка, а менеджер заповнює нормальну накладну.
+  useEffect(() => {
+    if (!sourceDraftId) return
+    orderApi.get(sourceDraftId)
+      .then(({ data: draft }) => {
+        setDraftHint(draft)
+        setDraftHintOpen(true)
+        setComment(draft.comment ?? '')
+        if (draft.customer) {
+          setCustomerId(draft.customer.id)
+          customerApi.get(draft.customer.id)
+            .then((result) => setSelectedCustomer(result.data))
+            .catch(() => {})
+          customerVehiclesApi.list(draft.customer.id)
+            .then((result) => {
+              setVehicles(result.data ?? [])
+              const matched = (result.data ?? []).find((vehicle) => vehicle.vin === draft.vehicle_info?.vin)
+              if (matched) setSelectedVehicle(matched)
+            })
+            .catch(() => {})
+        }
+        if (draft.vehicle_info) setLoadedVehicleInfo(draft.vehicle_info)
+        setStep(3)
+      })
+      .catch(() => {
+        toast.error('Чернетку не знайдено')
+        navigate('/orders?tab=drafts')
+      })
+  }, [sourceDraftId, navigate])
 
   // Load existing order details for editing (P0 Fix 1)
   useEffect(() => {
@@ -667,6 +701,7 @@ export default function OrderFormPage() {
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
       source: 'walk_in',
+      parent_draft_id: !asDraft ? sourceDraftId : null,
       vehicle_info: vehicleInfo,
       comment: finalComment || null,
       prepayment: finalPrepayment,
@@ -714,6 +749,9 @@ export default function OrderFormPage() {
               return
             }
           }
+          if (sourceDraftId) {
+            await api.delete(`/api/v1/customer-orders/${sourceDraftId}`).catch(() => {})
+          }
           toast.success('Замовлення оформлено!')
           navigate('/orders/' + newOrder.id)
         }
@@ -756,7 +794,7 @@ export default function OrderFormPage() {
 
   return (
     <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
-      <div className="max-w-4xl mx-auto space-y-6">
+      <div className={`max-w-4xl mx-auto space-y-6 transition-[margin] ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
         
         {/* Step Indicator — лише в покроковому (мобільному) режимі */}
         {!isDesktop && (
@@ -1661,6 +1699,51 @@ export default function OrderFormPage() {
         )}
 
       </div>
+
+      {draftHint && draftHintOpen && (
+        <aside className="fixed bottom-4 right-4 top-20 z-30 flex w-[24rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-yellow-300 bg-white shadow-2xl">
+          <div className="flex items-start justify-between gap-3 border-b border-yellow-200 bg-yellow-50 px-4 py-3">
+            <div className="flex gap-2">
+              <ClipboardList size={19} className="mt-0.5 shrink-0 text-yellow-700" />
+              <div>
+                <p className="font-bold text-gray-900">Чернетка-підказка</p>
+                <p className="text-xs text-gray-500">Залишається відкритою, поки ви її не закриєте</p>
+              </div>
+            </div>
+            <button type="button" onClick={() => setDraftHintOpen(false)} className="rounded-lg p-1.5 text-gray-500 hover:bg-white" aria-label="Закрити чернетку">
+              <X size={18} />
+            </button>
+          </div>
+          <div className="flex-1 space-y-4 overflow-y-auto p-4">
+            <div className="space-y-1 text-sm">
+              <p className="font-semibold text-gray-900">{draftHint.customer?.full_name ?? 'Без імені'}</p>
+              {draftHint.customer?.phone && <p className="font-mono text-gray-600">{draftHint.customer.phone}</p>}
+              {draftHint.vehicle_info?.vin && (
+                <p className="break-all rounded-lg bg-gray-100 px-2.5 py-2 font-mono text-sm font-bold tracking-wide text-gray-900">
+                  VIN {draftHint.vehicle_info.vin}
+                </p>
+              )}
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-400">Що потрібно знайти</p>
+              <ol className="space-y-2">
+                {draftHint.items.map((item, index) => (
+                  <li key={item.id} className="flex gap-2 rounded-xl border border-gray-100 bg-gray-50 p-3 text-sm font-medium text-gray-800">
+                    <span className="text-gray-400">{index + 1}.</span>
+                    <span>{item.name}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+            {draftHint.comment && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p className="mb-1 text-xs font-bold uppercase">Нотатка</p>
+                <p className="whitespace-pre-wrap">{draftHint.comment}</p>
+              </div>
+            )}
+          </div>
+        </aside>
+      )}
     </Layout>
   )
 }

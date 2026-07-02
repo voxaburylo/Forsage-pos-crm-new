@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown, Pencil } from 'lucide-react'
+import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown, Pencil, Copy } from 'lucide-react'
 import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
 import { formatOrderNo, startRepeatOrder } from './orderActions'
@@ -15,6 +15,9 @@ import { formatMoney, formatDate } from '@/lib/utils'
 import { adminApi } from '@/features/admin/adminApi'
 import { productApi } from '@/features/products/productApi'
 import { DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
+import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
+import { customerApi } from '@/features/customers/customerApi'
+import type { Customer } from '@/types/customer'
 
 interface Payment {
   id: string
@@ -66,6 +69,7 @@ interface DraftEditItem {
   item_type: 'product' | 'service'
   buy_price: string
   expected_date: string | null
+  item_status: ItemStatus
 }
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
@@ -142,11 +146,15 @@ export default function OrderDetailPage() {
   const [editItems, setEditItems] = useState(false)
   const [draftItems, setDraftItems] = useState<DraftEditItem[]>([])
   const [draftVehicle, setDraftVehicle] = useState({ make: '', model: '', year: '', vin: '' })
+  const [draftComment, setDraftComment] = useState('')
   const [savingItems, setSavingItems] = useState(false)
+  const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
+  const [quickCustomer, setQuickCustomer] = useState<Customer | null>(null)
+  const [customerEditorOpen, setCustomerEditorOpen] = useState(false)
 
   function startEdit() {
     if (!order) return
-    setDraftItems(order.items.filter((i) => i.item_status !== 'canceled').map((i) => ({
+    setDraftItems(order.items.map((i) => ({
       id: i.id,
       name: i.name,
       sku: i.sku ?? '',
@@ -157,9 +165,11 @@ export default function OrderDetailPage() {
       item_type: i.item_type,
       buy_price: (i.buy_price / 100).toFixed(2),
       expected_date: i.expected_date,
+      item_status: i.item_status,
     })))
     const v = order.vehicle_info
     setDraftVehicle({ make: v?.make ?? '', model: v?.model ?? '', year: v?.year ? String(v.year) : '', vin: v?.vin ?? '' })
+    setDraftComment(order.comment ?? '')
     setEditItems(true)
   }
 
@@ -167,7 +177,7 @@ export default function OrderDetailPage() {
     setDraftItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)))
   }
   function addDraftItem() {
-    setDraftItems((prev) => [...prev, { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: null, product_id: null, item_type: 'product', buy_price: '0', expected_date: null }])
+    setDraftItems((prev) => [...prev, { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: null, product_id: null, item_type: 'product', buy_price: '0', expected_date: null, item_status: 'pending' }])
   }
   function removeDraftItem(idx: number) {
     setDraftItems((prev) => prev.filter((_, i) => i !== idx))
@@ -188,6 +198,7 @@ export default function OrderDetailPage() {
           }
         : null
       await orderApi.update(id, {
+        comment: draftComment.trim() || null,
         vehicle_info,
         items: valid.map((i) => ({
           id: i.id,
@@ -201,6 +212,7 @@ export default function OrderDetailPage() {
           sell_price: Math.round(parseFloat(i.sell_price || '0') * 100),
           qty: parseFloat(i.qty) || 1,
           expected_date: i.expected_date,
+          item_status: i.item_status,
         })),
       })
       toast.success('Замовлення оновлено')
@@ -239,6 +251,31 @@ export default function OrderDetailPage() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
+    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true })
+      .then((result) => {
+        const seen = new Set<string>()
+        setSuppliers((result.data ?? []).filter((supplier) => {
+          const key = supplier.name.trim().toLocaleLowerCase('uk-UA')
+          if (!key || seen.has(key)) return false
+          seen.add(key)
+          return true
+        }))
+      })
+      .catch(() => {})
+  }, [])
+
+  async function openCustomerEditor() {
+    if (!order?.customer) return
+    try {
+      const result = await customerApi.get(order.customer.id)
+      setQuickCustomer(result.data)
+      setCustomerEditorOpen(true)
+    } catch {
+      toast.error('Не вдалося завантажити клієнта')
+    }
+  }
+
+  useEffect(() => {
     if (!id) return
     api.get<{ data: Payment[] }>(`/api/v1/customer-orders/${id}/payments`)
       .then((r) => setPayments(r.data ?? []))
@@ -252,6 +289,17 @@ export default function OrderDetailPage() {
       toast.success('Статус позиції оновлено')
       load()
     } catch { toast.error('Помилка') }
+  }
+
+  async function handleOrderStatus(status: CustomerOrderStatus) {
+    if (!id) return
+    try {
+      await orderApi.updateStatus(id, status)
+      toast.success('Статус замовлення оновлено')
+      load()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити статус')
+    }
   }
 
   async function handleComplete() {
@@ -586,14 +634,25 @@ export default function OrderDetailPage() {
         </div>
       }
     >
-      <div className="max-w-3xl space-y-5">
+      <div className="mx-auto max-w-6xl space-y-5">
 
         {/* Шапка */}
         <Card>
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-2">
               <div className="flex items-center gap-3 flex-wrap">
-                <Badge color={conf.color}>{conf.label}</Badge>
+                {canCancel && !isDraft ? (
+                  <select
+                    value={order.status}
+                    onChange={(e) => handleOrderStatus(e.target.value as CustomerOrderStatus)}
+                    className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-yellow-400"
+                    aria-label="Загальний статус замовлення"
+                  >
+                    {(['new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'] as CustomerOrderStatus[]).map((status) => (
+                      <option key={status} value={status}>{STATUS_CONFIG[status]?.label ?? status}</option>
+                    ))}
+                  </select>
+                ) : <Badge color={conf.color}>{conf.label}</Badge>}
                 {order.source === 'messenger' && <MessageSquare size={14} className="text-blue-400" />}
                 {order.source === 'phone' && <Phone size={14} className="text-green-400" />}
                 <span className="text-xs text-gray-400">{formatDate(order.created_at)}</span>
@@ -602,14 +661,25 @@ export default function OrderDetailPage() {
               <div className="text-sm text-gray-600 space-y-1">
                 {order.customer ? (
                   <div className="flex flex-wrap items-center gap-x-2">
-                    <button onClick={() => navigate('/customers/' + order.customer!.id)}
-                      className="text-blue-600 hover:underline font-medium">
+                    <button onClick={openCustomerEditor}
+                      className="font-medium text-blue-600 hover:underline" title="Швидко змінити ім’я або телефон">
                       {order.customer.full_name ?? order.customer.phone}
                     </button>
                     {order.customer.full_name && order.customer.phone && (
-                      <a href={`tel:${order.customer.phone}`} className="inline-flex items-center gap-1 text-gray-500 hover:text-gray-800">
-                        <Phone size={13} /> {order.customer.phone}
-                      </a>
+                      <span className="inline-flex items-center gap-1">
+                        <a href={`tel:${order.customer.phone}`} className="inline-flex items-center gap-1 font-mono text-gray-600 hover:text-gray-900">
+                          <Phone size={13} /> {order.customer.phone}
+                        </a>
+                        <button type="button" onClick={() => {
+                          navigator.clipboard.writeText(order.customer?.phone ?? '')
+                          toast.success('Телефон скопійовано')
+                        }} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Скопіювати телефон">
+                          <Copy size={12} />
+                        </button>
+                        <button type="button" onClick={openCustomerEditor} className="text-xs font-medium text-blue-600 hover:underline">
+                          змінити
+                        </button>
+                      </span>
                     )}
                   </div>
                 ) : (
@@ -629,12 +699,26 @@ export default function OrderDetailPage() {
                       className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent" />
                   </div>
                 ) : order.vehicle_info && (
-                  <div>🚗 {[order.vehicle_info.make, order.vehicle_info.model, order.vehicle_info.year].filter(Boolean).join(' ')}
-                    {order.vehicle_info.vin && <span className="ml-1 font-mono text-xs text-gray-400">({order.vehicle_info.vin})</span>}
+                  <div className="space-y-1">
+                    <div>🚗 {[order.vehicle_info.make, order.vehicle_info.model, order.vehicle_info.year].filter(Boolean).join(' ') || 'Автомобіль'}</div>
+                    {order.vehicle_info.vin && (
+                      <button type="button" onClick={() => {
+                        navigator.clipboard.writeText(order.vehicle_info?.vin ?? '')
+                        toast.success('VIN скопійовано')
+                      }} className="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 font-mono text-sm font-bold tracking-wider text-gray-900 hover:bg-gray-200">
+                        VIN {order.vehicle_info.vin} <Copy size={13} />
+                      </button>
+                    )}
                   </div>
                 )}
 
-                {order.comment && <div className="italic text-gray-500">{order.comment}</div>}
+                {editItems ? (
+                  <textarea value={draftComment} onChange={(e) => setDraftComment(e.target.value)} rows={2}
+                    placeholder="Нотатка до замовлення"
+                    className="mt-2 w-full max-w-2xl rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                ) : order.comment ? (
+                  <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 italic text-amber-900">📝 {order.comment}</div>
+                ) : null}
                 {order.pickup_deadline_at && (
                   <div className={`text-xs mt-2 ${new Date(order.pickup_deadline_at) < now ? 'text-red-600 font-bold' : 'text-gray-500'}`}>
                     📅 Дедлайн видачі: {formatDate(order.pickup_deadline_at)}
@@ -676,45 +760,38 @@ export default function OrderDetailPage() {
           </div>
 
           {editItems ? (
-            /* ── Режим редагування: чіткі поля Артикул / Назва / К-сть / Ціна ── */
-            <div className="space-y-2">
-              <div className="hidden md:grid grid-cols-[1fr_130px_70px_110px_36px] gap-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                <span>Назва запчастини</span><span>Артикул</span><span>К-сть</span><span>Ціна, грн</span><span></span>
-              </div>
-              {draftItems.map((it, idx) => (
-                <div key={idx} className="grid grid-cols-2 md:grid-cols-[1fr_130px_70px_110px_36px] gap-2 items-center">
-                  <input
-                    value={it.name}
-                    onChange={(e) => updateDraftItem(idx, { name: e.target.value })}
-                    placeholder="Назва запчастини"
-                    className="col-span-2 md:col-span-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
-                  />
-                  <input
-                    value={it.sku}
-                    onChange={(e) => updateDraftItem(idx, { sku: e.target.value })}
-                    placeholder="Артикул"
-                    className="border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
-                  />
-                  <input
-                    type="number" min="0" step="1"
-                    value={it.qty}
-                    onChange={(e) => updateDraftItem(idx, { qty: e.target.value })}
-                    placeholder="К-сть"
-                    className="border border-gray-200 rounded-lg px-2.5 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
-                  />
-                  <input
-                    type="number" min="0" step="0.01"
-                    value={it.sell_price}
-                    onChange={(e) => updateDraftItem(idx, { sell_price: e.target.value })}
-                    placeholder="Ціна"
-                    className="border border-gray-200 rounded-lg px-2.5 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
-                  />
-                  <button onClick={() => removeDraftItem(idx)} title="Видалити позицію"
-                    className="justify-self-end text-gray-300 hover:text-red-500 p-1.5">
-                    🗑
-                  </button>
+            <div className="overflow-x-auto">
+              <div className="min-w-[1100px] space-y-2">
+                <div className="grid grid-cols-[36px_minmax(190px,1fr)_130px_70px_100px_100px_170px_130px_36px] gap-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                  <span>№</span><span>Назва</span><span>Артикул</span><span>К-сть</span>
+                  <span>Закупка</span><span>Продаж</span><span>Постачальник</span><span>Статус</span><span></span>
                 </div>
-              ))}
+                {draftItems.map((it, idx) => (
+                  <div key={it.id ?? `new-${idx}`} className="grid grid-cols-[36px_minmax(190px,1fr)_130px_70px_100px_100px_170px_130px_36px] items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-2">
+                    <span className="text-center text-sm font-bold text-gray-400">{idx + 1}</span>
+                    <input value={it.name} onChange={(e) => updateDraftItem(idx, { name: e.target.value })} placeholder="Назва запчастини"
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                    <input value={it.sku} onChange={(e) => updateDraftItem(idx, { sku: e.target.value })} placeholder="Артикул"
+                      className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                    <input type="number" min="0.001" step="any" value={it.qty} onChange={(e) => updateDraftItem(idx, { qty: e.target.value })}
+                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-center text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                    <input type="number" min="0" step="0.01" value={it.buy_price} onChange={(e) => updateDraftItem(idx, { buy_price: e.target.value })}
+                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-right text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                    <input type="number" min="0" step="0.01" value={it.sell_price} onChange={(e) => updateDraftItem(idx, { sell_price: e.target.value })}
+                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-right text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                    <select value={it.supplier_id ?? ''} onChange={(e) => updateDraftItem(idx, { supplier_id: e.target.value || null })}
+                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
+                      <option value="">Власний склад</option>
+                      {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+                    </select>
+                    <select value={it.item_status} onChange={(e) => updateDraftItem(idx, { item_status: e.target.value as ItemStatus })}
+                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
+                      {Object.entries(ITEM_STATUS_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                    <button onClick={() => removeDraftItem(idx)} title="Видалити позицію" className="rounded p-1.5 text-gray-300 hover:bg-red-50 hover:text-red-500">🗑</button>
+                  </div>
+                ))}
+              </div>
               <div className="flex justify-end pt-2 border-t border-gray-100 text-sm">
                 <span className="text-gray-500 mr-2">Разом:</span>
                 <span className="font-bold text-gray-900">{draftTotal.toFixed(2)} ₴</span>
@@ -820,6 +897,14 @@ export default function OrderDetailPage() {
               <span>Сплачено:</span>
               <span className="font-semibold">{formatMoney(totalPaid)}</span>
             </div>
+            {order.prepayment > 0 && order.prepayment_method && (
+              <div className="flex justify-between text-gray-500">
+                <span>Тип передоплати:</span>
+                <span className="font-medium">
+                  {order.prepayment_method === 'cash' ? 'Готівка' : order.prepayment_method === 'card' ? 'Картка' : 'Переказ'}
+                </span>
+              </div>
+            )}
             {remaining > 0 && (
               <div className="flex justify-between text-orange-600 font-bold">
                 <span>Залишок:</span>
@@ -1040,6 +1125,23 @@ export default function OrderDetailPage() {
           </div>
         </Modal>
       )}
+
+      <QuickCustomerEditModal
+        customer={quickCustomer}
+        open={customerEditorOpen}
+        onClose={() => setCustomerEditorOpen(false)}
+        onSaved={(customer) => {
+          setQuickCustomer(customer)
+          setOrder((current) => current ? {
+            ...current,
+            customer: current.customer ? {
+              ...current.customer,
+              phone: customer.phone,
+              full_name: customer.full_name,
+            } : current.customer,
+          } : current)
+        }}
+      />
     </Layout>
   )
 }

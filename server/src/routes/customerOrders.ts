@@ -398,6 +398,7 @@ router.get('/', async (req, res, next) => {
 router.put('/:id/draft', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
+      customer_id: z.string().uuid().optional().nullable(),
       comment:     z.string().max(2000).optional().nullable(),
       vehicle_info: z.any().optional(),
       items: z.array(z.object({
@@ -420,8 +421,15 @@ router.put('/:id/draft', requireRole('owner', 'admin', 'manager'), async (req, r
 
     const orderId = req.params.id
 
+    if (parsed.data.customer_id) {
+      const { data: customer } = await db.from('customers').select('id')
+        .eq('id', parsed.data.customer_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
+      if (!customer) throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+    }
+
     // Оновлюємо основні поля
     const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    if (parsed.data.customer_id !== undefined) updateFields.customer_id = parsed.data.customer_id
     if (parsed.data.comment !== undefined) updateFields.comment = parsed.data.comment
     if (parsed.data.vehicle_info !== undefined) updateFields.vehicle_info = parsed.data.vehicle_info
 
@@ -1241,6 +1249,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
         supplier_id:    z.string().uuid().optional().nullable(),
         source_type:    z.enum(['warehouse', 'supplier']).default('supplier'),
         item_type:      z.enum(['product', 'service']).default('product'),
+        item_status:    z.enum(['pending', 'ordered', 'arrived', 'handed', 'canceled', 'returned']).optional(),
         buy_price:      z.number().int().min(0).default(0),
         sell_price:     z.number().int().min(0).default(0),
         qty:            z.number().min(0.001).default(1),
@@ -1331,7 +1340,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
               buy_price: item.buy_price,
               source_type: item.supplier_id ? 'supplier' : 'warehouse',
               item_type: item.item_type,
-              item_status: prev ? keptStatus : 'pending',
+              item_status: item.item_status ?? (prev ? keptStatus : 'pending'),
               is_draft_note: item.is_draft_note,
               expected_date: item.expected_date ?? prev?.expected_date ?? null,
               core_deposit_amount: oldCore ? oldCore.core_deposit_amount : coreDeposit,

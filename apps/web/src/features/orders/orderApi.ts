@@ -60,6 +60,8 @@ export interface CreateOrderItemPayload {
   sell_price: number
   qty: number
   expected_date?: string | null
+  is_draft_note?: boolean
+  item_status?: ItemStatus
 }
 
 export interface CreateOrderPayload {
@@ -71,6 +73,7 @@ export interface CreateOrderPayload {
   prepayment?: number
   prepayment_method?: 'cash' | 'card' | 'transfer' | null
   prepayment_is_fiscal?: boolean
+  parent_draft_id?: string | null
   discount_amount?: number
   items: CreateOrderItemPayload[]
 }
