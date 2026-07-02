@@ -49,6 +49,7 @@ export interface CustomerOrder {
 }
 
 export interface CreateOrderItemPayload {
+  id?: string // наявна позиція — щоб сервер зберіг її статус при редагуванні
   name: string
   sku?: string | null
   product_id?: string | null

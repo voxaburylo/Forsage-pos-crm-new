@@ -1293,12 +1293,17 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       // скине returned/refunded назад у pending і заставу можна буде виплатити вдруге
       const { data: oldItems } = await db
         .from('customer_order_items')
-        .select('product_id, core_return_status, core_deposit_amount')
+        .select('id, item_status, expected_date, product_id, core_return_status, core_deposit_amount')
         .eq('order_id', orderId)
       const oldCoreMap = new Map(
         (oldItems ?? [])
           .filter((i) => i.product_id && i.core_return_status && i.core_return_status !== 'none')
           .map((i) => [i.product_id as string, i])
+      )
+      // Зберігаємо статус/очікувану дату наявних позицій за їх id — щоб inline-
+      // редагування (ціна/к-сть/назва) НЕ скидало «замовлено/прийшло» назад у pending
+      const oldByIdMap = new Map(
+        (oldItems ?? []).map((i) => [i.id as string, i])
       )
 
       // Видаляємо старі позиції
@@ -1312,6 +1317,9 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
             const coreDeposit = requiresCore ? (prodData?.core_deposit_amount ?? 0) : 0
             const oldCore = item.product_id ? oldCoreMap.get(item.product_id) : undefined
             const coreStatus = oldCore ? oldCore.core_return_status : (requiresCore ? 'pending' : 'none')
+            // Наявна позиція (є id у запиті) — зберігаємо її поточний статус
+            const prev = item.id ? oldByIdMap.get(item.id) : undefined
+            const keptStatus = prev && prev.item_status !== 'canceled' ? prev.item_status : (prev?.item_status ?? 'pending')
             return {
               order_id: orderId,
               product_id: item.product_id ?? null,
@@ -1323,9 +1331,9 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
               buy_price: item.buy_price,
               source_type: item.supplier_id ? 'supplier' : 'warehouse',
               item_type: item.item_type,
-              item_status: 'pending',
+              item_status: prev ? keptStatus : 'pending',
               is_draft_note: item.is_draft_note,
-              expected_date: item.expected_date ?? null,
+              expected_date: item.expected_date ?? prev?.expected_date ?? null,
               core_deposit_amount: oldCore ? oldCore.core_deposit_amount : coreDeposit,
               core_return_status: coreStatus,
             }
