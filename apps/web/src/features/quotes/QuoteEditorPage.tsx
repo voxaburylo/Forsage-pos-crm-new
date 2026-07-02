@@ -96,132 +96,120 @@ function DraftItemRow({
     onChange(idx, { ...item, variants })
   }
 
+  const inputCls = 'border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent'
+
   return (
-    <div className="border border-gray-700 rounded-xl overflow-hidden shadow-sm bg-gray-800 text-white mb-2">
-      {/* Шапка/ Desktop рядок */}
-      <div className="flex flex-col md:flex-row md:items-center gap-2 px-3 py-2 bg-gray-750 border-b border-gray-700">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-400 text-xs font-mono w-5 text-center">{idx + 1}</span>
-          <input
-            placeholder="Назва запчастини..."
-            value={item.name}
-            onChange={(e) => update({ name: e.target.value })}
-            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs focus:outline-none text-white w-48"
-          />
-        </div>
+    <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm bg-white">
+      {/* Рядок позиції */}
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+        <span className="text-gray-400 text-sm font-semibold w-5 text-center shrink-0">{idx + 1}</span>
+        <input
+          placeholder="Назва запчастини…"
+          value={item.name}
+          onChange={(e) => update({ name: e.target.value })}
+          className={`flex-1 min-w-[140px] ${inputCls}`}
+        />
+        <input
+          placeholder="Артикул"
+          value={item.sku}
+          onChange={(e) => update({ sku: e.target.value })}
+          className={`w-28 text-center font-mono ${inputCls}`}
+        />
+        <input
+          type="number" min="1"
+          value={item.qty}
+          onChange={(e) => update({ qty: e.target.value })}
+          title="Кількість"
+          className={`w-14 text-center ${inputCls}`}
+        />
 
-        <div className="flex items-center gap-2 justify-between flex-1">
-          <input
-            placeholder="Артикул"
-            value={item.sku}
-            onChange={(e) => update({ sku: e.target.value })}
-            className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-center font-mono focus:outline-none text-white"
-          />
-
-          <input
-            type="number" min="1"
-            value={item.qty}
-            onChange={(e) => update({ qty: e.target.value })}
-            className="w-10 bg-gray-900 border border-gray-700 rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none text-white"
-          />
-
-          {item.is_draft_note ? (
-            <button
-              onClick={() => update({ is_draft_note: false })}
-              className="text-[10px] text-yellow-400 border border-dashed border-yellow-500/50 rounded px-2 py-1 hover:bg-yellow-500/10 transition-colors"
-            >
-              + ціна
-            </button>
-          ) : (
-            <div className="flex items-center gap-0.5">
-              <input
-                type="number" min="0" step="0.01"
-                value={item.sell_price}
-                onChange={(e) => update({ sell_price: e.target.value })}
-                className="w-16 bg-gray-900 border border-gray-700 rounded-lg px-1.5 py-1 text-xs text-right focus:outline-none text-white"
-              />
-              <span className="text-[10px] text-gray-400">₴</span>
-            </div>
-          )}
-
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => update({ expanded: !item.expanded })}
-              className={`px-1.5 py-1 rounded text-[10px] font-medium transition-colors ${
-                item.variants.length > 0
-                  ? 'bg-yellow-900/60 text-yellow-300'
-                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-              }`}
-            >
-              {item.variants.length > 0 ? `${item.variants.length} вар.` : '+ вар.'}
-            </button>
-
-            <button onClick={() => onRemove(idx)} className="text-gray-400 hover:text-red-400">
-              <Trash2 size={13} />
-            </button>
+        {item.is_draft_note ? (
+          <button
+            onClick={() => update({ is_draft_note: false })}
+            className="text-xs font-medium text-yellow-700 border border-dashed border-yellow-400 rounded-lg px-2.5 py-2 hover:bg-yellow-50 transition-colors whitespace-nowrap"
+            title="Додати ціну до позиції"
+          >
+            + ціна
+          </button>
+        ) : (
+          <div className="flex items-center gap-1">
+            <input
+              type="number" min="0" step="0.01"
+              value={item.sell_price}
+              onChange={(e) => update({ sell_price: e.target.value })}
+              className={`w-24 text-right ${inputCls}`}
+            />
+            <span className="text-xs text-gray-400 font-medium">₴</span>
           </div>
-        </div>
+        )}
+
+        <button
+          onClick={() => update({ expanded: !item.expanded })}
+          className={`px-2.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            item.variants.length > 0
+              ? 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'
+              : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+          }`}
+          title="Варіанти брендів для цієї позиції"
+        >
+          {item.variants.length > 0 ? `${item.variants.length} вар.` : '+ вар.'}
+        </button>
+
+        <button onClick={() => onRemove(idx)} className="text-gray-300 hover:text-red-500 p-1 shrink-0" title="Видалити позицію">
+          <Trash2 size={16} />
+        </button>
       </div>
 
       {/* Варіанти */}
       {item.expanded && (
-        <div className="bg-gray-900/40 p-3 border-t border-gray-700 space-y-2">
+        <div className="bg-gray-50 p-3 border-t border-gray-100 space-y-2">
           <div className="flex justify-between items-center mb-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Варіанти брендів:</span>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              icon={<Plus size={10} />}
-              onClick={addVariant}
-            >
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Варіанти брендів</span>
+            <Button type="button" variant="secondary" size="sm" icon={<Plus size={12} />} onClick={addVariant}>
               Додати варіант
             </Button>
           </div>
 
           {item.variants.length === 0 && (
-            <p className="text-[11px] text-gray-500 py-1.5 text-center">Немає варіантів. Додайте вручну або знайдіть у каталозі.</p>
+            <p className="text-xs text-gray-400 py-2 text-center">Немає варіантів. Додайте вручну або знайдіть у каталозі.</p>
           )}
 
           {item.variants.map((v, vi) => (
-            <div key={vi} className="grid grid-cols-[20px_1fr_90px_20px_20px] gap-2 items-center bg-gray-800/80 p-2 rounded-lg border border-gray-750">
-              {/* Radio button для вибору */}
+            <div key={vi} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-gray-200">
               <input
                 type="radio"
                 name={`item-variant-${idx}`}
                 checked={!!v.selected}
                 onChange={() => updateVariant(vi, { selected: true })}
-                className="w-3.5 h-3.5 accent-yellow-500"
+                title="Обрати цей варіант для замовлення"
+                className="w-4 h-4 accent-yellow-500 shrink-0"
               />
-              
               <input
                 placeholder="Виробник / Бренд"
                 value={v.brand}
                 onChange={(e) => updateVariant(vi, { brand: e.target.value })}
-                className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white"
+                className={`flex-1 min-w-0 ${inputCls}`}
               />
-
-              <div className="flex items-center gap-0.5">
+              <div className="flex items-center gap-1 shrink-0">
                 <input
                   type="number" min="0" step="0.01"
                   placeholder="Ціна"
                   value={v.price}
                   onChange={(e) => updateVariant(vi, { price: e.target.value })}
-                  className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-right text-white"
+                  className={`w-24 text-right ${inputCls}`}
                 />
-                <span className="text-[10px] text-gray-400">₴</span>
+                <span className="text-xs text-gray-400">₴</span>
               </div>
-
               <button
                 type="button"
                 onClick={() => toggleRecommended(vi)}
-                className={`p-1 rounded transition-colors ${v.is_recommended ? 'text-yellow-400' : 'text-gray-500 hover:text-gray-400'}`}
+                title="Рекомендований варіант"
+                className={`p-1.5 rounded transition-colors shrink-0 ${v.is_recommended ? 'text-yellow-500' : 'text-gray-300 hover:text-gray-400'}`}
               >
-                <Star size={12} fill={v.is_recommended ? 'currentColor' : 'none'} />
+                <Star size={15} fill={v.is_recommended ? 'currentColor' : 'none'} />
               </button>
-
-              <button type="button" onClick={() => removeVariant(vi)} className="text-gray-500 hover:text-red-400 p-1">
-                <Trash2 size={12} />
+              <button type="button" onClick={() => removeVariant(vi)} className="text-gray-300 hover:text-red-500 p-1.5 shrink-0" title="Видалити варіант">
+                <Trash2 size={14} />
               </button>
             </div>
           ))}
@@ -340,10 +328,27 @@ export default function QuoteEditorPage() {
     }).catch(() => {})
   }, [searchParams])
 
-  // Завантаження автомобілів клієнта
+  // Завантаження автомобілів клієнта + АВТОПІДСТАВЛЕННЯ авто.
+  // Головна скарга: «вибираю клієнта — не підтягує VIN». Тепер якщо в полях
+  // авто ще нічого немає (новий підбір), одразу підставляємо перше (найчастіше
+  // єдине) авто клієнта. Якщо поля вже заповнені (редагування замовлення) —
+  // не перезаписуємо.
   useEffect(() => {
     if (!customerId) { setVehicles([]); return }
-    customerVehiclesApi.list(customerId).then((r) => setVehicles((r as any).data ?? [])).catch(() => {})
+    customerVehiclesApi.list(customerId).then((r) => {
+      const list: Vehicle[] = (r as any).data ?? []
+      setVehicles(list)
+      if (list.length > 0 && !vehicleVin && !vehicleMake && !vehicleModel) {
+        const v = list[0]
+        setSelectedVehicleId(v.id)
+        setVehicleMake(v.brand ?? '')
+        setVehicleModel(v.model ?? '')
+        setVehicleYear(v.year ? String(v.year) : '')
+        setVehicleVin(v.vin ?? '')
+      }
+    }).catch(() => {})
+    // навмисно лише [customerId]: підставляємо один раз на зміну клієнта
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerId])
 
   // Пошук клієнта
@@ -646,33 +651,35 @@ export default function QuoteEditorPage() {
       title={order?.kp_number ? `Робота з ${order.kp_number}` : 'Робочий стіл менеджера подбору'}
       onBack={() => navigate('/orders')}
     >
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start">
-        
-        {/* ЛЕВА КОЛОНКА (3 cols): Клієнт та Авто */}
-        <div className="md:col-span-3 space-y-4">
-          
-          {/* Картка клієнта */}
+      <div className="space-y-4">
+
+        {/* ── Верхня смуга: Клієнт + Авто ─────────────────────────────── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          {/* Клієнт */}
           <Card>
-            <div className="flex items-center justify-between mb-4 border-b border-gray-700 pb-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Клієнт</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+                <User size={14} className="text-gray-400" /> Клієнт
+              </h3>
               <button
                 onClick={() => { setScanMode(true); setTimeout(() => scanRef.current?.focus(), 100) }}
-                className="flex items-center gap-1 text-[10px] text-yellow-500 hover:text-yellow-400 font-medium"
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 font-medium"
               >
-                <ScanLine size={13} /> Картка
+                <ScanLine size={14} /> Сканувати картку
               </button>
             </div>
 
             {scanMode && (
-              <div className="mb-3 flex gap-2 items-center bg-gray-900 border border-gray-700 rounded-lg px-2 py-1">
-                <ScanLine size={14} className="text-yellow-500 shrink-0" />
+              <div className="mb-3 flex gap-2 items-center bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2">
+                <ScanLine size={15} className="text-yellow-500 shrink-0" />
                 <input
                   ref={scanRef}
                   value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && scanInput.trim()) handleBarcodeScan(scanInput.trim()) }}
-                  placeholder="Код картки..."
-                  className="flex-1 bg-transparent text-xs focus:outline-none text-white"
+                  placeholder="Код картки…"
+                  className="flex-1 bg-transparent text-sm focus:outline-none"
                 />
               </div>
             )}
@@ -685,15 +692,16 @@ export default function QuoteEditorPage() {
                   setCustomerSearch(e.target.value)
                   if (!e.target.value) { setCustomerId(''); setSelectedCustomer(null) }
                 }}
-                placeholder="Ім'я або телефон..."
+                icon={<Search size={16} />}
+                placeholder="Ім'я або телефон…"
               />
               {customerOptions.length > 0 && (
-                <div className="absolute z-20 top-full mt-1 w-full bg-gray-900 border border-gray-700 rounded-xl shadow-lg overflow-hidden">
+                <div className="absolute z-20 top-full mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden">
                   {customerOptions.map((c) => (
                     <button key={c.id} type="button" onClick={() => selectCustomer(c)}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-800 text-xs border-b border-gray-850 last:border-0 text-white">
-                      <div className="font-semibold">{c.full_name ?? 'Без імені'}</div>
-                      <div className="text-gray-400 text-[10px]">{c.phone}</div>
+                      className="w-full text-left px-3 py-2.5 hover:bg-gray-50 text-sm border-b border-gray-100 last:border-0">
+                      <div className="font-semibold text-gray-800">{c.full_name ?? 'Без імені'}</div>
+                      <div className="text-gray-400 text-xs">{c.phone}</div>
                     </button>
                   ))}
                 </div>
@@ -701,57 +709,60 @@ export default function QuoteEditorPage() {
             </div>
 
             {selectedCustomer && (
-              <div className="mt-3 bg-gray-900/60 p-2 rounded-lg border border-gray-700">
-                <p className="text-xs font-semibold text-green-400 flex items-center gap-1.5">
-                  <User size={13} />
-                  {selectedCustomer.full_name ?? selectedCustomer.phone}
-                </p>
-                {selectedCustomer.full_name && <p className="text-[10px] text-gray-500 mt-0.5">{selectedCustomer.phone}</p>}
+              <div className="mt-3 bg-green-50 p-2.5 rounded-lg border border-green-100 flex items-center gap-2">
+                <User size={15} className="text-green-600 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-green-800">{selectedCustomer.full_name ?? selectedCustomer.phone}</p>
+                  {selectedCustomer.full_name && <p className="text-xs text-gray-500">{selectedCustomer.phone}</p>}
+                </div>
               </div>
             )}
           </Card>
 
-          {/* Гараж автомобілів */}
+          {/* Авто */}
           <Card>
-            <div className="flex items-center gap-2 mb-3 border-b border-gray-700 pb-2">
-              <Car size={14} className="text-gray-400" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Автомобіль</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+                <Car size={14} className="text-gray-400" /> Автомобіль
+              </h3>
+              {vehicles.length > 0 && (
+                <span className="text-[11px] text-gray-400">{vehicles.length} авто в гаражі</span>
+              )}
             </div>
 
             {vehicles.length > 0 && (
-              <div className="mb-3">
-                <select
-                  value={selectedVehicleId}
-                  onChange={(e) => handleVehicleSelect(e.target.value)}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
-                >
-                  <option value="">— Гараж клієнта —</option>
-                  {vehicles.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.brand} {v.model} {v.year ? `(${v.year})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={selectedVehicleId}
+                onChange={(e) => handleVehicleSelect(e.target.value)}
+                className="w-full mb-3 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
+              >
+                <option value="">— Обрати з гаражу клієнта —</option>
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.id}>{v.brand} {v.model} {v.year ? `(${v.year})` : ''}{v.vin ? ` · ${v.vin}` : ''}</option>
+                ))}
+              </select>
             )}
 
-            <div className="space-y-2.5">
+            <div className="grid grid-cols-2 gap-2.5">
               <Input label="Марка" value={vehicleMake} onChange={(e) => setVehicleMake(e.target.value)} placeholder="Toyota" />
               <Input label="Модель" value={vehicleModel} onChange={(e) => setVehicleModel(e.target.value)} placeholder="Camry" />
               <Input label="Рік" type="number" value={vehicleYear} onChange={(e) => setVehicleYear(e.target.value)} placeholder="2018" />
-              <Input label="VIN-код" value={vehicleVin} onChange={(e) => setVehicleVin(e.target.value.toUpperCase())} placeholder="JTDK..." />
               <Input label="Держномер" value={vehicleLicensePlate} onChange={(e) => setVehicleLicensePlate(e.target.value.toUpperCase())} placeholder="AA1111AA" />
+              <div className="col-span-2">
+                <Input label="VIN-код" value={vehicleVin} onChange={(e) => setVehicleVin(e.target.value.toUpperCase())} placeholder="JTDK…" className="font-mono" />
+              </div>
             </div>
           </Card>
         </div>
 
-        {/* ЦЕНТРАЛЬНА КОЛОНКА (4 cols): Пошук запчастини в Каталозі */}
-        <div className="md:col-span-4 space-y-4">
+        {/* ── Робоча зона: Каталог | Позиції ──────────────────────────── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+
+          {/* Каталог деталей */}
           <Card>
-            <div className="flex items-center gap-2 mb-3 border-b border-gray-700 pb-2">
-              <Search size={14} className="text-gray-400" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Каталог деталей</h3>
-            </div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5 mb-3">
+              <Search size={14} className="text-gray-400" /> Каталог деталей
+            </h3>
 
             <div className="flex gap-2">
               <input
@@ -759,18 +770,15 @@ export default function QuoteEditorPage() {
                 value={catalogQuery}
                 onChange={(e) => setCatalogQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleCatalogSearch() }}
-                placeholder="Шукати за артикулом / назвою..."
-                className="flex-1 bg-gray-900 border border-gray-700 text-white text-xs rounded-lg px-3 py-2 
-                           focus:outline-none focus:border-yellow-500"
+                placeholder="Шукати за артикулом / назвою…"
+                className="flex-1 border border-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
               />
-              <Button onClick={handleCatalogSearch} loading={searchingCatalog} size="sm">
-                Пошук
-              </Button>
+              <Button onClick={handleCatalogSearch} loading={searchingCatalog} size="sm">Пошук</Button>
             </div>
 
-            <div className="mt-4 space-y-2 max-h-[500px] overflow-y-auto pr-1">
+            <div className="mt-3 space-y-2 max-h-[520px] overflow-y-auto pr-1">
               {catalogResults.length === 0 && !searchingCatalog && (
-                <div className="text-center py-8 text-gray-500 text-xs">
+                <div className="text-center py-10 text-gray-400 text-sm">
                   Введіть OEM або артикул деталі для пошуку
                 </div>
               )}
@@ -778,44 +786,42 @@ export default function QuoteEditorPage() {
               {catalogResults.map((product) => {
                 const isLocalStock = product.qty_on_hand > 0
                 return (
-                  <div key={product.id} className={`p-2.5 rounded-lg border text-xs transition-colors ${
-                    isLocalStock ? 'bg-green-950/40 border-green-900/60' : 'bg-gray-900 border-gray-750'
+                  <div key={product.id} className={`p-3 rounded-lg border text-sm transition-colors ${
+                    isLocalStock ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'
                   }`}>
-                    <div className="flex justify-between items-start gap-1">
-                      <div>
-                        <div className="font-semibold text-white">{product.name}</div>
-                        <div className="text-[10px] text-gray-400 mt-0.5">Арт: {product.sku}</div>
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-gray-800">{product.name}</div>
+                        <div className="text-xs text-gray-400 mt-0.5">Арт: {product.sku}</div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-bold text-yellow-400">{formatMoney(product.retail_price)} ₴</div>
+                      <div className="text-right shrink-0">
+                        <div className="font-bold text-gray-900">{formatMoney(product.retail_price)} ₴</div>
                         {isLocalStock ? (
-                          <div className="text-[10px] text-green-400 font-medium">В наявності: {product.qty_on_hand} шт</div>
+                          <div className="text-xs text-green-600 font-medium">В наявності: {product.qty_on_hand} шт</div>
                         ) : (
-                          <div className="text-[10px] text-gray-500">Під замовлення</div>
+                          <div className="text-xs text-gray-400">Під замовлення</div>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex justify-between items-center mt-2 pt-2 border-t border-gray-800">
+                    <div className="flex justify-between items-center mt-2.5 pt-2.5 border-t border-gray-200">
                       <div>
                         {product.storage_bin && (
-                          <span className="text-[9px] bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded flex items-center gap-0.5 w-max">
-                            <MapPin size={9} /> {product.storage_bin}
+                          <span className="text-[11px] bg-white border border-gray-200 text-gray-500 px-1.5 py-0.5 rounded flex items-center gap-0.5 w-max">
+                            <MapPin size={11} /> {product.storage_bin}
                           </span>
                         )}
                       </div>
-                      
-                      <div className="flex gap-1">
-                        {/* Кнопка аналогів */}
+
+                      <div className="flex gap-1.5 items-center">
                         <button
                           type="button"
                           onClick={() => loadAnalogs(product.id)}
-                          className="px-2 py-0.5 bg-gray-800 hover:bg-gray-700 text-[10px] rounded text-gray-300"
+                          className="px-2.5 py-1 bg-white border border-gray-200 hover:bg-gray-100 text-xs rounded-lg text-gray-600"
                         >
                           Аналоги
                         </button>
-                        
-                        {/* Додавання до КП як варіант */}
+
                         {mode === 'draft' && items.length > 0 && (
                           <select
                             onChange={(e) => {
@@ -824,7 +830,7 @@ export default function QuoteEditorPage() {
                                 e.target.value = ''
                               }
                             }}
-                            className="bg-yellow-600 hover:bg-yellow-500 text-white font-medium text-[10px] px-1.5 py-0.5 rounded cursor-pointer outline-none"
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-xs px-2 py-1 rounded-lg cursor-pointer outline-none"
                           >
                             <option value="">+ варіант</option>
                             {items.map((_, i) => (
@@ -836,26 +842,25 @@ export default function QuoteEditorPage() {
                         <button
                           type="button"
                           onClick={() => addProductToWorkspace(product)}
-                          className="px-2 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white text-[10px] rounded font-medium"
+                          className="px-2.5 py-1 bg-yellow-400 hover:bg-yellow-500 text-black text-xs rounded-lg font-semibold"
                         >
                           {mode === 'direct' ? '+ додати' : '+ нова поз.'}
                         </button>
                       </div>
                     </div>
 
-                    {/* Показ аналогів */}
                     {analogs[product.id] && (
-                      <div className="mt-2.5 pt-2 border-t border-dashed border-gray-700 bg-gray-950/20 p-1.5 rounded-lg space-y-1">
-                        <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">Аналоги / Кросси:</div>
-                        {analogs[product.id].length === 0 && <div className="text-[10px] text-gray-500">Аналогів не знайдено</div>}
+                      <div className="mt-2.5 pt-2.5 border-t border-dashed border-gray-200 space-y-1">
+                        <div className="text-[11px] text-gray-400 font-bold uppercase tracking-wider mb-1">Аналоги / кроси</div>
+                        {analogs[product.id].length === 0 && <div className="text-xs text-gray-400">Аналогів не знайдено</div>}
                         {analogs[product.id].map((an) => (
-                          <div key={an.id} className="flex justify-between items-center py-1 border-b border-gray-850/50 last:border-0 text-[10px]">
-                            <span className="text-gray-300">{an.name} ({an.sku.split('-')[0]})</span>
+                          <div key={an.id} className="flex justify-between items-center py-1 border-b border-gray-100 last:border-0 text-xs">
+                            <span className="text-gray-600">{an.name} ({an.sku.split('-')[0]})</span>
                             <div className="flex items-center gap-1.5">
-                              <span className="font-semibold text-yellow-400">{formatMoney(an.retail_price)} ₴</span>
+                              <span className="font-semibold text-gray-800">{formatMoney(an.retail_price)} ₴</span>
                               <button
                                 onClick={() => addProductToWorkspace(an)}
-                                className="bg-gray-800 hover:bg-gray-700 text-white px-1.5 py-0.5 rounded text-[9px]"
+                                className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-0.5 rounded text-[11px]"
                               >
                                 Додати
                               </button>
@@ -869,20 +874,17 @@ export default function QuoteEditorPage() {
               })}
             </div>
           </Card>
-        </div>
 
-        {/* ПРАВА КОЛОНКА (5 cols): Чернетка або пряме замовлення */}
-        <div className="md:col-span-5 space-y-4">
+          {/* Позиції + коментар + дії */}
+          <div className="space-y-4">
           <Card>
-            <div className="flex items-center justify-between mb-4 border-b border-gray-700 pb-3">
-              <div className="flex gap-2">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
                 <button
                   type="button"
                   onClick={() => setMode('draft')}
-                  className={`px-3 py-1 text-xs rounded-lg font-semibold transition-colors ${
-                    mode === 'draft'
-                      ? 'bg-yellow-600 text-white'
-                      : 'bg-gray-900 text-gray-400 border border-gray-750 hover:bg-gray-800'
+                  className={`px-3 py-1.5 text-xs rounded-md font-semibold transition-colors ${
+                    mode === 'draft' ? 'bg-yellow-400 text-black shadow-sm' : 'text-gray-500 hover:text-gray-800'
                   }`}
                 >
                   Чернетка (КП)
@@ -890,22 +892,20 @@ export default function QuoteEditorPage() {
                 <button
                   type="button"
                   onClick={() => setMode('direct')}
-                  className={`px-3 py-1 text-xs rounded-lg font-semibold transition-colors ${
-                    mode === 'direct'
-                      ? 'bg-yellow-600 text-white'
-                      : 'bg-gray-900 text-gray-400 border border-gray-750 hover:bg-gray-800'
+                  className={`px-3 py-1.5 text-xs rounded-md font-semibold transition-colors ${
+                    mode === 'direct' ? 'bg-yellow-400 text-black shadow-sm' : 'text-gray-500 hover:text-gray-800'
                   }`}
                 >
-                  Пряме Замовлення
+                  Пряме замовлення
                 </button>
               </div>
 
-              <Button type="button" variant="secondary" size="sm" icon={<Plus size={12} />} onClick={addItem}>
-                Додати поз.
+              <Button type="button" variant="secondary" size="sm" icon={<Plus size={14} />} onClick={addItem}>
+                Додати позицію
               </Button>
             </div>
 
-            <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
               {items.map((item, idx) => (
                 <DraftItemRow
                   key={idx}
@@ -918,10 +918,10 @@ export default function QuoteEditorPage() {
             </div>
 
             {totalItems.length > 0 && (
-              <div className="mt-4 pt-3 border-t border-gray-700 text-xs text-gray-400 flex justify-between items-center">
+              <div className="mt-3 pt-3 border-t border-gray-100 text-sm text-gray-500 flex justify-between items-center">
                 <span>{totalItems.length} позицій {mode === 'draft' && hasVariants ? `· ${totalItems.filter(i => i.variants.length > 0).length} з варіантами` : ''}</span>
                 {mode === 'direct' && (
-                  <span className="text-white font-bold text-sm">
+                  <span className="text-gray-900 font-bold text-base">
                     Разом: {formatMoney(totalItems.reduce((acc, it) => acc + (parseFloat(it.sell_price) * parseInt(it.qty) * 100), 0))} ₴
                   </span>
                 )}
@@ -929,15 +929,15 @@ export default function QuoteEditorPage() {
             )}
           </Card>
 
-          {/* Нотатки */}
+          {/* Коментар */}
           <Card>
-            <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">Коментар менеджера</label>
+            <label className="block text-xs font-bold uppercase tracking-wider text-gray-500 mb-2">Коментар менеджера</label>
             <textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder="Деталі розмови, зауваження до підбору..."
-              rows={3}
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-500 text-white resize-none"
+              placeholder="Деталі розмови, зауваження до підбору…"
+              rows={2}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent resize-none"
             />
           </Card>
 
@@ -991,6 +991,7 @@ export default function QuoteEditorPage() {
             <Button icon={<Save size={14} />} onClick={handleSave} loading={saving}>
               {isNew ? (mode === 'direct' ? 'Створити замовлення' : 'Зберегти чернетку') : 'Зберегти зміни'}
             </Button>
+          </div>
           </div>
         </div>
 

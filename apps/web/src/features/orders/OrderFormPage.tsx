@@ -114,6 +114,9 @@ export default function OrderFormPage() {
   // Step 2: Vehicle
   const [vehicles, setVehicles] = useState<CustomerVehicle[]>([])
   const [selectedVehicle, setSelectedVehicle] = useState<CustomerVehicle | null>(null)
+  // Авто із замовлення, якого немає в гаражі клієнта — щоб при редагуванні
+  // НЕ загубити його (інакше vehicle_info затирався б на null при збереженні)
+  const [loadedVehicleInfo, setLoadedVehicleInfo] = useState<{ make?: string; model?: string; year?: number; vin?: string } | null>(null)
 
   // Inline Create Vehicle
   const [showAddVehicle, setShowAddVehicle] = useState(false)
@@ -213,15 +216,20 @@ export default function OrderFormPage() {
               const list = res.data || []
               setVehicles(list)
               if (o.vehicle_info) {
-                const veh = list.find((v) => 
-                  v.brand === o.vehicle_info?.make && 
-                  v.model === o.vehicle_info?.model && 
+                const veh = list.find((v) =>
+                  v.brand === o.vehicle_info?.make &&
+                  v.model === o.vehicle_info?.model &&
                   v.vin === o.vehicle_info?.vin
                 )
                 if (veh) setSelectedVehicle(veh)
+                // Авто є в замовленні, але не в гаражі — зберігаємо, щоб не загубити
+                else setLoadedVehicleInfo(o.vehicle_info as any)
               }
             })
             .catch(() => {})
+        } else if (o.vehicle_info) {
+          // Замовлення без клієнта, але з авто — теж не губимо
+          setLoadedVehicleInfo(o.vehicle_info as any)
         }
         
         // Set comment & urgency
@@ -252,6 +260,9 @@ export default function OrderFormPage() {
             buy_price: item.buy_price ? (item.buy_price / 100).toString() : '0',
           })))
         }
+        // Редагування: клієнт і авто вже відомі — одразу переходимо до позицій,
+        // щоб не показувати екран вибору клієнта «з нуля» (плутало користувачів)
+        setStep(3)
       })
       .catch(() => toast.error('Помилка завантаження замовлення'))
       .finally(() => setLoading(false))
@@ -639,7 +650,7 @@ export default function OrderFormPage() {
           year:  selectedVehicle.year ?? undefined,
           vin:   selectedVehicle.vin ?? undefined,
         }
-      : null
+      : loadedVehicleInfo // при редагуванні зберігаємо авто, якого немає в гаражі
 
     const finalComment = [
       isUrgent ? '[ТЕРМІНОВО]' : '',
@@ -948,9 +959,11 @@ export default function OrderFormPage() {
                       <p className="truncate text-sm font-bold text-gray-900">
                         {selectedVehicle
                           ? `${selectedVehicle.brand} ${selectedVehicle.model}${selectedVehicle.year ? ` (${selectedVehicle.year})` : ''}`
-                          : 'Без прив’язаного автомобіля'}
+                          : loadedVehicleInfo
+                            ? `${loadedVehicleInfo.make ?? ''} ${loadedVehicleInfo.model ?? ''}${loadedVehicleInfo.year ? ` (${loadedVehicleInfo.year})` : ''}`.trim() || 'Авто із замовлення'
+                            : 'Без прив’язаного автомобіля'}
                       </p>
-                      {selectedVehicle?.vin && <p className="font-mono text-xs text-gray-500">{selectedVehicle.vin}</p>}
+                      {(selectedVehicle?.vin || loadedVehicleInfo?.vin) && <p className="font-mono text-xs text-gray-500">{selectedVehicle?.vin ?? loadedVehicleInfo?.vin}</p>}
                     </div>
                   </div>
                   <Button size="sm" variant="secondary" onClick={() => setStep(2)}>Змінити</Button>
@@ -1097,7 +1110,7 @@ export default function OrderFormPage() {
                       </span>
                     )}
                     {selectedCustomer && (
-                      <> | Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}${selectedVehicle.year ? ` (${selectedVehicle.year})` : ''}` : 'Не обрано'}</span>
+                      <> | Авто: <span className="font-bold text-gray-700">{selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}${selectedVehicle.year ? ` (${selectedVehicle.year})` : ''}` : loadedVehicleInfo ? (`${loadedVehicleInfo.make ?? ''} ${loadedVehicleInfo.model ?? ''}`.trim() || 'З замовлення') : 'Не обрано'}</span>
                         <button type="button" onClick={() => setStep(2)} className="ml-1.5 text-yellow-600 hover:text-yellow-700 font-semibold underline">змінити</button>
                       </>
                     )}
@@ -1414,15 +1427,19 @@ export default function OrderFormPage() {
                       <div className="flex justify-between">
                         <span className="text-gray-500">Автомобіль:</span>
                         <span className="font-semibold text-gray-800">
-                          {selectedVehicle ? `${selectedVehicle.brand} ${selectedVehicle.model}` : 'Не прив\'язано'}
+                          {selectedVehicle
+                            ? `${selectedVehicle.brand} ${selectedVehicle.model}`
+                            : loadedVehicleInfo
+                              ? `${loadedVehicleInfo.make ?? ''} ${loadedVehicleInfo.model ?? ''}`.trim() || 'З замовлення'
+                              : 'Не прив\'язано'}
                         </span>
                       </div>
                     </>
                   )}
-                  {selectedVehicle?.vin && (
+                  {(selectedVehicle?.vin || loadedVehicleInfo?.vin) && (
                     <div className="flex justify-between">
                       <span className="text-gray-500">VIN-код:</span>
-                      <span className="font-mono text-xs text-gray-800">{selectedVehicle.vin}</span>
+                      <span className="font-mono text-xs text-gray-800">{selectedVehicle?.vin ?? loadedVehicleInfo?.vin}</span>
                     </div>
                   )}
                 </div>
@@ -1616,23 +1633,26 @@ export default function OrderFormPage() {
             <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4 lg:sticky lg:bottom-4">
               {!isDesktop
                 ? <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
-                : <span className="text-xs text-gray-400 hidden sm:block">Ctrl+S — оформити замовлення</span>}
+                : <span className="text-xs text-gray-400 hidden sm:block">Ctrl+S — {id ? 'зберегти зміни' : 'оформити замовлення'}</span>}
 
               <div className="flex gap-2 w-full sm:w-auto">
-                <Button
-                  variant="secondary"
-                  disabled={saving}
-                  className="flex-1 sm:flex-initial"
-                  onClick={() => handleSave(true)}
-                >
-                  Зберегти як Чернетку
-                </Button>
+                {/* Кнопка «як чернетку» лише при СТВОРЕННІ — при редагуванні наявного замовлення вона не має сенсу */}
+                {!id && (
+                  <Button
+                    variant="secondary"
+                    disabled={saving}
+                    className="flex-1 sm:flex-initial"
+                    onClick={() => handleSave(true)}
+                  >
+                    Зберегти як Чернетку
+                  </Button>
+                )}
                 <Button
                   disabled={saving}
                   className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
                   onClick={() => handleSave(false)}
                 >
-                  Оформити замовлення
+                  {id ? 'Зберегти зміни' : 'Оформити замовлення'}
                 </Button>
               </div>
             </div>

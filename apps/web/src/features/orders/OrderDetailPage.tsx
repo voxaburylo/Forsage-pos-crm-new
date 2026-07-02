@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown } from 'lucide-react'
+import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown, Pencil } from 'lucide-react'
 import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
 import { formatOrderNo, startRepeatOrder } from './orderActions'
@@ -355,6 +355,9 @@ export default function OrderDetailPage() {
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
   const canCancel   = !['completed', 'canceled'].includes(order.status)
   const isDraft     = order.status === 'lead' && ['walk_in', 'mobile_draft'].includes(order.source)
+  // Звичайне (не чернетка, не завершене/скасоване) замовлення можна редагувати
+  // напряму — раніше кнопки редагування тут не було взагалі
+  const canEdit     = !isDraft && !['completed', 'canceled'].includes(order.status)
   const hasPendingWarehouseItems = order.items.some((i) => i.source_type === 'warehouse' && i.item_status === 'pending')
 
   return (
@@ -366,6 +369,11 @@ export default function OrderDetailPage() {
           {isDraft && (
             <Button icon={<FilePen size={15} />} onClick={() => navigate('/quotes/' + id)}>
               <span className="hidden sm:inline">Редагувати КП</span>
+            </Button>
+          )}
+          {canEdit && (
+            <Button variant="secondary" icon={<Pencil size={15} />} onClick={() => navigate(`/orders/${id}/edit`)}>
+              <span className="hidden sm:inline">Редагувати</span>
             </Button>
           )}
           {canComplete && (
