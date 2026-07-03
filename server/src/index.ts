@@ -43,10 +43,8 @@ import reservesRouter from './routes/reserves.js'
 import pickingRouter from './routes/picking.js'
 import commissionRouter from './routes/commission.js'
 import supplierImportsRouter from './routes/supplierImports.js'
-import stockIntegrityRouter from './routes/stockIntegrity.js'
 import warehouseMovementsRouter from './routes/warehouseMovements.js'
 import notificationsRouter from './routes/notifications.js'
-import printRouter from './routes/print.js'
 import autoPurchaseRouter from './routes/autoPurchase.js'
 import onecImportRouter from './routes/onecImport.js'
 import jobsRouter from './routes/jobs.js'
@@ -56,7 +54,6 @@ import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js
 import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
 import { ReserveService } from './services/reserveService.js'
-import { StockValidatorService } from './services/stockValidatorService.js'
 import { TaskQueue } from './services/taskQueue.js'
 import { closeStaleShifts } from './services/shiftService.js'
 import { JOB_PRIORITY } from './services/taskQueue.js'
@@ -155,10 +152,8 @@ app.use('/api/v1/reserves', reservesRouter)
 app.use('/api/v1/picking', pickingRouter)
 app.use('/api/v1/commission', commissionRouter)
 app.use('/api/v1/supplier-imports', supplierImportsRouter)
-app.use('/api/v1/admin/stock-integrity', stockIntegrityRouter)
 app.use('/api/v1/warehouse/movements', warehouseMovementsRouter)
 app.use('/api/v1/notifications', notificationsRouter)
-app.use('/api/v1/print', printRouter)
 app.use('/api/v1/auto-purchase', autoPurchaseRouter)
 app.use('/api/v1/import/1c',    onecImportRouter)
 app.use('/api/v1/jobs',           jobsRouter)
@@ -197,12 +192,6 @@ jobWorker.register('ocr_photo', async (payload, jobInfo) => {
   logger.info({ jobId: jobInfo.id, chatId: payload.chatId }, 'Starting background OCR photo recognition')
   await processOcrPhoto(payload.fileId, payload.chatId, payload.username)
   logger.info({ jobId: jobInfo.id, chatId: payload.chatId }, 'Completed background OCR photo recognition')
-})
-jobWorker.register('validate_stock_integrity', async (_payload, jobInfo) => {
-  logger.info('Running validate_stock_integrity background job...')
-  const result = await StockValidatorService.runIntegrityCheck(jobInfo.tenantId)
-  logger.info({ issuesCount: result.count }, 'Completed validate_stock_integrity job')
-  await StockValidatorService.enqueueNextCheck(jobInfo.tenantId)
 })
 jobWorker.register('close_stale_shifts', async (_payload, jobInfo) => {
   logger.info('Running close_stale_shifts background job...')
@@ -264,17 +253,6 @@ const server = app.listen(PORT, () => {
           priority: JOB_PRIORITY.NORMAL,
         })
         logger.info('Enqueued initial cleanup_expired_reserves job')
-      }
-
-      const { data: existingIntegrity } = await db.from('sys_background_jobs')
-        .select('id').eq('job_type', 'validate_stock_integrity').eq('status', 'pending').limit(1).maybeSingle()
-      if (!existingIntegrity) {
-        await TaskQueue.enqueue('validate_stock_integrity', {}, {
-          scheduledAt: new Date(Date.now() + 60 * 1000),
-          tenantId: schedulerTenantId,
-          priority: JOB_PRIORITY.LOW,
-        })
-        logger.info('Enqueued initial validate_stock_integrity job')
       }
 
       const { data: existingStaleShift } = await db.from('sys_background_jobs')

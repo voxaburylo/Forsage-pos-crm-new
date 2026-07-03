@@ -42,7 +42,6 @@ const InvoiceDetailPage    = lazyWithRetry(() => import('@/features/suppliers/In
 const ImportPage           = lazyWithRetry(() => import('@/features/suppliers/ImportPage'))
 const BulkImportPage       = lazyWithRetry(() => import('@/features/suppliers/BulkImportPage'))
 const SupplierPricesPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierPricesPage'))
-const StockIntegrityPage   = lazyWithRetry(() => import('@/features/admin/StockIntegrityPage'))
 const WriteoffsPage        = lazyWithRetry(() => import('@/features/inventory/WriteoffsPage'))
 const WriteoffFormPage     = lazyWithRetry(() => import('@/features/inventory/WriteoffFormPage'))
 const WriteoffDetailPage   = lazyWithRetry(() => import('@/features/inventory/WriteoffDetailPage'))
@@ -71,7 +70,6 @@ const AutoPurchasePage      = lazyWithRetry(() => import('@/features/autoPurchas
 const CoreReturnsPage       = lazyWithRetry(() => import('@/features/inventory/CoreReturnsPage'))
 const AuditLogPage          = lazyWithRetry(() => import('@/features/admin/AuditLogPage'))
 const TemplateEditor        = lazyWithRetry(() => import('@/features/notifications/TemplateEditor'))
-const PrintCenterPage       = lazyWithRetry(() => import('@/features/print/PrintCenterPage'))
 
 const OFFICE_ROLES = ['owner', 'admin', 'manager']
 const ADMIN_ROLES = ['owner', 'admin']
@@ -137,12 +135,10 @@ function App() {
           <Route path="/internal"       element={<ProtectedRoute roles={OFFICE_ROLES}><InternalConsumptionsPage /></ProtectedRoute>} />
           <Route path="/settings/channels" element={<ProtectedRoute roles={ADMIN_ROLES}><SettingsChannels /></ProtectedRoute>} />
           <Route path="/labels"  element={<ProtectedRoute roles={ADMIN_ROLES}><LabelDesigner /></ProtectedRoute>} />
-          <Route path="/stock-integrity" element={<ProtectedRoute roles={ADMIN_ROLES}><StockIntegrityPage /></ProtectedRoute>} />
           <Route path="/auto-purchase"   element={<ProtectedRoute roles={OFFICE_ROLES}><AutoPurchasePage /></ProtectedRoute>} />
           <Route path="/core-returns"    element={<ProtectedRoute roles={OFFICE_ROLES}><CoreReturnsPage /></ProtectedRoute>} />
           <Route path="/audit"           element={<ProtectedRoute roles={ADMIN_ROLES}><AuditLogPage /></ProtectedRoute>} />
           <Route path="/settings/templates" element={<ProtectedRoute roles={ADMIN_ROLES}><TemplateEditor /></ProtectedRoute>} />
-          <Route path="/print-center"    element={<ProtectedRoute roles={ADMIN_ROLES}><PrintCenterPage /></ProtectedRoute>} />
           <Route path="/notifications"  element={<ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute>} />
           <Route path="/ai-assistant"   element={<ProtectedRoute roles={OFFICE_ROLES}><AiAssistantPage /></ProtectedRoute>} />
 

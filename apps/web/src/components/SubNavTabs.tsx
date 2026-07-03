@@ -133,7 +133,5 @@ export const SETTINGS_TABS = [
   { to: '/settings', label: 'Загальні', roles: ['owner', 'admin'] },
   { to: '/settings/channels', label: 'Канали зв\'язку', roles: ['owner', 'admin'] },
   { to: '/settings/templates', label: 'Шаблони сповіщень', roles: ['owner', 'admin'] },
-  { to: '/audit', label: 'Журнал аудиту', roles: ['owner', 'admin'] },
-  { to: '/print-center', label: 'Центр друку', roles: ['owner', 'admin'] },
-  { to: '/stock-integrity', label: 'Цілісність залишків', roles: ['owner', 'admin'] }
+  { to: '/audit', label: 'Журнал аудиту', roles: ['owner', 'admin'] }
 ]

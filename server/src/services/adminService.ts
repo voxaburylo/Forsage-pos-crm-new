@@ -138,7 +138,6 @@ export async function deleteUser(id: string, tenantId: string) {
   }
   // 1. Clean up references
   await db.from('warehouse_movements').update({ moved_by: null }).eq('moved_by', id).eq('tenant_id', tenantId)
-  await db.from('print_jobs').update({ printed_by: null }).eq('printed_by', id).eq('tenant_id', tenantId)
   await db.from('staff_kpi_targets').delete().eq('user_id', id).eq('tenant_id', tenantId)
 
   // 2. Delete user from supabase auth
@@ -354,7 +353,6 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     await client.query('BEGIN')
 
     const tablesToDelete = [
-      { name: 'print_jobs', query: 'DELETE FROM print_jobs WHERE tenant_id = $1' },
       { name: 'in_app_notifications', query: 'DELETE FROM in_app_notifications WHERE tenant_id = $1' },
       { name: 'sys_background_jobs', query: 'DELETE FROM sys_background_jobs WHERE tenant_id = $1' },
       { name: 'idempotency_keys', query: 'DELETE FROM idempotency_keys WHERE tenant_id = $1' },
