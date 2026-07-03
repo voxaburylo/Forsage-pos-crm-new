@@ -51,7 +51,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
   )
 
   return (
-    <div className="flex min-h-screen bg-gray-100">
+    <div className="flex h-screen overflow-hidden bg-gray-100">
       {/* Mobile backdrop */}
       {sidebarOpen && (
         <div
@@ -94,7 +94,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
           )}
         </header>
 
-        <main className="flex-1 p-4 md:p-6 overflow-auto pb-safe">
+        <main id="app-main-scroll" className="flex-1 p-4 md:p-6 overflow-auto pb-safe">
           {activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}
           {children}
         </main>

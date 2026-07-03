@@ -1043,37 +1043,63 @@ function pickPhone(raw: any): string | null {
 // поштучно і пакетно.
 async function doCreateCustomer(c: any, tenantId: string) {
   const phone = pickPhone(c.phone)
+  const fullName = c.full_name ? String(c.full_name).trim() : ''
+  let customer: any = null
 
-  // Дедуп лише коли телефон є (клієнти без телефону не конфліктують — NULL != NULL)
+  // Спочатку телефон, потім єдиний точний збіг імені. Це дозволяє імпортувати
+  // кілька VIN одного клієнта в одну картку, але не склеює двох тёзок із
+  // різними відомими телефонами.
   if (phone) {
-    const { data: existing } = await db
-      .from('customers').select('id').eq('tenant_id', tenantId).eq('phone', phone).is('deleted_at', null).maybeSingle()
-    if (existing) throw new AppError('PHONE_DUPLICATE', `Клієнт з телефоном ${phone} вже існує`, 409)
+    const { data } = await db
+      .from('customers').select('*').eq('tenant_id', tenantId).eq('phone', phone).is('deleted_at', null).maybeSingle()
+    customer = data
+  }
+  if (!customer && fullName) {
+    const { data: nameMatches } = await db
+      .from('customers')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .ilike('full_name', fullName)
+      .is('deleted_at', null)
+      .limit(2)
+    if (nameMatches?.length === 1) {
+      const match = nameMatches[0]
+      if (!phone || !match.phone || match.phone === phone) customer = match
+    }
   }
 
-  const input: any = { tenant_id: tenantId, phone, tags: [] }
-  if (c.full_name) input.full_name = String(c.full_name)
-  if (c.email) input.email = String(c.email)
-  if (c.notes) input.notes = String(c.notes)
+  if (!customer) {
+    const input: any = { tenant_id: tenantId, phone, tags: [] }
+    if (fullName) input.full_name = fullName
+    if (c.email) input.email = String(c.email)
+    if (c.notes) input.notes = String(c.notes)
+    const { data, error: custErr } = await db.from('customers').insert(input).select('*').single()
+    if (custErr) throw new AppError('DB_ERROR', custErr.message, 500)
+    customer = data
+  }
 
-  const { data: customer, error: custErr } = await db.from('customers').insert(input).select('*').single()
-  if (custErr) throw new AppError('DB_ERROR', custErr.message, 500)
-
-  // Авто клієнта — не критичне: помилку (напр. дубль VIN) ковтаємо, клієнт лишається створеним
+  // Кожен новий VIN додається в гараж знайденого/створеного клієнта.
   if (c.vin || c.car_make || c.car_model) {
     const rawVin = typeof c.vin === 'string' ? c.vin.trim().toUpperCase() : ''
     const vin = rawVin.length === 17 ? rawVin : null
     const extraNote = rawVin && !vin ? `VIN: ${rawVin}` : null
-    const { error } = await db.from('customer_cars').insert({
-      tenant_id: tenantId,
-      customer_id: customer.id,
-      make: c.car_make ? String(c.car_make) : 'Авто',
-      model: c.car_model ? String(c.car_model) : '—',
-      year: c.car_year ?? null,
-      vin,
-      notes: extraNote,
-    })
-    if (error) logger.warn({ err: error.message, customer: customer.id }, '[ai] car insert skipped')
+    let carExists = false
+    if (vin) {
+      const { data } = await db.from('customer_cars').select('id').eq('tenant_id', tenantId).eq('vin', vin).maybeSingle()
+      carExists = !!data
+    }
+    if (!carExists) {
+      const { error } = await db.from('customer_cars').insert({
+        tenant_id: tenantId,
+        customer_id: customer.id,
+        make: c.car_make ? String(c.car_make) : 'Авто',
+        model: c.car_model ? String(c.car_model) : '—',
+        year: c.car_year ?? null,
+        vin,
+        notes: extraNote,
+      })
+      if (error) logger.warn({ err: error.message, customer: customer.id }, '[ai] car insert skipped')
+    }
   }
   return customer
 }

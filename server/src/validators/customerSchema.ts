@@ -25,6 +25,13 @@ export const createCustomerSchema = z.object({
   risk_profile:  z.enum(['low','medium','high']).optional(),
   discount_pct:  z.number().min(0).max(100).optional(),
   client_status: z.enum(['client','sto']).optional(),
+  vehicle: z.object({
+    brand: z.string().max(100).optional().default('Авто'),
+    model: z.string().max(100).optional().default('—'),
+    year:  z.number().int().min(1900).max(2100).optional().nullable(),
+    vin:   z.string().trim().max(17).optional().nullable(),
+    notes: z.string().max(2000).optional().nullable(),
+  }).optional(),
 })
 
 export const quickCreateSchema = z.object({
@@ -32,7 +39,7 @@ export const quickCreateSchema = z.object({
   full_name: z.string().min(1, 'Ім\'я обов\'язкове').max(200),
 })
 
-export const updateCustomerSchema = createCustomerSchema.partial()
+export const updateCustomerSchema = createCustomerSchema.omit({ vehicle: true }).partial()
 
 export const customerListSchema = z.object({
   search:   z.string().optional(),

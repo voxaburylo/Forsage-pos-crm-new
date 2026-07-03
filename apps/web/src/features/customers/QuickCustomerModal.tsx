@@ -88,8 +88,9 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
     if (!name.trim())  { toast.error("Ім'я обов'язкове"); return }
     setSaving(true)
     try {
-      const { data } = await customerApi.quickCreate(phone, name)
-      toast.success('Клієнта створено')
+      const result = await customerApi.quickCreate(phone, name)
+      const { data } = result
+      toast.success(result.meta?.reused ? 'Клієнт уже є в базі — вибрано його картку' : 'Клієнта створено')
       saveRecentItem('recent_phones', phone.trim())
       onCreated(data)
       onClose()

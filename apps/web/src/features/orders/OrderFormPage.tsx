@@ -464,7 +464,7 @@ export default function OrderFormPage() {
     try {
       const res = await customerApi.quickCreate(newCustPhone.trim(), newCustName.trim())
       if (res.data) {
-        toast.success('Клієнта створено!')
+        toast.success(res.meta?.reused ? 'Клієнт уже є в базі — вибрано його картку' : 'Клієнта створено!')
         saveRecentItem('recent_phones', newCustPhone.trim())
         handleCustomerSelect(res.data)
       }

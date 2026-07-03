@@ -106,17 +106,50 @@ export async function findByPhone(phone: string, tenantId: string) {
 }
 
 export async function createCustomer(input: CreateCustomerInput, tenantId: string) {
+  const { vehicle, ...customerInput } = input
   const existing = await findByPhone(input.phone, tenantId)
-  if (existing) throw new AppError('PHONE_DUPLICATE', `Клієнт з телефоном ${input.phone} вже існує`, 409)
+  if (existing) {
+    let vehicleAdded = false
+    if (vehicle?.vin || vehicle?.brand || vehicle?.model) {
+      try {
+        await createCustomerVehicle(existing.id, {
+          brand: vehicle.brand || 'Авто',
+          model: vehicle.model || '—',
+          year: vehicle.year,
+          vin: vehicle.vin,
+          notes: vehicle.notes,
+        }, tenantId)
+        vehicleAdded = true
+      } catch (error) {
+        const sameCustomerDuplicate = error instanceof AppError
+          && error.code === 'VIN_DUPLICATE'
+          && error.message.includes('цього клієнта')
+        if (!sameCustomerDuplicate) throw error
+      }
+    }
+    return { customer: existing, reused: true, vehicleAdded }
+  }
 
   const { data, error } = await db
     .from(TABLE)
-    .insert({ ...input, tenant_id: tenantId })
+    .insert({ ...customerInput, tenant_id: tenantId })
     .select('*')
     .single()
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data
+
+  let vehicleAdded = false
+  if (vehicle?.vin || vehicle?.brand || vehicle?.model) {
+    await createCustomerVehicle(data.id, {
+      brand: vehicle.brand || 'Авто',
+      model: vehicle.model || '—',
+      year: vehicle.year,
+      vin: vehicle.vin,
+      notes: vehicle.notes,
+    }, tenantId)
+    vehicleAdded = true
+  }
+  return { customer: data, reused: false, vehicleAdded }
 }
 
 export async function updateCustomer(id: string, input: UpdateCustomerInput, tenantId: string) {

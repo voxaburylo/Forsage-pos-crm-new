@@ -236,7 +236,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
       className={[
         'fixed inset-y-0 left-0 z-30 w-64 md:w-56 bg-white border-r border-gray-100 flex flex-col',
         'transition-transform duration-200 ease-in-out',
-        'md:relative md:z-auto md:translate-x-0',
+        'md:sticky md:top-0 md:bottom-auto md:h-screen md:self-start md:z-auto md:translate-x-0',
         isOpen ? 'translate-x-0 shadow-xl' : '-translate-x-full',
       ].join(' ')}
     >

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Save } from 'lucide-react'
+import { Car, Save } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
@@ -19,11 +19,16 @@ interface FormData {
   card_barcode:  string
   discount_pct:  string
   client_status: string
+  car_brand:     string
+  car_model:     string
+  car_year:      string
+  car_vin:       string
 }
 
 const EMPTY: FormData = {
   phone: '', full_name: '', email: '', notes: '', tags: [], price_tier_id: '',
   card_barcode: '', discount_pct: '0', client_status: 'client',
+  car_brand: '', car_model: '', car_year: '', car_vin: '',
 }
 
 export default function CustomerFormPage() {
@@ -55,6 +60,10 @@ export default function CustomerFormPage() {
         card_barcode:  (d as any).card_barcode ?? '',
         discount_pct:  String((d as any).discount_pct ?? 0),
         client_status: (d as any).client_status ?? 'client',
+        car_brand:     '',
+        car_model:     '',
+        car_year:      '',
+        car_vin:       '',
       })
     }).catch(() => {
       toast.error('Клієнта не знайдено')
@@ -88,15 +97,30 @@ export default function CustomerFormPage() {
         price_tier_id: (form.price_tier_id || null) as string | null | undefined,
         discount_pct:  Number(form.discount_pct) || 0,
         client_status: form.client_status,
+        ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
+          vehicle: {
+            brand: form.car_brand.trim() || 'Авто',
+            model: form.car_model.trim() || '—',
+            year: form.car_year ? Number(form.car_year) : null,
+            vin: form.car_vin.trim().toUpperCase() || null,
+          },
+        } : {}),
       }
       if (isEdit) {
         await customerApi.update(id, body)
         toast.success('Клієнта оновлено')
+        navigate('/customers')
       } else {
-        await customerApi.create(body as Parameters<typeof customerApi.create>[0])
-        toast.success('Клієнта створено')
+        const result = await customerApi.create(body as Parameters<typeof customerApi.create>[0])
+        if (result.meta?.reused) {
+          toast.success(result.meta.vehicle_added
+            ? 'Клієнт уже існував — нове авто додано в його картку'
+            : 'Клієнт уже існує — відкрито його картку')
+        } else {
+          toast.success(result.meta?.vehicle_added ? 'Клієнта й автомобіль створено' : 'Клієнта створено')
+        }
+        navigate(`/customers/${result.data.id}`)
       }
-      navigate('/customers')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка збереження')
     } finally {
@@ -123,6 +147,34 @@ export default function CustomerFormPage() {
             <Input label="Email" type="email"
               value={form.email} onChange={(e) => set('email', e.target.value)}
               placeholder="ivan@example.com" />
+
+            {!isEdit && (
+              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <Car size={18} className="text-blue-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">Автомобіль клієнта</p>
+                    <p className="text-xs text-gray-500">
+                      Якщо цей телефон уже є в базі, новий VIN додасться до існуючої картки клієнта.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input label="Марка"
+                    value={form.car_brand} onChange={(e) => set('car_brand', e.target.value)}
+                    placeholder="Chevrolet" />
+                  <Input label="Модель"
+                    value={form.car_model} onChange={(e) => set('car_model', e.target.value)}
+                    placeholder="Lanos" />
+                  <Input label="Рік" type="number"
+                    value={form.car_year} onChange={(e) => set('car_year', e.target.value)}
+                    placeholder="2008" min="1900" max="2100" />
+                  <Input label="VIN"
+                    value={form.car_vin} onChange={(e) => set('car_vin', e.target.value.toUpperCase())}
+                    placeholder="17 символів" maxLength={17} />
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <div>

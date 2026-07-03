@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2 } from 'lucide-react'
+import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2, ArrowUp } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { customerGroupsApi, type CustomerGroup } from './customerGroupsApi'
 import { CustomerDrawer } from './CustomerDrawer'
@@ -38,9 +38,23 @@ export default function CustomersPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkGroupId, setBulkGroupId] = useState('')
   const [bulkOperating, setBulkOperating] = useState(false)
+  const [showScrollTop, setShowScrollTop] = useState(false)
 
   const sentinelRef = useRef<HTMLDivElement>(null)
   const loadingRef = useRef(false)
+
+  useEffect(() => {
+    const scroller = document.getElementById('app-main-scroll')
+    if (!scroller) return
+    const handleScroll = () => setShowScrollTop(scroller.scrollTop > 500)
+    handleScroll()
+    scroller.addEventListener('scroll', handleScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  function scrollToTop() {
+    document.getElementById('app-main-scroll')?.scrollTo({ top: 0, behavior: 'smooth' })
+  }
 
   useEffect(() => {
     customerGroupsApi.list().then((res) => {
@@ -446,6 +460,17 @@ export default function CustomersPage() {
           setCustomers((current) => current.map((customer) => customer.id === updated.id ? updated : customer))
         }}
       />
+      {showScrollTop && (
+        <button
+          type="button"
+          onClick={scrollToTop}
+          className="fixed right-5 bottom-5 z-40 w-11 h-11 rounded-full bg-gray-900 text-white shadow-lg hover:bg-yellow-400 hover:text-black transition-colors flex items-center justify-center"
+          title="Повернутися на початок списку"
+          aria-label="Повернутися на початок списку"
+        >
+          <ArrowUp size={20} />
+        </button>
+      )}
     </Layout>
   )
 }

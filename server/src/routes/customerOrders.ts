@@ -15,6 +15,38 @@ import { logAction } from '../services/auditService.js'
 const router = Router()
 router.use(requireAuth)
 
+async function ensureCustomerCar(
+  customerId: string | null | undefined,
+  vehicleInfo: { make?: string; model?: string; year?: number; vin?: string } | null | undefined,
+  tenantId: string,
+) {
+  const vin = vehicleInfo?.vin?.trim().toUpperCase()
+  if (!customerId || !vin || vin.length > 17) return
+
+  const { data: existing, error: findError } = await db
+    .from('customer_cars')
+    .select('id, customer_id')
+    .eq('tenant_id', tenantId)
+    .eq('vin', vin)
+    .maybeSingle()
+
+  if (findError) {
+    logger.warn({ error: findError.message, vin }, 'Failed to check customer car from order')
+    return
+  }
+  if (existing) return
+
+  const { error } = await db.from('customer_cars').insert({
+    tenant_id: tenantId,
+    customer_id: customerId,
+    make: vehicleInfo?.make?.trim() || 'Авто',
+    model: vehicleInfo?.model?.trim() || '—',
+    year: vehicleInfo?.year ?? null,
+    vin,
+  })
+  if (error) logger.warn({ error: error.message, customerId, vin }, 'Failed to add customer car from order')
+}
+
 async function requireTenantOrder(req: Request, _res: Response, next: NextFunction, orderId: string) {
   try {
     const { data, error } = await db.from('customer_orders')
@@ -183,6 +215,10 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
       .single()
 
     if (orderErr || !order) throw new AppError('DB_ERROR', orderErr?.message ?? 'Create failed', 500)
+
+    // Один клієнт може мати багато авто: VIN із нового замовлення автоматично
+    // потрапляє в його гараж, а не створює окрему картку клієнта.
+    await ensureCustomerCar(input.customer_id, input.vehicle_info, req.user!.tenant_id)
 
     // Додаємо позиції (підтримка variants для чернеток)
     const itemsToInsert = input.items.map((item) => {
