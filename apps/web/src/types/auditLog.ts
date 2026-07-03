@@ -34,6 +34,8 @@ export const ACTION_LABEL: Record<string, string> = {
   order_items_bulk_arrived:       'Товар прибув',
   order_sent_to_telegram:         'Надіслано в Telegram',
   order_deleted:                  'Замовлення видалено',
+  product_cross_numbers_added:    'Додано крос-номери',
+  product_cross_number_removed:   'Видалено крос-номер',
 }
 
 export const ACTION_COLOR: Record<string, string> = {
@@ -53,4 +55,6 @@ export const ACTION_COLOR: Record<string, string> = {
   order_items_bulk_arrived:       'green',
   order_sent_to_telegram:         'blue',
   order_deleted:                  'red',
+  product_cross_numbers_added:    'green',
+  product_cross_number_removed:   'red',
 }

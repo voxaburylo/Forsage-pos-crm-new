@@ -8,6 +8,17 @@ export interface StockBreakdown {
   available: number
 }
 
+export interface ProductCrossNumber {
+  id: string
+  number: string
+  normalized_number: string
+  number_type: 'cross' | 'oe' | 'supplier' | 'other'
+  brand: string | null
+  source: string
+  is_verified: boolean
+  created_at: string
+}
+
 export interface ProductFilters {
   search?: string
   category_id?: string
@@ -135,6 +146,24 @@ export const productApi = {
 
   removeAnalog: (id: string, analogId: string) =>
     api.delete(`/api/v1/products/${id}/analogs/${analogId}`),
+
+  getCrossNumbers: (id: string) =>
+    api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`),
+
+  addCrossNumbers: (
+    id: string,
+    numbers: string[],
+    numberType: ProductCrossNumber['number_type'],
+    source: string,
+  ) =>
+    api.post<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`, {
+      numbers,
+      number_type: numberType,
+      source,
+    }),
+
+  removeCrossNumber: (id: string, crossNumberId: string) =>
+    api.delete(`/api/v1/products/${id}/cross-numbers/${crossNumberId}`),
 
   getFitment: (id: string) =>
     api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Edit, Trash2, Clock, AlertTriangle, Search, Trash, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
-import { productApi } from './productApi'
+import { productApi, type ProductCrossNumber } from './productApi'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { getSpecTemplate } from './productSpecs'
@@ -39,6 +39,11 @@ export default function ProductDetailPage() {
   }>>([])
   const [loading, setLoading] = useState(true)
   const [analogs, setAnalogs] = useState<{ grouped: Record<string, any[]> } | null>(null)
+  const [crossNumbers, setCrossNumbers] = useState<ProductCrossNumber[]>([])
+  const [crossPaste, setCrossPaste] = useState('')
+  const [crossType, setCrossType] = useState<ProductCrossNumber['number_type']>('cross')
+  const [crossSource, setCrossSource] = useState('Внесено менеджером')
+  const [savingCrossNumbers, setSavingCrossNumbers] = useState(false)
   const [fitment, setFitment] = useState<{ grouped: Record<string, any[]> } | null>(null)
   const [cobuy, setCobuy] = useState<any[]>([])
   const [photoModalOpen, setPhotoModalOpen] = useState(false)
@@ -117,6 +122,51 @@ export default function ProductDetailPage() {
     }
   }
 
+  const handleAddCrossNumbers = async () => {
+    if (!id) return
+    const numbers = [...new Set(
+      crossPaste
+        .split(/[\r\n,;\t]+/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    )]
+    if (numbers.length === 0) {
+      toast.error('Вставте хоча б один номер')
+      return
+    }
+    setSavingCrossNumbers(true)
+    try {
+      const { data } = await productApi.addCrossNumbers(id, numbers, crossType, crossSource.trim() || 'Внесено менеджером')
+      setCrossNumbers(data)
+      setCrossPaste('')
+      toast.success(`Номери збережено. Усього у картці: ${data.length}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти номери')
+    } finally {
+      setSavingCrossNumbers(false)
+    }
+  }
+
+  const handleRemoveCrossNumber = async (crossNumber: ProductCrossNumber) => {
+    if (!id || !confirm(`Видалити номер ${crossNumber.number}?`)) return
+    try {
+      await productApi.removeCrossNumber(id, crossNumber.id)
+      setCrossNumbers((current) => current.filter((item) => item.id !== crossNumber.id))
+      toast.success('Номер видалено')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити номер')
+    }
+  }
+
+  const copyCrossNumber = async (number: string) => {
+    try {
+      await navigator.clipboard.writeText(number)
+      toast.success('Номер скопійовано')
+    } catch {
+      toast.error('Не вдалося скопіювати номер')
+    }
+  }
+
   async function handlePhotoUrl(url: string | null) {
     if (!product || !id) return
     setSavingPhoto(true)
@@ -182,12 +232,14 @@ export default function ProductDetailPage() {
       productApi.get(id),
       productApi.getHistory(id).catch(() => ({ data: [] })),
       productApi.getAnalogs(id).catch(() => null),
+      productApi.getCrossNumbers(id).catch(() => ({ data: [] })),
       productApi.getFitment(id).catch(() => null),
       productApi.getCobuy(id).catch(() => []),
-    ]).then(([{ data }, { data: hist }, analogsData, fitmentData, cobuyData]) => {
+    ]).then(([{ data }, { data: hist }, analogsData, crossNumbersData, fitmentData, cobuyData]) => {
       setProduct(data)
       setHistory(hist as typeof history)
       if (analogsData) setAnalogs(analogsData)
+      setCrossNumbers(crossNumbersData.data)
       if (fitmentData) setFitment(fitmentData)
       setCobuy(cobuyData)
     }).catch(() => navigate('/products')).finally(() => setLoading(false))
@@ -424,7 +476,7 @@ export default function ProductDetailPage() {
                 {/* ?Аналоги? */}
         <Card>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <h3 className="font-semibold text-gray-800">🔗 Аналоги та крос-номери</h3>
+            <h3 className="font-semibold text-gray-800">🔗 Крос-номери та аналоги</h3>
             
             {/* Inline search bar for adding analogs */}
             <div className="relative flex items-center gap-2" ref={suggestionsRef}>
@@ -472,6 +524,87 @@ export default function ProductDetailPage() {
               )}
             </div>
           </div>
+
+          <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4 mb-5">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-3">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">Номери, за якими можна знайти цей товар</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Вставте список з Excel, каталогу або повідомлення. Розділяйте номери новим рядком, комою чи крапкою з комою.
+                </p>
+              </div>
+              <Badge color="blue">{crossNumbers.length} номерів</Badge>
+            </div>
+
+            <textarea
+              value={crossPaste}
+              onChange={(event) => setCrossPaste(event.target.value)}
+              rows={4}
+              placeholder={'Наприклад:\n96182220\n94788122\nOC90'}
+              className="w-full resize-y rounded-xl border border-gray-200 bg-white px-3 py-2.5 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+
+            <div className="grid grid-cols-1 sm:grid-cols-[150px_1fr_auto] gap-2 mt-2">
+              <select
+                value={crossType}
+                onChange={(event) => setCrossType(event.target.value as ProductCrossNumber['number_type'])}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              >
+                <option value="cross">Крос-номер</option>
+                <option value="oe">OE / OEM</option>
+                <option value="supplier">Постачальник</option>
+                <option value="other">Інший номер</option>
+              </select>
+              <input
+                value={crossSource}
+                onChange={(event) => setCrossSource(event.target.value)}
+                maxLength={200}
+                placeholder="Джерело: постачальник, каталог..."
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              />
+              <Button
+                size="sm"
+                onClick={handleAddCrossNumbers}
+                disabled={savingCrossNumbers || !crossPaste.trim()}
+              >
+                {savingCrossNumbers ? 'Зберігаємо...' : 'Додати номери'}
+              </Button>
+            </div>
+
+            {crossNumbers.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-4">
+                {crossNumbers.map((crossNumber) => (
+                  <div
+                    key={crossNumber.id}
+                    className="group flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white pl-2.5 pr-1.5 py-1.5 shadow-sm"
+                    title={`${crossNumber.source} · ${crossNumber.number_type.toUpperCase()}`}
+                  >
+                    <span className="text-[9px] font-bold uppercase text-blue-600">
+                      {crossNumber.number_type === 'oe' ? 'OE' : crossNumber.number_type === 'supplier' ? 'ПОСТ' : crossNumber.number_type === 'other' ? 'ІНШ' : 'КРОС'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => copyCrossNumber(crossNumber.number)}
+                      className="font-mono text-xs font-semibold text-gray-900 hover:text-blue-700"
+                      title="Скопіювати номер"
+                    >
+                      {crossNumber.number}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCrossNumber(crossNumber)}
+                      className="p-0.5 text-gray-300 hover:text-red-500 opacity-50 group-hover:opacity-100"
+                      title="Видалити номер"
+                    >
+                      <Trash size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">Пов’язані товари зі складу</p>
 
           {analogs && Object.keys(analogs.grouped).length > 0 && (
             <div className="space-y-4">

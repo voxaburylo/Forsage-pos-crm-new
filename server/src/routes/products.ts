@@ -43,6 +43,11 @@ router.post('/:id/analogs', requireRole('owner', 'admin', 'storekeeper'), produc
 // DELETE /api/v1/products/:id/analogs/:analogId — видалити аналог
 router.delete('/:id/analogs/:analogId', requireRole('owner', 'admin', 'storekeeper'), productController.removeAnalog)
 
+// Власна база OE та крос-номерів — масова вставка з буфера обміну
+router.get('/:id/cross-numbers', productController.getCrossNumbers)
+router.post('/:id/cross-numbers', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.addCrossNumbers)
+router.delete('/:id/cross-numbers/:crossNumberId', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.removeCrossNumber)
+
 // GET /api/v1/products/:id/cobuy — супутні товари
 router.get('/:id/cobuy', productController.getCobuy)
 

@@ -80,3 +80,11 @@ export const addAnalogSchema = z.object({
 })
 
 export type AddAnalogInput = z.infer<typeof addAnalogSchema>
+
+export const bulkCrossNumbersSchema = z.object({
+  numbers: z.array(z.string().trim().min(1).max(100)).min(1).max(500),
+  number_type: z.enum(['cross', 'oe', 'supplier', 'other']).default('cross'),
+  source: z.string().trim().max(200).optional().default('Внесено менеджером'),
+})
+
+export type BulkCrossNumbersInput = z.infer<typeof bulkCrossNumbersSchema>

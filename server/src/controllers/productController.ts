@@ -8,6 +8,7 @@ import {
   posSearchSchema,
   stockCorrectionSchema,
   addAnalogSchema,
+  bulkCrossNumbersSchema,
 } from '../validators/productValidator.js'
 import * as productService from '../services/productService.js'
 
@@ -263,6 +264,43 @@ export async function removeAnalog(req: Request, res: Response, next: NextFuncti
       .eq('analog_product_id', req.params.analogId)
       .eq('tenant_id', req.user!.tenant_id)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.status(204).send()
+  } catch (err) { next(err) }
+}
+
+export async function getCrossNumbers(req: Request, res: Response, next: NextFunction) {
+  try {
+    const result = await productService.getProductCrossNumbers(String(req.params.id), req.user!.tenant_id)
+    res.json({ data: result })
+  } catch (err) { next(err) }
+}
+
+export async function addCrossNumbers(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = bulkCrossNumbersSchema.safeParse(req.body)
+    if (!parsed.success) {
+      throw new AppError('VALIDATION_ERROR', 'Перевірте список номерів', 422, parsed.error.flatten())
+    }
+    const result = await productService.addProductCrossNumbers(
+      String(req.params.id),
+      parsed.data,
+      req.user!.id,
+      req.user!.role,
+      req.user!.tenant_id,
+    )
+    res.status(201).json({ data: result })
+  } catch (err) { next(err) }
+}
+
+export async function removeCrossNumber(req: Request, res: Response, next: NextFunction) {
+  try {
+    await productService.removeProductCrossNumber(
+      String(req.params.id),
+      String(req.params.crossNumberId),
+      req.user!.id,
+      req.user!.role,
+      req.user!.tenant_id,
+    )
     res.status(204).send()
   } catch (err) { next(err) }
 }

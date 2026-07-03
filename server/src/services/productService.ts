@@ -5,7 +5,12 @@ import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
 import { logAction } from './auditService.js'
 import { SimpleCache } from '../lib/simpleCache.js'
-import type { CreateProductInput, UpdateProductInput, ProductListQuery } from '../validators/productValidator.js'
+import type {
+  CreateProductInput,
+  UpdateProductInput,
+  ProductListQuery,
+  BulkCrossNumbersInput,
+} from '../validators/productValidator.js'
 
 const TABLE = 'products'
 
@@ -48,6 +53,26 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
 export async function listProducts(query: ProductListQuery, tenantId: string) {
   const { search, category_id, brand_id, is_active, low_stock, page, per_page, sort_field, sort_dir } = query
   const offset = (page - 1) * per_page
+  let crossIdFilter = ''
+
+  if (search) {
+    const crossQuery = search.startsWith('oem:') ? search.slice(4).trim() : search
+    const normalizedCross = normalizeOemValue(crossQuery)
+    if (normalizedCross) {
+      const { data: crossMatches, error: crossError } = await db
+        .from('product_cross_numbers')
+        .select('product_id')
+        .eq('tenant_id', tenantId)
+        .ilike('normalized_number', `%${normalizedCross}%`)
+        .limit(500)
+      if (crossError) {
+        logger.warn({ error: crossError.message }, '[productService] cross-number list search error')
+      } else {
+        const ids = [...new Set((crossMatches ?? []).map((row: any) => row.product_id))]
+        if (ids.length > 0) crossIdFilter = `,id.in.(${ids.join(',')})`
+      }
+    }
+  }
 
   // Фільтр "мало на складі": PostgREST не вміє порівнювати дві колонки →
   // завантажуємо всі відфільтровані записи, фільтруємо в JS, пагінуємо вручну
@@ -62,10 +87,10 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
       if (search.startsWith('oem:')) {
         const oem = search.slice(4).trim()
         const normalized = normalizeOemValue(oem)
-        allQ = allQ.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%`)
+        allQ = allQ.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%${crossIdFilter}`)
       } else {
         const normalized = normalizeArticle(search)
-        allQ = allQ.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%`)
+        allQ = allQ.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%${crossIdFilter}`)
       }
     }
     if (category_id) allQ = allQ.eq('category_id', category_id)
@@ -117,10 +142,10 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
     if (search.startsWith('oem:')) {
       const oem = search.slice(4).trim()
       const normalized = normalizeOemValue(oem)
-      q = q.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%`)
+      q = q.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%${crossIdFilter}`)
     } else {
       const normalized = normalizeArticle(search)
-      q = q.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%`)
+      q = q.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%${crossIdFilter}`)
     }
   }
   if (category_id) q = q.eq('category_id', category_id)
@@ -444,6 +469,140 @@ export async function addProductAnalog(
 
   return data
 }
+
+export interface ProductCrossNumber {
+  id: string
+  number: string
+  normalized_number: string
+  number_type: 'cross' | 'oe' | 'supplier' | 'other'
+  brand: string | null
+  source: string
+  is_verified: boolean
+  created_at: string
+}
+
+export async function getProductCrossNumbers(productId: string, tenantId: string): Promise<ProductCrossNumber[]> {
+  await getProduct(productId, tenantId)
+  const { data, error } = await db
+    .from('product_cross_numbers')
+    .select('id, number, normalized_number, number_type, brand, source, is_verified, created_at')
+    .eq('tenant_id', tenantId)
+    .eq('product_id', productId)
+    .order('number_type')
+    .order('number')
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return (data ?? []) as ProductCrossNumber[]
+}
+
+export async function addProductCrossNumbers(
+  productId: string,
+  input: BulkCrossNumbersInput,
+  userId: string,
+  userRole: string,
+  tenantId: string,
+): Promise<ProductCrossNumber[]> {
+  const product = await getProduct(productId, tenantId)
+
+  const unique = new Map<string, string>()
+  for (const raw of input.numbers) {
+    const number = raw.trim()
+    const normalized = normalizeOemValue(number)
+    if (normalized) unique.set(normalized, number)
+  }
+  if (unique.size === 0) throw new AppError('VALIDATION_ERROR', 'Список номерів порожній', 422)
+
+  const normalizedNumbers = [...unique.keys()]
+  const { data: existing, error: existingError } = await db
+    .from('product_cross_numbers')
+    .select('normalized_number')
+    .eq('tenant_id', tenantId)
+    .eq('product_id', productId)
+    .in('normalized_number', normalizedNumbers)
+
+  if (existingError) throw new AppError('DB_ERROR', existingError.message, 500)
+  const existingSet = new Set((existing ?? []).map((row: any) => row.normalized_number))
+
+  const rows = normalizedNumbers
+    .filter((normalized) => !existingSet.has(normalized))
+    .map((normalized) => ({
+      tenant_id: tenantId,
+      product_id: productId,
+      number: unique.get(normalized)!,
+      normalized_number: normalized,
+      number_type: input.number_type,
+      source: input.source || 'Внесено менеджером',
+      is_verified: true,
+      created_by: userId,
+    }))
+
+  if (rows.length > 0) {
+    const { error } = await db.from('product_cross_numbers').insert(rows)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+    void logAction({
+      tenantId,
+      userId,
+      userRole,
+      action: 'product_cross_numbers_added',
+      entityType: 'product',
+      entityId: productId,
+      entityLabel: `${product.sku} - ${product.name}`,
+      newValue: rows.map((row) => ({
+        number: row.number,
+        type: row.number_type,
+        source: row.source,
+      })),
+      note: `Додано номерів: ${rows.length}`,
+    })
+    await searchCache.clear()
+  }
+
+  return getProductCrossNumbers(productId, tenantId)
+}
+
+export async function removeProductCrossNumber(
+  productId: string,
+  crossNumberId: string,
+  userId: string,
+  userRole: string,
+  tenantId: string,
+): Promise<void> {
+  const product = await getProduct(productId, tenantId)
+  const { data: crossNumber, error: getError } = await db
+    .from('product_cross_numbers')
+    .select('id, number, number_type, source')
+    .eq('id', crossNumberId)
+    .eq('product_id', productId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+
+  if (getError) throw new AppError('DB_ERROR', getError.message, 500)
+  if (!crossNumber) throw new AppError('CROSS_NUMBER_NOT_FOUND', 'Крос-номер не знайдено', 404)
+
+  const { error } = await db
+    .from('product_cross_numbers')
+    .delete()
+    .eq('id', crossNumberId)
+    .eq('product_id', productId)
+    .eq('tenant_id', tenantId)
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+  void logAction({
+    tenantId,
+    userId,
+    userRole,
+    action: 'product_cross_number_removed',
+    entityType: 'product',
+    entityId: productId,
+    entityLabel: `${product.sku} - ${product.name}`,
+    oldValue: crossNumber,
+    note: `Видалено номер ${crossNumber.number}`,
+  })
+  await searchCache.clear()
+}
+
 export async function getProductAnalogs(productId: string, tenantId: string) {
   await getProduct(productId, tenantId)
   // 1. Отримуємо всі аналоги з brand.tier

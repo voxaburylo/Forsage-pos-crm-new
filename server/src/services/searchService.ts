@@ -1,7 +1,7 @@
 ﻿import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { normalizeArticle } from '../validators/productValidator.js'
+import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
 import { transliterateToCyrillic, isLatinText } from './translitService.js'
 import { fixKeyboardLayout } from './keyboardService.js'
 
@@ -50,18 +50,32 @@ async function enrichWithAnalogs(results: SearchResult[]): Promise<SearchResult[
   const productIds = results.map((r) => r.id)
 
   // Один запит для підрахунку аналогів для всіх товарів
-  const { data: analogs, error } = await db
-    .from('product_analogs')
-    .select('product_id, analog_product_id')
-    .in('product_id', productIds)
-    .limit(1000) // достатньо для підрахунку
+  const [
+    { data: analogs, error },
+    { data: crossNumbers, error: crossError },
+  ] = await Promise.all([
+    db
+      .from('product_analogs')
+      .select('product_id, analog_product_id')
+      .in('product_id', productIds)
+      .limit(1000),
+    db
+      .from('product_cross_numbers')
+      .select('product_id')
+      .in('product_id', productIds)
+      .limit(2000),
+  ])
 
-  if (error) { logger.warn({ error: error.message }, '[search] product_analogs error'); return results }
+  if (error) logger.warn({ error: error.message }, '[search] product_analogs error')
+  if (crossError) logger.warn({ error: crossError.message }, '[search] product_cross_numbers error')
 
   // Підраховуємо кількість аналогів для кожного товару
   const analogCounts = new Map<string, number>()
   for (const a of analogs ?? []) {
     analogCounts.set(a.product_id, (analogCounts.get(a.product_id) ?? 0) + 1)
+  }
+  for (const cross of crossNumbers ?? []) {
+    analogCounts.set(cross.product_id, (analogCounts.get(cross.product_id) ?? 0) + 1)
   }
 
   return results.map((r: SearchResult): SearchResult => {
@@ -130,29 +144,72 @@ export async function searchProductsForPOS(q: string, limit: number, tenantId: s
   const results = await directProductSearch(searchTerms, q, limit, tenantId)
   if (results && results.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(results))
 
-  // [2] Пошук по коду постачальника
+  // [2] Пошук по власній базі OE та крос-номерів
+  const crossResults = await crossNumberSearch(q, limit, tenantId)
+  if (crossResults && crossResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(crossResults))
+
+  // [3] Пошук по коду постачальника
   const supplierResults = await supplierCodeSearch(q, limit, tenantId)
   if (supplierResults && supplierResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(supplierResults))
 
-  // [3] Пошук по аліасах
+  // [4] Пошук по аліасах
   const aliasResults = await aliasSearch(searchTerms, q, limit, tenantId)
   if (aliasResults && aliasResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(aliasResults))
 
-  // [4] Пошук по додаткових штрихкодах (таблиця product_barcodes)
+  // [5] Пошук по додаткових штрихкодах (таблиця product_barcodes)
   const barcodeResults = await barcodeSearch(q, limit, tenantId)
   if (barcodeResults && barcodeResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(barcodeResults))
 
-  // [4b] Пошук по additional_barcodes JSONB колонці products
+  // [5b] Пошук по additional_barcodes JSONB колонці products
   const additionalBarcodeResults = await additionalBarcodesSearch(q, limit, tenantId)
   if (additionalBarcodeResults && additionalBarcodeResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(additionalBarcodeResults))
 
-  // [5] Пошук по VIN (тільки від 6 символів)
+  // [6] Пошук по VIN (тільки від 6 символів)
   if (q.length >= 6) {
     const vinResults = await vinSearch(q, limit, tenantId)
     if (vinResults && vinResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(vinResults))
   }
 
   return []
+}
+
+async function crossNumberSearch(code: string, limit: number, tenantId: string): Promise<SearchResult[]> {
+  const normalized = normalizeOemValue(code)
+  const { data: matches, error: matchError } = await db
+    .from('product_cross_numbers')
+    .select('product_id, number')
+    .eq('tenant_id', tenantId)
+    .ilike('normalized_number', `%${normalized}%`)
+    .limit(limit)
+
+  if (matchError) {
+    logger.warn({ error: matchError.message }, '[search] product_cross_numbers error')
+    return []
+  }
+  if (!matches || matches.length === 0) return []
+
+  const productIds = [...new Set(matches.map((row: any) => row.product_id))].slice(0, limit)
+  const { data: products, error: productError } = await db
+    .from(PRODUCTS_TABLE)
+    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .eq('is_active', true)
+    .in('id', productIds)
+    .order('qty_on_hand', { ascending: false })
+    .limit(limit)
+
+  if (productError) {
+    logger.warn({ error: productError.message }, '[search] cross number products error')
+    return []
+  }
+
+  const matchedByProduct = new Map(matches.map((row: any) => [row.product_id, row.number]))
+  return (products ?? []).map((product: any): SearchResult => ({
+    ...product,
+    match_field: 'cross_number',
+    match_value: matchedByProduct.get(product.id) ?? code,
+  }))
 }
 
 /** [1] Прямий пошук по товарах (sku, name, barcode, oem_number) */
