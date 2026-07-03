@@ -1252,14 +1252,6 @@ export default function OrderFormPage() {
                         {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
                       </span>
                     )}
-                    <div className="inline-flex rounded-md overflow-hidden border border-gray-200">
-                      {(['product', 'service'] as const).map((t) => (
-                        <button key={t} type="button" onClick={() => updateItem(idx, 'item_type', t)}
-                          className={`px-3 py-1 text-xs font-semibold transition-colors ${(row.item_type ?? 'product') === t ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400'}`}>
-                          {t === 'product' ? 'Товар' : 'Робота'}
-                        </button>
-                      ))}
-                    </div>
                     <div className="grid grid-cols-3 gap-2">
                       <input value={row.sku} onChange={(e) => updateItem(idx, 'sku', e.target.value)} placeholder="Артикул"
                         className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-mono" />
@@ -1289,11 +1281,11 @@ export default function OrderFormPage() {
               </div>
 
               <div className="overflow-x-auto hidden md:block">
-                <table className="w-full text-left border-collapse text-sm">
+                <table className="w-full min-w-[1050px] text-left border-collapse text-sm">
                   <thead>
                     <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
                       <th className="px-4 py-3 w-10 text-center">#</th>
-                      <th className="px-4 py-3">Назва запчастини / роботи</th>
+                      <th className="px-4 py-3 w-[30%] min-w-[260px]">Назва запчастини</th>
                       <th className="px-4 py-3 w-40">Артикул / SKU</th>
                       <th className="px-4 py-3 w-24">К-сть</th>
                       <th className="px-4 py-3 w-32">Ціна (грн)</th>
@@ -1304,7 +1296,7 @@ export default function OrderFormPage() {
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {items.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50/20">
+                      <tr key={idx} className="hover:bg-gray-50/20 align-top">
                         <td className="px-4 py-3 text-center text-gray-400 font-mono text-xs">{idx + 1}</td>
                         <td className="px-4 py-3">
                           <ProductAutocomplete
@@ -1312,6 +1304,7 @@ export default function OrderFormPage() {
                             onChange={(val) => setItems((p) => p.map((r, i) => i === idx ? { ...r, name: val, product_id: null, stock: undefined } : r))}
                             onSelect={(p) => selectProduct(idx, p)}
                             placeholder="Введіть назву або артикул..."
+                            className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
                             required
                           />
                           {row.product_id && row.stock !== undefined && (
@@ -1319,21 +1312,6 @@ export default function OrderFormPage() {
                               {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
                             </span>
                           )}
-                          {/* Тип позиції товар/робота (ORD-24) */}
-                          <div className="mt-1 inline-flex rounded-md overflow-hidden border border-gray-200">
-                            {(['product', 'service'] as const).map((t) => (
-                              <button
-                                key={t}
-                                type="button"
-                                onClick={() => updateItem(idx, 'item_type', t)}
-                                className={`px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                                  (row.item_type ?? 'product') === t ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400 hover:bg-gray-50'
-                                }`}
-                              >
-                                {t === 'product' ? 'Товар' : 'Робота'}
-                              </button>
-                            ))}
-                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <input
