@@ -14,7 +14,6 @@ import { CashOperationModal } from './CashOperationModal'
 import { DebtPaymentModal } from './DebtPaymentModal'
 import { CashReconciliationModal } from './CashReconciliationModal'
 import { FavoritesPanel } from './FavoritesPanel'
-import { DashboardPanel } from './DashboardPanel'
 import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
 import { QuickChargeModal } from './QuickChargeModal'
@@ -645,14 +644,6 @@ export default function POSPage() {
 
         {/* Desktop права частина — щоденні дії з підписами, решта в меню «Ще» */}
         <div className="hidden md:flex items-center gap-0.5">
-          <button onClick={() => setQuickOpen(true)}
-            className="h-10 px-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-indigo-600/30 text-xs"
-            title="Швидкий доступ до товарів">
-            <LayoutGrid size={15} /> Товари
-          </button>
-
-          <div className="w-px h-7 bg-gray-800 mx-1" />
-
           {/* Чеки */}
           {lastSale && (
             <button onClick={printReceipt}
@@ -882,11 +873,8 @@ export default function POSPage() {
                 </button>
                 <button onClick={() => setQuickOpen(true)}
                   className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-300 hover:bg-gray-700">
-                  <LayoutGrid size={16} /> Інші швидкі товари
+                  <LayoutGrid size={16} /> Товари швидкого доступу
                 </button>
-              </div>
-              <div className="hidden md:flex md:flex-col min-h-0 min-w-0 flex-1">
-                <DashboardPanel />
               </div>
               <div className="hidden md:block">
                 <CrossSellPanel />
