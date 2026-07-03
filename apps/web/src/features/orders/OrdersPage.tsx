@@ -965,11 +965,13 @@ interface OrdersTableProps {
   onNextPage: () => void
   hasMore: boolean
   onQuickView: (o: CustomerOrder) => void
+  onDelete: (o: CustomerOrder) => void
+  canDelete: boolean
   statusTab: Tab
   onStatusTab: (t: Tab) => void
 }
 
-function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, statusTab, onStatusTab }: OrdersTableProps) {
+function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
   const navigate = useNavigate()
 
   const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
@@ -1100,6 +1102,9 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                   <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <Button variant="secondary" size="sm" icon={<Copy size={13} />} title="Повторити" onClick={() => startRepeatOrder(o, navigate)} />
                     <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
+                    {canDelete && (
+                      <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} title="Видалити замовлення" onClick={() => onDelete(o)} />
+                    )}
                   </div>
                 </div>
                 <div className="text-[11px] text-gray-400 flex items-center justify-end gap-1">
@@ -1274,6 +1279,9 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                           <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>
                             Відкрити
                           </Button>
+                          {canDelete && (
+                            <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} title="Видалити замовлення" onClick={() => onDelete(o)} />
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1637,6 +1645,20 @@ export default function OrdersPage() {
     } catch { toast.error('Помилка') }
   }
 
+  async function handleDeleteOrder(order: CustomerOrder) {
+    const label = formatOrderNo(order)
+    const client = order.customer?.full_name ?? order.customer?.phone ?? 'без клієнта'
+    if (!confirm(`Видалити ${label} (${client}) зі списку?\n\nДія буде записана в журнал. Фінансові документи та історія залишаться збереженими.`)) return
+    try {
+      await orderApi.delete(order.id)
+      if (selection?.kind === 'order' && selection.id === order.id) setSelection(null)
+      toast.success(`${label} видалено зі списку`)
+      await loadOrders()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити замовлення')
+    }
+  }
+
   async function loadBulkItems() {
     if (!bulkSupplier) return
     try {
@@ -1932,6 +1954,8 @@ export default function OrdersPage() {
               onNextPage={() => setOffset(offset + 50)}
               hasMore={orders.length >= 50}
               onQuickView={(o) => navigate('/orders/' + o.id)}
+              onDelete={handleDeleteOrder}
+              canDelete={role === 'owner' || role === 'admin'}
               statusTab={tab}
               onStatusTab={setTab}
             />

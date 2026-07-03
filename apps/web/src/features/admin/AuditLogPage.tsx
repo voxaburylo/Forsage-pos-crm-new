@@ -14,6 +14,7 @@ const ENTITY_TYPES = [
   { value: 'return',  label: 'Повернення' },
   { value: 'product', label: 'Товари' },
   { value: 'writeoff', label: 'Списання' },
+  { value: 'customer_order', label: 'Замовлення' },
 ]
 
 export default function AuditLogPage() {

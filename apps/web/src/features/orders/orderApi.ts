@@ -95,6 +95,9 @@ export const orderApi = {
   update: (id: string, body: CreateOrderPayload) =>
     api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body),
 
+  delete: (id: string) =>
+    api.delete<{ data: { success: boolean } }>('/api/v1/customer-orders/' + id),
+
   updateStatus: (id: string, status: CustomerOrderStatus, callback_at?: string | null) =>
     api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status, callback_at }),
 
