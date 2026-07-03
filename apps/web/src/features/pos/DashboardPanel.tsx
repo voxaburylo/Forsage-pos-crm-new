@@ -61,13 +61,13 @@ export function DashboardPanel() {
     <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
       {/* Швидкі товари — POS тайли */}
       {favorites.length > 0 && (
-        <div className="px-3 py-3 flex-1">
+        <div className="px-3 py-3">
           <div className="flex items-center gap-1.5 mb-2.5">
             <Star size={13} className="text-yellow-400" />
             <span className="text-gray-500 text-xs font-medium uppercase tracking-wider">Швидкий доступ</span>
           </div>
 
-          <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+          <div className="flex gap-2 overflow-x-auto pb-1">
             {favorites.map((p, i) => {
               const bg = TILE_COLORS[i % TILE_COLORS.length]
               const inStock = p.qty_on_hand > 0
@@ -75,14 +75,14 @@ export function DashboardPanel() {
                 <button
                   key={p.id}
                   onClick={() => addToReceipt(p)}
-                  className="rounded-xl text-left transition-all active:scale-[0.96] relative overflow-hidden flex flex-col justify-between border border-white/5"
-                  style={{ background: bg, minHeight: 100 }}
+                  className="w-36 shrink-0 rounded-xl text-left transition-all active:scale-[0.96] relative overflow-hidden flex flex-col justify-between border border-white/5"
+                  style={{ background: bg, minHeight: 78 }}
                 >
                   {/* Декоративний акцент */}
                   <div className="absolute top-0 right-0 w-16 h-16 rounded-full opacity-10"
                     style={{ background: 'white', transform: 'translate(30%, -30%)' }} />
 
-                  <div className="p-3 flex flex-col h-full gap-1.5">
+                  <div className="p-2.5 flex flex-col h-full gap-1">
                     {/* Артикул */}
                     <span className="text-white/40 text-[10px] font-mono uppercase tracking-wider">{p.sku}</span>
 

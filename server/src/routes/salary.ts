@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
+import { supabaseAdmin } from '../db/supabaseAdmin.js'
+import { runTransaction } from '../db/pg.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -15,6 +17,16 @@ const createSchema = z.object({
   method:        z.enum(['cash', 'card', 'transfer']).default('cash'),
   period:        z.string().regex(/^\d{4}-\d{2}$/).optional().nullable(),
   note:          z.string().max(1000).optional().nullable(),
+  shift_id:      z.string().uuid().optional().nullable(),
+  work_date:     z.string().regex(/^\d{4}-\d{2}$/).optional(),
+})
+
+const dailyPayoutSchema = z.object({
+  employee_id:   z.string().uuid(),
+  employee_name: z.string().min(1).max(200),
+  method:        z.enum(['cash', 'card', 'transfer']).default('cash'),
+  shift_id:      z.string().uuid().optional().nullable(),
+  work_date:     z.string().regex(/^\d{4}-\d{2}$/),
 })
 
 // GET /api/v1/salary — список виплат
@@ -89,6 +101,114 @@ router.get('/summary', requireRole('owner', 'admin'), async (req, res, next) => 
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/salary/daily-summary?date=YYYY-MM-DD
+router.get('/daily-summary', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const date = String(req.query.date ?? new Date().toISOString().slice(0, 10))
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError('VALIDATION_ERROR', 'Невірна дата', 422)
+    const { data, error } = await db
+      .from('salary_payments')
+      .select('employee_id, employee_name, amount, type')
+      .eq('tenant_id', req.user!.tenant_id)
+      .eq('work_date', date)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+    const map: Record<string, any> = {}
+    for (const row of data ?? []) {
+      if (!map[row.employee_id]) map[row.employee_id] = {
+        employee_id: row.employee_id, employee_name: row.employee_name,
+        earned: 0, paid: 0, penalty: 0, balance: 0,
+      }
+      if (row.type === 'salary' || row.type === 'bonus') map[row.employee_id].earned += row.amount
+      if (row.type === 'advance') map[row.employee_id].paid += row.amount
+      if (row.type === 'penalty') map[row.employee_id].penalty += row.amount
+    }
+    for (const value of Object.values(map) as any[]) value.balance = value.earned - value.paid - value.penalty
+    res.json({ data: Object.values(map), date })
+  } catch (err) { next(err) }
+})
+
+// POST /api/v1/salary/daily-payout — нарахувати денну ставку та видати залишок за день.
+router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const parsed = dailyPayoutSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані виплати', 422, parsed.error.flatten())
+    const input = parsed.data
+    if (input.method === 'cash' && !input.shift_id) {
+      throw new AppError('SHIFT_REQUIRED', 'Для виплати готівкою потрібна відкрита касова зміна', 422)
+    }
+
+    const { data: authData } = await supabaseAdmin.auth.admin.getUserById(input.employee_id)
+    const employee = authData.user
+    if (!employee || employee.user_metadata?.tenant_id !== req.user!.tenant_id) {
+      throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
+    }
+    const dailyRate = employee.user_metadata?.rate_period === 'day'
+      ? Number(employee.user_metadata?.base_rate ?? 0)
+      : 0
+    const period = input.work_date.slice(0, 7)
+
+    const result = await runTransaction(async (client) => {
+      if (input.shift_id) {
+        const shift = await client.query(
+          `SELECT id FROM shifts WHERE id=$1 AND tenant_id=$2 AND status='open'`,
+          [input.shift_id, req.user!.tenant_id],
+        )
+        if (shift.rowCount === 0) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+      }
+
+      if (dailyRate > 0) {
+        await client.query(
+          `INSERT INTO salary_payments
+           (tenant_id, employee_id, employee_name, amount, type, method, period, work_date, source, note, created_by)
+           VALUES ($1,$2,$3,$4,'salary','cash',$5,$6,'daily_rate','Денна ставка',$7)
+           ON CONFLICT DO NOTHING`,
+          [req.user!.tenant_id, input.employee_id, input.employee_name, dailyRate, period, input.work_date, req.user!.id],
+        )
+      }
+
+      const totals = await client.query(
+        `SELECT
+           COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END),0)::int AS earned,
+           COALESCE(SUM(CASE WHEN type='advance' THEN amount ELSE 0 END),0)::int AS paid,
+           COALESCE(SUM(CASE WHEN type='penalty' THEN amount ELSE 0 END),0)::int AS penalty
+         FROM salary_payments
+         WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`,
+        [req.user!.tenant_id, input.employee_id, input.work_date],
+      )
+      const earned = Number(totals.rows[0].earned)
+      const paid = Number(totals.rows[0].paid)
+      const penalty = Number(totals.rows[0].penalty)
+      const amount = earned - paid - penalty
+      if (amount <= 0) throw new AppError('NOTHING_TO_PAY', 'За сьогодні немає невиплаченого заробітку', 409)
+
+      let cashOperationId: string | null = null
+      if (input.method === 'cash') {
+        const cash = await client.query(
+          `INSERT INTO cash_operations
+           (tenant_id, shift_id, type, amount, note, created_by, source)
+           VALUES ($1,$2,'out',$3,$4,$5,'cashbox') RETURNING id`,
+          [req.user!.tenant_id, input.shift_id, amount, `Зарплата за ${input.work_date}: ${input.employee_name}`, req.user!.id],
+        )
+        cashOperationId = cash.rows[0].id
+      }
+
+      const payout = await client.query(
+        `INSERT INTO salary_payments
+         (tenant_id, employee_id, employee_name, amount, type, method, period, work_date, source, note, created_by, cash_operation_id)
+         VALUES ($1,$2,$3,$4,'advance',$5,$6,$7,'daily_payout',$8,$9,$10)
+         RETURNING *`,
+        [
+          req.user!.tenant_id, input.employee_id, input.employee_name, amount, input.method,
+          period, input.work_date, `Виплата заробітку за ${input.work_date}`, req.user!.id, cashOperationId,
+        ],
+      )
+      return { payment: payout.rows[0], amount, earned, previously_paid: paid, penalty }
+    })
+    res.status(201).json({ data: result })
+  } catch (err) { next(err) }
+})
+
 // POST /api/v1/salary — додати виплату
 router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
@@ -97,23 +217,38 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
 
     const period = parsed.data.period ?? new Date().toISOString().slice(0, 7)
 
-    const { data, error } = await db
-      .from('salary_payments')
-      .insert({
-        tenant_id:     req.user!.tenant_id,
-        employee_id:   parsed.data.employee_id,
-        employee_name: parsed.data.employee_name,
-        amount:        parsed.data.amount,
-        type:          parsed.data.type,
-        method:        parsed.data.method,
-        period,
-        note:          parsed.data.note ?? null,
-        created_by:    req.user!.id,
-      })
-      .select()
-      .single()
-
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    if (parsed.data.type === 'advance' && parsed.data.method === 'cash' && !parsed.data.shift_id) {
+      throw new AppError('SHIFT_REQUIRED', 'Для виплати готівкою потрібна відкрита касова зміна', 422)
+    }
+    const workDate = parsed.data.work_date ?? new Date().toISOString().slice(0, 10)
+    const data = await runTransaction(async (client) => {
+      let cashOperationId: string | null = null
+      if (parsed.data.type === 'advance' && parsed.data.method === 'cash') {
+        const shift = await client.query(
+          `SELECT id FROM shifts WHERE id=$1 AND tenant_id=$2 AND status='open'`,
+          [parsed.data.shift_id, req.user!.tenant_id],
+        )
+        if (shift.rowCount === 0) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+        const cash = await client.query(
+          `INSERT INTO cash_operations
+           (tenant_id, shift_id, type, amount, note, created_by, source)
+           VALUES ($1,$2,'out',$3,$4,$5,'cashbox') RETURNING id`,
+          [req.user!.tenant_id, parsed.data.shift_id, parsed.data.amount, parsed.data.note || `Виплата зарплати: ${parsed.data.employee_name}`, req.user!.id],
+        )
+        cashOperationId = cash.rows[0].id
+      }
+      const inserted = await client.query(
+        `INSERT INTO salary_payments
+         (tenant_id, employee_id, employee_name, amount, type, method, period, note, created_by, work_date, source, cash_operation_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'manual',$11) RETURNING *`,
+        [
+          req.user!.tenant_id, parsed.data.employee_id, parsed.data.employee_name,
+          parsed.data.amount, parsed.data.type, parsed.data.method, period,
+          parsed.data.note ?? null, req.user!.id, workDate, cashOperationId,
+        ],
+      )
+      return inserted.rows[0]
+    })
     res.status(201).json({ data })
   } catch (err) { next(err) }
 })

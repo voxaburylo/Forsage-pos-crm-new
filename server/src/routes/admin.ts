@@ -12,6 +12,18 @@ import * as adminService from '../services/adminService.js'
 const router = Router()
 router.use(requireAuth)
 
+// Мінімальний список виконавців для каси — без телефонів, email та налаштувань зарплати.
+router.get('/staff-options', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try {
+    const users = await adminService.listUsers(req.user!.tenant_id)
+    res.json({
+      data: users
+        .filter((user) => user.is_active)
+        .map((user) => ({ id: user.id, full_name: user.full_name, role: user.role })),
+    })
+  } catch (err) { next(err) }
+})
+
 // Users
 router.get('/users', requireRole('owner', 'admin'), async (req, res, next) => {
   try { res.json({ data: await adminService.listUsers(req.user!.tenant_id) }) } catch (err) { next(err) }

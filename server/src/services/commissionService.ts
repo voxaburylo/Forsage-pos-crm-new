@@ -77,6 +77,12 @@ function currentPeriod(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
+function currentWorkDate(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date())
+}
+
 async function resolveEmployeeName(userId: string, isManager: boolean): Promise<string> {
   const fallback = isManager ? 'Менеджер' : 'Співробітник'
   try {
@@ -162,6 +168,7 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
   }))
   const commMap = computeCommissionMap(commItems, productsMap, rules, sale.manager_id)
   const period = currentPeriod()
+  const workDate = currentWorkDate()
 
   for (const [candidateId, amount] of commMap) {
     if (amount <= 0) continue
@@ -171,6 +178,7 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
       const { error } = await db.from('salary_payments').insert({
         tenant_id: tenantId, employee_id: candidateId, employee_name: name,
         amount, type: 'bonus', method: 'cash', period,
+        source: 'commission', work_date: workDate,
         note: `Комісія за продаж (чек #${sale.sale_number})`,
         created_by: createdBy, commission_source_sale_id: sale.id,
       })
@@ -213,6 +221,7 @@ export async function reverseCommissionForReturn(
   const productsMap = await fetchProductsMap(commItems.map((i) => i.product_id), tenantId)
   const commMap = computeCommissionMap(commItems, productsMap, rules, activeManagerId)
   const period = currentPeriod()
+  const workDate = currentWorkDate()
 
   for (const [candidateId, amount] of commMap) {
     if (amount <= 0) continue
@@ -222,6 +231,7 @@ export async function reverseCommissionForReturn(
       await db.from('salary_payments').insert({
         tenant_id: tenantId, employee_id: candidateId, employee_name: name,
         amount: -amount, type: 'bonus', method: 'cash', period,
+        source: 'commission_reversal', work_date: workDate,
         note: `Сторно комісії за повернення (чек #${sale.sale_number})`,
         created_by: createdBy,
       })
@@ -296,6 +306,7 @@ export async function calculateAndRecordCommission(
   // 5-6. Розрахунок комісії по кожному отримувачу (спільний рушій)
   const commMap = computeCommissionMap(items as CommissionItem[], productsMap, rules, order.manager_id)
   const period = currentPeriod()
+  const workDate = currentWorkDate()
 
   // 7-8. Запис у salary_payments
   for (const [candidateId, candidateCommission] of commMap) {
@@ -312,6 +323,8 @@ export async function calculateAndRecordCommission(
           amount: candidateCommission,
           type: 'bonus',
           method: 'cash',
+          source: 'commission',
+          work_date: workDate,
           period,
           note: `Автоматична комісія за замовлення #${order.id.slice(0, 8)}${!isActiveManager ? ' (відсоток від каси)' : ''}`,
           created_by: createdBy,

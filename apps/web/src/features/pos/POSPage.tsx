@@ -195,7 +195,7 @@ export default function POSPage() {
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/users')
+    api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/staff-options')
       .then((res) => {
         setStaffUsers(res.data)
         // За замовчуванням — поточний користувач
@@ -650,16 +650,6 @@ export default function POSPage() {
             title="Швидкий доступ до товарів">
             <LayoutGrid size={15} /> Товари
           </button>
-          <button onClick={() => setQuickCharge('tire_service')}
-            className="h-10 px-3 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-emerald-600/30 text-xs"
-            title="Прийняти оплату за роботу шиномонтажу">
-            <Wrench size={15} /> Шиномонтаж
-          </button>
-          <button onClick={() => setQuickCharge('free_sale')}
-            className="h-10 px-3 bg-orange-600/20 hover:bg-orange-600/40 text-orange-400 font-bold rounded-lg transition-colors flex items-center gap-1.5 border border-orange-600/30 text-xs"
-            title="Прийняти довільну суму за товар, якого немає в каталозі">
-            <CircleDollarSign size={15} /> Вільна сума
-          </button>
 
           <div className="w-px h-7 bg-gray-800 mx-1" />
 
@@ -753,6 +743,12 @@ export default function POSPage() {
                       {isEmployeeSale && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
                     </button>
                   )}
+                  {['owner','admin'].includes(String(session?.user?.user_metadata?.role ?? '')) && (
+                    <button onClick={() => { setMoreOpen(false); navigate('/staff') }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-emerald-300 hover:bg-gray-700 text-left transition-colors">
+                      <DollarSign size={15} /> Зарплата за сьогодні
+                    </button>
+                  )}
                   <button onClick={() => { setMoreOpen(false); handleLock() }}
                     className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
                     <Lock size={15} /> Заблокувати касу
@@ -823,6 +819,9 @@ export default function POSPage() {
             {/* Сітка дій */}
             <div className="grid grid-cols-4 gap-3 mb-4">
               {[
+                ...(['owner','admin'].includes(String(session?.user?.user_metadata?.role ?? '')) ? [
+                  { icon: '💵', label: 'Зарплата', action: () => { setMobileMenuOpen(false); navigate('/staff') } },
+                ] : []),
                 { icon: '🛞', label: 'Шиномонтаж', action: () => { setQuickCharge('tire_service'); setMobileMenuOpen(false) } },
                 { icon: '💰', label: 'Вільна сума', action: () => { setQuickCharge('free_sale'); setMobileMenuOpen(false) } },
                 { icon: '🖨️', label: 'Друк', action: () => { printReceipt(); setMobileMenuOpen(false) }, disabled: !lastSale },
@@ -870,6 +869,22 @@ export default function POSPage() {
           <>
             <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
               <SearchPanel ref={searchRef} />
+              <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-800 bg-[#111] px-2 py-2">
+                <button onClick={() => setQuickCharge('tire_service')}
+                  className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-emerald-700/50 bg-emerald-900/30 px-4 text-sm font-bold text-emerald-300 hover:bg-emerald-900/50"
+                  title="Прийняти оплату за шиномонтаж і зарахувати роботу працівнику">
+                  <Wrench size={16} /> Шиномонтаж
+                </button>
+                <button onClick={() => setQuickCharge('free_sale')}
+                  className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-orange-700/50 bg-orange-900/30 px-4 text-sm font-bold text-orange-300 hover:bg-orange-900/50"
+                  title="Продаж за довільною сумою без товару в каталозі">
+                  <CircleDollarSign size={16} /> Вільна сума
+                </button>
+                <button onClick={() => setQuickOpen(true)}
+                  className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-300 hover:bg-gray-700">
+                  <LayoutGrid size={16} /> Інші швидкі товари
+                </button>
+              </div>
               <div className="hidden md:flex md:flex-col min-h-0 min-w-0 flex-1">
                 <DashboardPanel />
               </div>

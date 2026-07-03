@@ -29,6 +29,7 @@ function mapSupabaseUser(u: any) {
     role:      u.user_metadata?.role ?? 'cashier',
     is_active: u.user_metadata?.is_active !== false,
     base_rate: u.user_metadata?.base_rate ?? 0,
+    rate_period: u.user_metadata?.rate_period ?? 'month',
     created_at: u.created_at,
   }
 }
@@ -60,6 +61,7 @@ export async function createUser(input: CreateUserInput, tenantId: string) {
       tenant_id: tenantId,
       is_active: true,
       base_rate: input.base_rate ?? 0,
+      rate_period: input.rate_period ?? 'month',
     },
   })
 
@@ -90,6 +92,7 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
       ...(input.is_active !== undefined ? { is_active: input.is_active } : {}),
       ...(input.full_name !== undefined ? { full_name: input.full_name } : {}),
       ...(input.base_rate !== undefined ? { base_rate: input.base_rate } : {}),
+      ...(input.rate_period !== undefined ? { rate_period: input.rate_period } : {}),
       ...(input.phone     !== undefined ? { phone: input.phone }         : {}),
     }
   }
