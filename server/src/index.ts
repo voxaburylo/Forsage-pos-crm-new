@@ -89,6 +89,8 @@ app.use('/api/v1/vin/ocr', express.json({ limit: '10mb' }))
 // AI-чат може містити вставлені таблиці/прайси (file_text) та фото замовлень
 // (до 4 стиснутих зображень у base64) — більший ліміт
 app.use('/api/v1/ai/chat', express.json({ limit: '25mb' }))
+// Імпорт каталогу товарів: список «усіх товарів» легко перевищує стандартні 100kb
+app.use('/api/v1/import', express.json({ limit: '25mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)

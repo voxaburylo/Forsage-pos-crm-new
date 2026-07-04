@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { logger } from '../lib/logger.js'
 import { applyMarkup, type MarkupRule } from '../lib/markup.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
@@ -182,7 +183,15 @@ export async function parseClipboardText(input: ParseImportInput, tenantId: stri
   }))
 
   const dbProductsList = await fetchDbProducts(tempItems, tenantId)
-  const items = tempItems.map(item => matchPreviewProduct(item, dbProductsList, tempItems.length))
+  const bySku = new Map<string, any>()
+  const byBarcode = new Map<string, any>()
+  const byName = new Map<string, any>()
+  for (const p of dbProductsList) {
+    if (p.sku) bySku.set(String(p.sku), p)
+    if (p.barcode) byBarcode.set(String(p.barcode), p)
+    if (p.name) byName.set(String(p.name).trim().toLowerCase(), p)
+  }
+  const items = tempItems.map(item => matchPreviewProduct(item, dbProductsList, { bySku, byBarcode, byName }, tempItems.length))
 
   return {
     supplier_id:   input.supplier_id,
@@ -342,57 +351,61 @@ function parseImportLines(
 }
 
 async function fetchDbProducts(temporaryItems: TemporaryItem[], tenantId: string): Promise<any[]> {
-  const skus = temporaryItems.map(i => normalizeArticle(i.sku)).filter(Boolean)
-  const barcodes = temporaryItems.map(i => i.barcode).filter(Boolean) as string[]
-  const names = temporaryItems.map(i => i.name.trim()).filter(Boolean)
+  // Унікалізуємо значення — щоб не гнати дублі у запити
+  const skus = [...new Set(temporaryItems.map(i => normalizeArticle(i.sku)).filter(Boolean))]
+  const barcodes = [...new Set(temporaryItems.map(i => i.barcode).filter(Boolean) as string[])]
+  const names = [...new Set(temporaryItems.map(i => i.name.trim()).filter(Boolean))]
 
-  let dbProducts: any[] = []
-  if (skus.length > 0 || barcodes.length > 0 || names.length > 0) {
-    const promises = []
-    if (skus.length > 0) {
-      promises.push(
-        db.from("products")
-          .select("id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin")
-          .eq("tenant_id", tenantId)
-          .is("deleted_at", null)
-          .in("sku", skus)
-      )
-    }
-    if (barcodes.length > 0) {
-      promises.push(
-        db.from("products")
-          .select("id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin")
-          .eq("tenant_id", tenantId)
-          .is("deleted_at", null)
-          .in("barcode", barcodes)
-      )
-    }
-    if (names.length > 0) {
-      promises.push(
-        db.from("products")
-          .select("id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin")
-          .eq("tenant_id", tenantId)
-          .is("deleted_at", null)
-          .in("name", names)
-      )
-    }
+  const SELECT = "id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin"
+  const dbProductsMap = new Map<string, any>()
 
-    const results = await Promise.all(promises)
-    for (const r of results) {
-      if (r.data) {
-        dbProducts = dbProducts.concat(r.data)
+  // PostgREST кладе .in(...) у query-рядок URL. На великих списках URL перевищує
+  // ліміт і запит падає. Кирилиця (назви) в URL кодується ВТРИЧІ довше, тому для
+  // назв порція значно менша. Помилка окремої порції не валить увесь імпорт —
+  // просто частина збігів по цьому полю не врахується (артикул/штрихкод головні).
+  async function queryIn(field: string, values: string[], chunkSize: number, concurrency: number) {
+    const slices: string[][] = []
+    for (let i = 0; i < values.length; i += chunkSize) slices.push(values.slice(i, i + chunkSize))
+    let failed = 0
+    let cursor = 0
+    async function worker() {
+      while (cursor < slices.length) {
+        const slice = slices[cursor++]
+        try {
+          const { data, error } = await db
+            .from("products")
+            .select(SELECT)
+            .eq("tenant_id", tenantId)
+            .is("deleted_at", null)
+            .in(field, slice)
+          if (error) throw new Error(error.message)
+          if (data) for (const p of data) dbProductsMap.set(p.id, p)
+        } catch (e: any) {
+          failed++
+        }
       }
     }
+    const workers: Promise<void>[] = []
+    for (let k = 0; k < Math.min(concurrency, slices.length); k++) workers.push(worker())
+    await Promise.all(workers)
+    if (failed > 0) {
+      logger.warn({ field, failed }, "[import] частину порцій пошуку товарів не вдалося виконати")
+    }
   }
 
-  const dbProductsMap = new Map<string, any>()
-  for (const p of dbProducts) {
-    dbProductsMap.set(p.id, p)
-  }
+  if (skus.length > 0) await queryIn("sku", skus, 200, 6)          // ASCII-артикули
+  if (barcodes.length > 0) await queryIn("barcode", barcodes, 200, 6)
+  if (names.length > 0) await queryIn("name", names, 25, 8)        // кирилиця → дрібніше
+
   return Array.from(dbProductsMap.values())
 }
 
-function matchPreviewProduct(item: TemporaryItem, dbProductsList: any[], totalItemsCount: number): ParsedItem {
+function matchPreviewProduct(
+  item: TemporaryItem,
+  dbProductsList: any[],
+  idx: { bySku: Map<string, any>; byBarcode: Map<string, any>; byName: Map<string, any> },
+  totalItemsCount: number,
+): ParsedItem {
   let matchedProduct: any = null
   let matchQuality: 'exact' | 'fuzzy' | 'new' = 'new'
   const warnings: string[] = []
@@ -400,7 +413,7 @@ function matchPreviewProduct(item: TemporaryItem, dbProductsList: any[], totalIt
   // 1. Точний збіг по SKU
   if (item.sku) {
     const norm = normalizeArticle(item.sku)
-    matchedProduct = dbProductsList.find(p => p.sku === norm)
+    matchedProduct = idx.bySku.get(norm)
     if (matchedProduct) {
       matchQuality = 'exact'
     }
@@ -408,7 +421,7 @@ function matchPreviewProduct(item: TemporaryItem, dbProductsList: any[], totalIt
 
   // 2. Точний збіг по штрихкоду
   if (!matchedProduct && item.barcode) {
-    matchedProduct = dbProductsList.find(p => p.barcode === item.barcode)
+    matchedProduct = idx.byBarcode.get(item.barcode)
     if (matchedProduct) {
       matchQuality = 'exact'
       warnings.push("Збіг за штрихкодом")
@@ -418,7 +431,7 @@ function matchPreviewProduct(item: TemporaryItem, dbProductsList: any[], totalIt
   // 3. Точний збіг по назві
   if (!matchedProduct && item.name) {
     const trimmedName = item.name.trim().toLowerCase()
-    matchedProduct = dbProductsList.find(p => p.name.trim().toLowerCase() === trimmedName)
+    matchedProduct = idx.byName.get(trimmedName)
     if (matchedProduct) {
       matchQuality = 'fuzzy'
       warnings.push("Знайдено за назвою (артикул/штрихкод не збігається)")
@@ -499,7 +512,18 @@ export async function previewImport(input: PreviewImportInput, tenantId: string)
   const { temporaryItems, conflicts } = parseImportLines(lines, sep, startLine, mapping)
   const dbProductsList = await fetchDbProducts(temporaryItems, tenantId)
 
-  const items = temporaryItems.map(item => matchPreviewProduct(item, dbProductsList, temporaryItems.length))
+  // Індекси для O(1) пошуку (інакше на «всіх товарах» — квадратична складність)
+  const bySku = new Map<string, any>()
+  const byBarcode = new Map<string, any>()
+  const byName = new Map<string, any>()
+  for (const p of dbProductsList) {
+    if (p.sku) bySku.set(String(p.sku), p)
+    if (p.barcode) byBarcode.set(String(p.barcode), p)
+    if (p.name) byName.set(String(p.name).trim().toLowerCase(), p)
+  }
+  const idx = { bySku, byBarcode, byName }
+
+  const items = temporaryItems.map(item => matchPreviewProduct(item, dbProductsList, idx, temporaryItems.length))
 
   const toCreate = items.filter(i => !i.matched).length
   const toUpdate = items.filter(i => i.matched).length
