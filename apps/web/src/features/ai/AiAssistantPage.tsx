@@ -81,11 +81,18 @@ interface ChatEntry {
 const CHAT_STORAGE_KEY = 'forsage_ai_chat_v1'
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
-const MAX_ATTACHMENT_TEXT_CHARS = 950_000
+const MAX_AI_CHUNK_CHARS = 160_000
+const MAX_AI_CHUNK_ROWS = 250
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_IMAGES = 4
 const ALLOWED_ATTACHMENT_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.txt']
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
+
+interface TextAttachment {
+  name: string
+  parts: string[]
+  rowCount: number
+}
 
 function isImageFile(file: File): boolean {
   const name = file.name.toLowerCase()
@@ -113,6 +120,49 @@ async function fileToText(file: File): Promise<string> {
   }
   // csv / txt / інше — як текст
   return await file.text()
+}
+
+function splitAttachmentText(text: string): { parts: string[]; rowCount: number } {
+  const sheetBlocks = text.split(/(?=^# Лист:)/m).filter((block) => block.trim())
+  const parts: string[] = []
+  let rowCount = 0
+
+  for (const block of sheetBlocks.length > 0 ? sheetBlocks : [text]) {
+    const lines = block.split(/\r?\n/)
+    const headerIndex = lines.findIndex((line) => {
+      const normalized = line.toLocaleLowerCase('uk-UA')
+      return normalized.includes('номенклатур')
+        || normalized.includes('штрихкод')
+        || normalized.includes('артикул')
+        || normalized.includes('телефон')
+    })
+    const prefixEnd = headerIndex >= 0 ? headerIndex + 1 : Math.min(lines.length, 1)
+    const prefix = lines.slice(0, prefixEnd).join('\n')
+    const dataLines = lines.slice(prefixEnd).filter((line) => line.trim())
+    rowCount += dataLines.length
+
+    let batch: string[] = []
+    let batchChars = prefix.length
+    const flush = () => {
+      if (batch.length === 0) return
+      parts.push(`${prefix}\n${batch.join('\n')}`)
+      batch = []
+      batchChars = prefix.length
+    }
+
+    for (const line of dataLines) {
+      if (batch.length >= MAX_AI_CHUNK_ROWS || (batch.length > 0 && batchChars + line.length + 1 > MAX_AI_CHUNK_CHARS)) {
+        flush()
+      }
+      batch.push(line)
+      batchChars += line.length + 1
+    }
+    flush()
+
+    if (dataLines.length === 0 && block.trim()) parts.push(block)
+  }
+
+  return { parts: parts.length > 0 ? parts : [text], rowCount }
 }
 
 // ── Стиснення фото для відправки в Gemini (довша сторона ≤1800px, JPEG) ────────
@@ -158,7 +208,7 @@ export default function AiAssistantPage() {
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null)
+  const [attachment, setAttachment] = useState<TextAttachment | null>(null)
   const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
   const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
   const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>({})
@@ -170,6 +220,7 @@ export default function AiAssistantPage() {
   const [modalAction, setModalAction] = useState<AiPendingAction | null>(null)
   const [recognizedVin, setRecognizedVin] = useState('')
   const [recognizingVin, setRecognizingVin] = useState(false)
+  const [sendingProgress, setSendingProgress] = useState('')
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -232,11 +283,13 @@ export default function AiAssistantPage() {
         return
       }
       const text = await fileToText(file)
-      if (text.length > MAX_ATTACHMENT_TEXT_CHARS) {
-        throw new Error('У файлі забагато рядків для одного запиту. Розділіть Excel на частини приблизно по 1000 товарів.')
-      }
-      setAttachment({ name: file.name, text })
-      toast.success(`Файл «${file.name}» прикріплено`)
+      const { parts, rowCount } = splitAttachmentText(text)
+      setAttachment({ name: file.name, parts, rowCount })
+      toast.success(
+        parts.length > 1
+          ? `Файл «${file.name}» підготовлено: ${rowCount} рядків, ${parts.length} частин`
+          : `Файл «${file.name}» прикріплено`,
+      )
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати файл')
     }
@@ -257,7 +310,7 @@ export default function AiAssistantPage() {
       text: message + (attachmentNote ? `\n\n${attachmentNote}` : ''),
     }
     setEntries((prev) => [...prev, userEntry])
-    const fileText = attachment?.text
+    const fileParts = attachment?.parts ?? []
     const images = imageAttachments.length > 0 ? imageAttachments.map((img) => dataUrlToChatImage(img.dataUrl)) : undefined
     const fallbackPrompt = images
       ? 'Ось фото замовлення з зошита — додай замовлення в програму.'
@@ -268,13 +321,41 @@ export default function AiAssistantPage() {
     setSending(true)
 
     try {
-      const { data } = await aiApi.chat({ message: message || fallbackPrompt, history, file_text: fileText, images })
-      setEntries((prev) => [...prev, { role: 'model', text: data.reply, actions: data.actions, cost: data.usage.cost_usd }])
+      const responses = []
+      const partsToSend = fileParts.length > 0 ? fileParts : [undefined]
+      for (let index = 0; index < partsToSend.length; index += 1) {
+        if (partsToSend.length > 1) setSendingProgress(`Обробляю частину ${index + 1} із ${partsToSend.length}…`)
+        const partPrompt = partsToSend.length > 1
+          ? `${message || fallbackPrompt}\n\nЦе частина ${index + 1} з ${partsToSend.length}. Оброби всі рядки цієї частини, не пропускаючи товари.`
+          : message || fallbackPrompt
+        const response = await aiApi.chat({
+          message: partPrompt,
+          history: index === 0 ? history : undefined,
+          file_text: partsToSend[index],
+          images: index === 0 ? images : undefined,
+        })
+        responses.push(response.data)
+      }
+
+      const actions = responses.flatMap((response) => response.actions)
+      const cost = responses.reduce((sum, response) => sum + response.usage.cost_usd, 0)
+      const reply = responses.length > 1
+        ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`
+        : responses[0].reply
+      setEntries((prev) => [...prev, { role: 'model', text: reply, actions, cost }])
       // оновимо лічильник у шапці
-      setStatus((s) => s ? { ...s, usage: { ...s.usage, cost_usd: Number((s.usage.cost_usd + data.usage.cost_usd).toFixed(4)), requests: s.usage.requests + 1 } } : s)
+      setStatus((s) => s ? {
+        ...s,
+        usage: {
+          ...s.usage,
+          cost_usd: Number((s.usage.cost_usd + cost).toFixed(4)),
+          requests: s.usage.requests + responses.length,
+        },
+      } : s)
     } catch (e) {
       setEntries((prev) => [...prev, { role: 'model', text: '⚠️ ' + (e instanceof Error ? e.message : 'Помилка запиту') }])
     } finally {
+      setSendingProgress('')
       setSending(false)
     }
   }
@@ -565,8 +646,9 @@ export default function AiAssistantPage() {
 
           {sending && (
             <div className="flex justify-start">
-              <div className="bg-white border border-gray-100 rounded-2xl rounded-bl-sm px-4 py-2.5">
+              <div className="flex items-center gap-2 bg-white border border-gray-100 rounded-2xl rounded-bl-sm px-4 py-2.5">
                 <Loader2 size={16} className="text-gray-400 animate-spin" />
+                {sendingProgress && <span className="text-xs text-gray-500">{sendingProgress}</span>}
               </div>
             </div>
           )}
@@ -577,7 +659,10 @@ export default function AiAssistantPage() {
           {attachment && (
             <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-gray-50 rounded-lg text-xs">
               <Paperclip size={13} className="text-gray-400" />
-              <span className="flex-1 truncate text-gray-600">{attachment.name}</span>
+              <span className="flex-1 truncate text-gray-600">
+                {attachment.name}
+                {attachment.parts.length > 1 && ` · ${attachment.rowCount} рядків · ${attachment.parts.length} частин`}
+              </span>
               <button
                 type="button"
                 onClick={() => setAttachment(null)}
