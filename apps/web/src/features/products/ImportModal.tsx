@@ -71,6 +71,16 @@ type Step = 'source' | 'mapping' | 'preview' | 'success'
 
 const TEMPLATE_TSV = 'Артикул\tНазва\tЗакупівельнаЦіна\tРоздрібнаЦіна\tЗалишок\tШтрихкод\tКомірка\nW712\tФільтр оливний Mann\t220.00\t380.00\t15\t4011558737604\tA-12\nB005\tМасло моторне 5W-40\t450.00\t720.00\t8\t4047024367612\tB-03'
 
+const MAPPING_OPTIONS: Array<{ field: keyof ColumnMapping; label: string; required?: boolean }> = [
+  { field: 'sku', label: 'Артикул (SKU)' },
+  { field: 'name', label: 'Назва товару', required: true },
+  { field: 'price', label: 'Ціна закупівлі', required: true },
+  { field: 'retail_price', label: 'Роздрібна ціна' },
+  { field: 'qty', label: 'Залишок' },
+  { field: 'barcode', label: 'Штрихкод' },
+  { field: 'storage_bin', label: 'Комірка' },
+]
+
 export function ImportModal({ onClose, onImported }: Props) {
   // Загальний стан майстра
   const [step, setStep] = useState<Step>('source')
@@ -123,21 +133,28 @@ export function ImportModal({ onClose, onImported }: Props) {
     headers.forEach((h, index) => {
       const header = h.toLowerCase().trim()
       
-      if (/артикул|sku|article|код|арт/i.test(header) && newMapping.sku === null) {
+      if (/штрихкод|barcode|штрих.код|штрих/i.test(header) && newMapping.barcode === null) {
+        newMapping.barcode = index
+      } else if (
+        /артикул|sku|article|номенклатура[.\s]*код|^код$/i.test(header)
+        && newMapping.sku === null
+      ) {
         newMapping.sku = index
-      } else if (/назва|name|товар|product|наименование|описание/i.test(header) && newMapping.name === null) {
+      } else if (
+        /назва|name|товар|product|наименование|описание|номенклатур|ценовая группа|характеристика/i.test(header)
+        && !/родител|код/i.test(header)
+        && newMapping.name === null
+      ) {
         newMapping.name = index
-      } else if (/закупівельна|собівартість|purchase|buy.?price|цена.закупки/i.test(header) && newMapping.price === null) {
+      } else if (/закупівельна|собівартість|purchase|buy.?price|цена.закупки|закупоч|закупка/i.test(header) && newMapping.price === null) {
         newMapping.price = index
-      } else if (/ціна|роздріб|retail|ціна.роздр|цена.продажи|продаж/i.test(header) && newMapping.retail_price === null) {
+      } else if (/ціна|роздріб|retail|ціна.роздр|цена.продажи|продаж|рознич/i.test(header) && newMapping.retail_price === null) {
         // перевіримо чи це не закупка
-        if (!/закуп|собіварт/i.test(header)) {
+        if (!/закуп|собіварт|закупоч/i.test(header)) {
           newMapping.retail_price = index
         }
-      } else if (/залишок|stock|qty|quantity|к-сть|кол|кількість/i.test(header) && newMapping.qty === null) {
+      } else if (/залишок|остаток|stock|qty|quantity|к-сть|кол|кількість/i.test(header) && newMapping.qty === null) {
         newMapping.qty = index
-      } else if (/штрихкод|barcode|штрих.код|штрих/i.test(header) && newMapping.barcode === null) {
-        newMapping.barcode = index
       } else if (/комірка|cell|bin|storage|місце/i.test(header) && newMapping.storage_bin === null) {
         newMapping.storage_bin = index
       }
@@ -188,13 +205,23 @@ export function ImportModal({ onClose, onImported }: Props) {
       const buffer = await file.arrayBuffer()
       const wb = XLSX.read(buffer, { type: 'array' })
       const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' }) as string[][]
+      const allRows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '', raw: false }) as string[][]
       
-      if (rows.length === 0) {
+      if (allRows.length === 0) {
         toast.error('Файл Excel порожній')
         return
       }
 
+      // У звітах 1С перед таблицею часто є дата, валюта та порожні рядки.
+      // Знаходимо справжній рядок заголовків, щоб він одразу опинився над колонками.
+      const headerRowIndex = allRows.findIndex((row) => {
+        const cells = row.map((cell) => String(cell ?? '').toLowerCase())
+        const matches = cells.filter((cell) =>
+          /номенклатур|назва|наименование|артикул|штрих.?код|остаток|залишок|закупоч|рознич|роздріб/.test(cell),
+        ).length
+        return matches >= 2
+      })
+      const rows = headerRowIndex >= 0 ? allRows.slice(headerRowIndex) : allRows
       const tsv = rows.map((r) => r.map((c) => String(c ?? '')).join('\t')).join('\n')
       processRawText(tsv)
     } catch (e) {
@@ -341,7 +368,7 @@ export function ImportModal({ onClose, onImported }: Props) {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div className={`relative bg-white w-full shadow-2xl overflow-hidden flex flex-col transition-all duration-300
         rounded-t-2xl sm:rounded-2xl sm:mx-4
-        ${step === 'preview' ? 'sm:max-w-6xl h-[95vh] sm:h-[90vh]' : 'sm:max-w-3xl max-h-[95vh] sm:max-h-[85vh]'}
+        ${step === 'preview' || step === 'mapping' ? 'sm:max-w-7xl h-[95vh] sm:h-[92vh]' : 'sm:max-w-3xl max-h-[95vh] sm:max-h-[85vh]'}
       `}>
 
         {/* Хедер модального вікна */}
@@ -496,85 +523,61 @@ export function ImportModal({ onClose, onImported }: Props) {
               Система розпізнала перші рядки вашого файлу. Вкажіть, які саме колонки відповідають полям каталогу товарів.
             </div>
 
-            {/* Блок селекторів мапінгу */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {([
-                { field: 'sku' as keyof ColumnMapping, label: 'Артикул (SKU)', required: false, icon: '📋' },
-                { field: 'name' as keyof ColumnMapping, label: 'Назва товару', required: true, icon: '🏷️' },
-                { field: 'price' as keyof ColumnMapping, label: 'Ціна закупівлі', required: true, icon: '💰' },
-                { field: 'retail_price' as keyof ColumnMapping, label: 'Роздрібна ціна', required: false, icon: '🛒' },
-                { field: 'qty' as keyof ColumnMapping, label: 'Залишок (кількість)', required: false, icon: '📦' },
-                { field: 'barcode' as keyof ColumnMapping, label: 'Штрихкод', required: false, icon: '⚡' },
-                { field: 'storage_bin' as keyof ColumnMapping, label: 'Комірка зберігання', required: false, icon: '📍' },
-              ]).map((fieldItem) => {
-                const currentValue = mapping[fieldItem.field];
-                return (
-                  <div key={fieldItem.field} className="bg-gray-50 border border-gray-100 rounded-xl p-3 flex flex-col justify-between space-y-2">
-                    <label className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
-                      <span>{fieldItem.icon}</span>
-                      {fieldItem.label}
-                      {fieldItem.required && <span className="text-red-500 font-bold">*</span>}
-                    </label>
-                    <select
-                      value={currentValue !== null ? String(currentValue) : ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setMapping(prev => ({
-                          ...prev,
-                          [fieldItem.field]: val === '' ? null : parseInt(val)
-                        }));
-                      }}
-                      className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                    >
-                      <option value="">-- Не імпортувати --</option>
-                      {parsedRows[0]?.map((colName, index) => (
-                        <option key={index} value={index}>
-                          Колонка {index + 1}: {colName.slice(0, 30) || `(Без назви)`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Попередній перегляд таблиці */}
+            {/* Сопоставление прямо над колонками и полный просмотр файла */}
             <div className="space-y-2">
-              <h3 className="text-xs font-bold text-gray-800 uppercase tracking-wide">Перші 5 рядків для перевірки:</h3>
-              <div className="border border-gray-100 rounded-xl overflow-x-auto">
-                <table className="w-full text-xs text-left">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100 text-gray-500 font-semibold">
-                      {parsedRows[0]?.map((_, index) => {
-                        // Визначаємо яка це колонка в мапінгу
-                        const matchedFields: string[] = []
-                        Object.entries(mapping).forEach(([key, val]) => {
-                          if (val === index) matchedFields.push(key)
-                        })
-
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xs font-bold text-gray-800 uppercase tracking-wide">
+                  Товари у файлі: {Math.max(0, parsedRows.length - 1)}
+                </h3>
+                <span className="text-[11px] text-gray-400">Оберіть призначення над кожною колонкою</span>
+              </div>
+              <div className="max-h-[55vh] overflow-auto rounded-xl border border-gray-200 bg-white">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="sticky top-0 z-10 bg-gray-50 shadow-sm">
+                    <tr className="border-b border-gray-200">
+                      {parsedRows[0]?.map((colName, index) => {
+                        const selectedField = MAPPING_OPTIONS.find((option) => mapping[option.field] === index)?.field ?? ''
                         return (
-                          <th key={index} className="px-3 py-2 border-r border-gray-100 text-center min-w-[120px]">
-                            <div className="font-mono text-[10px] text-gray-400">Кол. {index + 1}</div>
-                            {matchedFields.length > 0 ? (
-                              <div className="mt-1 inline-block bg-yellow-100 text-yellow-800 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
-                                {matchedFields.join(', ')}
-                              </div>
-                            ) : (
-                              <div className="mt-1 inline-block bg-gray-200 text-gray-500 text-[10px] px-2 py-0.5 rounded-full uppercase">
-                                Пропущено
-                              </div>
-                            )}
+                          <th key={index} className="min-w-[180px] border-r border-gray-200 p-2 align-top">
+                            <div className="mb-2 min-h-8 text-[11px] font-semibold leading-tight text-gray-600">
+                              <span className="mr-1 font-mono text-[10px] text-gray-400">{index + 1}.</span>
+                              {colName || 'Без назви'}
+                            </div>
+                            <select
+                              value={selectedField}
+                              onChange={(e) => {
+                                const selected = e.target.value as keyof ColumnMapping | ''
+                                setMapping((previous) => {
+                                  const next = { ...previous }
+                                  MAPPING_OPTIONS.forEach((option) => {
+                                    if (next[option.field] === index) next[option.field] = null
+                                  })
+                                  if (selected) next[selected] = index
+                                  return next
+                                })
+                              }}
+                              className={`w-full rounded-lg border px-2 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-yellow-400 ${
+                                selectedField ? 'border-yellow-300 bg-yellow-50 text-yellow-900' : 'border-gray-200 bg-white text-gray-500'
+                              }`}
+                            >
+                              <option value="">Не імпортувати</option>
+                              {MAPPING_OPTIONS.map((option) => (
+                                <option key={option.field} value={option.field}>
+                                  {option.label}{option.required ? ' *' : ''}
+                                </option>
+                              ))}
+                            </select>
                           </th>
                         )
                       })}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {parsedRows.slice(0, 5).map((row, rIndex) => (
-                      <tr key={rIndex} className={rIndex === 0 ? 'bg-gray-50/30 italic text-gray-400' : 'hover:bg-gray-50/20'}>
-                        {row.map((cell, cIndex) => (
-                          <td key={cIndex} className="px-3 py-2 border-r border-gray-100 font-medium truncate max-w-[200px]">
-                            {cell}
+                  <tbody className="divide-y divide-gray-100">
+                    {parsedRows.slice(1).map((row, rowIndex) => (
+                      <tr key={rowIndex} className="hover:bg-yellow-50/30">
+                        {parsedRows[0]?.map((_, columnIndex) => (
+                          <td key={columnIndex} className="max-w-[280px] border-r border-gray-100 px-3 py-2 font-medium text-gray-700">
+                            <div className="whitespace-normal break-words">{row[columnIndex] ?? ''}</div>
                           </td>
                         ))}
                       </tr>
@@ -582,6 +585,12 @@ export function ImportModal({ onClose, onImported }: Props) {
                   </tbody>
                 </table>
               </div>
+              {(mapping.name === null || mapping.price === null) && (
+                <p className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
+                  <AlertCircle size={14} />
+                  Обов’язково вкажіть «Назва товару» та «Ціна закупівлі».
+                </p>
+              )}
             </div>
 
             {/* Кнопки навігації */}
