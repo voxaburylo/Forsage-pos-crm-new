@@ -62,7 +62,7 @@ export function CategorySidebar({
 
 
   return (
-    <div className="w-52 shrink-0 flex flex-col gap-4 overflow-y-auto pr-1">
+    <div className="w-52 max-h-[calc(100vh-5rem)] shrink-0 flex flex-col gap-4 overflow-y-auto pr-1">
 
       {/* Категорії */}
       <div>

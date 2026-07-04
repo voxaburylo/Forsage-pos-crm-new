@@ -22,6 +22,7 @@ interface Props { onClose: () => void; onImported: () => void }
 interface ColumnMapping {
   sku: number | null
   name: number | null
+  category: number | null
   qty: number | null
   price: number | null
   retail_price: number | null
@@ -33,6 +34,7 @@ interface PreviewItem {
   row: number
   sku: string
   name: string
+  category_name: string | null
   qty: number
   price: number
   retail_price: number | null
@@ -70,11 +72,12 @@ interface PreviewResponse {
 type Tab = 'file' | 'paste' | 'quick'
 type Step = 'source' | 'mapping' | 'preview' | 'success'
 
-const TEMPLATE_TSV = 'Артикул\tНазва\tЗакупівельнаЦіна\tРоздрібнаЦіна\tЗалишок\tШтрихкод\tКомірка\nW712\tФільтр оливний Mann\t220.00\t380.00\t15\t4011558737604\tA-12\nB005\tМасло моторне 5W-40\t450.00\t720.00\t8\t4047024367612\tB-03'
+const TEMPLATE_TSV = 'Артикул\tНазва\tКатегорія\tЗакупівельнаЦіна\tРоздрібнаЦіна\tЗалишок\tШтрихкод\tКомірка\nW712\tФільтр оливний Mann\tФільтри\t220.00\t380.00\t15\t4011558737604\tA-12\nB005\tМасло моторне 5W-40\tМастила\t450.00\t720.00\t8\t4047024367612\tB-03'
 
 const MAPPING_OPTIONS: Array<{ field: keyof ColumnMapping; label: string; required?: boolean }> = [
   { field: 'sku', label: 'Артикул (SKU)' },
   { field: 'name', label: 'Назва товару', required: true },
+  { field: 'category', label: 'Категорія / папка' },
   { field: 'price', label: 'Ціна закупівлі', required: true },
   { field: 'retail_price', label: 'Роздрібна ціна' },
   { field: 'qty', label: 'Залишок' },
@@ -98,6 +101,7 @@ export function ImportModal({ onClose, onImported }: Props) {
   const [mapping, setMapping] = useState<ColumnMapping>({
     sku: null,
     name: null,
+    category: null,
     qty: null,
     price: null,
     retail_price: null,
@@ -124,6 +128,7 @@ export function ImportModal({ onClose, onImported }: Props) {
     const newMapping: ColumnMapping = {
       sku: null,
       name: null,
+      category: null,
       qty: null,
       price: null,
       retail_price: null,
@@ -136,6 +141,11 @@ export function ImportModal({ onClose, onImported }: Props) {
       
       if (/штрихкод|barcode|штрих.код|штрих/i.test(header) && newMapping.barcode === null) {
         newMapping.barcode = index
+      } else if (
+        /номенклатура[.\s]*родител|родительская\s+номенклатура|батьківська\s+номенклатура|категор|папка|category/i.test(header)
+        && newMapping.category === null
+      ) {
+        newMapping.category = index
       } else if (
         /артикул|sku|article|номенклатура[.\s]*код|^код$/i.test(header)
         && newMapping.sku === null
@@ -328,6 +338,7 @@ export function ImportModal({ onClose, onImported }: Props) {
           row: item.row,
           sku: item.sku,
           name: item.name,
+          category_name: item.category_name,
           qty: item.qty,
           price: item.price,
           retail_price: item.retail_price,
@@ -724,7 +735,7 @@ export function ImportModal({ onClose, onImported }: Props) {
                               <th className="px-4 py-2 w-32 text-right">Закупка</th>
                               <th className="px-4 py-2 w-32 text-right">Роздріб (імпорт)</th>
                               <th className="px-4 py-2 w-28 text-right">Залишок</th>
-                              <th className="px-4 py-2 w-32">Комірка / Штрихкод</th>
+                              <th className="px-4 py-2 w-40">Категорія / комірка</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100">
@@ -751,6 +762,7 @@ export function ImportModal({ onClose, onImported }: Props) {
                                   </td>
                                   <td className="px-4 py-2.5 text-right text-gray-600 font-bold">+{item.qty} шт</td>
                                   <td className="px-4 py-2.5 text-xs text-gray-500">
+                                    {item.category_name && <div className="font-medium text-blue-700">📁 {item.category_name}</div>}
                                     {item.storage_bin && <div className="text-gray-800">📍 {item.storage_bin}</div>}
                                     {item.barcode && <div>⚡ {item.barcode}</div>}
                                   </td>

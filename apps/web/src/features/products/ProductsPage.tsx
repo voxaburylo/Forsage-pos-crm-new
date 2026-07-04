@@ -311,7 +311,7 @@ export default function ProductsPage() {
       <div className="flex gap-5 min-h-0">
 
         {/* ── Ліва колонка: категорії — тільки desktop ── */}
-        <div className="hidden md:block">
+        <div className="hidden md:block sticky top-16 self-start">
           <CategorySidebar
             categories={categories}
             activeCategory={categoryFilter}

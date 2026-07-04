@@ -3,6 +3,7 @@ import { z } from 'zod'
 export const columnMappingSchema = z.object({
   sku: z.number().int().min(0).optional().nullable(),
   name: z.number().int().min(0).optional().nullable(),
+  category: z.number().int().min(0).optional().nullable(),
   qty: z.number().int().min(0).optional().nullable(),
   price: z.number().int().min(0).optional().nullable(),
   retail_price: z.number().int().min(0).optional().nullable(),
@@ -25,6 +26,7 @@ export const parsedItemSchema = z.object({
   row:           z.number().int().positive(),
   sku:           z.string().optional().default(''),
   name:          z.string().min(1),
+  category_name: z.string().max(200).optional().nullable(),
   qty:           z.number().min(0),
   price:         z.number().int().min(0),
   retail_price:  z.number().int().min(0).optional().nullable(),

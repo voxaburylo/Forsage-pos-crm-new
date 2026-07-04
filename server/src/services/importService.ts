@@ -180,6 +180,7 @@ export async function parseClipboardText(input: ParseImportInput, tenantId: stri
     retail_price: null,
     barcode: null,
     storage_bin: null,
+    category_name: null,
   }))
 
   const dbProductsList = await fetchDbProducts(tempItems, tenantId)
@@ -233,6 +234,7 @@ interface TemporaryItem {
   retail_price: number | null
   barcode:      string | null
   storage_bin:  string | null
+  category_name: string | null
   warnings?:    string[]      // напр. «ціну не розпізнано — оновіть після імпорту»
   price_review?: boolean      // true, якщо ціну не вдалося розпізнати (товар «під питанням»)
 }
@@ -347,6 +349,9 @@ function parseImportLines(
 
     const barcode = mapping.barcode !== null && mapping.barcode !== undefined ? (parts[mapping.barcode] ?? "").trim() : null
     const storage_bin = mapping.storage_bin !== null && mapping.storage_bin !== undefined ? (parts[mapping.storage_bin] ?? "").trim() : null
+    const category_name = mapping.category !== null && mapping.category !== undefined
+      ? (parts[mapping.category] ?? "").trim().slice(0, 200) || null
+      : null
 
     temporaryItems.push({
       row: rowNum,
@@ -357,6 +362,7 @@ function parseImportLines(
       retail_price,
       barcode,
       storage_bin,
+      category_name,
       warnings: itemWarnings.length ? itemWarnings : undefined,
       price_review: priceReview || undefined,
     })
@@ -485,6 +491,7 @@ function matchPreviewProduct(
       retail_price:  item.retail_price || null,
       barcode:       item.barcode || matchedProduct.barcode || null,
       storage_bin:   item.storage_bin || matchedProduct.storage_bin || null,
+      category_name: item.category_name,
       matched:       true,
       product_id:    matchedProduct.id,
       match_quality: matchQuality,
@@ -504,6 +511,7 @@ function matchPreviewProduct(
       retail_price:  item.retail_price || null,
       barcode:       item.barcode || null,
       storage_bin:   item.storage_bin || null,
+      category_name: item.category_name,
       matched:       false,
       product_id:    null,
       match_quality: 'new',
@@ -561,7 +569,54 @@ async function getCalculatedRetailPrice(purchasePrice: number, tenantId: string)
   return applyMarkup(purchasePrice, rules, 30)
 }
 
+function normalizeCategoryName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('uk-UA')
+}
+
+async function resolveImportCategories(items: ParsedItem[], tenantId: string): Promise<Map<string, string>> {
+  const requested = new Map<string, string>()
+  for (const item of items) {
+    const name = item.category_name?.trim().replace(/\s+/g, ' ')
+    if (name) requested.set(normalizeCategoryName(name), name)
+  }
+  if (requested.size === 0) return new Map()
+
+  const { data: existing, error: fetchError } = await db
+    .from('categories')
+    .select('id, name')
+    .eq('tenant_id', tenantId)
+  if (fetchError) throw new AppError('DB_ERROR', 'Не вдалося завантажити категорії: ' + fetchError.message, 500)
+
+  const categoryMap = new Map<string, string>()
+  for (const category of existing ?? []) {
+    categoryMap.set(normalizeCategoryName(category.name), category.id)
+  }
+
+  const missing = [...requested.entries()]
+    .filter(([key]) => !categoryMap.has(key))
+    .map(([, name]) => ({ tenant_id: tenantId, name, sort_order: 0 }))
+
+  if (missing.length > 0) {
+    const { data: created, error: createError } = await db
+      .from('categories')
+      .insert(missing)
+      .select('id, name')
+    if (createError) {
+      throw new AppError('DB_ERROR', 'Не вдалося створити категорії з файлу: ' + createError.message, 500)
+    }
+    for (const category of created ?? []) {
+      categoryMap.set(normalizeCategoryName(category.name), category.id)
+    }
+  }
+
+  return categoryMap
+}
+
 export async function confirmImport(input: ConfirmImportInput, userId: string, tenantId: string) {
+  const categoryMap = await resolveImportCategories(input.items, tenantId)
+  const categoryIdFor = (item: ParsedItem) =>
+    item.category_name ? categoryMap.get(normalizeCategoryName(item.category_name)) ?? null : null
+
   // ЯКЩО ВКАЗАНО ПОСТАЧАЛЬНИКА -> Створюємо прихідну накладну (стара поведінка)
   if (input.supplier_id) {
     const invoiceItems = []
@@ -586,6 +641,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
             tenant_id:      tenantId,
             barcode:        item.barcode || null,
             storage_bin:    item.storage_bin || null,
+            category_id:    categoryIdFor(item),
           })
           .select('id').single()
 
@@ -601,6 +657,18 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
           'Товар "' + item.name + '" (рядок ' + item.row + ') не знайдено. Пропустіть або увімкніть "Створити нові товари".',
           400,
         )
+      }
+
+      const categoryId = categoryIdFor(item)
+      if (categoryId && item.product_id) {
+        const { error: categoryError } = await db
+          .from('products')
+          .update({ category_id: categoryId })
+          .eq('id', productId)
+          .eq('tenant_id', tenantId)
+        if (categoryError) {
+          throw new AppError('DB_ERROR', 'Не вдалося призначити категорію товару "' + item.name + '"', 500)
+        }
       }
 
       invoiceItems.push({
@@ -643,6 +711,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
       qty_on_hand: i.qty,
       unit: 'шт',
       storage_bin: i.storage_bin ?? null,
+      category_id: categoryIdFor(i),
     }
   })
 
