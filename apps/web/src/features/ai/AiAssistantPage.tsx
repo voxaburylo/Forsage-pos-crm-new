@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import * as XLSX from 'xlsx'
 import {
   Sparkles, Send, Paperclip, X, Check, Loader2, AlertTriangle, Settings as SettingsIcon, Eye, Trash2,
 } from 'lucide-react'
@@ -12,6 +11,7 @@ import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatIm
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
+import { parseProductsWorkbook, type ExcelImportProduct } from './excelProductImport'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
 function ChangesTable({ changes }: { changes: AiActionChange[] }) {
@@ -92,6 +92,9 @@ interface TextAttachment {
   name: string
   parts: string[]
   rowCount: number
+  products?: ExcelImportProduct[]
+  skippedRows?: number
+  categoryCount?: number
 }
 
 function isImageFile(file: File): boolean {
@@ -100,7 +103,7 @@ function isImageFile(file: File): boolean {
 }
 
 // ── Читання прикріпленого файлу у текст (Excel/CSV/текст) ──────────────────────
-async function fileToText(file: File): Promise<string> {
+async function fileToText(file: File): Promise<{ text: string; directImport?: Omit<TextAttachment, 'name' | 'parts' | 'rowCount'> }> {
   const name = file.name.toLowerCase()
   if (!ALLOWED_ATTACHMENT_EXTENSIONS.some((ext) => name.endsWith(ext))) {
     throw new Error('Підтримуються Excel, CSV, TXT та фото (JPG/PNG/WebP)')
@@ -110,16 +113,18 @@ async function fileToText(file: File): Promise<string> {
   }
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
     const buf = await file.arrayBuffer()
-    const wb = XLSX.read(buf, { type: 'array' })
-    const parts: string[] = []
-    for (const sheetName of wb.SheetNames) {
-      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[sheetName])
-      parts.push(`# Лист: ${sheetName}\n${csv}`)
+    const parsed = parseProductsWorkbook(buf)
+    return {
+      text: parsed.text,
+      directImport: parsed.products.length > 0 ? {
+        products: parsed.products,
+        skippedRows: parsed.skippedRows,
+        categoryCount: parsed.categoryCount,
+      } : undefined,
     }
-    return parts.join('\n\n')
   }
   // csv / txt / інше — як текст
-  return await file.text()
+  return { text: await file.text() }
 }
 
 function splitAttachmentText(text: string): { parts: string[]; rowCount: number } {
@@ -163,6 +168,40 @@ function splitAttachmentText(text: string): { parts: string[]; rowCount: number 
   }
 
   return { parts: parts.length > 0 ? parts : [text], rowCount }
+}
+
+function buildExcelImportActions(products: ExcelImportProduct[]): AiPendingAction[] {
+  const batchSize = 500
+  const totalBatches = Math.ceil(products.length / batchSize)
+  const actionSeed = Date.now()
+  const actions: AiPendingAction[] = []
+
+  for (let offset = 0; offset < products.length; offset += batchSize) {
+    const batch = products.slice(offset, offset + batchSize)
+    const batchNumber = Math.floor(offset / batchSize) + 1
+    actions.push({
+      id: `excel-products-${actionSeed}-${batchNumber}`,
+      tool: 'create_products_bulk',
+      title: totalBatches > 1
+        ? `Додати товари з Excel — частина ${batchNumber} із ${totalBatches}`
+        : 'Додати товари з Excel',
+      changes: [],
+      count: batch.length,
+      columns: ['Артикул', 'Назва', 'Папка', 'Штрихкод', 'Залишок', 'Закупка', 'Роздріб'],
+      items: batch.map((product) => ({
+        'Артикул': product.sku,
+        'Назва': product.name,
+        'Папка': product.category_name ?? '—',
+        'Штрихкод': product.barcode ?? '—',
+        'Залишок': String(product.qty_on_hand),
+        'Закупка': product.purchase_price_uah !== undefined ? `${product.purchase_price_uah.toFixed(2)} грн` : '—',
+        'Роздріб': product.retail_price_uah !== undefined ? `${product.retail_price_uah.toFixed(2)} грн` : '—',
+      })),
+      payload: { products: batch },
+    })
+  }
+
+  return actions
 }
 
 // ── Стиснення фото для відправки в Gemini (довша сторона ≤1800px, JPEG) ────────
@@ -282,14 +321,20 @@ export default function AiAssistantPage() {
         toast.success(`Фото «${file.name}» прикріплено`)
         return
       }
-      const text = await fileToText(file)
+      const { text, directImport } = await fileToText(file)
       const { parts, rowCount } = splitAttachmentText(text)
-      setAttachment({ name: file.name, parts, rowCount })
-      toast.success(
-        parts.length > 1
-          ? `Файл «${file.name}» підготовлено: ${rowCount} рядків, ${parts.length} частин`
-          : `Файл «${file.name}» прикріплено`,
-      )
+      setAttachment({ name: file.name, parts, rowCount, ...directImport })
+      if (directImport?.products?.length) {
+        toast.success(
+          `Розпізнано ${directImport.products.length} товарів і ${directImport.categoryCount ?? 0} папок`,
+        )
+      } else {
+        toast.success(
+          parts.length > 1
+            ? `Файл «${file.name}» підготовлено: ${rowCount} рядків, ${parts.length} частин`
+            : `Файл «${file.name}» прикріплено`,
+        )
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати файл')
     }
@@ -314,8 +359,23 @@ export default function AiAssistantPage() {
     const images = imageAttachments.length > 0 ? imageAttachments.map((img) => dataUrlToChatImage(img.dataUrl)) : undefined
     const fallbackPrompt = images
       ? 'Ось фото замовлення з зошита — додай замовлення в програму.'
-      : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Російські назви товарів і папок переклади українською.'
+      : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Назви товарів і папок не перекладай та не виправляй.'
     setInput('')
+
+    if (attachment?.products?.length) {
+      const actions = buildExcelImportActions(attachment.products)
+      const skippedText = attachment.skippedRows
+        ? ` ${attachment.skippedRows} непорожніх рядків без назви пропущено.`
+        : ''
+      setEntries((prev) => [...prev, {
+        role: 'model',
+        text: `Excel розпізнано без AI: ${attachment.products!.length} товарів, ${attachment.categoryCount ?? 0} папок. Назви залишено як у файлі.${skippedText} Перевірте таблицю та підтвердьте додавання.`,
+        actions,
+      }])
+      setAttachment(null)
+      return
+    }
+
     setSending(true)
 
     try {
@@ -683,7 +743,9 @@ export default function AiAssistantPage() {
               <Paperclip size={13} className="text-gray-400" />
               <span className="flex-1 truncate text-gray-600">
                 {attachment.name}
-                {attachment.parts.length > 1 && ` · ${attachment.rowCount} рядків · ${attachment.parts.length} частин`}
+                {attachment.products?.length
+                  ? ` · ${attachment.products.length} товарів · ${attachment.categoryCount ?? 0} папок`
+                  : attachment.parts.length > 1 && ` · ${attachment.rowCount} рядків · ${attachment.parts.length} частин`}
               </span>
               <button
                 type="button"
