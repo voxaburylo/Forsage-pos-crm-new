@@ -803,7 +803,7 @@ export default function OrderFormPage() {
 
   return (
     <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
-      <div className={`mx-auto max-w-4xl space-y-6 transition-[margin] lg:max-w-[1400px] ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
+      <div className={`mx-auto max-w-4xl space-y-6 transition-[margin] lg:max-w-none ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
         
         {/* Step Indicator — лише в покроковому (мобільному) режимі */}
         {!isDesktop && (
@@ -1281,17 +1281,17 @@ export default function OrderFormPage() {
               </div>
 
               <div className="overflow-x-auto hidden md:block">
-                <table className="w-full min-w-[1080px] table-fixed text-left border-collapse text-sm">
+                <table className="w-full min-w-[1000px] table-fixed text-left border-collapse text-sm">
                   <thead>
                     <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
-                      <th className="px-3 py-3 w-10 text-center">#</th>
-                      <th className="px-3 py-3 w-[32%]">Назва запчастини</th>
-                      <th className="px-3 py-3 w-36">Артикул / SKU</th>
-                      <th className="px-3 py-3 w-24">К-сть</th>
-                      <th className="px-3 py-3 w-28">Ціна (грн)</th>
-                      <th className="px-3 py-3 w-28">Закупка (грн)</th>
-                      <th className="px-3 py-3 w-44">Постачальник</th>
-                      <th className="px-3 py-3 w-10 text-center"></th>
+                      <th className="px-3 py-3 w-[4%] text-center">#</th>
+                      <th className="px-3 py-3 w-[28%]">Назва запчастини</th>
+                      <th className="px-3 py-3 w-[15%]">Артикул / SKU</th>
+                      <th className="px-3 py-3 w-[8%]">К-сть</th>
+                      <th className="px-3 py-3 w-[12%]">Ціна (грн)</th>
+                      <th className="px-3 py-3 w-[12%]">Закупка (грн)</th>
+                      <th className="px-3 py-3 w-[17%]">Постачальник</th>
+                      <th className="px-3 py-3 w-[4%] text-center"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
