@@ -5,14 +5,56 @@ import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
 import '@/stores/authStore'
 
+const CHUNK_RELOAD_KEY = 'forsage_chunk_reload_at'
+
+function ChunkLoadError() {
+  async function recover() {
+    try {
+      sessionStorage.removeItem(CHUNK_RELOAD_KEY)
+      const registrations = await navigator.serviceWorker?.getRegistrations()
+      await Promise.all((registrations ?? []).map((registration) => registration.unregister()))
+      const cacheNames = await caches?.keys()
+      await Promise.all((cacheNames ?? []).map((name) => caches.delete(name)))
+    } catch {
+      // Навіть якщо очищення PWA-кешу недоступне, звичайне оновлення ще може допомогти.
+    }
+    window.location.reload()
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gray-100 p-6">
+      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
+        <h1 className="text-lg font-bold text-gray-900">Потрібно завершити оновлення</h1>
+        <p className="mt-2 text-sm text-gray-500">
+          Браузер зберіг стару версію одного з файлів програми. Дані магазину не пошкоджені.
+        </p>
+        <button
+          type="button"
+          onClick={recover}
+          className="mt-5 rounded-xl bg-yellow-400 px-5 py-2.5 text-sm font-bold text-black hover:bg-yellow-300"
+        >
+          Очистити кеш і відкрити програму
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function lazyWithRetry(componentImport: () => Promise<any>) {
   return lazy(async () => {
     try {
-      return await componentImport()
+      const component = await componentImport()
+      sessionStorage.removeItem(CHUNK_RELOAD_KEY)
+      return component
     } catch (error) {
-      console.error('Failed to load chunk, reloading page...', error)
-      window.location.reload()
-      return new Promise(() => {}) // Keep loader active during reload
+      console.error('Failed to load application chunk', error)
+      const lastReload = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) ?? 0)
+      if (!lastReload || Date.now() - lastReload > 60_000) {
+        sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()))
+        window.location.reload()
+        return new Promise(() => {}) // Тримаємо loader лише під час єдиної спроби reload.
+      }
+      return { default: ChunkLoadError }
     }
   })
 }
