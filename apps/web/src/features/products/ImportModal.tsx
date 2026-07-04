@@ -42,6 +42,7 @@ interface PreviewItem {
   product_id: string | null
   match_quality?: 'exact' | 'fuzzy' | 'new'
   warnings: string[]
+  price_review?: boolean  // ціну не розпізнано — товар додано з 0, треба оновити
   old_price?: number | null
   old_qty?: number | null
   old_retail_price?: number | null
@@ -730,11 +731,19 @@ export function ImportModal({ onClose, onImported }: Props) {
                             {previewData.items
                               .filter((i) => !i.matched)
                               .map((item) => (
-                                <tr key={item.row} className="hover:bg-gray-50/50">
+                                <tr key={item.row} className={item.price_review ? 'bg-amber-50' : 'hover:bg-gray-50/50'}>
                                   <td className="px-4 py-2.5 text-center text-gray-400 font-mono">{item.row}</td>
                                   <td className="px-4 py-2.5 font-mono text-gray-800 font-semibold">{item.sku || '(Буде згенеровано)'}</td>
-                                  <td className="px-4 py-2.5 font-medium text-gray-900">{item.name}</td>
-                                  <td className="px-4 py-2.5 text-right font-semibold text-gray-800">
+                                  <td className="px-4 py-2.5 font-medium text-gray-900">
+                                    {item.name}
+                                    {item.price_review && (
+                                      <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded"
+                                        title="Ціну не розпізнано у файлі — товар додається з ціною 0, оновіть її після імпорту">
+                                        ⚠ оновіть ціну
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className={`px-4 py-2.5 text-right font-semibold ${item.price_review ? 'text-amber-600' : 'text-gray-800'}`}>
                                     {(item.price / 100).toFixed(2)} грн
                                   </td>
                                   <td className="px-4 py-2.5 text-right font-semibold text-blue-600">
@@ -891,6 +900,11 @@ export function ImportModal({ onClose, onImported }: Props) {
                     <span className="text-yellow-600 font-bold ml-1">{previewData.summary.toUpdate}</span> до оновлення.
                     {previewData.summary.conflicts > 0 && (
                       <span className="text-red-500 font-bold ml-1">{previewData.summary.conflicts} буде пропущено.</span>
+                    )}
+                    {previewData.items.filter((i) => i.price_review).length > 0 && (
+                      <span className="text-amber-600 font-bold ml-1">
+                        ⚠ {previewData.items.filter((i) => i.price_review).length} — без ціни (додасться з 0, оновіть згодом).
+                      </span>
                     )}
                   </div>
                   <button

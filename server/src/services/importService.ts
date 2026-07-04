@@ -233,6 +233,8 @@ interface TemporaryItem {
   retail_price: number | null
   barcode:      string | null
   storage_bin:  string | null
+  warnings?:    string[]      // напр. «ціну не розпізнано — оновіть після імпорту»
+  price_review?: boolean      // true, якщо ціну не вдалося розпізнати (товар «під питанням»)
 }
 
 function detectDelimiter(firstLine: string): string {
@@ -279,32 +281,43 @@ function parseImportLines(
     const parts = lines[i].split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ""))
     const rowNum = i + 1
 
-    // Отримуємо назву
+    // Отримуємо назву (єдина справді обов'язкова умова — без назви товар не має сенсу)
     const name = mapping.name !== null && mapping.name !== undefined ? (parts[mapping.name] ?? "").trim() : ""
     if (!name) {
       conflicts.push({ row: rowNum, reason: "Відсутня назва товару" })
       continue
     }
 
-    // Отримуємо ціну
-    const rawPrice = mapping.price !== null && mapping.price !== undefined ? parts[mapping.price] ?? "" : ""
-    const priceHryvnia = parseFloat(rawPrice.replace(/,/g, ".").replace(/[^\d.]/g, ""))
-    if (isNaN(priceHryvnia) || priceHryvnia < 0) {
-      conflicts.push({ row: rowNum, name, reason: "Некоректна ціна закупівлі: \"" + rawPrice + "\"" })
-      continue
-    }
-    const price = Math.round(priceHryvnia * 100)
+    const itemWarnings: string[] = []
 
-    // Отримуємо кількість
-    let qty = 1
+    // Ціна закупівлі: якщо порожня/не число — НЕ пропускаємо рядок, а ставимо 0
+    // і позначаємо товар «під питанням» (потрібно оновити ціну після імпорту).
+    const rawPrice = mapping.price !== null && mapping.price !== undefined ? (parts[mapping.price] ?? "") : ""
+    const priceHryvnia = parseFloat(rawPrice.replace(/,/g, ".").replace(/[^\d.]/g, ""))
+    let price = 0
+    let priceReview = false
+    if (isNaN(priceHryvnia) || priceHryvnia < 0) {
+      price = 0
+      priceReview = true
+      itemWarnings.push(
+        rawPrice.trim()
+          ? 'Ціну не розпізнано ("' + rawPrice.trim() + '") — додано з ціною 0, потрібно оновити'
+          : 'Ціна відсутня — додано з ціною 0, потрібно оновити'
+      )
+    } else {
+      price = Math.round(priceHryvnia * 100)
+    }
+
+    // Кількість (залишок): порожня/не число — просто 0, без пропуску рядка
+    let qty = 1 // якщо колонку залишку не призначено
     if (mapping.qty !== null && mapping.qty !== undefined) {
-      const rawQty = parts[mapping.qty] ?? ""
-      const parsedQty = parseFloat(rawQty.replace(/,/g, ".").replace(/[^\d.]/g, ""))
-      if (isNaN(parsedQty) || parsedQty < 0) {
-        conflicts.push({ row: rowNum, name, reason: "Некоректна кількість: \"" + rawQty + "\"" })
-        continue
+      const rawQty = (parts[mapping.qty] ?? "").trim()
+      if (!rawQty) {
+        qty = 0
+      } else {
+        const parsedQty = parseFloat(rawQty.replace(/,/g, ".").replace(/[^\d.]/g, ""))
+        qty = (isNaN(parsedQty) || parsedQty < 0) ? 0 : parsedQty
       }
-      qty = parsedQty
     }
 
     // Отримуємо роздрібну ціну
@@ -344,6 +357,8 @@ function parseImportLines(
       retail_price,
       barcode,
       storage_bin,
+      warnings: itemWarnings.length ? itemWarnings : undefined,
+      price_review: priceReview || undefined,
     })
   }
 
@@ -408,7 +423,7 @@ function matchPreviewProduct(
 ): ParsedItem {
   let matchedProduct: any = null
   let matchQuality: 'exact' | 'fuzzy' | 'new' = 'new'
-  const warnings: string[] = []
+  const warnings: string[] = [...(item.warnings ?? [])] // напр. «оновіть ціну»
 
   // 1. Точний збіг по SKU
   if (item.sku) {
@@ -474,6 +489,7 @@ function matchPreviewProduct(
       product_id:    matchedProduct.id,
       match_quality: matchQuality,
       warnings,
+      price_review:  item.price_review || false,
       old_price:        matchedProduct.purchase_price,
       old_qty:          matchedProduct.qty_on_hand,
       old_retail_price: matchedProduct.retail_price,
@@ -491,8 +507,9 @@ function matchPreviewProduct(
       matched:       false,
       product_id:    null,
       match_quality: 'new',
-      warnings:      ["Новий товар (не знайдено в базі даних)"],
-    }
+      warnings:      [...warnings, "Новий товар (не знайдено в базі даних)"],
+      price_review:  item.price_review || false,
+    } as any
   }
 }
 
@@ -607,25 +624,25 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
   const skus = input.items.map((i) => normalizeArticle(i.sku)).filter(Boolean)
   const barcodes = input.items.map((i) => i.barcode).filter(Boolean) as string[]
 
+  // Пошук наявних товарів — порційно (той самий клас бага, що й у прев'ю:
+  // тисячі значень в одному .in(...) ламають URL PostgREST). Порція, що впала,
+  // не валить увесь імпорт.
   let existingProducts: any[] = []
-  if (productIds.length > 0 || skus.length > 0 || barcodes.length > 0) {
-    const promises = []
-    if (productIds.length > 0) {
-      promises.push(db.from('products').select('id, sku, barcode, retail_price').eq('tenant_id', tenantId).in('id', productIds))
-    }
-    if (skus.length > 0) {
-      promises.push(db.from('products').select('id, sku, barcode, retail_price').eq('tenant_id', tenantId).in('sku', skus))
-    }
-    if (barcodes.length > 0) {
-      promises.push(db.from('products').select('id, sku, barcode, retail_price').eq('tenant_id', tenantId).in('barcode', barcodes))
-    }
-    const results = await Promise.all(promises)
-    for (const r of results) {
-      if (r.data) {
-        existingProducts = existingProducts.concat(r.data)
-      }
+  const collectIn = async (field: string, values: string[], chunkSize: number) => {
+    for (let i = 0; i < values.length; i += chunkSize) {
+      const slice = values.slice(i, i + chunkSize)
+      try {
+        const { data } = await db.from('products')
+          .select('id, sku, barcode, retail_price')
+          .eq('tenant_id', tenantId)
+          .in(field, slice)
+        if (data) existingProducts = existingProducts.concat(data)
+      } catch { /* ігноруємо збій порції — RPC все одно робить власний матчинг */ }
     }
   }
+  if (productIds.length > 0) await collectIn('id', productIds, 200)
+  if (skus.length > 0) await collectIn('sku', skus, 200)
+  if (barcodes.length > 0) await collectIn('barcode', barcodes, 200)
 
   const existingMap = new Map<string, any>()
   for (const p of existingProducts) {
