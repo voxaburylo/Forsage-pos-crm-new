@@ -79,7 +79,7 @@ export const aiApi = {
     api.post<{ data: { ok: boolean } }>('/api/v1/ai/test', body ?? {}),
 
   chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }) =>
-    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', body, undefined, { timeoutMs: 180000 }),
+    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', body, undefined, { timeoutMs: 600000, silent: true }),
 
   applyAction: (body: { tool: string; payload: Record<string, any> }) =>
     api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),

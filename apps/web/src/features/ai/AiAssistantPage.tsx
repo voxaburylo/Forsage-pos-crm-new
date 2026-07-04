@@ -82,7 +82,7 @@ const CHAT_STORAGE_KEY = 'forsage_ai_chat_v1'
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 const MAX_AI_CHUNK_CHARS = 160_000
-const MAX_AI_CHUNK_ROWS = 250
+const MAX_AI_CHUNK_ROWS = 100
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_IMAGES = 4
 const ALLOWED_ATTACHMENT_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.txt']
@@ -316,33 +316,55 @@ export default function AiAssistantPage() {
       ? 'Ось фото замовлення з зошита — додай замовлення в програму.'
       : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Російські назви товарів і папок переклади українською.'
     setInput('')
-    setAttachment(null)
-    setImageAttachments([])
     setSending(true)
 
     try {
       const responses = []
       const partsToSend = fileParts.length > 0 ? fileParts : [undefined]
+      let failedAt = -1
+      let failureMessage = ''
       for (let index = 0; index < partsToSend.length; index += 1) {
         if (partsToSend.length > 1) setSendingProgress(`Обробляю частину ${index + 1} із ${partsToSend.length}…`)
         const partPrompt = partsToSend.length > 1
           ? `${message || fallbackPrompt}\n\nЦе частина ${index + 1} з ${partsToSend.length}. Оброби всі рядки цієї частини, не пропускаючи товари.`
           : message || fallbackPrompt
-        const response = await aiApi.chat({
-          message: partPrompt,
-          history: index === 0 ? history : undefined,
-          file_text: partsToSend[index],
-          images: index === 0 ? images : undefined,
-        })
-        responses.push(response.data)
+        try {
+          const response = await aiApi.chat({
+            message: partPrompt,
+            history: index === 0 ? history : undefined,
+            file_text: partsToSend[index],
+            images: index === 0 ? images : undefined,
+          })
+          responses.push(response.data)
+        } catch (error) {
+          failedAt = index
+          failureMessage = error instanceof Error ? error.message : 'Помилка запиту'
+          break
+        }
       }
+
+      if (responses.length === 0 && failedAt >= 0) throw new Error(failureMessage)
 
       const actions = responses.flatMap((response) => response.actions)
       const cost = responses.reduce((sum, response) => sum + response.usage.cost_usd, 0)
-      const reply = responses.length > 1
-        ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`
-        : responses[0].reply
+      const completedAllParts = failedAt < 0
+      const reply = completedAllParts
+        ? responses.length > 1
+          ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`
+          : responses[0].reply
+        : `Оброблено ${responses.length} із ${partsToSend.length} частин. Готові товари збережено нижче. Частина ${failedAt + 1} не відповіла вчасно; решта файлу залишилася прикріпленою — натисніть «Надіслати» ще раз, щоб продовжити без повторної обробки готових частин.`
       setEntries((prev) => [...prev, { role: 'model', text: reply, actions, cost }])
+      if (completedAllParts) {
+        setAttachment(null)
+      } else if (attachment) {
+        const remainingParts = attachment.parts.slice(failedAt)
+        setAttachment({
+          name: `${attachment.name} (продовження)`,
+          parts: remainingParts,
+          rowCount: Math.min(attachment.rowCount, remainingParts.length * MAX_AI_CHUNK_ROWS),
+        })
+      }
+      setImageAttachments([])
       // оновимо лічильник у шапці
       setStatus((s) => s ? {
         ...s,

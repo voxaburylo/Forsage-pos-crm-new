@@ -50,7 +50,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
   } catch (networkErr) {
     const aborted = (networkErr as any)?.name === 'AbortError'
     const msg = aborted
-      ? 'Сервер не відповів вчасно. Перевірте, чи продаж пройшов, перш ніж повторювати.'
+      ? 'Сервер не відповів вчасно. Перевірте результат операції перед повторенням.'
       : 'Сервер недоступний. Перевірте підключення до мережі.'
     if (!silent) {
       import('@/components/ui/Toast').then(({ toast }) => toast.error(msg))
