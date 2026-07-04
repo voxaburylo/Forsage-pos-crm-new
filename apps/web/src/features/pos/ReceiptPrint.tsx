@@ -22,6 +22,7 @@ const PAY_LABEL: Record<string, string> = {
 }
 
 export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
+  const isOfflineReceipt = sale.sale_number.startsWith('OFF-')
   const qrLink = `${window.location.origin}/sales?search=${encodeURIComponent(sale.sale_number)}`
   const qr = qrSvg(qrLink)
   return createPortal(
@@ -124,11 +125,18 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
       <hr className="rp-thin" />
 
       {/* QR — швидке відкриття чека */}
-      <div className="rp-center" style={{ marginTop: '2mm' }}>
-        <div style={{ display: 'inline-block', width: '22mm', height: '22mm' }}
-          dangerouslySetInnerHTML={{ __html: qr }} />
-        <div className="rp-small">Скануйте, щоб відкрити чек</div>
-      </div>
+      {isOfflineReceipt ? (
+        <div className="rp-center rp-small" style={{ marginTop: '2mm' }}>
+          НЕФІСКАЛЬНИЙ ОФЛАЙН-ЧЕК<br />
+          Буде передано в систему після відновлення зв’язку
+        </div>
+      ) : (
+        <div className="rp-center" style={{ marginTop: '2mm' }}>
+          <div style={{ display: 'inline-block', width: '22mm', height: '22mm' }}
+            dangerouslySetInnerHTML={{ __html: qr }} />
+          <div className="rp-small">Скануйте, щоб відкрити чек</div>
+        </div>
+      )}
 
       {/* Нижній колонтитул */}
       <div className="rp-thanks">

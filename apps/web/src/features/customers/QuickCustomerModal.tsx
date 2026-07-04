@@ -3,9 +3,12 @@ import { customerApi } from './customerApi'
 import type { Customer } from '@/types/customer'
 import { Modal, Button, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { searchCustomersOffline } from '@/lib/offlineDB'
+import { useAuthStore } from '@/stores/authStore'
 
 interface Props {
   open: boolean
+  offline?: boolean
   onClose: () => void
   onCreated: (customer: Customer) => void
 }
@@ -33,7 +36,8 @@ function getRecentItems(key: string): string[] {
   }
 }
 
-export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
+export function QuickCustomerModal({ open, offline = false, onClose, onCreated }: Props) {
+  const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
   const [results, setResults]       = useState<Customer[]>([])
@@ -56,6 +60,10 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
     }
   }, [open])
 
+  useEffect(() => {
+    if (offline) setMode('search')
+  }, [offline])
+
   // Debounced search
   useEffect(() => {
     if (mode !== 'search' || query.trim().length < 2) {
@@ -65,16 +73,20 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
     const t = setTimeout(async () => {
       setSearching(true)
       try {
-        const r = await customerApi.list({ search: query.trim(), per_page: 6 })
-        setResults((r as { data: Customer[] }).data ?? [])
+        if (offline) {
+          setResults(await searchCustomersOffline(query.trim(), 6, scopeKey) as Customer[])
+        } else {
+          const r = await customerApi.list({ search: query.trim(), per_page: 6 })
+          setResults((r as { data: Customer[] }).data ?? [])
+        }
       } catch {
-        setResults([])
+        setResults(await searchCustomersOffline(query.trim(), 6, scopeKey).catch(() => []) as Customer[])
       } finally {
         setSearching(false)
       }
     }, 300)
     return () => clearTimeout(t)
-  }, [query, mode])
+  }, [query, mode, offline, scopeKey])
 
   function selectCustomer(c: Customer) {
     saveRecentItem('recent_phones', c.phone)
@@ -84,6 +96,10 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
+    if (offline) {
+      toast.error('Створення нового клієнта потребує інтернету')
+      return
+    }
     if (!phone.trim()) { toast.error("Телефон обов'язковий"); return }
     if (!name.trim())  { toast.error("Ім'я обов'язкове"); return }
     setSaving(true)
@@ -105,7 +121,7 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
     <Modal open={open} onClose={onClose} title="Клієнт" size="sm">
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-gray-200 -mt-1">
-        {(['search', 'create'] as Mode[]).map((m) => (
+        {((offline ? ['search'] : ['search', 'create']) as Mode[]).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -123,6 +139,11 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
 
       {mode === 'search' ? (
         <div className="space-y-3">
+          {offline && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Офлайн: пошук серед клієнтів, збережених у браузері. Створення доступне після відновлення зв’язку.
+            </div>
+          )}
           <Input
             label="Ім'я або телефон"
             value={query}
@@ -154,12 +175,14 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
           {!searching && query.trim().length >= 2 && results.length === 0 && (
             <div className="text-center py-4">
               <p className="text-sm text-gray-500 mb-3">Клієнта не знайдено</p>
-              <Button variant="secondary" size="sm" onClick={() => {
-                setPhone(query.trim())
-                setMode('create')
-              }}>
-                Створити нового
-              </Button>
+              {!offline && (
+                <Button variant="secondary" size="sm" onClick={() => {
+                  setPhone(query.trim())
+                  setMode('create')
+                }}>
+                  Створити нового
+                </Button>
+              )}
             </div>
           )}
 
@@ -196,15 +219,17 @@ export function QuickCustomerModal({ open, onClose, onCreated }: Props) {
             </div>
           )}
 
-          <p className="text-xs text-gray-400 text-center">
-            Або{' '}
-            <button
-              className="text-yellow-600 hover:underline"
-              onClick={() => setMode('create')}
-            >
-              створіть нового клієнта
-            </button>
-          </p>
+          {!offline && (
+            <p className="text-xs text-gray-400 text-center">
+              Або{' '}
+              <button
+                className="text-yellow-600 hover:underline"
+                onClick={() => setMode('create')}
+              >
+                створіть нового клієнта
+              </button>
+            </p>
+          )}
         </div>
       ) : (
         <form onSubmit={handleCreate} className="space-y-4">

@@ -9,7 +9,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { getCachedCategories, searchProductsOffline } from '@/lib/offlineDB'
+import { getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 function saveRecentItem(key: string, value: string) {
@@ -169,8 +169,27 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         addToReceipt(offlineResults[0] as Product)
         saveRecentItem('recent_scans', code)
       } else {
-        playErrorTone()
-        toast.error('Штрих-код не знайдено в офлайн-кеші')
+        const customers = await searchCustomersOffline(code, 1, scopeKey)
+        const customer = customers[0]
+        if (customer) {
+          store.setCustomer({
+            id: customer.id,
+            phone: customer.phone,
+            name: customer.full_name ?? null,
+            debtBalance: customer.debt_balance ?? 0,
+            tierDiscountPct: customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0,
+            tierName: customer.price_tier?.name ?? null,
+            vipLevel: customer.vip_level ?? 'standard',
+            riskProfile: customer.risk_profile ?? 'low',
+          })
+          store.setAutomaticDiscountPct(customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+          toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
+          saveRecentItem('recent_scans', code)
+          playSuccessBeep()
+        } else {
+          playErrorTone()
+          toast.error('Штрих-код не знайдено в офлайн-кеші')
+        }
       }
       setQuery('')
       setResults([])

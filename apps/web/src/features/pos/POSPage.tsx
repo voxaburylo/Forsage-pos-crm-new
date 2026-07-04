@@ -525,6 +525,15 @@ export default function POSPage() {
           unit_price: i.unitPrice,
           discount: i.discount,
         })),
+        receipt_items:   items.map((i) => ({
+          product_id: i.productId,
+          sku: i.sku,
+          name: i.name,
+          unit: i.unit,
+        })),
+        customer_snapshot: customer
+          ? { phone: customer.phone, full_name: customer.name }
+          : null,
         payment_method:  method,
         total,
         notes:           notes || null,
@@ -1096,6 +1105,7 @@ export default function POSPage() {
 
       <QuickCustomerModal
         open={customerOpen}
+        offline={!serverOnline}
         onClose={() => setCustomerOpen(false)}
         onCreated={(c: Customer) => {
           const tierDiscountPct = c.price_tier?.discount_pct ?? 0

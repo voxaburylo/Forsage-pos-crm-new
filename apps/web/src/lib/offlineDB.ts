@@ -9,7 +9,7 @@
  */
 
 const DB_NAME    = 'forsage_offline'
-const DB_VERSION = 3
+const DB_VERSION = 4
 
 export async function ensurePersistentStorage(): Promise<boolean> {
   if (!navigator.storage?.persist) return false
@@ -48,6 +48,11 @@ function openDB(): Promise<IDBDatabase> {
 
       if (!db.objectStoreNames.contains('staff')) {
         db.createObjectStore('staff', { keyPath: 'id' })
+      }
+
+      if (!db.objectStoreNames.contains('customers')) {
+        const store = db.createObjectStore('customers', { keyPath: 'id' })
+        store.createIndex('by_phone', 'phone', { unique: false })
       }
 
       if (!db.objectStoreNames.contains('meta')) {
@@ -135,6 +140,21 @@ export async function getProductsCacheScope(): Promise<string | null> {
   })
 }
 
+export async function getCachedProductsByIds(ids: string[]): Promise<any[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('products', 'readonly')
+    const store = tx.objectStore('products')
+    const results: any[] = []
+    for (const id of [...new Set(ids)]) {
+      const req = store.get(id)
+      req.onsuccess = () => { if (req.result) results.push(req.result) }
+    }
+    tx.oncomplete = () => resolve(results)
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
 export async function cacheCategories(categories: any[], scopeKey: string): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
@@ -184,6 +204,51 @@ export async function getCachedStaff(scopeKey?: string): Promise<any[]> {
     req.onsuccess = () => {
       if (scopeKey && scopeRequest.result?.value !== scopeKey) resolve([])
       else resolve(req.result ?? [])
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function cacheCustomers(customers: any[], scopeKey: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['customers', 'meta'], 'readwrite')
+    const store = tx.objectStore('customers')
+    store.clear()
+    for (const customer of customers) store.put(customer)
+    tx.objectStore('meta').put({ key: 'cache_scope', value: scopeKey })
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+export async function searchCustomersOffline(
+  query: string,
+  limit = 10,
+  scopeKey?: string,
+): Promise<any[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['customers', 'meta'], 'readonly')
+    const scopeRequest = tx.objectStore('meta').get('cache_scope')
+    const req = tx.objectStore('customers').getAll()
+    req.onsuccess = () => {
+      if (scopeKey && scopeRequest.result?.value !== scopeKey) {
+        resolve([])
+        return
+      }
+      const normalized = query.toLocaleLowerCase('uk-UA').replace(/\s+/g, '')
+      const digits = query.replace(/\D/g, '')
+      resolve((req.result ?? []).filter((customer: any) => {
+        const name = String(customer.full_name ?? '').toLocaleLowerCase('uk-UA').replace(/\s+/g, '')
+        const phone = String(customer.phone ?? '').replace(/\D/g, '')
+        const vin = String(customer.primary_vin ?? '').toLocaleLowerCase('uk-UA')
+        const barcode = String(customer.card_barcode ?? '')
+        return name.includes(normalized)
+          || (!!digits && phone.includes(digits))
+          || vin.includes(normalized)
+          || barcode === query
+      }).slice(0, limit))
     }
     req.onerror = () => reject(req.error)
   })
@@ -268,6 +333,13 @@ export interface PendingSale {
   sync_status:    'pending' | 'failed'
   sync_attempts:  number
   last_error:     string | null
+  receipt_items?: Array<{
+    product_id: string
+    sku: string
+    name: string
+    unit: string
+  }>
+  customer_snapshot?: { phone: string; full_name: string | null } | null
 }
 
 export async function enqueueSale(sale: PendingSale): Promise<void> {

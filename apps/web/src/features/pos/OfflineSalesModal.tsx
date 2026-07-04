@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, RefreshCw, Receipt, WifiOff, X } from 'lucide-react'
-import { getPendingSales, type PendingSale } from '@/lib/offlineDB'
+import { AlertTriangle, ChevronDown, Printer, RefreshCw, Receipt, WifiOff, X } from 'lucide-react'
+import { getCachedProductsByIds, getPendingSales, type PendingSale } from '@/lib/offlineDB'
 import { formatMoney } from '@/lib/utils'
+import type { Sale } from '@/types/sale'
+import { printReceipt, ReceiptPrint } from './ReceiptPrint'
 
 interface Props {
   open: boolean
@@ -17,11 +19,19 @@ export function OfflineSalesModal({
 }: Props) {
   const [sales, setSales] = useState<PendingSale[]>([])
   const [loading, setLoading] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [products, setProducts] = useState<Record<string, any>>({})
+  const [printSale, setPrintSale] = useState<Sale | null>(null)
 
   async function load() {
     setLoading(true)
     try {
-      setSales(await getPendingSales())
+      const pending = await getPendingSales()
+      setSales(pending)
+      const cached = await getCachedProductsByIds(
+        pending.flatMap((sale) => sale.items.map((item) => item.product_id)),
+      )
+      setProducts(Object.fromEntries(cached.map((product) => [product.id, product])))
     } finally {
       setLoading(false)
     }
@@ -36,6 +46,57 @@ export function OfflineSalesModal({
   async function sync() {
     await onSync()
     await load()
+  }
+
+  function itemInfo(sale: PendingSale, productId: string) {
+    return sale.receipt_items?.find((item) => item.product_id === productId) ?? products[productId]
+  }
+
+  function handlePrint(sale: PendingSale) {
+    const localSale: Sale = {
+      id: sale.offline_id,
+      sale_number: `OFF-${sale.offline_id.slice(0, 8).toUpperCase()}`,
+      customer_id: sale.customer_id,
+      cashier_id: '',
+      manager_id: sale.manager_id,
+      shift_id: sale.shift_id,
+      status: 'completed',
+      subtotal: sale.items.reduce((sum, item) => sum + item.unit_price * item.qty, 0),
+      discount: sale.discount ?? sale.items.reduce((sum, item) => sum + item.discount, 0),
+      total: sale.total,
+      payment_method: sale.payment_method,
+      is_debt: false,
+      notes: sale.notes,
+      completed_at: sale.created_at,
+      is_fiscal: false,
+      fiscal_number: null,
+      bank_auth_code: null,
+      cash_amount: sale.cash_amount ?? (sale.payment_method === 'cash' ? sale.total : 0),
+      card_amount: 0,
+      pickup_cell: null,
+      customer: sale.customer_snapshot
+        ? { id: sale.customer_id ?? '', ...sale.customer_snapshot }
+        : null,
+      sale_items: sale.items.map((item, index) => {
+        const product = itemInfo(sale, item.product_id)
+        return {
+          id: `${sale.offline_id}-${index}`,
+          product_id: item.product_id,
+          qty: item.qty,
+          unit_price: item.unit_price,
+          discount: item.discount,
+          total: item.unit_price * item.qty - item.discount,
+          product: {
+            id: item.product_id,
+            sku: product?.sku ?? '—',
+            name: product?.name ?? 'Товар',
+            unit: product?.unit ?? 'шт',
+          },
+        }
+      }),
+    }
+    setPrintSale(localSale)
+    window.setTimeout(printReceipt, 250)
   }
 
   return (
@@ -103,6 +164,41 @@ export function OfflineSalesModal({
                       </div>
                     </div>
                   )}
+                  <div className="mt-3 flex items-center justify-between border-t border-gray-700/70 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpanded(expanded === sale.offline_id ? null : sale.offline_id)}
+                      className="flex items-center gap-1 text-xs font-semibold text-gray-300 hover:text-white"
+                    >
+                      <ChevronDown size={14} className={expanded === sale.offline_id ? 'rotate-180' : ''} />
+                      Позиції чека
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePrint(sale)}
+                      className="flex items-center gap-1.5 rounded-lg bg-gray-700 px-2.5 py-1.5 text-xs font-semibold hover:bg-gray-600"
+                    >
+                      <Printer size={13} /> Друк
+                    </button>
+                  </div>
+                  {expanded === sale.offline_id && (
+                    <div className="mt-2 space-y-1 rounded-lg bg-black/20 p-2">
+                      {sale.items.map((item, index) => {
+                        const product = itemInfo(sale, item.product_id)
+                        return (
+                          <div key={`${item.product_id}-${index}`} className="flex justify-between gap-3 text-xs">
+                            <span className="min-w-0 truncate text-gray-300">
+                              {product?.name ?? product?.sku ?? item.product_id} × {item.qty}
+                            </span>
+                            <span className="shrink-0 font-semibold text-gray-100">
+                              {formatMoney(item.unit_price * item.qty - item.discount)}
+                            </span>
+                          </div>
+                        )
+                      })}
+                      {sale.notes && <p className="pt-1 text-[11px] text-gray-500">Примітка: {sale.notes}</p>}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -124,6 +220,7 @@ export function OfflineSalesModal({
           </button>
         </div>
       </div>
+      {printSale && <ReceiptPrint sale={printSale} />}
     </div>
   )
 }

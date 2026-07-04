@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '@/lib/api'
 import { toast } from '@/components/ui/Toast'
 import {
-  cacheProducts, cacheCategories, cacheStaff, getProductsCacheAge, getProductsCacheScope,
+  cacheProducts, cacheCategories, cacheStaff, cacheCustomers, getProductsCacheAge, getProductsCacheScope,
   getPendingSales, removePendingSale, countPendingSales, markPendingSaleFailed,
   ensurePersistentStorage,
 } from '@/lib/offlineDB'
@@ -55,11 +55,25 @@ export function useOfflineSync(serverOnline: boolean) {
         page++
       } while (page <= totalPages)
 
+      const customers: any[] = []
+      let customerPage = 1
+      let customerPages = 1
+      do {
+        const response = await api.get<{
+          data: any[]
+          pagination?: { total_pages?: number }
+        }>(`/api/v1/customers?per_page=100&page=${customerPage}`, { silent: true })
+        customers.push(...(response.data ?? []))
+        customerPages = Math.max(1, response.pagination?.total_pages ?? 1)
+        customerPage++
+      } while (customerPage <= customerPages)
+
       const categories = await api.get<{ data: any[] }>('/api/v1/admin/categories', { silent: true })
       const staff = await api.get<{ data: any[] }>('/api/v1/admin/staff-options', { silent: true })
       await cacheProducts(products, scopeKey)
       await cacheCategories(categories.data ?? [], scopeKey)
       await cacheStaff(staff.data ?? [], scopeKey)
+      await cacheCustomers(customers, scopeKey)
       setLastCached(new Date())
     } catch {
       // Не критично — кеш просто не оновився
