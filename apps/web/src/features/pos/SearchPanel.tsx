@@ -58,6 +58,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null)
   const [pricingModalItem, setPricingModalItem] = useState<any | null>(null)
   const [pricingRetailPrice, setPricingRetailPrice] = useState<string>('')
+  const [offlineStockVersion, setOfflineStockVersion] = useState(0)
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
 
@@ -81,6 +82,12 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
 
   // Auto focus
   useEffect(() => { inputRef.current?.focus() }, [])
+
+  useEffect(() => {
+    const refresh = () => setOfflineStockVersion((version) => version + 1)
+    window.addEventListener('forsage:offline-stock-updated', refresh)
+    return () => window.removeEventListener('forsage:offline-stock-updated', refresh)
+  }, [])
 
   // Load categories dynamically
   useEffect(() => {
@@ -136,7 +143,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         setLoading(false) 
       }
     }, 200)
-  }, [query, categoryFilter, serverOnline, scopeKey])
+  }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { setQuery(''); setResults([]); setSupplierResults([]); return }

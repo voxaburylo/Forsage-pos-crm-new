@@ -9,13 +9,17 @@ import { useAuthStore } from '@/stores/authStore'
 interface Props {
   open: boolean
   shiftId: string
+  offline?: boolean
+  pendingOfflineSales?: number
   onClose: () => void
   onClosed: () => void
 }
 
 const VARIANCE_THRESHOLD = 1000  // 10 грн в копійках
 
-export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
+export function ShiftCloseModal({
+  open, shiftId, offline = false, pendingOfflineSales = 0, onClose, onClosed,
+}: Props) {
   const session = useAuthStore((s) => s.session)
   const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
   const isOwnerOrAdmin = role === 'owner' || role === 'admin'
@@ -29,6 +33,10 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
 
   useEffect(() => {
     if (!open) return
+    if (offline) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     Promise.all([
       shiftApi.report(shiftId),
@@ -40,7 +48,7 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
       })
       .catch(() => toast.error('Помилка завантаження даних зміни'))
       .finally(() => setLoading(false))
-  }, [open, shiftId])
+  }, [open, shiftId, offline])
 
   if (!open) return null
 
@@ -50,6 +58,14 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
 
   async function handleClose() {
+    if (offline) {
+      toast.error('Закриття зміни потребує інтернету')
+      return
+    }
+    if (pendingOfflineSales > 0) {
+      toast.error(`Спочатку синхронізуйте офлайн-чеки: ${pendingOfflineSales}`)
+      return
+    }
     if (needsComment && !comment.trim()) {
       toast.error('Розбіжність > 10 грн — поясніть у коментарі')
       return
@@ -89,6 +105,13 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
       <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-5">
         <h2 className="text-white text-lg font-bold">Закрити зміну</h2>
+        {(offline || pendingOfflineSales > 0) && (
+          <div className="rounded-xl border border-red-500/50 bg-red-900/25 px-4 py-3 text-sm text-red-300">
+            {offline
+              ? 'Зміну не можна закрити без інтернету.'
+              : `Не синхронізовано офлайн-чеків: ${pendingOfflineSales}. Спочатку передайте їх на сервер.`}
+          </div>
+        )}
 
         {/* Нагадування звірки */}
         {!loading && cashInput === '' && (
@@ -190,7 +213,7 @@ export function ShiftCloseModal({ open, shiftId, onClose, onClosed }: Props) {
             className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
             Скасувати
           </button>
-          <button onClick={handleClose} disabled={closing || loading || (cashInput === '' && !loading)}
+          <button onClick={handleClose} disabled={offline || pendingOfflineSales > 0 || closing || loading || (cashInput === '' && !loading)}
             style={{ minHeight: 56 }}
             className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-40 transition-colors">
             {closing ? 'Закриваємо...' : 'Закрити зміну'}

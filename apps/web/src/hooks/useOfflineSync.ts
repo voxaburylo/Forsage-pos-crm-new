@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '@/lib/api'
 import { toast } from '@/components/ui/Toast'
 import {
-  cacheProducts, cacheCategories, getProductsCacheAge, getProductsCacheScope,
+  cacheProducts, cacheCategories, cacheStaff, getProductsCacheAge, getProductsCacheScope,
   getPendingSales, removePendingSale, countPendingSales, markPendingSaleFailed,
   ensurePersistentStorage,
 } from '@/lib/offlineDB'
@@ -24,11 +24,11 @@ export function useOfflineSync(serverOnline: boolean) {
   }, [])
 
   // Кеш товарів — оновлюємо якщо онлайн і кеш застарів
-  const refreshProductCache = useCallback(async () => {
+  const refreshProductCache = useCallback(async (force = false) => {
     if (!serverOnline || !scopeKey) return
     const age = await getProductsCacheAge()
     const cachedScope = await getProductsCacheScope()
-    const stale = !age || cachedScope !== scopeKey || (Date.now() - age) > CACHE_TTL_MS
+    const stale = force || !age || cachedScope !== scopeKey || (Date.now() - age) > CACHE_TTL_MS
 
     if (!stale) {
       setLastCached(age ? new Date(age) : null)
@@ -36,6 +36,12 @@ export function useOfflineSync(serverOnline: boolean) {
     }
 
     try {
+      // Ці дві службові позиції потрібні для офлайн-кнопок «Шиномонтаж»
+      // та «Вільна сума». Гарантуємо їх існування до знімка каталогу.
+      await Promise.all([
+        api.post('/api/v1/sales/quick-item', { kind: 'tire_service' }),
+        api.post('/api/v1/sales/quick-item', { kind: 'free_sale' }),
+      ])
       const products: any[] = []
       let page = 1
       let totalPages = 1
@@ -50,8 +56,10 @@ export function useOfflineSync(serverOnline: boolean) {
       } while (page <= totalPages)
 
       const categories = await api.get<{ data: any[] }>('/api/v1/admin/categories', { silent: true })
+      const staff = await api.get<{ data: any[] }>('/api/v1/admin/staff-options', { silent: true })
       await cacheProducts(products, scopeKey)
       await cacheCategories(categories.data ?? [], scopeKey)
+      await cacheStaff(staff.data ?? [], scopeKey)
       setLastCached(new Date())
     } catch {
       // Не критично — кеш просто не оновився
@@ -115,13 +123,18 @@ export function useOfflineSync(serverOnline: boolean) {
     if (failCount > 0) {
       toast.error(`${failCount} продажів не вдалось синхронізувати — перевірте журнал`)
     }
-  }, [serverOnline, syncing])
+    if (successCount > 0) {
+      await refreshProductCache(true)
+    }
+  }, [serverOnline, syncing, refreshProductCache])
 
   // При відновленні зв'язку — оновлюємо кеш і синхронізуємо
   useEffect(() => {
     if (serverOnline) {
-      refreshProductCache()
-      syncPendingSales()
+      void (async () => {
+        await syncPendingSales()
+        await refreshProductCache()
+      })()
     } else {
       syncTriggeredRef.current = false
     }

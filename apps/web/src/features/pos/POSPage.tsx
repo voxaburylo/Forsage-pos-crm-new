@@ -33,7 +33,8 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
-import { cacheCurrentShift, enqueueSale } from '@/lib/offlineDB'
+import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } from '@/lib/offlineDB'
+import { OfflineSalesModal } from './OfflineSalesModal'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -142,6 +143,7 @@ export default function POSPage() {
   const autoPrintRef                    = useRef(false)
   const skipNextAutoPrintRef            = useRef(false)
   const [findReceiptOpen, setFindReceiptOpen] = useState(false)
+  const [offlineSalesOpen, setOfflineSalesOpen] = useState(false)
 
   // Повторний друк будь-якого чека, обраного у вікні пошуку (ReceiptFinderModal).
   // Реюз єдиного слота lastSale + ReceiptPrint, щоб не монтувати два чеки одночасно
@@ -204,7 +206,11 @@ export default function POSPage() {
       .then((res) => {
         setStaffUsers(res.data)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (session?.user?.id) {
+          getCachedStaff(session.user.id).then(setStaffUsers).catch(() => {})
+        }
+      })
     // Лічильник відкладених чеків
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
     // Знижка працівника та конфігурація швидких товарів
@@ -541,6 +547,7 @@ export default function POSPage() {
         return null
       }
 
+      await decrementCachedStock(offlineSale.items).catch(() => {})
       incrementPending()
       const localReceipt: Sale = {
         id: offlineId,
@@ -661,6 +668,13 @@ export default function POSPage() {
           {pendingCount > 0 && (
             <span className="ml-2 px-2 py-0.5 bg-red-700 rounded-full text-xs font-bold">{pendingCount} в черзі</span>
           )}
+          <button
+            type="button"
+            onClick={() => setOfflineSalesOpen(true)}
+            className="ml-auto rounded-lg bg-red-700 px-3 py-1 text-xs font-bold text-white hover:bg-red-600"
+          >
+            Журнал
+          </button>
         </div>
       )}
       {serverOnline && syncing && (
@@ -672,13 +686,22 @@ export default function POSPage() {
       {serverOnline && !syncing && pendingCount > 0 && (
         <div className="shrink-0 bg-amber-900/60 border-b border-amber-500 px-4 py-1.5 flex items-center justify-between gap-3 text-amber-100 text-xs">
           <span>Є несинхронізовані офлайн-чеки: {pendingCount}</span>
-          <button
-            type="button"
-            onClick={syncPendingSales}
-            className="rounded-lg bg-amber-500 px-3 py-1 font-bold text-black hover:bg-amber-400"
-          >
-            Синхронізувати зараз
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setOfflineSalesOpen(true)}
+              className="rounded-lg bg-amber-800 px-3 py-1 font-bold text-amber-100 hover:bg-amber-700"
+            >
+              Журнал
+            </button>
+            <button
+              type="button"
+              onClick={syncPendingSales}
+              className="rounded-lg bg-amber-500 px-3 py-1 font-bold text-black hover:bg-amber-400"
+            >
+              Синхронізувати зараз
+            </button>
+          </div>
         </div>
       )}
 
@@ -1036,13 +1059,24 @@ export default function POSPage() {
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}
         staff={staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role))}
+        offline={!serverOnline}
         onClose={() => setQuickCharge(null)}
+      />
+      <OfflineSalesModal
+        open={offlineSalesOpen}
+        online={serverOnline}
+        syncing={syncing}
+        refreshKey={pendingCount}
+        onClose={() => setOfflineSalesOpen(false)}
+        onSync={syncPendingSales}
       />
 
       {/* Модалки */}
       <ShiftCloseModal
         open={closeOpen}
         shiftId={shift.id}
+        offline={!serverOnline}
+        pendingOfflineSales={pendingCount}
         onClose={() => setCloseOpen(false)}
         onClosed={() => {
           store.setCurrentShift(null)

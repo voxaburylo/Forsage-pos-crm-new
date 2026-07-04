@@ -9,7 +9,7 @@
  */
 
 const DB_NAME    = 'forsage_offline'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 export async function ensurePersistentStorage(): Promise<boolean> {
   if (!navigator.storage?.persist) return false
@@ -44,6 +44,10 @@ function openDB(): Promise<IDBDatabase> {
 
       if (!db.objectStoreNames.contains('categories')) {
         db.createObjectStore('categories', { keyPath: 'id' })
+      }
+
+      if (!db.objectStoreNames.contains('staff')) {
+        db.createObjectStore('staff', { keyPath: 'id' })
       }
 
       if (!db.objectStoreNames.contains('meta')) {
@@ -155,6 +159,63 @@ export async function getCachedCategories(scopeKey?: string): Promise<any[]> {
       else resolve(req.result ?? [])
     }
     req.onerror = () => reject(req.error)
+  })
+}
+
+export async function cacheStaff(staff: any[], scopeKey: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['staff', 'meta'], 'readwrite')
+    const store = tx.objectStore('staff')
+    store.clear()
+    for (const person of staff) store.put(person)
+    tx.objectStore('meta').put({ key: 'cache_scope', value: scopeKey })
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+export async function getCachedStaff(scopeKey?: string): Promise<any[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['staff', 'meta'], 'readonly')
+    const scopeRequest = tx.objectStore('meta').get('cache_scope')
+    const req = tx.objectStore('staff').getAll()
+    req.onsuccess = () => {
+      if (scopeKey && scopeRequest.result?.value !== scopeKey) resolve([])
+      else resolve(req.result ?? [])
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function decrementCachedStock(
+  items: Array<{ product_id: string; qty: number }>,
+): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('products', 'readwrite')
+    const store = tx.objectStore('products')
+    for (const item of items) {
+      const req = store.get(item.product_id)
+      req.onsuccess = () => {
+        const product = req.result
+        if (!product || product.is_service) return
+        store.put({
+          ...product,
+          qty_on_hand: Math.max(0, Number(product.qty_on_hand ?? 0) - item.qty),
+          qty_available: Math.max(
+            0,
+            Number(product.qty_available ?? product.qty_on_hand ?? 0) - item.qty,
+          ),
+        })
+      }
+    }
+    tx.oncomplete = () => {
+      window.dispatchEvent(new CustomEvent('forsage:offline-stock-updated'))
+      resolve()
+    }
+    tx.onerror = () => reject(tx.error)
   })
 }
 

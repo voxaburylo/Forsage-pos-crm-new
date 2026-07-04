@@ -3,19 +3,23 @@ import { X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
+import { searchProductsOffline } from '@/lib/offlineDB'
+import { useAuthStore } from '@/stores/authStore'
 
 type Kind = 'tire_service' | 'free_sale'
 type Staff = { id: string; full_name: string; role: string }
 
 export function QuickChargeModal({
-  open, kind, staff, onClose,
+  open, kind, staff, offline = false, onClose,
 }: {
   open: boolean
   kind: Kind
   staff: Staff[]
+  offline?: boolean
   onClose: () => void
 }) {
   const store = usePOSStore()
+  const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [workerId, setWorkerId] = useState('')
@@ -39,9 +43,18 @@ export function QuickChargeModal({
     }
     setSaving(true)
     try {
-      const { data } = await api.post<{ data: {
-        id: string; sku: string; name: string; unit: string; retail_price: number
-      } }>('/api/v1/sales/quick-item', { kind })
+      const sku = isTire ? 'POS-TIRE-SERVICE' : 'POS-FREE-SALE'
+      let data: { id: string; sku: string; name: string; unit: string; retail_price: number } | null = null
+      if (!offline) {
+        const response = await api.post<{ data: NonNullable<typeof data> }>('/api/v1/sales/quick-item', { kind })
+        data = response.data
+      } else {
+        const cached = await searchProductsOffline(sku, 10, scopeKey)
+        data = cached.find((product) => product.sku === sku) ?? null
+      }
+      if (!data) {
+        throw new Error('Службова позиція ще не кешована. Відкрийте касу один раз з інтернетом')
+      }
       // У чеку має бути одна підсумкова сума такого типу. Повторне введення
       // замінює її, а не множить попередню ціну на кількість.
       if (store.items.some((item) => item.productId === data.id)) {
