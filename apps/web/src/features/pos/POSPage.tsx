@@ -33,7 +33,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
-import { enqueueSale } from '@/lib/offlineDB'
+import { cacheCurrentShift, enqueueSale } from '@/lib/offlineDB'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -163,7 +163,7 @@ export default function POSPage() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
-  const { pendingCount, syncing, incrementPending } = useOfflineSync(serverOnline)
+  const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
   const [isEmployeeSale, setIsEmployeeSale] = useState(false)
   const [employeeDiscountPct, setEmployeeDiscountPct] = useState(0)
 
@@ -190,18 +190,19 @@ export default function POSPage() {
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickCharge, setQuickCharge] = useState<'tire_service' | 'free_sale' | null>(null)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
-  
+
+  // Менеджер за замовчуванням має бути доступний навіть після офлайн-перезапуску,
+  // тому не прив'язуємо його встановлення до успішного запиту списку працівників.
+  useEffect(() => {
+    const currentId = session?.user?.id
+    if (currentId && !store.managerId) store.setManagerId(currentId)
+  }, [session?.user?.id, store.managerId])
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
     api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/staff-options')
       .then((res) => {
         setStaffUsers(res.data)
-        // За замовчуванням — поточний користувач
-        const currentId = session?.user?.id
-        if (currentId && !store.managerId) {
-          store.setManagerId(currentId)
-        }
       })
       .catch(() => {})
     // Лічильник відкладених чеків
@@ -469,9 +470,7 @@ export default function POSPage() {
     return (
       <OpenShiftScreen
         onBack={() => navigate('/dashboard')}
-        onOpened={() => {
-          shiftApi.current().then(({ data }) => store.setCurrentShift(data))
-        }}
+        onOpened={checkShift}
       />
     )
   }
@@ -484,45 +483,126 @@ export default function POSPage() {
     isFiscal?: boolean,
     terminalAuthCode?: string,
   ) {
-    // Офлайн-режим: лише повноготівкові/переказ без ПРРО.
-    // Картка, борг і змішана (має карткову частину) недоступні — термінал/звірку
-    // офлайн не провести, інакше продаж синхронізується з неповними даними.
-    if (!serverOnline) {
+    async function saveOfflineSale() {
       if (method === 'card' || method === 'debt' || method === 'mixed') {
         toast.error('Офлайн доступні лише готівка та переказ')
-        return
+        return null
       }
-      const { currentShift, items, customer, notes, managerId, total, getActiveTab } = store
-      if (!currentShift || !items.length) return
+      if (isFiscal) {
+        toast.error('ПРРО потребує інтернету. Вимкніть «Фіскальний чек» або дочекайтеся зв’язку')
+        return null
+      }
+      if ((bonusRedeemed ?? 0) > 0) {
+        toast.error('Списання бонусів потребує інтернету')
+        return null
+      }
 
+      const {
+        currentShift, items, customer, customerOrderId, notes, managerId,
+        total, totalDiscount, getActiveTab,
+      } = store
+      if (!currentShift || !items.length) return null
+
+      const offlineId = crypto.randomUUID()
+      const createdAt = new Date().toISOString()
+      const idempotencyKey = getActiveTab()?.idempotencyKey ?? crypto.randomUUID()
       const offlineSale = {
-        offline_id:      crypto.randomUUID(),
-        created_at:      new Date().toISOString(),
+        offline_id:      offlineId,
+        created_at:      createdAt,
         shift_id:        currentShift.id,
         customer_id:     customer?.id ?? null,
+        customer_order_id: customerOrderId || null,
         manager_id:      managerId,
-        items:           items.map((i) => ({ product_id: i.productId, qty: i.qty, unit_price: i.unitPrice, discount: i.discount })),
+        items:           items.map((i) => ({
+          product_id: i.productId,
+          qty: i.qty,
+          unit_price: i.unitPrice,
+          discount: i.discount,
+        })),
         payment_method:  method,
         total,
         notes:           notes || null,
-        idempotency_key: getActiveTab()?.idempotencyKey ?? crypto.randomUUID(),
+        is_fiscal:       false as const,
+        terminal_auth_code: null,
+        discount:        totalDiscount,
+        bonuses_spent:   0 as const,
+        cash_amount:     method === 'cash' ? total : 0,
+        card_amount:     0 as const,
+        idempotency_key: idempotencyKey,
+        sync_status:     'pending' as const,
+        sync_attempts:   0,
+        last_error:      null,
       }
-      await enqueueSale(offlineSale)
+
+      try {
+        await enqueueSale(offlineSale)
+      } catch {
+        toast.error('Не вдалося зберегти чек у браузері. Не приймайте оплату та повторіть')
+        return null
+      }
+
       incrementPending()
+      const localReceipt: Sale = {
+        id: offlineId,
+        sale_number: `OFF-${offlineId.slice(0, 8).toUpperCase()}`,
+        customer_id: customer?.id ?? null,
+        cashier_id: session?.user?.id ?? '',
+        manager_id: managerId,
+        shift_id: currentShift.id,
+        status: 'completed',
+        subtotal: items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0),
+        discount: totalDiscount,
+        total,
+        payment_method: method,
+        is_debt: false,
+        notes: notes || null,
+        completed_at: createdAt,
+        is_fiscal: false,
+        fiscal_number: null,
+        bank_auth_code: null,
+        cash_amount: method === 'cash' ? total : 0,
+        card_amount: 0,
+        pickup_cell: null,
+        customer: customer ? { id: customer.id, phone: customer.phone, full_name: customer.name } : null,
+        sale_items: items.map((item) => ({
+          id: `${offlineId}-${item.productId}`,
+          product_id: item.productId,
+          qty: item.qty,
+          unit_price: item.unitPrice,
+          discount: item.discount,
+          total: item.unitPrice * item.qty - item.discount,
+          product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
+        })),
+      }
+      setLastSale(localReceipt)
       store.clearReceipt()
       clearSavedCart()
       setPayOpen(false)
       playCashRegister()
-      toast.success(`Продаж збережено офлайн (${offlineSale.offline_id.slice(0,8)})`)
+      toast.success(`Офлайн-чек ${localReceipt.sale_number} збережено і буде синхронізовано`)
+      return localReceipt
+    }
+
+    // Офлайн-режим: лише повноготівкові/переказ без ПРРО.
+    // Картка, борг і змішана (має карткову частину) недоступні — термінал/звірку
+    // офлайн не провести, інакше продаж синхронізується з неповними даними.
+    if (!serverOnline) {
+      await saveOfflineSale()
       return
     }
 
-    const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
-    if (sale) {
-      setLastSale(sale as Sale)
-      clearSavedCart()
-      setPayOpen(false)
-      playCashRegister()
+    try {
+      const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
+      if (sale) {
+        setLastSale(sale as Sale)
+        clearSavedCart()
+        setPayOpen(false)
+        playCashRegister()
+      }
+    } catch {
+      // Зв'язок міг зникнути після останньої health-перевірки. Той самий
+      // idempotency key гарантує, що при синхронізації дубль не створиться.
+      await saveOfflineSale()
     }
   }
 
@@ -587,6 +667,18 @@ export default function POSPage() {
         <div className="shrink-0 bg-blue-900/60 border-b border-blue-500 px-4 py-1.5 flex items-center gap-2 text-blue-200 text-xs">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-300 animate-pulse inline-block" />
           Синхронізація офлайн-продажів...
+        </div>
+      )}
+      {serverOnline && !syncing && pendingCount > 0 && (
+        <div className="shrink-0 bg-amber-900/60 border-b border-amber-500 px-4 py-1.5 flex items-center justify-between gap-3 text-amber-100 text-xs">
+          <span>Є несинхронізовані офлайн-чеки: {pendingCount}</span>
+          <button
+            type="button"
+            onClick={syncPendingSales}
+            className="rounded-lg bg-amber-500 px-3 py-1 font-bold text-black hover:bg-amber-400"
+          >
+            Синхронізувати зараз
+          </button>
         </div>
       )}
 
@@ -954,6 +1046,7 @@ export default function POSPage() {
         onClose={() => setCloseOpen(false)}
         onClosed={() => {
           store.setCurrentShift(null)
+          if (session?.user?.id) cacheCurrentShift(null, session.user.id).catch(() => {})
           clearSavedCart()
           store.clearReceipt()
           setCloseOpen(false)
@@ -962,6 +1055,7 @@ export default function POSPage() {
 
       <PaymentModal
         open={payOpen}
+        offline={!serverOnline}
         onClose={() => setPayOpen(false)}
         onConfirm={handleConfirmPayment}
       />

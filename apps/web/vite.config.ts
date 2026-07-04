@@ -20,6 +20,15 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'any',
         start_url: '/',
+        shortcuts: [
+          {
+            name: 'Відкрити касу',
+            short_name: 'Каса',
+            description: 'Відкрити POS-касу Форсаж',
+            url: '/pos',
+            icons: [{ src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml' }],
+          },
+        ],
         icons: [
           {
             src: '/favicon.svg',

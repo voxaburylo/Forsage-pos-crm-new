@@ -11,6 +11,7 @@ interface SplitAmounts {
 
 interface Props {
   open: boolean
+  offline?: boolean
   onClose: () => void
   onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean, terminalAuthCode?: string) => Promise<void>
 }
@@ -28,7 +29,7 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
   { id: 'mixed',    label: 'Split',           icon: <SplitSquareHorizontal size={20} />,    color: 'bg-purple-500 hover:bg-purple-400' },
 ]
 
-export function PaymentModal({ open, onClose, onConfirm }: Props) {
+export function PaymentModal({ open, offline = false, onClose, onConfirm }: Props) {
   const store             = usePOSStore()
   const [method, setMethod]         = useState<Method>(() => {
     const m = localStorage.getItem(LAST_METHOD_KEY) as Method | null
@@ -50,6 +51,12 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
   useEffect(() => {
     if (method === 'card') setFiscal(true)
   }, [method])
+
+  useEffect(() => {
+    if (!open || !offline) return
+    if (!['cash', 'transfer'].includes(method)) setMethod('cash')
+    setBonusInput('')
+  }, [open, offline, method])
 
   // Чи активний інтегрований термінал — тоді сервер проводить оплату сам,
   // і касир НЕ вводить код вручну (інакше можливе подвійне списання).
@@ -189,9 +196,9 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
   async function submitSale(authCode?: string) {
     try {
       if (method === 'mixed') {
-        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, fiscal, authCode)
+        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, offline ? false : fiscal, authCode)
       } else {
-        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, fiscal, authCode)
+        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, offline ? false : fiscal, authCode)
       }
     } finally {
       setLoading(false)
@@ -217,6 +224,11 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
         </div>
 
         <div className="p-6 space-y-4">
+          {offline && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-900/25 px-3 py-2 text-xs text-amber-200">
+              Офлайн: доступні готівка та переказ без ПРРО і бонусів.
+            </div>
+          )}
           {/* Бонуси */}
           {loyaltyEnabled && store.customer && (
             <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-xl px-4 py-3">
@@ -245,22 +257,26 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
           {/* Вибір методу 3+2 */}
           <div className="grid grid-cols-3 gap-2">
             {METHODS.slice(0, 3).map((m) => (
-              <button key={m.id} onClick={() => { if (!m.requireCustomer || store.customer) setMethod(m.id) }}
+              <button key={m.id}
+                disabled={offline && !['cash', 'transfer'].includes(m.id)}
+                onClick={() => { if ((!offline || ['cash', 'transfer'].includes(m.id)) && (!m.requireCustomer || store.customer)) setMethod(m.id) }}
                 style={{ minHeight: 52 }}
                 className={'flex flex-col items-center justify-center gap-1 rounded-xl text-white text-[10px] font-semibold transition-all leading-tight ' +
                   (method === m.id ? m.color + ' ring-2 ring-white/30' : 'bg-[#2C2C2C] hover:bg-gray-700') +
-                  (m.requireCustomer && !store.customer ? ' opacity-40 cursor-not-allowed' : '')}>
+                  ((m.requireCustomer && !store.customer) || (offline && !['cash', 'transfer'].includes(m.id)) ? ' opacity-40 cursor-not-allowed' : '')}>
                 {m.icon}{m.label}
               </button>
             ))}
           </div>
           <div className="grid grid-cols-2 gap-2">
             {METHODS.slice(3).map((m) => (
-              <button key={m.id} onClick={() => { if (!m.requireCustomer || store.customer) setMethod(m.id) }}
+              <button key={m.id}
+                disabled={offline}
+                onClick={() => { if (!offline && (!m.requireCustomer || store.customer)) setMethod(m.id) }}
                 style={{ minHeight: 44 }}
                 className={'flex items-center justify-center gap-1.5 rounded-xl text-white text-xs font-semibold transition-all ' +
                   (method === m.id ? m.color + ' ring-2 ring-white/30' : 'bg-[#2C2C2C] hover:bg-gray-700') +
-                  (m.requireCustomer && !store.customer ? ' opacity-40 cursor-not-allowed' : '')}>
+                  ((m.requireCustomer && !store.customer) || offline ? ' opacity-40 cursor-not-allowed' : '')}>
                 {m.icon}{m.label}
               </button>
             ))}
@@ -341,9 +357,9 @@ export function PaymentModal({ open, onClose, onConfirm }: Props) {
                   <span className="text-gray-300 text-sm">🧾 Фіскальний чек</span>
                 </div>
                 <label className={`relative inline-flex items-center ${method === 'card' ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
-                  <input type="checkbox" checked={fiscal}
+                  <input type="checkbox" checked={offline ? false : fiscal}
                     onChange={method === 'card' ? undefined : handleFiscalToggle}
-                    disabled={method === 'card'}
+                    disabled={method === 'card' || offline}
                     className="sr-only peer" />
                   <div className={`w-9 h-5 rounded-full after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full ${
                     method === 'card'

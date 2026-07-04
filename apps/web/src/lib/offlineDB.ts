@@ -3,11 +3,19 @@
  *
  * Stores:
  *   products      — кеш каталогу товарів (оновлюється кожні 30 хв)
- *   pending_sales — черга продажів які зроблені без інтернету
+ *   categories    — кеш категорій для пошуку
+ *   pending_sales — черга продажів, зроблених без інтернету
+ *   meta          — час кешування та остання відкрита зміна
  */
 
 const DB_NAME    = 'forsage_offline'
-const DB_VERSION = 1
+const DB_VERSION = 2
+
+export async function ensurePersistentStorage(): Promise<boolean> {
+  if (!navigator.storage?.persist) return false
+  if (await navigator.storage.persisted()) return true
+  return navigator.storage.persist()
+}
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -26,6 +34,16 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('pending_sales')) {
         const store = db.createObjectStore('pending_sales', { keyPath: 'offline_id' })
         store.createIndex('by_created', 'created_at', { unique: false })
+        store.createIndex('by_status', 'sync_status', { unique: false })
+      } else {
+        const store = req.transaction!.objectStore('pending_sales')
+        if (!store.indexNames.contains('by_status')) {
+          store.createIndex('by_status', 'sync_status', { unique: false })
+        }
+      }
+
+      if (!db.objectStoreNames.contains('categories')) {
+        db.createObjectStore('categories', { keyPath: 'id' })
       }
 
       if (!db.objectStoreNames.contains('meta')) {
@@ -40,7 +58,7 @@ function openDB(): Promise<IDBDatabase> {
 
 // ─── Products cache ───────────────────────────────────────────────────────────
 
-export async function cacheProducts(products: any[]): Promise<void> {
+export async function cacheProducts(products: any[], scopeKey: string): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx    = db.transaction(['products', 'meta'], 'readwrite')
@@ -51,23 +69,35 @@ export async function cacheProducts(products: any[]): Promise<void> {
     for (const p of products) store.put(p)
 
     tx.objectStore('meta').put({ key: 'products_cached_at', value: Date.now() })
+    tx.objectStore('meta').put({ key: 'cache_scope', value: scopeKey })
     tx.oncomplete = () => resolve()
     tx.onerror    = () => reject(tx.error)
   })
 }
 
-export async function searchProductsOffline(query: string, limit = 20): Promise<any[]> {
+export async function searchProductsOffline(
+  query: string,
+  limit = 20,
+  scopeKey?: string,
+  categoryName?: string | null,
+): Promise<any[]> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
-    const tx    = db.transaction('products', 'readonly')
+    const tx    = db.transaction(['products', 'meta'], 'readonly')
     const store = tx.objectStore('products')
+    const scopeRequest = tx.objectStore('meta').get('cache_scope')
     const req   = store.getAll()
 
     req.onsuccess = () => {
+      if (scopeKey && scopeRequest.result?.value !== scopeKey) {
+        resolve([])
+        return
+      }
       const q = query.toLowerCase().trim()
       const results = (req.result as any[])
         .filter((p) =>
           p.is_active !== false &&
+          (!categoryName || p.category?.name === categoryName) &&
           (
             p.name?.toLowerCase().includes(q) ||
             p.sku?.toLowerCase().includes(q)  ||
@@ -91,6 +121,69 @@ export async function getProductsCacheAge(): Promise<number | null> {
   })
 }
 
+export async function getProductsCacheScope(): Promise<string | null> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readonly')
+    const req = tx.objectStore('meta').get('cache_scope')
+    req.onsuccess = () => resolve(req.result?.value ?? null)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function cacheCategories(categories: any[], scopeKey: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['categories', 'meta'], 'readwrite')
+    const store = tx.objectStore('categories')
+    store.clear()
+    for (const category of categories) store.put(category)
+    tx.objectStore('meta').put({ key: 'cache_scope', value: scopeKey })
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+export async function getCachedCategories(scopeKey?: string): Promise<any[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['categories', 'meta'], 'readonly')
+    const scopeRequest = tx.objectStore('meta').get('cache_scope')
+    const req = tx.objectStore('categories').getAll()
+    req.onsuccess = () => {
+      if (scopeKey && scopeRequest.result?.value !== scopeKey) resolve([])
+      else resolve(req.result ?? [])
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function cacheCurrentShift(shift: any, scopeKey: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readwrite')
+    tx.objectStore('meta').put({
+      key: 'current_shift',
+      value: shift ? { shift, scopeKey, cachedAt: Date.now() } : null,
+    })
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+export async function getCachedCurrentShift(scopeKey: string): Promise<any | null> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readonly')
+    const req = tx.objectStore('meta').get('current_shift')
+    req.onsuccess = () => {
+      const cached = req.result?.value
+      resolve(cached?.scopeKey === scopeKey && cached?.shift?.status === 'open' ? cached.shift : null)
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
 // ─── Pending sales queue ──────────────────────────────────────────────────────
 
 export interface PendingSale {
@@ -99,11 +192,21 @@ export interface PendingSale {
   shift_id:       string
   customer_id:    string | null
   manager_id:     string | null
+  customer_order_id: string | null
   items:          Array<{ product_id: string; qty: number; unit_price: number; discount: number }>
-  payment_method: string
+  payment_method: 'cash' | 'transfer'
   total:          number
   notes:          string | null
+  is_fiscal:      false
+  terminal_auth_code: null
+  discount:       number
+  bonuses_spent:  0
+  cash_amount:    number
+  card_amount:    0
   idempotency_key: string
+  sync_status:    'pending' | 'failed'
+  sync_attempts:  number
+  last_error:     string | null
 }
 
 export async function enqueueSale(sale: PendingSale): Promise<void> {
@@ -121,8 +224,32 @@ export async function getPendingSales(): Promise<PendingSale[]> {
   return new Promise((resolve, reject) => {
     const tx  = db.transaction('pending_sales', 'readonly')
     const req = tx.objectStore('pending_sales').getAll()
-    req.onsuccess = () => resolve(req.result ?? [])
+    req.onsuccess = () => resolve(
+      (req.result ?? []).sort((a: PendingSale, b: PendingSale) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      )
+    )
     req.onerror   = () => reject(req.error)
+  })
+}
+
+export async function markPendingSaleFailed(offlineId: string, error: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('pending_sales', 'readwrite')
+    const store = tx.objectStore('pending_sales')
+    const req = store.get(offlineId)
+    req.onsuccess = () => {
+      if (!req.result) return
+      store.put({
+        ...req.result,
+        sync_status: 'failed',
+        sync_attempts: (req.result.sync_attempts ?? 0) + 1,
+        last_error: error.slice(0, 500),
+      })
+    }
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
   })
 }
 

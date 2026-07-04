@@ -3,6 +3,8 @@ import { usePOSStore } from '@/stores/posStore'
 import { shiftApi } from './shiftApi'
 import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
+import { cacheCurrentShift, getCachedCurrentShift } from '@/lib/offlineDB'
+import { useAuthStore } from '@/stores/authStore'
 
 const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 
@@ -15,6 +17,7 @@ export function usePOS() {
   const setInitializing = usePOSStore((s) => s.setInitializing)
   const setInitError    = usePOSStore((s) => s.setInitError)
   const setCurrentShift = usePOSStore((s) => s.setCurrentShift)
+  const scopeKey = useAuthStore((s) => s.session?.user?.id ?? '')
 
   const checkShift = useCallback(() => {
     setInitializing(true)
@@ -24,8 +27,15 @@ export function usePOS() {
       .then(({ data }) => {
         setCurrentShift(data)
         setInitError(null)
+        if (scopeKey) cacheCurrentShift(data, scopeKey).catch(() => {})
       })
-      .catch((err) => {
+      .catch(async (err) => {
+        const cachedShift = scopeKey ? await getCachedCurrentShift(scopeKey).catch(() => null) : null
+        if (cachedShift) {
+          setCurrentShift(cachedShift)
+          setInitError(null)
+          return
+        }
         const status = err?.status
         if (status === 404 || err?.message?.includes('NO_SHIFT') || err?.message?.includes('not found')) {
           setCurrentShift(null)
@@ -36,7 +46,7 @@ export function usePOS() {
       .finally(() => {
         setInitializing(false)
       })
-  }, [setInitializing, setInitError, setCurrentShift])
+  }, [setInitializing, setInitError, setCurrentShift, scopeKey])
 
   // Завантажуємо поточну зміну при старті
   useEffect(() => {
@@ -98,6 +108,9 @@ export function usePOS() {
       toast.success('Продаж #' + sale.sale_number + ' оформлено')
       return sale
     } catch (e) {
+      // Мережева помилка не означає, що продаж не пройшов: POSPage збереже
+      // той самий запит у чергу з тим самим idempotency key.
+      if (!(e as any)?.status) throw e
       toast.error(e instanceof Error ? e.message : 'Помилка оформлення продажу')
       return null
     }

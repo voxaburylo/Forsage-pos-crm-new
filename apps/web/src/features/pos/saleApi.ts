@@ -21,7 +21,10 @@ export const saleApi = {
     const headers = idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : undefined
     // Таймаут, щоб вікно оплати не зависало назавжди. Достатньо для інтегрованого
     // терміналу (агент чекає до ~2 хв) + запас. Повтор безпечний завдяки idempotency key.
-    return api.post<{ data: Sale }>('/api/v1/sales', body, headers, { timeoutMs: 150_000, silent: true })
+    const timeoutMs = body.payment_method === 'card' || body.payment_method === 'mixed'
+      ? 150_000
+      : 20_000
+    return api.post<{ data: Sale }>('/api/v1/sales', body, headers, { timeoutMs, silent: true })
   },
 
   get: (id: string) =>

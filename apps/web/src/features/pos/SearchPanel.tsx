@@ -9,8 +9,9 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { searchProductsOffline } from '@/lib/offlineDB'
+import { getCachedCategories, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
+import { useAuthStore } from '@/stores/authStore'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -44,6 +45,7 @@ export interface SearchPanelHandle {
 export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const store        = usePOSStore()
   const serverOnline = useServerStatus()
+  const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
   const [supplierResults, setSupplierResults] = useState<any[]>([])
@@ -86,8 +88,10 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories')
         .then((res) => setCategories(res.data ?? []))
         .catch(() => {})
+    } else if (scopeKey) {
+      getCachedCategories(scopeKey).then(setCategories).catch(() => setCategories([]))
     }
-  }, [serverOnline])
+  }, [serverOnline, scopeKey])
 
   // Debounced search
   useEffect(() => {
@@ -98,7 +102,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       try {
         // Офлайн-режим: шукаємо в IndexedDB
         if (!serverOnline) {
-          const offlineResults = await searchProductsOffline(query.trim(), 20)
+          const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
           setResults(offlineResults as Product[])
           setSupplierResults([])
           setLoading(false)
@@ -124,14 +128,15 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           setResults(res.data ?? [])
           setSupplierResults([])
         }
-      } catch { 
-        setResults([]) 
+      } catch {
+        const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter).catch(() => [])
+        setResults(offlineResults as Product[])
         setSupplierResults([])
       } finally { 
         setLoading(false) 
       }
     }, 200)
-  }, [query, categoryFilter, serverOnline])
+  }, [query, categoryFilter, serverOnline, scopeKey])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { setQuery(''); setResults([]); setSupplierResults([]); return }
@@ -151,6 +156,20 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   }
 
   async function handleBarcodeScan(code: string) {
+    if (!serverOnline) {
+      const offlineResults = await searchProductsOffline(code, 1, scopeKey)
+      if (offlineResults[0]) {
+        addToReceipt(offlineResults[0] as Product)
+        saveRecentItem('recent_scans', code)
+      } else {
+        playErrorTone()
+        toast.error('Штрих-код не знайдено в офлайн-кеші')
+      }
+      setQuery('')
+      setResults([])
+      setSupplierResults([])
+      return
+    }
     try {
       const res = await api.get<any>(`/api/v1/search/barcode/${code}`)
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
@@ -177,8 +196,10 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       setResults([])
       setSupplierResults([])
     } catch {
-      if (results.length > 0) {
-        addToReceipt(results[0])
+      const offlineResults = await searchProductsOffline(code, 1, scopeKey).catch(() => [])
+      const fallback = offlineResults[0] ?? results[0]
+      if (fallback) {
+        addToReceipt(fallback as Product)
         setQuery('')
         setResults([])
         setSupplierResults([])
