@@ -761,13 +761,13 @@ export default function OrderDetailPage() {
 
           {editItems ? (
             <div className="overflow-x-auto">
-              <div className="min-w-[920px] space-y-2">
-                <div className="grid grid-cols-[32px_minmax(180px,1fr)_110px_60px_85px_85px_140px_120px_32px] gap-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              <div className="min-w-[1050px] space-y-2">
+                <div className="grid grid-cols-[36px_minmax(210px,1fr)_130px_70px_100px_100px_170px_130px_36px] gap-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
                   <span>№</span><span>Назва</span><span>Артикул</span><span>К-сть</span>
                   <span>Закупка</span><span>Продаж</span><span>Постачальник</span><span>Статус</span><span></span>
                 </div>
                 {draftItems.map((it, idx) => (
-                  <div key={it.id ?? `new-${idx}`} className="grid grid-cols-[32px_minmax(180px,1fr)_110px_60px_85px_85px_140px_120px_32px] items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-2">
+                  <div key={it.id ?? `new-${idx}`} className="grid grid-cols-[36px_minmax(210px,1fr)_130px_70px_100px_100px_170px_130px_36px] items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-2">
                     <span className="text-center text-sm font-bold text-gray-400">{idx + 1}</span>
                     <input value={it.name} onChange={(e) => updateDraftItem(idx, { name: e.target.value })} placeholder="Назва запчастини"
                       className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
