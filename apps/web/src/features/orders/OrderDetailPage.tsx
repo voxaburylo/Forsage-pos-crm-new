@@ -764,7 +764,7 @@ export default function OrderDetailPage() {
               <div className="min-w-[1140px] space-y-2">
                 <div className="grid grid-cols-[36px_minmax(240px,2fr)_minmax(150px,1fr)_80px_minmax(110px,1fr)_minmax(110px,1fr)_minmax(180px,1.2fr)_minmax(140px,1fr)_36px] gap-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
                   <span>№</span><span>Назва</span><span>Артикул</span><span>К-сть</span>
-                  <span>Закупка</span><span>Продаж</span><span>Постачальник</span><span>Статус</span><span></span>
+                  <span>Закупка</span><span>Роздріб</span><span>Постачальник</span><span>Статус</span><span></span>
                 </div>
                 {draftItems.map((it, idx) => (
                   <div key={it.id ?? `new-${idx}`} className="grid grid-cols-[36px_minmax(240px,2fr)_minmax(150px,1fr)_80px_minmax(110px,1fr)_minmax(110px,1fr)_minmax(180px,1.2fr)_minmax(140px,1fr)_36px] items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-2">

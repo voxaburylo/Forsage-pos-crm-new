@@ -1288,8 +1288,8 @@ export default function OrderFormPage() {
                       <th className="px-3 py-3 w-[28%]">Назва запчастини</th>
                       <th className="px-3 py-3 w-[15%]">Артикул / SKU</th>
                       <th className="px-3 py-3 w-[8%]">К-сть</th>
-                      <th className="px-3 py-3 w-[12%]">Ціна (грн)</th>
                       <th className="px-3 py-3 w-[12%]">Закупка (грн)</th>
+                      <th className="px-3 py-3 w-[12%]">Роздріб (грн)</th>
                       <th className="px-3 py-3 w-[17%]">Постачальник</th>
                       <th className="px-3 py-3 w-[4%] text-center"></th>
                     </tr>
@@ -1332,17 +1332,6 @@ export default function OrderFormPage() {
                           />
                         </td>
                         <td className="px-3 py-3">
-                          <input
-                            value={row.sell_price}
-                            onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
-                            type="number"
-                            min="0"
-                            step="any"
-                            required
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold"
-                          />
-                        </td>
-                        <td className="px-3 py-3">
                           {row.supplier_id ? (
                             <input
                               value={row.buy_price || ''}
@@ -1356,6 +1345,17 @@ export default function OrderFormPage() {
                           ) : (
                             <span className="text-gray-400 text-xs block text-center">-</span>
                           )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            value={row.sell_price}
+                            onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
+                            type="number"
+                            min="0"
+                            step="any"
+                            required
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold"
+                          />
                         </td>
                         <td className="px-3 py-3">
                           <select
