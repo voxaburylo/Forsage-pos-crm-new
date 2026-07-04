@@ -803,7 +803,7 @@ export default function OrderFormPage() {
 
   return (
     <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
-      <div className={`max-w-4xl mx-auto space-y-6 transition-[margin] ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
+      <div className={`mx-auto max-w-4xl space-y-6 transition-[margin] lg:max-w-[1400px] ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
         
         {/* Step Indicator — лише в покроковому (мобільному) режимі */}
         {!isDesktop && (
@@ -1281,24 +1281,24 @@ export default function OrderFormPage() {
               </div>
 
               <div className="overflow-x-auto hidden md:block">
-                <table className="w-full min-w-[1050px] text-left border-collapse text-sm">
+                <table className="w-full min-w-[900px] table-fixed text-left border-collapse text-sm">
                   <thead>
                     <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
-                      <th className="px-4 py-3 w-10 text-center">#</th>
-                      <th className="px-4 py-3 w-[30%] min-w-[260px]">Назва запчастини</th>
-                      <th className="px-4 py-3 w-40">Артикул / SKU</th>
-                      <th className="px-4 py-3 w-24">К-сть</th>
-                      <th className="px-4 py-3 w-32">Ціна (грн)</th>
-                      <th className="px-4 py-3 w-32">Закупка (грн)</th>
-                      <th className="px-4 py-3 w-48">Постачальник</th>
-                      <th className="px-4 py-3 w-10 text-center"></th>
+                      <th className="px-2 py-3 w-10 text-center">#</th>
+                      <th className="px-2 py-3 w-[30%]">Назва запчастини</th>
+                      <th className="px-2 py-3 w-32">Артикул / SKU</th>
+                      <th className="px-2 py-3 w-20">К-сть</th>
+                      <th className="px-2 py-3 w-24">Ціна (грн)</th>
+                      <th className="px-2 py-3 w-24">Закупка</th>
+                      <th className="px-2 py-3 w-40">Постачальник</th>
+                      <th className="px-2 py-3 w-10 text-center"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {items.map((row, idx) => (
                       <tr key={idx} className="hover:bg-gray-50/20 align-top">
-                        <td className="px-4 py-3 text-center text-gray-400 font-mono text-xs">{idx + 1}</td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-3 text-center text-gray-400 font-mono text-xs">{idx + 1}</td>
+                        <td className="px-2 py-3">
                           <ProductAutocomplete
                             value={row.name}
                             onChange={(val) => setItems((p) => p.map((r, i) => i === idx ? { ...r, name: val, product_id: null, stock: undefined } : r))}
@@ -1313,7 +1313,7 @@ export default function OrderFormPage() {
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-3">
                           <input
                             value={row.sku}
                             onChange={(e) => updateItem(idx, 'sku', e.target.value)}
@@ -1321,7 +1321,7 @@ export default function OrderFormPage() {
                             className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-mono"
                           />
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-3">
                           <input
                             value={row.qty}
                             onChange={(e) => updateItem(idx, 'qty', e.target.value)}
@@ -1331,7 +1331,7 @@ export default function OrderFormPage() {
                             className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
                           />
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-3">
                           <input
                             value={row.sell_price}
                             onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
@@ -1342,7 +1342,7 @@ export default function OrderFormPage() {
                             className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold"
                           />
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-3">
                           {row.supplier_id ? (
                             <input
                               value={row.buy_price || ''}
@@ -1357,7 +1357,7 @@ export default function OrderFormPage() {
                             <span className="text-gray-400 text-xs block text-center">-</span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-2 py-3">
                           <select
                             value={row.supplier_id}
                             onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
@@ -1380,7 +1380,7 @@ export default function OrderFormPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-2 py-3 text-center">
                           {items.length > 1 && (
                             <button
                               type="button"
