@@ -28,9 +28,10 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
   const [resetText, setResetText]       = useState('')
   const [resetLoading, setResetLoading] = useState(false)
   const CONFIRM_PHRASE = 'ВИДАЛИТИ ВСЕ'
+  const resetConfirmed = [CONFIRM_PHRASE, 'УДАЛИТЬ ВСЕ'].includes(resetText.trim().toUpperCase())
 
   async function handleReset() {
-    if (resetText !== CONFIRM_PHRASE) return
+    if (!resetConfirmed) return
     setResetLoading(true)
     try {
       const { data } = await adminApi.resetCatalog()
@@ -267,7 +268,7 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
                 type="button"
                 variant="danger"
                 loading={resetLoading}
-                disabled={resetText !== CONFIRM_PHRASE}
+                disabled={!resetConfirmed}
                 onClick={handleReset}
                 className="flex-1"
               >

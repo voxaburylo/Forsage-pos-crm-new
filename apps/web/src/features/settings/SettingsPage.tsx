@@ -38,9 +38,10 @@ export default function SettingsPage() {
   const [resetModalOpen, setResetModalOpen] = useState(false)
   const [resetConfirmText, setResetConfirmText] = useState('')
   const [resetting, setResetting] = useState(false)
+  const resetConfirmed = ['ВИДАЛИТИ ВСЕ', 'УДАЛИТЬ ВСЕ'].includes(resetConfirmText.trim().toUpperCase())
 
   async function handleResetAllData() {
-    if (resetConfirmText !== 'ВИДАЛИТИ ВСЕ') return
+    if (!resetConfirmed) return
     setResetting(true)
     try {
       await adminApi.resetAllData()
@@ -772,7 +773,7 @@ export default function SettingsPage() {
               variant="danger"
               className="flex-1"
               loading={resetting}
-              disabled={resetConfirmText !== 'ВИДАЛИТИ ВСЕ'}
+              disabled={!resetConfirmed}
               onClick={handleResetAllData}
             >
               Видалити все

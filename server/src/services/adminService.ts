@@ -334,113 +334,122 @@ export async function updateSettings(input: SettingsInput, tenantId: string) {
 }
 
 export async function resetAllData(tenantId: string, currentUserId: string) {
-  // 1. Delete all other users from Supabase Auth
+  // Спочатку лише читаємо список користувачів. Видаляти Auth-користувачів до
+  // успішного COMMIT не можна: при помилці БД акаунти вже зникнуть, а дані
+  // залишаться.
   const { data: allUsers, error: listErr } = await supabaseAdmin.auth.admin.listUsers()
   if (listErr) throw new AppError('AUTH_ERROR', listErr.message, 500)
 
   const usersToDelete = (allUsers?.users ?? []).filter(
     (u) => u.user_metadata?.tenant_id === tenantId && u.id !== currentUserId
   )
+  const userIdsToDelete = usersToDelete.map((user) => user.id)
 
-  for (const user of usersToDelete) {
-    await db.from('staff_kpi_targets').delete().eq('user_id', user.id)
-    await supabaseAdmin.auth.admin.deleteUser(user.id)
-  }
+  // Порядок — від дочірніх таблиць до батьківських згідно з реальними FK.
+  // Таблиці без tenant_id очищаються через їх батьківську таблицю.
+  const tablesToDelete = [
+    { name: 'in_app_notifications', query: 'DELETE FROM in_app_notifications WHERE tenant_id = $1' },
+    { name: 'sys_background_jobs', query: 'DELETE FROM sys_background_jobs WHERE tenant_id = $1' },
+    { name: 'idempotency_keys', query: 'DELETE FROM idempotency_keys WHERE tenant_id = $1' },
+    { name: 'ai_usage', query: 'DELETE FROM ai_usage WHERE tenant_id = $1' },
+    { name: 'audit_log', query: 'DELETE FROM audit_log WHERE tenant_id = $1' },
+    { name: 'telegram_messages', query: 'DELETE FROM telegram_messages WHERE tenant_id = $1' },
+    { name: 'bonus_transactions', query: 'DELETE FROM bonus_transactions WHERE tenant_id = $1' },
+    { name: 'loyalty_transactions', query: 'DELETE FROM loyalty_transactions WHERE tenant_id = $1' },
 
-  // 2. Clear all tables for this tenant in transaction
+    { name: 'return_items', query: 'DELETE FROM return_items WHERE tenant_id = $1' },
+    { name: 'customer_return_items', query: 'DELETE FROM customer_return_items WHERE tenant_id = $1' },
+    { name: 'supplier_warranty_claims', query: 'DELETE FROM supplier_warranty_claims WHERE tenant_id = $1' },
+    { name: 'supplier_returns', query: 'DELETE FROM supplier_returns WHERE tenant_id = $1' },
+    { name: 'returns', query: 'DELETE FROM returns WHERE tenant_id = $1' },
+    { name: 'customer_returns', query: 'DELETE FROM customer_returns WHERE tenant_id = $1' },
+
+    { name: 'supplier_purchase_order_items', query: 'DELETE FROM supplier_purchase_order_items WHERE tenant_id = $1' },
+    { name: 'supplier_purchase_orders', query: 'DELETE FROM supplier_purchase_orders WHERE tenant_id = $1' },
+    { name: 'order_payments', query: 'DELETE FROM order_payments WHERE tenant_id = $1' },
+    { name: 'order_activity_log', query: 'DELETE FROM order_activity_log WHERE order_id IN (SELECT id FROM customer_orders WHERE tenant_id = $1)' },
+    { name: 'customer_order_items', query: 'DELETE FROM customer_order_items WHERE order_id IN (SELECT id FROM customer_orders WHERE tenant_id = $1)' },
+    { name: 'customer_orders', query: 'DELETE FROM customer_orders WHERE tenant_id = $1' },
+
+    { name: 'messenger_messages', query: 'DELETE FROM messenger_messages WHERE chat_id IN (SELECT id FROM messenger_chats WHERE tenant_id = $1)' },
+    { name: 'messenger_chats', query: 'DELETE FROM messenger_chats WHERE tenant_id = $1' },
+    { name: 'messenger_channels', query: 'DELETE FROM messenger_channels WHERE tenant_id = $1' },
+
+    { name: 'sale_items', query: 'DELETE FROM sale_items WHERE tenant_id = $1' },
+    { name: 'sales', query: 'DELETE FROM sales WHERE tenant_id = $1' },
+
+    { name: 'inventory_session_items', query: 'DELETE FROM inventory_session_items WHERE tenant_id = $1' },
+    { name: 'inventory_items', query: 'DELETE FROM inventory_items WHERE session_id IN (SELECT id FROM inventory_sessions WHERE tenant_id = $1)' },
+    { name: 'inventory_sessions', query: 'DELETE FROM inventory_sessions WHERE tenant_id = $1' },
+    { name: 'inventory_writeoff_items', query: 'DELETE FROM inventory_writeoff_items WHERE writeoff_id IN (SELECT id FROM inventory_writeoffs WHERE tenant_id = $1)' },
+    { name: 'inventory_writeoffs', query: 'DELETE FROM inventory_writeoffs WHERE tenant_id = $1' },
+
+    { name: 'supplier_purchase_items', query: 'DELETE FROM supplier_purchase_items WHERE tenant_id = $1' },
+    { name: 'supplier_purchases', query: 'DELETE FROM supplier_purchases WHERE tenant_id = $1' },
+    { name: 'inventory_receipt_items', query: 'DELETE FROM inventory_receipt_items WHERE tenant_id = $1' },
+    { name: 'inventory_receipts', query: 'DELETE FROM inventory_receipts WHERE tenant_id = $1' },
+
+    { name: 'supplier_payments', query: 'DELETE FROM supplier_payments WHERE tenant_id = $1' },
+    { name: 'supply_invoice_items', query: 'DELETE FROM supply_invoice_items WHERE tenant_id = $1' },
+    { name: 'supply_invoices', query: 'DELETE FROM supply_invoices WHERE tenant_id = $1' },
+    { name: 'supplier_price_items', query: 'DELETE FROM supplier_price_items WHERE tenant_id = $1' },
+    { name: 'supplier_price_imports', query: 'DELETE FROM supplier_price_imports WHERE tenant_id = $1' },
+
+    { name: 'warehouse_movements', query: 'DELETE FROM warehouse_movements WHERE tenant_id = $1' },
+    { name: 'inventory_reserves', query: 'DELETE FROM inventory_reserves WHERE tenant_id = $1' },
+    { name: 'auto_purchase_rules', query: 'DELETE FROM auto_purchase_rules WHERE tenant_id = $1' },
+
+    { name: 'product_photos', query: 'DELETE FROM product_photos WHERE product_id IN (SELECT id FROM products WHERE tenant_id = $1)' },
+    { name: 'product_analogs', query: 'DELETE FROM product_analogs WHERE tenant_id = $1' },
+    { name: 'product_cobuy', query: 'DELETE FROM product_cobuy WHERE product_id IN (SELECT id FROM products WHERE tenant_id = $1) OR recommended_product_id IN (SELECT id FROM products WHERE tenant_id = $1)' },
+    { name: 'product_barcodes', query: 'DELETE FROM product_barcodes WHERE tenant_id = $1' },
+    { name: 'product_aliases', query: 'DELETE FROM product_aliases WHERE tenant_id = $1' },
+    { name: 'product_cross_numbers', query: 'DELETE FROM product_cross_numbers WHERE tenant_id = $1' },
+    { name: 'product_supplier_codes', query: 'DELETE FROM product_supplier_codes WHERE tenant_id = $1' },
+    { name: 'product_price_history', query: 'DELETE FROM product_price_history WHERE tenant_id = $1' },
+    { name: 'product_fitment', query: 'DELETE FROM product_fitment WHERE tenant_id = $1' },
+    { name: 'product_waitlist', query: 'DELETE FROM product_waitlist WHERE tenant_id = $1' },
+
+    { name: 'customer_cars', query: 'DELETE FROM customer_cars WHERE tenant_id = $1' },
+    { name: 'customer_vehicles', query: 'DELETE FROM customer_vehicles WHERE tenant_id = $1' },
+    { name: 'customer_notes', query: 'DELETE FROM customer_notes WHERE tenant_id = $1' },
+    { name: 'customer_group_members', query: 'DELETE FROM customer_group_members WHERE group_id IN (SELECT id FROM customer_groups WHERE tenant_id = $1)' },
+    { name: 'customer_groups', query: 'DELETE FROM customer_groups WHERE tenant_id = $1' },
+    { name: 'customer_notification_preferences', query: 'DELETE FROM customer_notification_preferences WHERE tenant_id = $1' },
+    { name: 'customers', query: 'DELETE FROM customers WHERE tenant_id = $1' },
+
+    { name: 'salary_payments', query: 'DELETE FROM salary_payments WHERE tenant_id = $1' },
+    { name: 'internal_consumptions', query: 'DELETE FROM internal_consumptions WHERE tenant_id = $1' },
+    { name: 'cash_reconciliations', query: 'DELETE FROM cash_reconciliations WHERE tenant_id = $1' },
+    { name: 'cash_operations', query: 'DELETE FROM cash_operations WHERE tenant_id = $1' },
+    { name: 'expense_categories', query: 'DELETE FROM expense_categories WHERE tenant_id = $1' },
+    { name: 'shifts', query: 'DELETE FROM shifts WHERE tenant_id = $1' },
+
+    { name: 'category_markups', query: 'DELETE FROM category_markups WHERE tenant_id = $1' },
+    { name: 'volume_discounts', query: 'DELETE FROM volume_discounts WHERE tenant_id = $1' },
+    { name: 'commission_rules', query: 'DELETE FROM commission_rules WHERE tenant_id = $1' },
+    { name: 'price_tiers', query: 'DELETE FROM price_tiers WHERE tenant_id = $1' },
+    { name: 'products', query: 'DELETE FROM products WHERE tenant_id = $1' },
+    { name: 'categories', query: 'DELETE FROM categories WHERE tenant_id = $1' },
+    { name: 'brands', query: 'DELETE FROM brands WHERE tenant_id = $1' },
+    { name: 'suppliers', query: 'DELETE FROM suppliers WHERE tenant_id = $1' },
+    { name: 'staff_kpi_targets', query: 'DELETE FROM staff_kpi_targets WHERE tenant_id = $1' },
+  ]
+
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
 
-    const tablesToDelete = [
-      { name: 'in_app_notifications', query: 'DELETE FROM in_app_notifications WHERE tenant_id = $1' },
-      { name: 'sys_background_jobs', query: 'DELETE FROM sys_background_jobs WHERE tenant_id = $1' },
-      { name: 'idempotency_keys', query: 'DELETE FROM idempotency_keys WHERE tenant_id = $1' },
-      { name: 'bonus_transactions', query: 'DELETE FROM bonus_transactions WHERE tenant_id = $1' },
-      { name: 'audit_log', query: 'DELETE FROM audit_log WHERE tenant_id = $1' },
-      { name: 'telegram_messages', query: 'DELETE FROM telegram_messages WHERE tenant_id = $1' },
-      { name: 'messenger_messages', query: 'DELETE FROM messenger_messages WHERE tenant_id = $1' },
-      { name: 'messenger_chats', query: 'DELETE FROM messenger_chats WHERE tenant_id = $1' },
-      { name: 'messenger_channels', query: 'DELETE FROM messenger_channels WHERE tenant_id = $1' },
-
-      { name: 'sale_items', query: 'DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE tenant_id = $1)' },
-      { name: 'sales', query: 'DELETE FROM sales WHERE tenant_id = $1' },
-      { name: 'order_payments', query: 'DELETE FROM order_payments WHERE tenant_id = $1' },
-      { name: 'order_activity_log', query: 'DELETE FROM order_activity_log WHERE tenant_id = $1' },
-      { name: 'order_status_history', query: 'DELETE FROM order_status_history WHERE tenant_id = $1' },
-      { name: 'order_items', query: 'DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = $1)' },
-      { name: 'orders', query: 'DELETE FROM orders WHERE tenant_id = $1' },
-      { name: 'customer_order_items', query: 'DELETE FROM customer_order_items WHERE order_id IN (SELECT id FROM customer_orders WHERE tenant_id = $1)' },
-      { name: 'customer_orders', query: 'DELETE FROM customer_orders WHERE tenant_id = $1' },
-
-      { name: 'return_items', query: 'DELETE FROM return_items WHERE return_id IN (SELECT id FROM returns WHERE tenant_id = $1)' },
-      { name: 'returns', query: 'DELETE FROM returns WHERE tenant_id = $1' },
-      { name: 'customer_return_items', query: 'DELETE FROM customer_return_items WHERE return_id IN (SELECT id FROM customer_returns WHERE tenant_id = $1)' },
-      { name: 'customer_returns', query: 'DELETE FROM customer_returns WHERE tenant_id = $1' },
-      { name: 'inventory_session_items', query: 'DELETE FROM inventory_session_items WHERE session_id IN (SELECT id FROM inventory_sessions WHERE tenant_id = $1)' },
-      { name: 'inventory_sessions', query: 'DELETE FROM inventory_sessions WHERE tenant_id = $1' },
-      { name: 'inventory_writeoff_items', query: 'DELETE FROM inventory_writeoff_items WHERE writeoff_id IN (SELECT id FROM inventory_writeoffs WHERE tenant_id = $1)' },
-      { name: 'inventory_writeoffs', query: 'DELETE FROM inventory_writeoffs WHERE tenant_id = $1' },
-
-      { name: 'warehouse_movements', query: 'DELETE FROM warehouse_movements WHERE tenant_id = $1' },
-      { name: 'inventory_reserves', query: 'DELETE FROM inventory_reserves WHERE tenant_id = $1' },
-      { name: 'inventory_items', query: 'DELETE FROM inventory_items WHERE tenant_id = $1' },
-
-      { name: 'product_photos', query: 'DELETE FROM product_photos WHERE tenant_id = $1' },
-      { name: 'product_analogs', query: 'DELETE FROM product_analogs WHERE tenant_id = $1' },
-      { name: 'product_cobuy', query: 'DELETE FROM product_cobuy WHERE tenant_id = $1' },
-      { name: 'product_barcodes', query: 'DELETE FROM product_barcodes WHERE tenant_id = $1' },
-      { name: 'product_aliases', query: 'DELETE FROM product_aliases WHERE tenant_id = $1' },
-      { name: 'product_supplier_codes', query: 'DELETE FROM product_supplier_codes WHERE tenant_id = $1' },
-      { name: 'product_price_history', query: 'DELETE FROM product_price_history WHERE tenant_id = $1' },
-      { name: 'product_fitment', query: 'DELETE FROM product_fitment WHERE tenant_id = $1' },
-      { name: 'product_waitlist', query: 'DELETE FROM product_waitlist WHERE tenant_id = $1' },
-
-      { name: 'supplier_price_items', query: 'DELETE FROM supplier_price_items WHERE tenant_id = $1' },
-      { name: 'supplier_price_imports', query: 'DELETE FROM supplier_price_imports WHERE tenant_id = $1' },
-      { name: 'supplier_invoice_payments', query: 'DELETE FROM supplier_invoice_payments WHERE tenant_id = $1' },
-      { name: 'supplier_purchase_order_items', query: 'DELETE FROM supplier_purchase_order_items WHERE po_id IN (SELECT id FROM supplier_purchase_orders WHERE tenant_id = $1)' },
-      { name: 'supplier_purchase_orders', query: 'DELETE FROM supplier_purchase_orders WHERE tenant_id = $1' },
-      { name: 'supplier_purchase_items', query: 'DELETE FROM supplier_purchase_items WHERE purchase_id IN (SELECT id FROM supplier_purchases WHERE tenant_id = $1)' },
-      { name: 'supplier_purchases', query: 'DELETE FROM supplier_purchases WHERE tenant_id = $1' },
-      { name: 'supplier_returns', query: 'DELETE FROM supplier_returns WHERE tenant_id = $1' },
-      { name: 'supplier_warranty_claims', query: 'DELETE FROM supplier_warranty_claims WHERE tenant_id = $1' },
-      { name: 'supply_invoice_items', query: 'DELETE FROM supply_invoice_items WHERE invoice_id IN (SELECT id FROM supply_invoices WHERE tenant_id = $1)' },
-      { name: 'supply_invoices', query: 'DELETE FROM supply_invoices WHERE tenant_id = $1' },
-
-      { name: 'category_markups', query: 'DELETE FROM category_markups WHERE tenant_id = $1' },
-      { name: 'volume_discounts', query: 'DELETE FROM volume_discounts WHERE tenant_id = $1' },
-      { name: 'price_tiers', query: 'DELETE FROM price_tiers WHERE tenant_id = $1' },
-      { name: 'commission_rules', query: 'DELETE FROM commission_rules WHERE tenant_id = $1' },
-
-      { name: 'products', query: 'DELETE FROM products WHERE tenant_id = $1' },
-      { name: 'categories', query: 'DELETE FROM categories WHERE tenant_id = $1' },
-      { name: 'brands', query: 'DELETE FROM brands WHERE tenant_id = $1' },
-
-      { name: 'customer_cars', query: 'DELETE FROM customer_cars WHERE tenant_id = $1' },
-      { name: 'customer_vehicles', query: 'DELETE FROM customer_vehicles WHERE tenant_id = $1' },
-      { name: 'customer_notes', query: 'DELETE FROM customer_notes WHERE tenant_id = $1' },
-      { name: 'customer_group_members', query: 'DELETE FROM customer_group_members WHERE tenant_id = $1' },
-      { name: 'customer_groups', query: 'DELETE FROM customer_groups WHERE tenant_id = $1' },
-      { name: 'customer_notification_preferences', query: 'DELETE FROM customer_notification_preferences WHERE tenant_id = $1' },
-      { name: 'customers', query: 'DELETE FROM customers WHERE tenant_id = $1' },
-
-      { name: 'suppliers', query: 'DELETE FROM suppliers WHERE tenant_id = $1' },
-
-      { name: 'expense_categories', query: 'DELETE FROM expense_categories WHERE tenant_id = $1' },
-      { name: 'cash_operations', query: 'DELETE FROM cash_operations WHERE tenant_id = $1' },
-      { name: 'cash_reconciliations', query: 'DELETE FROM cash_reconciliations WHERE tenant_id = $1' },
-      { name: 'auto_purchase_rules', query: 'DELETE FROM auto_purchase_rules WHERE tenant_id = $1' },
-
-      { name: 'staff_kpi_targets', query: 'DELETE FROM staff_kpi_targets WHERE tenant_id = $1' },
-      { name: 'staff_pins', query: 'DELETE FROM staff_pins WHERE tenant_id = $1' },
-      { name: 'salary_payments', query: 'DELETE FROM salary_payments WHERE tenant_id = $1' },
-      { name: 'internal_consumptions', query: 'DELETE FROM internal_consumptions WHERE tenant_id = $1' },
-      { name: 'shifts', query: 'DELETE FROM shifts WHERE tenant_id = $1' }
-    ]
-
     for (const table of tablesToDelete) {
-      await client.query(table.query, [tenantId])
+      try {
+        await client.query(table.query, [tenantId])
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new AppError('RESET_TABLE_FAILED', `Не вдалося очистити ${table.name}: ${message}`, 500)
+      }
+    }
+    if (userIdsToDelete.length > 0) {
+      await client.query('DELETE FROM staff_pins WHERE user_id = ANY($1::uuid[])', [userIdsToDelete])
     }
 
     await client.query('COMMIT')
@@ -451,8 +460,19 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     client.release()
   }
 
+  // БД уже успішно очищена — тепер безпечно видаляємо інші Auth-акаунти.
+  const authDeleteErrors: string[] = []
+  for (const user of usersToDelete) {
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(user.id)
+    if (error) authDeleteErrors.push(user.id)
+  }
+
   categoriesCache.delete(tenantId)
   brandsCache.delete(tenantId)
 
-  return { success: true }
+  return {
+    success: true,
+    users_deleted: usersToDelete.length - authDeleteErrors.length,
+    users_failed: authDeleteErrors.length,
+  }
 }
