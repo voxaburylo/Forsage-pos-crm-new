@@ -619,103 +619,54 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
     }, tenantId)
   }
 
-  // ЯКЩО ПОСТАЧАЛЬНИКА НЕ ВКАЗАНО -> Прямий імпорт у каталог товарів через RPC
-  const productIds = input.items.map((i) => i.product_id).filter(Boolean) as string[]
-  const skus = input.items.map((i) => normalizeArticle(i.sku)).filter(Boolean)
-  const barcodes = input.items.map((i) => i.barcode).filter(Boolean) as string[]
+  // ЯКЩО ПОСТАЧАЛЬНИКА НЕ ВКАЗАНО -> Прямий імпорт у каталог ПАКЕТНИМ RPC.
+  // Раніше: окремий RPC + окремий запит налаштувань на КОЖЕН товар (9000 рядків
+  // = десятки тисяч звернень -> 20-40 хв). Тепер: правила націнки кешуємо один
+  // раз, а всі товари відправляємо порціями по 500 у серверну функцію
+  // upsert_products_import_bulk (обробляє масив за один виклик).
+  const now = Date.now()
+  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
+  const rules = (settings as any)?.markup_rules as MarkupRule[] | undefined
+  const updateRetail = input.update_retail ?? true
 
-  // Пошук наявних товарів — порційно (той самий клас бага, що й у прев'ю:
-  // тисячі значень в одному .in(...) ламають URL PostgREST). Порція, що впала,
-  // не валить увесь імпорт.
-  let existingProducts: any[] = []
-  const collectIn = async (field: string, values: string[], chunkSize: number) => {
-    for (let i = 0; i < values.length; i += chunkSize) {
-      const slice = values.slice(i, i + chunkSize)
-      try {
-        const { data } = await db.from('products')
-          .select('id, sku, barcode, retail_price')
-          .eq('tenant_id', tenantId)
-          .in(field, slice)
-        if (data) existingProducts = existingProducts.concat(data)
-      } catch { /* ігноруємо збій порції — RPC все одно робить власний матчинг */ }
+  const payloadItems = input.items.map((i) => {
+    const sku = i.sku ? normalizeArticle(i.sku) : 'IMP-' + now + '-' + i.row
+    // роздрібну рахуємо локально (без запиту в БД на кожен рядок)
+    let retail = i.retail_price ?? 0
+    if (!retail) retail = applyMarkup(i.price, rules, 30)
+    return {
+      sku,
+      barcode: i.barcode ?? null,
+      name: i.name,
+      retail_price: retail,
+      purchase_price: i.price,
+      qty_on_hand: i.qty,
+      unit: 'шт',
+      storage_bin: i.storage_bin ?? null,
     }
-  }
-  if (productIds.length > 0) await collectIn('id', productIds, 200)
-  if (skus.length > 0) await collectIn('sku', skus, 200)
-  if (barcodes.length > 0) await collectIn('barcode', barcodes, 200)
+  })
 
-  const existingMap = new Map<string, any>()
-  for (const p of existingProducts) {
-    existingMap.set(p.id, p)
-    if (p.sku) existingMap.set(p.sku, p)
-    if (p.barcode) existingMap.set(p.barcode, p)
-  }
-
-  const resultsSummary = { created: 0, updated: 0, errors: 0 }
-
-  for (const item of input.items) {
-    let hasMatch = false
-    let matchedProduct = null
-
-    if (item.product_id) {
-      matchedProduct = existingMap.get(item.product_id)
-    }
-    if (!matchedProduct && item.sku) {
-      matchedProduct = existingMap.get(normalizeArticle(item.sku))
-    }
-    if (!matchedProduct && item.barcode) {
-      matchedProduct = existingMap.get(item.barcode)
-    }
-
-    if (matchedProduct) {
-      hasMatch = true
-    }
-
-    if (!hasMatch && !input.create_missing) {
-      resultsSummary.errors++
-      continue
-    }
-
-    let retailPriceToUse = item.retail_price ?? 0
-
-    if (hasMatch) {
-      if (!input.update_retail) {
-        retailPriceToUse = matchedProduct.retail_price ?? 0
-      } else if (!retailPriceToUse) {
-        retailPriceToUse = await getCalculatedRetailPrice(item.price, tenantId)
-      }
-    } else {
-      if (!retailPriceToUse) {
-        retailPriceToUse = await getCalculatedRetailPrice(item.price, tenantId)
-      }
-    }
-
-    const skuToUse = item.sku ? normalizeArticle(item.sku) : 'IMP-' + Date.now() + '-' + item.row
-
-    const { data, error } = await db.rpc('upsert_product_import', {
+  const summary = { created: 0, updated: 0, errors: 0 }
+  const CHUNK = 500
+  for (let i = 0; i < payloadItems.length; i += CHUNK) {
+    const chunk = payloadItems.slice(i, i + CHUNK)
+    const { data, error } = await db.rpc('upsert_products_import_bulk', {
       p_tenant_id:      tenantId,
-      p_sku:            skuToUse,
-      p_barcode:        item.barcode ?? null,
-      p_name:           item.name,
-      p_retail_price:   retailPriceToUse,
-      p_purchase_price: item.price,
-      p_qty_on_hand:    item.qty,
-      p_unit:           'шт',
-      p_storage_bin:    item.storage_bin ?? null,
+      p_items:          chunk,
       p_mode:           input.mode ?? 'replace',
+      p_update_retail:  updateRetail,
+      p_create_missing: input.create_missing ?? false,
     })
-
     if (error || !data) {
-      resultsSummary.errors++
+      summary.errors += chunk.length
+      logger.warn({ err: error?.message, from: i }, '[import] пакетна порція не вдалася')
     } else {
-      const res = data as any
-      if (res.is_new) {
-        resultsSummary.created++
-      } else {
-        resultsSummary.updated++
-      }
+      const r = data as any
+      summary.created += r.created ?? 0
+      summary.updated += (r.updated ?? 0) + (r.restored ?? 0) // відновлені = оновлені для користувача
+      summary.errors  += (r.errors ?? 0) + (r.skipped ?? 0)
     }
   }
 
-  return resultsSummary
+  return summary
 }
