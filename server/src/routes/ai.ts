@@ -62,7 +62,7 @@ const chatSchema = z.object({
     role: z.enum(['user', 'model']),
     text: z.string(),
   })).max(40).optional(),
-  file_text: z.string().max(200000).optional(),
+  file_text: z.string().max(1_000_000).optional(),
   // Фото (рукописні замовлення тощо): стиснуті на клієнті JPEG/PNG/WebP у base64
   images: z.array(z.object({
     mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
@@ -109,6 +109,7 @@ const productPayload = z.object({
   oem_number: optionalText(100),
   barcode: optionalText(100),
   storage_bin: optionalText(100),
+  qty_on_hand: z.number().finite().min(0).max(100_000_000).optional(),
 })
 
 const orderItemPayload = z.object({
@@ -156,7 +157,7 @@ const applySchema = z.discriminatedUnion('tool', [
   }),
   z.object({
     tool: z.literal('create_products_bulk'),
-    payload: z.object({ products: z.array(productPayload).min(1).max(500) }),
+    payload: z.object({ products: z.array(productPayload).min(1).max(1500) }),
   }),
   z.object({
     tool: z.literal('create_categories_bulk'),

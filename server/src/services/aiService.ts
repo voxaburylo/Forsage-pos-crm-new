@@ -216,6 +216,7 @@ const toolDeclarations: FunctionDeclaration[] = [
         oem_number: { type: SchemaType.STRING },
         barcode: { type: SchemaType.STRING },
         storage_bin: { type: SchemaType.STRING, description: 'Місце зберігання (комірка)' },
+        qty_on_hand: { type: SchemaType.NUMBER, description: 'Фактичний залишок' },
       },
       required: ['product_id'],
     },
@@ -235,6 +236,7 @@ const toolDeclarations: FunctionDeclaration[] = [
         brand_name: { type: SchemaType.STRING },
         oem_number: { type: SchemaType.STRING },
         barcode: { type: SchemaType.STRING },
+        qty_on_hand: { type: SchemaType.NUMBER, description: 'Початковий залишок; за відсутності 0' },
       },
       required: ['sku', 'name'],
     },
@@ -378,6 +380,8 @@ const toolDeclarations: FunctionDeclaration[] = [
               retail_price_uah: { type: SchemaType.NUMBER },
               purchase_price_uah: { type: SchemaType.NUMBER },
               oem_number: { type: SchemaType.STRING },
+              barcode: { type: SchemaType.STRING, description: 'Штрихкод як рядок, без округлення' },
+              qty_on_hand: { type: SchemaType.NUMBER, description: 'Залишок. Якщо клітинка порожня — 0' },
             },
             required: ['sku', 'name'],
           },
@@ -422,6 +426,16 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 - список клієнтів → create_customers_bulk;
 - візитка постачальника чи щось інше — опиши текстом, що бачиш, і спитай, що з цим зробити.
 Ціни на фото часто мають формат «1 890,00» — в аргументи інструментів передавай ЧИСЛО без пробілів, із крапкою: 1890.00.
+
+ІМПОРТ ТОВАРІВ З EXCEL/CSV:
+- «Ценовая группа/Номенклатура/Характеристика номенклатуры» або «Номенклатура» → name.
+- «Остаток» → qty_on_hand; якщо клітинка порожня — ОБОВʼЯЗКОВО qty_on_hand=0.
+- «Штрихкод» → barcode як точний РЯДОК без округлення та без наукового формату.
+- «Номенклатура.Код» / «Код» → sku; зберігай цифри коду.
+- «Номенклатура.Родитель» / «Родительская номенклатура» → category_name. Це папка: вона буде створена автоматично, а товар розміщений у ній.
+- «Закупочная цена» → purchase_price_uah, «Розничная цена» → retail_price_uah. Позначення «грн» і «шт» прибирай.
+- Російські назви товарів і папок перекладай українською. Бренди, артикули, коди, розміри, моделі та латинські позначення НЕ перекладай й не змінюй.
+- Не пропускай товар через відсутній залишок, штрихкод чи ціну. Обовʼязкові лише sku та name.
 
 Правила:
 - Усі грошові суми — у гривнях (грн). Телефони клієнтів — у форматі +380XXXXXXXXX (нормалізуй сам), але вони НЕОБОВʼЯЗКОВІ. Дані можуть бути «брудною» таблицею через табуляцію (колонки: №, прізвище, імʼя, телефон, рік, обʼєм, VIN, марка, модель, примітки) — розбирай по колонках, порожні клітинки пропускай.
@@ -527,12 +541,15 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
       'Назва': String(p.name ?? '—'),
       'Бренд': String(p.brand_name ?? '—'),
       'Категорія': String(p.category_name ?? '—'),
-      'Ціна': p.retail_price_uah !== undefined ? Number(p.retail_price_uah).toFixed(2) + ' грн' : '—',
+      'Штрихкод': String(p.barcode ?? '—'),
+      'Залишок': String(p.qty_on_hand ?? 0),
+      'Закупівля': p.purchase_price_uah !== undefined ? Number(p.purchase_price_uah).toFixed(2) + ' грн' : '—',
+      'Продаж': p.retail_price_uah !== undefined ? Number(p.retail_price_uah).toFixed(2) + ' грн' : '—',
     }))
     return {
       id, tool: name, title: `Створити товари: ${list.length}`,
       changes: [], count: list.length,
-      columns: ['Артикул', 'Назва', 'Бренд', 'Категорія', 'Ціна'], items,
+      columns: ['Артикул', 'Назва', 'Бренд', 'Категорія', 'Штрихкод', 'Залишок', 'Закупівля', 'Продаж'], items,
       payload: { products: list },
     }
   }
@@ -711,6 +728,8 @@ const SALVAGE_SCHEMA = {
           retail_price_uah: { type: SchemaType.NUMBER },
           purchase_price_uah: { type: SchemaType.NUMBER },
           oem_number: { type: SchemaType.STRING },
+          barcode: { type: SchemaType.STRING },
+          qty_on_hand: { type: SchemaType.NUMBER },
         },
         required: ['sku', 'name'],
       },
@@ -734,7 +753,7 @@ const SALVAGE_SCHEMA = {
 
 const SALVAGE_PROMPT = `Розпізнай дані з фото і поверни СТРОГО JSON за схемою (без коментарів).
 - Рукописні замовлення з зошита → orders[] (кожне замовлення окремо: клієнт, телефон +380…, авто, VIN, держномер, позиції; ПЕРЕКРЕСЛЕНЕ замовлення → is_done=true; ГАЛОЧКА біля позиції → arrived=true; невпевнено розпізнані поля перелічи в uncertain: customer_name/customer_phone/car/vin/plate/items/prices/status).
-- Прайс-лист або накладна з товарами → products[] (закупівельну ціну вказуй лише якщо вона явно є).
+- Прайс-лист або накладна з товарами → products[]. Для Excel: «Родитель» → category_name; «Остаток» → qty_on_hand (порожньо = 0); «Штрихкод» → barcode; російські назви товарів і папок переклади українською, не змінюючи бренди/артикули/коди.
 - Список клієнтів → customers[].
 Ціни «1 890,00» передавай числом 1890.00. Не вигадуй даних, яких нема на фото. Порожні масиви не включай.`
 
@@ -842,7 +861,7 @@ export async function runChat(
 
   let userText = params.message
   if (params.fileText) {
-    const clipped = params.fileText.slice(0, 100_000)
+    const clipped = params.fileText.slice(0, 900_000)
     userText += `\n\n[Прикріплений файл / вставлені дані]:\n${clipped}`
   }
 
@@ -1275,6 +1294,7 @@ export async function applyAction(
     if (payload.oem_number !== undefined) input.oem_number = payload.oem_number
     if (payload.barcode !== undefined) input.barcode = payload.barcode
     if (payload.storage_bin !== undefined) input.storage_bin = payload.storage_bin
+    if (payload.qty_on_hand !== undefined) input.qty_on_hand = Number(payload.qty_on_hand)
     if (payload.brand_name) input.brand_id = await resolveBrandId(payload.brand_name, tenantId)
 
     const result = await updateProduct(String(payload.product_id), input as any, userId, tenantId)
@@ -1287,6 +1307,7 @@ export async function applyAction(
       name: String(payload.name),
       purchase_price: payload.purchase_price_uah !== undefined ? Math.round(Number(payload.purchase_price_uah) * 100) : 0,
       retail_price: payload.retail_price_uah !== undefined ? Math.round(Number(payload.retail_price_uah) * 100) : 0,
+      qty_on_hand: payload.qty_on_hand !== undefined ? Number(payload.qty_on_hand) : 0,
     }
     if (payload.description !== undefined) input.notes = payload.description
     if (payload.category_id) input.category_id = payload.category_id
@@ -1344,8 +1365,11 @@ export async function applyAction(
           name: String(p.name),
           purchase_price: p.purchase_price_uah !== undefined ? Math.round(Number(p.purchase_price_uah) * 100) : 0,
           retail_price: p.retail_price_uah !== undefined ? Math.round(Number(p.retail_price_uah) * 100) : 0,
+          qty_on_hand: p.qty_on_hand !== undefined ? Number(p.qty_on_hand) : 0,
         }
         if (p.oem_number) input.oem_number = p.oem_number
+        if (p.barcode) input.barcode = String(p.barcode).trim()
+        if (p.storage_bin) input.storage_bin = String(p.storage_bin)
         if (p.brand_name) input.brand_id = await resolveBrandId(String(p.brand_name), tenantId)
         if (p.category_name) input.category_id = await resolveCategoryId(String(p.category_name), tenantId)
         return createProduct(input as any, userId, tenantId)

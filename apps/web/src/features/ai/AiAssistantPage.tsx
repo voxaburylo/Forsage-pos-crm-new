@@ -80,7 +80,8 @@ interface ChatEntry {
 // Переписка зберігається локально, щоб не зникати при переході на іншу вкладку
 const CHAT_STORAGE_KEY = 'forsage_ai_chat_v1'
 
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+const MAX_ATTACHMENT_TEXT_CHARS = 950_000
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_IMAGES = 4
 const ALLOWED_ATTACHMENT_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.txt']
@@ -98,7 +99,7 @@ async function fileToText(file: File): Promise<string> {
     throw new Error('Підтримуються Excel, CSV, TXT та фото (JPG/PNG/WebP)')
   }
   if (file.size > MAX_ATTACHMENT_BYTES) {
-    throw new Error('Файл завеликий — максимум 5 МБ')
+    throw new Error('Файл завеликий — максимум 10 МБ')
   }
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
     const buf = await file.arrayBuffer()
@@ -231,6 +232,9 @@ export default function AiAssistantPage() {
         return
       }
       const text = await fileToText(file)
+      if (text.length > MAX_ATTACHMENT_TEXT_CHARS) {
+        throw new Error('У файлі забагато рядків для одного запиту. Розділіть Excel на частини приблизно по 1000 товарів.')
+      }
       setAttachment({ name: file.name, text })
       toast.success(`Файл «${file.name}» прикріплено`)
     } catch (error) {
@@ -255,7 +259,9 @@ export default function AiAssistantPage() {
     setEntries((prev) => [...prev, userEntry])
     const fileText = attachment?.text
     const images = imageAttachments.length > 0 ? imageAttachments.map((img) => dataUrlToChatImage(img.dataUrl)) : undefined
-    const fallbackPrompt = images ? 'Ось фото замовлення з зошита — додай замовлення в програму.' : 'Ось файл, розбери його.'
+    const fallbackPrompt = images
+      ? 'Ось фото замовлення з зошита — додай замовлення в програму.'
+      : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Російські назви товарів і папок переклади українською.'
     setInput('')
     setAttachment(null)
     setImageAttachments([])
