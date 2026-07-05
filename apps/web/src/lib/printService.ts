@@ -44,6 +44,55 @@ export class PrintService {
     }
   }
 
+  /**
+   * Browser print preview can be created before data-URL images are decoded.
+   * Thermal labels then contain the barcode digits but no bars. Wait for every
+   * printable image and two paint frames before opening the system dialog.
+   */
+  private static async waitForPrintableResources(
+    doc: Document,
+    printWindow: Window,
+    timeoutMs = 5000,
+  ): Promise<void> {
+    await doc.fonts?.ready;
+
+    const waitForImage = async (image: HTMLImageElement) => {
+      if (!image.complete) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(
+            () => reject(new Error("Зображення штрихкоду не завантажилося вчасно.")),
+            timeoutMs,
+          );
+          image.addEventListener("load", () => {
+            window.clearTimeout(timeout);
+            resolve();
+          }, { once: true });
+          image.addEventListener("error", () => {
+            window.clearTimeout(timeout);
+            reject(new Error("Не вдалося завантажити зображення штрихкоду."));
+          }, { once: true });
+        });
+      }
+
+      if (typeof image.decode === "function") {
+        await image.decode();
+      }
+      if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+        throw new Error("Зображення штрихкоду порожнє.");
+      }
+    };
+
+    await Promise.all(Array.from(doc.images).map(waitForImage));
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        printWindow.requestAnimationFrame(() => {
+          printWindow.requestAnimationFrame(() => resolve());
+        });
+      }),
+      new Promise<void>((resolve) => window.setTimeout(resolve, 100)),
+    ]);
+  }
+
   static printCurrentPage(): boolean {
     // A double click or automatic print followed by a manual click must not
     // create a second OS spooler job while the first dialog is still open.
@@ -103,7 +152,7 @@ export class PrintService {
       iframe.onload = () => {
         const start = async () => {
           try {
-            await doc.fonts?.ready;
+            await PrintService.waitForPrintableResources(doc, printWindow);
             printWindow.addEventListener("afterprint", cleanup, { once: true });
             printWindow.focus();
             printWindow.print();
@@ -145,7 +194,7 @@ export class PrintService {
       printWindow.addEventListener("load", () => {
         const start = async () => {
           try {
-            await printWindow.document.fonts?.ready;
+            await PrintService.waitForPrintableResources(printWindow.document, printWindow);
             printWindow.addEventListener("afterprint", cleanup, { once: true });
             printWindow.focus();
             printWindow.print();
