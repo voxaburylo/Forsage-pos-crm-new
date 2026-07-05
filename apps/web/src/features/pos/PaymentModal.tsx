@@ -25,7 +25,7 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
   { id: 'card',     label: 'Термінал',        icon: <CreditCard size={20} />,               color: 'bg-blue-500 hover:bg-blue-400' },
   { id: 'transfer', label: 'Переказ на карту', icon: <Smartphone size={20} />,              color: 'bg-cyan-500 hover:bg-cyan-400' },
   { id: 'debt',     label: 'Борг',            icon: <BookOpen size={20} />,                 color: 'bg-red-500 hover:bg-red-400', requireCustomer: true },
-  { id: 'mixed',    label: 'Split',           icon: <SplitSquareHorizontal size={20} />,    color: 'bg-purple-500 hover:bg-purple-400' },
+  { id: 'mixed',    label: 'Змішана оплата',  icon: <SplitSquareHorizontal size={20} />,    color: 'bg-purple-500 hover:bg-purple-400' },
 ]
 
 export function PaymentModal({ open, offline = false, onClose, onConfirm }: Props) {
@@ -183,7 +183,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setPrintAfterPayment(shouldPrint)
     setLoading(true)
 
-    // Картка або Split із картковою частиною
+    // Картка або змішана оплата з картковою частиною
     if (method === 'card' || (method === 'mixed' && splitCardKopecks > 0)) {
       if (terminalIntegrated) {
         // Інтегрований термінал: сервер сам проведе оплату. Без ручного коду — щоб
@@ -326,7 +326,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             </div>
           )}
 
-          {/* Split */}
+          {/* Змішана оплата */}
           {method === 'mixed' && (
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Готівка (₴)</label>
