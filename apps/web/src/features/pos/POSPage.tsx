@@ -719,14 +719,15 @@ export default function POSPage() {
   }
 
   return (
-    <div
-      className="pos-app-shell fixed inset-0 flex flex-col overflow-hidden bg-[#1A1A1A]"
-      style={bigFont ? {
-        zoom: 1.18,
-        width: 'calc(100% / 1.18)',
-        height: 'calc(100dvh / 1.18)',
-      } : undefined}
-    >
+    <div className="fixed inset-0 overflow-hidden bg-[#1A1A1A]">
+      <div
+        className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
+        style={bigFont ? {
+          zoom: 1.18,
+          width: 'calc(100% / 1.18)',
+          height: 'calc(100% / 1.18)',
+        } : undefined}
+      >
       {/* Lock Screen */}
       {isLockedPIN && (
         <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />
@@ -1281,6 +1282,7 @@ export default function POSPage() {
 
       {/* Прихований чек для друку */}
       {lastSale && <ReceiptPrint sale={lastSale} />}
+      </div>
     </div>
   )
 }
