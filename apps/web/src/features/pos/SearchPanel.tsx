@@ -33,6 +33,20 @@ function getRecentItems(key: string): string[] {
   }
 }
 
+function findExactScannedProduct(products: any[], code: string): Product | undefined {
+  const normalized = code.toLocaleLowerCase('uk-UA').replace(/[\s\-./_]/g, '')
+  return products.find((product) => {
+    const barcodes = [
+      product.barcode,
+      ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+    ].filter(Boolean).map(String)
+    const normalizedSku = String(product.sku ?? '')
+      .toLocaleLowerCase('uk-UA')
+      .replace(/[\s\-./_]/g, '')
+    return barcodes.includes(code) || normalizedSku === normalized
+  }) as Product | undefined
+}
+
 
 export interface SearchPanelHandle {
   focus: () => void
@@ -156,13 +170,13 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { setQuery(''); setResults([]); setSupplierResults([]); return }
-    if (e.key === 'Enter' && query.trim()) {
+    if (e.key === 'Enter' && e.currentTarget.value.trim()) {
       e.preventDefault()
-      const trimmed = query.trim()
+      const trimmed = e.currentTarget.value.trim()
       // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
       // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
       // результат текстового пошуку.
-      handleBarcodeScan(trimmed)
+      void handleBarcodeScan(trimmed)
     }
   }
 
@@ -181,9 +195,10 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     // гарантує оновлення, а старий список лишається видимим до приходу відповіді.
     setSearchRefreshVersion((version) => version + 1)
     if (!serverOnline) {
-      const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey)
-      if (offlineResults[0]) {
-        addToReceipt(offlineResults[0] as Product)
+      const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey)
+      const exactProduct = findExactScannedProduct(offlineResults, normalizedCode)
+      if (exactProduct) {
+        addToReceipt(exactProduct)
         saveRecentItem('recent_scans', normalizedCode)
       } else {
         const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
@@ -208,7 +223,6 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           toast.error('Штрих-код не знайдено в офлайн-кеші')
         }
       }
-      setQuery('')
       setSupplierResults([])
       return
     }
@@ -237,14 +251,14 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         playErrorTone()
         toast.error('Штрих-код не знайдено в базі')
       }
-      setQuery('')
       setSupplierResults([])
     } catch {
-      const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey).catch(() => [])
-      const fallback = offlineResults[0] ?? results[0]
+      const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey).catch(() => [])
+      // Штрихкод має збігатися точно. Ніколи не додаємо перший текстовий
+      // результат: при швидкому скануванні це збільшувало кількість попереднього товару.
+      const fallback = findExactScannedProduct(offlineResults, normalizedCode)
       if (fallback) {
         addToReceipt(fallback as Product)
-        setQuery('')
         setSupplierResults([])
       } else {
         playErrorTone()
@@ -385,7 +399,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
             <button
               key={code}
               type="button"
-              onClick={() => { setQuery(code); handleBarcodeScan(code) }}
+              onClick={() => { void handleBarcodeScan(code) }}
               className="text-[10px] bg-[#2C2C2C] hover:bg-[#3C3C3C] text-gray-300 border border-gray-700 px-2.5 py-1 rounded-full transition font-mono"
             >
               {code}
