@@ -98,7 +98,10 @@ export async function cacheProducts(products: any[], scopeKey: string): Promise<
 
     tx.objectStore('meta').put({ key: 'products_cached_at', value: Date.now() })
     tx.objectStore('meta').put({ key: 'cache_scope', value: scopeKey })
-    tx.oncomplete = () => resolve()
+    tx.oncomplete = () => {
+      window.dispatchEvent(new CustomEvent('forsage:offline-products-refreshed'))
+      resolve()
+    }
     tx.onerror    = () => reject(tx.error)
   })
 }
@@ -194,6 +197,23 @@ export async function findProductByScanOffline(
     const sku = String(product.sku ?? '').replace(/[\s\-./_]/g, '').toUpperCase()
     return barcodes.includes(code) || sku === normalizedSku
   }) ?? null
+}
+
+export async function getCachedProductsForScan(scopeKey?: string): Promise<any[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['products', 'meta'], 'readonly')
+    const scopeRequest = tx.objectStore('meta').get('cache_scope')
+    const productsRequest = tx.objectStore('products').getAll()
+    productsRequest.onsuccess = () => {
+      if (scopeKey && scopeRequest.result?.value !== scopeKey) {
+        resolve([])
+        return
+      }
+      resolve((productsRequest.result ?? []).filter((product: any) => product.is_active !== false))
+    }
+    productsRequest.onerror = () => reject(productsRequest.error)
+  })
 }
 
 export async function getProductsCacheAge(): Promise<number | null> {

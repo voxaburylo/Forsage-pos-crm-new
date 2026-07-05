@@ -371,35 +371,66 @@ export default function POSPage() {
     let buf = ''
     let last = 0
     let first = 0
+    let scanTarget: HTMLInputElement | HTMLTextAreaElement | null = null
+    let valueBeforeScan = ''
+    function restoreInputBeforeScan() {
+      const el = scanTarget
+      if (!el) return
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+      setter?.call(el, valueBeforeScan)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
     function onScanKey(e: KeyboardEvent) {
       const now = Date.now()
-      if (e.key === 'Enter') {
-        const ae = document.activeElement as HTMLElement | null
-        const editable = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
+      if (e.key === 'Enter' || e.key === 'Tab') {
         const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-        const scannerSequence = buf.length >= 4 && (now - last) < 120 && averageInterval < 60
-        // Поле пошуку саме відокремлює сканер від ручного введення. Глобальний
-        // обробник потрібен лише коли фокус не стоїть у жодному полі.
-        if (!editable && scannerSequence) {
+        // Пороги з запасом на повільні/Bluetooth-сканери: людина так швидко
+        // 4+ символів поспіль не набирає, тож хибних спрацювань не буде.
+        const scannerSequence = buf.length >= 4 && (now - last) < 500 && averageInterval <= 120
+        if (scannerSequence) {
           e.preventDefault()
           e.stopPropagation()
+          e.stopImmediatePropagation()
+          restoreInputBeforeScan()
           searchRef.current?.scanBarcode(buf)
         }
         buf = ''
         first = 0
+        scanTarget = null
+        valueBeforeScan = ''
         return
       }
-      if (e.key.length === 1) {
-        if (now - last > 120) {
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (now - last > 400) {
           buf = ''
           first = now
         }
-        if (!buf) first = now
+        if (!buf) {
+          first = now
+          const active = document.activeElement
+          scanTarget = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+            ? active
+            : null
+          valueBeforeScan = scanTarget?.value ?? ''
+        }
         buf += e.key
         last = now
-      } else {
+        const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
+        const scannerBurst = buf.length >= 3 && averageInterval <= 120
+        if (scannerBurst && scanTarget?.dataset.posSearch !== 'true') {
+          // Після перших символів уже зрозуміло, що це сканер. Решту коду не
+          // віддаємо полю кількості/ціни; на суфіксі повернемо початкове значення.
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      } else if (e.key !== 'Shift' && e.key !== 'CapsLock') {
+        // Shift не скидає буфер: сканер тисне його перед великими літерами
+        // та символами (CODE128), і код рвався навпіл.
         buf = ''
         first = 0
+        scanTarget = null
+        valueBeforeScan = ''
       }
     }
     window.addEventListener('keydown', onScanKey, true)

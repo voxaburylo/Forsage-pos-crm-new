@@ -8,7 +8,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
+import { findProductByScanOffline, getCachedCategories, getCachedProductsForScan, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 function saveRecentItem(key: string, value: string) {
@@ -46,6 +46,21 @@ function findExactScannedProduct(products: any[], code: string): Product | undef
   }) as Product | undefined
 }
 
+function addProductToScanIndex(index: Map<string, Product>, product: Product) {
+  const barcodes = [
+    product.barcode,
+    ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+  ].filter(Boolean).map((value) => String(value).replace(/[\u0000-\u001f\u007f\s]/g, ''))
+  for (const barcode of barcodes) index.set(`barcode:${barcode}`, product)
+  const sku = String(product.sku ?? '').replace(/[\s\-./_]/g, '').toUpperCase()
+  if (sku) index.set(`sku:${sku}`, product)
+}
+
+function findProductInScanIndex(index: Map<string, Product>, code: string): Product | undefined {
+  const normalizedSku = code.replace(/[\s\-./_]/g, '').toUpperCase()
+  return index.get(`barcode:${code}`) ?? index.get(`sku:${normalizedSku}`)
+}
+
 
 export interface SearchPanelHandle {
   focus: () => void
@@ -76,6 +91,13 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const inputCommitTimer        = useRef<ReturnType<typeof setTimeout>>()
   const inputDraft              = useRef('')
   const searchEpoch             = useRef(0)
+  const scanQueue               = useRef<string[]>([])
+  const scanQueueRunning        = useRef(false)
+  const scanProductIndex        = useRef<Map<string, Product>>(new Map())
+  // Таймінг набору: відрізняємо чергу символів сканера від ручного вводу
+  const burstStart              = useRef(0)
+  const burstCount              = useRef(0)
+  const lastCharAt              = useRef(0)
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
@@ -109,6 +131,27 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   useEffect(() => () => {
     clearTimeout(inputCommitTimer.current)
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const rebuildScanIndex = async () => {
+      const products = await getCachedProductsForScan(scopeKey).catch(() => [])
+      if (cancelled) return
+      const index = new Map<string, Product>()
+      for (const product of products as Product[]) {
+        addProductToScanIndex(index, product)
+      }
+      scanProductIndex.current = index
+    }
+
+    void rebuildScanIndex()
+    window.addEventListener('forsage:offline-products-refreshed', rebuildScanIndex)
+    return () => {
+      cancelled = true
+      window.removeEventListener('forsage:offline-products-refreshed', rebuildScanIndex)
+    }
+  }, [scopeKey])
 
   useEffect(() => {
     const refresh = () => setOfflineStockVersion((version) => version + 1)
@@ -222,22 +265,61 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       // передає код, він живе лише у ref і не запускає текстовий пошук.
       // Для ручного набору текст з'явиться після короткої паузи.
       e.preventDefault()
+      const now = Date.now()
+      if (now - lastCharAt.current > 400) {
+        burstStart.current = now
+        burstCount.current = 0
+      }
+      burstCount.current++
+      lastCharAt.current = now
+      const avgInterval = burstCount.current > 1
+        ? (now - burstStart.current) / (burstCount.current - 1)
+        : Number.POSITIVE_INFINITY
+      // Черга сканера (3+ символи, ≤120мс між ними) — комміт відкладаємо далі,
+      // ніж будь-яка пауза сканера: Enter скасує його, і частковий код не
+      // потрапить у текстовий пошук (список не смикається, каса не гальмує).
+      const scannerLike = burstCount.current >= 3 && avgInterval <= 120
       inputDraft.current += e.key
       clearTimeout(inputCommitTimer.current)
       inputCommitTimer.current = setTimeout(() => {
         setQuery(inputDraft.current)
-      }, 180)
+      }, scannerLike ? 450 : 180)
     }
   }
 
   function queueBarcodeScan(code: string) {
-    // Кожен скан обробляється незалежно: повільна відповідь для одного
-    // невідомого коду більше не блокує всі наступні товари.
     clearTimeout(inputCommitTimer.current)
     inputDraft.current = ''
+    burstStart.current = 0
+    burstCount.current = 0
+    lastCharAt.current = 0
     setQuery('')
     setSupplierResults([])
-    void handleBarcodeScan(code)
+    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+    if (!normalizedCode) return
+    const immediateProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
+    if (immediateProduct) {
+      addToReceipt(immediateProduct)
+      saveRecentItem('recent_scans', normalizedCode)
+      return
+    }
+    scanQueue.current.push(normalizedCode)
+    void drainBarcodeQueue()
+  }
+
+  async function drainBarcodeQueue() {
+    if (scanQueueRunning.current) return
+    scanQueueRunning.current = true
+    try {
+      while (scanQueue.current.length > 0) {
+        const code = scanQueue.current.shift()
+        if (code) await handleBarcodeScan(code)
+      }
+    } finally {
+      scanQueueRunning.current = false
+      // Скан міг потрапити між останньою перевіркою length та finally.
+      if (scanQueue.current.length > 0) void drainBarcodeQueue()
+    }
   }
 
   async function handleBarcodeScan(code: string) {
@@ -253,7 +335,9 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
-    const cachedProduct = await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
+    const memoryProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
+    const cachedProduct = memoryProduct
+      ?? await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
     if (cachedProduct) {
       addToReceipt(cachedProduct as Product)
       saveRecentItem('recent_scans', normalizedCode)
@@ -306,6 +390,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
       } else if (result?.type === 'product' && result?.data) {
+        addProductToScanIndex(scanProductIndex.current, result.data as Product)
         addToReceipt(result.data)
         saveRecentItem('recent_scans', normalizedCode)
       } else {
