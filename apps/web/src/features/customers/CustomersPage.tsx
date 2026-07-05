@@ -11,6 +11,7 @@ import { Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
+import { listCustomersOffline } from '@/lib/offlineDB'
 
 const PER_PAGE = 50
 
@@ -18,6 +19,7 @@ export default function CustomersPage() {
   const navigate = useNavigate()
   const session = useAuthStore((state) => state.session)
   const role = (session?.user.user_metadata?.role as string | undefined) ?? 'cashier'
+  const scopeKey = session?.user.id ?? ''
   const canManageCustomers = ['owner', 'admin', 'manager'].includes(role)
   const canDeleteCustomers = ['owner', 'admin'].includes(role)
   const [sp] = useSearchParams()
@@ -77,6 +79,22 @@ export default function CustomersPage() {
     if (loadingRef.current) return
     loadingRef.current = true
     if (reset) setLoading(true); else setLoadingMore(true)
+    const local = !activeGroup ? await listCustomersOffline({
+      search,
+      hasDebt,
+      page: pageToLoad,
+      perPage: PER_PAGE,
+      scopeKey,
+    }).catch(() => null) : null
+    if (local && (local.data.length > 0 || local.pagination.total > 0)) {
+      setTotal(local.pagination.total)
+      setHasMore(pageToLoad < local.pagination.total_pages)
+      setPage(pageToLoad)
+      setCustomers((prev) => reset ? local.data : [...prev, ...local.data.filter(
+        (candidate) => !prev.some((existing) => existing.id === candidate.id),
+      )])
+      if (reset) setLoading(false); else setLoadingMore(false)
+    }
     try {
       const data = await customerApi.list({
         search:   search || undefined,
@@ -89,15 +107,18 @@ export default function CustomersPage() {
       setTotal(data.pagination.total)
       setHasMore(pageToLoad < data.pagination.total_pages)
       setPage(pageToLoad)
-      setCustomers((prev) => reset ? data.data : [...prev, ...data.data])
+      setCustomers((prev) => reset ? data.data : [
+        ...prev.filter((existing) => !data.data.some((candidate) => candidate.id === existing.id)),
+        ...data.data,
+      ])
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
+      if (!local?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
     } finally {
       loadingRef.current = false
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [search, hasDebt, activeGroup])
+  }, [search, hasDebt, activeGroup, scopeKey])
 
   // Скидання при зміні фільтрів/пошуку (з невеликим debounce для пошуку)
   useEffect(() => {

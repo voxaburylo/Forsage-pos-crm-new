@@ -50,6 +50,7 @@ import onecImportRouter from './routes/onecImport.js'
 import jobsRouter from './routes/jobs.js'
 import vinRouter from './routes/vin.js'
 import aiRouter from './routes/ai.js'
+import syncRouter from './routes/sync.js'
 import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
 import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
@@ -168,6 +169,7 @@ app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
 app.use('/api/v1/vin', vinRouter)
 app.use('/api/v1/in', vinRouter)
 app.use('/api/v1/ai', aiRouter)
+app.use('/api/v1/sync', syncRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

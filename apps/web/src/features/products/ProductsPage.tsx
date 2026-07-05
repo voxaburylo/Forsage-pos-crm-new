@@ -18,6 +18,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Badge, Modal, ConfirmDialog, Drawer, SplitButton } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
+import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
 import {
   printLabels,
   DEFAULT_LABEL,
@@ -67,6 +68,7 @@ export default function ProductsPage() {
   const navigate = useNavigate()
   const session  = useAuthStore((s) => s.session)
   const role     = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const scopeKey = session?.user?.id ?? ''
   const isAdmin  = ['owner', 'admin'].includes(role)
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
@@ -149,10 +151,18 @@ export default function ProductsPage() {
   }
 
   // Завантаження категорій та брендів
-  const loadMeta = useCallback(() => {
+  const loadMeta = useCallback(async () => {
+    if (scopeKey) {
+      const [cachedCategories, cachedBrands] = await Promise.all([
+        getCachedCategories(scopeKey).catch(() => []),
+        getCachedBrands(scopeKey).catch(() => []),
+      ])
+      if (cachedCategories.length) setCategories(cachedCategories)
+      if (cachedBrands.length) setBrands(cachedBrands)
+    }
     adminApi.listCategories().then((r) => setCategories(r.data)).catch(() => {})
     adminApi.listBrands().then((r) => setBrands(r.data)).catch(() => {})
-  }, [])
+  }, [scopeKey])
 
   useEffect(() => { loadMeta() }, [loadMeta])
 
@@ -165,6 +175,22 @@ export default function ProductsPage() {
   // Завантаження товарів (серверне сортування, крім 'brand' — передається окремо)
   const load = useCallback(async () => {
     setLoading(true)
+    const local = await listProductsOffline({
+      search: debouncedSearch || undefined,
+      lowStock,
+      stockFilter,
+      categoryId: categoryFilter || undefined,
+      brandId: brandFilter || undefined,
+      page,
+      perPage: 25,
+      sortField: sort?.field,
+      sortDir: sort?.dir,
+      scopeKey,
+    }).catch(() => null)
+    if (local?.data.length || local?.pagination.total) {
+      setResult(local as PaginatedProducts)
+      setLoading(false)
+    }
     try {
       const serverSortField = sort?.field !== 'brand' ? sort?.field as ProductFilters['sort_field'] : undefined
       const data = await productApi.list({
@@ -180,9 +206,9 @@ export default function ProductsPage() {
       })
       setResult(data)
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
+      if (!local?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
     } finally { setLoading(false) }
-  }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort])
+  }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setPage(1) }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])

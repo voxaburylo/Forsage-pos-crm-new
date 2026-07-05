@@ -8,6 +8,14 @@ import { Layout } from '@/components/Layout'
 import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
+import { getLocalSale, getLocalSales, type LocalSaleRecord } from '@/lib/offlineDB'
+
+type SaleWithSync = Sale & {
+  local_id?: string
+  server_id?: string | null
+  sync_status?: LocalSaleRecord['sync_status']
+  sync_error?: string | null
+}
 
 const PAY_COLOR: Record<string, 'green' | 'blue' | 'red' | 'gray'> = {
   cash: 'green', card: 'blue', debt: 'red', mixed: 'gray', transfer: 'blue',
@@ -19,7 +27,7 @@ const PAY_LABEL: Record<string, string> = {
 export default function SalesPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [sales, setSales]     = useState<Sale[]>([])
+  const [sales, setSales]     = useState<SaleWithSync[]>([])
   const [search, setSearch]   = useState(() => searchParams.get('search') ?? '')
   const [page, setPage]       = useState(1)
   const [total, setTotal]     = useState(0)
@@ -27,17 +35,23 @@ export default function SalesPage() {
   const [loading, setLoading] = useState(false)
 
   // Картка продажу
-  const [detail, setDetail]   = useState<Sale | null>(null)
+  const [detail, setDetail]   = useState<SaleWithSync | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
   async function openDetail(id: string) {
     setDetailLoading(true)
     setDetail(null)
+    const local = await getLocalSale(id).catch(() => null)
+    if (local) {
+      setDetail(local as SaleWithSync)
+      setDetailLoading(false)
+    }
+    if (local && !local.server_id) return
     try {
-      const { data } = await saleApi.get(id)
+      const { data } = await saleApi.get(local?.server_id ?? id)
       setDetail(data)
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чек')
+      if (!local) toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чек')
     } finally {
       setDetailLoading(false)
     }
@@ -45,16 +59,35 @@ export default function SalesPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
+    const allLocal = await getLocalSales(5000).catch(() => [])
+    const query = search.toLocaleLowerCase('uk-UA').trim()
+    const filteredLocal = allLocal.filter((sale) => !query
+      || sale.sale_number.toLocaleLowerCase('uk-UA').includes(query)
+      || String(sale.customer?.full_name ?? '').toLocaleLowerCase('uk-UA').includes(query)
+      || String(sale.customer?.phone ?? '').includes(query))
+    const localPage = filteredLocal.slice((page - 1) * 20, page * 20) as SaleWithSync[]
+    if (localPage.length) {
+      setSales(localPage)
+      setTotal(filteredLocal.length)
+      setPages(Math.max(1, Math.ceil(filteredLocal.length / 20)))
+      setLoading(false)
+    }
     try {
       const params: Record<string, string | number> = { page, per_page: 20 }
       if (search) params.search = search
       const result = await saleApi.list(params)
       const r = result as unknown as { data: Sale[]; pagination: { total: number; total_pages: number } }
-      setSales(r.data ?? [])
-      setTotal(r.pagination?.total ?? 0)
-      setPages(r.pagination?.total_pages ?? 1)
+      const pending = filteredLocal.filter((sale) => !sale.server_id) as unknown as SaleWithSync[]
+      const serverIds = new Set((r.data ?? []).map((sale) => sale.id))
+      const pendingForPage = page === 1
+        ? pending.filter((sale) => !serverIds.has(sale.id)).slice(0, 20)
+        : []
+      const merged = [...pendingForPage, ...(r.data ?? [])].slice(0, 20)
+      setSales(merged)
+      setTotal((r.pagination?.total ?? 0) + pending.length)
+      setPages(Math.max(1, Math.ceil(((r.pagination?.total ?? 0) + pending.length) / 20)))
     } catch {
-      toast.error('Помилка завантаження продажів')
+      if (!localPage.length) toast.error('Помилка завантаження продажів')
     } finally {
       setLoading(false)
     }
@@ -66,7 +99,7 @@ export default function SalesPage() {
   const columns = [
     {
       key: 'num', header: 'Чек',
-      render: (s: Sale) => (
+      render: (s: SaleWithSync) => (
         <button onClick={() => openDetail(s.id)}
           className="font-mono text-xs text-yellow-700 hover:text-yellow-800 hover:underline font-semibold">
           #{s.sale_number}
@@ -75,7 +108,7 @@ export default function SalesPage() {
     },
     {
       key: 'customer', header: 'Клієнт',
-      render: (s: Sale) => (
+      render: (s: SaleWithSync) => (
         <span className="text-gray-700">
           {s.customer?.full_name ?? s.customer?.phone ?? <span className="text-gray-400 italic">Анонім</span>}
         </span>
@@ -83,7 +116,7 @@ export default function SalesPage() {
     },
     {
       key: 'pay', header: 'Оплата', className: 'w-24',
-      render: (s: Sale) => (
+      render: (s: SaleWithSync) => (
         <Badge color={PAY_COLOR[s.payment_method] ?? 'gray'}>
           {PAY_LABEL[s.payment_method] ?? s.payment_method}
         </Badge>
@@ -91,19 +124,19 @@ export default function SalesPage() {
     },
     {
       key: 'status', header: 'Статус', className: 'w-24',
-      render: (s: Sale) => (
-        <Badge color={s.status === 'returned' ? 'red' : s.status === 'completed' ? 'green' : 'gray'}>
-          {s.status === 'returned' ? 'Повернено' : s.status === 'completed' ? 'Виконано' : s.status}
+      render: (s: SaleWithSync) => (
+        <Badge color={s.sync_status === 'failed' ? 'red' : s.sync_status === 'pending' ? 'orange' : s.status === 'returned' ? 'red' : s.status === 'completed' ? 'green' : 'gray'}>
+          {s.sync_status === 'failed' ? 'Помилка синхр.' : s.sync_status === 'pending' ? 'Очікує синхр.' : s.status === 'returned' ? 'Повернено' : s.status === 'completed' ? 'Виконано' : s.status}
         </Badge>
       ),
     },
     {
       key: 'total', header: 'Сума', className: 'w-32 text-right',
-      render: (s: Sale) => <span className="font-semibold">{formatMoney(s.total)}</span>,
+      render: (s: SaleWithSync) => <span className="font-semibold">{formatMoney(s.total)}</span>,
     },
     {
       key: 'date', header: 'Дата', className: 'w-40 text-right',
-      render: (s: Sale) => <span className="text-gray-400 text-xs">{formatDateTime(s.completed_at)}</span>,
+      render: (s: SaleWithSync) => <span className="text-gray-400 text-xs">{formatDateTime(s.completed_at)}</span>,
     },
   ]
 
@@ -252,7 +285,7 @@ export default function SalesPage() {
 
             {/* Дії */}
             <div className="flex gap-2 pt-2 border-t border-gray-100">
-              {detail.status === 'completed' && (
+              {detail.status === 'completed' && detail.sync_status !== 'pending' && detail.sync_status !== 'failed' && (
                 <Button icon={<RotateCcw size={15} />} className="flex-1"
                   onClick={() => navigate(`/returns?sale=${detail.sale_number}`)}>
                   Оформити повернення

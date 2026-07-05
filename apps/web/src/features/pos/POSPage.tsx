@@ -33,7 +33,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
-import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } from '@/lib/offlineDB'
+import { cacheCurrentShift, commitLocalSale, getCachedStaff } from '@/lib/offlineDB'
 import { OfflineSalesModal } from './OfflineSalesModal'
 
 const CART_KEY = 'forsage_pos_cart'
@@ -569,15 +569,6 @@ export default function POSPage() {
         last_error:      null,
       }
 
-      try {
-        await enqueueSale(offlineSale)
-      } catch {
-        toast.error('Не вдалося зберегти чек у браузері. Не приймайте оплату та повторіть')
-        return null
-      }
-
-      await decrementCachedStock(offlineSale.items).catch(() => {})
-      incrementPending()
       const localReceipt: Sale = {
         id: offlineId,
         sale_number: `OFF-${offlineId.slice(0, 8).toUpperCase()}`,
@@ -610,14 +601,39 @@ export default function POSPage() {
           product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
         })),
       }
+
+      try {
+        // Один IndexedDB transaction: чек + outbox + локальний залишок.
+        // Або збережеться все, або не збережеться нічого.
+        await commitLocalSale(
+          offlineSale,
+          localReceipt as any,
+          session?.user?.id ?? '',
+        )
+      } catch {
+        toast.error('Не вдалося зберегти чек на цьому ПК. Не приймайте оплату та повторіть')
+        return null
+      }
+
+      incrementPending()
       paymentPrintChoiceRef.current = printAfterPayment === true
       setLastSale(localReceipt)
       store.clearReceipt()
       clearSavedCart()
       setPayOpen(false)
       playCashRegister()
-      toast.success(`Офлайн-чек ${localReceipt.sale_number} збережено і буде синхронізовано`)
+      toast.success(`Локальний чек ${localReceipt.sale_number} збережено. Синхронізація — до 5 хв`)
       return localReceipt
+    }
+
+    // Local-first: звичайна готівка/переказ завжди спочатку фіксуються на ПК.
+    // Інтернет не бере участі в критичному шляху «оплата → закриття чека».
+    const canCommitLocally = (method === 'cash' || method === 'transfer')
+      && !isFiscal
+      && (bonusRedeemed ?? 0) === 0
+    if (canCommitLocally) {
+      await saveOfflineSale()
+      return
     }
 
     // Офлайн-режим: лише повноготівкові/переказ без ПРРО.

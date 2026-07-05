@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
+import { LocalSyncAgent } from '@/components/LocalSyncAgent'
 import '@/stores/authStore'
 
 const CHUNK_RELOAD_KEY = 'forsage_chunk_reload_at'
@@ -132,6 +133,7 @@ function Loader() {
 function App() {
   return (
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <LocalSyncAgent />
       <Suspense fallback={<Loader />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
