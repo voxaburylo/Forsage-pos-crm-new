@@ -844,16 +844,29 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   }
 }
 
-export async function resumeSale(saleId: string, tenantId: string, userId: string, userRole: string) {
+export async function resumeSale(saleId: string, tenantId: string) {
   const { data, error } = await db
     .from('sales')
-    // Відкладений запис є лише знімком кошика. Після повернення в касу він
-    // більше не повинен висіти окремим draft і дублювати майбутній продаж.
+    // Спочатку лише читаємо знімок. Видаляємо його зі списку окремим confirm
+    // тільки після того, як браузер успішно відновив локальний кошик.
+    .select('*, sale_items(*, product:products(id,sku,name,unit,qty_on_hand)), customer:customers(id,phone,full_name)')
+    .eq('id', saleId)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'suspended')
+    .single()
+
+  if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Відкладений чек не знайдено', 404)
+  return data
+}
+
+export async function confirmResumedSale(saleId: string, tenantId: string, userId: string, userRole: string) {
+  const { data, error } = await db
+    .from('sales')
     .update({ status: 'cancelled', updated_at: new Date().toISOString() })
     .eq('id', saleId)
     .eq('tenant_id', tenantId)
     .eq('status', 'suspended')
-    .select('*, sale_items(*, product:products(id,sku,name,unit,qty_on_hand)), customer:customers(id,phone,full_name)')
+    .select('id,sale_number,total,status')
     .single()
 
   if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Відкладений чек не знайдено', 404)

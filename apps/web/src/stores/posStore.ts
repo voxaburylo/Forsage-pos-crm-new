@@ -124,6 +124,11 @@ interface POSState {
   setSelectedProductId: (id: string | null) => void
   setCustomerOrderId: (id: string | null) => void
   clearReceipt: () => void
+  restoreReceipt: (receipt: {
+    items: Array<Omit<POSItem, 'total'>>
+    customer: POSCustomer | null
+    notes?: string
+  }) => boolean
 }
 
 function updateTabInStore(set: any, get: any, tabId: string, updates: Partial<ReceiptTab>) {
@@ -352,6 +357,62 @@ export const usePOSStore = create<POSState>((set, get) => {
       const { activeTabId } = get()
       if (!activeTabId) return
       updateTabInStore(set, get, activeTabId, { customerOrderId: id } as any)
+    },
+
+    restoreReceipt: (receipt) => {
+      const state = get()
+      const restoredItems: POSItem[] = receipt.items
+        .filter((item) =>
+          Boolean(item.productId) &&
+          Number.isFinite(item.qty) &&
+          item.qty > 0 &&
+          Number.isFinite(item.unitPrice) &&
+          item.unitPrice >= 0,
+        )
+        .map((item) => {
+          const discount = Math.max(0, Math.min(Number(item.discount) || 0, item.unitPrice * item.qty))
+          return {
+            ...item,
+            name: item.name || item.sku || 'Товар',
+            unit: item.unit || 'шт',
+            discount,
+            total: item.unitPrice * item.qty - discount,
+          }
+        })
+
+      if (restoredItems.length === 0) return false
+
+      const totals = calcTotals(restoredItems)
+      const current = state.tabs.find((tab: ReceiptTab) => tab.id === state.activeTabId)
+      const reusable = current && current.items.length === 0
+        ? current
+        : state.tabs.find((tab: ReceiptTab) => tab.items.length === 0)
+
+      if (!reusable && state.tabs.length >= MAX_TABS) return false
+
+      const target = reusable ?? createEmptyTab()
+      const restoredTab: ReceiptTab = {
+        ...target,
+        idempotencyKey: crypto.randomUUID(),
+        items: restoredItems,
+        customer: receipt.customer,
+        notes: receipt.notes ?? '',
+        selectedProductId: null,
+        bonusToRedeem: 0,
+        customerOrderId: null,
+        automaticDiscountPct: 0,
+        ...totals,
+      }
+      const tabs = reusable
+        ? state.tabs.map((tab: ReceiptTab) => tab.id === restoredTab.id ? restoredTab : tab)
+        : [...state.tabs, restoredTab]
+
+      set({
+        tabs,
+        activeTabId: restoredTab.id,
+        ...getActiveTabGetters(tabs, restoredTab.id),
+      })
+      return true
     },
 
     clearReceipt: () => {

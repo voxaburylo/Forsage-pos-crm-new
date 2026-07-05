@@ -8,7 +8,7 @@ import { toast } from '@/components/ui/Toast'
 interface Props {
   open: boolean
   onClose: () => void
-  onResume: (sale: Sale) => void
+  onResume: (sale: Sale) => boolean
   onChanged?: () => void
 }
 
@@ -34,7 +34,11 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
     setOperatingId(sale.id)
     try {
       const { data } = await saleApi.resume(sale.id)
-      onResume(data)
+      const restored = onResume(data)
+      if (!restored) {
+        throw new Error('Не вдалося відновити позиції. Звільніть одну вкладку чека та повторіть.')
+      }
+      await saleApi.confirmResume(sale.id)
       setSales((current) => current.filter((item) => item.id !== sale.id))
       onChanged?.()
       toast.success(`Чек #${sale.sale_number} повернено в кошик`)

@@ -1152,10 +1152,7 @@ export default function POSPage() {
       <SuspendedListModal open={suspendedOpen} onClose={() => setSuspendedOpen(false)}
         onChanged={refreshSuspendedCount}
         onResume={(sale) => {
-          // Не змішуємо відновлений чек з уже відкритим кошиком.
-          if (store.items.length > 0) store.addTab()
-          sale.sale_items?.forEach((item) => {
-            store.addItem({
+          const restoredItems = (sale.sale_items ?? []).map((item) => ({
               productId: item.product_id,
               sku: item.product?.sku ?? '',
               name: item.product?.name ?? '',
@@ -1166,11 +1163,11 @@ export default function POSPage() {
               qtyOnHand: item.product?.qty_on_hand ?? 0,
               requiresCoreReturn: !!item.core_deposit_amount && item.core_deposit_amount > 0,
               coreDepositAmount: item.core_deposit_amount ?? 0,
-            })
-          })
-          store.setNotes(sale.notes ?? '')
-          if (sale.customer) {
-            store.setCustomer({
+            }))
+          return store.restoreReceipt({
+            items: restoredItems,
+            notes: sale.notes ?? '',
+            customer: sale.customer ? {
               id: sale.customer.id,
               phone: sale.customer.phone,
               name: sale.customer.full_name ?? null,
@@ -1179,8 +1176,8 @@ export default function POSPage() {
               tierName: null,
               vipLevel: 'standard',
               riskProfile: 'low',
-            })
-          }
+            } : null,
+          })
         }} />
 
       {/* Hotkeys cheat sheet — постійна підказка для касира (прихована на мобільних) */}

@@ -226,7 +226,14 @@ router.get('/suspended', async (req, res, next) => {
 // POST /api/v1/sales/:id/resume — відновити чек
 router.post('/:id/resume', async (req, res, next) => {
   try {
-    const sale = await saleService.resumeSale(
+    const sale = await saleService.resumeSale(String(req.params.id), req.user!.tenant_id)
+    res.json({ data: sale })
+  } catch (err) { next(err) }
+})
+
+router.post('/:id/resume/confirm', async (req, res, next) => {
+  try {
+    const sale = await saleService.confirmResumedSale(
       String(req.params.id),
       req.user!.tenant_id,
       req.user!.id,
