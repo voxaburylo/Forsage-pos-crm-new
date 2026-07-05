@@ -61,6 +61,18 @@ export default function DailyReport() {
   const [profit, setProfit]       = useState<ProfitReport | null>(null)
   const [loading, setLoading]   = useState(false)
 
+  // «Контроль дня» — метрики для власника (повернення, знижки, недостачі, мінуси)
+  interface DailyControl {
+    revenue: number; receipts: number; avg_receipt: number
+    cash: number; card: number; debt_sales: number; discounts: number
+    returns_count: number; returns_sum: number
+    returns_reasons: Array<{ reason: string; count: number }>
+    recon_diffs: Array<{ difference: number; comment: string | null }>
+    negative_stock: number; no_price: number
+  }
+  const [control, setControl] = useState<DailyControl | null>(null)
+  const [sendingTg, setSendingTg] = useState(false)
+
   const loadToday = useCallback(async () => {
     setLoading(true)
     try {
@@ -69,6 +81,8 @@ export default function DailyReport() {
         reportApi.salesPeriod(),
       ])
       setReport({ ...summary, sales: period.sales })
+      api.get<{ data: DailyControl }>('/api/v1/reports/daily-control')
+        .then((r) => setControl(r.data)).catch(() => {})
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [])
 
@@ -283,6 +297,59 @@ export default function DailyReport() {
               </Card>
             ))}
           </div>
+
+          {/* Контроль дня — очима власника */}
+          {control && (
+            <Card className="mb-4 border-yellow-200 bg-yellow-50/40">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-bold text-gray-800">🔎 Контроль дня</p>
+                <button
+                  onClick={async () => {
+                    setSendingTg(true)
+                    try {
+                      const r = await api.post<{ data: { sent: boolean } }>('/api/v1/reports/daily-control/send', {})
+                      if (r.data.sent) toast.success('Звіт надіслано в Telegram')
+                      else toast.warning('Не налаштовано Telegram chat ID власника (Налаштування)')
+                    } catch { toast.error('Не вдалося надіслати') } finally { setSendingTg(false) }
+                  }}
+                  disabled={sendingTg}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium disabled:opacity-50"
+                >
+                  {sendingTg ? 'Надсилаю…' : '✈️ Надіслати в Telegram'}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <p className="text-xs text-gray-400">Повернення</p>
+                  <p className={`font-bold ${control.returns_count > 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                    {control.returns_count} шт{control.returns_sum > 0 ? ' · ' + formatMoney(control.returns_sum) : ''}
+                  </p>
+                  {control.returns_reasons.slice(0, 3).map((r, i) => (
+                    <p key={i} className="text-[11px] text-gray-500">• {r.reason} ×{r.count}</p>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-xs text-gray-400">Знижки за день</p>
+                  <p className={`font-bold ${control.discounts > 0 ? 'text-amber-600' : 'text-gray-900'}`}>{formatMoney(control.discounts)}</p>
+                  {control.debt_sales > 0 && <p className="text-[11px] text-gray-500">в борг: {formatMoney(control.debt_sales)}</p>}
+                </div>
+                <div>
+                  <p className="text-xs text-gray-400">Звірка каси</p>
+                  {control.recon_diffs.length === 0
+                    ? <p className="font-bold text-green-600">без розбіжностей</p>
+                    : control.recon_diffs.map((d, i) => (
+                        <p key={i} className="font-bold text-red-600">{d.difference > 0 ? '+' : ''}{formatMoney(d.difference)}</p>
+                      ))}
+                </div>
+                <div>
+                  <p className="text-xs text-gray-400">Каталог</p>
+                  <p className={`font-bold ${control.negative_stock > 0 ? 'text-red-600' : 'text-gray-900'}`}>мінуси: {control.negative_stock}</p>
+                  <p className={`text-[11px] ${control.no_price > 0 ? 'text-amber-600 font-semibold' : 'text-gray-500'}`}>без ціни: {control.no_price}</p>
+                </div>
+              </div>
+            </Card>
+          )}
+
           <Card padding="none">
             <Table
               columns={[

@@ -75,6 +75,27 @@ router.get('/shift/:id', requireRole('owner', 'admin', 'manager', 'cashier'), as
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/reports/daily-control?date= — контрольні метрики дня для власника
+// (повернення, знижки, недостачі каси, борги, мінусові залишки)
+router.get('/daily-control', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const { buildDailyControl } = await import('../services/dailyDigestService.js')
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date
+      : new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' })
+    res.json({ data: await buildDailyControl(req.user!.tenant_id, date) })
+  } catch (err) { next(err) }
+})
+
+// POST /api/v1/reports/daily-control/send — надіслати звіт власнику в Telegram зараз
+router.post('/daily-control/send', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const { sendOwnerDigest } = await import('../services/dailyDigestService.js')
+    const sent = await sendOwnerDigest(req.user!.tenant_id)
+    res.json({ data: { sent } })
+  } catch (err) { next(err) }
+})
+
 // GET /api/v1/reports/profit?from=&to= — P&L звіт (E-6: COGS)
 router.get('/profit', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {

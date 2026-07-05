@@ -142,6 +142,7 @@ export default function SettingsPage() {
         vin_decoder_api_key: form.vin_decoder_api_key,
         auto_print_receipt: form.auto_print_receipt,
         receipt_width_mm: form.receipt_width_mm ?? 58,
+        owner_telegram_chat_id: form.owner_telegram_chat_id ? Number(form.owner_telegram_chat_id) : null,
       })
       localStorage.setItem('forsage_receipt_width_mm', String(form.receipt_width_mm ?? 58))
       toast.success('Налаштування збережено')
@@ -393,6 +394,23 @@ export default function SettingsPage() {
               </select>
               <p className="text-xs text-gray-400 mt-1">
                 Зберігається для цього магазину й автоматично застосовується в касі.
+              </p>
+            </div>
+
+            {/* Вечірній звіт власнику */}
+            <div className="pt-2 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                📊 Вечірній звіт власнику (Telegram chat ID)
+              </label>
+              <input type="text" inputMode="numeric"
+                aria-label="Telegram chat ID власника для вечірнього звіту"
+                placeholder="Напишіть боту /id — він підкаже ваш chat ID"
+                value={form.owner_telegram_chat_id ?? ''}
+                onChange={(e) => set('owner_telegram_chat_id', e.target.value.replace(/[^\d-]/g, '') as any)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
+              <p className="text-xs text-gray-400 mt-1">
+                Щодня о 21:00 бот надішле підсумок: виторг, чеки, повернення, знижки,
+                недостачі каси, мінусові залишки. Команда /zvit — звіт зараз.
               </p>
             </div>
 

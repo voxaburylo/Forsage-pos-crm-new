@@ -1565,6 +1565,21 @@ export function startBot() {
   }
 
   // ─── Register handlers ───
+  // /id — показати chat ID (потрібен власнику для вечірнього звіту в Налаштуваннях)
+  bot.command('id', async (ctx: any) => {
+    try { await ctx.reply('Ваш chat ID: `' + ctx.chat.id + '`\nВставте його в Налаштування → «Вечірній звіт власнику», щоб отримувати підсумок дня о 21:00.', { parse_mode: 'Markdown' }) } catch { /* ok */ }
+  })
+  // /zvit — надіслати підсумок дня зараз (тільки для збереженого chat ID власника)
+  bot.command('zvit', async (ctx: any) => {
+    try {
+      const { data: shops } = await db.from('shop_settings')
+        .select('tenant_id, owner_telegram_chat_id')
+        .eq('owner_telegram_chat_id', ctx.chat.id)
+      if (!shops || shops.length === 0) { await ctx.reply('Цей chat ID не привʼязаний до звітів. Надішліть /id і збережіть його в Налаштуваннях.'); return }
+      const { sendOwnerDigest } = await import('./dailyDigestService.js')
+      await sendOwnerDigest(shops[0].tenant_id)
+    } catch { /* ok */ }
+  })
   bot.on('message',                 async (ctx: any) => { await onMsg(ctx, false) })
   bot.on('callback_query',          async (ctx: any) => { await onCb(ctx, false) })
   bot.on('business_message' as any, async (ctx: any) => {

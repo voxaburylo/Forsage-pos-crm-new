@@ -223,6 +223,11 @@ const server = app.listen(PORT, () => {
   initMessengers().then(() => startBot()).catch(() => startBot())
   processOrderDeadlines()
   setInterval(() => processOrderDeadlines(), 6 * 3600 * 1000)
+
+  // Вечірній звіт власнику в Telegram (21:00 за Києвом)
+  import('./services/dailyDigestService.js')
+    .then((m) => m.startDailyDigestScheduler())
+    .catch((e) => logger.warn({ err: e?.message }, 'digest scheduler not started'))
   
   // Start background job worker
   jobWorker.start()
