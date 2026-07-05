@@ -9,6 +9,7 @@ import { getProduct, createProduct, updateProduct } from './productService.js'
 import { listCategories, listBrands, createCategory } from './adminService.js'
 import { listCustomers, updateCustomer } from './customerService.js'
 import { normalizePhone } from '../validators/customerSchema.js'
+import { normalizeArticle } from '../validators/productValidator.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
 // Значення орієнтовні (тарифи Google можуть змінюватись) — лічильник показуємо
@@ -164,10 +165,10 @@ export async function getUsageSummary(tenantId: string) {
 // ─── Інструменти (function-calling) ──────────────────────────────────────────
 // READ-інструменти виконуються одразу. WRITE-інструменти НЕ виконуються, а
 // повертаються користувачу як «пропозиція змін» (було → стане) на підтвердження.
-const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers'])
+const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products'])
 const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
-const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk'])
+const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'update_products_bulk', 'merge_products_bulk'])
 
 const toolDeclarations: FunctionDeclaration[] = [
   {
@@ -337,6 +338,74 @@ const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'list_products_page',
+    description: 'Посторінковий обхід каталогу для масового наведення порядку. Повертає до 200 товарів за раз (product_id, sku, name, category). Фільтри: russian_names — назви з ознаками російської мови (для перекладу), no_category — товари без категорії (для сортування), all — всі. Викликай наступну сторінку лише після обробки поточної.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        page: { type: SchemaType.NUMBER, description: 'Номер сторінки, з 1' },
+        per_page: { type: SchemaType.NUMBER, description: 'Розмір сторінки, 1-200 (за замовч. 200)' },
+        filter: { type: SchemaType.STRING, description: 'russian_names | no_category | all' },
+      },
+      required: ['page'],
+    },
+  },
+  {
+    name: 'find_duplicate_products',
+    description: 'Знайти ймовірні ДУБЛІ товарів у каталозі (сервер сам групує весь каталог — швидко і без токенів). by="sku" — однаковий артикул, by="name" — однакова назва. Повертає групи по 2+ товари з залишками й цінами.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        by: { type: SchemaType.STRING, description: 'sku | name (за замовч. name)' },
+        limit: { type: SchemaType.NUMBER, description: 'Скільки груп повернути, 1-40 (за замовч. 20)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'update_products_bulk',
+    description: 'МАСОВА зміна наявних товарів: нові назви (переклад українською) та/або категорія. Одна пропозиція на всю пачку, користувач підтвердить. До 200 товарів за виклик. product_id бери ТІЛЬКИ з list_products_page/search_products.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        updates: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              product_id: { type: SchemaType.STRING },
+              new_name: { type: SchemaType.STRING, description: 'Нова назва (укр). Бренди, артикули, розміри, латиницю НЕ чіпати' },
+              category_name: { type: SchemaType.STRING, description: 'Назва категорії (знайдемо або створимо)' },
+            },
+            required: ['product_id'],
+          },
+        },
+      },
+      required: ['updates'],
+    },
+  },
+  {
+    name: 'merge_products_bulk',
+    description: 'МАСОВЕ злиття дублів товарів. Кожна пара: primary (залишається, сюди переносяться залишки й історія) + duplicate (зникає). Пари бери ТІЛЬКИ з find_duplicate_products. Основним обирай товар з заповненішою карткою або більшим залишком.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        merges: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              primary_product_id: { type: SchemaType.STRING },
+              duplicate_product_id: { type: SchemaType.STRING },
+            },
+            required: ['primary_product_id', 'duplicate_product_id'],
+          },
+        },
+      },
+      required: ['merges'],
+    },
+  },
+  {
     name: 'create_customers_bulk',
     description: 'МАСОВЕ створення клієнтів зі списку (наприклад, перетягнутого Excel). Одна пропозиція на весь список, застосовується пакетом. Використовуй для 2+ клієнтів.',
     parameters: {
@@ -407,7 +476,7 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 Ти допомагаєш власнику як досвідчений кладівник і директор: розбираєш товар, перекладаєш і чистиш назви, пишеш описи, підбираєш категорію та бренд, створюєш і сортуєш категорії («папки»), заводиш клієнтів з їхніми авто, аналізуєш прайси й таблиці (Excel/CSV/текст).
 
 Що ти вмієш (через інструменти):
-- Товари: пошук, картка, створення (по одному або МАСОВО create_products_bulk).
+- Товари: пошук, картка, створення (по одному або МАСОВО create_products_bulk), масовий порядок: list_products_page + update_products_bulk (переклад назв, категорії), find_duplicate_products + merge_products_bulk (дублі).
 - Клієнти: пошук, створення (по одному або МАСОВО create_customers_bulk), редагування. Телефон НЕОБОВʼЯЗКОВИЙ — якщо його нема, все одно створюй клієнта (імʼя + авто). Прізвище та імʼя обʼєднуй у full_name. Якщо в клітинці кілька телефонів — бери перший. При наявності VIN — заведи авто клієнту (make/model/year/vin); марку/модель бери з рядка або визнач за WMI (перші символи VIN). Додаткові примітки (напр. «Такси», список деталей) клади в notes.
 - Категорії («папки»): створення по одній або МАСОВО create_categories_bulk.
 - Замовлення: create_order — з ФОТО рукописного зошита або з тексту. Кожне замовлення = окремий виклик create_order.
@@ -436,6 +505,12 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 - «Закупочная цена» → purchase_price_uah, «Розничная цена» → retail_price_uah. Позначення «грн» і «шт» прибирай.
 - Під час імпорту назви товарів і папок залишай як у файлі. Перекладай їх українською лише коли користувач окремо прямо попросив переклад. Бренди, артикули, коди, розміри, моделі та латинські позначення НЕ перекладай й не змінюй.
 - Не пропускай товар через відсутній залишок, штрихкод чи ціну. Обовʼязкові лише sku та name.
+
+МАСОВЕ НАВЕДЕННЯ ПОРЯДКУ В КАТАЛОЗІ (переклад, сортування, дублі):
+- Переклад назв українською: виклич list_products_page(page=1, filter='russian_names') → отримаєш до 200 товарів → переклади НАЗВИ (бренди, артикули, коди, розміри, латиницю НЕ чіпай) → виклич update_products_bulk з парами product_id + new_name. ОДНА сторінка = ОДИН виклик update_products_bulk. Далі скажи користувачу, скільки сторінок лишилось, і чекай наступної команди «далі».
+- Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name для кожного товару (категорія створиться сама, якщо нової нема).
+- Дублі: find_duplicate_products(by='name' або by='sku') — сервер сам знайде групи по всьому каталогу. Переглянь групи, обери в кожній ОСНОВНИЙ товар (більший залишок / заповненіша картка) і виклич merge_products_bulk. Залишки та історія дубліката перенесуться в основний, дублікат зникне. НЕ зливай товари, якщо не впевнений, що це той самий товар (різні розміри/сторони/обʼєми — це РІЗНІ товари!).
+- НІКОЛИ не проси весь каталог одразу і не обробляй більше 200 товарів за один виклик — працюй сторінками. product_id бери тільки з відповідей інструментів.
 
 Правила:
 - Усі грошові суми — у гривнях (грн). Телефони клієнтів — у форматі +380XXXXXXXXX (нормалізуй сам), але вони НЕОБОВʼЯЗКОВІ. Дані можуть бути «брудною» таблицею через табуляцію (колонки: №, прізвище, імʼя, телефон, рік, обʼєм, VIN, марка, модель, примітки) — розбирай по колонках, порожні клітинки пропускай.
@@ -497,6 +572,69 @@ async function executeReadTool(name: string, args: any, tenantId: string): Promi
       const brands = await listBrands(tenantId)
       return { brands: brands.map((b: any) => ({ id: b.id, name: b.name })) }
     }
+    case 'list_products_page': {
+      const perPage = Math.min(Math.max(Number(args?.per_page) || 200, 1), 200)
+      const page = Math.max(Number(args?.page) || 1, 1)
+      const filter = String(args?.filter ?? 'all')
+      let q = db.from('products')
+        .select('id, sku, name, category:categories(name)', { count: 'exact' })
+        .eq('tenant_id', tenantId)
+        .is('deleted_at', null)
+        .order('name')
+        .range((page - 1) * perPage, page * perPage - 1)
+      // Ознаки російської: літери ёыэъ або типові закінчення, яких нема в українській
+      if (filter === 'russian_names') q = q.filter('name', 'imatch', '[ёыэъ]|(ый|ое|ая|ние|ской|ского)\\y')
+      if (filter === 'no_category') q = q.is('category_id', null)
+      const { data, count, error } = await q
+      if (error) return { error: error.message }
+      return {
+        total: count ?? 0,
+        page,
+        pages: Math.ceil((count ?? 0) / perPage),
+        products: (data ?? []).map((p: any) => ({
+          product_id: p.id, sku: p.sku, name: p.name,
+          category: p.category?.name ?? null,
+        })),
+      }
+    }
+    case 'find_duplicate_products': {
+      const by = String(args?.by ?? 'name') === 'sku' ? 'sku' : 'name'
+      const limit = Math.min(Math.max(Number(args?.limit) || 20, 1), 40)
+      // Тягнемо весь каталог порціями і групуємо на сервері — без токенів
+      const all: any[] = []
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await db.from('products')
+          .select('id, sku, name, qty_on_hand, retail_price')
+          .eq('tenant_id', tenantId).is('deleted_at', null)
+          .range(from, from + 999)
+        if (error) return { error: error.message }
+        all.push(...(data ?? []))
+        if (!data || data.length < 1000) break
+      }
+      const groups = new Map<string, any[]>()
+      for (const p of all) {
+        const key = by === 'sku'
+          ? normalizeArticle(String(p.sku ?? ''))
+          : String(p.name ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
+        if (!key) continue
+        const g = groups.get(key) ?? []
+        g.push(p)
+        groups.set(key, g)
+      }
+      const dupGroups = [...groups.values()]
+        .filter((g) => g.length >= 2)
+        .sort((a, b) => b.length - a.length)
+      return {
+        total_groups: dupGroups.length,
+        showing: Math.min(limit, dupGroups.length),
+        groups: dupGroups.slice(0, limit).map((g) => ({
+          products: g.map((p) => ({
+            product_id: p.id, sku: p.sku, name: p.name,
+            qty: p.qty_on_hand, price_uah: (p.retail_price ?? 0) / 100,
+          })),
+        })),
+      }
+    }
     case 'search_customers': {
       const limit = Math.min(Math.max(Number(args?.limit) || 10, 1), 20)
       const { data } = await listCustomers({ search: String(args?.query ?? ''), page: 1, per_page: limit } as any, tenantId)
@@ -551,6 +689,58 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
       changes: [], count: list.length,
       columns: ['Артикул', 'Назва', 'Бренд', 'Категорія', 'Штрихкод', 'Залишок', 'Закупівля', 'Продаж'], items,
       payload: { products: list },
+    }
+  }
+
+  if (name === 'update_products_bulk') {
+    const list: any[] = Array.isArray(args?.updates) ? args.updates : []
+    // Підтягуємо поточні назви, щоб показати «було → стане»
+    const ids = list.map((u) => String(u.product_id)).filter(Boolean)
+    const current = new Map<string, { sku: string; name: string }>()
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data } = await db.from('products').select('id, sku, name')
+        .eq('tenant_id', tenantId).in('id', ids.slice(i, i + 200))
+      for (const p of data ?? []) current.set(p.id, { sku: p.sku, name: p.name })
+    }
+    const items = list.map((u) => {
+      const cur = current.get(String(u.product_id))
+      return {
+        'Артикул': cur?.sku ?? '?',
+        'Було': cur?.name ?? '(не знайдено)',
+        'Стане': String(u.new_name ?? cur?.name ?? '—'),
+        'Категорія': String(u.category_name ?? '—'),
+      }
+    })
+    return {
+      id, tool: name, title: `Змінити товари: ${list.length}`,
+      changes: [], count: list.length,
+      columns: ['Артикул', 'Було', 'Стане', 'Категорія'], items,
+      payload: { updates: list },
+    }
+  }
+
+  if (name === 'merge_products_bulk') {
+    const list: any[] = Array.isArray(args?.merges) ? args.merges : []
+    const ids = [...new Set(list.flatMap((m) => [String(m.primary_product_id), String(m.duplicate_product_id)]))]
+    const info = new Map<string, { sku: string; name: string; qty: number }>()
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data } = await db.from('products').select('id, sku, name, qty_on_hand')
+        .eq('tenant_id', tenantId).in('id', ids.slice(i, i + 200))
+      for (const p of data ?? []) info.set(p.id, { sku: p.sku, name: p.name, qty: p.qty_on_hand })
+    }
+    const label = (pid: any) => {
+      const p = info.get(String(pid))
+      return p ? `${p.sku} · ${p.name} (${p.qty} шт)` : '(не знайдено)'
+    }
+    const items = list.map((m) => ({
+      'Залишається': label(m.primary_product_id),
+      'Зливається (зникне)': label(m.duplicate_product_id),
+    }))
+    return {
+      id, tool: name, title: `Об'єднати дублі: ${list.length} пар`,
+      changes: [], count: list.length,
+      columns: ['Залишається', 'Зливається (зникне)'], items,
+      payload: { merges: list },
     }
   }
 
@@ -1374,6 +1564,40 @@ export async function applyAction(
         if (p.category_name) input.category_id = await resolveCategoryId(String(p.category_name), tenantId)
         return createProduct(input as any, userId, tenantId)
       }, (p) => p.sku || p.name),
+    }
+  }
+
+  if (tool === 'update_products_bulk') {
+    const list: any[] = Array.isArray(payload.updates) ? payload.updates : []
+    return {
+      result: await runBatch(list, async (u) => {
+        const input: Record<string, any> = {}
+        if (u.new_name !== undefined && String(u.new_name).trim()) input.name = String(u.new_name).trim()
+        if (u.category_name) input.category_id = await resolveCategoryId(String(u.category_name), tenantId)
+        if (Object.keys(input).length === 0) return null
+        return updateProduct(String(u.product_id), input as any, userId, tenantId)
+      }, (u) => String(u.new_name ?? u.product_id)),
+    }
+  }
+
+  if (tool === 'merge_products_bulk') {
+    const list: any[] = Array.isArray(payload.merges) ? payload.merges : []
+    return {
+      result: await runBatch(list, async (m) => {
+        const primaryId = String(m.primary_product_id)
+        const duplicateId = String(m.duplicate_product_id)
+        if (primaryId === duplicateId) throw new AppError('VALIDATION_ERROR', 'Однаковий товар в обох ролях', 422)
+        // merge_products не перевіряє tenant — перевіряємо самі перед злиттям
+        const { data: pair } = await db.from('products').select('id')
+          .eq('tenant_id', tenantId).in('id', [primaryId, duplicateId])
+        if ((pair ?? []).length !== 2) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
+        const { data, error } = await db.rpc('merge_products', {
+          p_primary_id: primaryId,
+          p_duplicate_id: duplicateId,
+        })
+        if (error) throw new AppError('DB_ERROR', error.message, 500)
+        return data
+      }, (m) => `${m.primary_product_id} ← ${m.duplicate_product_id}`),
     }
   }
 

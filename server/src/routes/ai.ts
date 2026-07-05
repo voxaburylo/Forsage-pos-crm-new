@@ -163,6 +163,25 @@ const applySchema = z.discriminatedUnion('tool', [
     tool: z.literal('create_categories_bulk'),
     payload: z.object({ names: z.array(z.string().trim().min(1).max(200)).min(1).max(500) }),
   }),
+  z.object({
+    tool: z.literal('update_products_bulk'),
+    payload: z.object({
+      updates: z.array(z.object({
+        product_id: z.string().uuid(),
+        new_name: z.string().trim().min(1).max(500).optional(),
+        category_name: optionalText(200),
+      })).min(1).max(500),
+    }),
+  }),
+  z.object({
+    tool: z.literal('merge_products_bulk'),
+    payload: z.object({
+      merges: z.array(z.object({
+        primary_product_id: z.string().uuid(),
+        duplicate_product_id: z.string().uuid(),
+      })).min(1).max(200),
+    }),
+  }),
 ])
 
 // POST /api/v1/ai/apply-action — застосувати підтверджену пропозицію (тільки власник/адмін)
