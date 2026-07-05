@@ -9,7 +9,15 @@ import { ProductPhotoUpload } from './ProductPhotoUpload'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { printLabels, DEFAULT_LABEL, DEFAULT_BIN_LABEL } from '@/features/labels/LabelDesigner'
+import {
+  printLabels,
+  DEFAULT_LABEL,
+  DEFAULT_BIN_LABEL,
+  PRODUCT_LABEL_PRESET_OPTIONS,
+  PRODUCT_LABEL_PRESET_STORAGE_KEY,
+  resolveProductLabelSettings,
+  type ProductLabelPresetKey,
+} from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -54,6 +62,12 @@ export default function ProductDetailPage() {
   const [savingPhoto, setSavingPhoto] = useState(false)
   const [printModalOpen, setPrintModalOpen] = useState(false)
   const [printCopies, setPrintCopies] = useState(1)
+  const [printLabelPreset, setPrintLabelPreset] = useState<ProductLabelPresetKey>(() => {
+    const saved = localStorage.getItem(PRODUCT_LABEL_PRESET_STORAGE_KEY)
+    return PRODUCT_LABEL_PRESET_OPTIONS.some((option) => option.value === saved)
+      ? saved as ProductLabelPresetKey
+      : 'compact_product_4025'
+  })
 
   
   // Inline Analogs state
@@ -775,6 +789,24 @@ export default function ProductDetailPage() {
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
+              Розмір етикетки
+            </label>
+            <select
+              value={printLabelPreset}
+              onChange={(e) => {
+                const value = e.target.value as ProductLabelPresetKey
+                setPrintLabelPreset(value)
+                localStorage.setItem(PRODUCT_LABEL_PRESET_STORAGE_KEY, value)
+              }}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              {PRODUCT_LABEL_PRESET_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
               Кількість копій
             </label>
             <input
@@ -794,7 +826,8 @@ export default function ProductDetailPage() {
               onClick={async () => {
                 try {
                   const settingsRes = await adminApi.getSettings()
-                  const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+                  const savedSettings = settingsRes.data.label_settings || DEFAULT_LABEL
+                  const settings = resolveProductLabelSettings(savedSettings, printLabelPreset)
                   const items = Array(printCopies).fill(product)
                   printLabels(settings as any, items, false)
                   setPrintModalOpen(false)

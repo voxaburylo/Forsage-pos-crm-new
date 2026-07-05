@@ -102,6 +102,27 @@ export const DEFAULT_LABEL: LabelSettings = {
   align_barcode: 'center',
 }
 
+// Фізичний рулон користувача. Швидкий друк із картки товару завжди використовує
+// цей компактний макет, незалежно від старого збереженого шаблону 40×30.
+export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
+  ...DEFAULT_LABEL,
+  width_mm: 40,
+  height_mm: 25,
+  padding_mm: 1,
+  font_size_shop: 4.5,
+  font_size_title: 6,
+  font_size_sku: 4.5,
+  font_size_price: 9,
+  font_size: 5.5,
+  barcode_height: 18,
+  pos_shop_name: { x: 0, y: 0 },
+  pos_product_name: { x: 0, y: 11 },
+  pos_barcode: { x: 4, y: 38 },
+  pos_sku: { x: 0, y: 72 },
+  pos_price: { x: 55, y: 78 },
+  pos_bin: { x: 0, y: 86 },
+}
+
 type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' | 'pos_price' | 'pos_bin'
 
 // ─── Числове поле з вільним редагуванням, дробами (крок 0.5), комою/крапкою та ± ───
@@ -197,6 +218,10 @@ function MockBarcode({ width, height, value, displayValue = true, fontSize = 7, 
 }
 
 export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: string }> = {
+  compact_product_4025: {
+    ...QUICK_PRODUCT_LABEL_4025,
+    name: 'Товарна компактна (40×25 мм)',
+  },
   standard_product_4030: {
     name: 'Товарна стандартна (40×30 мм)',
     width_mm: 40, height_mm: 30, padding_mm: 1.5,
@@ -289,6 +314,34 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     align_sku: 'center',
     align_barcode: 'center',
   }
+}
+
+export const PRODUCT_LABEL_PRESET_OPTIONS = [
+  { value: 'compact_product_4025', label: '40×25 мм — поточний рулон' },
+  { value: 'standard_product_4030', label: '40×30 мм' },
+  { value: 'large_product_5840', label: '58×40 мм' },
+  { value: 'saved', label: 'Мій розмір із дизайнера' },
+] as const
+
+export type ProductLabelPresetKey = typeof PRODUCT_LABEL_PRESET_OPTIONS[number]['value']
+export const PRODUCT_LABEL_PRESET_STORAGE_KEY = 'forsage_product_label_preset'
+
+export function resolveProductLabelSettings(
+  savedSettings: Partial<LabelSettings> | null | undefined,
+  presetKey: ProductLabelPresetKey,
+): LabelSettings {
+  const saved = { ...DEFAULT_LABEL, ...(savedSettings ?? {}) }
+  if (presetKey === 'saved') return saved
+
+  const preset = LABEL_PRESETS[presetKey] ?? LABEL_PRESETS.compact_product_4025
+  const { name: _name, ...presetSettings } = preset
+  return {
+    ...saved,
+    ...presetSettings,
+    // Калібрування належить принтеру, тому зберігаємо його при зміні рулону.
+    offset_x_mm: saved.offset_x_mm ?? 0,
+    offset_y_mm: saved.offset_y_mm ?? 0,
+  } as LabelSettings
 }
 
 export const DEMO_PRODUCT: Product = {
@@ -578,6 +631,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         const alignBc = settings.align_barcode || 'center'
         const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
         const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, height: barcodeHeight })
+        if (!barcode.includes('<rect')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
         body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;right:0;top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:hidden;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;">${esc(binLabel)}</span>` : ''}</div>`
       }
     } else if (product) {
@@ -590,6 +644,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         const alignBc = settings.align_barcode || 'center'
         const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
+        if (!barcode.includes('<rect')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
         body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;right:0;top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:hidden;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;">${esc(product.barcode)}</span>` : ''}</div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
@@ -619,7 +674,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   const html = `<!DOCTYPE html>
 <html lang="uk"><head><meta charset="utf-8"><title>Етикетки ${w}×${h} мм</title><style>
   @page { margin: 0; size: ${w}mm ${h}mm; }
-  html, body { margin: 0 !important; padding: 0 !important; width: ${w}mm; background: #fff; }
+  html, body { margin: 0 !important; padding: 0 !important; width: ${w}mm; min-width: ${w}mm; background: #fff; }
   *, *::before, *::after { box-sizing: border-box; }
   body { font-family: Arial, sans-serif; color: #000; }
   .label-page {
@@ -650,7 +705,8 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     flex: 0 1 auto;
   }
   @media print {
-    html, body { width: ${w}mm !important; }
+    html, body { width: ${w}mm !important; min-width: ${w}mm !important; }
+    .label-page { width: ${w}mm !important; height: ${h}mm !important; }
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
 </style></head><body>
@@ -660,8 +716,8 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   PrintService.printHtml(html, {
     mode: 'iframe',
     title: `Етикетки ${w}×${h} мм`,
-    cleanupDelayMs: 120000,
-    readyDelayMs: 50,
+    cleanupDelayMs: 30000,
+    readyDelayMs: 150,
   })
 }
 
