@@ -116,6 +116,7 @@ const TemplateEditor        = lazyWithRetry(() => import('@/features/notificatio
 const OFFICE_ROLES = ['owner', 'admin', 'manager']
 const ADMIN_ROLES = ['owner', 'admin']
 const WAREHOUSE_ROLES = ['owner', 'admin', 'storekeeper']
+const INVENTORY_COUNTER_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer']
 const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const AiAssistantPage       = lazyWithRetry(() => import('@/features/ai/AiAssistantPage'))
@@ -184,9 +185,9 @@ function App() {
           <Route path="/notifications"  element={<ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute>} />
           <Route path="/ai-assistant"   element={<ProtectedRoute roles={OFFICE_ROLES}><AiAssistantPage /></ProtectedRoute>} />
 
-          <Route path="/inventory"               element={<ProtectedRoute roles={WAREHOUSE_ROLES}><InventoryPage /></ProtectedRoute>} />
+          <Route path="/inventory"               element={<ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><InventoryPage /></ProtectedRoute>} />
           <Route path="/inventory/picking"       element={<ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><WarehousePicking /></ProtectedRoute>} />
-          <Route path="/inventory/:id"          element={<ProtectedRoute roles={WAREHOUSE_ROLES}><ActiveSession /></ProtectedRoute>} />
+          <Route path="/inventory/:id"          element={<ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><ActiveSession /></ProtectedRoute>} />
           <Route path="/inventory/reserves"      element={<ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><ReservesList /></ProtectedRoute>} />
           <Route path="/inventory/movements"     element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WarehouseMovementPage /></ProtectedRoute>} />
           <Route path="/inventory/writeoffs"     element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffsPage /></ProtectedRoute>} />

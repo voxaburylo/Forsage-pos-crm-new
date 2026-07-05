@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, ClipboardList, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import { adminApi } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Table, Badge, Modal, Input } from '@/components/ui'
@@ -27,6 +26,8 @@ const STATUS_BADGE: Record<string, { color: 'yellow' | 'blue' | 'green'; label: 
 export default function InventoryPage() {
   const navigate = useNavigate()
   const { session } = useAuthStore()
+  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const canManage = ['owner', 'admin', 'storekeeper'].includes(role)
   const [sessions, setSessions] = useState<Session[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -41,7 +42,7 @@ export default function InventoryPage() {
     try {
       const [sessRes, usersRes] = await Promise.all([
         api.get<{ data: Session[] }>('/api/v1/inventory'),
-        adminApi.listUsers().catch(() => ({ data: [] })),
+        api.get<{ data: any[] }>('/api/v1/admin/staff-options').catch(() => ({ data: [] })),
       ])
       setSessions(sessRes.data)
       setUsers(usersRes.data ?? [])
@@ -77,7 +78,8 @@ export default function InventoryPage() {
         created_by: managerId || undefined,
         created_at: date ? new Date(date).toISOString() : undefined,
       })
-      toast.success('Сесію створено')
+      const started = await api.post<{ data: { total_products?: number } }>(`/api/v1/inventory/${data.id}/start`, {})
+      toast.success(`Ревізію розпочато: ${started.data.total_products ?? 0} товарів у знімку`)
       setModalOpen(false)
       setName('')
       setDate(new Date().toISOString().split('T')[0])
@@ -89,9 +91,9 @@ export default function InventoryPage() {
 
   async function startSession(session: Session) {
     try {
-      await api.post(`/api/v1/inventory/${session.id}/start`, {})
-      toast.success('Ревізію розпочато')
-      load()
+      const response = await api.post<{ data: { total_products?: number } }>(`/api/v1/inventory/${session.id}/start`, {})
+      toast.success(`Ревізію розпочато: ${response.data.total_products ?? 0} товарів`)
+      navigate(`/inventory/${session.id}`)
     } catch { toast.error('Помилка') }
   }
 
@@ -116,7 +118,7 @@ export default function InventoryPage() {
       return <Badge color={b.color}>{b.label}</Badge>
     }},
     { key: 'actions', header: '', className: 'w-32 text-right', render: (s: Session) => (
-      s.status === 'draft' ? (
+      s.status === 'draft' && canManage ? (
         <Button size="sm" variant="outline" icon={<Play size={14} />} onClick={() => startSession(s)}>Почати</Button>
       ) : s.status === 'in_progress' ? (
         <Button size="sm" variant="outline" icon={<ClipboardList size={14} />} onClick={() => navigate(`/inventory/${s.id}`)}>Відкрити</Button>
@@ -131,7 +133,7 @@ export default function InventoryPage() {
           Звірте фактичну кількість товарів із залишками в системі. Розбіжності буде видно під час ревізії.
         </p>
         <div className="flex justify-end mb-4">
-          <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>Нова ревізія</Button>
+          {canManage && <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>Нова ревізія</Button>}
         </div>
         <Card padding="none">
           <Table columns={columns} data={sessions} keyFn={(s) => s.id} loading={loading}
@@ -141,6 +143,9 @@ export default function InventoryPage() {
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Нова ревізія" size="sm">
         <form onSubmit={handleCreate} className="space-y-4">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Під час великої ревізії призупиніть продажі, приходи та списання. На старті система зафіксує повний знімок активних складських товарів.
+          </div>
           <Input
             label="Дата ревізії *"
             type="date"
