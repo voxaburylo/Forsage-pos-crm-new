@@ -67,6 +67,9 @@ router.post('/:id/analogs', requireRole('owner', 'admin', 'storekeeper'), produc
 // DELETE /api/v1/products/:id/analogs/:analogId — видалити аналог
 router.delete('/:id/analogs/:analogId', requireRole('owner', 'admin', 'storekeeper'), productController.removeAnalog)
 
+// Масовий імпорт крос-номерів списком (наш артикул + кроси) — до /:id роутів
+router.post('/cross-numbers/import', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.importCrossNumbers)
+
 // Власна база OE та крос-номерів — масова вставка з буфера обміну
 router.get('/:id/cross-numbers', productController.getCrossNumbers)
 router.post('/:id/cross-numbers', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.addCrossNumbers)

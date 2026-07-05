@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import Papa from 'papaparse'
 import { api } from '@/lib/api'
+import { productApi } from './productApi'
 import { toast } from '@/components/ui/Toast'
 
 interface Props { onClose: () => void; onImported: () => void }
@@ -69,7 +70,7 @@ interface PreviewResponse {
   }
 }
 
-type Tab = 'file' | 'paste' | 'quick'
+type Tab = 'file' | 'paste' | 'quick' | 'cross'
 type Step = 'source' | 'mapping' | 'preview' | 'success'
 
 const TEMPLATE_TSV = 'Артикул\tНазва\tКатегорія\tЗакупівельнаЦіна\tРоздрібнаЦіна\tЗалишок\tШтрихкод\tКомірка\nW712\tФільтр оливний Mann\tФільтри\t220.00\t380.00\t15\t4011558737604\tA-12\nB005\tМасло моторне 5W-40\tМастила\t450.00\t720.00\t8\t4047024367612\tB-03'
@@ -122,6 +123,36 @@ export function ImportModal({ onClose, onImported }: Props) {
   // Результат (Step 4)
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<{ created: number; updated: number; errors: number } | null>(null)
+
+  // Вкладка «Крос-номери»
+  const [crossText, setCrossText] = useState('')
+  const [crossSource, setCrossSource] = useState('')
+  const [crossImporting, setCrossImporting] = useState(false)
+  const [crossResult, setCrossResult] = useState<{ linked: number; products: number; not_found: number; not_found_skus: string[]; skipped_dup: number } | null>(null)
+
+  async function handleCrossImport() {
+    if (!crossText.trim()) {
+      toast.error('Вставте список крос-номерів')
+      return
+    }
+    setCrossImporting(true)
+    setCrossResult(null)
+    try {
+      const res = await productApi.importCrossNumbers(crossText, crossSource.trim() || undefined)
+      const data = (res as any).data ?? res
+      setCrossResult(data)
+      if (data.linked > 0) {
+        toast.success(`Прив'язано ${data.linked} крос-номерів`)
+        onImported()
+      } else {
+        toast.error('Жодного номера не прив\'язано — перевірте формат і артикули')
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка імпорту крос-номерів')
+    } finally {
+      setCrossImporting(false)
+    }
+  }
 
   // Отримання першого рядка або заголовків для автовизначення мапінгу
   function autoGuessMapping(headers: string[]) {
@@ -425,6 +456,7 @@ export function ImportModal({ onClose, onImported }: Props) {
                 { id: 'file' as Tab, icon: <FileSpreadsheet size={15} />, label: 'Файл (CSV / Excel)' },
                 { id: 'paste' as Tab, icon: <Table2 size={15} />, label: 'Вставити таблицю' },
                 { id: 'quick' as Tab, icon: <Clipboard size={15} />, label: 'Швидкий список' },
+                { id: 'cross' as Tab, icon: <ArrowRight size={15} />, label: 'Крос-номери' },
               ] as const).map((t) => (
                 <button
                   key={t.id}
@@ -522,6 +554,49 @@ export function ImportModal({ onClose, onImported }: Props) {
                   className="w-full py-3 bg-yellow-400 text-black font-bold rounded-xl hover:bg-yellow-300 disabled:opacity-40 transition-colors flex items-center justify-center gap-2 text-xs"
                 >
                   Згенерувати таблицю та перейти до мапінгу →
+                </button>
+              </div>
+            )}
+            {tab === 'cross' && (
+              <div className="space-y-4">
+                <div className="text-xs text-gray-500 leading-relaxed">
+                  Кожен рядок: <span className="font-mono font-semibold text-gray-700">ваш артикул</span>, далі через
+                  <span className="font-semibold"> таб / ; / кому</span> — крос-номери (OEM, аналоги інших брендів).
+                  Товар знаходиться за артикулом, кроси одразу працюють у пошуку POS.
+                </div>
+                <textarea
+                  value={crossText}
+                  onChange={(e) => setCrossText(e.target.value)}
+                  placeholder={"W712; OC90; PH5949; 650401\nB005; 0451103316; LS867B\nGB-102; 90915-YZZE1; W68/3"}
+                  rows={9}
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent resize-none bg-gray-50/50"
+                />
+                <input
+                  value={crossSource}
+                  onChange={(e) => setCrossSource(e.target.value)}
+                  placeholder="Джерело (необов'язково): напр. Прайс постачальника Елі́т"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
+                />
+                {crossResult && (
+                  <div className="bg-green-50 border border-green-100 rounded-xl p-4 text-xs text-green-800 space-y-1">
+                    <div><span className="font-bold">Прив'язано:</span> {crossResult.linked} номерів до {crossResult.products} товарів</div>
+                    {crossResult.skipped_dup > 0 && <div>Пропущено дублікатів: {crossResult.skipped_dup}</div>}
+                    {crossResult.not_found > 0 && (
+                      <div className="text-amber-700">
+                        <span className="font-bold">Не знайдено артикулів у базі:</span> {crossResult.not_found}
+                        <div className="font-mono text-[10px] mt-1 break-all">{crossResult.not_found_skus.join(', ')}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <button
+                  disabled={!crossText.trim() || crossImporting}
+                  onClick={handleCrossImport}
+                  className="w-full py-3 bg-yellow-400 text-black font-bold rounded-xl hover:bg-yellow-300 disabled:opacity-40 transition-colors flex items-center justify-center gap-2 text-xs"
+                >
+                  {crossImporting
+                    ? <><div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" /> Прив'язуємо кроси...</>
+                    : <>Імпортувати крос-номери ({crossText.split('\n').filter((l) => l.trim()).length} рядків) →</>}
                 </button>
               </div>
             )}

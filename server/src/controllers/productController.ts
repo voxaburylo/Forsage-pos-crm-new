@@ -9,6 +9,7 @@ import {
   stockCorrectionSchema,
   addAnalogSchema,
   bulkCrossNumbersSchema,
+  importCrossNumbersSchema,
 } from '../validators/productValidator.js'
 import * as productService from '../services/productService.js'
 
@@ -289,6 +290,23 @@ export async function addCrossNumbers(req: Request, res: Response, next: NextFun
       req.user!.tenant_id,
     )
     res.status(201).json({ data: result })
+  } catch (err) { next(err) }
+}
+
+// Масовий імпорт крос-номерів: рядки "наш артикул; крос1; крос2 ..."
+export async function importCrossNumbers(req: Request, res: Response, next: NextFunction) {
+  try {
+    const parsed = importCrossNumbersSchema.safeParse(req.body)
+    if (!parsed.success) {
+      throw new AppError('VALIDATION_ERROR', 'Перевірте дані імпорту', 422, parsed.error.flatten())
+    }
+    const result = await productService.importCrossNumbersBulk(
+      parsed.data.text,
+      parsed.data.source ?? 'Масовий імпорт',
+      req.user!.id,
+      req.user!.tenant_id,
+    )
+    res.json({ data: result })
   } catch (err) { next(err) }
 }
 

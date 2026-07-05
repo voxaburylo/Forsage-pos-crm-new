@@ -605,6 +605,104 @@ export async function removeProductCrossNumber(
   await searchCache.clear()
 }
 
+// ─── Масовий імпорт крос-номерів ─────────────────────────────────────────────
+// Формат рядка: "наш_артикул <роздільник> крос1 <роздільник> крос2 ..."
+// Роздільники: таб / ; / кома. Товар шукається за нормалізованим артикулом,
+// далі за штрихкодом. Дублікати номерів пропускаються (унікальність у БД).
+export async function importCrossNumbersBulk(
+  text: string,
+  source: string,
+  userId: string,
+  tenantId: string,
+): Promise<{ linked: number; products: number; not_found: number; not_found_skus: string[]; skipped_dup: number }> {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    .split('\n').map((l) => l.trim()).filter(Boolean)
+  if (lines.length === 0) throw new AppError('VALIDATION_ERROR', 'Порожній список', 422)
+
+  // Розбираємо рядки: перший стовпець — наш артикул, решта — кроси
+  const bySku = new Map<string, Set<string>>() // normalizedSku -> set оригінальних кросів
+  const skuOriginal = new Map<string, string>()
+  for (const line of lines) {
+    const parts = line.split(/[\t;,]+/).map((s) => s.trim()).filter(Boolean)
+    if (parts.length < 2) continue
+    const skuNorm = normalizeArticle(parts[0])
+    if (!skuNorm) continue
+    skuOriginal.set(skuNorm, parts[0])
+    const set = bySku.get(skuNorm) ?? new Set<string>()
+    for (const cross of parts.slice(1)) {
+      if (normalizeOemValue(cross)) set.add(cross)
+    }
+    bySku.set(skuNorm, set)
+  }
+  if (bySku.size === 0) {
+    throw new AppError('VALIDATION_ERROR',
+      'Не розпізнано жодного рядка. Формат: "наш артикул; крос1; крос2" (роздільники таб/;/кома)', 422)
+  }
+
+  // Знаходимо товари порціями (щоб не впертись у ліміт URL PostgREST)
+  const skus = [...bySku.keys()]
+  const productBySku = new Map<string, string>() // normalizedSku -> product_id
+  for (let i = 0; i < skus.length; i += 200) {
+    const { data } = await db.from('products')
+      .select('id, sku')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .in('sku', skus.slice(i, i + 200))
+    for (const p of data ?? []) productBySku.set(String(p.sku), p.id)
+  }
+
+  const notFound: string[] = []
+  const rows: any[] = []
+  for (const [skuNorm, crosses] of bySku) {
+    const productId = productBySku.get(skuNorm)
+    if (!productId) { notFound.push(skuOriginal.get(skuNorm) ?? skuNorm); continue }
+    const seen = new Set<string>()
+    for (const cross of crosses) {
+      const normalized = normalizeOemValue(cross)
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      rows.push({
+        tenant_id: tenantId,
+        product_id: productId,
+        number: cross,
+        normalized_number: normalized,
+        number_type: 'cross',
+        source: source || 'Масовий імпорт',
+        is_verified: true,
+        created_by: userId,
+      })
+    }
+  }
+
+  // Вставляємо порціями; конфлікт унікальності (дубль) не валить порцію —
+  // використовуємо upsert з ignoreDuplicates
+  let linked = 0
+  let skippedDup = 0
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500)
+    const { data, error } = await db.from('product_cross_numbers')
+      .upsert(chunk, { onConflict: 'tenant_id,product_id,normalized_number', ignoreDuplicates: true })
+      .select('id')
+    if (error) {
+      logger.warn({ err: error.message, from: i }, '[cross-import] порція не вдалася')
+      continue
+    }
+    linked += (data ?? []).length
+    skippedDup += chunk.length - (data ?? []).length
+  }
+
+  await searchCache.clear()
+  logger.info({ linked, products: productBySku.size, notFound: notFound.length }, '[cross-import] масовий імпорт кросів')
+
+  return {
+    linked,
+    products: productBySku.size,
+    not_found: notFound.length,
+    not_found_skus: notFound.slice(0, 50),
+    skipped_dup: skippedDup,
+  }
+}
+
 export async function getProductAnalogs(productId: string, tenantId: string) {
   await getProduct(productId, tenantId)
   // 1. Отримуємо всі аналоги з brand.tier

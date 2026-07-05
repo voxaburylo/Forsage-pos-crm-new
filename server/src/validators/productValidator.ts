@@ -91,3 +91,9 @@ export const bulkCrossNumbersSchema = z.object({
 })
 
 export type BulkCrossNumbersInput = z.infer<typeof bulkCrossNumbersSchema>
+
+// Масовий імпорт кросів текстом: "наш артикул; крос1; крос2" по рядку
+export const importCrossNumbersSchema = z.object({
+  text: z.string().min(3).max(5_000_000),
+  source: z.string().trim().max(200).optional(),
+})

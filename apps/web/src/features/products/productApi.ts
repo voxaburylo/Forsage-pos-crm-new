@@ -166,6 +166,12 @@ export const productApi = {
   removeCrossNumber: (id: string, crossNumberId: string) =>
     api.delete(`/api/v1/products/${id}/cross-numbers/${crossNumberId}`),
 
+  importCrossNumbers: (text: string, source?: string) =>
+    api.post<{ data: { linked: number; products: number; not_found: number; not_found_skus: string[]; skipped_dup: number } }>(
+      '/api/v1/products/cross-numbers/import',
+      { text, source },
+    ),
+
   getFitment: (id: string) =>
     api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),
 
