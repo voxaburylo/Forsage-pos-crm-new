@@ -1,12 +1,10 @@
 import { Router } from 'express'
 import { db } from '../db/supabase.js'
 import { requireAuth } from '../middleware/auth.js'
-import { searchProductsForPOS } from '../services/searchService.js'
+import { buildProductSearchTerms, searchProductsForPOS } from '../services/searchService.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { importFromCatalog } from '../services/productService.js'
-import { fixKeyboardLayout } from '../services/keyboardService.js'
-import { isLatinText, transliterateToCyrillic } from '../services/translitService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -26,16 +24,18 @@ router.get('/hybrid', async (req, res, next) => {
     const warehouseResults = await searchProductsForPOS(q, limit, tenantId)
 
     // 2. Пошук по прайсах постачальників
-    const catalogTerms = [q]
-    if (isLatinText(q)) {
-      catalogTerms.push(...fixKeyboardLayout(q))
-      const translit = transliterateToCyrillic(q)
-      catalogTerms.push(translit, translit.replace(/і/g, 'и').replace(/ї/g, 'й').replace(/є/g, 'е').replace(/ґ/g, 'г'))
-    }
-    const catalogConditions = [...new Set(catalogTerms)]
+    const catalogTerms = buildProductSearchTerms(q)
+    const catalogWordTerms = catalogTerms
+      .flatMap((term) => term.split(/\s+/))
+      .filter((term) => term.length >= 2)
+      .sort((a, b) => b.length - a.length)
+    const catalogConditions = [...new Set([...catalogTerms, ...catalogWordTerms])]
+      .slice(0, 16)
       .flatMap((term) => {
-        const safe = term.replace(/[,()]/g, ' ').replace(/\s+/g, ' ').trim()
-        return safe ? [`sku.ilike.*${normalizeArticle(safe)}*`, `name.ilike.*${safe}*`] : []
+        const safe = term.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim()
+        return safe
+          ? [`sku.ilike.*${safe}*`, `sku.ilike.*${normalizeArticle(safe)}*`, `name.ilike.*${safe}*`]
+          : []
       })
       .join(',')
     const { data: catalogResults, error: catalogError } = await db

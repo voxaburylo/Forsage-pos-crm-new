@@ -19,7 +19,6 @@ interface Props {
 type Method = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
 
 const FISCAL_KEY = 'forsage_pos_fiscal_enabled'
-const LAST_METHOD_KEY = 'forsage_pos_last_method'
 
 const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string; requireCustomer?: boolean }[] = [
   { id: 'cash',     label: 'Готівка',         icon: <Banknote size={20} />,                 color: 'bg-green-500 hover:bg-green-400' },
@@ -31,10 +30,7 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
 
 export function PaymentModal({ open, offline = false, onClose, onConfirm }: Props) {
   const store             = usePOSStore()
-  const [method, setMethod]         = useState<Method>(() => {
-    const m = localStorage.getItem(LAST_METHOD_KEY) as Method | null
-    return m && m !== 'debt' ? m : 'cash'   // борг не запам'ятовуємо (потрібен клієнт)
-  })
+  const [method, setMethod]         = useState<Method>('cash')
   const [cashInput, setCash]        = useState('')
   const [loading, setLoading]       = useState(false)
   const [terminalStep, setTerminalStep] = useState<'none' | 'waiting_auth'>('none')
@@ -47,6 +43,19 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [fiscal, setFiscal] = useState(() => localStorage.getItem(FISCAL_KEY) !== 'false')
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
+
+  // Кожен новий чек починаємо з готівки. Вибір термінала або іншого способу
+  // стосується лише поточної оплати й не переноситься на наступного клієнта.
+  useEffect(() => {
+    if (!open) return
+    setMethod('cash')
+    setCash('')
+    setBonusInput('')
+    setSplitCash('')
+    setTerminalStep('none')
+    setTerminalAuthCode('')
+    setPrintAfterPayment(false)
+  }, [open])
 
   // Авто-фіскалізація при оплаті карткою (обов'язково за законом)
   useEffect(() => {
@@ -207,8 +216,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       }
     } finally {
       setLoading(false)
-      if (method !== 'debt') localStorage.setItem(LAST_METHOD_KEY, method)
-      setCash(''); setMethod((m) => m === 'debt' ? 'cash' : m); setBonusInput(''); setSplitCash('')
+      setCash(''); setMethod('cash'); setBonusInput(''); setSplitCash('')
     }
   }
 

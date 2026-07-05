@@ -192,7 +192,7 @@ export default function POSPage() {
   const [suspendedCount, setSuspendedCount] = useState(0)
   const [lastSale, setLastSale]         = useState<Sale | null>(null)
   const autoPrintRef                    = useRef(false)
-  const printAfterSaleRef               = useRef(false)
+  const paymentPrintChoiceRef           = useRef<boolean | null>(null)
   const skipNextAutoPrintRef            = useRef(false)
   const [findReceiptOpen, setFindReceiptOpen] = useState(false)
   const [offlineSalesOpen, setOfflineSalesOpen] = useState(false)
@@ -203,6 +203,7 @@ export default function POSPage() {
   async function handleReprintSale(saleId: string) {
     try {
       const { data } = await saleApi.get(saleId)
+      paymentPrintChoiceRef.current = null
       skipNextAutoPrintRef.current = true   // це повторний друк, не новий продаж — не плутати з авто-друком
       setLastSale(data as Sale)
       setTimeout(() => printReceipt(), 300)
@@ -299,8 +300,9 @@ export default function POSPage() {
     if (!lastSale) return
     // Повторний друк зі списку чеків сам викликає друк — не дублюємо авто-друком
     if (skipNextAutoPrintRef.current) { skipNextAutoPrintRef.current = false; return }
-    if (printAfterSaleRef.current || autoPrintRef.current) {
-      printAfterSaleRef.current = false
+    const explicitChoice = paymentPrintChoiceRef.current
+    paymentPrintChoiceRef.current = null
+    if (explicitChoice === true || (explicitChoice === null && autoPrintRef.current)) {
       const t = setTimeout(() => printReceipt(), 250)
       return () => clearTimeout(t)
     }
@@ -629,7 +631,7 @@ export default function POSPage() {
           product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
         })),
       }
-      printAfterSaleRef.current = !!printAfterPayment
+      paymentPrintChoiceRef.current = printAfterPayment === true
       setLastSale(localReceipt)
       store.clearReceipt()
       clearSavedCart()
@@ -650,7 +652,7 @@ export default function POSPage() {
     try {
       const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
       if (sale) {
-        printAfterSaleRef.current = !!printAfterPayment
+        paymentPrintChoiceRef.current = printAfterPayment === true
         setLastSale(sale as Sale)
         clearSavedCart()
         setPayOpen(false)

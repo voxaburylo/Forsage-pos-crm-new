@@ -121,36 +121,55 @@ async function enrichWithAvailability(results: SearchResult[]): Promise<SearchRe
     }
   })
 }
+function addCyrillicVariants(target: Set<string>, value: string) {
+  const clean = value.replace(/\s+/g, ' ').trim().toLocaleLowerCase('uk-UA')
+  if (!clean) return
+  target.add(clean)
+
+  // У каталозі після імпорту одночасно є українські та російські написання.
+  const russianLike = clean
+    .replace(/і/g, 'и')
+    .replace(/ї/g, 'й')
+    .replace(/є/g, 'е')
+    .replace(/ґ/g, 'г')
+  target.add(russianLike)
+
+  const simplified = clean
+    .replace(/ё/g, 'е')
+    .replace(/э/g, 'е')
+    .replace(/ы/g, 'и')
+    .replace(/ъ/g, '')
+  target.add(simplified)
+}
+
+function replaceLatinTokens(text: string, converter: (token: string) => string): string {
+  return text.replace(/[a-z]+/gi, (token) => converter(token))
+}
+
+export function buildProductSearchTerms(query: string): string[] {
+  const terms = new Set<string>()
+  addCyrillicVariants(terms, query)
+
+  // Обробляємо латинські слова навіть усередині змішаного запиту:
+  // "фільтр masla" → "фільтр масла", "колодки njhvjpf" → варіант розкладки.
+  if (/[a-z]/i.test(query)) {
+    addCyrillicVariants(terms, replaceLatinTokens(query, transliterateToCyrillic))
+    addCyrillicVariants(terms, replaceLatinTokens(query, (token) => fixKeyboardLayout(token)[0] ?? token))
+    addCyrillicVariants(terms, replaceLatinTokens(query, (token) => fixKeyboardLayout(token)[1] ?? token))
+  }
+
+  // Зберігаємо колишню поведінку для повністю латинського вводу.
+  if (isLatinText(query)) {
+    for (const fixed of fixKeyboardLayout(query)) addCyrillicVariants(terms, fixed)
+    addCyrillicVariants(terms, transliterateToCyrillic(query))
+  }
+
+  return [...terms].filter(Boolean).slice(0, 12)
+}
+
 export async function searchProductsForPOS(q: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const cleanQuery = q.replace(/[\u0000-\u001f\u007f]/g, '').trim()
-  const searchTerms = [cleanQuery]
-
-  // [00] Виправлення розкладки клавіатури
-  if (isLatinText(cleanQuery)) {
-    const fixed = fixKeyboardLayout(cleanQuery)
-    for (const f of fixed) {
-      if (!searchTerms.includes(f)) searchTerms.push(f)
-    }
-  }
-
-  // [0] Транслітерація
-  if (isLatinText(cleanQuery)) {
-    const translit = transliterateToCyrillic(cleanQuery)
-    if (translit !== cleanQuery.toLowerCase() && !searchTerms.includes(translit)) {
-      searchTerms.push(translit)
-    }
-    // Прайси містять суміш українських і російських назв. Наприклад,
-    // "podshipnik" → "підшипник" за українською транслітерацією, але товар
-    // часто записаний як "подшипник". Шукаємо обидва варіанти.
-    const russianVariant = translit
-      .replace(/і/g, 'и')
-      .replace(/ї/g, 'й')
-      .replace(/є/g, 'е')
-      .replace(/ґ/g, 'г')
-    if (russianVariant !== translit && !searchTerms.includes(russianVariant)) {
-      searchTerms.push(russianVariant)
-    }
-  }
+  const searchTerms = buildProductSearchTerms(cleanQuery)
 
   // [1] Прямий пошук по товарах
   const results = await directProductSearch(searchTerms, cleanQuery, limit, tenantId)
@@ -236,12 +255,20 @@ async function crossNumberSearch(code: string, limit: number, tenantId: string):
 
 /** [1] Прямий пошук по товарах (sku, name, barcode, oem_number) */
 async function directProductSearch(terms: string[], originalQ: string, limit: number, tenantId: string): Promise<SearchResult[]> {
-  const conditions = terms.flatMap((t) => {
+  const fullTerms = terms
+    .map((term) => term.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+  const wordTerms = fullTerms
+    .flatMap((term) => term.split(/\s+/))
+    .filter((term) => term.length >= 2)
+    .sort((a, b) => b.length - a.length)
+  const conditionTerms = [...new Set([...fullTerms, ...wordTerms])].slice(0, 16)
+
+  const conditions = conditionTerms.flatMap((safeTerm) => {
     // Commas and parentheses are PostgREST OR grammar, not search text.
-    const safeTerm = t.replace(/[,()]/g, ' ').replace(/\s+/g, ' ').trim()
-    if (!safeTerm) return []
     const normalized = normalizeArticle(safeTerm)
     return [
+      `sku.ilike.*${safeTerm}*`,
       `sku.ilike.*${normalized}*`,
       `name.ilike.*${safeTerm}*`,
       `barcode.eq.${safeTerm}`,
@@ -270,6 +297,9 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
 
   const normalizedOriginal = normalizeArticle(originalQ)
   const lowerTerms = terms.map((term) => term.toLocaleLowerCase('uk-UA'))
+  const tokenGroups = lowerTerms
+    .map((term) => term.split(/\s+/).filter((token) => token.length >= 2))
+    .filter((tokens) => tokens.length > 1)
   const score = (p: any): { value: number; field: string; match: string } => {
     const barcode = String(p.barcode ?? '')
     const sku = String(p.sku ?? '')
@@ -284,6 +314,14 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
     if (normalizedOem === normalizedOriginal) return { value: 9000, field: 'oem', match: oem }
 
     let best = { value: 0, field: 'name', match: name }
+    for (const tokens of tokenGroups) {
+      const matched = tokens.filter((token) => lowerName.includes(token)).length
+      if (matched === tokens.length) {
+        best = { value: Math.max(best.value, 7800 + Math.min(tokens.length, 5) * 20), field: 'name', match: name }
+      } else if (matched > 0) {
+        best = { value: Math.max(best.value, 3000 + matched * 100), field: 'name', match: name }
+      }
+    }
     for (const term of lowerTerms) {
       const normalizedTerm = normalizeArticle(term)
       if (lowerName === term) best = { value: Math.max(best.value, 8500), field: 'name', match: name }
