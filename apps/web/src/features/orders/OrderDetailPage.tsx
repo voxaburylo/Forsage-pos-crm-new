@@ -461,7 +461,7 @@ export default function OrderDetailPage() {
         justify-content: space-between;
         page-break-inside: avoid;
       }
-      .barcode svg { display:block; max-width:100%; height:${settings.barcode_height}px; margin:0 auto; }
+      .barcode svg, .barcode img { display:block; width:auto; max-width:100%; height:${settings.barcode_height}px; margin:0 auto; image-rendering:pixelated; }
       @media print { * { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
     </style></head><body>
       ${labelsHtml}

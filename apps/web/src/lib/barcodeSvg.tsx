@@ -6,42 +6,36 @@ export interface BarcodeSvgOptions {
 }
 
 /**
- * Creates a complete SVG synchronously before the print dialog opens.
+ * Creates a high-resolution raster barcode synchronously before print.
  *
  * react-barcode cannot be rendered with renderToStaticMarkup: its bars are
  * drawn through a ref after mounting, so SSR produces only <svg></svg>.
+ * Some thermal printer drivers also skip inline SVG in Chrome preview, while
+ * an embedded PNG is handled reliably by both preview and the spooler.
  */
 export function renderBarcodeSvg(value: string, options: BarcodeSvgOptions = {}): string {
   const normalized = String(value ?? '').trim()
   if (!normalized || typeof document === 'undefined') return ''
 
   try {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-    svg.setAttribute('role', 'img')
-    svg.setAttribute('aria-label', `Штрихкод ${normalized}`)
+    const scale = 3
+    const canvas = document.createElement('canvas')
 
-    JsBarcode(svg, normalized, {
+    JsBarcode(canvas, normalized, {
       format: 'CODE128',
-      width: options.width ?? 1.2,
-      height: options.height ?? 28,
+      width: (options.width ?? 1.2) * scale,
+      height: (options.height ?? 28) * scale,
       margin: 0,
       displayValue: false,
       background: '#ffffff',
       lineColor: '#000000',
     })
 
-    // Частина термодрайверів і preview Chrome ігнорує SVG fill, заданий лише
-    // через inline-style. Дублюємо його звичайним атрибутом для надійного друку.
-    svg.querySelectorAll('rect').forEach((rect) => {
-      const fill = rect.style.fill
-      if (fill) rect.setAttribute('fill', fill)
-      rect.setAttribute('shape-rendering', 'crispEdges')
-    })
-
-    return svg.outerHTML
+    const displayWidth = Math.max(1, Math.round(canvas.width / scale))
+    const displayHeight = Math.max(1, Math.round(canvas.height / scale))
+    return `<img class="barcode-raster" src="${canvas.toDataURL('image/png')}" width="${displayWidth}" height="${displayHeight}" alt="">`
   } catch (error) {
-    console.error('Failed to generate barcode SVG', error)
+    console.error('Failed to generate barcode image', error)
     return ''
   }
 }
