@@ -9,9 +9,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // Не перезавантажувати касу посеред продажу. Нова версія активується
-      // після повного закриття встановленого PWA та наступного запуску.
-      registerType: 'prompt',
+      // Новий service worker активується одразу, інакше відкрита вкладка каси
+      // безкінечно утримує старі модулі (зокрема друк етикеток). Поточну
+      // сторінку це не перезавантажує: оновлення з'явиться при наступному reload.
+      registerType: 'autoUpdate',
       includeAssets: ['*.svg'],
       manifest: {
         name: 'Forsage CRM',
@@ -42,8 +43,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
-        skipWaiting: false,
-        clientsClaim: false,
+        skipWaiting: true,
+        clientsClaim: true,
       },
     }),
   ],
