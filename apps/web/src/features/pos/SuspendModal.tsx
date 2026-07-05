@@ -28,6 +28,7 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
     setSaving(true)
     try {
       await saleApi.suspend({
+        confirmed_by_cashier: true,
         shift_id:       currentShift.id,
         customer_id:    customer?.id ?? null,
         manager_id:     managerId,

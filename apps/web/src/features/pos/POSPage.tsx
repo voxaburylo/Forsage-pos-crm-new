@@ -474,22 +474,6 @@ export default function POSPage() {
           const selId = store.selectedProductId
           if (selId) store.removeItem(selId)
         }
-        if (e.key === '+' || e.key === '=') {
-          e.preventDefault()
-          const selId = store.selectedProductId
-          if (selId) {
-            const item = store.items.find(i => i.productId === selId)
-            if (item) store.updateQty(selId, +(item.qty + 1).toFixed(3))
-          }
-        }
-        if (e.key === '-') {
-          e.preventDefault()
-          const selId = store.selectedProductId
-          if (selId) {
-            const item = store.items.find(i => i.productId === selId)
-            if (item) store.updateQty(selId, +(item.qty - 1).toFixed(3))
-          }
-        }
       }
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
@@ -1270,7 +1254,6 @@ export default function POSPage() {
           ['F6', 'Знайти чек'],
           ['F8', 'Сканер'],
           ['Del', 'Видалити'],
-          ['+/−', 'К-сть'],
         ].map(([key, label]) => (
           <span key={key} className="flex items-center gap-1 whitespace-nowrap">
             <kbd className="text-[10px] font-mono bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded border border-gray-700">{key}</kbd>

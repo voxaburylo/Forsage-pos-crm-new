@@ -85,6 +85,7 @@ router.post('/quick-item', async (req, res, next) => {
 
 // POST /api/v1/sales/suspend — відкласти чек (без списання залишків і RPC)
 const suspendSaleSchema = z.object({
+  confirmed_by_cashier: z.literal(true),
   shift_id:       z.string().uuid(),
   customer_id:    z.string().uuid().optional().nullable(),
   manager_id:     z.string().uuid().optional().nullable(),

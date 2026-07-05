@@ -40,6 +40,7 @@ export const saleApi = {
     api.post<{ data: PriceCalculation[] }>('/api/v1/sales/calculate-price', { items }),
 
   suspend: (body: {
+    confirmed_by_cashier: true
     shift_id: string; customer_id?: string | null; manager_id?: string | null
     items: Array<{ product_id: string; qty: number; unit_price: number; discount: number }>
     payment_method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
