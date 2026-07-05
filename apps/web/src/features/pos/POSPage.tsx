@@ -373,6 +373,7 @@ export default function POSPage() {
     let first = 0
     let scanTarget: HTMLInputElement | HTMLTextAreaElement | null = null
     let valueBeforeScan = ''
+    let idleTimer: number | null = null
     function restoreInputBeforeScan() {
       const el = scanTarget
       if (!el) return
@@ -381,41 +382,42 @@ export default function POSPage() {
       setter?.call(el, valueBeforeScan)
       el.dispatchEvent(new Event('input', { bubbles: true }))
     }
+    function resetScannerBuffer() {
+      if (idleTimer !== null) window.clearTimeout(idleTimer)
+      idleTimer = null
+      buf = ''
+      first = 0
+      scanTarget = null
+      valueBeforeScan = ''
+    }
+    function completeScannerSequence(event?: KeyboardEvent, fromIdle = false) {
+      const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
+      const scannerSequence = fromIdle
+        ? buf.length >= 6 && averageInterval <= 100
+        : buf.length >= 4 && averageInterval <= 350
+      if (!scannerSequence) {
+        resetScannerBuffer()
+        return false
+      }
+
+      event?.preventDefault()
+      event?.stopPropagation()
+      event?.stopImmediatePropagation()
+      const code = buf
+      restoreInputBeforeScan()
+      resetScannerBuffer()
+      searchRef.current?.scanBarcode(code)
+      return true
+    }
     function onScanKey(e: KeyboardEvent) {
       const now = Date.now()
-      const active = document.activeElement
-      const searchOwnsInput = active instanceof HTMLElement && active.dataset.posSearch === 'true'
-      if (searchOwnsInput) {
-        // Поле пошуку має власний ізольований буфер сканера. Не змішуємо сюди
-        // попередній ручний запит і не перехоплюємо його Enter/Tab.
-        buf = ''
-        first = 0
-        scanTarget = null
-        valueBeforeScan = ''
-        return
-      }
       if (e.key === 'Enter' || e.key === 'Tab') {
-        const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-        // Пороги з запасом на повільні/Bluetooth-сканери: людина так швидко
-        // 4+ символів поспіль не набирає, тож хибних спрацювань не буде.
-        const scannerSequence = buf.length >= 4 && (now - last) < 600 && averageInterval <= 250
-        if (scannerSequence) {
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          restoreInputBeforeScan()
-          searchRef.current?.scanBarcode(buf)
-        }
-        buf = ''
-        first = 0
-        scanTarget = null
-        valueBeforeScan = ''
+        completeScannerSequence(e)
         return
       }
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (now - last > 500) {
-          buf = ''
-          first = now
+          resetScannerBuffer()
         }
         if (!buf) {
           first = now
@@ -429,23 +431,25 @@ export default function POSPage() {
         last = now
         const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
         const scannerBurst = buf.length >= 3 && averageInterval <= 250
-        if (scannerBurst && scanTarget?.dataset.posSearch !== 'true') {
+        if (scannerBurst) {
           // Після перших символів уже зрозуміло, що це сканер. Решту коду не
-          // віддаємо полю кількості/ціни; на суфіксі повернемо початкове значення.
+          // віддаємо пошуку/кількості; після завершення повернемо початкове значення.
           e.preventDefault()
           e.stopPropagation()
         }
+        if (idleTimer !== null) window.clearTimeout(idleTimer)
+        idleTimer = window.setTimeout(() => completeScannerSequence(undefined, true), 140)
       } else if (e.key !== 'Shift' && e.key !== 'CapsLock') {
         // Shift не скидає буфер: сканер тисне його перед великими літерами
         // та символами (CODE128), і код рвався навпіл.
-        buf = ''
-        first = 0
-        scanTarget = null
-        valueBeforeScan = ''
+        resetScannerBuffer()
       }
     }
     window.addEventListener('keydown', onScanKey, true)
-    return () => window.removeEventListener('keydown', onScanKey, true)
+    return () => {
+      if (idleTimer !== null) window.clearTimeout(idleTimer)
+      window.removeEventListener('keydown', onScanKey, true)
+    }
   }, [])
 
   // Гарячі клавіші
