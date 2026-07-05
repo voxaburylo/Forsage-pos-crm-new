@@ -45,28 +45,78 @@ interface SavedCart {
 }
 
 function saveCart(store: { tabs: Array<{ items: POSItem[]; customer: POSCustomer | null; notes: string }>; currentShift: { id: string } | null }) {
-  const hasItems = store.tabs.some((t) => t.items.length > 0)
-  if (!hasItems) { localStorage.removeItem(CART_KEY); return }
-  const cart: SavedCart = {
-    tabs: store.tabs.map((t) => ({ items: t.items, customer: t.customer, notes: t.notes })),
-    savedAt: new Date().toISOString(),
-    shiftId: store.currentShift?.id ?? null,
+  try {
+    const hasItems = store.tabs.some((t) => Array.isArray(t.items) && t.items.length > 0)
+    if (!hasItems) { localStorage.removeItem(CART_KEY); return }
+    const cart: SavedCart = {
+      tabs: store.tabs.map((t) => ({ items: t.items, customer: t.customer, notes: t.notes })),
+      savedAt: new Date().toISOString(),
+      shiftId: store.currentShift?.id ?? null,
+    }
+    localStorage.setItem(CART_KEY, JSON.stringify(cart))
+  } catch (error) {
+    console.warn('Не вдалося зберегти аварійну копію кошика', error)
   }
-  localStorage.setItem(CART_KEY, JSON.stringify(cart))
 }
 
 function loadCart(): SavedCart | null {
   try {
     const raw = localStorage.getItem(CART_KEY)
     if (!raw) return null
-    const cart = JSON.parse(raw) as SavedCart
-    if (!cart.tabs?.some((t) => t.items.length > 0)) return null
-    return cart
-  } catch { return null }
+    const parsed = JSON.parse(raw) as Partial<SavedCart>
+    if (!Array.isArray(parsed.tabs)) {
+      localStorage.removeItem(CART_KEY)
+      return null
+    }
+    const tabs = parsed.tabs.slice(0, 5).flatMap((tab) => {
+      if (!tab || !Array.isArray(tab.items)) return []
+      const items = tab.items.flatMap((rawItem) => {
+        const item = rawItem as Partial<POSItem>
+        const qty = Number(item.qty)
+        const unitPrice = Number(item.unitPrice)
+        if (!item.productId || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) return []
+        const discount = Math.max(0, Math.min(Number(item.discount) || 0, unitPrice * qty))
+        return [{
+          productId: String(item.productId),
+          sku: String(item.sku ?? ''),
+          name: String(item.name ?? item.sku ?? 'Товар'),
+          unit: String(item.unit ?? 'шт'),
+          qty,
+          unitPrice,
+          discount,
+          discountPct: Number.isFinite(Number(item.discountPct)) ? Number(item.discountPct) : undefined,
+          total: unitPrice * qty - discount,
+          qtyOnHand: Number(item.qtyOnHand) || 0,
+          requiresCoreReturn: Boolean(item.requiresCoreReturn),
+          coreDepositAmount: Number(item.coreDepositAmount) || 0,
+        }]
+      })
+      return items.length > 0 ? [{ items, customer: tab.customer ?? null, notes: String(tab.notes ?? '') }] : []
+    })
+    if (tabs.length === 0) {
+      localStorage.removeItem(CART_KEY)
+      return null
+    }
+    return {
+      tabs,
+      savedAt: Number.isFinite(Date.parse(parsed.savedAt ?? '')) ? String(parsed.savedAt) : new Date().toISOString(),
+      shiftId: typeof parsed.shiftId === 'string' ? parsed.shiftId : null,
+    }
+  } catch {
+    try { localStorage.removeItem(CART_KEY) } catch {}
+    return null
+  }
 }
 
 function clearSavedCart() {
-  localStorage.removeItem(CART_KEY)
+  try { localStorage.removeItem(CART_KEY) } catch {}
+}
+
+function savedCartTotal(cart: SavedCart): number {
+  return cart.tabs.reduce(
+    (sum, tab) => sum + tab.items.reduce((itemSum, item) => itemSum + (Number(item.total) || 0), 0),
+    0,
+  )
 }
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
@@ -628,23 +678,39 @@ export default function POSPage() {
   }
 
   function handleRestoreCart(cart: SavedCart) {
-    cart.tabs.forEach((savedTab, idx) => {
-      if (idx > 0) store.addTab()
-      savedTab.items.forEach(item => store.addItem(item))
-      if (savedTab.customer) {
-        store.setCustomer(savedTab.customer)
-        if (!isEmployeeSale) store.setAutomaticDiscountPct(savedTab.customer.tierDiscountPct ?? 0)
+    try {
+      const availableTargets = store.tabs.filter((tab) => tab.items.length === 0).length + Math.max(0, 5 - store.tabs.length)
+      if (cart.tabs.length > availableTargets) {
+        toast.error(`Потрібно вільних вкладок: ${cart.tabs.length}. Закрийте зайві чеки та повторіть.`)
+        return
       }
-      if (savedTab.notes) store.setNotes(savedTab.notes)
-    })
-    setRecoverCart(null)
-    clearSavedCart()
-    toast.success('Вкладки відновлено')
+      let restored = 0
+      for (const savedTab of cart.tabs) {
+        const ok = store.restoreReceipt({
+          items: savedTab.items,
+          customer: savedTab.customer,
+          notes: savedTab.notes,
+        })
+        if (!ok) break
+        restored++
+      }
+      if (restored !== cart.tabs.length) {
+        toast.error('Не вистачає вільних вкладок або кошик пошкоджений. Закрийте зайву вкладку й повторіть.')
+        return
+      }
+      setRecoverCart(null)
+      clearSavedCart()
+      toast.success(restored > 1 ? `Відновлено вкладок: ${restored}` : 'Кошик відновлено')
+    } catch (error) {
+      console.error('Помилка відновлення збереженого кошика', error)
+      toast.error('Кошик пошкоджений. Його можна безпечно видалити кнопкою поруч.')
+    }
   }
 
   function handleDismissRecover() {
-    clearSavedCart()
     setRecoverCart(null)
+    clearSavedCart()
+    toast.success('Збережену копію кошика видалено')
   }
 
   return (
@@ -659,7 +725,7 @@ export default function POSPage() {
         <div className="bg-yellow-500/10 border-b border-yellow-500/30 px-4 py-2 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2 text-yellow-300 text-sm">
             <RotateCcw size={14} />
-            <span>Знайдено збережений кошик від {new Date(recoverCart.savedAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })} ({recoverCart.tabs.length} вкл., {recoverCart.tabs.reduce((s, t) => s + t.items.reduce((s2, i) => s2 + i.total, 0), 0) / 100} грн)</span>
+            <span>Знайдено збережений кошик від {new Date(recoverCart.savedAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })} ({recoverCart.tabs.length} вкл., {(savedCartTotal(recoverCart) / 100).toFixed(2)} грн)</span>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => handleRestoreCart(recoverCart)}
@@ -668,7 +734,7 @@ export default function POSPage() {
             </button>
             <button onClick={handleDismissRecover}
               className="px-3 py-1 bg-gray-700 text-gray-400 text-xs rounded-lg hover:text-white transition-colors">
-              Скасувати
+              Видалити копію
             </button>
           </div>
         </div>
