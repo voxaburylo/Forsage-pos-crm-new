@@ -3,6 +3,7 @@ export interface Product {
   sku: string
   name: string
   barcode: string | null
+  additional_barcodes?: string[] | null
   brand_id: string | null
   category_id: string | null
   unit: string

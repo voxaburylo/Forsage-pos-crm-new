@@ -87,6 +87,12 @@ export default function ProductsPage() {
   const [binDraft, setBinDraft]       = useState('')
   const [savingBin, setSavingBin]     = useState(false)
 
+  function copyBarcode(barcode: string) {
+    navigator.clipboard.writeText(barcode)
+      .then(() => toast.success('Штрихкод скопійовано'))
+      .catch(() => {})
+  }
+
   function startEditPrice(p: Product) {
     setEditPriceId(p.id)
     setPriceDraft(kopecksToHryvnia(p.retail_price))
@@ -386,6 +392,7 @@ export default function ProductsPage() {
                         className="accent-yellow-500 cursor-pointer" />
                     </th>
                     <SortTh field="sku"          label="Артикул"  className="w-32"         sort={sort} onSort={toggleSort} />
+                    <th className="w-40 px-3 py-3 text-left text-xs font-bold uppercase tracking-wide text-gray-500">Штрихкод</th>
                     <SortTh field="name"         label="Назва"                             sort={sort} onSort={toggleSort} />
                     <SortTh field="brand"        label="Бренд"    className="w-32"         sort={sort} onSort={toggleSort} />
                     <th className="px-3 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide w-24">Місце</th>
@@ -399,14 +406,14 @@ export default function ProductsPage() {
                   {loading ? (
                     Array.from({ length: 8 }).map((_, i) => (
                       <tr key={i} className="animate-pulse">
-                        <td colSpan={9} className="px-3 py-3">
+                        <td colSpan={10} className="px-3 py-3">
                           <div className="h-4 bg-gray-100 rounded w-full" />
                         </td>
                       </tr>
                     ))
                   ) : products.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="text-center py-16">
+                      <td colSpan={10} className="text-center py-16">
                         <Package size={40} className="mx-auto text-gray-200 mb-3" />
                         <p className="text-gray-400 text-sm">Товарів не знайдено</p>
                         {search && <p className="text-gray-300 text-xs mt-1">Спробуйте інший запит</p>}
@@ -414,6 +421,10 @@ export default function ProductsPage() {
                     </tr>
                   ) : products.map((p) => {
                     const stock = stockStatus(p)
+                    const barcodes = [...new Set([
+                      p.barcode,
+                      ...(Array.isArray(p.additional_barcodes) ? p.additional_barcodes : []),
+                    ].filter((value): value is string => Boolean(value)))]
                     return (
                       <tr key={p.id}
                         className={`group hover:bg-gray-50 transition-colors ${selectedIds.has(p.id) ? 'bg-yellow-50/60' : ''} ${p.is_active === false ? 'opacity-50' : ''}`}>
@@ -424,6 +435,29 @@ export default function ProductsPage() {
                         </td>
                         <td className="px-3 py-3">
                           <span className="font-mono text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
+                        </td>
+                        <td className="px-3 py-3">
+                          {barcodes.length > 0 ? (
+                            <div className="flex max-w-44 flex-wrap gap-1">
+                              {barcodes.slice(0, 2).map((barcode) => (
+                                <button
+                                  key={barcode}
+                                  type="button"
+                                  onClick={() => copyBarcode(barcode)}
+                                  title="Клік — копіювати штрихкод"
+                                  className="inline-flex max-w-40 items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-xs font-semibold text-gray-700 hover:border-yellow-300 hover:bg-yellow-50"
+                                >
+                                  <span className="truncate">{barcode}</span>
+                                  <Copy size={11} className="shrink-0 opacity-40" />
+                                </button>
+                              ))}
+                              {barcodes.length > 2 && (
+                                <span className="px-1 text-[10px] text-gray-400">+{barcodes.length - 2}</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-300">—</span>
+                          )}
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-2">

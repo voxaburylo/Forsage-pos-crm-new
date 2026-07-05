@@ -25,6 +25,7 @@ export const createCustomerSchema = z.object({
   risk_profile:  z.enum(['low','medium','high']).optional(),
   discount_pct:  z.number().min(0).max(100).optional(),
   client_status: z.enum(['client','sto']).optional(),
+  card_barcode:  z.string().trim().max(50).transform((value) => value || null).nullable().optional(),
   vehicle: z.object({
     brand: z.string().max(100).optional().default('Авто'),
     model: z.string().max(100).optional().default('—'),

@@ -15,6 +15,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
   const [phone, setPhone] = useState('')
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
+  const [cardBarcode, setCardBarcode] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -22,6 +23,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     setPhone(customer.phone ?? '')
     setFullName(customer.full_name ?? '')
     setEmail(customer.email ?? '')
+    setCardBarcode(customer.card_barcode ?? '')
   }, [customer, open])
 
   async function submit(e: React.FormEvent) {
@@ -38,6 +40,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
         phone: phone.trim(),
         full_name: fullName.trim(),
         email: email.trim(),
+        card_barcode: cardBarcode.trim() || null,
       })
       onSaved(data)
       toast.success('Контакти клієнта оновлено')
@@ -73,6 +76,12 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+        />
+        <Input
+          label="Штрихкод картки"
+          value={cardBarcode}
+          onChange={(e) => setCardBarcode(e.target.value.replace(/\s/g, ''))}
+          placeholder="Скануйте картку або введіть номер"
         />
         <div className="flex gap-2 pt-1">
           <Button type="submit" loading={saving} className="flex-1">

@@ -26,7 +26,11 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
 
   if (search) {
     const normalized = normalizePhone(search)
-    const orParts = [`phone.ilike.%${normalized}%`, `full_name.ilike.%${search}%`]
+    const orParts = [
+      `phone.ilike.%${normalized}%`,
+      `full_name.ilike.%${search}%`,
+      `card_barcode.ilike.%${search}%`,
+    ]
     // Пошук також за VIN авто клієнта
     const { data: vinMatches } = await db
       .from('customer_cars')
@@ -136,7 +140,12 @@ export async function createCustomer(input: CreateCustomerInput, tenantId: strin
     .select('*')
     .single()
 
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    if (error.code === '23505' && input.card_barcode) {
+      throw new AppError('BARCODE_DUPLICATE', `Штрихкод картки ${input.card_barcode} вже використовується`, 409)
+    }
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
 
   let vehicleAdded = false
   if (vehicle?.vin || vehicle?.brand || vehicle?.model) {
@@ -171,7 +180,12 @@ export async function updateCustomer(id: string, input: UpdateCustomerInput, ten
     .select('*')
     .single()
 
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    if (error.code === '23505' && input.card_barcode) {
+      throw new AppError('BARCODE_DUPLICATE', `Штрихкод картки ${input.card_barcode} вже використовується`, 409)
+    }
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
   return data
 }
 

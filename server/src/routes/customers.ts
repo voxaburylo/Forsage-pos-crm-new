@@ -65,7 +65,7 @@ router.post('/quick', requireRole('owner', 'admin', 'manager', 'cashier'), async
   try {
     const parsed = quickCreateSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Введіть телефон та ім\'я', 422, parsed.error.flatten())
-    const result = await customerService.createCustomer({ ...parsed.data, tags: [] }, req.user!.tenant_id)
+    const result = await customerService.createCustomer({ ...parsed.data, tags: [], card_barcode: null }, req.user!.tenant_id)
     res.status(result.reused ? 200 : 201).json({
       data: result.customer,
       meta: { reused: result.reused, vehicle_added: result.vehicleAdded },

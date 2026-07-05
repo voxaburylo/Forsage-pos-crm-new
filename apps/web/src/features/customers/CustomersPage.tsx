@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2, ArrowUp } from 'lucide-react'
+import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2, ArrowUp, Barcode } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { customerGroupsApi, type CustomerGroup } from './customerGroupsApi'
 import { CustomerDrawer } from './CustomerDrawer'
@@ -39,6 +39,10 @@ export default function CustomersPage() {
   const [bulkGroupId, setBulkGroupId] = useState('')
   const [bulkOperating, setBulkOperating] = useState(false)
   const [showScrollTop, setShowScrollTop] = useState(false)
+  const [editBarcodeId, setEditBarcodeId] = useState<string | null>(null)
+  const [barcodeDraft, setBarcodeDraft] = useState('')
+  const [savingBarcode, setSavingBarcode] = useState(false)
+  const cancelBarcodeEditRef = useRef(false)
 
   const sentinelRef = useRef<HTMLDivElement>(null)
   const loadingRef = useRef(false)
@@ -122,6 +126,35 @@ export default function CustomersPage() {
     }).catch(() => {})
   }
 
+  function startBarcodeEdit(customer: Customer) {
+    cancelBarcodeEditRef.current = false
+    setEditBarcodeId(customer.id)
+    setBarcodeDraft(customer.card_barcode ?? '')
+  }
+
+  async function saveBarcode(customer: Customer) {
+    if (cancelBarcodeEditRef.current) {
+      cancelBarcodeEditRef.current = false
+      return
+    }
+    const value = barcodeDraft.trim()
+    if ((customer.card_barcode ?? '') === value) {
+      setEditBarcodeId(null)
+      return
+    }
+    setSavingBarcode(true)
+    try {
+      const { data } = await customerApi.update(customer.id, { card_barcode: value || null })
+      setCustomers((current) => current.map((item) => item.id === customer.id ? { ...item, card_barcode: data.card_barcode } : item))
+      setEditBarcodeId(null)
+      toast.success(value ? 'Штрихкод картки збережено' : 'Штрихкод картки видалено')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти штрихкод')
+    } finally {
+      setSavingBarcode(false)
+    }
+  }
+
   async function handleDelete(c: Customer) {
     const name = c.full_name ?? c.phone ?? 'без імені'
     if (!confirm(`Видалити клієнта "${name}"?`)) return
@@ -167,11 +200,12 @@ export default function CustomersPage() {
     if (selectedIds.size === 0) return
     const chosen = customers.filter((c) => selectedIds.has(c.id))
     const rows = [
-      ['Телефон', 'Ім\'я', 'VIN', 'Email', 'Борг,грн', 'Бонусів,грн', 'VIP', 'Ризик', 'Теги'].join(','),
+      ['Телефон', 'Ім\'я', 'Штрихкод картки', 'VIN', 'Email', 'Борг,грн', 'Бонусів,грн', 'VIP', 'Ризик', 'Теги'].join(','),
       ...chosen.map((c) =>
         [
           c.phone ?? '',
           `"${(c.full_name ?? '').replace(/"/g, '""')}"`,
+          c.card_barcode ?? '',
           c.primary_vin ?? '',
           c.email ?? '',
           (c.debt_balance / 100).toFixed(2),
@@ -237,7 +271,7 @@ export default function CustomersPage() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Пошук за телефоном, ім'ям або VIN..."
+            placeholder="Телефон, ім’я, VIN або штрихкод картки..."
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400/50"
           />
         </div>
@@ -331,6 +365,61 @@ export default function CustomersPage() {
                           ))}
                         </div>
                       )}
+
+                      {/* Штрихкод картки — завжди під рукою, редагується прямо у списку */}
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        {editBarcodeId === c.id ? (
+                          <div className="flex max-w-full items-center gap-1.5">
+                            <Barcode size={14} className="shrink-0 text-yellow-600" />
+                            <input
+                              autoFocus
+                              value={barcodeDraft}
+                              disabled={savingBarcode}
+                              onChange={(event) => setBarcodeDraft(event.target.value.replace(/\s/g, ''))}
+                              onBlur={() => saveBarcode(c)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') event.currentTarget.blur()
+                                if (event.key === 'Escape') {
+                                  cancelBarcodeEditRef.current = true
+                                  setEditBarcodeId(null)
+                                  event.currentTarget.blur()
+                                }
+                              }}
+                              placeholder="Скануйте або введіть номер"
+                              className="w-56 max-w-[65vw] rounded-lg border border-yellow-400 px-2.5 py-1 font-mono text-sm outline-none focus:ring-2 focus:ring-yellow-300"
+                            />
+                          </div>
+                        ) : c.card_barcode ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(c.card_barcode, 'штрихкод картки')}
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-yellow-200 bg-yellow-50 px-2.5 py-1 font-mono text-sm font-semibold text-gray-800 hover:bg-yellow-100"
+                              title="Клік — копіювати штрихкод картки"
+                            >
+                              <Barcode size={14} className="shrink-0 text-yellow-700" />
+                              <span className="truncate">{c.card_barcode}</span>
+                              <Copy size={12} className="shrink-0 opacity-40" />
+                            </button>
+                            {canManageCustomers && (
+                              <button type="button" onClick={() => startBarcodeEdit(c)}
+                                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                title="Змінити штрихкод картки">
+                                <Edit size={12} />
+                              </button>
+                            )}
+                          </>
+                        ) : canManageCustomers ? (
+                          <button type="button" onClick={() => startBarcodeEdit(c)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-500 hover:border-yellow-400 hover:bg-yellow-50 hover:text-yellow-700">
+                            <Barcode size={13} /> Додати штрихкод картки
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                            <Barcode size={12} /> Штрихкод картки не задано
+                          </span>
+                        )}
+                      </div>
 
                       {/* Рядок 3: VIN — великий, клік = копіювати */}
                       {c.primary_vin && (

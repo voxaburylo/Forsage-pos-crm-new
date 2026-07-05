@@ -97,6 +97,7 @@ export default function CustomerFormPage() {
         price_tier_id: (form.price_tier_id || null) as string | null | undefined,
         discount_pct:  Number(form.discount_pct) || 0,
         client_status: form.client_status,
+        card_barcode:  form.card_barcode.trim() || null,
         ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
             brand: form.car_brand.trim() || 'Авто',
