@@ -241,6 +241,8 @@ export default function POSPage() {
   usePOSBarcodeScanner({
     onScan: (code) => searchRef.current?.scanBarcode(code),
     onManualSearchText: (text) => searchRef.current?.appendSearchText(text),
+    onManualSearchBackspace: () => searchRef.current?.backspaceSearch(),
+    onManualSearchClear: () => searchRef.current?.clear(),
   })
 
   const refreshSuspendedCount = useCallback(() => {

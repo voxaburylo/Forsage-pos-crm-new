@@ -18,6 +18,8 @@ function looksLikeBarcode(value: string): boolean {
 interface ScannerOptions {
   onScan: (code: string) => void
   onManualSearchText: (text: string) => void
+  onManualSearchBackspace: () => void
+  onManualSearchClear: () => void
 }
 
 /**
@@ -26,12 +28,21 @@ interface ScannerOptions {
  * Символи не потрапляють у видимий пошук, доки послідовність не класифікована:
  * штрихкод іде прямо в кошик, звичайний текст — окремо в ручний пошук.
  */
-export function usePOSBarcodeScanner({ onScan, onManualSearchText }: ScannerOptions) {
+export function usePOSBarcodeScanner({
+  onScan,
+  onManualSearchText,
+  onManualSearchBackspace,
+  onManualSearchClear,
+}: ScannerOptions) {
   const scanCallback = useRef(onScan)
   const manualTextCallback = useRef(onManualSearchText)
+  const backspaceCallback = useRef(onManualSearchBackspace)
+  const clearCallback = useRef(onManualSearchClear)
 
   useEffect(() => { scanCallback.current = onScan }, [onScan])
   useEffect(() => { manualTextCallback.current = onManualSearchText }, [onManualSearchText])
+  useEffect(() => { backspaceCallback.current = onManualSearchBackspace }, [onManualSearchBackspace])
+  useEffect(() => { clearCallback.current = onManualSearchClear }, [onManualSearchClear])
 
   useEffect(() => {
     let buffer = ''
@@ -101,6 +112,26 @@ export function usePOSBarcodeScanner({ onScan, onManualSearchText }: ScannerOpti
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
       const now = Date.now()
+      const active = document.activeElement
+      const activeSearch = active instanceof HTMLElement && active.dataset.posSearch === 'true'
+
+      if (activeSearch && event.key === 'Backspace') {
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+        reset()
+        backspaceCallback.current()
+        return
+      }
+
+      if (activeSearch && event.key === 'Delete') {
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+        reset()
+        clearCallback.current()
+        return
+      }
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         if (!buffer) return
@@ -129,7 +160,6 @@ export function usePOSBarcodeScanner({ onScan, onManualSearchText }: ScannerOpti
 
       if (!buffer) {
         firstAt = now
-        const active = document.activeElement
         target = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
           ? active
           : null
