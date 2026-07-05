@@ -9,7 +9,7 @@
  */
 
 const DB_NAME    = 'forsage_offline'
-const DB_VERSION = 4
+const DB_VERSION = 5
 
 export async function ensurePersistentStorage(): Promise<boolean> {
   if (!navigator.storage?.persist) return false
@@ -29,6 +29,11 @@ function openDB(): Promise<IDBDatabase> {
         store.createIndex('by_sku',  'sku',     { unique: false })
         store.createIndex('by_name', 'name',    { unique: false })
         store.createIndex('by_barcode', 'barcode', { unique: false })
+      } else {
+        const store = req.transaction!.objectStore('products')
+        if (!store.indexNames.contains('by_sku')) store.createIndex('by_sku', 'sku', { unique: false })
+        if (!store.indexNames.contains('by_name')) store.createIndex('by_name', 'name', { unique: false })
+        if (!store.indexNames.contains('by_barcode')) store.createIndex('by_barcode', 'barcode', { unique: false })
       }
 
       if (!db.objectStoreNames.contains('pending_sales')) {
@@ -126,6 +131,55 @@ export async function searchProductsOffline(
     }
     req.onerror = () => reject(req.error)
   })
+}
+
+export async function findProductByScanOffline(
+  code: string,
+  scopeKey?: string,
+): Promise<any | null> {
+  const db = await openDB()
+  const normalizedSku = code.replace(/[\s\-./_]/g, '').toUpperCase()
+
+  const indexed = await new Promise<any | null>((resolve, reject) => {
+    const tx = db.transaction(['products', 'meta'], 'readonly')
+    const store = tx.objectStore('products')
+    const scopeRequest = tx.objectStore('meta').get('cache_scope')
+    const candidates: any[] = []
+
+    if (store.indexNames.contains('by_barcode')) {
+      const barcodeRequest = store.index('by_barcode').get(code)
+      barcodeRequest.onsuccess = () => { if (barcodeRequest.result) candidates.push(barcodeRequest.result) }
+    }
+    if (store.indexNames.contains('by_sku')) {
+      for (const sku of [...new Set([code, code.toUpperCase(), normalizedSku])]) {
+        const skuRequest = store.index('by_sku').get(sku)
+        skuRequest.onsuccess = () => { if (skuRequest.result) candidates.push(skuRequest.result) }
+      }
+    }
+
+    tx.oncomplete = () => {
+      if (scopeKey && scopeRequest.result?.value !== scopeKey) {
+        resolve(null)
+        return
+      }
+      resolve(candidates.find((product) => product.is_active !== false) ?? null)
+    }
+    tx.onerror = () => reject(tx.error)
+  })
+
+  if (indexed) return indexed
+
+  // Додаткові штрихкоди зберігаються масивом і не мають окремого індексу.
+  // Повний пошук потрібен лише як рідкісний fallback.
+  const candidates = await searchProductsOffline(code, 20, scopeKey)
+  return candidates.find((product) => {
+    const barcodes = [
+      product.barcode,
+      ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+    ].filter(Boolean).map(String)
+    const sku = String(product.sku ?? '').replace(/[\s\-./_]/g, '').toUpperCase()
+    return barcodes.includes(code) || sku === normalizedSku
+  }) ?? null
 }
 
 export async function getProductsCacheAge(): Promise<number | null> {

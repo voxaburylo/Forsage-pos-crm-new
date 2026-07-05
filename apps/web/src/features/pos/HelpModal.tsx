@@ -6,15 +6,7 @@ interface Props {
 }
 
 const SHORTCUTS = [
-  { key: 'F1', label: 'Довідка (це вікно)' },
-  { key: 'F2', label: 'Оплата / Завершити продаж' },
-  { key: 'F3', label: 'Нова вкладка чека' },
-  { key: 'F4', label: 'Фокус на пошук' },
-  { key: 'F5', label: 'Відкладені чеки' },
-  { key: 'F6', label: 'Знайти і надрукувати чек' },
-  { key: 'F8', label: 'Сканер (камера)' },
-  { key: 'F12 / Ctrl+L', label: 'Заблокувати касу' },
-  { key: 'Enter', label: 'Додати перший результат пошуку' },
+  { key: 'Enter', label: 'Обробити введений штрихкод або артикул' },
   { key: 'Delete', label: 'Видалити товар з чека' },
   { key: 'Escape', label: 'Очистити пошук / Закрити вікно' },
 ]
@@ -48,7 +40,7 @@ export function HelpModal({ open, onClose }: Props) {
         </div>
 
         <p className="text-gray-600 text-xs text-center mt-5">
-          Натисніть <kbd className="bg-[#2C2C2C] text-gray-300 font-mono px-1.5 py-0.5 rounded border border-gray-700">F1</kbd> щоб відкрити це вікно знову
+          Функціональні F-клавіші вимкнені, щоб сканер не запускав касові дії.
         </p>
       </div>
     </div>

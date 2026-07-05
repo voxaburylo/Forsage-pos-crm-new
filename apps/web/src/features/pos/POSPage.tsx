@@ -362,35 +362,44 @@ export default function POSPage() {
     clearSavedCart()
   }, [store])
 
-  // Глобальний сканер ШК: ловимо штрихкод навіть коли фокус НЕ в полі пошуку
-  // (модалка/кнопка/порожньо). Безпечно: спрацьовує лише коли активний елемент —
-  // НЕ поле вводу (інакше поле саме отримує ввід), і лише для швидкої серії символів
-  // + Enter (сканер = клавіатура). Ручний набір не зачіпається (захист таймінгом).
+  // Глобальний сканер ШК працює в capture-фазі, тому не залежить від фокуса.
+  // Швидка серія символів + Enter перехоплюється раніше за звичайний пошук.
   useEffect(() => {
     let buf = ''
     let last = 0
+    let first = 0
     function onScanKey(e: KeyboardEvent) {
       const now = Date.now()
       if (e.key === 'Enter') {
         const ae = document.activeElement as HTMLElement | null
         const editable = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
-        if (!editable && buf.length >= 6 && (now - last) < 80) {
+        const searchInput = ae?.dataset?.posSearch === 'true'
+        const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
+        const scannerSequence = buf.length >= 4 && (now - last) < 120 && averageInterval < 60
+        if ((!editable || searchInput) && scannerSequence) {
           e.preventDefault()
+          e.stopPropagation()
           searchRef.current?.scanBarcode(buf)
         }
         buf = ''
+        first = 0
         return
       }
       if (e.key.length === 1) {
-        if (now - last > 80) buf = ''   // повільний набір/нова серія
+        if (now - last > 120) {
+          buf = ''
+          first = now
+        }
+        if (!buf) first = now
         buf += e.key
         last = now
       } else {
         buf = ''
+        first = 0
       }
     }
-    window.addEventListener('keydown', onScanKey)
-    return () => window.removeEventListener('keydown', onScanKey)
+    window.addEventListener('keydown', onScanKey, true)
+    return () => window.removeEventListener('keydown', onScanKey, true)
   }, [])
 
   // Гарячі клавіші
@@ -398,8 +407,6 @@ export default function POSPage() {
     function handleGlobalKeyDown(e: KeyboardEvent) {
       // Не перехоплюємо якщо фокус на input (крім F-клавіш та Esc)
       const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA'
-      const isFKey = e.key.startsWith('F')
-
       // Escape закриває відкриті модалки
       const anyModalOpen = payOpen || customerOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen
       if (e.key === 'Escape' && anyModalOpen) {
@@ -417,44 +424,12 @@ export default function POSPage() {
         return
       }
 
-      if (e.key === 'F1') {
-        e.preventDefault()
-        setHelpOpen(true)
-      }
-      if (e.key === 'F2') {
-        e.preventDefault()
-        if (store.items.length > 0) setPayOpen(true)
-      }
-      if (e.key === 'F3') {
-        e.preventDefault()
-        if (store.tabs.length < 5) store.addTab()
-      }
-      if (e.key === 'F4') {
-        e.preventDefault()
-        searchRef.current?.focus()
-      }
-      if (e.key === 'F5') {
-        e.preventDefault()
-        setSuspendedOpen(true)
-      }
-      if (e.key === 'F6') {
-        e.preventDefault()
-        setFindReceiptOpen(true)
-      }
-      if (e.key === 'F8') {
-        e.preventDefault()
-        searchRef.current?.openCamera()
-      }
-      if (e.key === 'F12' || (e.key === 'l' && e.ctrlKey)) {
-        e.preventDefault()
-        handleLock()
-      }
       if (e.key === 'Escape' && !isInput) {
         searchRef.current?.clear()
       }
 
       // Навігація по чеку — тільки коли не в полі пошуку
-      if (!isInput && !isFKey) {
+      if (!isInput) {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
           if (store.items.length > 0) {
@@ -1244,25 +1219,6 @@ export default function POSPage() {
             } : null,
           })
         }} />
-
-      {/* Hotkeys cheat sheet — постійна підказка для касира (прихована на мобільних) */}
-      <div className="hidden md:flex shrink-0 bg-[#0D0D0D] border-t border-gray-800 px-4 py-1 flex items-center gap-4 overflow-x-auto select-none print:hidden">
-        {[
-          ['F1', 'Довідка'],
-          ['F2', 'Оплата'],
-          ['F3', '+Вкладка'],
-          ['F4', 'Пошук'],
-          ['F5', 'Відкладені'],
-          ['F6', 'Знайти чек'],
-          ['F8', 'Сканер'],
-          ['Del', 'Видалити'],
-        ].map(([key, label]) => (
-          <span key={key} className="flex items-center gap-1 whitespace-nowrap">
-            <kbd className="text-[10px] font-mono bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded border border-gray-700">{key}</kbd>
-            <span className="text-[10px] text-gray-500">{label}</span>
-          </span>
-        ))}
-      </div>
 
       {/* Прихований чек для друку */}
       {lastSale && <ReceiptPrint sale={lastSale} />}

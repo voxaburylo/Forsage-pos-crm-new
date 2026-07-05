@@ -97,7 +97,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
 }
 
 export const api = {
-  get:    <T>(path: string, opts?: Pick<RequestOptions, 'silent'>) => request<T>(path, opts),
+  get:    <T>(path: string, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, opts),
   post:   <T>(path: string, body: unknown, headers?: Record<string, string>, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, { method: 'POST',  body: JSON.stringify(body), headers, ...opts }),
   put:    <T>(path: string, body: unknown, opts?: Pick<RequestOptions, 'silent'>) => request<T>(path, { method: 'PUT',   body: JSON.stringify(body), ...opts }),
   patch:  <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),

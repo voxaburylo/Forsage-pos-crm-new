@@ -9,7 +9,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
+import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 function saveRecentItem(key: string, value: string) {
@@ -77,6 +77,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
   const searchEpoch             = useRef(0)
+  const scanQueue               = useRef<Promise<void>>(Promise.resolve())
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
@@ -91,7 +92,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       setSupplierResults([])
     },
     openCamera: () => setCameraOpen(true),
-    scanBarcode: (code: string) => handleBarcodeScan(code),
+    scanBarcode: (code: string) => queueBarcodeScan(code),
   }))
 
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
@@ -176,8 +177,18 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
       // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
       // результат текстового пошуку.
-      void handleBarcodeScan(trimmed)
+      queueBarcodeScan(trimmed)
     }
+  }
+
+  function queueBarcodeScan(code: string) {
+    // Очищаємо поле одразу, не чекаючи попередніх запитів. Самі коди
+    // обробляються послідовно, тому швидка серія сканів не губиться.
+    setQuery('')
+    setSupplierResults([])
+    scanQueue.current = scanQueue.current
+      .catch(() => {})
+      .then(() => handleBarcodeScan(code))
   }
 
   async function handleBarcodeScan(code: string) {
@@ -194,34 +205,37 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     // setQuery('') не запускає повторне завантаження каталогу. Окремий лічильник
     // гарантує оновлення, а старий список лишається видимим до приходу відповіді.
     setSearchRefreshVersion((version) => version + 1)
+
+    // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
+    // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
+    const cachedProduct = await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
+    if (cachedProduct) {
+      addToReceipt(cachedProduct as Product)
+      saveRecentItem('recent_scans', normalizedCode)
+      return
+    }
+
     if (!serverOnline) {
-      const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey)
-      const exactProduct = findExactScannedProduct(offlineResults, normalizedCode)
-      if (exactProduct) {
-        addToReceipt(exactProduct)
+      const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
+      const customer = customers[0]
+      if (customer) {
+        store.setCustomer({
+          id: customer.id,
+          phone: customer.phone,
+          name: customer.full_name ?? null,
+          debtBalance: customer.debt_balance ?? 0,
+          tierDiscountPct: customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0,
+          tierName: customer.price_tier?.name ?? null,
+          vipLevel: customer.vip_level ?? 'standard',
+          riskProfile: customer.risk_profile ?? 'low',
+        })
+        store.setAutomaticDiscountPct(customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+        toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
+        playSuccessBeep()
       } else {
-        const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
-        const customer = customers[0]
-        if (customer) {
-          store.setCustomer({
-            id: customer.id,
-            phone: customer.phone,
-            name: customer.full_name ?? null,
-            debtBalance: customer.debt_balance ?? 0,
-            tierDiscountPct: customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0,
-            tierName: customer.price_tier?.name ?? null,
-            vipLevel: customer.vip_level ?? 'standard',
-            riskProfile: customer.risk_profile ?? 'low',
-          })
-          store.setAutomaticDiscountPct(customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
-          toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
-          saveRecentItem('recent_scans', normalizedCode)
-          playSuccessBeep()
-        } else {
-          playErrorTone()
-          toast.error('Штрих-код не знайдено в офлайн-кеші')
-        }
+        playErrorTone()
+        toast.error('Штрих-код не знайдено в офлайн-кеші')
       }
       setSupplierResults([])
       return
@@ -229,7 +243,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     try {
       const res = await api.get<any>(
         `/api/v1/search/barcode/${encodeURIComponent(normalizedCode)}`,
-        { silent: true },
+        { silent: true, timeoutMs: 5_000 },
       )
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
       if (result?.type === 'customer' && result?.data) {
@@ -373,7 +387,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       <div className="relative mb-3 flex gap-2 shrink-0">
         <div className="relative flex-1 min-w-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
-          <input ref={inputRef} type="text" value={query}
+          <input ref={inputRef} type="text" value={query} data-pos-search="true"
             onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKeyDown}
             placeholder="Артикул, назва, штрихкод... (F4)"
             className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
@@ -389,7 +403,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       </div>
 
       <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
-        onScan={(code) => { setCameraOpen(false); void handleBarcodeScan(code) }} />
+        onScan={(code) => { setCameraOpen(false); queueBarcodeScan(code) }} />
 
       {/* Нещодавні скани */}
       {query === '' && getRecentItems('recent_scans').length > 0 && (
@@ -399,7 +413,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
             <button
               key={code}
               type="button"
-              onClick={() => { void handleBarcodeScan(code) }}
+              onClick={() => { queueBarcodeScan(code) }}
               className="text-[10px] bg-[#2C2C2C] hover:bg-[#3C3C3C] text-gray-300 border border-gray-700 px-2.5 py-1 rounded-full transition font-mono"
             >
               {code}
