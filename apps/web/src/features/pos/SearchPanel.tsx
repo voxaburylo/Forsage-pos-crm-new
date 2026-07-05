@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
 import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
-import { productApi } from '@/features/products/productApi'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
@@ -73,20 +72,22 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const [pricingModalItem, setPricingModalItem] = useState<any | null>(null)
   const [pricingRetailPrice, setPricingRetailPrice] = useState<string>('')
   const [offlineStockVersion, setOfflineStockVersion] = useState(0)
-  const [searchRefreshVersion, setSearchRefreshVersion] = useState(0)
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
+  const inputCommitTimer        = useRef<ReturnType<typeof setTimeout>>()
+  const inputDraft              = useRef('')
   const searchEpoch             = useRef(0)
-  const scanQueue               = useRef<Promise<void>>(Promise.resolve())
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
     clear: () => {
+      inputDraft.current = ''
       setQuery('')
       setResults([])
       setSupplierResults([])
     },
     search: (q: string) => {
+      inputDraft.current = q
       setQuery(q)
       setResults([])
       setSupplierResults([])
@@ -100,6 +101,16 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   // Auto focus
   useEffect(() => { inputRef.current?.focus() }, [])
 
+  // Тримаємо чернетку ручного вводу синхронною після очищення поля кнопками,
+  // вибору товару мишею або зовнішньої команди пошуку.
+  useEffect(() => {
+    inputDraft.current = query
+  }, [query])
+
+  useEffect(() => () => {
+    clearTimeout(inputCommitTimer.current)
+  }, [])
+
   useEffect(() => {
     const refresh = () => setOfflineStockVersion((version) => version + 1)
     window.addEventListener('forsage:offline-stock-updated', refresh)
@@ -109,7 +120,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   // Load categories dynamically
   useEffect(() => {
     if (serverOnline) {
-      api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories')
+      api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories', { silent: true })
         .then((res) => setCategories(res.data ?? []))
         .catch(() => {})
     } else if (scopeKey) {
@@ -138,21 +149,26 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         if (categoryFilter) {
           // Fetch products with large limit and filter by category name
           const { data } = await api.get<{ data: Product[] }>(
-            `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`
+            `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`,
+            { silent: true },
           )
           if (epoch !== searchEpoch.current) return
           setResults((data ?? []).filter((p) => p.category?.name === categoryFilter))
           setSupplierResults([])
         } else if (query.trim()) {
           const { data } = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(
-            `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`
+            `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`,
+            { silent: true },
           )
           if (epoch !== searchEpoch.current) return
           setResults(data?.warehouse || [])
           setSupplierResults(data?.supplier_catalog || [])
         } else {
           // If query is empty and no category filter, load first page of active products
-          const res = await productApi.list({ per_page: 50, is_active: 'true' })
+          const res = await api.get<{ data: Product[] }>(
+            '/api/v1/products?per_page=50&is_active=true',
+            { silent: true },
+          )
           if (epoch !== searchEpoch.current) return
           setResults(res.data ?? [])
           setSupplierResults([])
@@ -167,28 +183,62 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       }
     }, 200)
     return () => clearTimeout(timer.current)
-  }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion, searchRefreshVersion])
+  }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Escape') { setQuery(''); setResults([]); setSupplierResults([]); return }
-    if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+    if (e.key === 'Escape') {
+      clearTimeout(inputCommitTimer.current)
+      inputDraft.current = ''
+      setQuery('')
+      setResults([])
+      setSupplierResults([])
+      return
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
-      const trimmed = e.currentTarget.value.trim()
+      clearTimeout(inputCommitTimer.current)
+      const trimmed = inputDraft.current.trim()
+      inputDraft.current = ''
+      if (!trimmed) return
       // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
       // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
       // результат текстового пошуку.
       queueBarcodeScan(trimmed)
+      return
+    }
+    if (e.key === 'Backspace') {
+      e.preventDefault()
+      inputDraft.current = inputDraft.current.slice(0, -1)
+      setQuery(inputDraft.current)
+      return
+    }
+    if (e.key === 'Delete') {
+      e.preventDefault()
+      inputDraft.current = ''
+      setQuery('')
+      return
+    }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Не віддаємо символи сканера керованому input. Поки сканер швидко
+      // передає код, він живе лише у ref і не запускає текстовий пошук.
+      // Для ручного набору текст з'явиться після короткої паузи.
+      e.preventDefault()
+      inputDraft.current += e.key
+      clearTimeout(inputCommitTimer.current)
+      inputCommitTimer.current = setTimeout(() => {
+        setQuery(inputDraft.current)
+      }, 180)
     }
   }
 
   function queueBarcodeScan(code: string) {
-    // Очищаємо поле одразу, не чекаючи попередніх запитів. Самі коди
-    // обробляються послідовно, тому швидка серія сканів не губиться.
+    // Кожен скан обробляється незалежно: повільна відповідь для одного
+    // невідомого коду більше не блокує всі наступні товари.
+    clearTimeout(inputCommitTimer.current)
+    inputDraft.current = ''
     setQuery('')
     setSupplierResults([])
-    scanQueue.current = scanQueue.current
-      .catch(() => {})
-      .then(() => handleBarcodeScan(code))
+    void handleBarcodeScan(code)
   }
 
   async function handleBarcodeScan(code: string) {
@@ -201,10 +251,6 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     setQuery('')
     setSupplierResults([])
     setLoading(false)
-    // Якщо сканер працює поза полем пошуку, query вже порожній і звичайний
-    // setQuery('') не запускає повторне завантаження каталогу. Окремий лічильник
-    // гарантує оновлення, а старий список лишається видимим до приходу відповіді.
-    setSearchRefreshVersion((version) => version + 1)
 
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
@@ -388,7 +434,18 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         <div className="relative flex-1 min-w-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
           <input ref={inputRef} type="text" value={query} data-pos-search="true"
-            onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKeyDown}
+            onChange={(e) => {
+              // Віртуальна клавіатура та вставка можуть не надсилати keydown.
+              inputDraft.current = e.target.value
+              setQuery(e.target.value)
+            }}
+            onPaste={(e) => {
+              e.preventDefault()
+              const next = inputDraft.current + e.clipboardData.getData('text')
+              inputDraft.current = next
+              setQuery(next)
+            }}
+            onKeyDown={handleKeyDown}
             placeholder="Артикул, назва, штрихкод... (F4)"
             className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'

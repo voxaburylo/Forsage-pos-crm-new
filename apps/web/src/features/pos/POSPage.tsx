@@ -373,10 +373,11 @@ export default function POSPage() {
       if (e.key === 'Enter') {
         const ae = document.activeElement as HTMLElement | null
         const editable = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
-        const searchInput = ae?.dataset?.posSearch === 'true'
         const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
         const scannerSequence = buf.length >= 4 && (now - last) < 120 && averageInterval < 60
-        if ((!editable || searchInput) && scannerSequence) {
+        // Поле пошуку саме відокремлює сканер від ручного введення. Глобальний
+        // обробник потрібен лише коли фокус не стоїть у жодному полі.
+        if (!editable && scannerSequence) {
           e.preventDefault()
           e.stopPropagation()
           searchRef.current?.scanBarcode(buf)
