@@ -15,6 +15,16 @@ function looksLikeBarcode(value: string): boolean {
     && /^[A-Za-z0-9._/-]+$/.test(code)
 }
 
+function isValidEan13(value: string): boolean {
+  if (!/^\d{13}$/.test(value)) return false
+  let sum = 0
+  for (let index = 0; index < 12; index++) {
+    const digit = Number(value[index])
+    sum += index % 2 === 0 ? digit : digit * 3
+  }
+  return (10 - (sum % 10)) % 10 === Number(value[12])
+}
+
 interface ScannerOptions {
   onScan: (code: string) => void
   onManualSearchText: (text: string) => void
@@ -184,6 +194,13 @@ export function usePOSBarcodeScanner({
         // скану значення буде атомарно відновлено.
         event.preventDefault()
         event.stopPropagation()
+      }
+
+      // Основний магазинний формат — EAN-13. Валідний код завершуємо одразу
+      // на 13-й цифрі: не чекаємо idle/Enter і не склеюємо сусідні скани.
+      if (isValidEan13(buffer)) {
+        emitScan(event)
+        return
       }
 
       clearTimer()
