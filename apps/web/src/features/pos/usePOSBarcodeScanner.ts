@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 
 const IDLE_COMPLETE_MS = 220
 const SEQUENCE_RESET_MS = 900
+const TERMINATOR_GUARD_MS = 700
 
 function normalizeCode(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
@@ -34,6 +35,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
   useEffect(() => {
     let buffer = ''
     let lastAt = 0
+    let terminatorGuardUntil = 0
     let idleTimer: number | null = null
 
     const clearTimer = () => {
@@ -53,7 +55,10 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       event?.stopPropagation()
       event?.stopImmediatePropagation()
       reset()
-      if (code) scanCallback.current(code)
+      if (code) {
+        terminatorGuardUntil = Date.now() + TERMINATOR_GUARD_MS
+        scanCallback.current(code)
+      }
     }
 
     const finishAfterIdle = () => {
@@ -72,6 +77,20 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
+
+      // Більшість HID-сканерів після коду надсилають Enter або Tab. Для
+      // 13-значного коду товар уже додано на останній цифрі, тому ковтаємо
+      // цей хвіст, щоб він не переводив фокус на кнопку чи поле форми.
+      if (
+        !buffer
+        && (event.key === 'Enter' || event.key === 'Tab')
+        && Date.now() <= terminatorGuardUntil
+      ) {
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+        return
+      }
 
       // Касир натиснув конкретне поле — сканер не втручається в його ввід.
       if (isExplicitInputMode(document.activeElement)) {
