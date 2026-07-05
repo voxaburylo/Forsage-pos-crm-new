@@ -34,7 +34,6 @@ export const DEFAULT_QUICK_ITEMS: QuickItemConfig[] = [
 
 export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: () => void }) {
   const navigate = useNavigate()
-  const store = usePOSStore()
   const [items, setItems]             = useState<QuickItemConfig[]>([])
   const [cam13BasePrice, setCam13]    = useState<number>(0)
   const [popupItem, setPopupItem]     = useState<QuickItemConfig | null>(null)
@@ -124,7 +123,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
     try {
       if (sku === 'PACKET') {
         const { data: product } = await api.post<{ data: FoodItem }>('/api/v1/sales/quick-item', { kind: 'bag' })
-        store.addItem({
+        usePOSStore.getState().addItem({
           productId: product.id, sku: product.sku, name: product.name, unit: product.unit,
           qty: 1, unitPrice: price > 0 ? price : product.retail_price, discount: 0,
           qtyOnHand: 999999, requiresCoreReturn: false, coreDepositAmount: 0,
@@ -141,7 +140,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
         return
       }
       const qtyAvailable = product.qty_available ?? product.qty_on_hand
-      store.addItem({
+      usePOSStore.getState().addItem({
         productId: product.id,
         sku: product.sku,
         name: product.name,
@@ -162,7 +161,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
 
   function addFoodProduct(p: FoodItem) {
     initAudio()
-    store.addItem({
+    usePOSStore.getState().addItem({
       productId: p.id,
       sku: p.sku,
       name: p.name,

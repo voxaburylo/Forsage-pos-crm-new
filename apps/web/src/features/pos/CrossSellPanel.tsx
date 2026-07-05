@@ -7,40 +7,48 @@ import { usePOSStore } from '@/stores/posStore'
 import { playSuccessBeep, initAudio } from '@/lib/audioService'
 
 export function CrossSellPanel() {
-  const store = usePOSStore()
+  const items = usePOSStore((state) => state.items)
   const [suggestions, setSuggestions] = useState<Product[]>([])
 
   // Завантажуємо рекомендації для останнього доданого товару
   useEffect(() => {
-    const currentProductIds = store.items.map((i) => i.productId)
+    const currentProductIds = items.map((i) => i.productId)
 
-    if (store.items.length === 0) { setSuggestions([]); return }
-    const lastItem = store.items[store.items.length - 1]
+    if (items.length === 0) { setSuggestions([]); return }
+    const lastItem = items[items.length - 1]
     if (!lastItem) { setSuggestions([]); return }
 
     // Не запитуємо cobuy для синтетичних ID швидких товарів
     if (lastItem.productId.startsWith('quick_')) { setSuggestions([]); return }
 
     const controller = new AbortController()
-
-    request<{ data: Product[] }>(`/api/v1/products/${lastItem.productId}/cobuy`, { signal: controller.signal })
-      .then((res) => {
-        if (!controller.signal.aborted) {
-          // Фільтруємо ті, що вже в чеку
-          setSuggestions(res.data.filter((p) => !currentProductIds.includes(p.id)))
-        }
+    const timer = window.setTimeout(() => {
+      request<{ data: Product[] }>(`/api/v1/products/${lastItem.productId}/cobuy`, {
+        signal: controller.signal,
+        silent: true,
       })
-      .catch(() => {
-        if (!controller.signal.aborted) setSuggestions([])
-      })
+        .then((res) => {
+          if (!controller.signal.aborted) {
+            // Фільтруємо ті, що вже в чеку
+            setSuggestions(res.data.filter((p) => !currentProductIds.includes(p.id)))
+          }
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setSuggestions([])
+        })
+    }, 600)
 
-    return () => controller.abort()
-  }, [store.items.length])
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [items.length])
 
   if (suggestions.length === 0) return null
 
   function addToReceipt(p: Product) {
     initAudio()
+    const store = usePOSStore.getState()
     const tierPct = store.customer?.tierDiscountPct ?? 0
     const discount = tierPct > 0 ? Math.round(p.retail_price * tierPct / 100) : 0
     store.addItem({

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
 import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
@@ -55,8 +55,7 @@ export interface SearchPanelHandle {
   scanBarcode: (code: string) => void
 }
 
-export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
-  const store        = usePOSStore()
+const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const serverOnline = useServerStatus()
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [query, setQuery]       = useState('')
@@ -265,6 +264,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
+        const store = usePOSStore.getState()
         store.setCustomer({
           id: customer.id,
           phone: customer.phone,
@@ -294,6 +294,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
       if (result?.type === 'customer' && result?.data) {
         const c = result.data
+        const store = usePOSStore.getState()
         store.setCustomer({
           id: c.id, phone: c.phone, name: c.full_name ?? null,
           debtBalance: c.debt_balance ?? 0, tierDiscountPct: c.price_tier?.discount_pct ?? 0,
@@ -341,6 +342,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
 
   function addToReceipt(p: Product) {
     initAudio()
+    const store = usePOSStore.getState()
 
     const tierPct = store.automaticDiscountPct
     const discount = tierPct > 0
@@ -853,3 +855,8 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     </div>
   )
 })
+
+SearchPanelComponent.displayName = 'SearchPanel'
+
+// Зміни корзини не повинні перемальовувати великий каталог результатів.
+export const SearchPanel = memo(SearchPanelComponent)

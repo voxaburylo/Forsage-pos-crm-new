@@ -10,6 +10,7 @@
 
 const DB_NAME    = 'forsage_offline'
 const DB_VERSION = 5
+let dbPromise: Promise<IDBDatabase> | null = null
 
 export async function ensurePersistentStorage(): Promise<boolean> {
   if (!navigator.storage?.persist) return false
@@ -18,7 +19,9 @@ export async function ensurePersistentStorage(): Promise<boolean> {
 }
 
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise
+
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
 
     req.onupgradeneeded = (e) => {
@@ -65,9 +68,20 @@ function openDB(): Promise<IDBDatabase> {
       }
     }
 
-    req.onsuccess  = () => resolve(req.result)
-    req.onerror    = () => reject(req.error)
+    req.onsuccess = () => {
+      const db = req.result
+      db.onversionchange = () => {
+        db.close()
+        dbPromise = null
+      }
+      resolve(db)
+    }
+    req.onerror = () => {
+      dbPromise = null
+      reject(req.error)
+    }
   })
+  return dbPromise
 }
 
 // ─── Products cache ───────────────────────────────────────────────────────────

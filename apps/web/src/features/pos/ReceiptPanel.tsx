@@ -1,6 +1,8 @@
 ﻿import { useRef, useState, useCallback, useEffect } from 'react'
 import { Minus, Trash2, User, X, Plus as PlusIcon, ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePOSStore } from '@/stores/posStore'
+import type { POSItem } from '@/stores/posStore'
+import { memo } from 'react'
 import { useAuthStore } from '@/stores/authStore'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatMoney } from '@/lib/utils'
@@ -123,6 +125,117 @@ function NumpadModal({
 // ReceiptPanel
 // ================================================================
 
+const ReceiptItemRow = memo(function ReceiptItemRow({
+  item,
+  isSelected,
+  userCanDiscount,
+  onOpenNumpad,
+}: {
+  item: POSItem
+  isSelected: boolean
+  userCanDiscount: boolean
+  onOpenNumpad: (productId: string) => void
+}) {
+  const remove = () => usePOSStore.getState().removeItem(item.productId)
+  const updateQty = (qty: number) => usePOSStore.getState().updateQty(item.productId, qty)
+
+  return (
+    <SwipeableItem onDelete={remove}>
+      <div
+        onClick={() => usePOSStore.getState().setSelectedProductId(item.productId)}
+        className={`receipt-item py-3 px-3 -mx-1 rounded-xl border-2 cursor-pointer transition-all active-press ${
+          isSelected ? 'border-yellow-400 bg-yellow-400/5' : 'border-transparent hover:bg-gray-800/30'
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2 mb-1.5">
+          <div className="flex-1 min-w-0">
+            <p className="text-white text-sm leading-tight truncate font-medium flex items-center gap-1.5">
+              {item.name}
+              {item.requiresCoreReturn && (
+                <span className="shrink-0 bg-yellow-950 border border-yellow-800 text-yellow-500 text-[8px] px-1 py-0.5 rounded font-bold uppercase tracking-wider">
+                  ♻️ Обмін
+                </span>
+              )}
+            </p>
+            <p className="text-gray-500 text-xs mt-0.5">
+              {kopecksToHryvnia(item.unitPrice)} ₴ / {item.unit}
+              {item.requiresCoreReturn && ` • Застава: +${kopecksToHryvnia(item.coreDepositAmount ?? 0)} ₴`}
+            </p>
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); remove() }}
+            className="text-gray-700 hover:text-red-400 transition-colors shrink-0 touch-target ripple rounded-lg flex items-center justify-center"
+            aria-label={`Видалити ${item.name}`}
+            title="Видалити позицію"
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); updateQty(+(item.qty - 1).toFixed(3)) }}
+              className="w-12 h-12 rounded-xl bg-[#2C2C2C] text-white hover:bg-gray-600 flex items-center justify-center active-press ripple touch-target"
+              style={{ minWidth: 48, minHeight: 48 }}
+              aria-label={`Зменшити кількість ${item.name}`}
+            >
+              <Minus size={20} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onOpenNumpad(item.productId) }}
+              className="text-white text-lg font-semibold w-16 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
+              style={{ minHeight: 48 }}
+              aria-label={`Змінити кількість ${item.name}`}
+            >
+              {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                const newQty = +(item.qty + 1).toFixed(3)
+                if (item.qtyOnHand < newQty) {
+                  toast.warning(item.qtyOnHand <= 0
+                    ? `Недостатньо на складі: ${item.name} (немає в наявності)`
+                    : `Недостатньо на складі: ${item.name} (доступно ${item.qtyOnHand} ${item.unit})`)
+                }
+                updateQty(newQty)
+              }}
+              className="w-12 h-12 rounded-xl bg-[#2C2C2C] text-white hover:bg-gray-600 flex items-center justify-center active-press ripple touch-target"
+              style={{ minWidth: 48, minHeight: 48 }}
+              aria-label={`Збільшити кількість ${item.name}`}
+            >
+              <PlusIcon size={20} />
+            </button>
+          </div>
+          <span className="text-white font-bold text-base">{kopecksToHryvnia(item.total)} ₴</span>
+        </div>
+        {userCanDiscount && (
+          <div className="mt-2 flex items-center gap-2">
+            <label className="text-gray-500 text-xs">Знижка:</label>
+            <input
+              type="number" min="0" step="0.01"
+              value={(item.discount / 100).toFixed(2)}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                const value = parseFloat(e.target.value) || 0
+                usePOSStore.getState().setDiscount(item.productId, Math.round(value * 100))
+              }}
+              className="w-24 bg-[#2C2C2C] text-orange-400 text-sm text-center rounded-xl px-3 py-2 border border-gray-700 focus:outline-none focus:border-orange-400"
+            />
+            <span className="text-gray-500 text-xs">₴</span>
+          </div>
+        )}
+        {isSelected && (
+          <div className="mt-1.5 flex gap-3 text-gray-500 text-[10px]">
+            <span>Del — видалити</span>
+            <span>+/- — кількість</span>
+          </div>
+        )}
+      </div>
+    </SwipeableItem>
+  )
+})
+
 export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
   const store = usePOSStore()
   const userCanDiscount = canUserDiscount()
@@ -131,14 +244,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
   const tabTouchStart = useRef(0)
 
   const numpadItem = numpadTarget ? store.items.find((i) => i.productId === numpadTarget) : null
-
-  function handleSetDiscount(productId: string, discountKopecks: number) {
-    if (discountKopecks > 0 && !userCanDiscount) {
-      toast.warning('Тільки менеджер може застосувати знижку')
-      return
-    }
-    store.setDiscount(productId, discountKopecks)
-  }
+  const openNumpad = useCallback((productId: string) => setNumpadTarget(productId), [])
 
   // Swipe між вкладками
   const handleTabTouchStart = useCallback((e: React.TouchEvent) => {
@@ -281,116 +387,15 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
             Додайте товар через пошук
           </p>
         ) : (
-          store.items.map((item) => {
-            const isSelected = store.selectedProductId === item.productId
-            return (
-              <SwipeableItem
-                key={item.productId}
-                onDelete={() => store.removeItem(item.productId)}
-              >
-                <div
-                  onClick={() => store.setSelectedProductId(item.productId)}
-                  className={`receipt-item py-3 px-3 -mx-1 rounded-xl border-2 cursor-pointer transition-all active-press ${
-                    isSelected
-                      ? 'border-yellow-400 bg-yellow-400/5'
-                      : 'border-transparent hover:bg-gray-800/30'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2 mb-1.5">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white text-sm leading-tight truncate font-medium flex items-center gap-1.5">
-                        {item.name}
-                        {item.requiresCoreReturn && (
-                          <span className="shrink-0 bg-yellow-950 border border-yellow-800 text-yellow-500 text-[8px] px-1 py-0.5 rounded font-bold uppercase tracking-wider">
-                            ♻️ Обмін
-                          </span>
-                        )}
-                      </p>
-                      <p className="text-gray-500 text-xs mt-0.5">
-                        {kopecksToHryvnia(item.unitPrice)} ₴ / {item.unit}
-                        {item.requiresCoreReturn && ` • Застава: +${kopecksToHryvnia(item.coreDepositAmount ?? 0)} ₴`}
-                      </p>
-                    </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); store.removeItem(item.productId) }}
-                      className="text-gray-700 hover:text-red-400 transition-colors shrink-0 touch-target ripple rounded-lg flex items-center justify-center"
-                      aria-label={`Видалити ${item.name}`}
-                      title="Видалити позицію"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); store.updateQty(item.productId, +(item.qty - 1).toFixed(3)) }}
-                        className="w-12 h-12 rounded-xl bg-[#2C2C2C] text-white hover:bg-gray-600 flex items-center justify-center active-press ripple touch-target"
-                        style={{ minWidth: 48, minHeight: 48 }}
-                        aria-label={`Зменшити кількість ${item.name}`}
-                      >
-                        <Minus size={20} />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setNumpadTarget(item.productId)
-                        }}
-                        className="text-white text-lg font-semibold w-16 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
-                        style={{ minHeight: 48 }}
-                        aria-label={`Змінити кількість ${item.name}`}
-                      >
-                        {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const newQty = +(item.qty + 1).toFixed(3)
-                          if (item.qtyOnHand < newQty) {
-                            const msg = item.qtyOnHand <= 0
-                              ? 'Недостатньо на складі: ' + item.name + ' (немає в наявності)'
-                              : 'Недостатньо на складі: ' + item.name + ' (доступно ' + item.qtyOnHand + ' ' + item.unit + ')'
-                            toast.warning(msg)
-                          }
-                          store.updateQty(item.productId, newQty)
-                        }}
-                        className="w-12 h-12 rounded-xl bg-[#2C2C2C] text-white hover:bg-gray-600 flex items-center justify-center active-press ripple touch-target"
-                        style={{ minWidth: 48, minHeight: 48 }}
-                        aria-label={`Збільшити кількість ${item.name}`}
-                      >
-                        <PlusIcon size={20} />
-                      </button>
-                    </div>
-                    <span className="text-white font-bold text-base">
-                      {kopecksToHryvnia(item.total)} ₴
-                    </span>
-                  </div>
-                  {/* Знижка */}
-                  {userCanDiscount && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <label className="text-gray-500 text-xs">Знижка:</label>
-                      <input
-                        type="number" min="0" step="0.01"
-                        value={(item.discount / 100).toFixed(2)}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 0
-                          handleSetDiscount(item.productId, Math.round(val * 100))
-                        }}
-                        className="w-24 bg-[#2C2C2C] text-orange-400 text-sm text-center rounded-xl px-3 py-2 border border-gray-700 focus:outline-none focus:border-orange-400"
-                      />
-                      <span className="text-gray-500 text-xs">₴</span>
-                    </div>
-                  )}
-                  {isSelected && (
-                    <div className="mt-1.5 flex gap-3 text-gray-500 text-[10px]">
-                      <span>Del — видалити</span>
-                      <span>+/- — кількість</span>
-                    </div>
-                  )}
-                </div>
-              </SwipeableItem>
-            )
-          })
+          store.items.map((item) => (
+            <ReceiptItemRow
+              key={item.productId}
+              item={item}
+              isSelected={store.selectedProductId === item.productId}
+              userCanDiscount={userCanDiscount}
+              onOpenNumpad={openNumpad}
+            />
+          ))
         )}
       </div>
 

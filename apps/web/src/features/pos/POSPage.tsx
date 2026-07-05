@@ -349,7 +349,10 @@ export default function POSPage() {
 
   // Crash Recovery — авто-збереження всіх вкладок (зберігаємо і shift_id)
   useEffect(() => {
-    saveCart(store)
+    // Під час серії сканів не серіалізуємо весь чек після кожного товару.
+    // Останній стан зберігається одразу після короткої паузи.
+    const timer = window.setTimeout(() => saveCart(store), 180)
+    return () => window.clearTimeout(timer)
   }, [store.tabs, store.currentShift])
 
   // Очистити localStorage після успішного продажу або скидання
