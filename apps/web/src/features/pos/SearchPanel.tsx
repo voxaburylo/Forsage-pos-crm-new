@@ -61,6 +61,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const [offlineStockVersion, setOfflineStockVersion] = useState(0)
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
+  const searchEpoch             = useRef(0)
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
@@ -103,6 +104,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   // Debounced search
   useEffect(() => {
     clearTimeout(timer.current)
+    const epoch = ++searchEpoch.current
 
     timer.current = setTimeout(async () => {
       setLoading(true)
@@ -110,6 +112,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         // Офлайн-режим: шукаємо в IndexedDB
         if (!serverOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
+          if (epoch !== searchEpoch.current) return
           setResults(offlineResults as Product[])
           setSupplierResults([])
           setLoading(false)
@@ -121,28 +124,33 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           const { data } = await api.get<{ data: Product[] }>(
             `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`
           )
+          if (epoch !== searchEpoch.current) return
           setResults((data ?? []).filter((p) => p.category?.name === categoryFilter))
           setSupplierResults([])
         } else if (query.trim()) {
           const { data } = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(
             `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`
           )
+          if (epoch !== searchEpoch.current) return
           setResults(data?.warehouse || [])
           setSupplierResults(data?.supplier_catalog || [])
         } else {
           // If query is empty and no category filter, load first page of active products
           const res = await productApi.list({ per_page: 50, is_active: 'true' })
+          if (epoch !== searchEpoch.current) return
           setResults(res.data ?? [])
           setSupplierResults([])
         }
       } catch {
         const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter).catch(() => [])
+        if (epoch !== searchEpoch.current) return
         setResults(offlineResults as Product[])
         setSupplierResults([])
       } finally { 
-        setLoading(false) 
+        if (epoch === searchEpoch.current) setLoading(false)
       }
     }, 200)
+    return () => clearTimeout(timer.current)
   }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -160,6 +168,14 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   async function handleBarcodeScan(code: string) {
     const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
     if (!normalizedCode) return
+    // Скан — не текстовий пошук. Одразу прибираємо код із поля та скасовуємо
+    // запізнілі результати hybrid search, щоб екран не смикався.
+    searchEpoch.current++
+    clearTimeout(timer.current)
+    setQuery('')
+    setResults([])
+    setSupplierResults([])
+    setLoading(false)
     if (!serverOnline) {
       const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey)
       if (offlineResults[0]) {
@@ -358,7 +374,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       </div>
 
       <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
-        onScan={(code) => { setQuery(code); setCameraOpen(false); void handleBarcodeScan(code) }} />
+        onScan={(code) => { setCameraOpen(false); void handleBarcodeScan(code) }} />
 
       {/* Нещодавні скани */}
       {query === '' && getRecentItems('recent_scans').length > 0 && (
