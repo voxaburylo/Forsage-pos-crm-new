@@ -723,9 +723,10 @@ export default function POSPage() {
       <div
         className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
         style={bigFont ? {
-          zoom: 1.18,
-          width: 'calc(100% / 1.18)',
-          height: 'calc(100% / 1.18)',
+          transform: 'scale(1.18)',
+          transformOrigin: 'top left',
+          width: 'calc(100vw / 1.18)',
+          height: 'calc(100dvh / 1.18)',
         } : undefined}
       >
       {/* Lock Screen */}
