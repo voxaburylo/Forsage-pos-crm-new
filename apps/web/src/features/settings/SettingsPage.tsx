@@ -110,7 +110,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     adminApi.getSettings()
-      .then(({ data }) => setForm(data))
+      .then(({ data }) => {
+        setForm(data)
+        localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
+      })
       .catch(() => toast.error('Помилка завантаження налаштувань'))
       .finally(() => setLoading(false))
   }, [])
@@ -138,7 +141,9 @@ export default function SettingsPage() {
         vin_decoder_url:     form.vin_decoder_url,
         vin_decoder_api_key: form.vin_decoder_api_key,
         auto_print_receipt: form.auto_print_receipt,
+        receipt_width_mm: form.receipt_width_mm ?? 58,
       })
+      localStorage.setItem('forsage_receipt_width_mm', String(form.receipt_width_mm ?? 58))
       toast.success('Налаштування збережено')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка')
@@ -371,6 +376,24 @@ export default function SettingsPage() {
                   className="sr-only peer" />
                 <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-yellow-400 peer-focus:ring-2 peer-focus:ring-yellow-200 after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
               </label>
+            </div>
+
+            <div className="pt-2 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                <Printer size={14} className="inline mr-1" />
+                Ширина чекової стрічки
+              </label>
+              <select
+                value={form.receipt_width_mm ?? 58}
+                onChange={(e) => set('receipt_width_mm', Number(e.target.value) as 58 | 80)}
+                className="w-full border border-gray-200 rounded-lg bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                <option value={58}>58 мм — стандартний компактний чек</option>
+                <option value={80}>80 мм — широкий чек</option>
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                Зберігається для цього магазину й автоматично застосовується в касі.
+              </p>
             </div>
 
             {/* Знижка для працівників */}

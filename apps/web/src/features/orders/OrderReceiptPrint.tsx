@@ -3,6 +3,8 @@ import { PrintService } from "@/lib/printService"
 import type { CustomerOrder } from "./orderApi"
 
 export function printOrderReceipt(order: CustomerOrder, shopName = "ФОРСАЖ") {
+  const receiptWidth = Number(localStorage.getItem("forsage_receipt_width_mm")) === 80 ? 80 : 58
+  const sidePadding = receiptWidth === 80 ? 4 : 3
   const customer = order.customer
   const vehicle = order.vehicle_info
   const totalPaid = order.total_paid ?? order.prepayment
@@ -74,11 +76,11 @@ export function printOrderReceipt(order: CustomerOrder, shopName = "ФОРСАЖ
       <head>
         <title>Квитанція замовлення</title>
         <style>
-          @page { margin: 0; size: 58mm auto; }
-          html, body { width: 58mm; margin: 0; padding: 0; background: #fff; }
+          @page { margin: 0; size: ${receiptWidth}mm auto; }
+          html, body { width: ${receiptWidth}mm; margin: 0; padding: 0; background: #fff; }
           * { box-sizing: border-box; }
           body { font-family: monospace; font-size: 10px; }
-          .rp { width: 58mm; max-width: 58mm; margin: 0; padding: 2mm 3mm 4mm; overflow: hidden; overflow-wrap: anywhere; background: #fff; color: #000; }
+          .rp { width: ${receiptWidth}mm; max-width: ${receiptWidth}mm; margin: 0; padding: 2mm ${sidePadding}mm 4mm; overflow: hidden; overflow-wrap: anywhere; background: #fff; color: #000; }
           .rp-center { text-align: center; }
           .rp-bold { font-weight: bold; }
           .rp-lg { font-size: 12px; }

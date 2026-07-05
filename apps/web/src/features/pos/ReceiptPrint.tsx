@@ -16,14 +16,18 @@ function qrSvg(text: string): string {
 interface Props {
   sale: Sale
   shopName?: string
+  paperWidthMm?: 58 | 80
 }
 
 const PAY_LABEL: Record<string, string> = {
   cash: 'Готівка', card: 'Картка', debt: 'Борг', mixed: 'Змішано', transfer: 'Переказ',
 }
 
-export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
+export function ReceiptPrint({ sale, shopName = 'Форсаж', paperWidthMm }: Props) {
   const isOfflineReceipt = sale.sale_number.startsWith('OFF-')
+  const savedWidth = Number(localStorage.getItem('forsage_receipt_width_mm'))
+  const receiptWidth = paperWidthMm ?? (savedWidth === 80 ? 80 : 58)
+  const sidePadding = receiptWidth === 80 ? 4 : 3
   const qrLink = `${window.location.origin}/sales?search=${encodeURIComponent(sale.sale_number)}`
   const qr = qrSvg(qrLink)
   return createPortal(
@@ -31,9 +35,9 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
       <style>{`
         /* ======= Термопринтер 58/80мм чек ======= */
         @media print {
-          @page { margin: 0; size: 58mm auto; }
+          @page { margin: 0; size: ${receiptWidth}mm auto; }
           * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          html, body { width: 58mm !important; min-width: 58mm !important; margin: 0 !important; padding: 0 !important; background: white; }
+          html, body { width: ${receiptWidth}mm !important; min-width: ${receiptWidth}mm !important; margin: 0 !important; padding: 0 !important; background: white; }
           body > *:not(.receipt-print) { display: none !important; }
           body > .receipt-print { display: block !important; }
         }
@@ -41,10 +45,10 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
         .receipt-print {
           display: none;
           box-sizing: border-box;
-          width: 58mm;
-          max-width: 58mm;
+          width: ${receiptWidth}mm;
+          max-width: ${receiptWidth}mm;
           margin: 0;
-          padding: 2mm 3mm 4mm;
+          padding: 2mm ${sidePadding}mm 4mm;
           font-family: 'Courier New', 'Lucida Console', monospace;
           font-size: 10px;
           line-height: 1.35;

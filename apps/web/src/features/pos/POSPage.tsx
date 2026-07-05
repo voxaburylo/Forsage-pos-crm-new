@@ -219,6 +219,7 @@ export default function POSPage() {
         const data = res.data
         setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
         autoPrintRef.current = data.auto_print_receipt ?? false
+        localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
       })
       .catch(() => {})
 

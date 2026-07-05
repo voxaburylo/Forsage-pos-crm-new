@@ -101,6 +101,7 @@ export const settingsSchema = z.object({
   vin_decoder_url:           z.string().max(500).optional().nullable(),
   vin_decoder_api_key:       z.string().max(300).optional().nullable(),
   auto_print_receipt:        z.boolean().optional(),
+  receipt_width_mm:          z.union([z.literal(58), z.literal(80)]).optional(),
 })
 
 export type CreateUserInput  = z.infer<typeof createUserSchema>
