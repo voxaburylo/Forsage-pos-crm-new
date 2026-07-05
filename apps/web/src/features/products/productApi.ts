@@ -25,6 +25,7 @@ export interface ProductFilters {
   brand_id?: string
   is_active?: string
   low_stock?: string
+  stock_filter?: 'negative' | 'no_price'
   page?: number
   per_page?: number
   sort_field?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'created_at'

@@ -7,8 +7,32 @@ const router = Router()
 // Все маршруты требуют авторизации
 router.use(requireAuth)
 
-// GET /api/v1/products/export — експорт товарів у CSV
-router.get('/export', requireRole('owner', 'admin', 'manager'), productController.exportCsv)
+// ── Захист маржі ─────────────────────────────────────────────────────────────
+// Касир і менеджер не повинні бачити закупівельні ціни (маржу магазину) —
+// вирізаємо ці поля з УСІХ відповідей роутера на сервері, а не лише в UI.
+// Кладівник (storekeeper) працює з прийманням товару — йому закупівля потрібна.
+const MARGIN_FIELDS = new Set(['purchase_price', 'cost_price'])
+function stripMarginFields(obj: any): any {
+  if (Array.isArray(obj)) { for (const el of obj) stripMarginFields(el); return obj }
+  if (obj && typeof obj === 'object') {
+    for (const k of Object.keys(obj)) {
+      if (MARGIN_FIELDS.has(k)) delete obj[k]
+      else stripMarginFields(obj[k])
+    }
+  }
+  return obj
+}
+router.use((req, res, next) => {
+  const role = req.user?.role
+  if (role === 'cashier' || role === 'manager') {
+    const orig = res.json.bind(res)
+    res.json = ((body: any) => orig(stripMarginFields(body))) as any
+  }
+  next()
+})
+
+// GET /api/v1/products/export — експорт товарів у CSV (містить закупівлю → лише власник/адмін)
+router.get('/export', requireRole('owner', 'admin'), productController.exportCsv)
 
 // GET /api/v1/products/generate-barcode-only — згенерувати унікальний штрих-код без прив'язки до товару
 router.get('/generate-barcode-only', requireRole('owner', 'admin', 'storekeeper'), productController.generateBarcodeOnly)
@@ -31,8 +55,8 @@ router.post('/bulk-update', requireRole('owner', 'admin', 'manager'), productCon
 // GET /api/v1/products/:id — карточка товара
 router.get('/:id', productController.getOne)
 
-// GET /api/v1/products/:id/price-history — история цен
-router.get('/:id/price-history', requireRole('owner', 'admin', 'manager'), productController.getPriceHistory)
+// GET /api/v1/products/:id/price-history — история цен (містить закупівлю → без менеджера)
+router.get('/:id/price-history', requireRole('owner', 'admin'), productController.getPriceHistory)
 
 // GET /api/v1/products/:id/analogs — аналоги товара
 router.get('/:id/analogs', productController.getAnalogs)
@@ -75,11 +99,11 @@ router.put('/:id/stock', requireRole('owner', 'admin', 'storekeeper'), productCo
 // GET /api/v1/products/:id/fitment — сумісність з авто
 router.get('/:id/fitment', productController.getFitment)
 
-// GET /api/v1/products/:id/history — історія товару (ціни + рух)
-router.get('/:id/history', requireRole('owner', 'admin', 'manager'), productController.getHistory)
+// GET /api/v1/products/:id/history — історія товару (ціни + рух; закупівля → без менеджера)
+router.get('/:id/history', requireRole('owner', 'admin'), productController.getHistory)
 
 // GET /api/v1/products/:id/supplier-prices — порівняння закупівельних цін постачальників
-router.get('/:id/supplier-prices', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.getSupplierPrices)
+router.get('/:id/supplier-prices', requireRole('owner', 'admin', 'storekeeper'), productController.getSupplierPrices)
 
 // POST /api/v1/products/:id/generate-barcode — генерувати внутрішній штрих-код
 router.post('/:id/generate-barcode', requireRole('owner', 'admin', 'storekeeper'), productController.generateBarcode)

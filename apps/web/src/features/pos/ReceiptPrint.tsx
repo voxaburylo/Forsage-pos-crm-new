@@ -3,6 +3,7 @@ import qrcode from 'qrcode-generator'
 import type { Sale } from '@/types/sale'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatDateTime } from '@/lib/utils'
+import { PrintService } from '@/lib/printService'
 
 // Синхронна генерація QR (SVG) — щоб був готовий одразу на момент друку
 function qrSvg(text: string): string {
@@ -32,33 +33,40 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
         @media print {
           @page { margin: 0; size: 58mm auto; }
           * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          body { background: white; margin: 0; padding: 0; }
+          html, body { width: 58mm !important; min-width: 58mm !important; margin: 0 !important; padding: 0 !important; background: white; }
           body > *:not(.receipt-print) { display: none !important; }
           body > .receipt-print { display: block !important; }
         }
 
         .receipt-print {
           display: none;
-          width: 48mm;
-          padding: 2mm 2mm 2mm 2mm;
+          box-sizing: border-box;
+          width: 58mm;
+          max-width: 58mm;
+          margin: 0;
+          padding: 2mm 3mm 4mm;
           font-family: 'Courier New', 'Lucida Console', monospace;
           font-size: 10px;
           line-height: 1.35;
           color: #000;
           background: #fff;
-          word-wrap: break-word;
+          overflow: hidden;
+          overflow-wrap: anywhere;
         }
 
+        .receipt-print * { box-sizing: border-box; }
         .receipt-print .rp-center { text-align: center; }
         .receipt-print .rp-bold { font-weight: 700; }
         .receipt-print .rp-large { font-size: 14px; }
         .receipt-print .rp-small { font-size: 8px; color: #666; }
         .receipt-print .rp-dash { border: none; border-top: 1px dashed #333; margin: 2mm 0; }
         .receipt-print .rp-thin { border: none; border-top: 1px solid #999; margin: 1.5mm 0; }
-        .receipt-print .rp-row { display: flex; justify-content: space-between; }
-        .receipt-print .rp-item-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32mm; }
+        .receipt-print .rp-row { display: flex; justify-content: space-between; gap: 2mm; }
+        .receipt-print .rp-row > :last-child { flex-shrink: 0; text-align: right; }
+        .receipt-print .rp-item-name { white-space: normal; overflow-wrap: anywhere; }
         .receipt-print .rp-total { font-size: 18px; font-weight: 700; text-align: center; margin: 2mm 0; }
         .receipt-print .rp-thanks { text-align: center; margin-top: 2mm; font-size: 10px; }
+        .receipt-print svg { display: block; width: 22mm; height: 22mm; margin: 0 auto; }
       `}</style>
 
       {/* Верхній колонтитул */}
@@ -151,5 +159,5 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж' }: Props) {
 }
 
 export function printReceipt() {
-  window.print()
+  PrintService.printCurrentPage()
 }

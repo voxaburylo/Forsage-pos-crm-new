@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ShoppingCart, RotateCcw, Printer } from 'lucide-react'
 import { saleApi } from '@/features/pos/saleApi'
-import { ReceiptPrint } from '@/features/pos/ReceiptPrint'
+import { printReceipt, ReceiptPrint } from '@/features/pos/ReceiptPrint'
 import type { Sale } from '@/types/sale'
 import { Layout } from '@/components/Layout'
 import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
@@ -258,7 +258,7 @@ export default function SalesPage() {
                   Оформити повернення
                 </Button>
               )}
-              <Button variant="secondary" icon={<Printer size={15} />} onClick={() => window.print()}>
+              <Button variant="secondary" icon={<Printer size={15} />} onClick={printReceipt}>
                 Друк чека
               </Button>
               <Button variant="secondary" onClick={() => setDetail(null)}>Закрити</Button>

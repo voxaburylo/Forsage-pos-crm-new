@@ -66,6 +66,8 @@ export default function ProductsPage() {
   const [search, setSearch]         = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [lowStock, setLowStock]     = useState(false)
+  // Контрольні фільтри власника: мінусові залишки / товари без ціни
+  const [stockFilter, setStockFilter] = useState<'' | 'negative' | 'no_price'>('')
   const [page, setPage]             = useState(1)
   const [loading, setLoading]       = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -155,6 +157,7 @@ export default function ProductsPage() {
       const data = await productApi.list({
         search: debouncedSearch || undefined,
         low_stock: lowStock ? 'true' : undefined,
+        stock_filter: stockFilter || undefined,
         category_id: categoryFilter || undefined,
         brand_id: brandFilter || undefined,
         page,
@@ -166,10 +169,10 @@ export default function ProductsPage() {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
     } finally { setLoading(false) }
-  }, [debouncedSearch, lowStock, categoryFilter, brandFilter, page, sort])
+  }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setPage(1) }, [debouncedSearch, lowStock, categoryFilter, brandFilter, sort])
+  useEffect(() => { setPage(1) }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
 
   // Клієнтське сортування тільки для поля 'brand' (JOIN-колонку не можна сортувати на сервері)
   const products = useMemo(() => {
@@ -358,6 +361,20 @@ export default function ProductsPage() {
                 lowStock ? 'bg-orange-100 border-orange-300 text-orange-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
               }`}>
               <AlertTriangle size={14} /> Мало на складі
+            </button>
+            <button onClick={() => { setStockFilter(stockFilter === 'negative' ? '' : 'negative'); setPage(1) }}
+              title="Товари, що пішли в мінус через продаж при нульовому залишку — вирівняйте ревізією"
+              className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                stockFilter === 'negative' ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}>
+              − Мінуси
+            </button>
+            <button onClick={() => { setStockFilter(stockFilter === 'no_price' ? '' : 'no_price'); setPage(1) }}
+              title="Товари з роздрібною ціною 0 грн (ціну не розпізнано при імпорті) — впишіть ціну"
+              className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                stockFilter === 'no_price' ? 'bg-amber-100 border-amber-300 text-amber-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}>
+              ₴0 Без ціни
             </button>
           </div>
 

@@ -7,6 +7,7 @@ import { orderApi } from '@/features/orders/orderApi'
 import { Layout } from '@/components/Layout'
 import { Card, Button } from '@/components/ui'
 import { formatMoney, localDateKey } from '@/lib/utils'
+import { useAuthStore } from '@/stores/authStore'
 
 interface DailyData {
   date: string
@@ -44,6 +45,9 @@ const PERIOD_LABELS: Record<Period, string> = { today: 'Сьогодні', week:
 
 export default function DashboardPage() {
   const navigate = useNavigate()
+  // Прибуток — тільки власнику/адміну; менеджер бачить виторг і чеки
+  const role = useAuthStore((s) => (s.session?.user?.user_metadata?.role as string) ?? 'cashier')
+  const canSeeProfit = ['owner', 'admin'].includes(role)
   const [period, setPeriod] = useState<Period>('month')
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [lowStock, setLowStock] = useState(0)
@@ -132,7 +136,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
         {[
           { label: 'Виторг',          value: d?.total_revenue  ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
-          { label: 'Валовий прибуток', value: d?.gross_profit  ?? 0, color: 'bg-blue-50 border-blue-200',       iconColor: 'text-blue-600',    icon: TrendingUp },
+          ...(canSeeProfit ? [{ label: 'Валовий прибуток', value: d?.gross_profit ?? 0, color: 'bg-blue-50 border-blue-200', iconColor: 'text-blue-600', icon: TrendingUp }] : []),
           { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200',   iconColor: 'text-purple-600',  icon: ClipboardList, raw: true },
           { label: 'Середній чек',    value: d?.average_receipt ?? 0, color: 'bg-amber-50 border-amber-200',   iconColor: 'text-amber-600',   icon: Receipt },
         ].map(({ label, value, color, iconColor, icon: Icon, raw }) => (

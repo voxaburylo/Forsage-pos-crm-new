@@ -11,6 +11,7 @@ import { ProductPhotoUpload } from './ProductPhotoUpload'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
 
 const EMPTY: ProductFormData = {
   sku: '', name: '', barcode: '', brand_id: '', category_id: '',
@@ -30,6 +31,12 @@ export default function ProductFormPage() {
   const [form, setForm] = useState<ProductFormData>(EMPTY)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // Закупівельна ціна (маржа) — лише для власника/адміна/кладівника.
+  // Касир/менеджер її не бачать (сервер її й не віддає) і НЕ надсилають при
+  // збереженні — інакше затерли б реальну закупівлю нулем.
+  const role = useAuthStore((s) => (s.session?.user?.user_metadata?.role as string) ?? 'cashier')
+  const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
 
   // Категорії та бренди для "креативних" селектів
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
@@ -149,11 +156,15 @@ export default function ProductFormPage() {
 
     setSaving(true)
     try {
+      // Персонал без доступу до маржі не надсилає purchase_price взагалі
+      const payload: any = { ...form }
+      if (!canSeeMargin) delete payload.purchase_price
+
       if (isEdit) {
-        await productApi.update(id, form)
+        await productApi.update(id, payload)
         toast.success('Товар оновлено')
       } else {
-        const { data } = await productApi.create(form)
+        const { data } = await productApi.create(payload)
         toast.success(`Товар "${data.name}" створено`)
       }
       navigate('/products')
@@ -307,14 +318,16 @@ export default function ProductFormPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Input
-                label="Закупівельна ціна (₴)"
-                type="number" min="0" step="0.01"
-                value={form.purchase_price}
-                onChange={(e) => set('purchase_price', e.target.value)}
-                placeholder="250.00"
-              />
+            <div className={`grid grid-cols-1 gap-4 ${canSeeMargin ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+              {canSeeMargin && (
+                <Input
+                  label="Закупівельна ціна (₴)"
+                  type="number" min="0" step="0.01"
+                  value={form.purchase_price}
+                  onChange={(e) => set('purchase_price', e.target.value)}
+                  placeholder="250.00"
+                />
+              )}
               <div>
                 <Input
                   label="Роздрібна ціна (₴) *"

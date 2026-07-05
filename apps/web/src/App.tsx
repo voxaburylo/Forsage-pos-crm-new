@@ -151,8 +151,9 @@ function App() {
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
           <Route path="/returns"  element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
           <Route path="/cashflow" element={<ProtectedRoute><CashflowPage /></ProtectedRoute>} />
-          <Route path="/reports"  element={<ProtectedRoute roles={OFFICE_ROLES}><DailyReport /></ProtectedRoute>} />
-          <Route path="/abc"        element={<ProtectedRoute roles={OFFICE_ROLES}><ABCAnalysis /></ProtectedRoute>} />
+          {/* Звіти з прибутком/маржею — лише власник і адмін */}
+          <Route path="/reports"  element={<ProtectedRoute roles={ADMIN_ROLES}><DailyReport /></ProtectedRoute>} />
+          <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute>} />
           <Route path="/needs-action" element={<ProtectedRoute roles={OFFICE_ROLES}><NeedsActionPage /></ProtectedRoute>} />
           <Route path="/staff-analytics" element={<ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />

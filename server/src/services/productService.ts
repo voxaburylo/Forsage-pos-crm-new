@@ -51,7 +51,7 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
 }
 
 export async function listProducts(query: ProductListQuery, tenantId: string) {
-  const { search, category_id, brand_id, is_active, low_stock, page, per_page, sort_field, sort_dir } = query
+  const { search, category_id, brand_id, is_active, low_stock, stock_filter, page, per_page, sort_field, sort_dir } = query
   const offset = (page - 1) * per_page
   let crossIdFilter = ''
 
@@ -120,7 +120,7 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
   }
 
   // Звичайний запит — перевіряємо кеш (тільки для пошукових запитів)
-  const isCacheable = !!search && !category_id && !brand_id && is_active === undefined
+  const isCacheable = !!search && !category_id && !brand_id && is_active === undefined && !stock_filter
   const cacheKey = isCacheable ? JSON.stringify({ tenantId, search, page, per_page, sort_field, sort_dir }) : null
   if (cacheKey) {
     const cached = await searchCache.get(cacheKey)
@@ -151,6 +151,8 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
   if (category_id) q = q.eq('category_id', category_id)
   if (brand_id) q = q.eq('brand_id', brand_id)
   if (is_active !== undefined) q = q.eq('is_active', is_active === 'true')
+  if (stock_filter === 'negative') q = q.lt('qty_on_hand', 0)
+  if (stock_filter === 'no_price') q = q.eq('retail_price', 0)
 
   const { data, error, count } = await q
   if (error) throw new AppError('DB_ERROR', error.message, 500)

@@ -51,6 +51,8 @@ const labelSettingsSchema = z.object({
   padding_mm:        z.number().min(0).max(10).optional(),
   font_size:         z.number().min(4).max(20).optional(),
   barcode_height:    z.number().min(10).max(60).optional(),
+  offset_x_mm:       z.number().min(-10).max(10).optional(),
+  offset_y_mm:       z.number().min(-10).max(10).optional(),
   show_shop_name:    z.boolean().optional(),
   show_product_name: z.boolean().optional(),
   show_barcode:      z.boolean().optional(),

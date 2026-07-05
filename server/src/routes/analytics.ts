@@ -108,13 +108,15 @@ router.get('/dashboard', async (req, res, next) => {
     const totalExpenses = (expenses ?? []).reduce((s, x) => s + x.amount, 0)
     const netProfit = grossProfit - totalExpenses
 
+    // Прибуток/собівартість — лише власнику й адміну; менеджер бачить виторг/чеки
+    const canSeeProfit = ['owner', 'admin'].includes(req.user!.role)
     res.json({
       data: {
         total_revenue:   totalRevenue,
-        cogs,
-        gross_profit:    grossProfit,
-        total_expenses:  totalExpenses,
-        net_profit:      netProfit,
+        cogs:            canSeeProfit ? cogs : 0,
+        gross_profit:    canSeeProfit ? grossProfit : 0,
+        total_expenses:  canSeeProfit ? totalExpenses : 0,
+        net_profit:      canSeeProfit ? netProfit : 0,
         total_receipts:  totalReceipts,
         average_receipt: averageReceipt,
         daily,
@@ -123,8 +125,8 @@ router.get('/dashboard', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-// GET /api/v1/analytics/abc — ABC-аналіз товарів
-router.get('/abc', async (req, res, next) => {
+// GET /api/v1/analytics/abc — ABC-аналіз товарів (маржа → лише власник/адмін)
+router.get('/abc', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const tenantId = req.user!.tenant_id
     const days = Math.max(1, parseInt(String(req.query.days ?? '90'), 10))

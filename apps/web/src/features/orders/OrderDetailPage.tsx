@@ -18,6 +18,8 @@ import { DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
 import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
+import { PrintService } from '@/lib/printService'
+import { renderBarcodeSvg } from '@/lib/barcodeSvg'
 
 interface Payment {
   id: string
@@ -392,6 +394,9 @@ export default function OrderDetailPage() {
       const h = settings.height_mm
       const padding = settings.padding_mm
       const fontSize = settings.font_size
+      const offsetX = Math.max(-10, Math.min(10, Number(settings.offset_x_mm) || 0))
+      const offsetY = Math.max(-10, Math.min(10, Number(settings.offset_y_mm) || 0))
+      const esc = PrintService.escapeHtml
 
       const clientName = order.customer?.full_name || order.customer?.phone || '—'
       const carInfo = order.vehicle_info
@@ -401,77 +406,68 @@ export default function OrderDetailPage() {
       const cellInfo = order.pickup_cell ? `Комірка: ${order.pickup_cell}` : ''
       const today = new Date().toLocaleDateString('uk-UA')
 
-      const labelsHtml = Array(itemLabelCopies).fill(0).map((_, index) => {
+      const barcodeSvg = barcodeValue
+        ? renderBarcodeSvg(barcodeValue, {
+            width: Math.max(0.5, Number(settings.barcode_width_factor) || 1) * 1.2,
+            height: settings.barcode_height,
+          })
+        : ''
+      const labelsHtml = Array(itemLabelCopies).fill(0).map(() => {
         return `
-          <div class="label">
+          <section class="label-page"><div class="label">
             <div style="font-size:${fontSize}px; font-weight:bold; border-bottom:0.2mm solid #ddd; padding-bottom:0.5mm; display:flex; justify-content:between; width:100%;">
-              <span>ЗАМОВЛЕННЯ №${orderNum}</span>
-              ${cellInfo ? `<span style="color:#b45309; font-weight:bold; margin-left:auto;">${cellInfo}</span>` : ''}
+              <span>ЗАМОВЛЕННЯ №${esc(orderNum)}</span>
+              ${cellInfo ? `<span style="color:#b45309; font-weight:bold; margin-left:auto;">${esc(cellInfo)}</span>` : ''}
             </div>
             <div style="font-size:${fontSize + 1}px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:0.5mm; width:100%;">
-              ${selectedOrderItem.name}
+              ${esc(selectedOrderItem.name)}
             </div>
             <div style="font-size:${fontSize}px; font-weight:bold; color:#1e3a8a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">
-              Клієнт: ${clientName}
+              Клієнт: ${esc(clientName)}
             </div>
-            ${carInfo ? `<div style="font-size:${fontSize - 1}px; color:#4b5563; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">Авто: ${carInfo}</div>` : ''}
+            ${carInfo ? `<div style="font-size:${fontSize - 1}px; color:#4b5563; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">Авто: ${esc(carInfo)}</div>` : ''}
             
-            <div style="text-align:center; margin:0.5mm 0; width:100%;">
-              <svg id="bc-${index}"></svg>
-            </div>
+            <div class="barcode" style="text-align:center; margin:0.5mm 0; width:100%;">${barcodeSvg}</div>
             
             <div style="display:flex; justify-content:space-between; align-items:baseline; font-size:${fontSize - 1}px; color:#6b7280; width:100%;">
-              <div>Арт: ${selectedOrderItem.sku || '—'}</div>
-              <div>${today}</div>
+              <div>Арт: ${esc(selectedOrderItem.sku || '—')}</div>
+              <div>${esc(today)}</div>
             </div>
-          </div>
+          </div></section>
         `
       }).join('')
 
       const html = `<!DOCTYPE html>
-    <html><head><style>
+    <html lang="uk"><head><meta charset="utf-8"><style>
       @page { margin: 0; size: ${w}mm ${h}mm; }
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body {
-        width: ${w}mm; min-height: ${h}mm;
+      html, body { width:${w}mm; margin:0; padding:0; background:#fff; }
+      * { box-sizing: border-box; }
+      .label-page {
+        width:${w}mm; height:${h}mm; margin:0;
         padding: ${padding}mm;
+        overflow:hidden; break-after:page; page-break-after:always;
+      }
+      .label-page:last-child { break-after:auto; page-break-after:auto; }
+      .label {
+        width: ${Math.max(1, w - padding * 2)}mm;
+        height: ${Math.max(1, h - padding * 2)}mm;
+        transform:translate(${offsetX}mm, ${offsetY}mm);
+        transform-origin:top left;
         font-family: 'Courier New', monospace;
         font-size: ${fontSize}px;
         line-height: 1.2;
         overflow: hidden;
-      }
-      .label {
-        width: ${w - padding * 2}mm;
-        height: ${h - padding * 2}mm;
         display: flex; flex-direction: column;
         justify-content: space-between;
         page-break-inside: avoid;
-        page-break-after: always;
       }
-      .label svg { max-width: ${w - padding * 2}mm; max-height: ${settings.barcode_height * 0.8}px; }
+      .barcode svg { display:block; max-width:100%; height:${settings.barcode_height}px; margin:0 auto; }
+      @media print { * { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
     </style></head><body>
       ${labelsHtml}
-      <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3/dist/JsBarcode.all.min.js"></script>
-      <script>
-        try {
-          ${Array(itemLabelCopies).fill(0).map((_, idx) => `
-            JsBarcode('#bc-${idx}', '${barcodeValue}', { width: 1.2, height: ${settings.barcode_height}, fontSize: ${fontSize}, margin: 0, displayValue: ${barcodeValue ? 'true' : 'false'} });
-          `).join('\n')}
-        } catch(e) {}
-        window.onload = function() { setTimeout(function() { window.print(); window.close(); }, 500); };
-      </script>
     </body></html>`
 
-      const iframe = document.createElement('iframe')
-      iframe.style.position = 'fixed'
-      iframe.style.top = '-9999px'
-      iframe.style.width = '0'
-      iframe.style.height = '0'
-      document.body.appendChild(iframe)
-      iframe.contentDocument?.open()
-      iframe.contentDocument?.write(html)
-      iframe.contentDocument?.close()
-      setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe) }, 30000)
+      PrintService.printHtml(html, { mode: 'iframe', cleanupDelayMs: 120000, readyDelayMs: 50 })
 
       setItemLabelModal(false)
     } catch {

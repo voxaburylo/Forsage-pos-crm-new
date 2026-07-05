@@ -6,6 +6,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
+import { PrintService } from '@/lib/printService'
 
 interface Props {
   open:     boolean
@@ -98,13 +99,23 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
     const style = document.createElement('style')
     style.id = 'label-print-style'
     style.innerHTML = `
+      @page { size: A4 portrait; margin: 8mm; }
       @media print {
         body > *:not(#label-print-portal) { display: none !important; }
-        #label-print-portal { display: flex !important; flex-wrap: wrap; padding: 4mm; }
+        #label-print-portal {
+          display: grid !important;
+          grid-template-columns: repeat(3, 58mm);
+          grid-auto-rows: 40mm;
+          gap: 3mm;
+          width: 190mm;
+          margin: 0;
+          padding: 0;
+        }
         .label-item {
-          width: 54mm; min-height: 32mm; border: 0.5mm solid #000;
-          padding: 2mm 3mm; margin: 1mm; page-break-inside: avoid;
+          width: 58mm; height: 40mm; border: 0.3mm solid #000;
+          padding: 2mm 3mm; margin: 0; page-break-inside: avoid;
           font-family: Arial, sans-serif; box-sizing: border-box;
+          overflow: hidden;
         }
         .label-shop  { font-size: 7pt; font-weight: bold; color: #555; border-bottom: 0.3mm solid #ccc; margin-bottom: 1mm; padding-bottom: 1mm; }
         .label-name  { font-size: 8pt; font-weight: bold; line-height: 1.2; margin-bottom: 1mm; }
@@ -144,10 +155,27 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
     document.head.appendChild(style)
     document.body.appendChild(portal)
 
-    window.print()
-
-    document.head.removeChild(style)
-    document.body.removeChild(portal)
+    let cleanupTimer: number | null = null
+    const cleanup = () => {
+      if (cleanupTimer !== null) window.clearTimeout(cleanupTimer)
+      if (document.head.contains(style)) document.head.removeChild(style)
+      if (document.body.contains(portal)) document.body.removeChild(portal)
+    }
+    window.addEventListener('afterprint', cleanup, { once: true })
+    try {
+      const started = PrintService.printCurrentPage()
+      if (!started) {
+        window.removeEventListener('afterprint', cleanup)
+        cleanup()
+        toast.error('Попереднє вікно друку ще відкрите')
+      } else {
+        cleanupTimer = window.setTimeout(cleanup, 120000)
+      }
+    } catch (error) {
+      window.removeEventListener('afterprint', cleanup)
+      cleanup()
+      toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити друк')
+    }
   }
 
   const totalLabels = qtys.reduce((s, q) => s + q.qty, 0)

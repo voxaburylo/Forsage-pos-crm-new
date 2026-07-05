@@ -75,14 +75,17 @@ export function printOrderReceipt(order: CustomerOrder, shopName = "ФОРСАЖ
         <title>Квитанція замовлення</title>
         <style>
           @page { margin: 0; size: 58mm auto; }
-          body { margin: 0; padding: 0; font-family: monospace; font-size: 10px; }
-          .rp { width: 58mm; padding: 2mm 3mm; background: #fff; color: #000; }
+          html, body { width: 58mm; margin: 0; padding: 0; background: #fff; }
+          * { box-sizing: border-box; }
+          body { font-family: monospace; font-size: 10px; }
+          .rp { width: 58mm; max-width: 58mm; margin: 0; padding: 2mm 3mm 4mm; overflow: hidden; overflow-wrap: anywhere; background: #fff; color: #000; }
           .rp-center { text-align: center; }
           .rp-bold { font-weight: bold; }
           .rp-lg { font-size: 12px; }
           .rp-sm { font-size: 8px; color: #666; }
           .rp-dash { border: none; border-top: 1px dashed #000; margin: 2mm 0; }
-          .rp-row { display: flex; justify-content: space-between; }
+          .rp-row { display: flex; justify-content: space-between; gap: 2mm; }
+          .rp-row > :last-child { flex-shrink: 0; text-align: right; }
           .rp-total { font-size: 11px; font-weight: bold; }
           @media print { body { -webkit-print-color-adjust: exact; } }
         </style>

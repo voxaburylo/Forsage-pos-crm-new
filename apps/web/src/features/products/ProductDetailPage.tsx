@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { printLabels, DEFAULT_LABEL, DEFAULT_BIN_LABEL } from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/authStore'
 
 function StockBadge({ product }: { product: Product }) {
   const status = stockStatus(product)
@@ -31,6 +32,9 @@ function StockBadge({ product }: { product: Product }) {
 export default function ProductDetailPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
+  // Закупівля/маржа — тільки власник/адмін/кладівник (сервер їх і не віддає іншим)
+  const role = useAuthStore((s) => (s.session?.user?.user_metadata?.role as string) ?? 'cashier')
+  const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
   const [product, setProduct] = useState<Product | null>(null)
   const [history, setHistory] = useState<Array<{
     type: 'price_change' | 'sale' | 'return' | 'writeoff'
@@ -415,11 +419,13 @@ export default function ProductDetailPage() {
           )}
         </Card>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Card>
-            <p className="text-xs text-gray-400 mb-1">Закупівельна ціна</p>
-            <p className="text-2xl font-bold text-gray-900">{kopecksToHryvnia(product.purchase_price)} ₴</p>
-          </Card>
+        <div className={`grid grid-cols-1 gap-4 ${canSeeMargin ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+          {canSeeMargin && (
+            <Card>
+              <p className="text-xs text-gray-400 mb-1">Закупівельна ціна</p>
+              <p className="text-2xl font-bold text-gray-900">{kopecksToHryvnia(product.purchase_price)} ₴</p>
+            </Card>
+          )}
           <Card>
             <p className="text-xs text-gray-400 mb-1">Роздрібна ціна</p>
             <p className="text-2xl font-bold text-gray-900">{kopecksToHryvnia(product.retail_price)} ₴</p>
@@ -459,7 +465,7 @@ export default function ProductDetailPage() {
         })()}
 
         {/* Маржа */}
-        {product.purchase_price > 0 && (
+        {canSeeMargin && product.purchase_price > 0 && (
           <Card>
             <p className="text-xs text-gray-400 mb-1">Маржа</p>
             <p className="text-xl font-bold text-green-600">

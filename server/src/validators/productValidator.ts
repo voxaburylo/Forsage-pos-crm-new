@@ -51,6 +51,9 @@ export const productListSchema = z.object({
   brand_id: z.string().uuid().optional(),
   is_active: z.enum(['true', 'false']).optional(),
   low_stock: z.enum(['true', 'false']).optional(),
+  // Контрольні фільтри власника: від'ємні залишки (наслідок продажу при 0)
+  // та товари без роздрібної ціни (нерозпізнана ціна при імпорті)
+  stock_filter: z.enum(['negative', 'no_price']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(2000).default(25),
   sort_field: z.enum(['sku', 'name', 'retail_price', 'qty_on_hand', 'created_at', 'brand']).optional(),
