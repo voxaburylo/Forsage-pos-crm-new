@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { usePOSStore } from '@/stores/posStore'
@@ -24,6 +24,7 @@ export function QuickChargeModal({
   const [description, setDescription] = useState('')
   const [workerId, setWorkerId] = useState('')
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
 
   useEffect(() => {
     if (!open) return
@@ -36,21 +37,28 @@ export function QuickChargeModal({
   const isTire = kind === 'tire_service'
 
   async function add() {
-    const price = Math.round(Number(amount) * 100)
+    if (savingRef.current) return
+    const normalizedAmount = amount.trim().replace(',', '.')
+    const price = Math.round(Number(normalizedAmount) * 100)
     if (!Number.isFinite(price) || price <= 0) {
       toast.error('Вкажіть суму більше 0')
       return
     }
+    savingRef.current = true
     setSaving(true)
     try {
       const sku = isTire ? 'POS-TIRE-SERVICE' : 'POS-FREE-SALE'
       let data: { id: string; sku: string; name: string; unit: string; retail_price: number } | null = null
-      if (!offline) {
-        const response = await api.post<{ data: NonNullable<typeof data> }>('/api/v1/sales/quick-item', { kind })
+      const cached = await searchProductsOffline(sku, 10, scopeKey).catch(() => [])
+      data = cached.find((product) => product.sku === sku) ?? null
+      if (!data && !offline) {
+        const response = await api.post<{ data: NonNullable<typeof data> }>(
+          '/api/v1/sales/quick-item',
+          { kind },
+          undefined,
+          { timeoutMs: 8_000, silent: true },
+        )
         data = response.data
-      } else {
-        const cached = await searchProductsOffline(sku, 10, scopeKey)
-        data = cached.find((product) => product.sku === sku) ?? null
       }
       if (!data) {
         throw new Error('Службова позиція ще не кешована. Відкрийте касу один раз з інтернетом')
@@ -82,6 +90,7 @@ export function QuickChargeModal({
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Не вдалося додати позицію')
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }

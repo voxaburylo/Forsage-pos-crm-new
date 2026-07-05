@@ -27,9 +27,45 @@ router.post('/quick-item', async (req, res, next) => {
     } as const
     const preset = presets[parsed.data.kind]
 
+    const { data: existing, error: existingError } = await db
+      .from('products')
+      .select('id,sku,name,unit,retail_price,qty_on_hand,is_service,is_active,deleted_at')
+      .eq('tenant_id', req.user!.tenant_id)
+      .eq('sku', preset.sku)
+      .maybeSingle()
+
+    if (existingError) throw new AppError('DB_ERROR', existingError.message, 500)
+    if (existing) {
+      if (existing.deleted_at || !existing.is_active || !existing.is_service) {
+        const { data: restored, error: restoreError } = await db
+          .from('products')
+          .update({
+            name: preset.name,
+            unit: 'шт',
+            purchase_price: 0,
+            retail_price: preset.retail_price,
+            qty_on_hand: 0,
+            is_active: true,
+            is_service: true,
+            deleted_at: null,
+          })
+          .eq('id', existing.id)
+          .eq('tenant_id', req.user!.tenant_id)
+          .select('id,sku,name,unit,retail_price,qty_on_hand,is_service')
+          .single()
+        if (restoreError || !restored) {
+          throw new AppError('DB_ERROR', restoreError?.message ?? 'Не вдалося відновити позицію', 500)
+        }
+        res.json({ data: restored })
+        return
+      }
+      res.json({ data: existing })
+      return
+    }
+
     const { data, error } = await db
       .from('products')
-      .upsert({
+      .insert({
         tenant_id: req.user!.tenant_id,
         ...preset,
         unit: 'шт',
@@ -38,7 +74,7 @@ router.post('/quick-item', async (req, res, next) => {
         is_active: true,
         is_service: true,
         deleted_at: null,
-      }, { onConflict: 'tenant_id,sku' })
+      })
       .select('id,sku,name,unit,retail_price,qty_on_hand,is_service')
       .single()
 

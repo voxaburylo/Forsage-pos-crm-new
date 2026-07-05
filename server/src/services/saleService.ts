@@ -35,7 +35,7 @@ export async function listSales(query: SaleListQuery, tenantId: string) {
 
   let q = db
     .from(TABLE)
-    .select('*, customer:customers(id,phone,full_name)', { count: 'exact' })
+    .select('*, sale_items(id,qty,product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .order('completed_at', { ascending: false })
     .range(offset, offset + per_page - 1)

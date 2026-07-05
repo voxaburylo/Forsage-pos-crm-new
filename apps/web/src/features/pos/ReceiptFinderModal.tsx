@@ -79,11 +79,13 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
             </div>
           ) : (
             <ul className="divide-y divide-gray-100">
-              {results.map((s) => (
+              {results.map((s) => {
+                const firstItems = (s.sale_items ?? []).slice(0, 2)
+                return (
                 <li key={s.id}>
                   <button
                     onClick={() => { onSelect(s.id); onClose() }}
-                    className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-yellow-50 transition-colors"
+                    className="w-full flex items-start justify-between gap-3 px-4 py-3 text-left hover:bg-yellow-50 transition-colors"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -97,6 +99,21 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
                         {s.customer?.full_name ? ` · ${s.customer.full_name}` : ''}
                         {` · ${PAY_LABEL[s.payment_method] ?? s.payment_method}`}
                       </div>
+                      {firstItems.length > 0 && (
+                        <div className="mt-1.5 space-y-0.5">
+                          {firstItems.map((item) => (
+                            <div key={item.id} className="truncate text-xs text-gray-600">
+                              {item.product?.name ?? item.product?.sku ?? 'Товар'}
+                              {item.qty !== 1 ? ` × ${item.qty}` : ''}
+                            </div>
+                          ))}
+                          {(s.sale_items?.length ?? 0) > 2 && (
+                            <div className="text-[11px] text-gray-400">
+                              + ще {(s.sale_items?.length ?? 0) - 2}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       <span className="font-semibold text-gray-800 text-sm">{formatMoney(s.total)}</span>
@@ -104,7 +121,8 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
                     </div>
                   </button>
                 </li>
-              ))}
+                )
+              })}
             </ul>
           )}
         </div>
