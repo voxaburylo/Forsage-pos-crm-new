@@ -35,6 +35,7 @@ import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } from '@/lib/offlineDB'
 import { OfflineSalesModal } from './OfflineSalesModal'
+import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -237,6 +238,10 @@ export default function POSPage() {
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
+  usePOSBarcodeScanner({
+    onScan: (code) => searchRef.current?.scanBarcode(code),
+    onManualSearchText: (text) => searchRef.current?.appendSearchText(text),
+  })
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
@@ -364,93 +369,6 @@ export default function POSPage() {
     }
     clearSavedCart()
   }, [store])
-
-  // Глобальний сканер ШК працює в capture-фазі, тому не залежить від фокуса.
-  // Швидка серія символів + Enter перехоплюється раніше за звичайний пошук.
-  useEffect(() => {
-    let buf = ''
-    let last = 0
-    let first = 0
-    let scanTarget: HTMLInputElement | HTMLTextAreaElement | null = null
-    let valueBeforeScan = ''
-    let idleTimer: number | null = null
-    function restoreInputBeforeScan() {
-      const el = scanTarget
-      if (!el) return
-      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
-      setter?.call(el, valueBeforeScan)
-      el.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    function resetScannerBuffer() {
-      if (idleTimer !== null) window.clearTimeout(idleTimer)
-      idleTimer = null
-      buf = ''
-      first = 0
-      scanTarget = null
-      valueBeforeScan = ''
-    }
-    function completeScannerSequence(event?: KeyboardEvent, fromIdle = false) {
-      const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-      const scannerSequence = fromIdle
-        ? buf.length >= 6 && averageInterval <= 100
-        : buf.length >= 4 && averageInterval <= 350
-      if (!scannerSequence) {
-        resetScannerBuffer()
-        return false
-      }
-
-      event?.preventDefault()
-      event?.stopPropagation()
-      event?.stopImmediatePropagation()
-      const code = buf
-      restoreInputBeforeScan()
-      resetScannerBuffer()
-      searchRef.current?.scanBarcode(code)
-      return true
-    }
-    function onScanKey(e: KeyboardEvent) {
-      const now = Date.now()
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        completeScannerSequence(e)
-        return
-      }
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (now - last > 500) {
-          resetScannerBuffer()
-        }
-        if (!buf) {
-          first = now
-          const active = document.activeElement
-          scanTarget = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
-            ? active
-            : null
-          valueBeforeScan = scanTarget?.value ?? ''
-        }
-        buf += e.key
-        last = now
-        const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-        const scannerBurst = buf.length >= 3 && averageInterval <= 250
-        if (scannerBurst) {
-          // Після перших символів уже зрозуміло, що це сканер. Решту коду не
-          // віддаємо пошуку/кількості; після завершення повернемо початкове значення.
-          e.preventDefault()
-          e.stopPropagation()
-        }
-        if (idleTimer !== null) window.clearTimeout(idleTimer)
-        idleTimer = window.setTimeout(() => completeScannerSequence(undefined, true), 140)
-      } else if (e.key !== 'Shift' && e.key !== 'CapsLock') {
-        // Shift не скидає буфер: сканер тисне його перед великими літерами
-        // та символами (CODE128), і код рвався навпіл.
-        resetScannerBuffer()
-      }
-    }
-    window.addEventListener('keydown', onScanKey, true)
-    return () => {
-      if (idleTimer !== null) window.clearTimeout(idleTimer)
-      window.removeEventListener('keydown', onScanKey, true)
-    }
-  }, [])
 
   // Гарячі клавіші
   useEffect(() => {
