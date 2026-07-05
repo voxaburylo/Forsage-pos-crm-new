@@ -102,17 +102,25 @@ export async function searchProductsOffline(
         resolve([])
         return
       }
-      const q = query.toLowerCase().trim()
+      const q = query.toLocaleLowerCase('uk-UA').trim()
+      const normalized = q.replace(/[\s\-./_]/g, '')
       const results = (req.result as any[])
-        .filter((p) =>
-          p.is_active !== false &&
-          (!categoryName || p.category?.name === categoryName) &&
-          (
-            p.name?.toLowerCase().includes(q) ||
-            p.sku?.toLowerCase().includes(q)  ||
-            p.barcode === query
-          )
-        )
+        .filter((p) => {
+          if (p.is_active === false || (categoryName && p.category?.name !== categoryName)) return false
+          const name = String(p.name ?? '').toLocaleLowerCase('uk-UA')
+          const sku = String(p.sku ?? '').toLocaleLowerCase('uk-UA')
+          const normalizedSku = sku.replace(/[\s\-./_]/g, '')
+          const barcodes = [
+            p.barcode,
+            ...(Array.isArray(p.additional_barcodes) ? p.additional_barcodes : []),
+          ].filter(Boolean).map(String)
+          return name.includes(q) || sku.includes(q) || normalizedSku.includes(normalized) || barcodes.includes(query)
+        })
+        .sort((a, b) => {
+          const exactA = String(a.barcode ?? '') === query || String(a.sku ?? '').replace(/[\s\-./_]/g, '').toLowerCase() === normalized
+          const exactB = String(b.barcode ?? '') === query || String(b.sku ?? '').replace(/[\s\-./_]/g, '').toLowerCase() === normalized
+          return Number(exactB) - Number(exactA)
+        })
         .slice(0, limit)
       resolve(results)
     }

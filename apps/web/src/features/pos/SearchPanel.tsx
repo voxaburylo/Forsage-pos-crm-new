@@ -150,26 +150,23 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     if (e.key === 'Enter' && query.trim()) {
       e.preventDefault()
       const trimmed = query.trim()
-      if (/^\d{8,}$/.test(trimmed)) {
-        handleBarcodeScan(trimmed)
-      } else if (results.length > 0) {
-        addToReceipt(results[0])
-        saveRecentItem('recent_scans', trimmed)
-        setQuery('')
-        setResults([])
-        setSupplierResults([])
-      }
+      // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
+      // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
+      // результат текстового пошуку.
+      handleBarcodeScan(trimmed)
     }
   }
 
   async function handleBarcodeScan(code: string) {
+    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+    if (!normalizedCode) return
     if (!serverOnline) {
-      const offlineResults = await searchProductsOffline(code, 1, scopeKey)
+      const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey)
       if (offlineResults[0]) {
         addToReceipt(offlineResults[0] as Product)
-        saveRecentItem('recent_scans', code)
+        saveRecentItem('recent_scans', normalizedCode)
       } else {
-        const customers = await searchCustomersOffline(code, 1, scopeKey)
+        const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
         const customer = customers[0]
         if (customer) {
           store.setCustomer({
@@ -184,7 +181,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
           })
           store.setAutomaticDiscountPct(customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
           toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
-          saveRecentItem('recent_scans', code)
+          saveRecentItem('recent_scans', normalizedCode)
           playSuccessBeep()
         } else {
           playErrorTone()
@@ -197,7 +194,10 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       return
     }
     try {
-      const res = await api.get<any>(`/api/v1/search/barcode/${code}`)
+      const res = await api.get<any>(
+        `/api/v1/search/barcode/${encodeURIComponent(normalizedCode)}`,
+        { silent: true },
+      )
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
       if (result?.type === 'customer' && result?.data) {
         const c = result.data
@@ -209,11 +209,11 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         })
         store.setAutomaticDiscountPct(c.price_tier?.discount_pct ?? 0)
         toast.success(`Клієнт ${c.full_name ?? c.phone} прив'язаний до чека`)
-        saveRecentItem('recent_scans', code)
+        saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
       } else if (result?.type === 'product' && result?.data) {
         addToReceipt(result.data)
-        saveRecentItem('recent_scans', code)
+        saveRecentItem('recent_scans', normalizedCode)
       } else {
         playErrorTone()
         toast.error('Штрих-код не знайдено в базі')
@@ -222,7 +222,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       setResults([])
       setSupplierResults([])
     } catch {
-      const offlineResults = await searchProductsOffline(code, 1, scopeKey).catch(() => [])
+      const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey).catch(() => [])
       const fallback = offlineResults[0] ?? results[0]
       if (fallback) {
         addToReceipt(fallback as Product)
@@ -358,7 +358,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       </div>
 
       <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
-        onScan={(code) => { setQuery(code); setCameraOpen(false); setTimeout(() => handleBarcodeScan(code), 100) }} />
+        onScan={(code) => { setQuery(code); setCameraOpen(false); void handleBarcodeScan(code) }} />
 
       {/* Нещодавні скани */}
       {query === '' && getRecentItems('recent_scans').length > 0 && (

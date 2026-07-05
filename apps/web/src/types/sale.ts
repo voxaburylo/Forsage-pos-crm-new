@@ -5,7 +5,7 @@ export interface SaleItem {
   unit_price: number   // копійки
   discount: number     // копійки
   total: number        // копійки
-  product?: { id: string; sku: string; name: string; unit: string }
+  product?: { id: string; sku: string; name: string; unit: string; qty_on_hand?: number }
   core_deposit_amount?: number
   core_return_status?: string
 }
@@ -17,7 +17,7 @@ export interface Sale {
   cashier_id: string
   manager_id: string | null
   shift_id: string
-  status: 'completed' | 'returned' | 'voided' | 'suspended' | 'draft' | 'ready_for_pickup'
+  status: 'completed' | 'returned' | 'voided' | 'suspended' | 'draft' | 'ready_for_pickup' | 'cancelled'
   subtotal: number     // копійки
   discount: number     // копійки
   total: number        // копійки

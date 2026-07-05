@@ -185,6 +185,10 @@ export default function POSPage() {
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
 
+  const refreshSuspendedCount = useCallback(() => {
+    saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
+  }, [])
+
   const shift = store.currentShift
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -212,7 +216,7 @@ export default function POSPage() {
         }
       })
     // Лічильник відкладених чеків
-    saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
+    refreshSuspendedCount()
     // Знижка працівника та конфігурація швидких товарів
     adminApi.getSettings()
       .then((res: any) => {
@@ -235,7 +239,7 @@ export default function POSPage() {
     loadReadyCount()
     const id = setInterval(loadReadyCount, 30000)
     return () => clearInterval(id)
-  }, [])
+  }, [refreshSuspendedCount])
 
   // Авто-друк чека після продажу (вмикається в Налаштуваннях).
   // Чекаємо рендер прихованого <ReceiptPrint> перед window.print().
@@ -1141,10 +1145,15 @@ export default function POSPage() {
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <ReceiptFinderModal open={findReceiptOpen} onClose={() => setFindReceiptOpen(false)} onSelect={handleReprintSale} />
-      <SuspendModal open={suspendOpen} onClose={() => setSuspendOpen(false)} onSuspended={() => setSuspendOpen(false)} />
+      <SuspendModal open={suspendOpen} onClose={() => setSuspendOpen(false)} onSuspended={() => {
+        setSuspendOpen(false)
+        refreshSuspendedCount()
+      }} />
       <SuspendedListModal open={suspendedOpen} onClose={() => setSuspendedOpen(false)}
+        onChanged={refreshSuspendedCount}
         onResume={(sale) => {
-          // Resume logic: load items from sale into current tab
+          // Не змішуємо відновлений чек з уже відкритим кошиком.
+          if (store.items.length > 0) store.addTab()
           sale.sale_items?.forEach((item) => {
             store.addItem({
               productId: item.product_id,
@@ -1154,11 +1163,12 @@ export default function POSPage() {
               qty: item.qty,
               unitPrice: item.unit_price,
               discount: item.discount,
-              qtyOnHand: 0,
+              qtyOnHand: item.product?.qty_on_hand ?? 0,
               requiresCoreReturn: !!item.core_deposit_amount && item.core_deposit_amount > 0,
               coreDepositAmount: item.core_deposit_amount ?? 0,
             })
           })
+          store.setNotes(sale.notes ?? '')
           if (sale.customer) {
             store.setCustomer({
               id: sale.customer.id,

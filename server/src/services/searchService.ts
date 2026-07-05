@@ -122,54 +122,76 @@ async function enrichWithAvailability(results: SearchResult[]): Promise<SearchRe
   })
 }
 export async function searchProductsForPOS(q: string, limit: number, tenantId: string): Promise<SearchResult[]> {
-  const searchTerms = [q]
+  const cleanQuery = q.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+  const searchTerms = [cleanQuery]
 
   // [00] Виправлення розкладки клавіатури
-  if (isLatinText(q)) {
-    const fixed = fixKeyboardLayout(q)
+  if (isLatinText(cleanQuery)) {
+    const fixed = fixKeyboardLayout(cleanQuery)
     for (const f of fixed) {
       if (!searchTerms.includes(f)) searchTerms.push(f)
     }
   }
 
   // [0] Транслітерація
-  if (isLatinText(q)) {
-    const translit = transliterateToCyrillic(q)
-    if (translit !== q.toLowerCase() && !searchTerms.includes(translit)) {
+  if (isLatinText(cleanQuery)) {
+    const translit = transliterateToCyrillic(cleanQuery)
+    if (translit !== cleanQuery.toLowerCase() && !searchTerms.includes(translit)) {
       searchTerms.push(translit)
+    }
+    // Прайси містять суміш українських і російських назв. Наприклад,
+    // "podshipnik" → "підшипник" за українською транслітерацією, але товар
+    // часто записаний як "подшипник". Шукаємо обидва варіанти.
+    const russianVariant = translit
+      .replace(/і/g, 'и')
+      .replace(/ї/g, 'й')
+      .replace(/є/g, 'е')
+      .replace(/ґ/g, 'г')
+    if (russianVariant !== translit && !searchTerms.includes(russianVariant)) {
+      searchTerms.push(russianVariant)
     }
   }
 
   // [1] Прямий пошук по товарах
-  const results = await directProductSearch(searchTerms, q, limit, tenantId)
-  if (results && results.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(results))
+  const results = await directProductSearch(searchTerms, cleanQuery, limit, tenantId)
+  const firstDirect = results?.[0]
+  const directIsStrong = firstDirect && (
+    firstDirect.match_field === 'barcode' ||
+    firstDirect.match_field === 'name' ||
+    normalizeArticle(firstDirect.sku) === normalizeArticle(cleanQuery) ||
+    (firstDirect.match_field === 'oem' && normalizeArticle(firstDirect.match_value) === normalizeArticle(cleanQuery))
+  )
+  if (directIsStrong) return await enrichWithAvailability(await enrichWithAnalogs(results))
 
   // [2] Пошук по власній базі OE та крос-номерів
-  const crossResults = await crossNumberSearch(q, limit, tenantId)
+  const crossResults = await crossNumberSearch(cleanQuery, limit, tenantId)
   if (crossResults && crossResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(crossResults))
 
   // [3] Пошук по коду постачальника
-  const supplierResults = await supplierCodeSearch(q, limit, tenantId)
+  const supplierResults = await supplierCodeSearch(cleanQuery, limit, tenantId)
   if (supplierResults && supplierResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(supplierResults))
 
   // [4] Пошук по аліасах
-  const aliasResults = await aliasSearch(searchTerms, q, limit, tenantId)
+  const aliasResults = await aliasSearch(searchTerms, cleanQuery, limit, tenantId)
   if (aliasResults && aliasResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(aliasResults))
 
   // [5] Пошук по додаткових штрихкодах (таблиця product_barcodes)
-  const barcodeResults = await barcodeSearch(q, limit, tenantId)
+  const barcodeResults = await barcodeSearch(cleanQuery, limit, tenantId)
   if (barcodeResults && barcodeResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(barcodeResults))
 
   // [5b] Пошук по additional_barcodes JSONB колонці products
-  const additionalBarcodeResults = await additionalBarcodesSearch(q, limit, tenantId)
+  const additionalBarcodeResults = await additionalBarcodesSearch(cleanQuery, limit, tenantId)
   if (additionalBarcodeResults && additionalBarcodeResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(additionalBarcodeResults))
 
   // [6] Пошук по VIN (тільки від 6 символів)
-  if (q.length >= 6) {
-    const vinResults = await vinSearch(q, limit, tenantId)
+  if (cleanQuery.length >= 6) {
+    const vinResults = await vinSearch(cleanQuery, limit, tenantId)
     if (vinResults && vinResults.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(vinResults))
   }
 
+  // Частковий збіг SKU корисний як fallback, але не повинен перекривати точний
+  // крос-номер, код постачальника, аліас або додатковий штрихкод.
+  if (results && results.length > 0) return await enrichWithAvailability(await enrichWithAnalogs(results))
   return []
 }
 
@@ -215,15 +237,18 @@ async function crossNumberSearch(code: string, limit: number, tenantId: string):
 /** [1] Прямий пошук по товарах (sku, name, barcode, oem_number) */
 async function directProductSearch(terms: string[], originalQ: string, limit: number, tenantId: string): Promise<SearchResult[]> {
   const conditions = terms.flatMap((t) => {
-    const normalized = normalizeArticle(t)
+    // Commas and parentheses are PostgREST OR grammar, not search text.
+    const safeTerm = t.replace(/[,()]/g, ' ').replace(/\s+/g, ' ').trim()
+    if (!safeTerm) return []
+    const normalized = normalizeArticle(safeTerm)
     return [
-      `sku.ilike.%${normalized}%`,
-      `name.ilike.%${t}%`,
-      `barcode.eq.${t}`,
+      `sku.ilike.*${normalized}*`,
+      `name.ilike.*${safeTerm}*`,
+      `barcode.eq.${safeTerm}`,
       // additional_barcodes виключено з OR — JSONB contains некоректно в or() рядку
       // обробляється окремо в barcodeSearch через product_barcodes таблицю
       `normalized_oem.eq.${normalized}`,
-      `oem_number.ilike.%${normalized}%`,
+      `oem_number.ilike.*${normalized}*`,
     ]
   })
 
@@ -238,28 +263,48 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
     .eq('is_active', true)
     .or(orString)
     .order('qty_on_hand', { ascending: false })
-    .limit(limit)
+    .limit(Math.min(limit * 5, 100))
 
   if (error) { logger.warn({ error: error.message }, '[search] directProductSearch error'); return [] }
   if (!data || data.length === 0) return []
 
-  return data.map((p: any): SearchResult => {
-    const normalized = normalizeArticle(originalQ)
-    // Визначаємо яке поле співпало (в порядку пріоритету)
-    if (p.barcode && normalizeArticle(p.barcode) === normalized) {
-      return { ...p, match_field: 'barcode', match_value: p.barcode }
+  const normalizedOriginal = normalizeArticle(originalQ)
+  const lowerTerms = terms.map((term) => term.toLocaleLowerCase('uk-UA'))
+  const score = (p: any): { value: number; field: string; match: string } => {
+    const barcode = String(p.barcode ?? '')
+    const sku = String(p.sku ?? '')
+    const oem = String(p.oem_number ?? '')
+    const name = String(p.name ?? '')
+    const normalizedSku = normalizeArticle(sku)
+    const normalizedOem = normalizeArticle(oem)
+    const lowerName = name.toLocaleLowerCase('uk-UA')
+
+    if (barcode === originalQ) return { value: 10000, field: 'barcode', match: barcode }
+    if (normalizedSku === normalizedOriginal) return { value: 9500, field: 'sku', match: sku }
+    if (normalizedOem === normalizedOriginal) return { value: 9000, field: 'oem', match: oem }
+
+    let best = { value: 0, field: 'name', match: name }
+    for (const term of lowerTerms) {
+      const normalizedTerm = normalizeArticle(term)
+      if (lowerName === term) best = { value: Math.max(best.value, 8500), field: 'name', match: name }
+      else if (lowerName.startsWith(term)) best = { value: Math.max(best.value, 8000), field: 'name', match: name }
+      else if (lowerName.includes(term)) best = { value: Math.max(best.value, 7000), field: 'name', match: name }
+      else if (normalizedSku.startsWith(normalizedTerm)) best = { value: Math.max(best.value, 6500), field: 'sku', match: sku }
+      else if (normalizedSku.includes(normalizedTerm)) best = { value: Math.max(best.value, 6000), field: 'sku', match: sku }
+      else if (normalizedOem.includes(normalizedTerm)) best = { value: Math.max(best.value, 5500), field: 'oem', match: oem }
     }
-    if (p.oem_number && normalizeArticle(p.oem_number) === normalized) {
-      return { ...p, match_field: 'oem', match_value: p.oem_number }
-    }
-    if (p.sku && normalizeArticle(p.sku).includes(normalized)) {
-      return { ...p, match_field: 'sku', match_value: p.sku }
-    }
-    if (p.name && p.name.toLowerCase().includes(originalQ.toLowerCase())) {
-      return { ...p, match_field: 'name', match_value: p.name }
-    }
-    return { ...p, match_field: 'oem', match_value: p.oem_number ?? '' }
-  })
+    return best
+  }
+
+  return data
+    .map((p: any) => ({ product: p, rank: score(p) }))
+    .sort((a, b) => b.rank.value - a.rank.value || Number(b.product.qty_on_hand ?? 0) - Number(a.product.qty_on_hand ?? 0))
+    .slice(0, limit)
+    .map(({ product, rank }): SearchResult => ({
+      ...product,
+      match_field: rank.field,
+      match_value: rank.match,
+    }))
 }
 
 /** [2] Пошук по коду постачальника (product_supplier_codes) */

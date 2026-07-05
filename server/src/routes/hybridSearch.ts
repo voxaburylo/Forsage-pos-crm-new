@@ -5,6 +5,8 @@ import { searchProductsForPOS } from '../services/searchService.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { importFromCatalog } from '../services/productService.js'
+import { fixKeyboardLayout } from '../services/keyboardService.js'
+import { isLatinText, transliterateToCyrillic } from '../services/translitService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -24,12 +26,23 @@ router.get('/hybrid', async (req, res, next) => {
     const warehouseResults = await searchProductsForPOS(q, limit, tenantId)
 
     // 2. Пошук по прайсах постачальників
-    const normalized = normalizeArticle(q)
+    const catalogTerms = [q]
+    if (isLatinText(q)) {
+      catalogTerms.push(...fixKeyboardLayout(q))
+      const translit = transliterateToCyrillic(q)
+      catalogTerms.push(translit, translit.replace(/і/g, 'и').replace(/ї/g, 'й').replace(/є/g, 'е').replace(/ґ/g, 'г'))
+    }
+    const catalogConditions = [...new Set(catalogTerms)]
+      .flatMap((term) => {
+        const safe = term.replace(/[,()]/g, ' ').replace(/\s+/g, ' ').trim()
+        return safe ? [`sku.ilike.*${normalizeArticle(safe)}*`, `name.ilike.*${safe}*`] : []
+      })
+      .join(',')
     const { data: catalogResults, error: catalogError } = await db
       .from('supplier_price_items')
       .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)')
       .eq('tenant_id', tenantId)
-      .or(`sku.ilike.%${normalized}%,name.ilike.%${q}%`)
+      .or(catalogConditions || 'name.ilike.*__no_match__*')
       .limit(limit)
 
     if (catalogError) throw new AppError('DB_ERROR', catalogError.message, 500)

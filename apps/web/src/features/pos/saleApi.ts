@@ -54,4 +54,7 @@ export const saleApi = {
 
   resume: (id: string) =>
     api.post<{ data: Sale }>(`/api/v1/sales/${id}/resume`, {}),
+
+  discardSuspended: (id: string) =>
+    api.delete<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/suspended`),
 }

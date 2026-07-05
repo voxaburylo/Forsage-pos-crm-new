@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { X, Camera, AlertTriangle } from 'lucide-react'
 
 interface Props {
@@ -10,39 +10,64 @@ interface Props {
 export function CameraScanner({ open, onClose, onScan }: Props) {
   const videoRef = useRef<HTMLDivElement>(null)
   const scannerRef = useRef<any>(null)
+  const scanHandledRef = useRef(false)
   const onScanRef = useRef(onScan)
-  const onCloseRef = useRef(onClose)
+  const scannerId = `scanner-${useId().replace(/:/g, '')}`
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
 
   useEffect(() => {
     onScanRef.current = onScan
-    onCloseRef.current = onClose
-  }, [onScan, onClose])
+  }, [onScan])
 
   useEffect(() => {
     if (!open) return
     let mounted = true
+    scanHandledRef.current = false
     setError('')
     setStarting(true)
 
     async function start() {
       try {
-        const { Html5Qrcode } = await import('html5-qrcode')
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode')
         if (!mounted || !videoRef.current) return
 
-        const scanner = new Html5Qrcode('scanner-container')
+        const scanner = new Html5Qrcode(scannerId, {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+          verbose: false,
+        })
         scannerRef.current = scanner
 
         await scanner.start(
           { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 150 } },
-          (decodedText: string) => {
-            scanner.stop().catch(() => {})
-            if (mounted) {
-              onScanRef.current(decodedText)
-              onCloseRef.current()
-            }
+          {
+            fps: 10,
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+              const maxWidth = Math.max(80, viewfinderWidth - 24)
+              const maxHeight = Math.max(60, viewfinderHeight - 24)
+              return {
+                width: Math.min(maxWidth, Math.max(120, Math.floor(viewfinderWidth * 0.85))),
+                height: Math.min(maxHeight, Math.max(80, Math.floor(viewfinderHeight * 0.4))),
+              }
+            },
+          },
+          async (decodedText: string) => {
+            if (scanHandledRef.current) return
+            scanHandledRef.current = true
+            try {
+              await scanner.stop()
+              scanner.clear()
+            } catch {}
+            scannerRef.current = null
+            if (mounted) onScanRef.current(decodedText)
           },
           () => {},
         )
@@ -65,10 +90,14 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
       const s = scannerRef.current
       if (s) {
         scannerRef.current = null
-        s.stop().catch(() => {})
+        Promise.resolve(s.stop())
+          .catch(() => {})
+          .finally(() => {
+            try { s.clear() } catch {}
+          })
       }
     }
-  }, [open])
+  }, [open, scannerId])
 
   if (!open) return null
 
@@ -87,7 +116,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
 
       {/* Scanner viewport */}
       <div className="flex-1 flex items-center justify-center bg-black relative">
-        <div id="scanner-container" ref={videoRef} className="w-full max-w-md" />
+        <div id={scannerId} ref={videoRef} className="min-h-64 w-full max-w-md overflow-hidden bg-black" />
         {!error && <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
           <div className="w-64 h-40 border-2 border-yellow-400 rounded-xl opacity-60" />
         </div>}

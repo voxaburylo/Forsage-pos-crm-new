@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Search, X } from 'lucide-react'
+import { Loader2, RotateCcw, Search, Trash2, X } from 'lucide-react'
 import { saleApi } from './saleApi'
 import type { Sale } from '@/types/sale'
 import { formatMoney, formatDateTime } from '@/lib/utils'
@@ -9,12 +9,14 @@ interface Props {
   open: boolean
   onClose: () => void
   onResume: (sale: Sale) => void
+  onChanged?: () => void
 }
 
-export function SuspendedListModal({ open, onClose, onResume }: Props) {
+export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props) {
   const [sales, setSales] = useState<Sale[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
+  const [operatingId, setOperatingId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -26,6 +28,39 @@ export function SuspendedListModal({ open, onClose, onResume }: Props) {
   }, [open])
 
   if (!open) return null
+
+  async function handleResume(sale: Sale) {
+    if (operatingId) return
+    setOperatingId(sale.id)
+    try {
+      const { data } = await saleApi.resume(sale.id)
+      onResume(data)
+      setSales((current) => current.filter((item) => item.id !== sale.id))
+      onChanged?.()
+      toast.success(`Чек #${sale.sale_number} повернено в кошик`)
+      onClose()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося повернути чек')
+    } finally {
+      setOperatingId(null)
+    }
+  }
+
+  async function handleDelete(sale: Sale) {
+    if (operatingId) return
+    if (!window.confirm(`Видалити відкладений чек #${sale.sale_number}? Товари не списувалися зі складу.`)) return
+    setOperatingId(sale.id)
+    try {
+      await saleApi.discardSuspended(sale.id)
+      setSales((current) => current.filter((item) => item.id !== sale.id))
+      onChanged?.()
+      toast.success('Відкладений чек видалено')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити чек')
+    } finally {
+      setOperatingId(null)
+    }
+  }
 
   const filtered = search
     ? sales.filter((s) =>
@@ -64,8 +99,7 @@ export function SuspendedListModal({ open, onClose, onResume }: Props) {
             <p className="text-gray-500 text-sm text-center py-8">{search ? 'Нічого не знайдено' : 'Немає відкладених чеків'}</p>
           ) : filtered.map((s) => (
             <div key={s.id}
-              className="bg-[#2C2C2C] rounded-xl px-4 py-3 flex items-center justify-between hover:bg-gray-700 transition-colors cursor-pointer"
-              onClick={() => { onResume(s); onClose() }}>
+              className="bg-[#2C2C2C] rounded-xl px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-yellow-400 text-xs">#{s.sale_number}</span>
@@ -76,7 +110,7 @@ export function SuspendedListModal({ open, onClose, onResume }: Props) {
                 </p>
                 {s.notes && <p className="text-gray-500 text-xs truncate">{s.notes}</p>}
               </div>
-              <div className="text-right shrink-0 ml-3">
+              <div className="text-left sm:text-right shrink-0 sm:ml-3">
                 {s.pickup_cell && (
                   <div className="bg-yellow-400/20 border border-yellow-500/40 rounded-lg px-3 py-1 mb-1">
                     <span className="text-yellow-300 text-xs font-bold">📦 {s.pickup_cell}</span>
@@ -84,6 +118,27 @@ export function SuspendedListModal({ open, onClose, onResume }: Props) {
                 )}
                 <p className="text-white font-bold">{formatMoney(s.total)}</p>
                 <p className="text-gray-500 text-xs">{s.sale_items?.length ?? 0} поз.</p>
+              </div>
+              <div className="flex gap-2 sm:ml-2">
+                <button
+                  type="button"
+                  disabled={operatingId !== null}
+                  onClick={() => void handleResume(s)}
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300 disabled:opacity-50 sm:flex-none"
+                >
+                  {operatingId === s.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                  У кошик
+                </button>
+                <button
+                  type="button"
+                  disabled={operatingId !== null}
+                  onClick={() => void handleDelete(s)}
+                  className="flex items-center justify-center rounded-lg border border-red-500/40 px-3 py-2 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                  title="Видалити відкладений чек"
+                  aria-label={`Видалити чек ${s.sale_number}`}
+                >
+                  <Trash2 size={15} />
+                </button>
               </div>
             </div>
           ))}

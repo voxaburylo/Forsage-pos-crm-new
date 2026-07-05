@@ -844,17 +844,57 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   }
 }
 
-export async function resumeSale(saleId: string, tenantId: string) {
+export async function resumeSale(saleId: string, tenantId: string, userId: string, userRole: string) {
   const { data, error } = await db
     .from('sales')
-    .update({ status: 'draft', updated_at: new Date().toISOString() })
+    // Відкладений запис є лише знімком кошика. Після повернення в касу він
+    // більше не повинен висіти окремим draft і дублювати майбутній продаж.
+    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
     .eq('id', saleId)
     .eq('tenant_id', tenantId)
     .eq('status', 'suspended')
-    .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)')
+    .select('*, sale_items(*, product:products(id,sku,name,unit,qty_on_hand)), customer:customers(id,phone,full_name)')
     .single()
 
   if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Відкладений чек не знайдено', 404)
+  await logAction({
+    tenantId,
+    userId,
+    userRole,
+    action: 'resume',
+    entityType: 'sale',
+    entityId: saleId,
+    entityLabel: `Відкладений чек #${data.sale_number}`,
+    oldValue: { status: 'suspended' },
+    newValue: { status: 'returned_to_cart' },
+    note: 'Відкладений чек повернено в кошик каси',
+  })
+  return data
+}
+
+export async function discardSuspendedSale(saleId: string, tenantId: string, userId: string, userRole: string) {
+  const { data, error } = await db
+    .from('sales')
+    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+    .eq('id', saleId)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'suspended')
+    .select('id,sale_number,total,status')
+    .single()
+
+  if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Відкладений чек не знайдено', 404)
+  await logAction({
+    tenantId,
+    userId,
+    userRole,
+    action: 'delete',
+    entityType: 'sale',
+    entityId: saleId,
+    entityLabel: `Відкладений чек #${data.sale_number}`,
+    oldValue: { status: 'suspended', total: data.total },
+    newValue: { status: 'cancelled' },
+    note: 'Відкладений чек видалено з каси',
+  })
   return data
 }
 

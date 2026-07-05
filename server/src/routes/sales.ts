@@ -212,7 +212,7 @@ router.get('/suspended', async (req, res, next) => {
     const { db } = await import('../db/supabase.js')
     const { data, error } = await db
       .from('sales')
-      .select('*, customer:customers(id,phone,full_name), shift:shifts(id)')
+      .select('*, customer:customers(id,phone,full_name), shift:shifts(id), sale_items(id)')
       .eq('tenant_id', req.user!.tenant_id)
       .eq('status', 'suspended')
       .order('completed_at', { ascending: false })
@@ -226,7 +226,26 @@ router.get('/suspended', async (req, res, next) => {
 // POST /api/v1/sales/:id/resume — відновити чек
 router.post('/:id/resume', async (req, res, next) => {
   try {
-    const sale = await saleService.resumeSale(String(req.params.id), req.user!.tenant_id)
+    const sale = await saleService.resumeSale(
+      String(req.params.id),
+      req.user!.tenant_id,
+      req.user!.id,
+      req.user!.role,
+    )
+    res.json({ data: sale })
+  } catch (err) { next(err) }
+})
+
+// DELETE /api/v1/sales/:id/suspended — прибрати випадково відкладений кошик.
+// Фінансового продажу тут ще не було, але запис лишається cancelled для аудиту.
+router.delete('/:id/suspended', async (req, res, next) => {
+  try {
+    const sale = await saleService.discardSuspendedSale(
+      String(req.params.id),
+      req.user!.tenant_id,
+      req.user!.id,
+      req.user!.role,
+    )
     res.json({ data: sale })
   } catch (err) { next(err) }
 })
