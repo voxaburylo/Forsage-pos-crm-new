@@ -59,6 +59,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
   const [pricingModalItem, setPricingModalItem] = useState<any | null>(null)
   const [pricingRetailPrice, setPricingRetailPrice] = useState<string>('')
   const [offlineStockVersion, setOfflineStockVersion] = useState(0)
+  const [searchRefreshVersion, setSearchRefreshVersion] = useState(0)
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
   const searchEpoch             = useRef(0)
@@ -151,7 +152,7 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       }
     }, 200)
     return () => clearTimeout(timer.current)
-  }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion])
+  }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion, searchRefreshVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { setQuery(''); setResults([]); setSupplierResults([]); return }
@@ -173,9 +174,12 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
     searchEpoch.current++
     clearTimeout(timer.current)
     setQuery('')
-    setResults([])
     setSupplierResults([])
     setLoading(false)
+    // Якщо сканер працює поза полем пошуку, query вже порожній і звичайний
+    // setQuery('') не запускає повторне завантаження каталогу. Окремий лічильник
+    // гарантує оновлення, а старий список лишається видимим до приходу відповіді.
+    setSearchRefreshVersion((version) => version + 1)
     if (!serverOnline) {
       const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey)
       if (offlineResults[0]) {
@@ -205,7 +209,6 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         }
       }
       setQuery('')
-      setResults([])
       setSupplierResults([])
       return
     }
@@ -235,7 +238,6 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
         toast.error('Штрих-код не знайдено в базі')
       }
       setQuery('')
-      setResults([])
       setSupplierResults([])
     } catch {
       const offlineResults = await searchProductsOffline(normalizedCode, 1, scopeKey).catch(() => [])
@@ -243,7 +245,6 @@ export const SearchPanel = forwardRef<SearchPanelHandle>((_, ref) => {
       if (fallback) {
         addToReceipt(fallback as Product)
         setQuery('')
-        setResults([])
         setSupplierResults([])
       } else {
         playErrorTone()

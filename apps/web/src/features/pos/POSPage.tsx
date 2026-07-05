@@ -714,7 +714,14 @@ export default function POSPage() {
   }
 
   return (
-    <div className="h-screen-pos flex flex-col bg-[#1A1A1A] overflow-hidden" style={{ zoom: bigFont ? 1.18 : undefined }}>
+    <div
+      className="h-screen-pos flex flex-col bg-[#1A1A1A] overflow-hidden"
+      style={bigFont ? {
+        zoom: 1.18,
+        width: 'calc(100% / 1.18)',
+        height: 'calc(100dvh / 1.18)',
+      } : undefined}
+    >
       {/* Lock Screen */}
       {isLockedPIN && (
         <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />

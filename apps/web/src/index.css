@@ -28,6 +28,56 @@ body {
   height: 100dvh;
 }
 
+/* POS receipt: only the list of items scrolls. Payment controls always remain
+   inside the viewport, including fullscreen on short laptop displays. */
+.receipt-panel,
+.receipt-items {
+  min-height: 0;
+}
+
+@media (min-width: 768px) and (max-height: 760px) {
+  .receipt-header {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+
+  .receipt-item {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+
+  .receipt-summary {
+    padding-top: 0.5rem;
+    padding-bottom: 0.4rem;
+    row-gap: 0.4rem;
+  }
+
+  .receipt-secondary-summary {
+    display: none;
+  }
+
+  .receipt-core-warning {
+    padding: 0.4rem 0.6rem;
+    margin-top: 0.25rem;
+  }
+
+  .receipt-core-warning p:last-child {
+    display: none;
+  }
+
+  .receipt-total {
+    font-size: 1.75rem;
+    line-height: 2rem;
+  }
+
+  .receipt-action {
+    min-height: 52px !important;
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+    font-size: 0.95rem;
+  }
+}
+
 /* iPhone Safe Area insets */
 .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }

@@ -167,7 +167,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
   }, [store])
 
   return (
-    <div className="flex flex-col h-full bg-[#1A1A1A]">
+    <div className="receipt-panel flex h-full min-h-0 flex-col overflow-hidden bg-[#1A1A1A]">
       {/* ========== Панель вкладок (із свайпом) ========== */}
       <div
         ref={tabBarRef}
@@ -240,7 +240,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
       </div>
 
       {/* ========== Шапка чека ========== */}
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+      <div className="receipt-header shrink-0 px-4 py-3 border-b border-gray-800 flex items-center justify-between">
         <span className="text-gray-400 text-sm font-medium">ЧЕК</span>
         {store.customer ? (
           <button onClick={onSelectCustomer} className="flex flex-col items-end text-xs hover:text-yellow-300 active-press touch-target">
@@ -275,7 +275,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
       </div>
 
       {/* ========== Позиції ========== */}
-      <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
+      <div className="receipt-items min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2 space-y-1">
         {store.items.length === 0 ? (
           <p className="text-gray-700 text-sm text-center py-16">
             Додайте товар через пошук
@@ -290,7 +290,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
               >
                 <div
                   onClick={() => store.setSelectedProductId(item.productId)}
-                  className={`py-3 px-3 -mx-1 rounded-xl border-2 cursor-pointer transition-all active-press ${
+                  className={`receipt-item py-3 px-3 -mx-1 rounded-xl border-2 cursor-pointer transition-all active-press ${
                     isSelected
                       ? 'border-yellow-400 bg-yellow-400/5'
                       : 'border-transparent hover:bg-gray-800/30'
@@ -395,9 +395,9 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
       </div>
 
       {/* ========== Підсумок ========== */}
-      <div className="border-t border-gray-800 px-4 pt-4 pb-3 space-y-3">
+      <div className="receipt-summary shrink-0 border-t border-gray-800 px-4 pt-4 pb-3 space-y-3">
         {store.items.length > 0 && (
-          <div className="space-y-1.5 text-sm">
+          <div className="receipt-secondary-summary space-y-1.5 text-sm">
             <div className="flex justify-between text-gray-400">
               <span>Товарів:</span>
               <span>{store.items.reduce((s, i) => s + i.qty, 0)}</span>
@@ -418,7 +418,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
         )}
 
         {store.totalCoreDeposit > 0 && (
-          <div className="p-3 bg-yellow-950/25 border border-yellow-800/40 rounded-xl flex items-start gap-2.5 text-yellow-500 text-xs mt-2">
+          <div className="receipt-core-warning p-3 bg-yellow-950/25 border border-yellow-800/40 rounded-xl flex items-start gap-2.5 text-yellow-500 text-xs mt-2">
             <span className="mt-0.5 text-sm">⚠️</span>
             <div>
               <p className="font-bold">Необхідно обміняти старі деталі!</p>
@@ -429,7 +429,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
 
         <div className="flex justify-between items-baseline">
           <span className="text-gray-400 text-base font-semibold">ДО ОПЛАТИ:</span>
-          <span className="text-white text-4xl font-bold tabular-nums">
+          <span className="receipt-total text-white text-4xl font-bold tabular-nums">
             {formatMoney(store.total)}
           </span>
         </div>
@@ -438,7 +438,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
           <button
             onClick={onClear}
             disabled={store.items.length === 0}
-            className="touch-target py-4 rounded-xl bg-[#2C2C2C] text-gray-400 text-base font-medium hover:bg-gray-700 disabled:opacity-30 transition-colors ripple active-press"
+            className="receipt-action touch-target py-4 rounded-xl bg-[#2C2C2C] text-gray-400 text-base font-medium hover:bg-gray-700 disabled:opacity-30 transition-colors ripple active-press"
             style={{ minHeight: 64 }}
           >
             ✕ Скинути чек
@@ -447,7 +447,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
             id="pos-pay-btn"
             onClick={onPay}
             disabled={store.items.length === 0}
-            className="w-full py-5 rounded-xl bg-yellow-400 text-black text-xl font-bold hover:bg-yellow-300 disabled:opacity-30 transition-all shadow-lg shadow-yellow-400/20 ripple active-press"
+            className="receipt-action w-full py-5 rounded-xl bg-yellow-400 text-black text-xl font-bold hover:bg-yellow-300 disabled:opacity-30 transition-all shadow-lg shadow-yellow-400/20 ripple active-press"
             style={{ minHeight: 72 }}
           >
             💰 ОПЛАТИТИ (F2)
