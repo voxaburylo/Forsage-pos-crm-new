@@ -238,9 +238,31 @@ export default function POSPage() {
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
+  const earlyBarcodeScans = useRef<string[]>([])
+  const routeBarcodeScan = useCallback((code: string) => {
+    const panel = searchRef.current
+    if (panel) {
+      panel.scanBarcode(code)
+      return
+    }
+    // Перший скан може прийти між підключенням глобального HID-обробника
+    // та монтуванням SearchPanel. Не втрачаємо його.
+    earlyBarcodeScans.current.push(code)
+  }, [])
   usePOSBarcodeScanner({
-    onScan: (code) => searchRef.current?.scanBarcode(code),
+    onScan: routeBarcodeScan,
   })
+
+  useEffect(() => {
+    if (store.isInitializing) return
+    const frame = window.requestAnimationFrame(() => {
+      const panel = searchRef.current
+      if (!panel || earlyBarcodeScans.current.length === 0) return
+      const queued = earlyBarcodeScans.current.splice(0)
+      for (const code of queued) panel.scanBarcode(code)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [store.isInitializing])
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
