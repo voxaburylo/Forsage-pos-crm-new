@@ -32,6 +32,12 @@ function getRecentItems(key: string): string[] {
   }
 }
 
+function reportScannerStage(stage: 'added' | 'failed', code: string, name?: string) {
+  window.dispatchEvent(new CustomEvent('forsage:pos-scanner-stage', {
+    detail: { stage, code, name, at: Date.now() },
+  }))
+}
+
 function findExactScannedProduct(products: any[], code: string): Product | undefined {
   const normalized = code.toLocaleLowerCase('uk-UA').replace(/[\s\-./_]/g, '')
   return products.find((product) => {
@@ -230,6 +236,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     if (immediateProduct) {
       addToReceipt(immediateProduct)
       saveRecentItem('recent_scans', normalizedCode)
+      reportScannerStage('added', normalizedCode, immediateProduct.name)
       return
     }
     scanQueue.current.push(normalizedCode)
@@ -265,6 +272,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     if (cachedProduct) {
       addToReceipt(cachedProduct as Product)
       saveRecentItem('recent_scans', normalizedCode)
+      reportScannerStage('added', normalizedCode, (cachedProduct as Product).name)
       return
     }
 
@@ -287,9 +295,11 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
+        reportScannerStage('added', normalizedCode, customer.full_name ?? customer.phone)
       } else {
         playErrorTone()
         toast.error('Штрих-код не знайдено в офлайн-кеші')
+        reportScannerStage('failed', normalizedCode)
       }
       return
     }
@@ -312,13 +322,16 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         toast.success(`Клієнт ${c.full_name ?? c.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
+        reportScannerStage('added', normalizedCode, c.full_name ?? c.phone)
       } else if (result?.type === 'product' && result?.data) {
         addProductToScanIndex(scanProductIndex.current, result.data as Product)
         addToReceipt(result.data)
         saveRecentItem('recent_scans', normalizedCode)
+        reportScannerStage('added', normalizedCode, result.data.name)
       } else {
         playErrorTone()
         toast.error('Штрих-код не знайдено в базі')
+        reportScannerStage('failed', normalizedCode)
       }
     } catch {
       const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey).catch(() => [])
@@ -327,9 +340,11 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const fallback = findExactScannedProduct(offlineResults, normalizedCode)
       if (fallback) {
         addToReceipt(fallback as Product)
+        reportScannerStage('added', normalizedCode, fallback.name)
       } else {
         playErrorTone()
         toast.error('Товар або клієнт не знайдено')
+        reportScannerStage('failed', normalizedCode)
       }
     }
   }

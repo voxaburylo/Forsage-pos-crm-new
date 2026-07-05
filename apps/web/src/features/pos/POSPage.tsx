@@ -236,6 +236,7 @@ export default function POSPage() {
     setLockedPIN(true)
   }
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
+  const [scannerStats, setScannerStats] = useState({ captured: 0, added: 0, failed: 0, lastCode: '' })
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
   const earlyBarcodeScans = useRef<string[]>([])
@@ -263,6 +264,24 @@ export default function POSPage() {
     })
     return () => window.cancelAnimationFrame(frame)
   }, [store.isInitializing])
+
+  useEffect(() => {
+    const handleScannerStage = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        stage?: 'captured' | 'added' | 'failed'
+        code?: string
+      }>).detail
+      if (!detail?.stage) return
+      setScannerStats((current) => ({
+        captured: current.captured + (detail.stage === 'captured' ? 1 : 0),
+        added: current.added + (detail.stage === 'added' ? 1 : 0),
+        failed: current.failed + (detail.stage === 'failed' ? 1 : 0),
+        lastCode: detail.code ?? current.lastCode,
+      }))
+    }
+    window.addEventListener('forsage:pos-scanner-stage', handleScannerStage)
+    return () => window.removeEventListener('forsage:pos-scanner-stage', handleScannerStage)
+  }, [])
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
@@ -784,6 +803,18 @@ export default function POSPage() {
             <Zap className="text-yellow-400 size-3.5 md:size-4" />
             <span className="text-white font-semibold text-xs md:text-sm tracking-wide">Форсаж</span>
             <span className="text-emerald-400 text-[9px] md:text-[10px] font-medium bg-emerald-900/40 px-1.5 py-0.5 rounded-full border border-emerald-800/30">Зміна</span>
+            <span
+              className={`hidden lg:inline-flex text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${
+                scannerStats.failed > 0 || scannerStats.captured !== scannerStats.added
+                  ? 'text-amber-300 bg-amber-950/60 border-amber-800/60'
+                  : 'text-emerald-300 bg-emerald-950/50 border-emerald-800/40'
+              }`}
+              title={scannerStats.lastCode
+                ? `Останній код: ${scannerStats.lastCode}. Помилок: ${scannerStats.failed}`
+                : 'Сканер готовий'}
+            >
+              Сканер {scannerStats.captured}/{scannerStats.added}
+            </span>
           </div>
           {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}

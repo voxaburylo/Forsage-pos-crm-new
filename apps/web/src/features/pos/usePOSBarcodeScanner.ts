@@ -78,6 +78,9 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       if (code) {
         terminatorGuardUntil = Date.now() + TERMINATOR_GUARD_MS
         focusScannerSurface()
+        window.dispatchEvent(new CustomEvent('forsage:pos-scanner-stage', {
+          detail: { stage: 'captured', code, at: Date.now() },
+        }))
         scanCallback.current(code)
       }
     }
