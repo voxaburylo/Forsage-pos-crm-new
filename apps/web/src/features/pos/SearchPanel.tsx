@@ -119,9 +119,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
 
-  // Auto focus
-  useEffect(() => { inputRef.current?.focus() }, [])
-
   useEffect(() => {
     let cancelled = false
 
@@ -222,6 +219,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       setQuery('')
       setResults([])
       setSupplierResults([])
+      inputRef.current?.blur()
     }
   }
 
@@ -388,7 +386,8 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
     })
-    inputRef.current?.focus()
+    // Після вибору товару клавіатура знову належить сканеру.
+    inputRef.current?.blur()
   }
 
   function openPricingModal(sItem: any) {
@@ -450,7 +449,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
               if (text) setQuery((current) => current + text)
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Артикул, назва, штрихкод... (F4)"
+            placeholder="Натисніть тут для пошуку товару"
             className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}

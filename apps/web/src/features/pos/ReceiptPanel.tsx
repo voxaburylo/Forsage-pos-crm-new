@@ -21,107 +21,6 @@ function canUserDiscount(): boolean {
 }
 
 // ================================================================
-// Numpad — повноекранна цифрова клавіатура
-// ================================================================
-
-function NumpadModal({
-  open,
-  value,
-  unit,
-  onConfirm,
-  onClose,
-}: {
-  open: boolean
-  value: number
-  unit: string
-  onConfirm: (v: number) => void
-  onClose: () => void
-}) {
-  const [input, setInput] = useState(String(value))
-
-  // Синхронізуємо input при відкритті для нового товару
-  useEffect(() => {
-    if (open) {
-      setInput(String(value))
-    }
-  }, [open, value])
-
-  const handleDigit = useCallback((d: string) => {
-    setInput((prev) => {
-      if (prev === '0' && d !== '.') return d
-      if (d === '.') {
-        return prev.includes('.') ? prev : prev + '.'
-      }
-      return prev + d
-    })
-  }, [])
-
-  const handleBackspace = useCallback(() => {
-    setInput((prev) => {
-      if (prev.length <= 1) return '0'
-      const next = prev.slice(0, -1)
-      return next
-    })
-  }, [])
-
-  const handleClear = useCallback(() => {
-    setInput('0')
-  }, [])
-
-  const handleConfirm = useCallback(() => {
-    const num = parseFloat(input)
-    if (isNaN(num) || num <= 0) { setInput('1'); return }
-    onConfirm(num)
-    onClose()
-  }, [input, onConfirm, onClose])
-
-  if (!open) return null
-
-  const buttons = [
-    ['1', '2', '3'],
-    ['4', '5', '6'],
-    ['7', '8', '9'],
-    ['✕', '0', '⌫'],
-  ]
-
-  return (
-    <div className="numpad-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="numpad-display">
-        <div className="text-gray-400 text-xs mb-1">Кількість ({unit})</div>
-        <div className="text-white text-5xl font-bold tabular-nums">{input}</div>
-      </div>
-      <div className="numpad-grid">
-        {buttons.flat().map((b) => {
-          if (b === '✕') return (
-            <button key={b} className="numpad-btn action touch-target ripple" onClick={handleClear}>
-              ✕
-            </button>
-          )
-          if (b === '⌫') return (
-            <button key={b} className="numpad-btn action touch-target ripple" onClick={handleBackspace}>
-              ⌫
-            </button>
-          )
-          return (
-            <button key={b} className="numpad-btn touch-target ripple" onClick={() => handleDigit(b)}>
-              {b}
-            </button>
-          )
-        })}
-      </div>
-      <div className="flex gap-px bg-[#1a1a1a]">
-        <button className="numpad-btn touch-target ripple flex-1 py-5" onClick={() => handleDigit('.')}>
-          .
-        </button>
-        <button className="numpad-btn confirm touch-target ripple flex-[2] py-5 text-lg font-bold" onClick={handleConfirm}>
-          ✅ Готово
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ================================================================
 // ReceiptPanel
 // ================================================================
 
@@ -129,15 +28,45 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
   item,
   isSelected,
   userCanDiscount,
-  onOpenNumpad,
 }: {
   item: POSItem
   isSelected: boolean
   userCanDiscount: boolean
-  onOpenNumpad: (productId: string) => void
 }) {
+  const [isEditingQty, setIsEditingQty] = useState(false)
+  const [qtyDraft, setQtyDraft] = useState(String(item.qty))
+  const qtyInputRef = useRef<HTMLInputElement>(null)
   const remove = () => usePOSStore.getState().removeItem(item.productId)
   const updateQty = (qty: number) => usePOSStore.getState().updateQty(item.productId, qty)
+
+  useEffect(() => {
+    if (!isEditingQty) {
+      setQtyDraft(String(item.qty))
+      return
+    }
+    const frame = requestAnimationFrame(() => {
+      qtyInputRef.current?.focus()
+      qtyInputRef.current?.select()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [isEditingQty, item.qty])
+
+  const commitQty = () => {
+    const value = Number(qtyDraft.trim().replace(',', '.'))
+    setIsEditingQty(false)
+    if (!Number.isFinite(value) || value <= 0) {
+      setQtyDraft(String(item.qty))
+      toast.warning('Введіть кількість більше нуля')
+      return
+    }
+    const qty = +value.toFixed(3)
+    if (item.qtyOnHand < qty) {
+      toast.warning(item.qtyOnHand <= 0
+        ? `Недостатньо на складі: ${item.name} (немає в наявності)`
+        : `Недостатньо на складі: ${item.name} (доступно ${item.qtyOnHand} ${item.unit})`)
+    }
+    updateQty(qty)
+  }
 
   return (
     <SwipeableItem onDelete={remove}>
@@ -181,14 +110,51 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
             >
               <Minus size={20} />
             </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onOpenNumpad(item.productId) }}
-              className="text-white text-lg font-semibold w-16 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
-              style={{ minHeight: 48 }}
-              aria-label={`Змінити кількість ${item.name}`}
-            >
-              {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
-            </button>
+            {isEditingQty ? (
+              <div
+                className="w-20 h-12 flex items-center rounded-xl bg-[#2C2C2C] border-2 border-yellow-400 overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  ref={qtyInputRef}
+                  type="text"
+                  inputMode="decimal"
+                  value={qtyDraft}
+                  data-scanner-ignore="true"
+                  onChange={(e) => setQtyDraft(e.target.value)}
+                  onBlur={commitQty}
+                  onKeyDown={(e) => {
+                    e.stopPropagation()
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      commitQty()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setQtyDraft(String(item.qty))
+                      setIsEditingQty(false)
+                    }
+                  }}
+                  className="min-w-0 w-full h-full bg-transparent text-white text-lg font-semibold text-center tabular-nums outline-none"
+                  aria-label={`Кількість ${item.name}`}
+                />
+                <span className="pr-2 text-gray-500 text-xs shrink-0">{item.unit}</span>
+              </div>
+            ) : (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  usePOSStore.getState().setSelectedProductId(item.productId)
+                  setQtyDraft(String(item.qty))
+                  setIsEditingQty(true)
+                }}
+                className="text-white text-lg font-semibold w-20 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
+                style={{ minHeight: 48 }}
+                aria-label={`Змінити кількість ${item.name}`}
+                title="Натисніть і введіть кількість"
+              >
+                {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation()
@@ -228,7 +194,7 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
         {isSelected && (
           <div className="mt-1.5 flex gap-3 text-gray-500 text-[10px]">
             <span>Del — видалити</span>
-            <span>+/- — кількість</span>
+            <span>Натисніть кількість і введіть число</span>
           </div>
         )}
       </div>
@@ -239,12 +205,8 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
 export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
   const store = usePOSStore()
   const userCanDiscount = canUserDiscount()
-  const [numpadTarget, setNumpadTarget] = useState<string | null>(null)
   const tabBarRef = useRef<HTMLDivElement>(null)
   const tabTouchStart = useRef(0)
-
-  const numpadItem = numpadTarget ? store.items.find((i) => i.productId === numpadTarget) : null
-  const openNumpad = useCallback((productId: string) => setNumpadTarget(productId), [])
 
   // Swipe між вкладками
   const handleTabTouchStart = useCallback((e: React.TouchEvent) => {
@@ -393,7 +355,6 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
               item={item}
               isSelected={store.selectedProductId === item.productId}
               userCanDiscount={userCanDiscount}
-              onOpenNumpad={openNumpad}
             />
           ))
         )}
@@ -460,16 +421,6 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
         </div>
       </div>
 
-      {/* Numpad */}
-      <NumpadModal
-        open={numpadTarget !== null}
-        value={numpadItem?.qty ?? 1}
-        unit={numpadItem?.unit ?? 'шт'}
-        onConfirm={(v) => {
-          if (numpadTarget) store.updateQty(numpadTarget, v)
-        }}
-        onClose={() => setNumpadTarget(null)}
-      />
     </div>
   )
 }

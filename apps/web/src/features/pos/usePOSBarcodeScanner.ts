@@ -123,7 +123,13 @@ export function usePOSBarcodeScanner({
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
       const now = Date.now()
       const active = document.activeElement
+      const scannerIgnored = active instanceof HTMLElement && active.dataset.scannerIgnore === 'true'
       const activeSearch = active instanceof HTMLElement && active.dataset.posSearch === 'true'
+
+      if (scannerIgnored) {
+        reset()
+        return
+      }
 
       if (activeSearch && event.key === 'Backspace') {
         event.preventDefault()
