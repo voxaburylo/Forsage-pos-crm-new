@@ -31,6 +31,14 @@ export function renderBarcodeSvg(value: string, options: BarcodeSvgOptions = {})
       lineColor: '#000000',
     })
 
+    // Частина термодрайверів і preview Chrome ігнорує SVG fill, заданий лише
+    // через inline-style. Дублюємо його звичайним атрибутом для надійного друку.
+    svg.querySelectorAll('rect').forEach((rect) => {
+      const fill = rect.style.fill
+      if (fill) rect.setAttribute('fill', fill)
+      rect.setAttribute('shape-rendering', 'crispEdges')
+    })
+
     return svg.outerHTML
   } catch (error) {
     console.error('Failed to generate barcode SVG', error)

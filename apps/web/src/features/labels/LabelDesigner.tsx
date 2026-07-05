@@ -630,9 +630,14 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const alignBc = settings.align_barcode || 'center'
         const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
+        const horizontalBc = alignBc === 'center'
+          ? 'left:0;right:0;'
+          : alignBc === 'right'
+            ? `left:0;right:${Math.max(0, pBc.x)}%;`
+            : `left:${pBc.x}%;right:0;`
         const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('<rect')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
-        body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;right:0;top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:hidden;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;">${esc(binLabel)}</span>` : ''}</div>`
+        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:visible;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;text-align:${alignBc};">${esc(binLabel)}</span>` : ''}</div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
@@ -643,9 +648,14 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const alignBc = settings.align_barcode || 'center'
         const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
+        const horizontalBc = alignBc === 'center'
+          ? 'left:0;right:0;'
+          : alignBc === 'right'
+            ? `left:0;right:${Math.max(0, pBc.x)}%;`
+            : `left:${pBc.x}%;right:0;`
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('<rect')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
-        body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;right:0;top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:hidden;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;">${esc(product.barcode)}</span>` : ''}</div>`
+        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:visible;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;text-align:${alignBc};">${esc(product.barcode)}</span>` : ''}</div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
         const pSku = settings.pos_sku || { x: 5, y: 75 }
@@ -700,9 +710,12 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   }
   .barcode svg {
     display: block;
-    max-width: 100%;
+    width: auto;
+    max-width: calc(100% - 2mm);
     height: ${barcodeHeight}px;
     flex: 0 1 auto;
+    overflow: visible;
+    shape-rendering: crispEdges;
   }
   @media print {
     html, body { width: ${w}mm !important; min-width: ${w}mm !important; }
