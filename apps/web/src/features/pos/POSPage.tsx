@@ -383,11 +383,22 @@ export default function POSPage() {
     }
     function onScanKey(e: KeyboardEvent) {
       const now = Date.now()
+      const active = document.activeElement
+      const searchOwnsInput = active instanceof HTMLElement && active.dataset.posSearch === 'true'
+      if (searchOwnsInput) {
+        // Поле пошуку має власний ізольований буфер сканера. Не змішуємо сюди
+        // попередній ручний запит і не перехоплюємо його Enter/Tab.
+        buf = ''
+        first = 0
+        scanTarget = null
+        valueBeforeScan = ''
+        return
+      }
       if (e.key === 'Enter' || e.key === 'Tab') {
         const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
         // Пороги з запасом на повільні/Bluetooth-сканери: людина так швидко
         // 4+ символів поспіль не набирає, тож хибних спрацювань не буде.
-        const scannerSequence = buf.length >= 4 && (now - last) < 500 && averageInterval <= 120
+        const scannerSequence = buf.length >= 4 && (now - last) < 600 && averageInterval <= 250
         if (scannerSequence) {
           e.preventDefault()
           e.stopPropagation()
@@ -402,7 +413,7 @@ export default function POSPage() {
         return
       }
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (now - last > 400) {
+        if (now - last > 500) {
           buf = ''
           first = now
         }
@@ -417,7 +428,7 @@ export default function POSPage() {
         buf += e.key
         last = now
         const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-        const scannerBurst = buf.length >= 3 && averageInterval <= 120
+        const scannerBurst = buf.length >= 3 && averageInterval <= 250
         if (scannerBurst && scanTarget?.dataset.posSearch !== 'true') {
           // Після перших символів уже зрозуміло, що це сканер. Решту коду не
           // віддаємо полю кількості/ціни; на суфіксі повернемо початкове значення.

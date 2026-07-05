@@ -98,6 +98,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const burstStart              = useRef(0)
   const burstCount              = useRef(0)
   const lastCharAt              = useRef(0)
+  const scanKeyBuffer           = useRef('')
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
@@ -231,6 +232,10 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     if (e.key === 'Escape') {
       clearTimeout(inputCommitTimer.current)
       inputDraft.current = ''
+      scanKeyBuffer.current = ''
+      burstStart.current = 0
+      burstCount.current = 0
+      lastCharAt.current = 0
       setQuery('')
       setResults([])
       setSupplierResults([])
@@ -239,24 +244,42 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
       clearTimeout(inputCommitTimer.current)
+      const scannerSequence = scanKeyBuffer.current.length >= 4
+      if (scannerSequence) {
+        const code = scanKeyBuffer.current
+        inputDraft.current = query
+        queueBarcodeScan(code)
+        return
+      }
       const trimmed = inputDraft.current.trim()
       inputDraft.current = ''
       if (!trimmed) return
       // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
       // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
       // результат текстового пошуку.
-      queueBarcodeScan(trimmed)
+      setQuery('')
+      setResults([])
+      setSupplierResults([])
+      queueBarcodeScan(trimmed, false)
       return
     }
     if (e.key === 'Backspace') {
       e.preventDefault()
       inputDraft.current = inputDraft.current.slice(0, -1)
+      scanKeyBuffer.current = ''
+      burstStart.current = 0
+      burstCount.current = 0
+      lastCharAt.current = 0
       setQuery(inputDraft.current)
       return
     }
     if (e.key === 'Delete') {
       e.preventDefault()
       inputDraft.current = ''
+      scanKeyBuffer.current = ''
+      burstStart.current = 0
+      burstCount.current = 0
+      lastCharAt.current = 0
       setQuery('')
       return
     }
@@ -266,35 +289,39 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       // Для ручного набору текст з'явиться після короткої паузи.
       e.preventDefault()
       const now = Date.now()
-      if (now - lastCharAt.current > 400) {
+      if (now - lastCharAt.current > 1000) {
         burstStart.current = now
         burstCount.current = 0
+        scanKeyBuffer.current = ''
       }
       burstCount.current++
       lastCharAt.current = now
+      scanKeyBuffer.current += e.key
       const avgInterval = burstCount.current > 1
-        ? (now - burstStart.current) / (burstCount.current - 1)
+        ? (lastCharAt.current - burstStart.current) / (burstCount.current - 1)
         : Number.POSITIVE_INFINITY
-      // Черга сканера (3+ символи, ≤120мс між ними) — комміт відкладаємо далі,
-      // ніж будь-яка пауза сканера: Enter скасує його, і частковий код не
-      // потрапить у текстовий пошук (список не смикається, каса не гальмує).
-      const scannerLike = burstCount.current >= 3 && avgInterval <= 120
+      // Після трьох символів чекаємо термінатор сканера довше й не запускаємо
+      // текстовий пошук посеред коду, навіть якщо Windows зробив мікропаузу.
+      const scannerLike = scanKeyBuffer.current.length >= 3 && avgInterval <= 250
       inputDraft.current += e.key
       clearTimeout(inputCommitTimer.current)
       inputCommitTimer.current = setTimeout(() => {
         setQuery(inputDraft.current)
-      }, scannerLike ? 450 : 180)
+        scanKeyBuffer.current = ''
+        burstStart.current = 0
+        burstCount.current = 0
+        lastCharAt.current = 0
+      }, scannerLike ? 1000 : 220)
     }
   }
 
-  function queueBarcodeScan(code: string) {
+  function queueBarcodeScan(code: string, preserveVisibleSearch = true) {
     clearTimeout(inputCommitTimer.current)
-    inputDraft.current = ''
+    inputDraft.current = preserveVisibleSearch ? (inputRef.current?.value ?? query) : ''
     burstStart.current = 0
     burstCount.current = 0
     lastCharAt.current = 0
-    setQuery('')
-    setSupplierResults([])
+    scanKeyBuffer.current = ''
     const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
     if (!normalizedCode) return
     const immediateProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
@@ -325,13 +352,8 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   async function handleBarcodeScan(code: string) {
     const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
     if (!normalizedCode) return
-    // Скан — не текстовий пошук. Одразу прибираємо код із поля та скасовуємо
-    // запізнілі результати hybrid search, щоб екран не смикався.
-    searchEpoch.current++
-    clearTimeout(timer.current)
-    setQuery('')
-    setSupplierResults([])
-    setLoading(false)
+    // Сканер і видимий пошук — незалежні канали. Тут навмисно не змінюємо
+    // query/loading/results і не скасовуємо ручний текстовий пошук.
 
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
@@ -367,7 +389,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         playErrorTone()
         toast.error('Штрих-код не знайдено в офлайн-кеші')
       }
-      setSupplierResults([])
       return
     }
     try {
@@ -397,7 +418,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         playErrorTone()
         toast.error('Штрих-код не знайдено в базі')
       }
-      setSupplierResults([])
     } catch {
       const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey).catch(() => [])
       // Штрихкод має збігатися точно. Ніколи не додаємо перший текстовий
@@ -405,7 +425,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const fallback = findExactScannedProduct(offlineResults, normalizedCode)
       if (fallback) {
         addToReceipt(fallback as Product)
-        setSupplierResults([])
       } else {
         playErrorTone()
         toast.error('Товар або клієнт не знайдено')
@@ -524,12 +543,20 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             onChange={(e) => {
               // Віртуальна клавіатура та вставка можуть не надсилати keydown.
               inputDraft.current = e.target.value
+              scanKeyBuffer.current = ''
+              burstStart.current = 0
+              burstCount.current = 0
+              lastCharAt.current = 0
               setQuery(e.target.value)
             }}
             onPaste={(e) => {
               e.preventDefault()
               const next = inputDraft.current + e.clipboardData.getData('text')
               inputDraft.current = next
+              scanKeyBuffer.current = ''
+              burstStart.current = 0
+              burstCount.current = 0
+              lastCharAt.current = 0
               setQuery(next)
             }}
             onKeyDown={handleKeyDown}
