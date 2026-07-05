@@ -13,7 +13,7 @@ interface Props {
   open: boolean
   offline?: boolean
   onClose: () => void
-  onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean, terminalAuthCode?: string) => Promise<void>
+  onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean, terminalAuthCode?: string, printAfterPayment?: boolean) => Promise<void>
 }
 
 type Method = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
@@ -46,6 +46,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [loyaltyEnabled, setLoyaltyEnabled] = useState(false)
   const [fiscal, setFiscal] = useState(() => localStorage.getItem(FISCAL_KEY) !== 'false')
   const [splitCash, setSplitCash] = useState('')
+  const [printAfterPayment, setPrintAfterPayment] = useState(false)
 
   // Авто-фіскалізація при оплаті карткою (обов'язково за законом)
   useEffect(() => {
@@ -96,7 +97,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center">
         <div className="absolute inset-0 bg-black/70" />
-        <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-5">
+        <div className="relative mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-2xl border border-gray-700 bg-[#1A1A1A] p-6">
           <div className="text-center">
             <CreditCard size={40} className="text-blue-400 mx-auto mb-3" />
             <h3 className="text-white text-lg font-bold">Проведіть оплату на терміналі</h3>
@@ -126,7 +127,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
           <div className="flex gap-3">
             <button
-              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setLoading(false) }}
+              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false); setLoading(false) }}
               className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700"
             >
               Скасувати
@@ -136,7 +137,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
               disabled={loading}
               className="flex-1 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold disabled:opacity-40"
             >
-              {loading ? <Loader2 size={16} className="animate-spin mx-auto" /> : 'Підтвердити оплату'}
+              {loading
+                ? <Loader2 size={16} className="animate-spin mx-auto" />
+                : printAfterPayment ? 'Оплатити й друкувати' : 'Підтвердити оплату'}
             </button>
           </div>
         </div>
@@ -165,9 +168,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     localStorage.setItem(FISCAL_KEY, next ? 'true' : 'false')
   }
 
-  async function handleConfirm() {
+  async function handleConfirm(shouldPrint = false) {
     if (!cashValid || !debtOk || !splitValid) return
 
+    setPrintAfterPayment(shouldPrint)
     setLoading(true)
 
     // Картка або Split із картковою частиною
@@ -175,7 +179,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       if (terminalIntegrated) {
         // Інтегрований термінал: сервер сам проведе оплату. Без ручного коду — щоб
         // не списати двічі. Касир лише дає клієнту прикласти картку.
-        await submitSale()
+        await submitSale(undefined, shouldPrint)
         return
       }
       // Ручний режим: касир проводить картку і вводить код авторизації
@@ -183,22 +187,23 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       return
     }
 
-    await submitSale()
+    await submitSale(undefined, shouldPrint)
   }
 
   async function confirmTerminalPayment() {
     setLoading(true)
-    await submitSale(terminalAuthCode || undefined)
+    await submitSale(terminalAuthCode || undefined, printAfterPayment)
     setTerminalStep('none')
     setTerminalAuthCode('')
+    setPrintAfterPayment(false)
   }
 
-  async function submitSale(authCode?: string) {
+  async function submitSale(authCode?: string, shouldPrint = false) {
     try {
       if (method === 'mixed') {
-        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, offline ? false : fiscal, authCode)
+        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, offline ? false : fiscal, authCode, shouldPrint)
       } else {
-        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, offline ? false : fiscal, authCode)
+        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, offline ? false : fiscal, authCode, shouldPrint)
       }
     } finally {
       setLoading(false)
@@ -210,9 +215,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 overflow-hidden">
+      <div className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
 
-        <div className="px-6 py-4 border-b border-gray-800">
+        <div className="shrink-0 border-b border-gray-800 px-6 py-4">
           <p className="text-gray-400 text-sm">До оплати</p>
           <p className="text-white text-4xl font-bold">{formatMoney(toPay)}</p>
           {bonusRedeemed > 0 && (
@@ -223,7 +228,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           )}
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="min-h-0 space-y-4 overflow-y-auto p-6">
           {offline && (
             <div className="rounded-xl border border-amber-500/40 bg-amber-900/25 px-3 py-2 text-xs text-amber-200">
               Офлайн: доступні готівка та переказ без ПРРО і бонусів.
@@ -287,7 +292,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Отримано готівки (₴)</label>
               <input type="number" min="0" step="0.01" autoFocus value={cashInput}
-                onChange={(e) => setCash(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm() }}
+                onChange={(e) => setCash(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm(false) }}
                 placeholder="0.00"
                 className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-yellow-400" />
               {/* Швидкі суми готівки — щоб не вбивати вручну щоразу */}
@@ -318,7 +323,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Готівка (₴)</label>
               <input type="number" min="0.01" step="0.01" autoFocus value={splitCash}
-                onChange={(e) => setSplitCash(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm() }}
+                onChange={(e) => setSplitCash(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm(false) }}
                 placeholder="0.00"
                 className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-purple-500" />
               {splitCashKopecks > 0 && splitCashKopecks < toPay && (
@@ -377,14 +382,22 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           )}
 
           {/* Кнопки */}
+          <button
+            onClick={() => handleConfirm(true)}
+            disabled={loading || !cashValid || !debtOk || !splitValid}
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-yellow-400/50 bg-yellow-400/10 px-4 py-3 font-bold text-yellow-300 transition-colors hover:bg-yellow-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Receipt size={18} />
+            ОПЛАТИТИ Й НАДРУКУВАТИ ЧЕК
+          </button>
           <div className="flex gap-3">
             <button onClick={onClose}
               className="flex-1 py-4 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">Скасувати</button>
-            <button onClick={handleConfirm}
+            <button onClick={() => handleConfirm(false)}
               disabled={loading || !cashValid || !debtOk || !splitValid}
               style={{ minHeight: 56 }}
               className="flex-1 py-4 rounded-xl bg-yellow-400 text-black font-bold hover:bg-yellow-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-              {loading ? 'Обробка...' : 'ПІДТВЕРДИТИ'}
+              {loading ? 'Обробка...' : 'ОПЛАТИТИ'}
             </button>
           </div>
         </div>

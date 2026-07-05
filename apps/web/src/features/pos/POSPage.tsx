@@ -191,6 +191,7 @@ export default function POSPage() {
   const [suspendedCount, setSuspendedCount] = useState(0)
   const [lastSale, setLastSale]         = useState<Sale | null>(null)
   const autoPrintRef                    = useRef(false)
+  const printAfterSaleRef               = useRef(false)
   const skipNextAutoPrintRef            = useRef(false)
   const [findReceiptOpen, setFindReceiptOpen] = useState(false)
   const [offlineSalesOpen, setOfflineSalesOpen] = useState(false)
@@ -297,7 +298,8 @@ export default function POSPage() {
     if (!lastSale) return
     // Повторний друк зі списку чеків сам викликає друк — не дублюємо авто-друком
     if (skipNextAutoPrintRef.current) { skipNextAutoPrintRef.current = false; return }
-    if (autoPrintRef.current) {
+    if (printAfterSaleRef.current || autoPrintRef.current) {
+      printAfterSaleRef.current = false
       const t = setTimeout(() => printReceipt(), 250)
       return () => clearTimeout(t)
     }
@@ -543,6 +545,7 @@ export default function POSPage() {
     split?: { cash_amount: number; card_amount: number },
     isFiscal?: boolean,
     terminalAuthCode?: string,
+    printAfterPayment?: boolean,
   ) {
     async function saveOfflineSale() {
       if (method === 'card' || method === 'debt' || method === 'mixed') {
@@ -645,6 +648,7 @@ export default function POSPage() {
           product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
         })),
       }
+      printAfterSaleRef.current = !!printAfterPayment
       setLastSale(localReceipt)
       store.clearReceipt()
       clearSavedCart()
@@ -665,6 +669,7 @@ export default function POSPage() {
     try {
       const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
       if (sale) {
+        printAfterSaleRef.current = !!printAfterPayment
         setLastSale(sale as Sale)
         clearSavedCart()
         setPayOpen(false)
@@ -715,7 +720,7 @@ export default function POSPage() {
 
   return (
     <div
-      className="h-screen-pos flex flex-col bg-[#1A1A1A] overflow-hidden"
+      className="pos-app-shell fixed inset-0 flex flex-col overflow-hidden bg-[#1A1A1A]"
       style={bigFont ? {
         zoom: 1.18,
         width: 'calc(100% / 1.18)',
