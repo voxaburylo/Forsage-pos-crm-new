@@ -179,6 +179,7 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 
 export default function POSPage() {
   const navigate = useNavigate()
+  const isStandalonePWA = window.matchMedia('(display-mode: standalone)').matches
   const { store, completeSale, checkShift } = usePOS()
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
@@ -212,7 +213,7 @@ export default function POSPage() {
   const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
-  const [bigFont, setBigFont]           = useState(() => localStorage.getItem('pos_big_font') === '1')
+  const [bigFont, setBigFont]           = useState(() => !isStandalonePWA && localStorage.getItem('pos_big_font') === '1')
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
@@ -437,10 +438,6 @@ export default function POSPage() {
       if (e.key === 'F6') {
         e.preventDefault()
         setFindReceiptOpen(true)
-      }
-      if (e.key === 'F7') {
-        e.preventDefault()
-        if (store.items.length > 0) setSuspendOpen(true)
       }
       if (e.key === 'F8') {
         e.preventDefault()
@@ -722,7 +719,7 @@ export default function POSPage() {
     <div className="fixed inset-0 overflow-hidden bg-[#1A1A1A]">
       <div
         className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
-        style={bigFont ? {
+        style={bigFont && !isStandalonePWA ? {
           transform: 'scale(1.18)',
           transformOrigin: 'top left',
           width: 'calc(100vw / 1.18)',
@@ -957,13 +954,15 @@ export default function POSPage() {
                     className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
                     <Keyboard size={15} /> Гарячі клавіші (F1)
                   </button>
-                  <button onClick={() => { const v = !bigFont; setBigFont(v); localStorage.setItem('pos_big_font', v ? '1' : '0'); setMoreOpen(false) }}
-                    className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left transition-colors ${
-                      bigFont ? 'text-yellow-400 bg-yellow-900/10' : 'text-gray-300 hover:bg-gray-700'
-                    }`}>
-                    <span className="font-bold text-[15px] leading-none w-[15px]">A+</span> Великий шрифт
-                    {bigFont && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
-                  </button>
+                  {!isStandalonePWA && (
+                    <button onClick={() => { const v = !bigFont; setBigFont(v); localStorage.setItem('pos_big_font', v ? '1' : '0'); setMoreOpen(false) }}
+                      className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left transition-colors ${
+                        bigFont ? 'text-yellow-400 bg-yellow-900/10' : 'text-gray-300 hover:bg-gray-700'
+                      }`}>
+                      <span className="font-bold text-[15px] leading-none w-[15px]">A+</span> Великий шрифт
+                      {bigFont && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
+                    </button>
+                  )}
                   <button onClick={() => { setMoreOpen(false); toggleFullscreen() }}
                     className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
                     {isFullscreen ? <Minimize size={15} /> : <Maximize size={15} />} {isFullscreen ? 'Вийти з повного екрана' : 'На весь екран'}
@@ -1269,7 +1268,6 @@ export default function POSPage() {
           ['F4', 'Пошук'],
           ['F5', 'Відкладені'],
           ['F6', 'Знайти чек'],
-          ['F7', 'Відкласти'],
           ['F8', 'Сканер'],
           ['Del', 'Видалити'],
           ['+/−', 'К-сть'],

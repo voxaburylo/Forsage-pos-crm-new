@@ -9,7 +9,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // Не перезавантажувати касу посеред продажу. Нова версія активується
+      // після повного закриття встановленого PWA та наступного запуску.
+      registerType: 'prompt',
       includeAssets: ['*.svg'],
       manifest: {
         name: 'Forsage CRM',
@@ -40,8 +42,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,json}'],
-        skipWaiting: true,
-        clientsClaim: true,
+        skipWaiting: false,
+        clientsClaim: false,
       },
     }),
   ],

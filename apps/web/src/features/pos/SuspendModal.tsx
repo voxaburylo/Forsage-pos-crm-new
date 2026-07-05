@@ -68,7 +68,6 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
           </label>
           <input type="text" autoFocus value={cell}
             onChange={(e) => setCell(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSuspend() }}
             placeholder="Напр. A-3, Стелаж 2..."
             className="w-full bg-[#2C2C2C] text-white text-lg rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-yellow-400" />
         </div>
