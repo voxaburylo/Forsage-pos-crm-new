@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { api } from '@/lib/api'
 
 const IDLE_COMPLETE_MS = 220
 const SEQUENCE_RESET_MS = 900
@@ -57,6 +58,82 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     let lastAt = 0
     let terminatorGuardUntil = 0
     let idleTimer: number | null = null
+
+    // ─── «Чорна скринька» сканера (тимчасова діагностика) ──────────────────
+    // Пише КОЖЕН keydown + події фокуса/фулскріна/перезавантаження і надсилає
+    // на сервер у scanner-keys.log. Переживає перезавантаження сторінки.
+    const BLACKBOX_LS = 'pos_scanner_blackbox_v1'
+    let bbEvents: any[] = []
+    let bbFlushTimer: number | null = null
+    let bbLastKeyAt = 0
+    const bbDescribeActive = () => {
+      const el = document.activeElement as HTMLElement | null
+      if (!el) return 'null'
+      let tag = el.tagName
+      if (el.dataset?.posScannerCapture === 'true') tag += '[sink]'
+      if (el.dataset?.posSearch === 'true') tag += '[search]'
+      if (el instanceof HTMLInputElement && el.type) tag += `(${el.type})`
+      const label = el.getAttribute?.('aria-label')
+      if (label) tag += `{${label.slice(0, 25)}}`
+      return tag
+    }
+    const bbFlush = (note?: string) => {
+      if (bbFlushTimer !== null) { window.clearTimeout(bbFlushTimer); bbFlushTimer = null }
+      if (bbEvents.length === 0) return
+      const events = bbEvents.splice(0)
+      try { localStorage.removeItem(BLACKBOX_LS) } catch { /* ignore */ }
+      api.post('/api/v1/debug/scanner-keys', { events, note: note ?? null }, undefined, { silent: true }).catch(() => {
+        // сервер недоступний — повертаємо в localStorage, надішлемо пізніше
+        try { localStorage.setItem(BLACKBOX_LS, JSON.stringify(events)) } catch { /* ignore */ }
+      })
+    }
+    const bbLog = (rec: Record<string, any>) => {
+      rec.t = Date.now()
+      bbEvents.push(rec)
+      if (bbEvents.length > 500) bbEvents.splice(0, bbEvents.length - 500)
+      try { localStorage.setItem(BLACKBOX_LS, JSON.stringify(bbEvents)) } catch { /* ignore */ }
+      if (bbFlushTimer !== null) window.clearTimeout(bbFlushTimer)
+      bbFlushTimer = window.setTimeout(() => bbFlush(), 600)
+    }
+    const bbLogKey = (event: KeyboardEvent) => {
+      const now = Date.now()
+      const dt = bbLastKeyAt ? now - bbLastKeyAt : null
+      bbLastKeyAt = now
+      bbLog({
+        type: 'key', dt,
+        k: event.key, c: event.code, w: event.keyCode,
+        mods: `${event.shiftKey ? 'S' : ''}${event.ctrlKey ? 'C' : ''}${event.altKey ? 'A' : ''}${event.metaKey ? 'M' : ''}` || null,
+        rep: event.repeat || undefined,
+        ae: bbDescribeActive(),
+      })
+    }
+    // Незлиті події з минулого запуску (наприклад, після перезавантаження)
+    try {
+      const leftover = localStorage.getItem(BLACKBOX_LS)
+      if (leftover) {
+        localStorage.removeItem(BLACKBOX_LS)
+        const events = JSON.parse(leftover)
+        if (Array.isArray(events) && events.length > 0) {
+          api.post('/api/v1/debug/scanner-keys', { events, note: 'restored-after-unload' }, undefined, { silent: true }).catch(() => {})
+        }
+      }
+    } catch { /* ignore */ }
+    const navEntry = performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined
+    bbLog({ type: 'boot', nav: navEntry?.type ?? 'unknown', ae: bbDescribeActive() })
+    const bbOnFullscreen = () => bbLog({ type: 'fullscreen', on: !!document.fullscreenElement })
+    const bbOnBlur = () => bbLog({ type: 'window', focus: false })
+    const bbOnFocus = () => bbLog({ type: 'window', focus: true })
+    const bbOnVis = () => bbLog({ type: 'visibility', state: document.visibilityState })
+    const bbOnUnload = () => {
+      try { localStorage.setItem(BLACKBOX_LS, JSON.stringify([...bbEvents, { type: 'unload', t: Date.now() }])) } catch { /* ignore */ }
+    }
+    document.addEventListener('fullscreenchange', bbOnFullscreen)
+    window.addEventListener('blur', bbOnBlur)
+    window.addEventListener('focus', bbOnFocus)
+    document.addEventListener('visibilitychange', bbOnVis)
+    window.addEventListener('beforeunload', bbOnUnload)
+    // ────────────────────────────────────────────────────────────────────────
+
     // Окремий буфер для набору всередині явних полів вводу
     let fieldBuf = ''
     let fieldFirstAt = 0
@@ -142,15 +219,19 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     const focusFrame = window.requestAnimationFrame(focusScannerSurface)
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Чорна скринька: фіксуємо ВСЕ, включно з Ctrl/Alt-комбінаціями сканера
+      bbLogKey(event)
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
 
-      // Більшість HID-сканерів після коду надсилають Enter або Tab. Для
-      // 13-значного коду товар уже додано на останній цифрі, тому ковтаємо
-      // цей хвіст, щоб він не переводив фокус на кнопку чи поле форми.
+      // Більшість HID-сканерів після коду надсилають Enter/Tab, а деякі — ще
+      // й службові клавіші (F-клавіші, стрілки). У вікні одразу після скану
+      // ковтаємо весь цей хвіст: він не має смикати браузер (фулскрін, меню)
+      // чи переводити фокус на кнопки форм.
       if (
         !buffer && !fieldBuf
-        && (event.key === 'Enter' || event.key === 'Tab')
         && Date.now() <= terminatorGuardUntil
+        && (event.key === 'Enter' || event.key === 'Tab'
+          || (event.key.length > 1 && event.key !== 'Escape' && event.key !== 'Shift'))
       ) {
         event.preventDefault()
         event.stopPropagation()
@@ -232,6 +313,13 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       clearTimer()
       window.removeEventListener('keydown', handleKeyDown, true)
       scannerSink.remove()
+      bbFlush('unmount')
+      if (bbFlushTimer !== null) window.clearTimeout(bbFlushTimer)
+      document.removeEventListener('fullscreenchange', bbOnFullscreen)
+      window.removeEventListener('blur', bbOnBlur)
+      window.removeEventListener('focus', bbOnFocus)
+      document.removeEventListener('visibilitychange', bbOnVis)
+      window.removeEventListener('beforeunload', bbOnUnload)
     }
   }, [])
 }
