@@ -57,6 +57,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     let buffer = ''
     let lastAt = 0
     let terminatorGuardUntil = 0
+    let prefixGuardUntil = 0
     let idleTimer: number | null = null
 
     // ─── «Чорна скринька» сканера (тимчасова діагностика) ──────────────────
@@ -223,6 +224,21 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       bbLogKey(event)
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
 
+      // Префікс сканера: сканер магазину шле F7 перед КОЖНИМ кодом. Chrome на
+      // F7 відкриває діалог «режим активного курсора» — екран «мигає», а цифри
+      // летять у діалог замість каси. Глушимо F7 і відкриваємо вікно
+      // захоплення: наступні пів секунди всі символи належать сканеру,
+      // незалежно від того, де стоїть фокус.
+      if (event.key === 'F7') {
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+        reset()
+        resetField()
+        prefixGuardUntil = Date.now() + 500
+        return
+      }
+
       // Більшість HID-сканерів після коду надсилають Enter/Tab, а деякі — ще
       // й службові клавіші (F-клавіші, стрілки). У вікні одразу після скану
       // ковтаємо весь цей хвіст: він не має смикати браузер (фулскрін, меню)
@@ -242,8 +258,9 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       // Фокус у явному полі (пошук, кількість, знижка, каса). Ручний набір
       // належить полю, але чергу сканера розпізнаємо за швидкістю і забираємо:
       // саме тут раніше скани «зникали через раз», коли курсор стояв у пошуку.
+      // Після префікса F7 поля пропускаємо повністю — код точно від сканера.
       const activeEl = document.activeElement
-      if (isExplicitInputMode(activeEl)) {
+      if (isExplicitInputMode(activeEl) && Date.now() > prefixGuardUntil) {
         reset()
         if (event.key === 'Enter' || event.key === 'Tab') {
           const now = Date.now()
