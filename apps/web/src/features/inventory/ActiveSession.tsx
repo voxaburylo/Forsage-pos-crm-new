@@ -87,6 +87,8 @@ export default function ActiveSession() {
   const authSession = useAuthStore((state) => state.session)
   const role = (authSession?.user?.user_metadata?.role as string) ?? 'cashier'
   const canComplete = ['owner', 'admin'].includes(role)
+  // Ті самі ролі, що можуть редагувати товар, можуть міняти ціну з ревізії
+  const canEditPrice = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
 
   const [session, setSession] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -97,6 +99,8 @@ export default function ActiveSession() {
   const [qty, setQty] = useState('1')
   const [priceStatus, setPriceStatus] = useState<'unchecked' | 'match' | 'mismatch'>('unchecked')
   const [observedPrice, setObservedPrice] = useState('')
+  const [applyNewPrice, setApplyNewPrice] = useState(true)
+  const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
@@ -224,16 +228,31 @@ export default function ActiveSession() {
 
     setSaving(true)
     try {
+      const willApplyPrice = priceStatus === 'mismatch' && applyNewPrice && canEditPrice && observedKopecks != null
       const response = await api.post<{ data: unknown; session: SessionData }>(
         `/api/v1/inventory/${id}/count`,
         {
           product_id: selected.id,
           qty: parsedQty,
-          price_checked: priceStatus === 'match',
-          observed_retail_price: observedKopecks,
+          // якщо ціну одразу міняємо в програмі — розбіжності більше нема
+          price_checked: priceStatus === 'match' || willApplyPrice,
+          observed_retail_price: willApplyPrice ? null : observedKopecks,
         },
       )
-      setSession(response.session)
+      let freshSession = response.session
+      if (willApplyPrice) {
+        try {
+          const applied = await api.post<{ data: unknown; session: SessionData }>(
+            `/api/v1/inventory/${id}/apply-price`,
+            { product_id: selected.id, retail_price: observedKopecks },
+          )
+          freshSession = applied.session
+          toast.success(`Ціну змінено: ${selected.name} → ${formatMoney(observedKopecks!)}`)
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : 'Кількість збережено, але ціну оновити не вдалося')
+        }
+      }
+      setSession(freshSession)
       toast.success(`Додано ${parsedQty} ${selected.unit ?? 'шт'} · ${selected.name}`)
       playSuccessBeep()
       setSelected(null)
@@ -246,6 +265,24 @@ export default function ActiveSession() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти підрахунок')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // Швидка зміна ціни зі списку розбіжностей: ставимо в програму ціну з цінника
+  async function applyIssuePrice(issue: SessionData['price_issues'][number]) {
+    if (!id || !issue.product?.id) return
+    setApplyingPriceId(issue.product.id)
+    try {
+      const response = await api.post<{ data: unknown; session: SessionData }>(
+        `/api/v1/inventory/${id}/apply-price`,
+        { product_id: issue.product.id, retail_price: issue.observed_retail_price },
+      )
+      setSession(response.session)
+      toast.success(`Ціну змінено: ${issue.product.name} → ${formatMoney(issue.observed_retail_price)}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
+    } finally {
+      setApplyingPriceId(null)
     }
   }
 
@@ -468,6 +505,20 @@ export default function ActiveSession() {
                   <input type="number" min="0" step="0.01" inputMode="decimal" value={observedPrice}
                     onChange={(event) => setObservedPrice(event.target.value)}
                     className="w-full rounded-lg border border-red-300 px-3 py-2 text-lg font-bold outline-none focus:border-red-500" />
+                  {canEditPrice && (
+                    <label className="mt-2 flex cursor-pointer items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm font-medium text-green-800">
+                      <input
+                        type="checkbox"
+                        checked={applyNewPrice}
+                        onChange={(event) => setApplyNewPrice(event.target.checked)}
+                        className="rounded text-green-600 focus:ring-green-500"
+                      />
+                      💾 Одразу змінити ціну в програмі на цю
+                    </label>
+                  )}
+                  {!canEditPrice && (
+                    <p className="mt-2 text-xs text-gray-500">Розбіжність побачить власник і вирішить, яка ціна правильна.</p>
+                  )}
                 </div>
               )}
             </div>
@@ -536,15 +587,27 @@ export default function ActiveSession() {
                   <div className="shrink-0 text-right">
                     <p className="text-xs text-gray-500">У програмі: {formatMoney(issue.product?.retail_price ?? 0)}</p>
                     <p className="font-bold text-red-600">На ціннику: {formatMoney(issue.observed_retail_price)}</p>
-                    {canComplete && issue.product?.id && (
-                      <button
-                        type="button"
-                        onClick={() => window.open(`/products/${issue.product!.id}/edit`, '_blank', 'noopener,noreferrer')}
-                        className="mt-1 text-xs font-semibold text-blue-600 hover:underline"
-                      >
-                        Виправити товар
-                      </button>
-                    )}
+                    <div className="mt-1.5 flex items-center justify-end gap-2">
+                      {canEditPrice && issue.product?.id && (
+                        <button
+                          type="button"
+                          disabled={applyingPriceId === issue.product.id}
+                          onClick={() => applyIssuePrice(issue)}
+                          className="rounded-lg bg-green-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+                        >
+                          {applyingPriceId === issue.product.id ? 'Зберігаю...' : `Змінити на ${formatMoney(issue.observed_retail_price)}`}
+                        </button>
+                      )}
+                      {canComplete && issue.product?.id && (
+                        <button
+                          type="button"
+                          onClick={() => window.open(`/products/${issue.product!.id}/edit`, '_blank', 'noopener,noreferrer')}
+                          className="text-xs font-semibold text-blue-600 hover:underline"
+                        >
+                          Картка
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
