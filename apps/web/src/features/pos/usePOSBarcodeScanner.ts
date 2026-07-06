@@ -3,6 +3,11 @@ import { useEffect, useRef } from 'react'
 const IDLE_COMPLETE_MS = 220
 const SEQUENCE_RESET_MS = 900
 const TERMINATOR_GUARD_MS = 700
+// Поріг «це сканер, а не людина»: людина не тримає 5+ символів поспіль
+// зі швидкістю ≤90мс/символ, а сканери (навіть повільні Bluetooth) — тримають.
+const FIELD_CHAR_GAP_MS = 120
+const FIELD_AVG_INTERVAL_MS = 90
+const FIELD_MIN_LENGTH = 5
 
 function normalizeCode(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
@@ -16,6 +21,19 @@ function looksLikeBarcode(value: string): boolean {
     && /^[A-Za-z0-9._/-]+$/.test(code)
 }
 
+// React-контрольовані input'и приймають зміну лише через нативний сеттер +
+// подію input — інакше React поверне старе значення при наступному рендері.
+function stripScannedTail(el: Element | null, tail: string) {
+  if (!tail) return
+  if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return
+  const value = String(el.value ?? '')
+  if (!value.endsWith(tail)) return
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+  setter?.call(el, value.slice(0, value.length - tail.length))
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 interface ScannerOptions {
   onScan: (code: string) => void
 }
@@ -23,9 +41,11 @@ interface ScannerOptions {
 /**
  * Глобальний HID-сканер каси.
  *
- * За замовчуванням усі друковані клавіші належать сканеру. Звичайний ввід
- * дозволений лише у полі, яке касир явно вибрав (пошук, кількість, сума тощо).
- * Це прибирає класифікацію "ручний текст чи скан" із критичного шляху.
+ * Поза полями вводу всі друковані клавіші належать сканеру (буфер + прихована
+ * «поверхня»). Але й у явних полях (пошук, кількість, знижка, каса) сканер
+ * МАЄ працювати: касир звично лишає курсор у пошуку і пікає далі. Тому в полях
+ * ми відрізняємо чергу сканера від ручного набору за швидкістю: розпізнаний
+ * код забираємо собі, а символи, що встигли надрукуватись у поле, — прибираємо.
  */
 export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
   const scanCallback = useRef(onScan)
@@ -37,6 +57,10 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     let lastAt = 0
     let terminatorGuardUntil = 0
     let idleTimer: number | null = null
+    // Окремий буфер для набору всередині явних полів вводу
+    let fieldBuf = ''
+    let fieldFirstAt = 0
+    let fieldLastAt = 0
     const scannerSink = document.createElement('input')
     scannerSink.type = 'text'
     scannerSink.readOnly = true
@@ -63,18 +87,31 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       lastAt = 0
     }
 
+    const resetField = () => {
+      fieldBuf = ''
+      fieldFirstAt = 0
+      fieldLastAt = 0
+    }
+
+    const fieldBurstLooksLikeScan = () => {
+      if (fieldBuf.length < FIELD_MIN_LENGTH) return false
+      const avg = (fieldLastAt - fieldFirstAt) / (fieldBuf.length - 1)
+      return avg <= FIELD_AVG_INTERVAL_MS
+    }
+
     const focusScannerSurface = () => {
       const active = document.activeElement
       if (isExplicitInputMode(active)) return
       scannerSink.focus({ preventScroll: true })
     }
 
-    const emitScan = (event?: KeyboardEvent) => {
-      const code = normalizeCode(buffer)
+    const emitCode = (rawCode: string, event?: KeyboardEvent) => {
+      const code = normalizeCode(rawCode)
       event?.preventDefault()
       event?.stopPropagation()
       event?.stopImmediatePropagation()
       reset()
+      resetField()
       if (code) {
         terminatorGuardUntil = Date.now() + TERMINATOR_GUARD_MS
         focusScannerSurface()
@@ -87,7 +124,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
 
     const finishAfterIdle = () => {
       idleTimer = null
-      if (looksLikeBarcode(buffer)) emitScan()
+      if (looksLikeBarcode(buffer)) emitCode(buffer)
       else reset()
     }
 
@@ -111,7 +148,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       // 13-значного коду товар уже додано на останній цифрі, тому ковтаємо
       // цей хвіст, щоб він не переводив фокус на кнопку чи поле форми.
       if (
-        !buffer
+        !buffer && !fieldBuf
         && (event.key === 'Enter' || event.key === 'Tab')
         && Date.now() <= terminatorGuardUntil
       ) {
@@ -121,14 +158,47 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
         return
       }
 
-      // Касир натиснув конкретне поле — сканер не втручається в його ввід.
-      if (isExplicitInputMode(document.activeElement)) {
+      // Фокус у явному полі (пошук, кількість, знижка, каса). Ручний набір
+      // належить полю, але чергу сканера розпізнаємо за швидкістю і забираємо:
+      // саме тут раніше скани «зникали через раз», коли курсор стояв у пошуку.
+      const activeEl = document.activeElement
+      if (isExplicitInputMode(activeEl)) {
         reset()
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          const now = Date.now()
+          if (fieldBuf && now - fieldLastAt <= 250 && fieldBurstLooksLikeScan()) {
+            const code = fieldBuf
+            // Код встиг надрукуватись у поле — прибираємо його звідти
+            stripScannedTail(activeEl, code)
+            emitCode(code, event)
+          } else {
+            resetField()
+          }
+          return
+        }
+        if (event.key.length !== 1) {
+          resetField()
+          return
+        }
+        const now = Date.now()
+        if (fieldBuf && now - fieldLastAt > FIELD_CHAR_GAP_MS) resetField()
+        if (!fieldBuf) fieldFirstAt = now
+        fieldBuf += event.key
+        fieldLastAt = now
+        // 13 цифр на швидкості сканера — завершуємо одразу, як і поза полями.
+        // Поточний символ ще НЕ в полі (keydown) — глушимо його і прибираємо
+        // з поля лише попередні 12.
+        if (/^\d{13}$/.test(fieldBuf) && fieldBurstLooksLikeScan()) {
+          const code = fieldBuf
+          stripScannedTail(activeEl, code.slice(0, -1))
+          emitCode(code, event)
+        }
         return
       }
+      resetField()
 
       if (event.key === 'Enter' || event.key === 'Tab') {
-        if (buffer) emitScan(event)
+        if (buffer) emitCode(buffer, event)
         return
       }
 
@@ -148,7 +218,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       // Основний формат магазину — 13 цифр. Завершуємо відразу, без очікування
       // Enter та без перевірки контрольної цифри: у базі можуть бути власні коди.
       if (/^\d{13}$/.test(buffer)) {
-        emitScan(event)
+        emitCode(buffer, event)
         return
       }
 
