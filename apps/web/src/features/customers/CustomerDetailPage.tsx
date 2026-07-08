@@ -44,6 +44,33 @@ export default function CustomerDetailPage() {
   const [discountVal, setDiscountVal] = useState('0')
   const [statusVal, setStatusVal] = useState('client')
   const [savingDiscount, setSavingDiscount] = useState(false)
+  // Рахунок клієнта (передплата): баланс + останні операції
+  const [deposit, setDeposit] = useState<{ balance: number; transactions: any[] } | null>(null)
+  const [savingLoyaltyMode, setSavingLoyaltyMode] = useState(false)
+
+  const loadDeposit = useCallback(() => {
+    if (!id) return
+    api.get<{ data: { balance: number; transactions: any[] } }>(`/api/v1/customers/${id}/deposit`, { silent: true })
+      .then((r) => setDeposit(r.data))
+      .catch(() => {})
+  }, [id])
+  useEffect(() => { loadDeposit() }, [loadDeposit])
+
+  async function changeLoyaltyMode(mode: 'discount' | 'cashback') {
+    if (!customer || (customer as any).loyalty_mode === mode) return
+    setSavingLoyaltyMode(true)
+    try {
+      await api.put(`/api/v1/customers/${customer.id}`, { loyalty_mode: mode })
+      setCustomer((prev) => prev ? ({ ...prev, loyalty_mode: mode } as any) : prev)
+      toast.success(mode === 'cashback'
+        ? 'Тепер відсоток клієнта накопичується грошима на рахунку'
+        : 'Тепер відсоток клієнта працює як знижка на касі')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося змінити режим')
+    } finally {
+      setSavingLoyaltyMode(false)
+    }
+  }
 
   const load = useCallback(async () => {
     if (!id) return
@@ -279,6 +306,57 @@ export default function CustomerDetailPage() {
               </Button>
             )}
           </div>
+        </Card>
+
+        {/* Рахунок клієнта (передплата) + режим лояльності */}
+        <Card className={(deposit?.balance ?? 0) > 0 ? 'border-emerald-200 bg-emerald-50' : ''}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-gray-400 mb-0.5">Рахунок клієнта (передплата)</p>
+              <p className={`text-2xl font-bold ${(deposit?.balance ?? 0) > 0 ? 'text-emerald-600' : 'text-gray-500'}`}>
+                {formatMoney(deposit?.balance ?? 0)}
+              </p>
+              <p className="mt-0.5 text-[11px] text-gray-400">Поповнення — тільки на касі. Списується на оплату замовлень.</p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs text-gray-400">Відсоток клієнта ({(customer as any).price_tier?.discount_pct ?? customer.discount_pct ?? 0}%) працює як:</p>
+              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
+                <button
+                  disabled={savingLoyaltyMode}
+                  onClick={() => changeLoyaltyMode('discount')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                    (customer as any).loyalty_mode !== 'cashback' ? 'bg-yellow-400 text-black' : 'text-gray-500 hover:text-gray-800'
+                  }`}>
+                  Знижка на касі
+                </button>
+                <button
+                  disabled={savingLoyaltyMode}
+                  onClick={() => changeLoyaltyMode('cashback')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                    (customer as any).loyalty_mode === 'cashback' ? 'bg-emerald-500 text-white' : 'text-gray-500 hover:text-gray-800'
+                  }`}>
+                  Накопичення на рахунок
+                </button>
+              </div>
+            </div>
+          </div>
+          {(deposit?.transactions?.length ?? 0) > 0 && (
+            <div className="mt-3 border-t border-gray-100 pt-2">
+              <p className="mb-1 text-xs font-semibold text-gray-500">Останні операції</p>
+              <div className="max-h-40 space-y-1 overflow-y-auto">
+                {deposit!.transactions.slice(0, 10).map((t: any) => (
+                  <div key={t.id} className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">
+                      {formatDateTime(t.created_at)} · {t.notes ?? t.method ?? ''}
+                    </span>
+                    <span className={`font-semibold ${t.amount > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {t.amount > 0 ? '+' : ''}{formatMoney(t.amount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Автомобілі */}

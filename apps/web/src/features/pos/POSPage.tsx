@@ -872,8 +872,8 @@ export default function POSPage() {
           </button>
           <button onClick={() => setDebtPayOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-red-400 hover:text-red-300 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Прийняти оплату боргу клієнта">
-            <DollarSign size={15} /><span className="hidden xl:inline">Борг</span>
+            title="Оплата боргу / поповнення рахунку клієнта">
+            <DollarSign size={15} /><span className="hidden xl:inline">Борг/Рахунок</span>
           </button>
           <button onClick={() => navigate('/returns')}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-orange-400 hover:text-orange-300 hover:bg-gray-800 transition-colors text-xs font-medium"
@@ -1173,7 +1173,8 @@ export default function POSPage() {
         offline={!serverOnline}
         onClose={() => setCustomerOpen(false)}
         onCreated={(c: Customer) => {
-          const tierDiscountPct = c.price_tier?.discount_pct ?? 0
+          // Режим «накопичення»: % не знижує чек, а нараховується на рахунок
+          const tierDiscountPct = (c as any).loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
           store.setCustomer({
             id:              c.id,
             phone:           c.phone,

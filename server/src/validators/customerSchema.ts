@@ -24,6 +24,8 @@ export const createCustomerSchema = z.object({
   vip_level:     z.enum(['standard','bronze','silver','gold']).optional(),
   risk_profile:  z.enum(['low','medium','high']).optional(),
   discount_pct:  z.number().min(0).max(100).optional(),
+  // 'discount' — % знижує чек; 'cashback' — % накопичується грошима на рахунку
+  loyalty_mode:  z.enum(['discount', 'cashback']).optional(),
   client_status: z.enum(['client','sto']).optional(),
   card_barcode:  z.string().trim().max(50).transform((value) => value || null).nullable().optional(),
   vehicle: z.object({

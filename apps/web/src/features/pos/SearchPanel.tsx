@@ -261,6 +261,16 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   async function handleBarcodeScan(code: string) {
     const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
     if (!normalizedCode) return
+    // Штрих-код замовлення з друкованого чека (ORD-1043) → вікно оплати
+    // задатку/залишку в панелі «Видати»
+    const ordMatch = normalizedCode.match(/^ORD-?(\d+)$/i)
+    if (ordMatch) {
+      window.dispatchEvent(new CustomEvent('forsage:pos-pay-order', { detail: { number: ordMatch[1] } }))
+      playSuccessBeep()
+      reportScannerStage('added', normalizedCode, `Замовлення №${ordMatch[1]}`)
+      return
+    }
+
     // Сканер і видимий пошук — незалежні канали. Тут навмисно не змінюємо
     // query/loading/results і не скасовуємо ручний текстовий пошук.
 
@@ -281,17 +291,20 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const customer = customers[0]
       if (customer) {
         const store = usePOSStore.getState()
+        // Режим «накопичення»: % не знижує чек, а нараховується на рахунок після продажу
+        const effectivePct = (customer as any).loyalty_mode === 'cashback'
+          ? 0 : (customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
         store.setCustomer({
           id: customer.id,
           phone: customer.phone,
           name: customer.full_name ?? null,
           debtBalance: customer.debt_balance ?? 0,
-          tierDiscountPct: customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0,
+          tierDiscountPct: effectivePct,
           tierName: customer.price_tier?.name ?? null,
           vipLevel: customer.vip_level ?? 'standard',
           riskProfile: customer.risk_profile ?? 'low',
         })
-        store.setAutomaticDiscountPct(customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+        store.setAutomaticDiscountPct(effectivePct)
         toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
@@ -312,13 +325,14 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       if (result?.type === 'customer' && result?.data) {
         const c = result.data
         const store = usePOSStore.getState()
+        const effectivePct = c.loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
         store.setCustomer({
           id: c.id, phone: c.phone, name: c.full_name ?? null,
-          debtBalance: c.debt_balance ?? 0, tierDiscountPct: c.price_tier?.discount_pct ?? 0,
+          debtBalance: c.debt_balance ?? 0, tierDiscountPct: effectivePct,
           tierName: c.price_tier?.name ?? null,
           vipLevel: c.vip_level ?? 'standard', riskProfile: c.risk_profile ?? 'low',
         })
-        store.setAutomaticDiscountPct(c.price_tier?.discount_pct ?? 0)
+        store.setAutomaticDiscountPct(effectivePct)
         toast.success(`Клієнт ${c.full_name ?? c.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()

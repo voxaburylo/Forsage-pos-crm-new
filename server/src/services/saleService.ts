@@ -763,6 +763,37 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       await processLegacyBonuses(sale, input)
     }
 
+    // Кешбек: клієнт у режимі «накопичення» — відсоток його цінової групи не
+    // знижує чек (каса ставить знижку 0), а нараховується грошима на рахунок.
+    // База — сума чека без застави за обмінні деталі.
+    if (input.customer_id && input.payment_method !== 'debt') {
+      try {
+        const { data: cust } = await db.from('customers')
+          .select('id, loyalty_mode, discount_pct, full_name, phone, price_tier:price_tiers(discount_pct)')
+          .eq('id', input.customer_id).eq('tenant_id', tenantId).maybeSingle()
+        const pct = Number((cust as any)?.price_tier?.discount_pct ?? (cust as any)?.discount_pct ?? 0)
+        if ((cust as any)?.loyalty_mode === 'cashback' && pct > 0) {
+          const cashback = Math.round(discountedTotal * pct / 100)
+          if (cashback > 0) {
+            const { error: cbErr } = await db.rpc('customer_deposit_change', {
+              p_tenant_id:   tenantId,
+              p_customer_id: input.customer_id,
+              p_amount:      cashback,
+              p_method:      'cashback',
+              p_sale_id:     sale.id,
+              p_shift_id:    input.shift_id ?? null,
+              p_notes:       `Накопичення ${pct}% з чека #${sale.sale_number ?? ''}`,
+              p_created_by:  cashierId,
+            })
+            if (cbErr) logger.warn({ err: cbErr.message, saleId: sale.id }, '[cashback] нарахування не вдалося')
+            else logger.info({ saleId: sale.id, cashback, pct }, '[cashback] нараховано на рахунок клієнта')
+          }
+        }
+      } catch (e: any) {
+        logger.warn({ err: e?.message, saleId: sale.id }, '[cashback] помилка нарахування')
+      }
+    }
+
     if (idempotencyKey) {
       await db.from('idempotency_keys')
         .update({

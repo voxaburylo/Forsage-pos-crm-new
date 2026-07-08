@@ -455,6 +455,30 @@ router.get('/', async (req, res, next) => {
       else query = query.in('status', statuses)
     }
 
+    // Пошук: № замовлення (з чека/сканера "ORD-1043", "#1043", "1043"),
+    // ім'я або телефон клієнта. Раніше параметр search тихо ігнорувався.
+    const search = String(req.query.search ?? '').trim()
+    if (search) {
+      const conditions: string[] = []
+      const numeric = search.replace(/^(ORD-?|#)/i, '')
+      if (/^\d+$/.test(numeric)) conditions.push(`order_number.eq.${numeric}`)
+      const safe = search.replace(/[(),%]/g, ' ').trim()
+      if (safe.length >= 2) {
+        const { data: matchedCustomers } = await db.from('customers').select('id')
+          .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+          .or(`full_name.ilike.%${safe}%,phone.ilike.%${safe.replace(/[\s\-()]/g, '')}%`)
+          .limit(100)
+        if (matchedCustomers?.length) {
+          conditions.push(`customer_id.in.(${matchedCustomers.map((c: any) => c.id).join(',')})`)
+        }
+      }
+      if (conditions.length === 0) {
+        res.json({ data: [] })
+        return
+      }
+      query = query.or(conditions.join(','))
+    }
+
     const { data, error } = await query
       .order('created_at', { ascending: false })
       .range(offset, offset + perPage - 1)
@@ -752,7 +776,7 @@ router.post('/:id/payments', async (req, res, next) => {
   try {
     const schema = z.object({
       amount:     z.number().int().min(1),
-      method:     z.enum(['cash', 'card', 'transfer']),
+      method:     z.enum(['cash', 'card', 'transfer', 'account']),
       is_fiscal:  z.boolean().default(false),
       shift_id:   z.string().uuid().optional().nullable(),
       notes:      z.string().max(500).optional().nullable(),
@@ -770,6 +794,26 @@ router.post('/:id/payments', async (req, res, next) => {
       throw new AppError('OVERPAYMENT', 'Сума перевищує залишок до сплати', 400)
     }
 
+    // Оплата з рахунку клієнта: атомарно списуємо з балансу ДО запису платежу
+    if (parsed.data.method === 'account') {
+      if (!order.customer_id) throw new AppError('NO_CUSTOMER', 'Замовлення без клієнта — оплата з рахунку неможлива', 400)
+      const { error: depErr } = await db.rpc('customer_deposit_change', {
+        p_tenant_id:   req.user!.tenant_id,
+        p_customer_id: order.customer_id,
+        p_amount:      -parsed.data.amount,
+        p_method:      'account',
+        p_order_id:    order.id,
+        p_notes:       `Оплата замовлення #${order.order_number ?? order.id.slice(0, 8)}`,
+        p_created_by:  req.user!.id,
+      })
+      if (depErr) {
+        if (/INSUFFICIENT_DEPOSIT/.test(depErr.message)) {
+          throw new AppError('INSUFFICIENT_DEPOSIT', 'Недостатньо коштів на рахунку клієнта', 400)
+        }
+        throw new AppError('DB_ERROR', depErr.message, 500)
+      }
+    }
+
     const { data: payment, error } = await db.from('order_payments').insert({
       tenant_id:  req.user!.tenant_id,
       order_id:   order.id,
@@ -780,7 +824,18 @@ router.post('/:id/payments', async (req, res, next) => {
       created_by: req.user!.id,
       notes:      parsed.data.notes ?? null,
     }).select().single()
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    if (error) {
+      // Компенсація: списання з рахунку вже пройшло, а платіж не записався
+      if (parsed.data.method === 'account' && order.customer_id) {
+        await db.rpc('customer_deposit_change', {
+          p_tenant_id: req.user!.tenant_id, p_customer_id: order.customer_id,
+          p_amount: parsed.data.amount, p_method: 'correction',
+          p_order_id: order.id, p_notes: 'Повернення: платіж не записався',
+          p_created_by: req.user!.id,
+        }).then(() => {}, () => {})
+      }
+      throw new AppError('DB_ERROR', error.message, 500)
+    }
 
     const newTotalPaid = (order.total_paid ?? 0) + parsed.data.amount
     
