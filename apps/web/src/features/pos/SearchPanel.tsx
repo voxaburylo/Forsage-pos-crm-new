@@ -290,6 +290,14 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
+        // Відкрита модалка Борг/Рахунок чи панель Видати — скан картки клієнта
+        // вибирає клієнта там (event перехоплюється через preventDefault)
+        if (!window.dispatchEvent(new CustomEvent('forsage:pos-customer-scanned', { detail: customer, cancelable: true }))) {
+          playSuccessBeep()
+          saveRecentItem('recent_scans', normalizedCode)
+          reportScannerStage('added', normalizedCode, customer.full_name ?? customer.phone)
+          return
+        }
         const store = usePOSStore.getState()
         // Режим «накопичення»: % не знижує чек, а нараховується на рахунок після продажу
         const effectivePct = (customer as any).loyalty_mode === 'cashback'
@@ -324,6 +332,12 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
       if (result?.type === 'customer' && result?.data) {
         const c = result.data
+        if (!window.dispatchEvent(new CustomEvent('forsage:pos-customer-scanned', { detail: c, cancelable: true }))) {
+          playSuccessBeep()
+          saveRecentItem('recent_scans', normalizedCode)
+          reportScannerStage('added', normalizedCode, c.full_name ?? c.phone)
+          return
+        }
         const store = usePOSStore.getState()
         const effectivePct = c.loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
         store.setCustomer({

@@ -58,6 +58,20 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payOrder?.id])
 
+  // Скан картки клієнта при відкритій панелі «Видати» → показуємо ЙОГО замовлення
+  useEffect(() => {
+    if (!(open || isMobileInline)) return
+    const handler = (event: Event) => {
+      const c = (event as CustomEvent<any>).detail
+      if (!c?.phone && !c?.full_name) return
+      event.preventDefault()
+      setSearch(c.phone ?? c.full_name)
+      toast.success(`Замовлення клієнта: ${c.full_name ?? c.phone}`)
+    }
+    window.addEventListener('forsage:pos-customer-scanned', handler)
+    return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
+  }, [open, isMobileInline])
+
   // Скан штрих-коду замовлення (ORD-1043) на касі → одразу вікно оплати
   useEffect(() => {
     const handler = async (event: Event) => {

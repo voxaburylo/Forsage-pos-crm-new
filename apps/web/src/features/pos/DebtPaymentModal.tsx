@@ -38,6 +38,28 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
     }
   }, [open])
 
+  // Скан картки клієнта при відкритій модалці — одразу вибирає клієнта тут,
+  // а не чіпляє його до чека
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: Event) => {
+      const c = (event as CustomEvent<any>).detail
+      if (!c?.id) return
+      event.preventDefault()
+      setSelected({
+        id: c.id,
+        full_name: c.full_name ?? null,
+        phone: c.phone,
+        debt_balance: c.debt_balance ?? 0,
+        deposit_balance: c.deposit_balance ?? 0,
+      })
+      setAmount(mode === 'debt' && (c.debt_balance ?? 0) > 0 ? ((c.debt_balance ?? 0) / 100).toFixed(2) : '')
+      toast.success(`Картка клієнта: ${c.full_name ?? c.phone}`)
+    }
+    window.addEventListener('forsage:pos-customer-scanned', handler)
+    return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
+  }, [open, mode])
+
   // Початковий список: для боргу — боржники, для рахунку — нічого (тільки пошук)
   useEffect(() => {
     if (!open) return
