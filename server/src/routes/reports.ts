@@ -75,6 +75,18 @@ router.get('/shift/:id', requireRole('owner', 'admin', 'manager', 'cashier'), as
   } catch (err) { next(err) }
 })
 
+// GET /api/v1/reports/sold-items?date=YYYY-MM-DD — продані товари за день
+// (список для дозамовлення у постачальників; за замовч. сьогодні)
+router.get('/sold-items', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+  try {
+    const raw = String(req.query.date ?? '')
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+      ? raw
+      : new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' })
+    res.json({ data: await reportService.getSoldItems(date, req.user!.tenant_id), date })
+  } catch (err) { next(err) }
+})
+
 // GET /api/v1/reports/daily-control?date= — контрольні метрики дня для власника
 // (повернення, знижки, недостачі каси, борги, мінусові залишки)
 router.get('/daily-control', requireRole('owner', 'admin'), async (req, res, next) => {
