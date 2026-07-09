@@ -66,6 +66,29 @@ async function requireTenantOrder(req: Request, _res: Response, next: NextFuncti
 router.param('id', requireTenantOrder)
 router.param('orderId', requireTenantOrder)
 
+// ── Захист маржі ─────────────────────────────────────────────────────────────
+// Касир бачить замовлення на касі (видача/оплата), але закупівельні ціни
+// позицій — це маржа магазину: вирізаємо їх з УСІХ відповідей роутера.
+// Менеджер замовлень працює з цінами постачальників — йому лишаємо.
+const ORDER_MARGIN_FIELDS = new Set(['buy_price', 'purchase_price', 'cost_price'])
+function stripOrderMargin(obj: any): any {
+  if (Array.isArray(obj)) { for (const el of obj) stripOrderMargin(el); return obj }
+  if (obj && typeof obj === 'object') {
+    for (const k of Object.keys(obj)) {
+      if (ORDER_MARGIN_FIELDS.has(k)) delete obj[k]
+      else stripOrderMargin(obj[k])
+    }
+  }
+  return obj
+}
+router.use((req, res, next) => {
+  if (req.user?.role === 'cashier') {
+    const orig = res.json.bind(res)
+    res.json = ((body: any) => orig(stripOrderMargin(body))) as any
+  }
+  next()
+})
+
 function orderLabel(order: any): string {
   return order?.order_number ? `Замовлення #${order.order_number}` : `Замовлення ${String(order?.id ?? '').slice(0, 8)}`
 }

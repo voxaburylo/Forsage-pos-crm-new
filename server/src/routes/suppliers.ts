@@ -11,6 +11,8 @@ import * as supplierService from '../services/supplierService.js'
 
 const router = Router()
 router.use(requireAuth)
+// Постачальники, накладні та закупівельні ціни — не для касира/СТО
+router.use(requireRole('owner', 'admin', 'manager', 'storekeeper'))
 
 // ===================== Приходні накладні =====================
 
