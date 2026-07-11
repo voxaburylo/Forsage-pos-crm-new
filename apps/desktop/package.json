@@ -10,7 +10,7 @@
     "dev": "tsc -p tsconfig.json --watch",
     "smoke:db": "pnpm build && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-local-db.cjs",
     "pack": "pnpm build && electron-builder --dir",
-    "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && electron-builder --win portable --x64"
+    "dist": "node scripts/verify-web-env.cjs && cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && electron-builder --win portable --x64"
   },
   "dependencies": {},
   "devDependencies": {
