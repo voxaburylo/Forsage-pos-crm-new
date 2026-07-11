@@ -1,0 +1,58 @@
+{
+  "name": "desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Forsage local-first portable desktop application",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "smoke:db": "pnpm build && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-local-db.cjs",
+    "pack": "pnpm build && electron-builder --dir",
+    "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && electron-builder --win portable --x64"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "cross-env": "^10.1.0",
+    "electron": "43.1.0",
+    "electron-builder": "26.15.3",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "ua.forsage.crm",
+    "productName": "Forsage",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "renderer",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Forsage-${version}-portable.${ext}"
+    },
+    "portable": {
+      "artifactName": "Forsage-${version}-portable.${ext}"
+    }
+  }
+}

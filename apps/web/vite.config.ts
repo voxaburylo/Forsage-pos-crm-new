@@ -4,11 +4,14 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 
+const isDesktopBuild = process.env.FORSAGE_DESKTOP_BUILD === '1'
+
 export default defineConfig({
+  base: isDesktopBuild ? './' : '/',
   plugins: [
     react(),
     tailwindcss(),
-    VitePWA({
+    ...(!isDesktopBuild ? [VitePWA({
       // Новий service worker активується одразу, інакше відкрита вкладка каси
       // безкінечно утримує старі модулі (зокрема друк етикеток). Поточну
       // сторінку це не перезавантажує: оновлення з'явиться при наступному reload.
@@ -46,7 +49,7 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
       },
-    }),
+    })] : []),
   ],
   resolve: {
     alias: {

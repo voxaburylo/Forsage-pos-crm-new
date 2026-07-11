@@ -5,8 +5,10 @@ import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
 import { cacheCurrentShift, getCachedCurrentShift } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge, desktopCheckoutToSale } from '@/lib/desktopBridge'
 
 const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
+type PaymentMethod = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
 
 export function usePOS() {
   const store = usePOSStore()
@@ -18,10 +20,25 @@ export function usePOS() {
   const setInitError    = usePOSStore((s) => s.setInitError)
   const setCurrentShift = usePOSStore((s) => s.setCurrentShift)
   const scopeKey = useAuthStore((s) => s.session?.user?.id ?? '')
+  const cashierId = useAuthStore((s) => s.session?.user?.id ?? '')
 
   const checkShift = useCallback(() => {
     setInitializing(true)
     setInitError(null)
+
+    const desktop = desktopBridge()
+    if (desktop && cashierId) {
+      desktop.pos.getOpenShift(cashierId)
+        .then((shift) => {
+          setCurrentShift(shift)
+          setInitError(null)
+        })
+        .catch((err) => {
+          setInitError(err instanceof Error ? err.message : 'Помилка локальної бази')
+        })
+        .finally(() => setInitializing(false))
+      return
+    }
 
     shiftApi.current()
       .then(({ data }) => {
@@ -46,7 +63,7 @@ export function usePOS() {
       .finally(() => {
         setInitializing(false)
       })
-  }, [setInitializing, setInitError, setCurrentShift, scopeKey])
+  }, [setInitializing, setInitError, setCurrentShift, scopeKey, cashierId])
 
   // Завантажуємо поточну зміну при старті
   useEffect(() => {
@@ -55,7 +72,7 @@ export function usePOS() {
 
   // Оформити продаж
   const completeSale = useCallback(async (
-    method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer',
+    method: PaymentMethod,
     options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean; terminalAuthCode?: string }
   ) => {
     const { currentShift, items, customer, notes, total, totalDiscount, managerId, customerOrderId } = store
@@ -67,6 +84,66 @@ export function usePOS() {
     if (method === 'debt' && !customer) { toast.error('Вкажіть клієнта для продажу в борг'); return null }
     if (method !== 'mixed' && options?.cashReceived !== undefined && options.cashReceived < toPay) {
       toast.error('Недостатньо готівки'); return null
+    }
+
+    const desktop = desktopBridge()
+    if (desktop) {
+      if (options?.isFiscal) {
+        toast.error('Фіскалізацію ПРРО підключимо окремим кроком. Зараз проведіть нефіскальний локальний чек')
+        return null
+      }
+      if (bonusRedeemed > 0) {
+        toast.error('Списання бонусів поки потребує серверної синхронізації')
+        return null
+      }
+
+      try {
+        const payments = method === 'mixed' && options?.split
+          ? [
+              { method: 'cash' as const, amount: options.split.cash_amount },
+              { method: 'card' as const, amount: options.split.card_amount, bank_auth_code: options.terminalAuthCode ?? null },
+            ].filter((payment) => payment.amount > 0)
+          : [{
+              method: method === 'mixed' ? 'cash' as const : method,
+              amount: toPay,
+              bank_auth_code: method === 'card' ? options?.terminalAuthCode ?? null : null,
+            }]
+
+        const checkoutInput = {
+          shift_id: currentShift.id,
+          customer_id: customer?.id ?? null,
+          manager_id: managerId,
+          cashier_id: currentShift.cashier_id,
+          items: items.map((item) => ({
+            product_id: item.productId,
+            qty: item.qty,
+            unit_price: item.unitPrice,
+            discount: item.discount,
+          })),
+          payments,
+          notes: notes || null,
+          discount: totalDiscount,
+          is_fiscal: false,
+        }
+        const result = await desktop.pos.checkout(checkoutInput)
+        window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+        const sale = desktopCheckoutToSale(result, checkoutInput, items.map((item) => ({
+          id: `${result.sale_id}-${item.productId}`,
+          product_id: item.productId,
+          qty: item.qty,
+          unit_price: item.unitPrice,
+          discount: item.discount,
+          total: item.unitPrice * item.qty - item.discount,
+          product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
+        })))
+
+        store.clearReceipt()
+        toast.success('Локальний продаж #' + sale.sale_number + ' оформлено')
+        return sale
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Помилка локального продажу')
+        return null
+      }
     }
 
     try {

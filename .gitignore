@@ -43,6 +43,7 @@ test_*.js
 
 # Білд-артефакти TypeScript
 *.tsbuildinfo
+apps/desktop/release/
 
 # Dev-скрипти з прямими DB підключеннями
 server/src/scratch/

@@ -11,6 +11,7 @@ import { CameraScanner } from './CameraScanner'
 import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -136,6 +137,18 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       setLoading(true)
       try {
         // Офлайн-режим: шукаємо в IndexedDB
+        const desktop = desktopBridge()
+        if (desktop) {
+          const localResults = query.trim()
+            ? await desktop.catalog.searchProducts(query.trim(), 30)
+            : []
+          if (epoch !== searchEpoch.current) return
+          setResults(localResults.map(desktopProductToProduct))
+          setSupplierResults([])
+          setLoading(false)
+          return
+        }
+
         if (!serverOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
           if (epoch !== searchEpoch.current) return
@@ -253,6 +266,20 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
+    const desktop = desktopBridge()
+    if (desktop) {
+      const desktopProduct = await desktop.catalog.findByBarcode(normalizedCode).catch(() => null)
+      if (desktopProduct) {
+        addToReceipt(desktopProductToProduct(desktopProduct))
+        saveRecentItem('recent_scans', normalizedCode)
+        return
+      }
+      playErrorTone()
+      toast.error('Штрих-код не знайдено в локальній базі')
+      setSupplierResults([])
+      return
+    }
+
     const cachedProduct = await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
     if (cachedProduct) {
       addToReceipt(cachedProduct as Product)

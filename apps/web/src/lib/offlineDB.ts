@@ -521,14 +521,22 @@ export interface LocalSaleRecord {
 }
 
 export interface SyncChanges {
+  tenant_id?: string
   cursor: string
   products: any[]
   deleted_product_ids: string[]
   customers: any[]
   deleted_customer_ids: string[]
+  suppliers?: any[]
+  deleted_supplier_ids?: string[]
   sales: any[]
   categories: any[]
   brands: any[]
+  product_barcodes?: any[]
+  product_aliases?: any[]
+  product_cross_numbers?: any[]
+  customer_vehicles?: any[]
+  references_included: boolean
 }
 
 export interface LocalSyncState {
@@ -536,6 +544,7 @@ export interface LocalSyncState {
   last_success_at: number | null
   last_attempt_at: number | null
   last_error: string | null
+  last_reference_sync_at: number | null
 }
 
 function syncMetaKey(scopeKey: string): string {
@@ -552,6 +561,7 @@ export async function getLocalSyncState(scopeKey: string): Promise<LocalSyncStat
       last_success_at: null,
       last_attempt_at: null,
       last_error: null,
+      last_reference_sync_at: null,
     })
     req.onerror = () => reject(req.error)
   })
@@ -680,6 +690,7 @@ export async function applySyncChanges(
   replaceSnapshot: boolean,
 ): Promise<void> {
   const pending = await getPendingSales()
+  const previousSyncState = await getLocalSyncState(scopeKey)
   const pendingQty = new Map<string, number>()
   for (const sale of pending) {
     for (const item of sale.items) {
@@ -700,6 +711,8 @@ export async function applySyncChanges(
     if (replaceSnapshot) {
       productsStore.clear()
       customersStore.clear()
+    }
+    if (replaceSnapshot || changes.references_included) {
       categoriesStore.clear()
       brandsStore.clear()
     }
@@ -750,6 +763,9 @@ export async function applySyncChanges(
         last_success_at: now,
         last_attempt_at: now,
         last_error: null,
+        last_reference_sync_at: changes.references_included
+          ? now
+          : previousSyncState.last_reference_sync_at,
       } satisfies LocalSyncState,
     })
     tx.objectStore('sync_log').add({

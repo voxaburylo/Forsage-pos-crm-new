@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles } from 'lucide-react'
+import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database, DownloadCloud } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
 import { aiApi, AI_MODELS, AI_MODEL_LABELS } from '@/features/ai/aiApi'
@@ -10,6 +10,8 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
+import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
+import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 
 // ─── Emoji picker (compact) ─────────────────────────────────────
 const EMOJI_OPTIONS = ['📦','🛍','⚙️','🍕','☕','🔧','💡','🎁','🧴','🔑','🚗','🏷️','📱','💧','🧲','🪫']
@@ -25,6 +27,9 @@ export default function SettingsPage() {
   const [form, setForm]     = useState<Partial<ShopSettings>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving]   = useState(false)
+  const [desktopRuntime, setDesktopRuntime] = useState<DesktopRuntimeInfo | null>(null)
+  const [bootstrapLoading, setBootstrapLoading] = useState(false)
+  const [bootstrapCounts, setBootstrapCounts] = useState<Record<string, number> | null>(null)
 
   // Local state for new markup rule
   const [newMin, setNewMin] = useState('')
@@ -70,6 +75,12 @@ export default function SettingsPage() {
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    const desktop = desktopBridge()
+    if (!desktop) return
+    desktop.getRuntimeInfo().then(setDesktopRuntime).catch(() => {})
+  }, [])
+
   async function saveAiConfig() {
     setAiSaving(true)
     try {
@@ -85,6 +96,26 @@ export default function SettingsPage() {
       toast.error(e instanceof Error ? e.message : 'Помилка')
     } finally {
       setAiSaving(false)
+    }
+  }
+
+  async function handleBootstrapDesktop() {
+    if (!isDesktopRuntime()) {
+      toast.error('Локальна база доступна тільки у desktop-додатку')
+      return
+    }
+    setBootstrapLoading(true)
+    try {
+      const result = await bootstrapDesktopFromServer()
+      setBootstrapCounts(result.counts)
+      const info = await desktopBridge()?.getRuntimeInfo()
+      if (info) setDesktopRuntime(info)
+      window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      toast.success(`Локальну базу оновлено: ${result.counts.products ?? 0} товарів`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити локальну базу')
+    } finally {
+      setBootstrapLoading(false)
     }
   }
 
@@ -321,6 +352,54 @@ export default function SettingsPage() {
               onChange={(e) => set('phone', e.target.value)}
               placeholder="+380671234567" />
           </Card>
+
+          {isDesktopRuntime() && (
+            <Card className="mt-6 space-y-4 border-emerald-200 bg-emerald-50/50">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 pb-2">
+                    <Database size={18} className="text-emerald-600" />
+                    <h3 className="text-sm font-semibold text-emerald-900">Локальна база на цьому ПК</h3>
+                  </div>
+                  <p className="text-xs text-emerald-700">
+                    Завантажує товари, категорії, бренди, постачальників, клієнтів, авто, штрихкоди та аналоги
+                    з сервера в SQLite-базу desktop-додатку. Після цього каса й пошук працюють з локальних даних.
+                  </p>
+                  {desktopRuntime && (
+                    <p className="mt-2 truncate rounded-lg bg-white/70 px-2 py-1 font-mono text-[11px] text-emerald-800">
+                      {desktopRuntime.databasePath}
+                    </p>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={bootstrapLoading}
+                  icon={<DownloadCloud size={16} />}
+                  onClick={handleBootstrapDesktop}
+                  className="shrink-0"
+                >
+                  Завантажити дані
+                </Button>
+              </div>
+
+              {bootstrapCounts && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-emerald-100">
+                  {[
+                    ['Товари', bootstrapCounts.products ?? 0],
+                    ['Штрихкоди', bootstrapCounts.product_barcodes ?? 0],
+                    ['Категорії', bootstrapCounts.categories ?? 0],
+                    ['Клієнти', bootstrapCounts.customers ?? 0],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-lg bg-white/80 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-500">{label}</p>
+                      <p className="text-lg font-bold text-emerald-950">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
 
           {/* ========== Правила продажу ========== */}
           <Card className="mt-6 space-y-4">

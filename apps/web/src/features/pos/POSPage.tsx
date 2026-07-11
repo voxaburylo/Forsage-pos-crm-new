@@ -22,7 +22,7 @@ import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
 import { LockScreenOverlay, isLocked, setLocked } from './LockScreenOverlay'
 import { shiftApi } from './shiftApi'
-import type { POSItem, POSCustomer } from '@/stores/posStore'
+import { usePOSStore, type POSItem, type POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
 import type { Sale } from '@/types/sale'
 import { formatMoney } from '@/lib/utils'
@@ -35,6 +35,7 @@ import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { cacheCurrentShift, commitLocalSale, getCachedStaff } from '@/lib/offlineDB'
 import { OfflineSalesModal } from './OfflineSalesModal'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -122,6 +123,8 @@ function savedCartTotal(cart: SavedCart): number {
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 
 function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: () => void }) {
+  const session = useAuthStore((s) => s.session)
+  const setCurrentShift = usePOSStore((s) => s.setCurrentShift)
   // Підставляємо залишок із закриття попередньої зміни (та сама каса)
   const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
   const [loading, setLoading] = useState(false)
@@ -133,6 +136,28 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: (
     const kopecks = Math.round(parsedCash * 100)
     setLoading(true)
     try {
+      const desktop = desktopBridge()
+      const cashierId = session?.user?.id
+      if (desktop && cashierId) {
+        const shiftId = await desktop.pos.openShift({ cashier_id: cashierId, opening_cash: kopecks })
+        window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+        const shift = await desktop.pos.getOpenShift(cashierId)
+        setCurrentShift(shift ?? {
+          id: shiftId,
+          cashier_id: cashierId,
+          status: 'open',
+          opening_cash: kopecks,
+          closing_cash: null,
+          expected_cash: null,
+          cash_variance: null,
+          opened_at: new Date().toISOString(),
+          closed_at: null,
+          notes: null,
+        })
+        toast.success('Локальну зміну відкрито')
+        onOpened()
+        return
+      }
       await shiftApi.open(kopecks)
       toast.success('Зміну відкрито')
       onOpened()
@@ -237,6 +262,7 @@ export default function POSPage() {
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
+  const scannerHotkeysBlockedUntilRef = useRef(0)
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
@@ -371,25 +397,41 @@ export default function POSPage() {
     let buf = ''
     let last = 0
     let first = 0
+    const scannerTerminatorKeys = new Set(['Enter', 'Tab', 'F7'])
+
+    function resetScannerBuffer() {
+      buf = ''
+      first = 0
+      last = 0
+    }
+
+    function isScannerSequence(now: number) {
+      const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
+      return buf.length >= 4 && (now - last) < 180 && averageInterval < 80
+    }
+
+    function finishScannerSequence(e: KeyboardEvent, now: number) {
+      if (!isScannerSequence(now)) return false
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      scannerHotkeysBlockedUntilRef.current = now + 300
+      searchRef.current?.scanBarcode(buf)
+      resetScannerBuffer()
+      return true
+    }
+
     function onScanKey(e: KeyboardEvent) {
       const now = Date.now()
-      if (e.key === 'Enter') {
-        const ae = document.activeElement as HTMLElement | null
-        const editable = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
-        const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-        const scannerSequence = buf.length >= 4 && (now - last) < 120 && averageInterval < 60
-        // Поле пошуку саме відокремлює сканер від ручного введення. Глобальний
-        // обробник потрібен лише коли фокус не стоїть у жодному полі.
-        if (!editable && scannerSequence) {
-          e.preventDefault()
-          e.stopPropagation()
-          searchRef.current?.scanBarcode(buf)
-        }
-        buf = ''
-        first = 0
+      if (scannerTerminatorKeys.has(e.key) || /^F\d{1,2}$/.test(e.key)) {
+        // Сканери можуть завершувати код Enter, Tab або навіть F7.
+        // Якщо це швидка серія символів — завершуємо скан тут незалежно від фокуса,
+        // щоб службова клавіша не потрапила в пошук або гарячі клавіші POS.
+        if (finishScannerSequence(e, now)) return
+        resetScannerBuffer()
         return
       }
-      if (e.key.length === 1) {
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (now - last > 120) {
           buf = ''
           first = now
@@ -398,8 +440,8 @@ export default function POSPage() {
         buf += e.key
         last = now
       } else {
-        buf = ''
-        first = 0
+        if (finishScannerSequence(e, now)) return
+        resetScannerBuffer()
       }
     }
     window.addEventListener('keydown', onScanKey, true)
@@ -409,6 +451,11 @@ export default function POSPage() {
   // Гарячі клавіші
   useEffect(() => {
     function handleGlobalKeyDown(e: KeyboardEvent) {
+      if (Date.now() < scannerHotkeysBlockedUntilRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       // Не перехоплюємо якщо фокус на input (крім F-клавіш та Esc)
       const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA'
       // Escape закриває відкриті модалки
@@ -628,6 +675,18 @@ export default function POSPage() {
 
     // Local-first: звичайна готівка/переказ завжди спочатку фіксуються на ПК.
     // Інтернет не бере участі в критичному шляху «оплата → закриття чека».
+    if (isDesktopRuntime() && !isFiscal && (bonusRedeemed ?? 0) === 0) {
+      const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
+      if (sale) {
+        paymentPrintChoiceRef.current = printAfterPayment === true
+        setLastSale(sale as Sale)
+        clearSavedCart()
+        setPayOpen(false)
+        playCashRegister()
+      }
+      return
+    }
+
     const canCommitLocally = (method === 'cash' || method === 'transfer')
       && !isFiscal
       && (bonusRedeemed ?? 0) === 0

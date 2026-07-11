@@ -1,4 +1,5 @@
 import { useOfflineSync } from '@/hooks/useOfflineSync'
+import { useDesktopOutboxSync } from '@/hooks/useDesktopOutboxSync'
 import { useServerStatus } from '@/hooks/useServerStatus'
 
 /**
@@ -8,5 +9,6 @@ import { useServerStatus } from '@/hooks/useServerStatus'
 export function LocalSyncAgent() {
   const serverOnline = useServerStatus()
   useOfflineSync(serverOnline)
+  useDesktopOutboxSync(serverOnline)
   return null
 }

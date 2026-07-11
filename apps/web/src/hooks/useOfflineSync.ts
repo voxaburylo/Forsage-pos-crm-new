@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '@/lib/api'
 import { toast } from '@/components/ui/Toast'
 import {
@@ -16,7 +16,11 @@ import {
 } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
 
-export const LOCAL_SYNC_INTERVAL_MS = 5 * 60 * 1000
+export const LOCAL_SYNC_IDLE_INTERVAL_MS = 30 * 1000
+export const LOCAL_SYNC_PENDING_INTERVAL_MS = 5 * 1000
+export const LOCAL_SYNC_RETRY_MIN_MS = 15 * 1000
+export const LOCAL_SYNC_RETRY_MAX_MS = 5 * 60 * 1000
+export const REFERENCE_REFRESH_INTERVAL_MS = 15 * 60 * 1000
 let globalSyncInProgress = false
 
 export function useOfflineSync(serverOnline: boolean) {
@@ -25,6 +29,7 @@ export function useOfflineSync(serverOnline: boolean) {
   const [syncing, setSyncing] = useState(false)
   const [lastCached, setLastCached] = useState<Date | null>(null)
   const [lastSyncError, setLastSyncError] = useState<string | null>(null)
+  const retryAttemptRef = useRef(0)
 
   useEffect(() => {
     countPendingSales().then(setPendingCount).catch(() => {})
@@ -84,6 +89,9 @@ export function useOfflineSync(serverOnline: boolean) {
     if (!scopeKey) return
     const localState = await getLocalSyncState(scopeKey)
     const since = forceSnapshot ? null : localState.cursor
+    const includeReferences = !since
+      || !localState.last_reference_sync_at
+      || Date.now() - localState.last_reference_sync_at >= REFERENCE_REFRESH_INTERVAL_MS
     if (!since) {
       // Службові позиції мають потрапити вже в перший локальний знімок.
       await Promise.allSettled([
@@ -91,7 +99,10 @@ export function useOfflineSync(serverOnline: boolean) {
         api.post('/api/v1/sales/quick-item', { kind: 'free_sale' }),
       ])
     }
-    const query = since ? `?since=${encodeURIComponent(since)}` : ''
+    const params = new URLSearchParams()
+    if (since) params.set('since', since)
+    if (includeReferences) params.set('include_references', 'true')
+    const query = params.size > 0 ? `?${params.toString()}` : ''
     const [response, staff] = await Promise.all([
       api.get<{ data: SyncChanges }>(`/api/v1/sync/changes${query}`, {
         silent: true,
@@ -121,6 +132,7 @@ export function useOfflineSync(serverOnline: boolean) {
     try {
       const pushed = await pushPendingSales()
       await pullChanges(options.forceSnapshot)
+      retryAttemptRef.current = 0
       if (options.notify) {
         toast.success(pushed.successCount > 0
           ? `Синхронізовано чеків: ${pushed.successCount}`
@@ -132,6 +144,7 @@ export function useOfflineSync(serverOnline: boolean) {
         if (options.notify) toast.warning(message)
       }
     } catch (error) {
+      retryAttemptRef.current += 1
       const message = error instanceof Error ? error.message : 'Помилка синхронізації'
       setLastSyncError(message)
       await markSyncError(scopeKey, message).catch(() => {})
@@ -144,13 +157,51 @@ export function useOfflineSync(serverOnline: boolean) {
   }, [serverOnline, scopeKey, pushPendingSales, pullChanges])
 
   useEffect(() => {
-    if (serverOnline && scopeKey) void syncNow()
-  }, [serverOnline, scopeKey, syncNow])
-
-  useEffect(() => {
     if (!serverOnline || !scopeKey) return
-    const timer = window.setInterval(() => void syncNow(), LOCAL_SYNC_INTERVAL_MS)
-    return () => window.clearInterval(timer)
+
+    let cancelled = false
+    let timer: number | null = null
+
+    const scheduleNext = async (immediate = false) => {
+      if (cancelled) return
+      if (timer !== null) window.clearTimeout(timer)
+
+      const queued = await countPendingSales().catch(() => 0)
+      const retryDelay = Math.min(
+        LOCAL_SYNC_RETRY_MAX_MS,
+        LOCAL_SYNC_RETRY_MIN_MS * (2 ** Math.max(0, retryAttemptRef.current - 1)),
+      )
+      const delay = immediate
+        ? 0
+        : retryAttemptRef.current > 0
+          ? retryDelay
+          : queued > 0
+            ? LOCAL_SYNC_PENDING_INTERVAL_MS
+            : LOCAL_SYNC_IDLE_INTERVAL_MS
+
+      timer = window.setTimeout(async () => {
+        await syncNow()
+        await scheduleNext()
+      }, delay)
+    }
+
+    const requestImmediateSync = () => { void scheduleNext(true) }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') requestImmediateSync()
+    }
+
+    window.addEventListener('forsage:sync-requested', requestImmediateSync)
+    window.addEventListener('online', requestImmediateSync)
+    document.addEventListener('visibilitychange', handleVisibility)
+    void scheduleNext(true)
+
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+      window.removeEventListener('forsage:sync-requested', requestImmediateSync)
+      window.removeEventListener('online', requestImmediateSync)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
   }, [serverOnline, scopeKey, syncNow])
 
   const refreshProductCache = useCallback(
@@ -165,6 +216,9 @@ export function useOfflineSync(serverOnline: boolean) {
     lastSyncError,
     refreshProductCache,
     syncPendingSales: () => syncNow({ notify: true }),
-    incrementPending: () => setPendingCount((count) => count + 1),
+    incrementPending: () => {
+      setPendingCount((count) => count + 1)
+      window.dispatchEvent(new Event('forsage:sync-requested'))
+    },
   }
 }

@@ -7,6 +7,11 @@
     "dev:web": "pnpm --filter=web dev",
     "dev:server": "pnpm --filter=server dev",
     "build": "pnpm --filter=web build && pnpm --filter=server build",
+    "build:web": "pnpm --filter=web build",
+    "build:server": "pnpm --filter=server build",
+    "build:desktop": "pnpm --filter=desktop dist",
+    "desktop:smoke": "pnpm --filter=desktop smoke:db",
+    "desktop:dist": "pnpm --filter=desktop dist",
     "lint": "pnpm --recursive lint"
   },
   "packageManager": "pnpm@10.0.0",
