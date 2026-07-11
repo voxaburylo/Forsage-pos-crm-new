@@ -114,11 +114,19 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
 
   try {
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    await printWindow.webContents.executeJavaScript(
+      'Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)',
+      true,
+    )
     await new Promise((resolve) => setTimeout(resolve, 250))
-    const pageSize = {
-      width: Math.round(widthMm * 1000),
-      height: Math.round(heightMm * 1000),
-    }
+
+    // Chromium приймає pageSize лише в портретній орієнтації (width <= height):
+    // альбомний розмір на кшталт 40×30 він мовчки нормалізує сам, а контент
+    // повертає поперек. Тому нормалізуємо явно і вмикаємо landscape.
+    const landscape = widthMm > heightMm
+    const pageSize = landscape
+      ? { width: Math.round(heightMm * 1000), height: Math.round(widthMm * 1000) }
+      : { width: Math.round(widthMm * 1000), height: Math.round(heightMm * 1000) }
 
     await new Promise<void>((resolve, reject) => {
       printWindow.webContents.print({
@@ -126,6 +134,7 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
         printBackground: true,
         margins: { marginType: 'none' },
         pageSize,
+        landscape,
         scaleFactor: 100,
       }, (success, failureReason) => {
         if (success || failureReason === 'cancelled') resolve()
