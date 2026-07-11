@@ -3,6 +3,8 @@ export interface PrintOptions {
   title?: string;
   width?: number;
   height?: number;
+  pageSizeMm?: { width: number; height: number };
+  preferDesktopNative?: boolean;
   cleanupDelayMs?: number;
   readyDelayMs?: number;
 }
@@ -66,9 +68,28 @@ export class PrintService {
       mode = "window",
       width = 500,
       height = 700,
+      pageSizeMm,
+      preferDesktopNative = false,
       cleanupDelayMs = 30000,
       readyDelayMs = 100,
     } = options;
+
+    const desktopPrint = typeof window !== "undefined" ? window.forsageDesktop?.print : undefined;
+    if (preferDesktopNative && pageSizeMm && desktopPrint) {
+      PrintService.beginPrint();
+      desktopPrint.html(htmlContent, {
+        title: options.title,
+        widthMm: pageSizeMm.width,
+        heightMm: pageSizeMm.height,
+        silent: false,
+      }).catch((error: unknown) => {
+        console.error("Failed to print document through desktop bridge", error);
+        import("@/components/ui/Toast").then(({ toast }) => {
+          toast.error(error instanceof Error ? error.message : "Помилка друку");
+        });
+      }).finally(() => PrintService.endPrint());
+      return;
+    }
 
     PrintService.beginPrint();
 

@@ -267,6 +267,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
     const desktop = desktopBridge()
+    let desktopLocalMiss = false
     if (desktop) {
       const desktopProduct = await desktop.catalog.findByBarcode(normalizedCode).catch(() => null)
       if (desktopProduct) {
@@ -274,20 +275,25 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         saveRecentItem('recent_scans', normalizedCode)
         return
       }
-      playErrorTone()
-      toast.error('Штрих-код не знайдено в локальній базі')
-      setSupplierResults([])
-      return
+      desktopLocalMiss = true
     }
 
-    const cachedProduct = await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
-    if (cachedProduct) {
-      addToReceipt(cachedProduct as Product)
-      saveRecentItem('recent_scans', normalizedCode)
-      return
+    if (!desktop) {
+      const cachedProduct = await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
+      if (cachedProduct) {
+        addToReceipt(cachedProduct as Product)
+        saveRecentItem('recent_scans', normalizedCode)
+        return
+      }
     }
 
     if (!serverOnline) {
+      if (desktopLocalMiss) {
+        playErrorTone()
+        toast.error('Штрих-код не знайдено в локальній базі. Підключіть інтернет і дочекайтесь синхронізації каталогу.')
+        setSupplierResults([])
+        return
+      }
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
@@ -335,9 +341,14 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       } else if (result?.type === 'product' && result?.data) {
         addToReceipt(result.data)
         saveRecentItem('recent_scans', normalizedCode)
+        if (desktopLocalMiss) {
+          toast.warning('Товар додано з сервера. Локальний каталог ще не синхронізований.')
+        }
       } else {
         playErrorTone()
-        toast.error('Штрих-код не знайдено в базі')
+        toast.error(desktopLocalMiss
+          ? 'Штрих-код не знайдено ні локально, ні на сервері'
+          : 'Штрих-код не знайдено в базі')
       }
       setSupplierResults([])
     } catch {

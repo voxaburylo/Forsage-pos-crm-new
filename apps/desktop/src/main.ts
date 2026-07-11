@@ -17,6 +17,13 @@ let localCatalog: LocalCatalogRepository | null = null
 let localPos: LocalPosRepository | null = null
 let localSync: LocalSyncRepository | null = null
 
+interface DesktopPrintOptions {
+  title?: string
+  widthMm?: number
+  heightMm?: number
+  silent?: boolean
+}
+
 function rendererIndexPath(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'renderer', 'index.html')
@@ -78,6 +85,59 @@ async function createWindow(): Promise<void> {
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
+function sanitizePageMm(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.max(min, Math.min(max, numeric))
+}
+
+async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}): Promise<{ success: true }> {
+  if (typeof html !== 'string' || html.trim().length === 0) {
+    throw new Error('PRINT_HTML_EMPTY')
+  }
+
+  const widthMm = sanitizePageMm(options.widthMm, 40, 10, 300)
+  const heightMm = sanitizePageMm(options.heightMm, 30, 10, 300)
+  const printWindow = new BrowserWindow({
+    title: options.title ?? 'Друк',
+    width: Math.max(360, Math.round(widthMm * 10)),
+    height: Math.max(320, Math.round(heightMm * 12)),
+    show: false,
+    parent: mainWindow ?? undefined,
+    backgroundColor: '#ffffff',
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  try {
+    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    const pageSize = {
+      width: Math.round(widthMm * 1000),
+      height: Math.round(heightMm * 1000),
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      printWindow.webContents.print({
+        silent: options.silent === true,
+        printBackground: true,
+        margins: { marginType: 'none' },
+        pageSize,
+        scaleFactor: 100,
+      }, (success, failureReason) => {
+        if (success || failureReason === 'cancelled') resolve()
+        else reject(new Error(failureReason || 'PRINT_FAILED'))
+      })
+    })
+    return { success: true }
+  } finally {
+    if (!printWindow.isDestroyed()) printWindow.close()
+  }
+}
+
 app.on('second-instance', () => {
   if (!mainWindow) return
   if (mainWindow.isMinimized()) mainWindow.restore()
@@ -134,6 +194,9 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:sync:mark-batch-failed', (_event, sequences: number[], error: string) =>
     requireLocalSync().markBatchFailed(sequences, error),
+  )
+  ipcMain.handle('desktop:print:html', (_event, html: string, options?: DesktopPrintOptions) =>
+    printHtmlDocument(html, options),
   )
 
   await createWindow()

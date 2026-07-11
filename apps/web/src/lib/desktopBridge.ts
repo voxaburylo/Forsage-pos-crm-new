@@ -156,6 +156,14 @@ interface ForsageDesktopBridge {
     applyPushResults: (results: DesktopSyncPushResult[]) => Promise<void>
     markBatchFailed: (sequences: number[], error: string) => Promise<void>
   }
+  print: {
+    html: (html: string, options?: {
+      title?: string
+      widthMm?: number
+      heightMm?: number
+      silent?: boolean
+    }) => Promise<{ success: true }>
+  }
 }
 
 declare global {

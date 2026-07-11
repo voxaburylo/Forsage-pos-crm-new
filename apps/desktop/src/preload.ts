@@ -34,4 +34,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     markBatchFailed: (sequences: number[], error: string) =>
       ipcRenderer.invoke('desktop:sync:mark-batch-failed', sequences, error),
   },
+  print: {
+    html: (html: string, options?: unknown) =>
+      ipcRenderer.invoke('desktop:print:html', html, options),
+  },
 })

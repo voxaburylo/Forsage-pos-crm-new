@@ -731,6 +731,8 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   PrintService.printHtml(html, {
     mode: 'iframe',
     title: `Етикетки ${w}×${h} мм`,
+    pageSizeMm: { width: w, height: h },
+    preferDesktopNative: true,
     cleanupDelayMs: 30000,
     readyDelayMs: 150,
   })
