@@ -105,24 +105,30 @@ $ErrorActionPreference = 'Stop'
 
 $script:app = $null
 
+function Set-Param($app, $name, $value) {
+  # Повернення SetParameter (bool) НЕ повинно потрапити у stdout — інакше
+  # засмітить base64-протокол. Тому явно поглинаємо результат.
+  [void]$app.SetParameter([string]$name, [string]$value)
+}
+
 function Ensure-App($cfg) {
   if ($null -ne $script:app) { return }
   $app = New-Object -ComObject 'AddIn.CashaLotApi'
-  $app.SetParameter('PathToCashalotDir', [string]$cfg.cashalotDir)
-  $app.SetParameter('DeviceIDFnRRO', [string]$cfg.fiscalNumberRRO)
+  Set-Param $app 'PathToCashalotDir' $cfg.cashalotDir
+  Set-Param $app 'DeviceIDFnRRO' $cfg.fiscalNumberRRO
   if ($cfg.certificateDir) {
-    $app.SetParameter('NOINTERFACEMODE', 'True')
-    $app.SetParameter('PathToCertificate', [string]$cfg.certificateDir)
-    $app.SetParameter('PwdToCertificate', [string]$cfg.keyPassword)
-    $app.SetParameter('USETOKEN', 'False')
+    Set-Param $app 'NOINTERFACEMODE' 'True'
+    Set-Param $app 'PathToCertificate' $cfg.certificateDir
+    Set-Param $app 'PwdToCertificate' $cfg.keyPassword
+    Set-Param $app 'USETOKEN' 'False'
   } else {
     # Без ключа в налаштуваннях авторизацію робить діалог самого Кашалота.
-    $app.SetParameter('NOINTERFACEMODE', 'False')
+    Set-Param $app 'NOINTERFACEMODE' 'False'
   }
-  $app.SetParameter('NOAUTOUPDATE', 'True')
-  $app.SetParameter('NOAUTOOPENSHIFT', 'False')
-  $app.SetParameter('AUTOPRINTMODE', 'False')
-  $app.SetParameter('NOPRINTMODE', 'True')
+  Set-Param $app 'NOAUTOUPDATE' 'True'
+  Set-Param $app 'NOAUTOOPENSHIFT' 'False'
+  Set-Param $app 'AUTOPRINTMODE' 'False'
+  Set-Param $app 'NOPRINTMODE' 'True'
   $script:app = $app
 }
 
@@ -133,11 +139,22 @@ function Convert-RetVal($r) {
   }
   $out = @{}
   foreach ($name in @('Return','Description','JsonVal','ReceiptFiscalNum','ReceiptLocalNum','ShiftID','OfflineMode','FSKOReceiptLink','CashalotReceiptLink','Type')) {
-    try {
-      $out[$name] = $r.GetType().InvokeMember($name, 'GetProperty', $null, $r, $null)
-    } catch {}
+    try { $out[$name] = $r.$name } catch {}
   }
   return $out
+}
+
+function Invoke-Com($app, $name, $a) {
+  # Нативний PowerShell-диспатч COM (IDispatch). Reflection InvokeMember на
+  # цьому RCW зависає, тому викликаємо метод напряму за динамічним іменем.
+  switch (@($a).Count) {
+    0 { return $app.$name() }
+    1 { return $app.$name($a[0]) }
+    2 { return $app.$name($a[0], $a[1]) }
+    3 { return $app.$name($a[0], $a[1], $a[2]) }
+    4 { return $app.$name($a[0], $a[1], $a[2], $a[3]) }
+    default { throw "TOO_MANY_ARGS" }
+  }
 }
 
 while ($true) {
@@ -157,7 +174,7 @@ while ($true) {
     } else {
       $invokeArgs = @()
       if ($null -ne $req.args) { $invokeArgs = @($req.args | ForEach-Object { [string]$_ }) }
-      $r = $script:app.GetType().InvokeMember([string]$req.comMethod, 'InvokeMethod', $null, $script:app, $invokeArgs)
+      $r = Invoke-Com $script:app ([string]$req.comMethod) $invokeArgs
       $resp.ok = $true
       $resp.result = Convert-RetVal $r
     }
@@ -219,13 +236,18 @@ export class CashalotService {
   }
 
   private isComRegistered(): boolean {
-    try {
-      const { execSync } = require('node:child_process') as typeof import('node:child_process')
-      execSync('reg query "HKLM\\SOFTWARE\\Classes\\AddIn.CashaLotApi" /ve', { stdio: 'ignore', windowsHide: true })
-      return true
-    } catch {
-      return false
+    const { execSync } = require('node:child_process') as typeof import('node:child_process')
+    // COM резолвить ProgId спершу з HKCU\Software\Classes, потім із HKLM,
+    // тому per-user реєстрація (без адмінправ) теж робоча — перевіряємо обидва.
+    for (const root of ['HKCU\\Software\\Classes', 'HKLM\\SOFTWARE\\Classes']) {
+      try {
+        execSync(`reg query "${root}\\AddIn.CashaLotApi" /ve`, { stdio: 'ignore', windowsHide: true })
+        return true
+      } catch {
+        // не знайдено в цьому корені — пробуємо наступний
+      }
     }
+    return false
   }
 
   getPublicConfig(): CashalotPublicConfig {
@@ -333,8 +355,12 @@ export class CashalotService {
     })
   }
 
-  /** Викликає COM-метод; черга гарантує послідовність (ПРРО не любить паралельність). */
-  private call(comMethod: string, args: string[]): Promise<CashalotRetVal> {
+  /**
+   * Викликає COM-метод; черга гарантує послідовність (ПРРО не любить паралельність).
+   * throwOnReject=false — повернути результат навіть при Return=false (для read-only
+   * методів на кшталт GetCurrentStatus, де Return=false = «зміна не відкрита», не помилка).
+   */
+  private call(comMethod: string, args: string[], throwOnReject = true): Promise<CashalotRetVal> {
     const run = async (): Promise<CashalotRetVal> => {
       if (!this.config.fiscalNumberRRO) throw new Error('FISCAL_RRO_NOT_CONFIGURED')
       const response = await this.sendRequest({
@@ -351,7 +377,7 @@ export class CashalotService {
       })
       if (!response.ok) throw new Error(response.error || 'FISCAL_CALL_FAILED')
       const result = response.result ?? {}
-      if (result.Return === false) {
+      if (throwOnReject && result.Return === false) {
         throw new Error(result.Description || 'FISCAL_OPERATION_REJECTED')
       }
       return result
@@ -362,7 +388,7 @@ export class CashalotService {
   }
 
   getStatus(): Promise<CashalotRetVal> {
-    return this.call('GetCurrentStatus', [this.config.fiscalNumberRRO])
+    return this.call('GetCurrentStatus', [this.config.fiscalNumberRRO], false)
   }
 
   openShift(): Promise<CashalotRetVal> {
@@ -440,16 +466,56 @@ export class CashalotService {
     ])
   }
 
-  /** Реєструє CashalotApi64.dll у системі (підніме UAC-запит). */
+  /**
+   * Реєструє CashalotApi64.dll для поточного користувача (HKCU\Software\Classes)
+   * без адмінправ/UAC: тимчасово підміняє HKEY_CLASSES_ROOT на HKCU і викликає
+   * нативний DllRegisterServer збірки.
+   */
   registerCom(): Promise<{ registered: boolean }> {
     const dllPath = path.join(this.config.cashalotDir, 'CashalotApi64.dll')
     if (!fs.existsSync(dllPath)) return Promise.reject(new Error('FISCAL_DLL_NOT_FOUND: ' + dllPath))
+
+    const script = `
+$ErrorActionPreference = 'Stop'
+$src = @"
+using System;
+using System.Runtime.InteropServices;
+public static class PerUserComReg {
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+  static extern int RegCreateKeyEx(IntPtr hKey, string lpSubKey, int Reserved, string lpClass, int dwOptions, int samDesired, IntPtr lpSecurityAttributes, out IntPtr phkResult, out int lpdwDisposition);
+  [DllImport("advapi32.dll")] static extern int RegOverridePredefKey(IntPtr hKey, IntPtr hNewKey);
+  [DllImport("advapi32.dll")] static extern int RegCloseKey(IntPtr hKey);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr LoadLibrary(string p);
+  [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr GetProcAddress(IntPtr h, string n);
+  [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int RegFn();
+  static readonly IntPtr HKCR = new IntPtr(unchecked((int)0x80000000));
+  static readonly IntPtr HKCU = new IntPtr(unchecked((int)0x80000001));
+  public static int Register(string dll) {
+    IntPtr lib = LoadLibrary(dll); if (lib == IntPtr.Zero) throw new Exception("LoadLibrary " + Marshal.GetLastWin32Error());
+    IntPtr proc = GetProcAddress(lib, "DllRegisterServer"); if (proc == IntPtr.Zero) throw new Exception("no DllRegisterServer");
+    IntPtr hKey; int disp;
+    int r = RegCreateKeyEx(HKCU, "Software\\\\Classes", 0, null, 0, 0xF003F, IntPtr.Zero, out hKey, out disp);
+    if (r != 0) throw new Exception("RegCreateKeyEx " + r);
+    r = RegOverridePredefKey(HKCR, hKey); if (r != 0) { RegCloseKey(hKey); throw new Exception("RegOverridePredefKey " + r); }
+    try { RegFn fn = (RegFn)Marshal.GetDelegateForFunctionPointer(proc, typeof(RegFn)); return fn(); }
+    finally { RegOverridePredefKey(HKCR, IntPtr.Zero); RegCloseKey(hKey); }
+  }
+}
+"@
+Add-Type -TypeDefinition $src
+[void][PerUserComReg]::Register('${dllPath.replace(/\\/g, '\\\\').replace(/'/g, "''")}')
+`
     return new Promise((resolve, reject) => {
       const ps = spawn('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        `Start-Process regsvr32 -Verb RunAs -ArgumentList '/s', '${dllPath.replace(/'/g, "''")}' -Wait`,
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script,
       ], { windowsHide: true })
-      ps.on('exit', () => resolve({ registered: this.isComRegistered() }))
+      let stderr = ''
+      ps.stderr.on('data', (chunk) => { stderr += chunk })
+      ps.on('exit', (code) => {
+        const registered = this.isComRegistered()
+        if (registered) resolve({ registered: true })
+        else reject(new Error('FISCAL_COM_REGISTER_FAILED' + (stderr ? ': ' + stderr.trim().slice(0, 300) : ` (exit ${code})`)))
+      })
       ps.on('error', reject)
     })
   }

@@ -114,7 +114,7 @@ export function FiscalSettingsCard() {
         <div className="flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3">
           <p className="text-xs text-red-700">
             COM-бібліотека Кашалота ще не зареєстрована в Windows — фіскалізація не працюватиме.
-            Реєстрація разова, потрібно підтвердити запит адміністратора.
+            Реєстрація разова, для поточного користувача (без прав адміністратора).
           </p>
           <Button type="button" variant="secondary" loading={registering} onClick={handleRegisterCom} className="shrink-0">
             Зареєструвати
