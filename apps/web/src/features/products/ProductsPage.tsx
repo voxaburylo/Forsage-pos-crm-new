@@ -440,7 +440,7 @@ export default function ProductsPage() {
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="sticky top-0 z-20 bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="px-3 py-3 w-10">
                       <input type="checkbox" checked={allSelected} onChange={toggleSelectAll}

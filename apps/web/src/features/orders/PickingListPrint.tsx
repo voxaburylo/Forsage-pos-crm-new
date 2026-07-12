@@ -23,7 +23,7 @@ export function printPickingList(order: EnrichedCustomerOrder, shopName = "ФО�
     if (item.source_type === "supplier") {
       key = "Під замовлення (Постачальник)"
     } else {
-      key = item.storage_bin ? `Ячейка: ${item.storage_bin}` : "Без ячейки (Склад)"
+      key = item.storage_bin ? `Комірка: ${item.storage_bin}` : "Без комірки (склад)"
     }
 
     if (!groups[key]) {

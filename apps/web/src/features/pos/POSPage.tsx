@@ -104,13 +104,13 @@ function loadCart(): SavedCart | null {
       shiftId: typeof parsed.shiftId === 'string' ? parsed.shiftId : null,
     }
   } catch {
-    try { localStorage.removeItem(CART_KEY) } catch {}
+    try { localStorage.removeItem(CART_KEY) } catch { /* localStorage може бути недоступний у приватному режимі */ }
     return null
   }
 }
 
 function clearSavedCart() {
-  try { localStorage.removeItem(CART_KEY) } catch {}
+  try { localStorage.removeItem(CART_KEY) } catch { /* аварійна копія не повинна блокувати касу */ }
 }
 
 function savedCartTotal(cart: SavedCart): number {
@@ -386,6 +386,7 @@ export default function POSPage() {
     const { tabs, activeTabId } = store
     const tab = tabs.find((t) => t.id === activeTabId)
     if (tab && tab.items.length > 0) {
+      if (!window.confirm(`Скинути поточний чек? Буде видалено ${tab.items.length} поз.`)) return
       store.clearReceipt()
     }
     clearSavedCart()
@@ -422,6 +423,13 @@ export default function POSPage() {
     }
 
     function onScanKey(e: KeyboardEvent) {
+      // Поле пошуку має власний буфер ручного вводу/сканера. Не запускаємо
+      // одночасно другий розпізнавач для тих самих клавіш: саме ця гонка
+      // могла втрачати кожен другий скан на завершальному Enter/Tab/F7.
+      const activeElement = document.activeElement as HTMLElement | null
+      if (activeElement?.dataset.posSearch === 'true') return
+      if (activeElement?.matches('input, textarea, select, [contenteditable="true"]')) return
+
       const now = Date.now()
       if (scannerTerminatorKeys.has(e.key) || /^F\d{1,2}$/.test(e.key)) {
         // Сканери можуть завершувати код Enter, Tab або навіть F7.
@@ -757,15 +765,7 @@ export default function POSPage() {
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#1A1A1A]">
-      <div
-        className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
-        style={bigFont && !isStandalonePWA ? {
-          transform: 'scale(1.18)',
-          transformOrigin: 'top left',
-          width: 'calc(100vw / 1.18)',
-          height: 'calc(100dvh / 1.18)',
-        } : undefined}
-      >
+      <div className={`pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A] ${bigFont && !isStandalonePWA ? 'pos-big-font' : ''}`}>
       {/* Lock Screen */}
       {isLockedPIN && (
         <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />

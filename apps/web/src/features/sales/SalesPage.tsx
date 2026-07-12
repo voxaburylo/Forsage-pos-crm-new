@@ -253,7 +253,7 @@ export default function SalesPage() {
             {/* Позиції */}
             <div className="border border-gray-100 rounded-xl overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-gray-400 text-[11px] uppercase">
+                <thead className="sticky top-0 z-10 bg-gray-50 text-gray-400 text-[11px] uppercase">
                   <tr>
                     <th className="px-3 py-2 text-left">Товар</th>
                     <th className="px-3 py-2 text-right">К-сть</th>

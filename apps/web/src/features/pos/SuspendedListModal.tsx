@@ -90,7 +90,7 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input type="text" value={search} autoFocus
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Пошук по клієнту, ячейці або номеру..."
+              placeholder="Пошук за клієнтом, коміркою або номером..."
               className="w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-9 pr-3 py-2 rounded-lg text-sm border border-gray-700 focus:outline-none focus:border-yellow-400" />
           </div>
         </div>

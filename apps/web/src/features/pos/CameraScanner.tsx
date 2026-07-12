@@ -65,7 +65,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
             try {
               await scanner.stop()
               scanner.clear()
-            } catch {}
+            } catch { /* камера могла вже зупинитися після успішного сканування */ }
             scannerRef.current = null
             if (mounted) onScanRef.current(decodedText)
           },
@@ -93,7 +93,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
         Promise.resolve(s.stop())
           .catch(() => {})
           .finally(() => {
-            try { s.clear() } catch {}
+            try { s.clear() } catch { /* очищення після закриття не повинно показувати помилку */ }
           })
       }
     }

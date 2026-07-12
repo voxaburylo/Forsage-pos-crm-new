@@ -11,8 +11,14 @@ interface ToastData {
 
 let toastCounter = 0
 const listeners: Array<(toast: ToastData) => void> = []
+const recentlyShown = new Map<string, number>()
+const TOAST_DEDUPE_MS = 1_500
 
 export function toast(message: string, type: ToastType = 'success') {
+  const key = `${type}:${message}`
+  const now = Date.now()
+  if (now - (recentlyShown.get(key) ?? 0) < TOAST_DEDUPE_MS) return
+  recentlyShown.set(key, now)
   const data: ToastData = { id: ++toastCounter, type, message }
   listeners.forEach((l) => l(data))
 }
@@ -31,7 +37,7 @@ export function ToastContainer() {
 
   useEffect(() => {
     const handler = (t: ToastData) => {
-      setToasts((prev) => [...prev, t])
+      setToasts((prev) => [...prev, t].slice(-4))
       setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== t.id)), 4000)
     }
     listeners.push(handler)
@@ -39,12 +45,13 @@ export function ToastContainer() {
   }, [])
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2" aria-live="polite" aria-atomic="false">
       {toasts.map((t) => (
         <div key={t.id} className="flex items-center gap-3 bg-white border border-gray-200 shadow-lg rounded-xl px-4 py-3 min-w-[280px]">
           {ICONS[t.type]}
           <span className="text-sm text-gray-800 flex-1">{t.message}</span>
           <button
+            type="button"
             onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
             aria-label="Закрити повідомлення"
             title="Закрити повідомлення"

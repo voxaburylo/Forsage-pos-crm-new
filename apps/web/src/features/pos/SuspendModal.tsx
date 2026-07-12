@@ -44,7 +44,7 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
         expires_at:     expiresAt,
       })
       store.clearReceipt()
-      toast.success(`Чек відкладено${cell.trim() ? ' в ячейку ' + cell.trim() : ''}`)
+      toast.success(`Чек відкладено${cell.trim() ? ' у комірку ' + cell.trim() : ''}`)
       onSuspended()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка')
@@ -65,7 +65,7 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
 
         <div>
           <label className="text-gray-400 text-xs mb-1 block">
-            Номер ячейки видачі <span className="text-gray-600">(необов'язково)</span>
+            Номер комірки видачі <span className="text-gray-600">(необов'язково)</span>
           </label>
           <input type="text" autoFocus value={cell}
             onChange={(e) => setCell(e.target.value)}

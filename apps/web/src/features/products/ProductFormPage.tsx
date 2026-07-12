@@ -123,7 +123,6 @@ export default function ProductFormPage() {
       })
     }).catch(() => toast.error('Не вдалося завантажити товар для копіювання'))
       .finally(() => setLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloneId, isEdit])
 
   function set(field: keyof ProductFormData, value: string | boolean) {

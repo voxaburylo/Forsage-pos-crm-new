@@ -417,7 +417,7 @@ export default function ProductDetailPage() {
                 {product.storage_bin && (
                   <button onClick={handlePrintBinLabel}
                     className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium ml-2"
-                    title="Друк етикетки ячейки">
+                    title="Друк етикетки комірки">
                     <Printer size={12} /> Друк комірки
                   </button>
                 )}

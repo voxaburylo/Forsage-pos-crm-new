@@ -148,6 +148,7 @@ export default function WarehousePicking() {
     if (!currentOrder) return
     const pendingItems = currentOrder.items.filter(i => i.source_type === 'warehouse' && i.item_status === 'pending')
     if (pendingItems.length === 0) return
+    if (!window.confirm(`Позначити як зібрані всі складські позиції (${pendingItems.length})?`)) return
 
     setLoadingDetail(true)
     try {
@@ -223,7 +224,7 @@ export default function WarehousePicking() {
   async function handleSaveCell(e: React.FormEvent) {
     e.preventDefault()
     if (!currentOrder || !pickupCell.trim()) {
-      toast.error('Вкажіть ячейку видачі')
+      toast.error('Вкажіть комірку видачі')
       return
     }
     const allReady = currentOrder.items.every(i =>
@@ -236,12 +237,12 @@ export default function WarehousePicking() {
     setSavingCell(true)
     try {
       await pickingApi.updatePickupCell(currentOrder.id, pickupCell.trim())
-      toast.success('Ячейку видачі збережено, замовлення готове до видачі!')
+      toast.success('Комірку видачі збережено, замовлення готове до видачі!')
       setCellModalOpen(false)
       // Повертаємось до списку збірки
       setSearchParams({})
     } catch (err: any) {
-      toast.error(err?.message || 'Не вдалося зберегти ячейку')
+      toast.error(err?.message || 'Не вдалося зберегти комірку')
     } finally {
       setSavingCell(false)
     }
@@ -440,14 +441,14 @@ export default function WarehousePicking() {
                             className="bg-green-100 hover:bg-green-200 text-green-800 border-none flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
                             onClick={() => handlePickItem(item, false)}
                           >
-                            <CheckCircle size={14} /> Взято
+                            <CheckCircle size={14} /> Зібрано · скасувати
                           </Button>
                         ) : (
                           <Button 
                             onClick={() => handlePickItem(item, true)}
                             className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold px-4 py-2 text-xs flex items-center gap-1"
                           >
-                            <CheckSquare size={14} /> Підтвердити
+                            <CheckSquare size={14} /> Взято зі складу
                           </Button>
                         )}
                       </div>

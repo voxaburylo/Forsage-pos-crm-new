@@ -169,7 +169,6 @@ export default function ReturnForm() {
       setSaleNumber(presale)
       searchSale(presale)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function updateQty(id: string, qty: number) {

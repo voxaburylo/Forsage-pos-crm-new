@@ -51,7 +51,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
   )
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-100">
+    <div className="flex h-screen h-[100dvh] overflow-hidden bg-gray-100">
       {/* Mobile backdrop */}
       {sidebarOpen && (
         <div

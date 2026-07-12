@@ -263,7 +263,6 @@ export default function InvoiceFormPage() {
       toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
     }).catch(() => toast.error('Не вдалось завантажити накладну для копіювання'))
       .finally(() => setLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloneId, id])
 
   // Пошук товарів

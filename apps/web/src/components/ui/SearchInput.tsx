@@ -22,6 +22,13 @@ export function SearchInput({
   const timer = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => { setLocal(value) }, [value])
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  function clearSearch() {
+    clearTimeout(timer.current)
+    setLocal('')
+    onChange('')
+  }
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const v = e.target.value
@@ -37,14 +44,23 @@ export function SearchInput({
         type="text"
         value={local}
         onChange={handleChange}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && local) {
+            event.preventDefault()
+            clearSearch()
+          }
+        }}
         placeholder={placeholder}
         autoFocus={autoFocus}
         className="w-full pl-9 pr-8 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent"
       />
       {local && (
         <button
-          onClick={() => { setLocal(''); onChange('') }}
+          type="button"
+          onClick={clearSearch}
           className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          aria-label="Очистити пошук"
+          title="Очистити пошук (Esc)"
         >
           <X size={14} />
         </button>

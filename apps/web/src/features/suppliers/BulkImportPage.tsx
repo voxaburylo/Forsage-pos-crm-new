@@ -116,7 +116,6 @@ export default function BulkImportPage() {
       .catch(() => {})
 
     fetchHistory()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAllowed])
 
   // Poll active import status
@@ -131,7 +130,6 @@ export default function BulkImportPage() {
     }, 2000)
 
     return () => clearInterval(interval)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeImportId, isAllowed])
 
   // Handle Drag & Drop

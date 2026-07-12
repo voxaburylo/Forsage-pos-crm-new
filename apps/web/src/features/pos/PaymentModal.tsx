@@ -25,7 +25,7 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
   { id: 'card',     label: 'Термінал',        icon: <CreditCard size={20} />,               color: 'bg-blue-500 hover:bg-blue-400' },
   { id: 'transfer', label: 'Переказ на карту', icon: <Smartphone size={20} />,              color: 'bg-cyan-500 hover:bg-cyan-400' },
   { id: 'debt',     label: 'Борг',            icon: <BookOpen size={20} />,                 color: 'bg-red-500 hover:bg-red-400', requireCustomer: true },
-  { id: 'mixed',    label: 'Split',           icon: <SplitSquareHorizontal size={20} />,    color: 'bg-purple-500 hover:bg-purple-400' },
+  { id: 'mixed',    label: 'Готівка + термінал', icon: <SplitSquareHorizontal size={20} />, color: 'bg-purple-500 hover:bg-purple-400' },
 ]
 
 export function PaymentModal({ open, offline = false, onClose, onConfirm }: Props) {
@@ -223,7 +223,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
+      <div role="dialog" aria-modal="true" aria-label="Оплата чека" className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
 
         <div className="shrink-0 border-b border-gray-800 px-6 py-4">
           <p className="text-gray-400 text-sm">До оплати</p>
@@ -367,7 +367,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Receipt size={16} className="text-gray-400" />
-                  <span className="text-gray-300 text-sm">🧾 Фіскальний чек</span>
+                  <span className="text-gray-300 text-sm">Фіскальний чек</span>
                 </div>
                 <label className={`relative inline-flex items-center ${method === 'card' ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input type="checkbox" checked={offline ? false : fiscal}

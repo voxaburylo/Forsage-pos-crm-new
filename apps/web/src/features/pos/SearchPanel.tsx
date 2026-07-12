@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
-import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
+import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database, X } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
@@ -45,6 +45,16 @@ function findExactScannedProduct(products: any[], code: string): Product | undef
       .replace(/[\s\-./_]/g, '')
     return barcodes.includes(code) || normalizedSku === normalized
   }) as Product | undefined
+}
+
+function normalizeScannedCode(code: string): string {
+  return Array.from(code)
+    .filter((char) => {
+      const charCode = char.charCodeAt(0)
+      return charCode > 31 && charCode !== 127 && !/\s/.test(char)
+    })
+    .join('')
+    .trim()
 }
 
 
@@ -206,12 +216,21 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       setSupplierResults([])
       return
     }
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'F7') {
       e.preventDefault()
       clearTimeout(inputCommitTimer.current)
       const trimmed = inputDraft.current.trim()
       inputDraft.current = ''
       if (!trimmed) return
+      // Після звичайного ручного пошуку Enter додає перший видимий товар.
+      // Швидкий скан не встигає потрапити до query і йде точним пошуком ШК.
+      if (e.key === 'Enter' && query.trim() === trimmed && results.length > 0) {
+        addToReceipt(results[0])
+        setQuery('')
+        setResults([])
+        setSupplierResults([])
+        return
+      }
       // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
       // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
       // результат текстового пошуку.
@@ -254,7 +273,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   }
 
   async function handleBarcodeScan(code: string) {
-    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+    const normalizedCode = normalizeScannedCode(code)
     if (!normalizedCode) return
     // Скан — не текстовий пошук. Одразу прибираємо код із поля та скасовуємо
     // запізнілі результати hybrid search, щоб екран не смикався.
@@ -487,10 +506,28 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             }}
             onKeyDown={handleKeyDown}
             placeholder="Артикул, назва, штрихкод... (F4)"
-            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
+            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 ${query ? 'pr-11' : 'pr-4'} rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}
           />
+          {query && (
+            <button
+              type="button"
+              onClick={() => {
+                clearTimeout(inputCommitTimer.current)
+                inputDraft.current = ''
+                setQuery('')
+                setResults([])
+                setSupplierResults([])
+                inputRef.current?.focus()
+              }}
+              className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-700 hover:text-white"
+              aria-label="Очистити пошук"
+              title="Очистити пошук (Esc)"
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
         <button onClick={() => setCameraOpen(true)}
           className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 md:w-[50px] md:h-[50px] w-[44px] h-[44px] shrink-0"

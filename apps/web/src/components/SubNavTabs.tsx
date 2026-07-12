@@ -111,7 +111,7 @@ export const RECEIVING_TABS = [
 ]
 
 export const INVENTORY_TABS = [
-  { to: '/inventory', label: 'Ревізія залишків', roles: ['owner', 'admin', 'storekeeper'] },
+  { to: '/inventory', label: 'Ревізія залишків', roles: ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer'] },
   { to: '/inventory/movements', label: 'Між комірками', roles: ['owner', 'admin', 'storekeeper'] },
   { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
   { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },

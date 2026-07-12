@@ -348,7 +348,6 @@ export default function QuoteEditorPage() {
       }
     }).catch(() => {})
     // навмисно лише [customerId]: підставляємо один раз на зміну клієнта
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerId])
 
   // Пошук клієнта
@@ -467,7 +466,7 @@ export default function QuoteEditorPage() {
         const newVariant: Variant = {
           brand: product.sku.split('-')[0] || 'Каталог',
           price: String((product.retail_price / 100).toFixed(2)),
-          notes: product.storage_bin ? `Склад ячейка: ${product.storage_bin}` : '',
+          notes: product.storage_bin ? `Комірка складу: ${product.storage_bin}` : '',
           is_recommended: false,
           selected: target.variants.length === 0
         }
@@ -490,7 +489,7 @@ export default function QuoteEditorPage() {
           variants: [{
             brand: product.sku.split('-')[0] || 'Каталог',
             price: String((product.retail_price / 100).toFixed(2)),
-            notes: product.storage_bin ? `Ячейка: ${product.storage_bin}` : '',
+            notes: product.storage_bin ? `Комірка: ${product.storage_bin}` : '',
             is_recommended: true,
             selected: true
           }],

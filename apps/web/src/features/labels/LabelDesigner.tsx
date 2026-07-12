@@ -269,7 +269,7 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     align_barcode: 'center',
   },
   standard_bin_4030: {
-    name: 'Ячейка стандартна (40×30 мм)',
+    name: 'Комірка стандартна (40×30 мм)',
     width_mm: 40, height_mm: 30, padding_mm: 1.5,
     font_size_shop: 5, font_size_title: 12, font_size_sku: 5, font_size_price: 10,
     font_size: 6, barcode_height: 22,
@@ -292,7 +292,7 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     align_barcode: 'center',
   },
   large_bin_5840: {
-    name: 'Ячейка велика (58×40 мм)',
+    name: 'Комірка велика (58×40 мм)',
     width_mm: 58, height_mm: 40, padding_mm: 3,
     font_size_shop: 7, font_size_title: 14, font_size_sku: 6, font_size_price: 16,
     font_size: 8, barcode_height: 35,
@@ -771,7 +771,7 @@ export default function LabelDesigner() {
     }
     const count = endVal - startVal + 1
     if (count > 200) {
-      toast.error('За один раз можна згенерувати не більше 200 ячейок')
+      toast.error('За один раз можна згенерувати не більше 200 комірок')
       return
     }
     const newBins: string[] = []
@@ -779,7 +779,7 @@ export default function LabelDesigner() {
       newBins.push(`${binPrefix}${i}`)
     }
     setBinLabels((prev) => [...prev, ...newBins])
-    toast.success(`Згенеровано та додано ${count} ячейок`)
+    toast.success(`Згенеровано та додано ${count} комірок`)
   }
 
 
@@ -1056,7 +1056,7 @@ export default function LabelDesigner() {
     try {
       if (binMode) {
         const items = binLabels.map((label) => ({ label }))
-        if (items.length === 0) { toast.error('Додайте хоча б одну ячейку'); return }
+        if (items.length === 0) { toast.error('Додайте хоча б одну комірку'); return }
         printLabels(settings, items, true)
       } else {
         const items = printItems.flatMap((p) => Array(p.copies).fill(p))
@@ -1103,7 +1103,7 @@ export default function LabelDesigner() {
             className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
               binMode ? 'bg-white text-black shadow-sm' : 'bg-transparent text-gray-600 hover:text-gray-900'
             }`}>
-            <Copy size={14} className="inline mr-1" />Ячейки (Bins)
+            <Copy size={14} className="inline mr-1" />Комірки
           </button>
         </div>
       </div>
@@ -1319,7 +1319,7 @@ export default function LabelDesigner() {
                 <p className="text-xs text-gray-400">
                   [{settings.width_mm}×{settings.height_mm}mm]
                   {binMode ? (
-                    ` · Ячейка: ${binLabels[binLabels.length - 1] || 'A-1'}`
+                    ` · Комірка: ${binLabels[binLabels.length - 1] || 'A-1'}`
                   ) : (
                     printItems.length > 0 ? ` · ${printItems[0].name}` : ` · ${DEMO_PRODUCT.name}`
                   )}
@@ -1407,11 +1407,11 @@ export default function LabelDesigner() {
                 {/* Поштучне додавання */}
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-2">
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                    Поштучне додавання ячейки
+                    Поштучне додавання комірки
                   </label>
                   <div className="flex gap-2">
                     <Input value={binInput} onChange={(e) => setBinInput(e.target.value.toUpperCase())}
-                      placeholder="Назва ячейки: A-3, B12, Стелаж 5..."
+                      placeholder="Назва комірки: A-3, B12, Стелаж 5..."
                       className="flex-1" />
                     <Button size="sm" onClick={() => { if (binInput.trim()) { setBinLabels((prev) => [...prev, binInput.trim()]); setBinInput('') } }}>
                       <Plus size={14} />
@@ -1422,7 +1422,7 @@ export default function LabelDesigner() {
                 {/* Масове генерування серії ячейок */}
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-3">
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                    Масове генерування ячейок
+                    Масове генерування комірок
                   </label>
                   <div className="grid grid-cols-3 gap-2">
                     <div>
@@ -1442,7 +1442,7 @@ export default function LabelDesigner() {
                     </div>
                   </div>
                   <Button size="sm" onClick={handleGenerateBinSeries} className="w-full">
-                    Згенерувати серію ячейок
+                    Згенерувати серію комірок
                   </Button>
                 </div>
               </div>
@@ -1452,7 +1452,7 @@ export default function LabelDesigner() {
             <Card padding="none">
               <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
                 <span className="text-sm font-semibold text-gray-800">
-                  {binMode ? 'Ячейки' : 'Товари'} ({binMode ? binLabels.length : printItems.reduce((s, i) => s + i.copies, 0)} шт)
+                  {binMode ? 'Комірки' : 'Товари'} ({binMode ? binLabels.length : printItems.reduce((s, i) => s + i.copies, 0)} шт)
                 </span>
                 <div className="flex gap-2">
                   {!binMode && printItems.some(p => !p.barcode) && (
@@ -1533,7 +1533,7 @@ export default function LabelDesigner() {
               ) : (
                 <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
                   {binLabels.length === 0 ? (
-                    <p className="text-gray-400 text-sm text-center py-8">Додайте назви ячейок</p>
+                    <p className="text-gray-400 text-sm text-center py-8">Додайте назви комірок</p>
                   ) : (
                     binLabels.map((label, i) => (
                       <div key={i} className="px-4 py-2 flex items-center justify-between text-sm">

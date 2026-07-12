@@ -136,8 +136,31 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
   userCanDiscount: boolean
   onOpenNumpad: (productId: string) => void
 }) {
+  const [editingQty, setEditingQty] = useState(false)
+  const [qtyDraft, setQtyDraft] = useState(String(item.qty))
+  const cancelQtyEdit = useRef(false)
   const remove = () => usePOSStore.getState().removeItem(item.productId)
   const updateQty = (qty: number) => usePOSStore.getState().updateQty(item.productId, qty)
+
+  useEffect(() => {
+    if (!editingQty) setQtyDraft(String(item.qty))
+  }, [item.qty, editingQty])
+
+  function focusSearch() {
+    window.setTimeout(() => document.querySelector<HTMLInputElement>('[data-pos-search="true"]')?.focus(), 0)
+  }
+
+  function finishQtyEdit(save: boolean) {
+    if (save) {
+      const value = Number(qtyDraft.replace(',', '.'))
+      if (Number.isFinite(value) && value > 0) updateQty(+value.toFixed(3))
+      else setQtyDraft(String(item.qty))
+    } else {
+      setQtyDraft(String(item.qty))
+    }
+    setEditingQty(false)
+    focusSearch()
+  }
 
   return (
     <SwipeableItem onDelete={remove}>
@@ -181,14 +204,48 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
             >
               <Minus size={20} />
             </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onOpenNumpad(item.productId) }}
-              className="text-white text-lg font-semibold w-16 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
-              style={{ minHeight: 48 }}
-              aria-label={`Змінити кількість ${item.name}`}
-            >
-              {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
-            </button>
+            {editingQty ? (
+              <input
+                autoFocus
+                type="text"
+                inputMode="decimal"
+                value={qtyDraft}
+                onClick={(e) => { e.stopPropagation(); e.currentTarget.select() }}
+                onChange={(e) => setQtyDraft(e.target.value.replace(/[^0-9.,]/g, ''))}
+                onBlur={() => {
+                  finishQtyEdit(!cancelQtyEdit.current)
+                  cancelQtyEdit.current = false
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    cancelQtyEdit.current = true
+                    e.currentTarget.blur()
+                  }
+                }}
+                className="h-12 w-20 rounded-xl border-2 border-yellow-400 bg-[#2C2C2C] px-2 text-center text-lg font-bold text-white outline-none"
+                aria-label={`Кількість ${item.name}`}
+              />
+            ) : (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  usePOSStore.getState().setSelectedProductId(item.productId)
+                  if (window.matchMedia('(pointer: fine)').matches) {
+                    setQtyDraft(String(item.qty))
+                    setEditingQty(true)
+                  } else {
+                    onOpenNumpad(item.productId)
+                  }
+                }}
+                className="text-white text-lg font-semibold w-16 text-center h-12 flex items-center justify-center hover:bg-[#2C2C2C] rounded-xl transition-colors touch-target"
+                style={{ minHeight: 48 }}
+                aria-label={`Змінити кількість ${item.name}`}
+              >
+                {item.qty} <span className="text-gray-500 text-xs ml-0.5">{item.unit}</span>
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation()
@@ -228,7 +285,7 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
         {isSelected && (
           <div className="mt-1.5 flex gap-3 text-gray-500 text-[10px]">
             <span>Del — видалити</span>
-            <span>+/- — кількість</span>
+            <span>Клік по кількості — ввести число</span>
           </div>
         )}
       </div>
@@ -245,6 +302,11 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
 
   const numpadItem = numpadTarget ? store.items.find((i) => i.productId === numpadTarget) : null
   const openNumpad = useCallback((productId: string) => setNumpadTarget(productId), [])
+
+  const closeReceiptTab = useCallback((tabId: string, itemCount: number, tabLabel: string) => {
+    if (itemCount > 0 && !window.confirm(`Закрити «${tabLabel}»? Усі ${itemCount} поз. у цьому чеку буде видалено.`)) return
+    store.closeTab(tabId)
+  }, [store.closeTab])
 
   // Swipe між вкладками
   const handleTabTouchStart = useCallback((e: React.TouchEvent) => {
@@ -313,7 +375,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
                 </span>
               )}
               <button
-                onClick={(e) => { e.stopPropagation(); store.closeTab(tab.id) }}
+                onClick={(e) => { e.stopPropagation(); closeReceiptTab(tab.id, itemCount, tabLabel) }}
                 aria-label={`Закрити ${tabLabel}`}
                 className="opacity-60 hover:opacity-100 hover:text-red-400 transition-all shrink-0 flex items-center justify-center rounded-lg hover:bg-red-900/30"
                 style={{ minWidth: 36, minHeight: 36 }}
