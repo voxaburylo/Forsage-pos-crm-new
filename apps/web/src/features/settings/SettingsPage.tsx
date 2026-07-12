@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
+import { FiscalSettingsCard } from './FiscalSettingsCard'
 
 // ─── Emoji picker (compact) ─────────────────────────────────────
 const EMOJI_OPTIONS = ['📦','🛍','⚙️','🍕','☕','🔧','💡','🎁','🧴','🔑','🚗','🏷️','📱','💧','🧲','🪫']
@@ -400,6 +401,8 @@ export default function SettingsPage() {
               )}
             </Card>
           )}
+
+          {isDesktopRuntime() && <FiscalSettingsCard />}
 
           {/* ========== Правила продажу ========== */}
           <Card className="mt-6 space-y-4">

@@ -6,6 +6,12 @@ import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
+import {
+  CashalotService,
+  type CashalotConfigUpdate,
+  type FiscalCheckItemInput,
+  type FiscalCheckPayInput,
+} from './fiscal/cashalotService'
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
@@ -16,6 +22,7 @@ let localBootstrap: LocalBootstrapRepository | null = null
 let localCatalog: LocalCatalogRepository | null = null
 let localPos: LocalPosRepository | null = null
 let localSync: LocalSyncRepository | null = null
+let cashalot: CashalotService | null = null
 
 interface DesktopPrintOptions {
   title?: string
@@ -53,6 +60,11 @@ function requireLocalPos(): LocalPosRepository {
 function requireLocalSync(): LocalSyncRepository {
   if (!localSync) throw new Error('LOCAL_SYNC_NOT_READY')
   return localSync
+}
+
+function requireCashalot(): CashalotService {
+  if (!cashalot) throw new Error('FISCAL_SERVICE_NOT_READY')
+  return cashalot
 }
 
 async function createWindow(): Promise<void> {
@@ -163,6 +175,7 @@ app.whenReady().then(async () => {
   localCatalog = new LocalCatalogRepository(localDatabase)
   localPos = new LocalPosRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
+  cashalot = new CashalotService(dataRoot)
 
   ipcMain.handle('desktop:get-runtime-info', () => requireLocalDatabase().info())
   ipcMain.handle('desktop:backup-now', () => requireLocalDatabase().backupNow())
@@ -207,6 +220,30 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:print:html', (_event, html: string, options?: DesktopPrintOptions) =>
     printHtmlDocument(html, options),
   )
+  ipcMain.handle('desktop:fiscal:get-config', () => requireCashalot().getPublicConfig())
+  ipcMain.handle('desktop:fiscal:set-config', (_event, update: CashalotConfigUpdate) =>
+    requireCashalot().updateConfig(update),
+  )
+  ipcMain.handle('desktop:fiscal:register-com', () => requireCashalot().registerCom())
+  ipcMain.handle('desktop:fiscal:status', () => requireCashalot().getStatus())
+  ipcMain.handle('desktop:fiscal:open-shift', () => requireCashalot().openShift())
+  ipcMain.handle('desktop:fiscal:close-shift', () => requireCashalot().closeShift())
+  ipcMain.handle('desktop:fiscal:x-report', () => requireCashalot().xReport())
+  ipcMain.handle('desktop:fiscal:service-cash', (_event, amount: number, direction: 'in' | 'out') =>
+    requireCashalot().serviceCash(amount, direction),
+  )
+  ipcMain.handle('desktop:fiscal:register-check', (
+    _event,
+    items: FiscalCheckItemInput[],
+    pay: FiscalCheckPayInput,
+    comment?: string | null,
+  ) => requireCashalot().fiscalizeCheck(items, pay, comment))
+  ipcMain.handle('desktop:fiscal:register-return', (
+    _event,
+    items: FiscalCheckItemInput[],
+    pay: FiscalCheckPayInput,
+    originalFiscalNumber: string,
+  ) => requireCashalot().fiscalizeReturnCheck(items, pay, originalFiscalNumber))
 
   await createWindow()
 }).catch((error: unknown) => {
@@ -216,6 +253,8 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
+  cashalot?.stopWorker()
+  cashalot = null
   localDatabase?.close()
   localDatabase = null
   localBootstrap = null

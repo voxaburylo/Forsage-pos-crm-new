@@ -38,4 +38,19 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     html: (html: string, options?: unknown) =>
       ipcRenderer.invoke('desktop:print:html', html, options),
   },
+  fiscal: {
+    getConfig: () => ipcRenderer.invoke('desktop:fiscal:get-config'),
+    setConfig: (update: unknown) => ipcRenderer.invoke('desktop:fiscal:set-config', update),
+    registerCom: () => ipcRenderer.invoke('desktop:fiscal:register-com'),
+    status: () => ipcRenderer.invoke('desktop:fiscal:status'),
+    openShift: () => ipcRenderer.invoke('desktop:fiscal:open-shift'),
+    closeShift: () => ipcRenderer.invoke('desktop:fiscal:close-shift'),
+    xReport: () => ipcRenderer.invoke('desktop:fiscal:x-report'),
+    serviceCash: (amount: number, direction: 'in' | 'out') =>
+      ipcRenderer.invoke('desktop:fiscal:service-cash', amount, direction),
+    registerCheck: (items: unknown[], pay: unknown, comment?: string | null) =>
+      ipcRenderer.invoke('desktop:fiscal:register-check', items, pay, comment),
+    registerReturn: (items: unknown[], pay: unknown, originalFiscalNumber: string) =>
+      ipcRenderer.invoke('desktop:fiscal:register-return', items, pay, originalFiscalNumber),
+  },
 })

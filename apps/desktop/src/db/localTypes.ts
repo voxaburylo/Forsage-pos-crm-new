@@ -66,6 +66,8 @@ export interface LocalSaleCheckoutInput {
   discount?: number
   notes?: string | null
   is_fiscal?: boolean
+  fiscal_number?: string | null
+  fiscal_qr_url?: string | null
 }
 
 export interface LocalSaleCheckoutResult {

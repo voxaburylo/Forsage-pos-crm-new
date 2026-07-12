@@ -88,24 +88,85 @@ export function usePOS() {
 
     const desktop = desktopBridge()
     if (desktop) {
-      if (options?.isFiscal) {
-        toast.error('Фіскалізацію ПРРО підключимо окремим кроком. Зараз проведіть нефіскальний локальний чек')
-        return null
-      }
       if (bonusRedeemed > 0) {
         toast.error('Списання бонусів поки потребує серверної синхронізації')
         return null
+      }
+      if (options?.isFiscal && (method === 'debt' || (method === 'mixed' && !options?.split))) {
+        toast.error('Продаж у борг не фіскалізується — вимкніть фіскальний чек')
+        return null
+      }
+
+      // Фіскалізація через ПРРО Кашалот — ДО запису в локальну базу:
+      // якщо ФСКО відхилить чек, продаж не проводиться взагалі.
+      let fiscalNumber: string | null = null
+      let fiscalQrUrl: string | null = null
+      if (options?.isFiscal) {
+        try {
+          const cashAmount = method === 'mixed' && options?.split
+            ? options.split.cash_amount
+            : method === 'cash' ? toPay : 0
+          const cardAmount = method === 'mixed' && options?.split
+            ? options.split.card_amount
+            : method === 'card' ? toPay : 0
+          const bankAmount = method === 'transfer' ? toPay : 0
+
+          // Розкидаємо загальну знижку чека по позиціях пропорційно,
+          // щоб сума позицій зійшлася з сумою чека до копійки.
+          const lineAmounts = items.map((item) => item.unitPrice * item.qty - item.discount)
+          const linesTotal = lineAmounts.reduce((sum, amount) => sum + amount, 0)
+          let discountLeft = Math.min(totalDiscount, linesTotal)
+          const fiscalItems = items.map((item, index) => {
+            const lineAmount = lineAmounts[index]
+            const isLast = index === items.length - 1
+            const share = isLast
+              ? discountLeft
+              : Math.min(discountLeft, Math.round(totalDiscount * lineAmount / (linesTotal || 1)))
+            discountLeft -= share
+            const gross = item.unitPrice * item.qty
+            const finalAmount = Math.max(0, lineAmount - share)
+            return {
+              name: item.name,
+              vendor_code: item.sku || item.name,
+              unit: item.unit,
+              qty: item.qty,
+              unit_price: item.unitPrice,
+              amount: finalAmount,
+              discount: Math.max(0, gross - finalAmount),
+            }
+          })
+
+          const fiscalResult = await desktop.fiscal.registerCheck(fiscalItems, {
+            cash: method === 'cash' && options?.cashReceived ? options.cashReceived : cashAmount,
+            card: cardAmount,
+            bank: bankAmount,
+            check_total: toPay,
+            auth_code: options?.terminalAuthCode ?? null,
+          })
+          fiscalNumber = fiscalResult.ReceiptFiscalNum || null
+          fiscalQrUrl = fiscalResult.FSKOReceiptLink || fiscalResult.CashalotReceiptLink || null
+          if (fiscalResult.OfflineMode) {
+            toast.warning('ПРРО в режимі офлайн — чек буде дореєстровано автоматично')
+          }
+        } catch (error) {
+          toast.error('Фіскалізація не пройшла: '
+            + (error instanceof Error ? error.message : 'невідома помилка')
+            + '. Продаж НЕ проведено.')
+          return null
+        }
       }
 
       try {
         const payments = method === 'mixed' && options?.split
           ? [
-              { method: 'cash' as const, amount: options.split.cash_amount },
-              { method: 'card' as const, amount: options.split.card_amount, bank_auth_code: options.terminalAuthCode ?? null },
+              { method: 'cash' as const, amount: options.split.cash_amount, is_fiscal: !!fiscalNumber, fiscal_number: fiscalNumber },
+              { method: 'card' as const, amount: options.split.card_amount, is_fiscal: !!fiscalNumber, fiscal_number: fiscalNumber, bank_auth_code: options.terminalAuthCode ?? null },
             ].filter((payment) => payment.amount > 0)
           : [{
               method: method === 'mixed' ? 'cash' as const : method,
               amount: toPay,
+              is_fiscal: !!fiscalNumber,
+              fiscal_number: fiscalNumber,
               bank_auth_code: method === 'card' ? options?.terminalAuthCode ?? null : null,
             }]
 
@@ -123,7 +184,9 @@ export function usePOS() {
           payments,
           notes: notes || null,
           discount: totalDiscount,
-          is_fiscal: false,
+          is_fiscal: !!fiscalNumber,
+          fiscal_number: fiscalNumber,
+          fiscal_qr_url: fiscalQrUrl,
         }
         const result = await desktop.pos.checkout(checkoutInput)
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
@@ -138,7 +201,9 @@ export function usePOS() {
         })))
 
         store.clearReceipt()
-        toast.success('Локальний продаж #' + sale.sale_number + ' оформлено')
+        toast.success(fiscalNumber
+          ? `Продаж #${sale.sale_number} оформлено, фіскальний чек ${fiscalNumber}`
+          : 'Локальний продаж #' + sale.sale_number + ' оформлено')
         return sale
       } catch (error) {
         toast.error(error instanceof Error ? error.message : 'Помилка локального продажу')

@@ -172,10 +172,11 @@ export class LocalPosRepository {
         INSERT INTO sales (
           id, tenant_id, sale_number, customer_id, cashier_id, manager_id, shift_id,
           status, subtotal, discount, total, payment_method, is_debt, is_fiscal,
+          fiscal_number, fiscal_qr_url,
           cash_amount, card_amount, transfer_amount, debt_amount, notes,
           completed_at, dirty_at, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         saleId,
         tenantId,
@@ -190,6 +191,8 @@ export class LocalPosRepository {
         method,
         payments.debt > 0 ? 1 : 0,
         input.is_fiscal === true ? 1 : 0,
+        input.fiscal_number ?? null,
+        input.fiscal_qr_url ?? null,
         payments.cash,
         payments.card,
         payments.transfer,

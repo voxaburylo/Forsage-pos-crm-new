@@ -5,6 +5,7 @@ import type { ExpectedCash } from './shiftApi'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface Props {
   open: boolean
@@ -92,6 +93,24 @@ export function ShiftCloseModal({
       // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
       try { localStorage.setItem('forsage_last_shift_close_cash', (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }
       toast.success('Зміну закрито')
+
+      // Desktop + увімкнений ПРРО Кашалот: закриваємо фіскальну зміну (Z-звіт).
+      const desktop = desktopBridge()
+      if (desktop?.fiscal) {
+        try {
+          const fiscalConfig = await desktop.fiscal.getConfig()
+          if (fiscalConfig.enabled) {
+            await desktop.fiscal.closeShift()
+            toast.success('Z-звіт ПРРО зареєстровано')
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          // Якщо фіскальна зміна й не відкривалась (не було фіскальних чеків) — це не помилка.
+          if (!/не відкрит|not open/i.test(message)) {
+            toast.warning('Зміну закрито, але Z-звіт ПРРО не пройшов: ' + message + '. Закрийте зміну в Кашалоті вручну.')
+          }
+        }
+      }
       onClosed()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка закриття зміни')

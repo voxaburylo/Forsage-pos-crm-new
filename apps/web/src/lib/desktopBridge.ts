@@ -32,6 +32,8 @@ export interface DesktopCheckoutInput {
   notes?: string | null
   discount?: number
   is_fiscal?: boolean
+  fiscal_number?: string | null
+  fiscal_qr_url?: string | null
   items: Array<{
     product_id?: string | null
     description?: string | null
@@ -133,6 +135,59 @@ export interface DesktopSyncPullResult {
   counts: Record<string, number>
 }
 
+export interface DesktopFiscalConfig {
+  enabled: boolean
+  cashalotDir: string
+  fiscalNumberRRO: string
+  certificateDir: string | null
+  hasPassword: boolean
+  comRegistered: boolean
+}
+
+export interface DesktopFiscalConfigUpdate {
+  enabled?: boolean
+  cashalotDir?: string
+  fiscalNumberRRO?: string
+  certificateDir?: string | null
+  keyPassword?: string | null
+}
+
+export interface DesktopFiscalResult {
+  Return?: boolean
+  Description?: string
+  JsonVal?: string
+  ReceiptFiscalNum?: string
+  ReceiptLocalNum?: string
+  ShiftID?: string
+  OfflineMode?: boolean
+  FSKOReceiptLink?: string
+  CashalotReceiptLink?: string
+  Type?: number
+  Value?: unknown
+}
+
+export interface DesktopFiscalCheckItem {
+  name: string
+  vendor_code: string
+  barcode?: string | null
+  unit?: string | null
+  qty: number
+  unit_price: number
+  amount: number
+  discount?: number
+  is_service?: boolean
+}
+
+export interface DesktopFiscalCheckPay {
+  cash: number
+  card: number
+  bank?: number
+  check_total: number
+  auth_code?: string | null
+  rrn?: string | null
+  customer_email?: string | null
+}
+
 interface ForsageDesktopBridge {
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   backupNow: () => Promise<string>
@@ -163,6 +218,26 @@ interface ForsageDesktopBridge {
       heightMm?: number
       silent?: boolean
     }) => Promise<{ success: true }>
+  }
+  fiscal: {
+    getConfig: () => Promise<DesktopFiscalConfig>
+    setConfig: (update: DesktopFiscalConfigUpdate) => Promise<DesktopFiscalConfig>
+    registerCom: () => Promise<{ registered: boolean }>
+    status: () => Promise<DesktopFiscalResult>
+    openShift: () => Promise<DesktopFiscalResult>
+    closeShift: () => Promise<DesktopFiscalResult>
+    xReport: () => Promise<DesktopFiscalResult>
+    serviceCash: (amount: number, direction: 'in' | 'out') => Promise<DesktopFiscalResult>
+    registerCheck: (
+      items: DesktopFiscalCheckItem[],
+      pay: DesktopFiscalCheckPay,
+      comment?: string | null,
+    ) => Promise<DesktopFiscalResult>
+    registerReturn: (
+      items: DesktopFiscalCheckItem[],
+      pay: DesktopFiscalCheckPay,
+      originalFiscalNumber: string,
+    ) => Promise<DesktopFiscalResult>
   }
 }
 
