@@ -733,6 +733,9 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     title: `Етикетки ${w}×${h} мм`,
     pageSizeMm: { width: w, height: h },
     preferDesktopNative: true,
+    // HL80 відхиляє власний pageSize — друкуємо на його налаштованому папері
+    // (у драйвері треба обрати розмір LABEL 40×30 за замовчуванням).
+    useDriverPaper: true,
     cleanupDelayMs: 30000,
     readyDelayMs: 150,
   })

@@ -5,6 +5,9 @@ export interface PrintOptions {
   height?: number;
   pageSizeMm?: { width: number; height: number };
   preferDesktopNative?: boolean;
+  /** Друкувати на папері за налаштуванням драйвера (не задавати pageSize) —
+   * для етикеткового HL80, який відхиляє власний pageSize («Invalid printer settings»). */
+  useDriverPaper?: boolean;
   cleanupDelayMs?: number;
   readyDelayMs?: number;
 }
@@ -70,6 +73,7 @@ export class PrintService {
       height = 700,
       pageSizeMm,
       preferDesktopNative = false,
+      useDriverPaper = false,
       cleanupDelayMs = 30000,
       readyDelayMs = 100,
     } = options;
@@ -82,6 +86,7 @@ export class PrintService {
         widthMm: pageSizeMm.width,
         heightMm: pageSizeMm.height,
         silent: false,
+        useDriverPaper,
       }).catch((error: unknown) => {
         console.error("Failed to print document through desktop bridge", error);
         import("@/components/ui/Toast").then(({ toast }) => {

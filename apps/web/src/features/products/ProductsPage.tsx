@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
@@ -64,6 +64,8 @@ function SortTh({ field, label, className, sort, onSort }: {
 }
 
 // ─── Головна сторінка ─────────────────────────────────────────────────────────
+const PRODUCTS_PER_PAGE = 100
+
 export default function ProductsPage() {
   const navigate = useNavigate()
   const session  = useAuthStore((s) => s.session)
@@ -78,6 +80,10 @@ export default function ProductsPage() {
   // Контрольні фільтри власника: мінусові залишки / товари без ціни
   const [stockFilter, setStockFilter] = useState<'' | 'negative' | 'no_price'>('')
   const [page, setPage]             = useState(1)
+  // Нескінченний скрол: накопичуємо сторінки по 100 (ключ = номер сторінки),
+  // щоб при докручуванні донизу дозавантажувати наступні 100, а не гортати сторінками.
+  const [pages, setPages]           = useState<Record<number, Product[]>>({})
+  const loadMoreRef                 = useRef<HTMLDivElement | null>(null)
   const [loading, setLoading]       = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
   const [categories, setCategories] = useState<Category[]>([])
@@ -172,7 +178,8 @@ export default function ProductsPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  // Завантаження товарів (серверне сортування, крім 'brand' — передається окремо)
+  // Завантаження товарів (серверне сортування, крім 'brand' — передається окремо).
+  // Пише результат сторінки в мапу pages, щоб накопичувати для нескінченного скролу.
   const load = useCallback(async () => {
     setLoading(true)
     const local = await listProductsOffline({
@@ -182,13 +189,14 @@ export default function ProductsPage() {
       categoryId: categoryFilter || undefined,
       brandId: brandFilter || undefined,
       page,
-      perPage: 25,
+      perPage: PRODUCTS_PER_PAGE,
       sortField: sort?.field,
       sortDir: sort?.dir,
       scopeKey,
     }).catch(() => null)
     if (local?.data.length || local?.pagination.total) {
       setResult(local as PaginatedProducts)
+      setPages((prev) => ({ ...prev, [page]: local!.data }))
       setLoading(false)
     }
     try {
@@ -200,29 +208,59 @@ export default function ProductsPage() {
         category_id: categoryFilter || undefined,
         brand_id: brandFilter || undefined,
         page,
-        per_page: 25,
+        per_page: PRODUCTS_PER_PAGE,
         sort_field: serverSortField,
         sort_dir: sort?.dir,
       })
       setResult(data)
+      setPages((prev) => ({ ...prev, [page]: data.data }))
     } catch (e) {
       if (!local?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
     } finally { setLoading(false) }
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setPage(1) }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
+  // Зміна фільтрів/пошуку/сортування — починаємо накопичення заново з 1-ї сторінки
+  useEffect(() => { setPage(1); setPages({}) }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
+
+  // Накопичені товари з усіх завантажених сторінок (нескінченний скрол), без дублів
+  const accumulated = useMemo(() => {
+    const seen = new Set<string>()
+    const out: Product[] = []
+    for (const key of Object.keys(pages).map(Number).sort((a, b) => a - b)) {
+      for (const p of pages[key]) {
+        if (!seen.has(p.id)) { seen.add(p.id); out.push(p) }
+      }
+    }
+    return out
+  }, [pages])
 
   // Клієнтське сортування тільки для поля 'brand' (JOIN-колонку не можна сортувати на сервері)
   const products = useMemo(() => {
-    const data = result?.data ?? []
+    const data = accumulated
     if (sort?.field !== 'brand') return data
     return [...data].sort((a, b) => {
       const va = a.brand?.name ?? ''
       const vb = b.brand?.name ?? ''
       return sort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va)
     })
-  }, [result, sort])
+  }, [accumulated, sort])
+
+  const totalCount = result?.pagination.total ?? 0
+  const hasMore = accumulated.length < totalCount
+
+  // Автопідвантаження наступних 100 при докручуванні донизу
+  useEffect(() => {
+    const node = loadMoreRef.current
+    if (!node || !hasMore) return
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && !loading && hasMore) {
+        setPage((p) => p + 1)
+      }
+    }, { rootMargin: '400px' })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasMore, loading])
 
   function toggleSort(field: SortField) {
     setSort((prev) => {
@@ -315,7 +353,6 @@ export default function ProductsPage() {
 
   const allSelected = !!result?.data.length && selectedIds.size === result.data.length
   const total       = result?.pagination.total ?? 0
-  const totalPages  = result?.pagination.total_pages ?? 1
 
   return (
     <Layout
@@ -621,21 +658,13 @@ export default function ProductsPage() {
               </table>
             </div>
 
-            {/* Пагінація */}
-            {totalPages > 1 && (
-              <div className="border-t border-gray-100 px-4 py-3 flex items-center justify-between text-sm text-gray-500 bg-gray-50">
-                <span>{total > 0 ? `Показано ${(page-1)*25+1}–${Math.min(page*25, total)} з ${total}` : 'Немає результатів'}</span>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setPage(1)} disabled={page === 1}
-                    className="px-2 py-1 rounded-lg bg-white border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-100 transition-colors">«</button>
-                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
-                    className="px-2 py-1 rounded-lg bg-white border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-100 transition-colors">‹</button>
-                  <span className="px-3 py-1 bg-yellow-400 text-black rounded-lg text-xs font-bold">{page} / {totalPages}</span>
-                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-                    className="px-2 py-1 rounded-lg bg-white border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-100 transition-colors">›</button>
-                  <button onClick={() => setPage(totalPages)} disabled={page === totalPages}
-                    className="px-2 py-1 rounded-lg bg-white border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-100 transition-colors">»</button>
-                </div>
+            {/* Нескінченний скрол: сентинел + лічильник */}
+            <div ref={loadMoreRef} />
+            {totalCount > 0 && (
+              <div className="border-t border-gray-100 px-4 py-3 text-center text-sm text-gray-500 bg-gray-50">
+                {hasMore
+                  ? (loading ? 'Завантаження...' : `Показано ${accumulated.length} з ${totalCount} — прокрутіть, щоб більше`)
+                  : `Показано всі ${totalCount}`}
               </div>
             )}
           </div>
