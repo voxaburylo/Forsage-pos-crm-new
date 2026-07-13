@@ -143,8 +143,21 @@ export default router
 export const settingsRouter = Router()
 settingsRouter.use(requireAuth)
 
-settingsRouter.get('/', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
-  try { res.json({ data: await adminService.getSettings(req.user!.tenant_id) }) } catch (err) { next(err) }
+// Читають налаштування ВСІ ролі (касі потрібні термінал/ПРРО/швидкі товари),
+// але секрети й комерційні поля бачать лише власник/адмін.
+const SENSITIVE_SETTINGS = [
+  'kashalot_license_key', 'kashalot_pin', 'vin_decoder_api_key',
+  'privatbank_merchant_id', 'owner_telegram_chat_id', 'markup_rules',
+] as const
+
+settingsRouter.get('/', async (req, res, next) => {
+  try {
+    const data: Record<string, any> = await adminService.getSettings(req.user!.tenant_id)
+    if (!['owner', 'admin'].includes(req.user!.role)) {
+      for (const key of SENSITIVE_SETTINGS) delete data[key]
+    }
+    res.json({ data })
+  } catch (err) { next(err) }
 })
 
 settingsRouter.put('/', requireRole('owner', 'admin'), async (req, res, next) => {

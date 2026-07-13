@@ -6,6 +6,8 @@ import { listWriteoffs, getWriteoff, createWriteoff } from '../services/writeoff
 
 const router = Router()
 router.use(requireAuth)
+// Списання містять собівартість — не для касира/СТО
+router.use(requireRole('owner', 'admin', 'manager', 'storekeeper'))
 
 router.get('/', async (req, res, next) => {
   try {

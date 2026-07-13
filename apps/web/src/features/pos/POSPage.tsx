@@ -22,7 +22,7 @@ import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
 import { LockScreenOverlay, isLocked, setLocked } from './LockScreenOverlay'
 import { shiftApi } from './shiftApi'
-import { usePOSStore, type POSItem, type POSCustomer } from '@/stores/posStore'
+import type { POSItem, POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
 import type { Sale } from '@/types/sale'
 import { formatMoney } from '@/lib/utils'
@@ -33,9 +33,9 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useAuthStore } from '@/stores/authStore'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
-import { cacheCurrentShift, commitLocalSale, getCachedStaff } from '@/lib/offlineDB'
+import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } from '@/lib/offlineDB'
 import { OfflineSalesModal } from './OfflineSalesModal'
-import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -104,13 +104,13 @@ function loadCart(): SavedCart | null {
       shiftId: typeof parsed.shiftId === 'string' ? parsed.shiftId : null,
     }
   } catch {
-    try { localStorage.removeItem(CART_KEY) } catch { /* localStorage може бути недоступний у приватному режимі */ }
+    try { localStorage.removeItem(CART_KEY) } catch {}
     return null
   }
 }
 
 function clearSavedCart() {
-  try { localStorage.removeItem(CART_KEY) } catch { /* аварійна копія не повинна блокувати касу */ }
+  try { localStorage.removeItem(CART_KEY) } catch {}
 }
 
 function savedCartTotal(cart: SavedCart): number {
@@ -123,8 +123,6 @@ function savedCartTotal(cart: SavedCart): number {
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 
 function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: () => void }) {
-  const session = useAuthStore((s) => s.session)
-  const setCurrentShift = usePOSStore((s) => s.setCurrentShift)
   // Підставляємо залишок із закриття попередньої зміни (та сама каса)
   const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
   const [loading, setLoading] = useState(false)
@@ -136,28 +134,6 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: (
     const kopecks = Math.round(parsedCash * 100)
     setLoading(true)
     try {
-      const desktop = desktopBridge()
-      const cashierId = session?.user?.id
-      if (desktop && cashierId) {
-        const shiftId = await desktop.pos.openShift({ cashier_id: cashierId, opening_cash: kopecks })
-        window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
-        const shift = await desktop.pos.getOpenShift(cashierId)
-        setCurrentShift(shift ?? {
-          id: shiftId,
-          cashier_id: cashierId,
-          status: 'open',
-          opening_cash: kopecks,
-          closing_cash: null,
-          expected_cash: null,
-          cash_variance: null,
-          opened_at: new Date().toISOString(),
-          closed_at: null,
-          notes: null,
-        })
-        toast.success('Локальну зміну відкрито')
-        onOpened()
-        return
-      }
       await shiftApi.open(kopecks)
       toast.success('Зміну відкрито')
       onOpened()
@@ -260,9 +236,52 @@ export default function POSPage() {
     setLockedPIN(true)
   }
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
+  const [scannerStats, setScannerStats] = useState({ captured: 0, added: 0, failed: 0, lastCode: '' })
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
-  const scannerHotkeysBlockedUntilRef = useRef(0)
+  const earlyBarcodeScans = useRef<string[]>([])
+  const routeBarcodeScan = useCallback((code: string) => {
+    const panel = searchRef.current
+    if (panel) {
+      panel.scanBarcode(code)
+      return
+    }
+    // Перший скан може прийти між підключенням глобального HID-обробника
+    // та монтуванням SearchPanel. Не втрачаємо його.
+    earlyBarcodeScans.current.push(code)
+  }, [])
+  usePOSBarcodeScanner({
+    onScan: routeBarcodeScan,
+  })
+
+  useEffect(() => {
+    if (store.isInitializing) return
+    const frame = window.requestAnimationFrame(() => {
+      const panel = searchRef.current
+      if (!panel || earlyBarcodeScans.current.length === 0) return
+      const queued = earlyBarcodeScans.current.splice(0)
+      for (const code of queued) panel.scanBarcode(code)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [store.isInitializing])
+
+  useEffect(() => {
+    const handleScannerStage = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        stage?: 'captured' | 'added' | 'failed'
+        code?: string
+      }>).detail
+      if (!detail?.stage) return
+      setScannerStats((current) => ({
+        captured: current.captured + (detail.stage === 'captured' ? 1 : 0),
+        added: current.added + (detail.stage === 'added' ? 1 : 0),
+        failed: current.failed + (detail.stage === 'failed' ? 1 : 0),
+        lastCode: detail.code ?? current.lastCode,
+      }))
+    }
+    window.addEventListener('forsage:pos-scanner-stage', handleScannerStage)
+    return () => window.removeEventListener('forsage:pos-scanner-stage', handleScannerStage)
+  }, [])
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
@@ -281,10 +300,7 @@ export default function POSPage() {
   useEffect(() => {
     const currentId = session?.user?.id
     if (currentId && !store.managerId) store.setManagerId(currentId)
-    // Кешуємо ім'я продавця для чека (працює й офлайн)
-    const sellerName = (session?.user?.user_metadata?.full_name as string | undefined) ?? ''
-    if (sellerName) localStorage.setItem('forsage_seller_name', sellerName)
-  }, [session?.user?.id, session?.user?.user_metadata?.full_name, store.managerId])
+  }, [session?.user?.id, store.managerId])
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
@@ -306,10 +322,6 @@ export default function POSPage() {
         setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
         autoPrintRef.current = data.auto_print_receipt ?? false
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
-        // Кешуємо реквізити магазину для чека (щоб друкувалися й офлайн)
-        if (data.shop_name) localStorage.setItem('forsage_shop_name', data.shop_name)
-        localStorage.setItem('forsage_shop_address', data.shop_address ?? '')
-        localStorage.setItem('forsage_shop_phone', data.phone ?? '')
       })
       .catch(() => {})
 
@@ -393,84 +405,14 @@ export default function POSPage() {
     const { tabs, activeTabId } = store
     const tab = tabs.find((t) => t.id === activeTabId)
     if (tab && tab.items.length > 0) {
-      if (!window.confirm(`Скинути поточний чек? Буде видалено ${tab.items.length} поз.`)) return
       store.clearReceipt()
     }
     clearSavedCart()
   }, [store])
 
-  // Глобальний сканер ШК працює в capture-фазі, тому не залежить від фокуса.
-  // Швидка серія символів + Enter перехоплюється раніше за звичайний пошук.
-  useEffect(() => {
-    let buf = ''
-    let last = 0
-    let first = 0
-    const scannerTerminatorKeys = new Set(['Enter', 'Tab', 'F7'])
-
-    function resetScannerBuffer() {
-      buf = ''
-      first = 0
-      last = 0
-    }
-
-    function isScannerSequence(now: number) {
-      const averageInterval = buf.length > 1 ? (last - first) / (buf.length - 1) : Number.POSITIVE_INFINITY
-      return buf.length >= 4 && (now - last) < 180 && averageInterval < 80
-    }
-
-    function finishScannerSequence(e: KeyboardEvent, now: number) {
-      if (!isScannerSequence(now)) return false
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      scannerHotkeysBlockedUntilRef.current = now + 300
-      searchRef.current?.scanBarcode(buf)
-      resetScannerBuffer()
-      return true
-    }
-
-    function onScanKey(e: KeyboardEvent) {
-      // Поле пошуку має власний буфер ручного вводу/сканера. Не запускаємо
-      // одночасно другий розпізнавач для тих самих клавіш: саме ця гонка
-      // могла втрачати кожен другий скан на завершальному Enter/Tab/F7.
-      const activeElement = document.activeElement as HTMLElement | null
-      if (activeElement?.dataset.posSearch === 'true') return
-      if (activeElement?.matches('input, textarea, select, [contenteditable="true"]')) return
-
-      const now = Date.now()
-      if (scannerTerminatorKeys.has(e.key) || /^F\d{1,2}$/.test(e.key)) {
-        // Сканери можуть завершувати код Enter, Tab або навіть F7.
-        // Якщо це швидка серія символів — завершуємо скан тут незалежно від фокуса,
-        // щоб службова клавіша не потрапила в пошук або гарячі клавіші POS.
-        if (finishScannerSequence(e, now)) return
-        resetScannerBuffer()
-        return
-      }
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (now - last > 120) {
-          buf = ''
-          first = now
-        }
-        if (!buf) first = now
-        buf += e.key
-        last = now
-      } else {
-        if (finishScannerSequence(e, now)) return
-        resetScannerBuffer()
-      }
-    }
-    window.addEventListener('keydown', onScanKey, true)
-    return () => window.removeEventListener('keydown', onScanKey, true)
-  }, [])
-
   // Гарячі клавіші
   useEffect(() => {
     function handleGlobalKeyDown(e: KeyboardEvent) {
-      if (Date.now() < scannerHotkeysBlockedUntilRef.current) {
-        e.preventDefault()
-        e.stopPropagation()
-        return
-      }
       // Не перехоплюємо якщо фокус на input (крім F-клавіш та Esc)
       const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA'
       // Escape закриває відкриті модалки
@@ -631,6 +573,15 @@ export default function POSPage() {
         last_error:      null,
       }
 
+      try {
+        await enqueueSale(offlineSale)
+      } catch {
+        toast.error('Не вдалося зберегти чек у браузері. Не приймайте оплату та повторіть')
+        return null
+      }
+
+      await decrementCachedStock(offlineSale.items).catch(() => {})
+      incrementPending()
       const localReceipt: Sale = {
         id: offlineId,
         sale_number: `OFF-${offlineId.slice(0, 8).toUpperCase()}`,
@@ -663,51 +614,14 @@ export default function POSPage() {
           product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
         })),
       }
-
-      try {
-        // Один IndexedDB transaction: чек + outbox + локальний залишок.
-        // Або збережеться все, або не збережеться нічого.
-        await commitLocalSale(
-          offlineSale,
-          localReceipt as any,
-          session?.user?.id ?? '',
-        )
-      } catch {
-        toast.error('Не вдалося зберегти чек на цьому ПК. Не приймайте оплату та повторіть')
-        return null
-      }
-
-      incrementPending()
       paymentPrintChoiceRef.current = printAfterPayment === true
       setLastSale(localReceipt)
       store.clearReceipt()
       clearSavedCart()
       setPayOpen(false)
       playCashRegister()
-      toast.success(`Локальний чек ${localReceipt.sale_number} збережено. Синхронізація — до 5 хв`)
+      toast.success(`Офлайн-чек ${localReceipt.sale_number} збережено і буде синхронізовано`)
       return localReceipt
-    }
-
-    // Local-first: звичайна готівка/переказ завжди спочатку фіксуються на ПК.
-    // Інтернет не бере участі в критичному шляху «оплата → закриття чека».
-    if (isDesktopRuntime() && !isFiscal && (bonusRedeemed ?? 0) === 0) {
-      const sale = await completeSale(method, { cashReceived, bonusRedeemed, split, isFiscal, terminalAuthCode })
-      if (sale) {
-        paymentPrintChoiceRef.current = printAfterPayment === true
-        setLastSale(sale as Sale)
-        clearSavedCart()
-        setPayOpen(false)
-        playCashRegister()
-      }
-      return
-    }
-
-    const canCommitLocally = (method === 'cash' || method === 'transfer')
-      && !isFiscal
-      && (bonusRedeemed ?? 0) === 0
-    if (canCommitLocally) {
-      await saveOfflineSale()
-      return
     }
 
     // Офлайн-режим: лише повноготівкові/переказ без ПРРО.
@@ -772,7 +686,15 @@ export default function POSPage() {
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#1A1A1A]">
-      <div className={`pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A] ${bigFont && !isStandalonePWA ? 'pos-big-font' : ''}`}>
+      <div
+        className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
+        style={bigFont && !isStandalonePWA ? {
+          transform: 'scale(1.18)',
+          transformOrigin: 'top left',
+          width: 'calc(100vw / 1.18)',
+          height: 'calc(100dvh / 1.18)',
+        } : undefined}
+      >
       {/* Lock Screen */}
       {isLockedPIN && (
         <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />
@@ -881,6 +803,18 @@ export default function POSPage() {
             <Zap className="text-yellow-400 size-3.5 md:size-4" />
             <span className="text-white font-semibold text-xs md:text-sm tracking-wide">Форсаж</span>
             <span className="text-emerald-400 text-[9px] md:text-[10px] font-medium bg-emerald-900/40 px-1.5 py-0.5 rounded-full border border-emerald-800/30">Зміна</span>
+            <span
+              className={`hidden lg:inline-flex text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${
+                scannerStats.failed > 0 || scannerStats.captured !== scannerStats.added
+                  ? 'text-amber-300 bg-amber-950/60 border-amber-800/60'
+                  : 'text-emerald-300 bg-emerald-950/50 border-emerald-800/40'
+              }`}
+              title={scannerStats.lastCode
+                ? `Останній код: ${scannerStats.lastCode}. Помилок: ${scannerStats.failed}`
+                : 'Сканер готовий'}
+            >
+              Сканер {scannerStats.captured}/{scannerStats.added}
+            </span>
           </div>
           {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}
@@ -938,8 +872,8 @@ export default function POSPage() {
           </button>
           <button onClick={() => setDebtPayOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-red-400 hover:text-red-300 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Прийняти оплату боргу клієнта">
-            <DollarSign size={15} /><span className="hidden xl:inline">Борг</span>
+            title="Оплата боргу / поповнення рахунку клієнта">
+            <DollarSign size={15} /><span className="hidden xl:inline">Борг/Рахунок</span>
           </button>
           <button onClick={() => navigate('/returns')}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-orange-400 hover:text-orange-300 hover:bg-gray-800 transition-colors text-xs font-medium"
@@ -1239,7 +1173,8 @@ export default function POSPage() {
         offline={!serverOnline}
         onClose={() => setCustomerOpen(false)}
         onCreated={(c: Customer) => {
-          const tierDiscountPct = c.price_tier?.discount_pct ?? 0
+          // Режим «накопичення»: % не знижує чек, а нараховується на рахунок
+          const tierDiscountPct = (c as any).loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
           store.setCustomer({
             id:              c.id,
             phone:           c.phone,

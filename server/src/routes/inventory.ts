@@ -259,6 +259,50 @@ router.put('/:id/items/:itemId', requireRole(...MANAGER_ROLES), async (req, res,
   } catch (error) { next(error) }
 })
 
+// Зміна ціни прямо з ревізії: оновлює роздрібну ціну товару (з історією цін)
+// і закриває розбіжність у сесії. Ролі — ті самі, що можуть редагувати товар.
+router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+  try {
+    const parsed = z.object({
+      product_id: z.string().uuid(),
+      retail_price: z.number().int().min(0).max(100_000_000_000),
+    }).safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна ціна', 422, parsed.error.flatten())
+    const sessionId = String(req.params.id)
+    await requireInventorySession(sessionId, req.user!.tenant_id)
+
+    const { updateProduct } = await import('../services/productService.js')
+    const product = await updateProduct(
+      parsed.data.product_id,
+      { retail_price: parsed.data.retail_price } as any,
+      req.user!.id,
+      req.user!.tenant_id,
+    )
+
+    // Розбіжність вирішено — позиція ревізії стає «ціна перевірена»
+    await db.from('inventory_items')
+      .update({ price_checked: true, observed_retail_price: null, updated_at: new Date().toISOString() })
+      .eq('session_id', sessionId)
+      .eq('product_id', parsed.data.product_id)
+
+    void logAction({
+      tenantId: req.user!.tenant_id,
+      userId: req.user!.id,
+      userRole: req.user!.role,
+      action: 'inventory_price_applied',
+      entityType: 'product',
+      entityId: parsed.data.product_id,
+      entityLabel: `${(product as any)?.sku ?? ''} - ${(product as any)?.name ?? ''}`,
+      note: `Ціну оновлено з ревізії: ${(parsed.data.retail_price / 100).toFixed(2)} грн`,
+    })
+
+    res.json({
+      data: { product },
+      session: await loadSessionData(sessionId, req.user!.tenant_id, req.user!.id),
+    })
+  } catch (error) { next(error) }
+})
+
 router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const confirmation = z.object({

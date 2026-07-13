@@ -1,16 +1,16 @@
-import { useState, useEffect, useMemo } from 'react'
-import { DollarSign, X } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { DollarSign, Wallet, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { shiftApi } from './shiftApi'
-import { desktopBridge } from '@/lib/desktopBridge'
 
 interface Customer {
   id: string
   full_name: string | null
   phone: string
   debt_balance: number
+  deposit_balance?: number
 }
 
 interface Props {
@@ -19,7 +19,10 @@ interface Props {
   onPaid: () => void
 }
 
+// Дві грошові операції з клієнтом на касі: погашення боргу і поповнення
+// рахунку (передплата). З рахунку потім оплачуються замовлення.
 export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
+  const [mode, setMode] = useState<'debt' | 'deposit'>('debt')
   const [search, setSearch] = useState('')
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(false)
@@ -30,51 +33,87 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
 
   useEffect(() => {
     if (!open) {
-      setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([])
+      setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([]); setMode('debt')
       return
     }
-    setLoading(true)
-    // Desktop: боржники з локальної бази (працює офлайн)
-    const desktop = desktopBridge()
-    if (desktop) {
-      desktop.pos.listDebtors(200)
-        .then((rows) => setCustomers(rows.map((c) => ({
-          id: c.id, full_name: c.full_name, phone: c.phone ?? '', debt_balance: c.debt_balance,
-        }))))
-        .catch(() => toast.error('Не вдалося завантажити список боргів'))
-        .finally(() => setLoading(false))
-      return
-    }
-    api.get<{ data: Customer[] }>('/api/v1/customers?has_debt=true&sort=debt&per_page=200')
-      .then((r) => setCustomers((r.data ?? []).filter((c) => c.debt_balance > 0)))
-      .catch(() => toast.error('Не вдалося завантажити список боргів'))
-      .finally(() => setLoading(false))
   }, [open])
 
-  const visibleCustomers = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase('uk-UA')
-    if (!query) return customers
-    return customers.filter((customer) =>
-      customer.phone.includes(query)
-      || (customer.full_name ?? '').toLocaleLowerCase('uk-UA').includes(query),
-    )
-  }, [customers, search])
+  // Скан картки клієнта при відкритій модалці — одразу вибирає клієнта тут,
+  // а не чіпляє його до чека
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: Event) => {
+      const c = (event as CustomEvent<any>).detail
+      if (!c?.id) return
+      event.preventDefault()
+      setSelected({
+        id: c.id,
+        full_name: c.full_name ?? null,
+        phone: c.phone,
+        debt_balance: c.debt_balance ?? 0,
+        deposit_balance: c.deposit_balance ?? 0,
+      })
+      setAmount(mode === 'debt' && (c.debt_balance ?? 0) > 0 ? ((c.debt_balance ?? 0) / 100).toFixed(2) : '')
+      toast.success(`Картка клієнта: ${c.full_name ?? c.phone}`)
+    }
+    window.addEventListener('forsage:pos-customer-scanned', handler)
+    return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
+  }, [open, mode])
 
-  async function handlePay() {
+  // Початковий список: для боргу — боржники, для рахунку — нічого (тільки пошук)
+  useEffect(() => {
+    if (!open) return
+    setSelected(null)
+    setAmount('')
+    if (mode === 'debt') {
+      setLoading(true)
+      api.get<{ data: Customer[] }>('/api/v1/customers?has_debt=true&sort=debt&per_page=100')
+        .then((r) => setCustomers((r.data ?? []).filter((c) => c.debt_balance > 0)))
+        .catch(() => toast.error('Не вдалося завантажити список боргів'))
+        .finally(() => setLoading(false))
+    } else {
+      setCustomers([])
+    }
+  }, [open, mode])
+
+  useEffect(() => {
+    if (!open || search.length < 2) return
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      const url = mode === 'debt'
+        ? `/api/v1/customers?search=${encodeURIComponent(search)}&has_debt=true&per_page=50`
+        : `/api/v1/customers?search=${encodeURIComponent(search)}&per_page=50`
+      api.get<{ data: Customer[] }>(url)
+        .then((r) => setCustomers(mode === 'debt' ? (r.data?.filter((c) => c.debt_balance > 0) ?? []) : (r.data ?? [])))
+        .catch(() => {})
+        .finally(() => setLoading(false))
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [search, open, mode])
+
+  async function handleSubmit() {
     if (!selected) return
     const kopecks = Math.round(parseFloat(amount || '0') * 100)
     if (kopecks <= 0) { toast.error('Вкажіть суму'); return }
-    if (kopecks > selected.debt_balance) { toast.error('Сума перевищує борг'); return }
+    if (mode === 'debt' && kopecks > selected.debt_balance) { toast.error('Сума перевищує борг'); return }
 
     setSaving(true)
     try {
       const shift = await shiftApi.current().catch(() => null)
       const shiftId = (shift as any)?.data?.id ?? null
-      await api.post(`/api/v1/customers/${selected.id}/pay-debt`, {
-        amount: kopecks, method,
-        shift_id: shiftId,
-      })
-      toast.success(`Борг оплачено: ${formatMoney(kopecks)}`)
+      if (mode === 'debt') {
+        await api.post(`/api/v1/customers/${selected.id}/pay-debt`, {
+          amount: kopecks, method,
+          shift_id: shiftId,
+        })
+        toast.success(`Борг оплачено: ${formatMoney(kopecks)}`)
+      } else {
+        const res = await api.post<{ data: { balance: number } }>(`/api/v1/customers/${selected.id}/deposit`, {
+          amount: kopecks, method,
+          shift_id: shiftId,
+        })
+        toast.success(`Рахунок поповнено: ${formatMoney(kopecks)}. Баланс: ${formatMoney(res.data.balance)}`)
+      }
       onPaid()
       onClose()
     } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
@@ -82,98 +121,134 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
   }
 
   if (!open) return null
+  const isDebt = mode === 'debt'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label="Оплата боргу" className="relative mx-4 flex max-h-[90dvh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A] p-5">
+      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <DollarSign size={18} className="text-red-400" />
-            <h2 className="text-white text-lg font-bold">Оплата боргу</h2>
+            {isDebt ? <DollarSign size={18} className="text-red-400" /> : <Wallet size={18} className="text-emerald-400" />}
+            <h2 className="text-white text-lg font-bold">{isDebt ? 'Оплата боргу' : 'Рахунок клієнта'}</h2>
           </div>
-          <button onClick={onClose} aria-label="Закрити оплату боргу" className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={onClose} aria-label="Закрити" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4">
-          <div className="shrink-0">
-            <label className="text-gray-400 text-xs mb-1 block">Пошук у списку боржників</label>
+        {/* Перемикач: борг / поповнення рахунку */}
+        <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl bg-[#2C2C2C] p-1">
+          <button onClick={() => setMode('debt')}
+            className={`py-2 rounded-lg text-sm font-semibold transition-colors ${
+              isDebt ? 'bg-red-500/90 text-white' : 'text-gray-400 hover:text-white'
+            }`}>
+            Погасити борг
+          </button>
+          <button onClick={() => setMode('deposit')}
+            className={`py-2 rounded-lg text-sm font-semibold transition-colors ${
+              !isDebt ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
+            }`}>
+            Поповнити рахунок
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-gray-400 text-xs mb-1 block">
+              {isDebt ? 'Пошук у списку боржників' : 'Пошук клієнта (телефон або ПІБ)'}
+            </label>
             <input type="text" autoFocus value={search}
               onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Escape') setSearch('') }}
-              placeholder="Телефон або ім'я..."
-              className="w-full bg-[#2C2C2C] text-white rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-red-500 text-sm" />
+              placeholder="Телефон або ПІБ..."
+              data-scanner-ignore="true"
+              className={`w-full bg-[#2C2C2C] text-white rounded-xl px-4 py-3 border border-gray-700 focus:outline-none text-sm ${
+                isDebt ? 'focus:border-red-500' : 'focus:border-emerald-500'
+              }`} />
           </div>
 
-          <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[1.15fr_0.85fr]">
-            <section className="flex min-h-0 flex-col rounded-xl border border-gray-800 bg-[#151515] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-white">Існуючі борги</p>
-                <span className="rounded-full bg-red-900/30 px-2 py-0.5 text-xs font-bold text-red-300">{visibleCustomers.length}</span>
+          {loading && <p className="text-gray-500 text-xs text-center">Пошук...</p>}
+
+          {selected ? (
+            <div className={`rounded-xl border p-3 ${isDebt ? 'bg-red-900/20 border-red-500/30' : 'bg-emerald-900/20 border-emerald-500/30'}`}>
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="text-white font-medium text-sm">{selected.full_name || '—'}</p>
+                  <p className="text-gray-400 text-xs">{selected.phone}</p>
+                </div>
+                <div className="flex items-start gap-3 text-right">
+                  <button onClick={() => { setSelected(null); setAmount('') }}
+                    className="text-xs text-gray-400 hover:text-white">Змінити</button>
+                  <div>
+                    {isDebt ? (
+                      <>
+                        <p className="text-red-400 text-xs">Борг:</p>
+                        <p className="text-red-400 font-bold text-lg">{formatMoney(selected.debt_balance)}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-emerald-400 text-xs">На рахунку:</p>
+                        <p className="text-emerald-400 font-bold text-lg">{formatMoney(selected.deposit_balance ?? 0)}</p>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
-              <p className="mb-2 text-xs text-gray-500">Прокрутіть список і виберіть клієнта</p>
-              <div className="min-h-48 flex-1 space-y-1 overflow-y-auto pr-1 md:min-h-0">
-                {loading && <p className="py-6 text-center text-xs text-gray-500">Завантаження боргів...</p>}
-                {!loading && visibleCustomers.map((customer) => (
-                  <button key={customer.id} type="button"
-                    onClick={() => { setSelected(customer); setAmount((customer.debt_balance / 100).toFixed(2)) }}
-                    className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left ${selected?.id === customer.id ? 'border-red-500 bg-red-900/25' : 'border-transparent bg-[#2C2C2C] hover:bg-gray-700'}`}>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-white">{customer.full_name || 'Без імені'}</p>
-                      <p className="text-xs text-gray-400">{customer.phone}</p>
+            </div>
+          ) : (
+            <div>
+              <p className="mb-2 text-xs text-gray-500">
+                {loading
+                  ? 'Завантаження...'
+                  : isDebt
+                    ? `Боржники (${customers.length}) — можна прокручувати та обрати без пошуку`
+                    : (search.length < 2 ? 'Введіть телефон або ім\'я клієнта' : `Знайдено: ${customers.length}`)}
+              </p>
+              <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                {customers.map((c) => (
+                  <button key={c.id}
+                    onClick={() => { setSelected(c); if (isDebt) setAmount((c.debt_balance / 100).toFixed(2)) }}
+                    className="w-full flex justify-between items-center px-3 py-2 rounded-xl bg-[#2C2C2C] hover:bg-gray-700 text-left">
+                    <div>
+                      <p className="text-white text-sm">{c.full_name || '—'}</p>
+                      <p className="text-gray-400 text-xs">{c.phone}</p>
                     </div>
-                    <span className="shrink-0 pl-3 text-sm font-bold text-red-400">{formatMoney(customer.debt_balance)}</span>
+                    {isDebt ? (
+                      <span className="text-red-400 font-bold text-sm">{formatMoney(c.debt_balance)}</span>
+                    ) : (
+                      <span className="text-emerald-400 font-bold text-sm">{formatMoney(c.deposit_balance ?? 0)}</span>
+                    )}
                   </button>
                 ))}
-                {!loading && visibleCustomers.length === 0 && (
-                  <p className="py-8 text-center text-sm text-gray-500">Боргів не знайдено</p>
+                {!loading && customers.length === 0 && (isDebt || search.length >= 2) && (
+                  <p className="py-6 text-center text-sm text-gray-500">{isDebt ? 'Боргів не знайдено' : 'Клієнтів не знайдено'}</p>
                 )}
               </div>
-            </section>
+            </div>
+          )}
 
-            <section className="min-h-0 overflow-y-auto rounded-xl border border-gray-800 bg-[#202020] p-4">
-              {!selected ? (
-                <div className="flex h-full min-h-48 flex-col items-center justify-center text-center">
-                  <DollarSign size={28} className="mb-2 text-gray-600" />
-                  <p className="text-sm font-semibold text-gray-300">Виберіть клієнта зі списку</p>
-                  <p className="mt-1 text-xs text-gray-500">Тут з'явиться сума та спосіб оплати боргу</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="rounded-xl border border-red-500/30 bg-red-900/20 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-white">{selected.full_name || 'Без імені'}</p>
-                        <p className="text-xs text-gray-400">{selected.phone}</p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-xs text-red-400">Загальний борг</p>
-                        <p className="text-lg font-bold text-red-400">{formatMoney(selected.debt_balance)}</p>
-                      </div>
-                    </div>
-                  </div>
-
+          {selected && (
+            <>
               <div>
-                <label className="text-gray-400 text-xs mb-1 block">Сума оплати (₴)</label>
+                <label className="text-gray-400 text-xs mb-1 block">
+                  {isDebt ? 'Сума оплати (₴)' : 'Сума поповнення (₴)'}
+                </label>
                 <input type="number" min="0.01" step="0.01" autoFocus value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handlePay() }}
-                  className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-red-500" />
-                  <button type="button" onClick={() => setAmount((selected.debt_balance / 100).toFixed(2))}
-                    className="mt-2 text-xs font-semibold text-red-300 hover:text-red-200">
-                    Погасити весь борг
-                  </button>
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit() }}
+                  data-scanner-ignore="true"
+                  className={`w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none ${
+                    isDebt ? 'focus:border-red-500' : 'focus:border-emerald-500'
+                  }`} />
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => setMethod('cash')}
+                <button onClick={() => setMethod('cash')}
                   className={`py-3 rounded-xl font-semibold text-sm transition-colors ${
                     method === 'cash'
                       ? 'bg-green-500 text-white' : 'bg-[#2C2C2C] text-gray-300 hover:bg-gray-700'
                   }`}>
                   💵 Готівка
                 </button>
-                <button type="button" onClick={() => setMethod('card')}
+                <button onClick={() => setMethod('card')}
                   className={`py-3 rounded-xl font-semibold text-sm transition-colors ${
                     method === 'card'
                       ? 'bg-blue-500 text-white' : 'bg-[#2C2C2C] text-gray-300 hover:bg-gray-700'
@@ -183,15 +258,19 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
               </div>
 
               <div className="flex gap-3">
-                <button type="button" onClick={handlePay} disabled={saving || !amount}
-                  className="w-full rounded-xl bg-red-500 py-3 font-bold text-white hover:bg-red-400 disabled:opacity-40">
-                  {saving ? 'Обробка...' : 'ОПЛАТИТИ БОРГ'}
+                <button onClick={onClose}
+                  className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700">
+                  Скасувати
+                </button>
+                <button onClick={handleSubmit} disabled={saving || !amount}
+                  className={`flex-1 py-3 rounded-xl text-white font-bold disabled:opacity-40 ${
+                    isDebt ? 'bg-red-500 hover:bg-red-400' : 'bg-emerald-600 hover:bg-emerald-500'
+                  }`}>
+                  {saving ? 'Обробка...' : isDebt ? 'ОПЛАТИТИ БОРГ' : 'ПОПОВНИТИ РАХУНОК'}
                 </button>
               </div>
-                </div>
-              )}
-            </section>
-          </div>
+            </>
+          )}
         </div>
       </div>
     </div>

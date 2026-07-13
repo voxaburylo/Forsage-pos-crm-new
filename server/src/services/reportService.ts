@@ -304,3 +304,41 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
     sales: list,
   }
 }
+
+// Продані товари за день — для дозамовлення у постачальників.
+// Агрегує позиції завершених чеків за київську добу; послуги пропускаються.
+export async function getSoldItems(date: string, tenantId: string) {
+  const from = `${date}T00:00:00+03:00`
+  const to   = `${date}T23:59:59.999+03:00`
+  const { data: sales, error } = await db.from('sales').select('id')
+    .eq('tenant_id', tenantId).eq('status', 'completed')
+    .gte('completed_at', from).lte('completed_at', to)
+    .limit(5000)
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+  const ids = (sales ?? []).map((s: any) => s.id)
+  const agg = new Map<string, any>()
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data: items, error: itemsErr } = await db.from('sale_items')
+      .select('product_id, qty, unit_price, discount, product:products(sku, name, unit, qty_on_hand, storage_bin, is_service)')
+      .in('sale_id', ids.slice(i, i + 100))
+    if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+    for (const it of (items ?? []) as any[]) {
+      if (!it.product_id || it.product?.is_service) continue
+      const cur = agg.get(it.product_id) ?? {
+        product_id: it.product_id,
+        sku: it.product?.sku ?? '',
+        name: it.product?.name ?? '(товар видалено)',
+        unit: it.product?.unit ?? 'шт',
+        qty_on_hand: Number(it.product?.qty_on_hand ?? 0),
+        storage_bin: it.product?.storage_bin ?? null,
+        qty_sold: 0,
+        revenue: 0,
+      }
+      cur.qty_sold += Number(it.qty)
+      cur.revenue += it.unit_price * Number(it.qty) - (it.discount ?? 0)
+      agg.set(it.product_id, cur)
+    }
+  }
+  return [...agg.values()].sort((a, b) => b.qty_sold - a.qty_sold)
+}

@@ -637,7 +637,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
             : `left:${pBc.x}%;right:0;`
         const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
-        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:visible;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="display:block;align-self:stretch;width:100%;font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;text-align:${alignBc};">${esc(binLabel)}</span>` : ''}</div>`
+        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;align-items:${flexBc};overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
@@ -655,7 +655,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
             : `left:${pBc.x}%;right:0;`
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
-        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;flex-direction:column;align-items:${flexBc};overflow:visible;">${barcode}${(settings.show_barcode_text ?? true) ? `<span style="display:block;align-self:stretch;width:100%;font-size:${settings.font_size}pt;font-family:monospace;letter-spacing:.3mm;margin-top:.3mm;line-height:1;color:#222;white-space:nowrap;text-align:${alignBc};">${esc(product.barcode)}</span>` : ''}</div>`
+        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;align-items:${flexBc};overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
         const pSku = settings.pos_sku || { x: 5, y: 75 }
@@ -708,11 +708,31 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     transform-origin: top left;
     overflow: hidden;
   }
+  .barcode-inner {
+    display: inline-flex;
+    flex: 0 1 auto;
+    flex-direction: column;
+    align-items: center;
+    width: fit-content;
+    max-width: calc(100% - 2mm);
+  }
+  .barcode-inner span {
+    display: block;
+    width: 100%;
+    margin-top: .3mm;
+    color: #222;
+    font-family: monospace;
+    font-size: ${settings.font_size}pt;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    text-align: center;
+    white-space: nowrap;
+  }
   .barcode svg,
   .barcode img {
     display: block;
     width: auto;
-    max-width: calc(100% - 2mm);
+    max-width: 100%;
     height: ${barcodeHeight}px;
     flex: 0 1 auto;
     overflow: visible;
@@ -738,7 +758,7 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
     // лишаємо драйверу принтера етикеток, щоб не ловити Invalid printer settings.
     useDriverPaper: true,
     cleanupDelayMs: 30000,
-    readyDelayMs: 150,
+    readyDelayMs: 50,
   })
 }
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
-import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database, X } from 'lucide-react'
+import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
@@ -8,10 +8,9 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
+import { findProductByScanOffline, getCachedCategories, getCachedProductsForScan, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
-import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -33,6 +32,12 @@ function getRecentItems(key: string): string[] {
   }
 }
 
+function reportScannerStage(stage: 'added' | 'failed', code: string, name?: string) {
+  window.dispatchEvent(new CustomEvent('forsage:pos-scanner-stage', {
+    detail: { stage, code, name, at: Date.now() },
+  }))
+}
+
 function findExactScannedProduct(products: any[], code: string): Product | undefined {
   const normalized = code.toLocaleLowerCase('uk-UA').replace(/[\s\-./_]/g, '')
   return products.find((product) => {
@@ -47,14 +52,19 @@ function findExactScannedProduct(products: any[], code: string): Product | undef
   }) as Product | undefined
 }
 
-function normalizeScannedCode(code: string): string {
-  return Array.from(code)
-    .filter((char) => {
-      const charCode = char.charCodeAt(0)
-      return charCode > 31 && charCode !== 127 && !/\s/.test(char)
-    })
-    .join('')
-    .trim()
+function addProductToScanIndex(index: Map<string, Product>, product: Product) {
+  const barcodes = [
+    product.barcode,
+    ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+  ].filter(Boolean).map((value) => String(value).replace(/[\u0000-\u001f\u007f\s]/g, ''))
+  for (const barcode of barcodes) index.set(`barcode:${barcode}`, product)
+  const sku = String(product.sku ?? '').replace(/[\s\-./_]/g, '').toUpperCase()
+  if (sku) index.set(`sku:${sku}`, product)
+}
+
+function findProductInScanIndex(index: Map<string, Product>, code: string): Product | undefined {
+  const normalizedSku = code.replace(/[\s\-./_]/g, '').toUpperCase()
+  return index.get(`barcode:${code}`) ?? index.get(`sku:${normalizedSku}`)
 }
 
 
@@ -62,6 +72,8 @@ export interface SearchPanelHandle {
   focus: () => void
   clear: () => void
   search: (q: string) => void
+  appendSearchText: (text: string) => void
+  backspaceSearch: () => void
   openCamera: () => void
   scanBarcode: (code: string) => void
 }
@@ -84,23 +96,28 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const [offlineStockVersion, setOfflineStockVersion] = useState(0)
   const inputRef                = useRef<HTMLInputElement>(null)
   const timer                   = useRef<ReturnType<typeof setTimeout>>()
-  const inputCommitTimer        = useRef<ReturnType<typeof setTimeout>>()
-  const inputDraft              = useRef('')
   const searchEpoch             = useRef(0)
+  const scanQueue               = useRef<string[]>([])
+  const scanQueueRunning        = useRef(false)
+  const scanProductIndex        = useRef<Map<string, Product>>(new Map())
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
     clear: () => {
-      inputDraft.current = ''
       setQuery('')
       setResults([])
       setSupplierResults([])
     },
     search: (q: string) => {
-      inputDraft.current = q
       setQuery(q)
       setResults([])
       setSupplierResults([])
+    },
+    appendSearchText: (text: string) => {
+      setQuery((current) => current + text)
+    },
+    backspaceSearch: () => {
+      setQuery((current) => current.slice(0, -1))
     },
     openCamera: () => setCameraOpen(true),
     scanBarcode: (code: string) => queueBarcodeScan(code),
@@ -108,18 +125,26 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
 
-  // Auto focus
-  useEffect(() => { inputRef.current?.focus() }, [])
-
-  // Тримаємо чернетку ручного вводу синхронною після очищення поля кнопками,
-  // вибору товару мишею або зовнішньої команди пошуку.
   useEffect(() => {
-    inputDraft.current = query
-  }, [query])
+    let cancelled = false
 
-  useEffect(() => () => {
-    clearTimeout(inputCommitTimer.current)
-  }, [])
+    const rebuildScanIndex = async () => {
+      const products = await getCachedProductsForScan(scopeKey).catch(() => [])
+      if (cancelled) return
+      const index = new Map<string, Product>()
+      for (const product of products as Product[]) {
+        addProductToScanIndex(index, product)
+      }
+      scanProductIndex.current = index
+    }
+
+    void rebuildScanIndex()
+    window.addEventListener('forsage:offline-products-refreshed', rebuildScanIndex)
+    return () => {
+      cancelled = true
+      window.removeEventListener('forsage:offline-products-refreshed', rebuildScanIndex)
+    }
+  }, [scopeKey])
 
   useEffect(() => {
     const refresh = () => setOfflineStockVersion((version) => version + 1)
@@ -147,19 +172,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       setLoading(true)
       try {
         // Офлайн-режим: шукаємо в IndexedDB
-        const desktop = desktopBridge()
-        if (desktop) {
-          // Порожнє поле — показуємо популярні товари (обране/перші), як онлайн-версія
-          const localResults = query.trim()
-            ? await desktop.catalog.searchProducts(query.trim(), 30)
-            : await desktop.catalog.listPopular(50)
-          if (epoch !== searchEpoch.current) return
-          setResults(localResults.map(desktopProductToProduct))
-          setSupplierResults([])
-          setLoading(false)
-          return
-        }
-
         if (!serverOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
           if (epoch !== searchEpoch.current) return
@@ -210,133 +222,106 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
-      clearTimeout(inputCommitTimer.current)
-      inputDraft.current = ''
       setQuery('')
       setResults([])
       setSupplierResults([])
-      return
-    }
-    if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'F7') {
-      e.preventDefault()
-      clearTimeout(inputCommitTimer.current)
-      const trimmed = inputDraft.current.trim()
-      inputDraft.current = ''
-      if (!trimmed) return
-      // Після звичайного ручного пошуку Enter додає перший видимий товар.
-      // Швидкий скан не встигає потрапити до query і йде точним пошуком ШК.
-      if (e.key === 'Enter' && query.trim() === trimmed && results.length > 0) {
-        addToReceipt(results[0])
-        setQuery('')
-        setResults([])
-        setSupplierResults([])
-        return
-      }
-      // Сканери часто передають CODE128/SKU з латинськими літерами. Раніше
-      // штрихкодом вважалися лише 8+ цифр, і Enter додавав випадковий перший
-      // результат текстового пошуку.
-      queueBarcodeScan(trimmed)
-      return
-    }
-    if (e.key === 'Backspace') {
-      e.preventDefault()
-      inputDraft.current = inputDraft.current.slice(0, -1)
-      setQuery(inputDraft.current)
-      return
-    }
-    if (e.key === 'Delete') {
-      e.preventDefault()
-      inputDraft.current = ''
-      setQuery('')
-      return
-    }
-    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      // Не віддаємо символи сканера керованому input. Поки сканер швидко
-      // передає код, він живе лише у ref і не запускає текстовий пошук.
-      // Для ручного набору текст з'явиться після короткої паузи.
-      e.preventDefault()
-      inputDraft.current += e.key
-      clearTimeout(inputCommitTimer.current)
-      inputCommitTimer.current = setTimeout(() => {
-        setQuery(inputDraft.current)
-      }, 180)
+      inputRef.current?.blur()
     }
   }
 
   function queueBarcodeScan(code: string) {
-    // Кожен скан обробляється незалежно: повільна відповідь для одного
-    // невідомого коду більше не блокує всі наступні товари.
-    clearTimeout(inputCommitTimer.current)
-    inputDraft.current = ''
-    setQuery('')
-    setSupplierResults([])
-    void handleBarcodeScan(code)
+    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+    if (!normalizedCode) return
+    const immediateProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
+    if (immediateProduct) {
+      addToReceipt(immediateProduct)
+      saveRecentItem('recent_scans', normalizedCode)
+      reportScannerStage('added', normalizedCode, immediateProduct.name)
+      return
+    }
+    scanQueue.current.push(normalizedCode)
+    void drainBarcodeQueue()
+  }
+
+  async function drainBarcodeQueue() {
+    if (scanQueueRunning.current) return
+    scanQueueRunning.current = true
+    try {
+      while (scanQueue.current.length > 0) {
+        const code = scanQueue.current.shift()
+        if (code) await handleBarcodeScan(code)
+      }
+    } finally {
+      scanQueueRunning.current = false
+      // Скан міг потрапити між останньою перевіркою length та finally.
+      if (scanQueue.current.length > 0) void drainBarcodeQueue()
+    }
   }
 
   async function handleBarcodeScan(code: string) {
-    const normalizedCode = normalizeScannedCode(code)
+    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
     if (!normalizedCode) return
-    // Скан — не текстовий пошук. Одразу прибираємо код із поля та скасовуємо
-    // запізнілі результати hybrid search, щоб екран не смикався.
-    searchEpoch.current++
-    clearTimeout(timer.current)
-    setQuery('')
-    setSupplierResults([])
-    setLoading(false)
+    // Штрих-код замовлення з друкованого чека (ORD-1043) → вікно оплати
+    // задатку/залишку в панелі «Видати»
+    const ordMatch = normalizedCode.match(/^ORD-?(\d+)$/i)
+    if (ordMatch) {
+      window.dispatchEvent(new CustomEvent('forsage:pos-pay-order', { detail: { number: ordMatch[1] } }))
+      playSuccessBeep()
+      reportScannerStage('added', normalizedCode, `Замовлення №${ordMatch[1]}`)
+      return
+    }
+
+    // Сканер і видимий пошук — незалежні канали. Тут навмисно не змінюємо
+    // query/loading/results і не скасовуємо ручний текстовий пошук.
 
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
-    const desktop = desktopBridge()
-    let desktopLocalMiss = false
-    if (desktop) {
-      const desktopProduct = await desktop.catalog.findByBarcode(normalizedCode).catch(() => null)
-      if (desktopProduct) {
-        addToReceipt(desktopProductToProduct(desktopProduct))
-        saveRecentItem('recent_scans', normalizedCode)
-        return
-      }
-      desktopLocalMiss = true
-    }
-
-    if (!desktop) {
-      const cachedProduct = await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
-      if (cachedProduct) {
-        addToReceipt(cachedProduct as Product)
-        saveRecentItem('recent_scans', normalizedCode)
-        return
-      }
+    const memoryProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
+    const cachedProduct = memoryProduct
+      ?? await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
+    if (cachedProduct) {
+      addToReceipt(cachedProduct as Product)
+      saveRecentItem('recent_scans', normalizedCode)
+      reportScannerStage('added', normalizedCode, (cachedProduct as Product).name)
+      return
     }
 
     if (!serverOnline) {
-      if (desktopLocalMiss) {
-        playErrorTone()
-        toast.error('Штрих-код не знайдено в локальній базі. Підключіть інтернет і дочекайтесь синхронізації каталогу.')
-        setSupplierResults([])
-        return
-      }
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
+        // Відкрита модалка Борг/Рахунок чи панель Видати — скан картки клієнта
+        // вибирає клієнта там (event перехоплюється через preventDefault)
+        if (!window.dispatchEvent(new CustomEvent('forsage:pos-customer-scanned', { detail: customer, cancelable: true }))) {
+          playSuccessBeep()
+          saveRecentItem('recent_scans', normalizedCode)
+          reportScannerStage('added', normalizedCode, customer.full_name ?? customer.phone)
+          return
+        }
         const store = usePOSStore.getState()
+        // Режим «накопичення»: % не знижує чек, а нараховується на рахунок після продажу
+        const effectivePct = (customer as any).loyalty_mode === 'cashback'
+          ? 0 : (customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
         store.setCustomer({
           id: customer.id,
           phone: customer.phone,
           name: customer.full_name ?? null,
           debtBalance: customer.debt_balance ?? 0,
-          tierDiscountPct: customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0,
+          tierDiscountPct: effectivePct,
           tierName: customer.price_tier?.name ?? null,
           vipLevel: customer.vip_level ?? 'standard',
           riskProfile: customer.risk_profile ?? 'low',
         })
-        store.setAutomaticDiscountPct(customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+        store.setAutomaticDiscountPct(effectivePct)
         toast.success(`Клієнт ${customer.full_name ?? customer.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
+        reportScannerStage('added', normalizedCode, customer.full_name ?? customer.phone)
       } else {
         playErrorTone()
         toast.error('Штрих-код не знайдено в офлайн-кеші')
+        reportScannerStage('failed', normalizedCode)
       }
-      setSupplierResults([])
       return
     }
     try {
@@ -347,30 +332,35 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
       if (result?.type === 'customer' && result?.data) {
         const c = result.data
+        if (!window.dispatchEvent(new CustomEvent('forsage:pos-customer-scanned', { detail: c, cancelable: true }))) {
+          playSuccessBeep()
+          saveRecentItem('recent_scans', normalizedCode)
+          reportScannerStage('added', normalizedCode, c.full_name ?? c.phone)
+          return
+        }
         const store = usePOSStore.getState()
+        const effectivePct = c.loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
         store.setCustomer({
           id: c.id, phone: c.phone, name: c.full_name ?? null,
-          debtBalance: c.debt_balance ?? 0, tierDiscountPct: c.price_tier?.discount_pct ?? 0,
+          debtBalance: c.debt_balance ?? 0, tierDiscountPct: effectivePct,
           tierName: c.price_tier?.name ?? null,
           vipLevel: c.vip_level ?? 'standard', riskProfile: c.risk_profile ?? 'low',
         })
-        store.setAutomaticDiscountPct(c.price_tier?.discount_pct ?? 0)
+        store.setAutomaticDiscountPct(effectivePct)
         toast.success(`Клієнт ${c.full_name ?? c.phone} прив'язаний до чека`)
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
+        reportScannerStage('added', normalizedCode, c.full_name ?? c.phone)
       } else if (result?.type === 'product' && result?.data) {
+        addProductToScanIndex(scanProductIndex.current, result.data as Product)
         addToReceipt(result.data)
         saveRecentItem('recent_scans', normalizedCode)
-        if (desktopLocalMiss) {
-          toast.warning('Товар додано з сервера. Локальний каталог ще не синхронізований.')
-        }
+        reportScannerStage('added', normalizedCode, result.data.name)
       } else {
         playErrorTone()
-        toast.error(desktopLocalMiss
-          ? 'Штрих-код не знайдено ні локально, ні на сервері'
-          : 'Штрих-код не знайдено в базі')
+        toast.error('Штрих-код не знайдено в базі')
+        reportScannerStage('failed', normalizedCode)
       }
-      setSupplierResults([])
     } catch {
       const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey).catch(() => [])
       // Штрихкод має збігатися точно. Ніколи не додаємо перший текстовий
@@ -378,10 +368,11 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       const fallback = findExactScannedProduct(offlineResults, normalizedCode)
       if (fallback) {
         addToReceipt(fallback as Product)
-        setSupplierResults([])
+        reportScannerStage('added', normalizedCode, fallback.name)
       } else {
         playErrorTone()
         toast.error('Товар або клієнт не знайдено')
+        reportScannerStage('failed', normalizedCode)
       }
     }
   }
@@ -438,7 +429,8 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
     })
-    inputRef.current?.focus()
+    // Після вибору товару клавіатура знову належить сканеру.
+    inputRef.current?.blur()
   }
 
   function openPricingModal(sItem: any) {
@@ -494,41 +486,13 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         <div className="relative flex-1 min-w-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
           <input ref={inputRef} type="text" value={query} data-pos-search="true"
-            onChange={(e) => {
-              // Віртуальна клавіатура та вставка можуть не надсилати keydown.
-              inputDraft.current = e.target.value
-              setQuery(e.target.value)
-            }}
-            onPaste={(e) => {
-              e.preventDefault()
-              const next = inputDraft.current + e.clipboardData.getData('text')
-              inputDraft.current = next
-              setQuery(next)
-            }}
+            onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Артикул, назва, штрихкод... (F4)"
-            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 ${query ? 'pr-11' : 'pr-4'} rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
+            placeholder="Натисніть тут для пошуку товару"
+            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}
           />
-          {query && (
-            <button
-              type="button"
-              onClick={() => {
-                clearTimeout(inputCommitTimer.current)
-                inputDraft.current = ''
-                setQuery('')
-                setResults([])
-                setSupplierResults([])
-                inputRef.current?.focus()
-              }}
-              className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-700 hover:text-white"
-              aria-label="Очистити пошук"
-              title="Очистити пошук (Esc)"
-            >
-              <X size={16} />
-            </button>
-          )}
         </div>
         <button onClick={() => setCameraOpen(true)}
           className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 md:w-[50px] md:h-[50px] w-[44px] h-[44px] shrink-0"

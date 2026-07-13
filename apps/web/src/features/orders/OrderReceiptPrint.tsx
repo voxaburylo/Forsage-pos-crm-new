@@ -1,5 +1,6 @@
 import { formatMoney, formatDate } from "@/lib/utils"
 import { PrintService } from "@/lib/printService"
+import { renderBarcodeSvg } from "@/lib/barcodeSvg"
 import type { CustomerOrder } from "./orderApi"
 
 export function printOrderReceipt(order: CustomerOrder, shopName = "ФОРСАЖ") {
@@ -28,6 +29,7 @@ export function printOrderReceipt(order: CustomerOrder, shopName = "ФОРСАЖ
     <div class="rp">
       <div class="rp-center rp-bold rp-lg">${esc(shopName)}</div>
       <div class="rp-center rp-sm">Замовлення автозапчастин</div>
+      ${order.order_number != null ? `<div class="rp-center rp-bold">Замовлення №${order.order_number}</div>` : ""}
       <hr class="rp-dash" />
       <div>Дата: ${formatDate(order.created_at)}</div>
       ${order.pickup_deadline_at ? `<div>Дедлайн: ${formatDate(order.pickup_deadline_at)}</div>` : ""}
@@ -64,6 +66,12 @@ export function printOrderReceipt(order: CustomerOrder, shopName = "ФОРСАЖ
       ${isFullyPaid ? `
         <div class="rp-center" style="color: #16a34a; font-weight: bold; margin-top: 2mm; font-size: 10px;">
           ✅ ОПЛАЧЕНО ПОВНІСТЮ
+        </div>
+      ` : ""}
+      ${order.order_number != null ? `
+        <div class="rp-center" style="margin-top: 2mm;">
+          ${renderBarcodeSvg(`ORD-${order.order_number}`, { height: 30 })}
+          <div style="font-size: 8px;">Відскануйте на касі, щоб внести задаток чи оплату</div>
         </div>
       ` : ""}
       <hr class="rp-dash" />

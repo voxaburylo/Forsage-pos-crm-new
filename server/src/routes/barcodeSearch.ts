@@ -53,7 +53,10 @@ router.get('/barcode/:code', async (req, res, next) => {
       }
     }
 
-    // 3. JSONB-масив additional_barcodes.
+    // 3. JSONB-масив additional_barcodes. Для jsonb значення contains має бути
+    // JSON-рядком: масив JS постміт формує як {a} (синтаксис text[]), і PostgREST
+    // падав з «invalid input syntax for type json» — це ламало ВЕСЬ пошук далі,
+    // включно з картками клієнтів. Помилку тут більше не фатальимо.
     if (!product) {
       const { data, error } = await db
         .from('products')
@@ -61,11 +64,15 @@ router.get('/barcode/:code', async (req, res, next) => {
         .eq('tenant_id', req.user!.tenant_id)
         .is('deleted_at', null)
         .eq('is_active', true)
-        .contains('additional_barcodes', [code])
+        .contains('additional_barcodes', JSON.stringify([code]))
         .limit(1)
         .maybeSingle()
-      if (error) throw new AppError('DB_ERROR', error.message, 500)
-      product = data
+      if (error) {
+        const { logger } = await import('../lib/logger.js')
+        logger.warn({ err: error.message, code }, '[barcode] additional_barcodes lookup failed')
+      } else {
+        product = data
+      }
     }
 
     if (product) {
@@ -81,7 +88,7 @@ router.get('/barcode/:code', async (req, res, next) => {
     // 4. Шукаємо клієнта
     const { data: customer } = await db
       .from('customers')
-      .select('id, phone, full_name, card_barcode, debt_balance, bonus_balance, vip_level, risk_profile, price_tier:price_tiers!left(id, name, discount_pct)')
+      .select('id, phone, full_name, card_barcode, debt_balance, bonus_balance, deposit_balance, loyalty_mode, vip_level, risk_profile, price_tier:price_tiers!left(id, name, discount_pct)')
       .is('deleted_at', null)
       .eq('card_barcode', code)
       .eq('tenant_id', req.user!.tenant_id)

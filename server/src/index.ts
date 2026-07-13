@@ -11,6 +11,7 @@ import shiftsRouter from './routes/shifts.js'
 import salesRouter from './routes/sales.js'
 import returnsRouter from './routes/returns.js'
 import reportsRouter from './routes/reports.js'
+import syncRouter from './routes/sync.js'
 import adminRouter, { settingsRouter } from './routes/admin.js'
 import suppliersRouter from './routes/suppliers.js'
 import importRouter from './routes/import.js'
@@ -50,7 +51,7 @@ import onecImportRouter from './routes/onecImport.js'
 import jobsRouter from './routes/jobs.js'
 import vinRouter from './routes/vin.js'
 import aiRouter from './routes/ai.js'
-import syncRouter from './routes/sync.js'
+import debugRouter from './routes/debug.js'
 import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
 import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
@@ -131,6 +132,7 @@ app.use('/api/v1/shifts', shiftsRouter)
 app.use('/api/v1/sales', salesRouter)
 app.use('/api/v1/returns', returnsRouter)
 app.use('/api/v1/reports', reportsRouter)
+app.use('/api/v1/sync', syncRouter)
 app.use('/api/v1/admin', adminRouter)
 app.use('/api/v1/settings', settingsRouter)
 app.use('/api/v1/suppliers', suppliersRouter)
@@ -169,7 +171,7 @@ app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
 app.use('/api/v1/vin', vinRouter)
 app.use('/api/v1/in', vinRouter)
 app.use('/api/v1/ai', aiRouter)
-app.use('/api/v1/sync', syncRouter)
+app.use('/api/v1/debug', debugRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

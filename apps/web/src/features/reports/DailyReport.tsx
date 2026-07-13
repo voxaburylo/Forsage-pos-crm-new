@@ -73,6 +73,43 @@ export default function DailyReport() {
   const [control, setControl] = useState<DailyControl | null>(null)
   const [sendingTg, setSendingTg] = useState(false)
 
+  // Продані товари за день — список для дозамовлення у постачальників
+  interface SoldItem {
+    product_id: string; sku: string; name: string; unit: string
+    qty_sold: number; revenue: number; qty_on_hand: number; storage_bin: string | null
+  }
+  const [soldItems, setSoldItems] = useState<SoldItem[]>([])
+  const [soldDate, setSoldDate] = useState(() => new Date().toLocaleDateString('sv-SE'))
+  const [soldOpen, setSoldOpen] = useState(false)
+
+  useEffect(() => {
+    if (tab !== 'today') return
+    api.get<{ data: SoldItem[] }>(`/api/v1/reports/sold-items?date=${soldDate}`, { silent: true })
+      .then((r) => setSoldItems(r.data ?? []))
+      .catch(() => setSoldItems([]))
+  }, [tab, soldDate])
+
+  function printSoldItems() {
+    const rows = soldItems.map((it, i) =>
+      `<tr><td>${i + 1}</td><td>${it.sku}</td><td>${it.name.replace(/</g, '&lt;')}</td>` +
+      `<td style="text-align:right;font-weight:bold">${it.qty_sold} ${it.unit}</td>` +
+      `<td style="text-align:right">${it.qty_on_hand} ${it.unit}</td></tr>`).join('')
+    const w = window.open('', '_blank', 'width=800,height=900')
+    if (!w) return
+    w.document.write(`<html><head><title>Продано ${soldDate}</title><style>
+      body{font-family:Arial,sans-serif;font-size:12px;padding:16px}
+      table{width:100%;border-collapse:collapse}
+      td,th{border:1px solid #ccc;padding:4px 6px;text-align:left}
+      th{background:#f3f3f3}
+    </style></head><body>
+      <h3>Продані товари за ${soldDate} — для дозамовлення</h3>
+      <table><tr><th>#</th><th>Артикул</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
+    </body></html>`)
+    w.document.close()
+    w.focus()
+    w.print()
+  }
+
   const loadToday = useCallback(async () => {
     setLoading(true)
     try {
@@ -349,6 +386,63 @@ export default function DailyReport() {
               </div>
             </Card>
           )}
+
+          {/* Продані товари за день — для дозамовлення */}
+          <Card padding="none" className="mb-4">
+            <button onClick={() => setSoldOpen(!soldOpen)}
+              className="flex w-full items-center justify-between px-4 py-3 text-left">
+              <span className="text-sm font-bold text-gray-800">
+                📦 Продано за день — для дозамовлення ({soldItems.length} поз.)
+              </span>
+              <span className="flex items-center gap-2">
+                <input type="date" value={soldDate}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => { e.stopPropagation(); setSoldDate(e.target.value); setSoldOpen(true) }}
+                  className="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600" />
+                <span className="text-gray-400 text-xs">{soldOpen ? '▲' : '▼'}</span>
+              </span>
+            </button>
+            {soldOpen && (
+              <div className="border-t border-gray-100">
+                <div className="flex justify-end px-4 py-2">
+                  <button onClick={printSoldItems} disabled={soldItems.length === 0}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium disabled:opacity-40">
+                    🖨 Друк списку
+                  </button>
+                </div>
+                {soldItems.length === 0 ? (
+                  <p className="px-4 pb-4 text-sm text-gray-400">За цей день продажів товарів немає</p>
+                ) : (
+                  <div className="max-h-96 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
+                        <tr>
+                          <th className="px-4 py-2 text-left">Артикул</th>
+                          <th className="px-2 py-2 text-left">Назва</th>
+                          <th className="px-2 py-2 text-right">Продано</th>
+                          <th className="px-2 py-2 text-right">Залишок</th>
+                          <th className="px-4 py-2 text-right hidden md:table-cell">Виручка</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {soldItems.map((it) => (
+                          <tr key={it.product_id} className={it.qty_on_hand <= 0 ? 'bg-red-50/60' : ''}>
+                            <td className="px-4 py-1.5 font-mono text-xs text-gray-500">{it.sku}</td>
+                            <td className="px-2 py-1.5 text-gray-800">{it.name}</td>
+                            <td className="px-2 py-1.5 text-right font-bold">{it.qty_sold} {it.unit}</td>
+                            <td className={`px-2 py-1.5 text-right font-semibold ${it.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                              {it.qty_on_hand} {it.unit}
+                            </td>
+                            <td className="px-4 py-1.5 text-right text-gray-500 hidden md:table-cell">{formatMoney(it.revenue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
 
           <Card padding="none">
             <Table

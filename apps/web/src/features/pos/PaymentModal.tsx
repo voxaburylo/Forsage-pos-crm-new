@@ -3,7 +3,6 @@ import { Banknote, CreditCard, BookOpen, Star, SplitSquareHorizontal, Smartphone
 import { usePOSStore } from '@/stores/posStore'
 import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
 
 interface SplitAmounts {
   cash_amount: number
@@ -26,7 +25,7 @@ const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string
   { id: 'card',     label: 'Термінал',        icon: <CreditCard size={20} />,               color: 'bg-blue-500 hover:bg-blue-400' },
   { id: 'transfer', label: 'Переказ на карту', icon: <Smartphone size={20} />,              color: 'bg-cyan-500 hover:bg-cyan-400' },
   { id: 'debt',     label: 'Борг',            icon: <BookOpen size={20} />,                 color: 'bg-red-500 hover:bg-red-400', requireCustomer: true },
-  { id: 'mixed',    label: 'Готівка + термінал', icon: <SplitSquareHorizontal size={20} />, color: 'bg-purple-500 hover:bg-purple-400' },
+  { id: 'mixed',    label: 'Змішана оплата',  icon: <SplitSquareHorizontal size={20} />,    color: 'bg-purple-500 hover:bg-purple-400' },
 ]
 
 export function PaymentModal({ open, offline = false, onClose, onConfirm }: Props) {
@@ -172,10 +171,6 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const splitCardKopecks = Math.max(0, toPay - splitCashKopecks)
   const splitValid       = method !== 'mixed' || (splitCashKopecks > 0 && splitCashKopecks < toPay)
 
-  // У desktop фіскалізація йде через локальний Кашалот і не залежить від
-  // доступності нашого сервера; офлайн ПРРО Кашалот обробляє сам.
-  const fiscalAllowed = isDesktopRuntime() || !offline
-
   function handleFiscalToggle() {
     const next = !fiscal
     setFiscal(next)
@@ -188,7 +183,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setPrintAfterPayment(shouldPrint)
     setLoading(true)
 
-    // Картка або Split із картковою частиною
+    // Картка або змішана оплата з картковою частиною
     if (method === 'card' || (method === 'mixed' && splitCardKopecks > 0)) {
       if (terminalIntegrated) {
         // Інтегрований термінал: сервер сам проведе оплату. Без ручного коду — щоб
@@ -215,9 +210,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   async function submitSale(authCode?: string, shouldPrint = false) {
     try {
       if (method === 'mixed') {
-        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, fiscalAllowed ? fiscal : false, authCode, shouldPrint)
+        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, offline ? false : fiscal, authCode, shouldPrint)
       } else {
-        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, fiscalAllowed ? fiscal : false, authCode, shouldPrint)
+        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, offline ? false : fiscal, authCode, shouldPrint)
       }
     } finally {
       setLoading(false)
@@ -228,7 +223,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label="Оплата чека" className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
+      <div className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
 
         <div className="shrink-0 border-b border-gray-800 px-6 py-4">
           <p className="text-gray-400 text-sm">До оплати</p>
@@ -331,7 +326,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             </div>
           )}
 
-          {/* Split */}
+          {/* Змішана оплата */}
           {method === 'mixed' && (
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Готівка (₴)</label>
@@ -372,12 +367,12 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Receipt size={16} className="text-gray-400" />
-                  <span className="text-gray-300 text-sm">Фіскальний чек</span>
+                  <span className="text-gray-300 text-sm">🧾 Фіскальний чек</span>
                 </div>
                 <label className={`relative inline-flex items-center ${method === 'card' ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
-                  <input type="checkbox" checked={fiscalAllowed ? fiscal : false}
+                  <input type="checkbox" checked={offline ? false : fiscal}
                     onChange={method === 'card' ? undefined : handleFiscalToggle}
-                    disabled={method === 'card' || !fiscalAllowed}
+                    disabled={method === 'card' || offline}
                     className="sr-only peer" />
                   <div className={`w-9 h-5 rounded-full after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full ${
                     method === 'card'

@@ -44,9 +44,58 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [search, setSearch] = useState('')
   const [payOrder, setPayOrder] = useState<ReadyOrder | null>(null)
   const [payAmount, setPayAmount] = useState('')
-  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
+  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account'>('cash')
   const [payFiscal, setPayFiscal] = useState(false)
   const [paying, setPaying] = useState(false)
+  // Рахунок клієнта (передплата) — для оплати замовлення з балансу
+  const [accountBalance, setAccountBalance] = useState<number | null>(null)
+
+  useEffect(() => {
+    setAccountBalance(null)
+    if (payMethod === 'account') setPayMethod('cash')
+    const customerId = payOrder?.customer?.id
+    if (!customerId) return
+    api.get<{ data: { balance: number } }>(`/api/v1/customers/${customerId}/deposit`, { silent: true })
+      .then((r) => setAccountBalance(r.data?.balance ?? 0))
+      .catch(() => setAccountBalance(0))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payOrder?.id])
+
+  // Скан картки клієнта при відкритій панелі «Видати» → показуємо ЙОГО замовлення
+  useEffect(() => {
+    if (!(open || isMobileInline)) return
+    const handler = (event: Event) => {
+      const c = (event as CustomEvent<any>).detail
+      if (!c?.phone && !c?.full_name) return
+      event.preventDefault()
+      setSearch(c.phone ?? c.full_name)
+      toast.success(`Замовлення клієнта: ${c.full_name ?? c.phone}`)
+    }
+    window.addEventListener('forsage:pos-customer-scanned', handler)
+    return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
+  }, [open, isMobileInline])
+
+  // Скан штрих-коду замовлення (ORD-1043) на касі → одразу вікно оплати
+  useEffect(() => {
+    const handler = async (event: Event) => {
+      const num = (event as CustomEvent<{ number?: string }>).detail?.number
+      if (!num) return
+      try {
+        const { data } = await api.get<{ data: any[] }>(`/api/v1/customer-orders?search=${encodeURIComponent(num)}&per_page=5`)
+        const order = (data ?? []).find((o) => String(o.order_number) === String(num)) ?? (data ?? [])[0]
+        if (!order) { toast.error(`Замовлення №${num} не знайдено`); return }
+        if (order.status === 'completed') { toast.error(`Замовлення №${num} вже видане`); return }
+        const remaining = order.total_amount - (order.total_paid ?? 0)
+        setPayOrder(order)
+        setPayAmount(remaining > 0 ? (remaining / 100).toString() : '')
+        if (remaining <= 0) toast.success(`Замовлення №${num} сплачено повністю — можна видавати`)
+      } catch {
+        toast.error('Не вдалося знайти замовлення')
+      }
+    }
+    window.addEventListener('forsage:pos-pay-order', handler)
+    return () => window.removeEventListener('forsage:pos-pay-order', handler)
+  }, [])
 
   useEffect(() => {
     const orderQuery = (searchParams.get('order') ?? searchParams.get('customer') ?? '').trim()
@@ -93,17 +142,21 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       toast.error('Сума перевищує залишок до сплати')
       return
     }
+    if (payMethod === 'account' && amountVal > (accountBalance ?? 0)) {
+      toast.error(`На рахунку клієнта лише ${formatMoney(accountBalance ?? 0)}`)
+      return
+    }
 
     setPaying(true)
     try {
       await api.post(`/api/v1/customer-orders/${payOrder.id}/payments`, {
         amount: amountVal,
         method: payMethod,
-        is_fiscal: payFiscal,
+        is_fiscal: payMethod === 'account' ? false : payFiscal,
         shift_id: store.currentShift?.id || null,
-        notes: 'Касова оплата замовлення',
+        notes: payMethod === 'account' ? 'Оплата з рахунку клієнта' : 'Касова оплата замовлення',
       })
-      toast.success('Оплату успішно внесено!')
+      toast.success(payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Оплату успішно внесено!')
       setPayOrder(null)
       setPayAmount('')
       setPayFiscal(false)
@@ -293,7 +346,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Спосіб оплати</label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => setPayMethod('cash')}
@@ -326,6 +379,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                       }`}
                     >
                       Переказ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPayMethod('account')}
+                      disabled={!payOrder.customer?.id || (accountBalance ?? 0) <= 0}
+                      className={`py-3 text-sm font-semibold rounded-xl border transition-colors disabled:opacity-40 ${
+                        payMethod === 'account'
+                          ? 'bg-emerald-600 text-white border-emerald-500'
+                          : 'bg-gray-900 text-emerald-300 border-gray-700 hover:bg-gray-750'
+                      }`}
+                    >
+                      З рахунку {accountBalance != null ? `(${formatMoney(accountBalance)})` : ''}
                     </button>
                   </div>
                 </div>
@@ -531,7 +596,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Спосіб оплати</label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setPayMethod('cash')}
@@ -564,6 +629,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     }`}
                   >
                     Переказ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayMethod('account')}
+                    disabled={!payOrder.customer?.id || (accountBalance ?? 0) <= 0}
+                    className={`py-3 text-sm font-semibold rounded-lg border transition-colors disabled:opacity-40 ${
+                      payMethod === 'account'
+                        ? 'bg-emerald-600 text-white border-emerald-500'
+                        : 'bg-gray-900 text-emerald-300 border-gray-700 hover:bg-gray-750'
+                    }`}
+                  >
+                    З рахунку {accountBalance != null ? `(${formatMoney(accountBalance)})` : ''}
                   </button>
                 </div>
               </div>
