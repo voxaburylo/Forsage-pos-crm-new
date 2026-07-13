@@ -25,6 +25,17 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('Входимо...')
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
+
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine)
+    window.addEventListener('online', update)
+    window.addEventListener('offline', update)
+    return () => {
+      window.removeEventListener('online', update)
+      window.removeEventListener('offline', update)
+    }
+  }, [])
 
   // Ping the server as soon as the login page loads so Render wakes up early
   useEffect(() => {
@@ -74,6 +85,11 @@ export default function LoginPage() {
           <div className="text-4xl mb-3">⚡</div>
           <h1 className="text-2xl font-bold text-gray-900">Форсаж CRM</h1>
           <p className="text-gray-400 text-sm mt-1">Вхід до системи</p>
+          {!online && (
+            <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+              Режим офлайн — вхід за збереженими даними цього ПК
+            </div>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
