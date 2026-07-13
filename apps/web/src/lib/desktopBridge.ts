@@ -197,6 +197,18 @@ interface ForsageDesktopBridge {
   catalog: {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
+    upsertProduct: (product: {
+      id: string
+      sku: string
+      name: string
+      unit?: string
+      retail_price?: number
+      purchase_price?: number
+      qty_on_hand?: number
+      is_service?: boolean
+      is_active?: boolean
+      barcode?: string | null
+    }) => Promise<DesktopProduct>
   }
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>

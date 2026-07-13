@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
-import type { LocalBootstrapSnapshot, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
+import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
 import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { LocalPosRepository } from './repositories/posRepository'
@@ -187,6 +187,9 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:catalog:search-products', (_event, query: string, limit?: number) =>
     requireLocalCatalog().searchProducts(query, undefined, limit),
+  )
+  ipcMain.handle('desktop:catalog:upsert-product', (_event, product: LocalProductUpsert) =>
+    requireLocalCatalog().upsertProduct(product),
   )
   ipcMain.handle('desktop:pos:open-shift', (_event, input: {
     cashier_id: string

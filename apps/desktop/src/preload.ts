@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
     searchProducts: (query: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
+    upsertProduct: (product: unknown) =>
+      ipcRenderer.invoke('desktop:catalog:upsert-product', product),
   },
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) =>

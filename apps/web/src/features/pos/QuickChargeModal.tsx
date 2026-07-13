@@ -5,6 +5,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { searchProductsOffline } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 type Kind = 'tire_service' | 'free_sale'
 type Staff = { id: string; full_name: string; role: string }
@@ -63,6 +64,26 @@ export function QuickChargeModal({
       if (!data) {
         throw new Error('Службова позиція ще не кешована. Відкрийте касу один раз з інтернетом')
       }
+
+      // Desktop: гарантуємо, що службовий товар (POS-FREE-SALE / POS-TIRE-SERVICE)
+      // є в локальній SQLite-базі, інакше локальний продаж впаде з LOCAL_PRODUCT_NOT_FOUND
+      // (його могло не бути в бутстрапі, бо він створюється на сервері на вимогу).
+      const desktop = desktopBridge()
+      if (desktop) {
+        await desktop.catalog.upsertProduct({
+          id: data.id,
+          sku: data.sku,
+          name: data.name,
+          unit: data.unit,
+          retail_price: data.retail_price,
+          qty_on_hand: 0,
+          is_service: true,
+          is_active: true,
+        }).catch((err) => {
+          console.error('Failed to cache service product locally', err)
+        })
+      }
+
       // У чеку має бути одна підсумкова сума такого типу. Повторне введення
       // замінює її, а не множить попередню ціну на кількість.
       if (store.items.some((item) => item.productId === data.id)) {
