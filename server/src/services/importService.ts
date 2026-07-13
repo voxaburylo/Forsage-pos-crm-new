@@ -1,6 +1,6 @@
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
-import { applyMarkup, type MarkupRule } from '../lib/markup.js'
+import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { createSupplyInvoice } from './supplierService.js'
@@ -564,9 +564,9 @@ export async function previewImport(input: PreviewImportInput, tenantId: string)
   }
 }
 async function getCalculatedRetailPrice(purchasePrice: number, tenantId: string): Promise<number> {
-  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
+  const { data: settings } = await db.from('shop_settings').select('markup_rules, price_rounding_enabled, price_rounding_step, price_rounding_dir').eq('tenant_id', tenantId).single()
   const rules = (settings as any)?.markup_rules as MarkupRule[] | undefined
-  return applyMarkup(purchasePrice, rules, 30)
+  return applyMarkup(purchasePrice, rules, 30, roundingFromSettings(settings))
 }
 
 function normalizeCategoryName(name: string): string {
@@ -693,15 +693,16 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
   // раз, а всі товари відправляємо порціями по 500 у серверну функцію
   // upsert_products_import_bulk (обробляє масив за один виклик).
   const now = Date.now()
-  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single()
+  const { data: settings } = await db.from('shop_settings').select('markup_rules, price_rounding_enabled, price_rounding_step, price_rounding_dir').eq('tenant_id', tenantId).single()
   const rules = (settings as any)?.markup_rules as MarkupRule[] | undefined
+  const rounding = roundingFromSettings(settings)
   const updateRetail = input.update_retail ?? true
 
   const payloadItems = input.items.map((i) => {
     const sku = i.sku ? normalizeArticle(i.sku) : 'IMP-' + now + '-' + i.row
     // роздрібну рахуємо локально (без запиту в БД на кожен рядок)
     let retail = i.retail_price ?? 0
-    if (!retail) retail = applyMarkup(i.price, rules, 30)
+    if (!retail) retail = applyMarkup(i.price, rules, 30, rounding)
     return {
       sku,
       barcode: i.barcode ?? null,
