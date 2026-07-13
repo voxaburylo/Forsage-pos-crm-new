@@ -281,7 +281,10 @@ export default function POSPage() {
   useEffect(() => {
     const currentId = session?.user?.id
     if (currentId && !store.managerId) store.setManagerId(currentId)
-  }, [session?.user?.id, store.managerId])
+    // Кешуємо ім'я продавця для чека (працює й офлайн)
+    const sellerName = (session?.user?.user_metadata?.full_name as string | undefined) ?? ''
+    if (sellerName) localStorage.setItem('forsage_seller_name', sellerName)
+  }, [session?.user?.id, session?.user?.user_metadata?.full_name, store.managerId])
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
@@ -303,6 +306,10 @@ export default function POSPage() {
         setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
         autoPrintRef.current = data.auto_print_receipt ?? false
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
+        // Кешуємо реквізити магазину для чека (щоб друкувалися й офлайн)
+        if (data.shop_name) localStorage.setItem('forsage_shop_name', data.shop_name)
+        localStorage.setItem('forsage_shop_address', data.shop_address ?? '')
+        localStorage.setItem('forsage_shop_phone', data.phone ?? '')
       })
       .catch(() => {})
 

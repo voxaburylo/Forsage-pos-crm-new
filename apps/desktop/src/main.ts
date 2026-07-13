@@ -29,6 +29,9 @@ interface DesktopPrintOptions {
   widthMm?: number
   heightMm?: number
   silent?: boolean
+  /** true — не задавати pageSize, друкувати на папері за налаштуванням драйвера
+   * (для чекового рулону 58/80мм, де висота змінна). */
+  useDriverPaper?: boolean
 }
 
 function rendererIndexPath(): string {
@@ -140,20 +143,43 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
       ? { width: Math.round(heightMm * 1000), height: Math.round(widthMm * 1000) }
       : { width: Math.round(widthMm * 1000), height: Math.round(heightMm * 1000) }
 
-    await new Promise<void>((resolve, reject) => {
-      printWindow.webContents.print({
-        silent: options.silent === true,
-        printBackground: true,
-        margins: { marginType: 'none' },
-        pageSize,
-        landscape,
-        scaleFactor: 100,
-      }, (success, failureReason) => {
-        if (success || failureReason === 'cancelled') resolve()
-        else reject(new Error(failureReason || 'PRINT_FAILED'))
+    // Деякі драйвери (напр. етикетковий HL80) відхиляють комбінацію
+    // pageSize+landscape з «Invalid printer settings». Тому пробуємо каскадом:
+    // спершу ідеальні налаштування, а якщо драйвер їх не приймає — простіші,
+    // щоб друк узагалі відбувся, а не падав.
+    const base = {
+      silent: options.silent === true,
+      printBackground: true,
+      margins: { marginType: 'none' as const },
+    }
+    const attempts: Electron.WebContentsPrintOptions[] = options.useDriverPaper
+      ? [{ ...base }]
+      : [
+          { ...base, pageSize, landscape },
+          { ...base, pageSize },
+          { ...base, landscape },
+          { ...base },
+        ]
+
+    const printOnce = (opts: Electron.WebContentsPrintOptions) =>
+      new Promise<void>((resolve, reject) => {
+        printWindow.webContents.print(opts, (success, failureReason) => {
+          if (success || failureReason === 'cancelled') resolve()
+          else reject(new Error(failureReason || 'PRINT_FAILED'))
+        })
       })
-    })
-    return { success: true }
+
+    let lastError: unknown = null
+    for (const opts of attempts) {
+      try {
+        await printOnce(opts)
+        return { success: true }
+      } catch (error) {
+        lastError = error
+        // «Invalid printer settings» / подібне — пробуємо наступний, простіший варіант
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('PRINT_FAILED')
   } finally {
     if (!printWindow.isDestroyed()) printWindow.close()
   }

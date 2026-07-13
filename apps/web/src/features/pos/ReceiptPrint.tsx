@@ -16,6 +16,9 @@ function qrSvg(text: string): string {
 interface Props {
   sale: Sale
   shopName?: string
+  shopAddress?: string
+  shopPhone?: string
+  sellerName?: string
   paperWidthMm?: 58 | 80
 }
 
@@ -23,10 +26,19 @@ const PAY_LABEL: Record<string, string> = {
   cash: 'Готівка', card: 'Картка', debt: 'Борг', mixed: 'Змішано', transfer: 'Переказ',
 }
 
-export function ReceiptPrint({ sale, shopName = 'Форсаж', paperWidthMm }: Props) {
+function cached(key: string): string {
+  try { return localStorage.getItem(key) ?? '' } catch { return '' }
+}
+
+export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerName, paperWidthMm }: Props) {
   const isOfflineReceipt = sale.sale_number.startsWith('OFF-')
   const savedWidth = Number(localStorage.getItem('forsage_receipt_width_mm'))
   const receiptWidth = paperWidthMm ?? (savedWidth === 80 ? 80 : 58)
+  // Офлайн-безпечно: якщо пропси не передані, беремо з кешу localStorage
+  const name = shopName || cached('forsage_shop_name') || 'Форсаж'
+  const address = shopAddress ?? cached('forsage_shop_address')
+  const phone = shopPhone ?? cached('forsage_shop_phone')
+  const seller = sellerName || sale.manager?.full_name || cached('forsage_seller_name')
   const sidePadding = receiptWidth === 80 ? 4 : 3
   const qrLink = `${window.location.origin}/sales?search=${encodeURIComponent(sale.sale_number)}`
   const qr = qrSvg(qrLink)
@@ -75,8 +87,10 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж', paperWidthMm }: 
 
       {/* Верхній колонтитул */}
       <div className="rp-center">
-        <div className="rp-bold rp-large">{shopName}</div>
+        <div className="rp-bold rp-large">{name}</div>
         <div className="rp-small">Магазин автозапчастин</div>
+        {address && <div className="rp-small">{address}</div>}
+        {phone && <div className="rp-small">тел. {phone}</div>}
       </div>
       <hr className="rp-dash" />
 
@@ -88,8 +102,8 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж', paperWidthMm }: 
       {sale.customer && (
         <div>Клієнт: {sale.customer.full_name ?? sale.customer.phone}</div>
       )}
-      {sale.cashier_id && (
-        <div>Касир: {sale.cashier_id.slice(0, 8)}</div>
+      {seller && (
+        <div>Продавець: {seller}</div>
       )}
       <hr className="rp-thin" />
 
@@ -163,5 +177,24 @@ export function ReceiptPrint({ sale, shopName = 'Форсаж', paperWidthMm }: 
 }
 
 export function printReceipt() {
+  // Desktop (Electron): друкуємо чек через нативний друк — системний діалог
+  // принтера без кривого Chromium-передперегляду («не підтримує передперегляд»).
+  // Папір бере з налаштувань чекового драйвера (58/80мм, змінна висота).
+  const desktopPrint = typeof window !== 'undefined' ? window.forsageDesktop?.print : undefined
+  if (desktopPrint) {
+    const el = document.querySelector('.receipt-print')
+    if (el) {
+      const html = `<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">`
+        + `<style>@page{margin:0}html,body{margin:0;padding:0;background:#fff}`
+        + `.receipt-print{display:block !important}</style></head><body>`
+        + `${el.outerHTML}</body></html>`
+      desktopPrint.html(html, { title: 'Чек', silent: false, useDriverPaper: true })
+        .catch((error: unknown) => {
+          console.error('Native receipt print failed, falling back to window.print', error)
+          PrintService.printCurrentPage()
+        })
+      return
+    }
+  }
   PrintService.printCurrentPage()
 }

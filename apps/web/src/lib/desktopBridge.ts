@@ -229,6 +229,7 @@ interface ForsageDesktopBridge {
       widthMm?: number
       heightMm?: number
       silent?: boolean
+      useDriverPaper?: boolean
     }) => Promise<{ success: true }>
   }
   fiscal: {
