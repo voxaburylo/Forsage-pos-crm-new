@@ -11,6 +11,7 @@ import shiftsRouter from './routes/shifts.js'
 import salesRouter from './routes/sales.js'
 import returnsRouter from './routes/returns.js'
 import reportsRouter from './routes/reports.js'
+import syncRouter from './routes/sync.js'
 import adminRouter, { settingsRouter } from './routes/admin.js'
 import suppliersRouter from './routes/suppliers.js'
 import importRouter from './routes/import.js'
@@ -131,6 +132,7 @@ app.use('/api/v1/shifts', shiftsRouter)
 app.use('/api/v1/sales', salesRouter)
 app.use('/api/v1/returns', returnsRouter)
 app.use('/api/v1/reports', reportsRouter)
+app.use('/api/v1/sync', syncRouter)
 app.use('/api/v1/admin', adminRouter)
 app.use('/api/v1/settings', settingsRouter)
 app.use('/api/v1/suppliers', suppliersRouter)
