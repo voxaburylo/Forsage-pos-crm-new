@@ -121,6 +121,77 @@ export class LocalPosRepository {
     return row ?? null
   }
 
+  // Список боржників з локальної бази (клієнти з боргом > 0), для каси офлайн.
+  listDebtors(tenantId = DEFAULT_TENANT_ID, limit = 200): Array<{
+    id: string
+    full_name: string | null
+    phone: string | null
+    debt_balance: number
+  }> {
+    return this.db.prepare(`
+      SELECT id, full_name, phone, debt_balance
+      FROM customers
+      WHERE tenant_id = ? AND deleted_at IS NULL AND debt_balance > 0
+      ORDER BY debt_balance DESC
+      LIMIT ?
+    `).all(tenantId, limit) as unknown as Array<{
+      id: string; full_name: string | null; phone: string | null; debt_balance: number
+    }>
+  }
+
+  // Очікувана готівка у відкритій зміні (звірка каси) — з локальних даних.
+  getExpectedCash(cashierId: string, tenantId = DEFAULT_TENANT_ID): {
+    opening_cash: number
+    cash_sales: number
+    cash_returns: number
+    cash_in: number
+    cash_out: number
+    expected_amount: number
+  } | null {
+    const shift = this.getOpenShift(cashierId, tenantId)
+    if (!shift) return null
+    const rows = this.db.prepare(`
+      SELECT type, SUM(amount) AS total
+      FROM cash_operations
+      WHERE tenant_id = ? AND shift_id = ?
+      GROUP BY type
+    `).all(tenantId, shift.id) as Array<{ type: string; total: number }>
+    const by: Record<string, number> = {}
+    for (const r of rows) by[r.type] = Number(r.total) || 0
+    const cash_sales = by['sale_cash'] ?? 0
+    const cash_returns = by['return_cash'] ?? 0
+    const cash_in = by['cash_in'] ?? 0
+    const cash_out = (by['cash_out'] ?? 0) + (by['salary_payout'] ?? 0) + (by['supplier_payment'] ?? 0)
+    const expected = shift.opening_cash + cash_sales + cash_in - cash_returns - cash_out
+    return {
+      opening_cash: shift.opening_cash,
+      cash_sales,
+      cash_returns,
+      cash_in,
+      cash_out,
+      expected_amount: Math.max(0, expected),
+    }
+  }
+
+  // Зберегти звірку каси локально (оновлюємо зміну очікуваною сумою й розбіжністю).
+  reconcileShift(cashierId: string, actualAmount: number, comment: string | null, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    const shift = this.getOpenShift(cashierId, tenantId)
+    if (!shift) throw new Error('LOCAL_NO_SHIFT')
+    const exp = this.getExpectedCash(cashierId, tenantId)
+    const expected = exp?.expected_amount ?? 0
+    const variance = Math.round(actualAmount) - expected
+    const ts = new Date().toISOString()
+    const note = comment && comment.trim()
+      ? `${shift.notes ? shift.notes + '\n' : ''}Звірка: ${comment.trim()}`
+      : shift.notes
+    this.db.prepare(`
+      UPDATE shifts
+      SET expected_cash = ?, cash_variance = ?, notes = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(expected, variance, note ?? null, ts, ts, shift.id, tenantId)
+    return { ok: true }
+  }
+
   checkout(input: LocalSaleCheckoutInput): LocalSaleCheckoutResult {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     if (input.items.length === 0) throw new Error('LOCAL_SALE_EMPTY')

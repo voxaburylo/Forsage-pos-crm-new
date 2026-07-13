@@ -4,6 +4,7 @@ import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface Props {
   open: boolean
@@ -27,6 +28,19 @@ export function CashReconciliationModal({ open, onClose }: Props) {
     setActual('')
     setComment('')
     setLoading(true)
+    const desktop = desktopBridge()
+    const cashierId = session?.user?.id
+    if (desktop && cashierId) {
+      desktop.pos.expectedCash(cashierId)
+        .then((data) => {
+          if (!data) { toast.error('Зміну не відкрито'); return }
+          setExpected(data.expected_amount ?? 0)
+          setBreakdown(data as unknown as Record<string, number>)
+        })
+        .catch(() => toast.error('Помилка завантаження даних'))
+        .finally(() => setLoading(false))
+      return
+    }
     api.get<{ data: Record<string, number> }>('/api/v1/shifts/current/expected-cash')
       .then((res) => {
         setExpected(res.data.expected_amount ?? 0)
@@ -34,7 +48,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
       })
       .catch(() => toast.error('Помилка завантаження даних'))
       .finally(() => setLoading(false))
-  }, [open])
+  }, [open, session?.user?.id])
 
   if (!open) return null
 
@@ -49,10 +63,16 @@ export function CashReconciliationModal({ open, onClose }: Props) {
 
     setSaving(true)
     try {
-      await api.post('/api/v1/shifts/current/reconcile', {
-        actual_amount: actualKopecks,
-        comment: comment.trim() || null,
-      })
+      const desktop = desktopBridge()
+      const cashierId = session?.user?.id
+      if (desktop && cashierId) {
+        await desktop.pos.reconcile(cashierId, actualKopecks, comment.trim() || null)
+      } else {
+        await api.post('/api/v1/shifts/current/reconcile', {
+          actual_amount: actualKopecks,
+          comment: comment.trim() || null,
+        })
+      }
       toast.success(`Звірку каси збережено. Різниця: ${formatMoney(Math.abs(difference))}${difference > 0 ? ' надлишок' : difference < 0 ? ' нестача' : ''}`)
       onClose()
     } catch (e) {

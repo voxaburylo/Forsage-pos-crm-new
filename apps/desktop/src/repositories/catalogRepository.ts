@@ -164,6 +164,19 @@ export class LocalCatalogRepository {
     return row ?? null
   }
 
+  // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі
+  // до вводу назви, коли поле пошуку порожнє.
+  listPopular(tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
+    return this.db.prepare(`
+      SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
+             qty_on_hand, is_active, is_service, storage_bin
+      FROM products
+      WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1
+      ORDER BY is_favorite DESC, name ASC
+      LIMIT ?
+    `).all(tenantId, limit) as unknown as LocalProduct[]
+  }
+
   searchProducts(query: string, tenantId = DEFAULT_TENANT_ID, limit = 20): LocalProduct[] {
     const raw = query.trim()
     if (!raw) return []

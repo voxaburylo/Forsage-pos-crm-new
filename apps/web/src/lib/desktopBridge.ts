@@ -209,11 +209,15 @@ interface ForsageDesktopBridge {
       is_active?: boolean
       barcode?: string | null
     }) => Promise<DesktopProduct>
+    listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
     getOpenShift: (cashierId: string) => Promise<Shift | null>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
+    listDebtors: (limit?: number) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number }>>
+    expectedCash: (cashierId: string) => Promise<{ opening_cash: number; cash_sales: number; cash_returns: number; cash_in: number; cash_out: number; expected_amount: number } | null>
+    reconcile: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true }>
   }
   sync: {
     listPending: (limit?: number) => Promise<DesktopSyncOutboxOperation[]>

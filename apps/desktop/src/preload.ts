@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
     upsertProduct: (product: unknown) =>
       ipcRenderer.invoke('desktop:catalog:upsert-product', product),
+    listPopular: (limit?: number) =>
+      ipcRenderer.invoke('desktop:catalog:list-popular', limit),
   },
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) =>
@@ -21,6 +23,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getOpenShift: (cashierId: string) =>
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
+    listDebtors: (limit?: number) => ipcRenderer.invoke('desktop:pos:list-debtors', limit),
+    expectedCash: (cashierId: string) => ipcRenderer.invoke('desktop:pos:expected-cash', cashierId),
+    reconcile: (cashierId: string, actualAmount: number, comment: string | null) =>
+      ipcRenderer.invoke('desktop:pos:reconcile', cashierId, actualAmount, comment),
   },
   sync: {
     listPending: (limit?: number) =>

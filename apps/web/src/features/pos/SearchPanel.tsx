@@ -149,9 +149,10 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         // Офлайн-режим: шукаємо в IndexedDB
         const desktop = desktopBridge()
         if (desktop) {
+          // Порожнє поле — показуємо популярні товари (обране/перші), як онлайн-версія
           const localResults = query.trim()
             ? await desktop.catalog.searchProducts(query.trim(), 30)
-            : []
+            : await desktop.catalog.listPopular(50)
           if (epoch !== searchEpoch.current) return
           setResults(localResults.map(desktopProductToProduct))
           setSupplierResults([])

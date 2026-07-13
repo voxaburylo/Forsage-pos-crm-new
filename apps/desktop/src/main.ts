@@ -217,6 +217,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:upsert-product', (_event, product: LocalProductUpsert) =>
     requireLocalCatalog().upsertProduct(product),
   )
+  ipcMain.handle('desktop:catalog:list-popular', (_event, limit?: number) =>
+    requireLocalCatalog().listPopular(undefined, limit),
+  )
+  ipcMain.handle('desktop:pos:list-debtors', (_event, limit?: number) =>
+    requireLocalPos().listDebtors(undefined, limit),
+  )
+  ipcMain.handle('desktop:pos:expected-cash', (_event, cashierId: string) =>
+    requireLocalPos().getExpectedCash(cashierId),
+  )
+  ipcMain.handle('desktop:pos:reconcile', (_event, cashierId: string, actualAmount: number, comment: string | null) =>
+    requireLocalPos().reconcileShift(cashierId, actualAmount, comment),
+  )
   ipcMain.handle('desktop:pos:open-shift', (_event, input: {
     cashier_id: string
     opening_cash?: number
