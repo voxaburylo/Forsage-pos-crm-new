@@ -179,7 +179,7 @@ export async function getSyncChanges({
     referencesIncluded
       ? fetchAll((from, to) => db
           .from('customer_cars')
-          .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at,updated_at')
+          .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at')
           .eq('tenant_id', tenantId)
           .range(from, to))
       : Promise.resolve([]),

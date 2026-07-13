@@ -22,7 +22,7 @@ router.post('/quick-item', async (req, res, next) => {
 
     const presets = {
       tire_service: { sku: 'POS-TIRE-SERVICE', name: 'Послуги шиномонтажу', retail_price: 0 },
-      free_sale: { sku: 'POS-FREE-SALE', name: 'Вільний продаж / б·у товар', retail_price: 0 },
+      free_sale: { sku: 'POS-FREE-SALE', name: 'Продаж товару', retail_price: 0 },
       bag: { sku: 'POS-BAG', name: 'Пакет', retail_price: 500 },
     } as const
     const preset = presets[parsed.data.kind]
@@ -57,6 +57,19 @@ router.post('/quick-item', async (req, res, next) => {
           throw new AppError('DB_ERROR', restoreError?.message ?? 'Не вдалося відновити позицію', 500)
         }
         res.json({ data: restored })
+        return
+      }
+      // Товар живий, але назва могла застаріти (напр. перейменували службову
+      // позицію) — синхронізуємо, щоб у чеку була актуальна назва.
+      if (existing.name !== preset.name) {
+        const { data: renamed } = await db
+          .from('products')
+          .update({ name: preset.name })
+          .eq('id', existing.id)
+          .eq('tenant_id', req.user!.tenant_id)
+          .select('id,sku,name,unit,retail_price,qty_on_hand,is_service')
+          .single()
+        res.json({ data: renamed ?? { ...existing, name: preset.name } })
         return
       }
       res.json({ data: existing })
