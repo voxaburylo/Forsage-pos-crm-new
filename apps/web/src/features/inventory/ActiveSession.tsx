@@ -516,18 +516,25 @@ export default function ActiveSession() {
               </div>
             </div>
 
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="mt-3 grid gap-2 sm:grid-cols-5">
+              <div className="rounded-xl bg-gray-50 p-3 sm:col-span-2">
+                <p className="text-xs text-gray-500">Штрихкод</p>
+                <p className="mt-1 truncate font-mono text-base font-bold text-gray-900 select-all">
+                  {selected.barcode || 'не задано'}
+                </p>
+              </div>
               <div className="rounded-xl bg-gray-50 p-3">
                 <p className="text-xs text-gray-500">У програмі на старті</p>
-                <p className="mt-1 text-xl font-bold">{selected.inventory_item?.expected_stock ?? selected.qty_on_hand ?? 0} {selected.unit}</p>
+                <p className="mt-1 text-lg font-bold">{selected.inventory_item?.expected_stock ?? selected.qty_on_hand ?? 0} {selected.unit}</p>
               </div>
               <div className="rounded-xl bg-blue-50 p-3">
                 <p className="text-xs text-blue-600">Вже пораховано всіма</p>
-                <p className="mt-1 text-xl font-bold text-blue-800">{selected.inventory_item?.counted_stock ?? 0} {selected.unit}</p>
+                <p className="mt-1 text-lg font-bold text-blue-800">{selected.inventory_item?.counted_stock ?? 0} {selected.unit}</p>
               </div>
               <div className="rounded-xl bg-yellow-50 p-3">
-                <p className="text-xs text-yellow-700">Ціна продажу</p>
-                <p className="mt-1 text-xl font-bold text-yellow-900">{formatMoney(selected.retail_price)}</p>
+                <p className="text-xs text-yellow-700">Закупка / продаж</p>
+                <p className="mt-1 text-sm font-semibold text-yellow-900">{formatMoney(selected.purchase_price ?? 0)}</p>
+                <p className="text-lg font-bold text-yellow-950">{formatMoney(selected.retail_price)}</p>
               </div>
             </div>
             {(selected.inventory_item?.counted_stock ?? 0) > 0 && (
@@ -757,44 +764,61 @@ function InventoryRow({
   onRemove: () => void
 }) {
   const retailStr = ((item.product?.retail_price ?? 0) / 100).toFixed(2)
+  const product = item.product
+  const unit = product?.unit ?? 'шт'
+  const barcode = product?.barcode || 'без штрихкоду'
   return (
-    <div className="flex flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap">
-      {canEditPrice && isActive && (
-        <input type="checkbox" aria-label="Вибрати" checked={selected} onChange={onToggleSelect}
-          className="h-4 w-4 shrink-0 rounded border-gray-300" />
-      )}
-      <div className="min-w-0 flex-1 basis-full sm:basis-auto">
-        <p className="truncate text-sm font-medium text-gray-900">{item.product?.name ?? 'Товар'}</p>
-        <p className="truncate font-mono text-[11px] text-gray-500">
-          {item.product?.sku} · було {item.expected_stock}{item.product?.storage_bin ? ` · ${item.product.storage_bin}` : ''}
-        </p>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <div className="text-center">
-          <span className="block text-[10px] text-gray-400">К-сть</span>
-          <input key={`q-${item.counted_stock}`} type="number" min="0" step="0.001" inputMode="decimal"
-            defaultValue={String(item.counted_stock)} disabled={!isActive}
-            onBlur={(event) => onSetQty(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-            className="w-16 rounded-lg border border-gray-300 px-2 py-1.5 text-center text-sm font-bold outline-none focus:border-yellow-500" />
-        </div>
-        {canEditPrice && (
-          <div className="text-center">
-            <span className="block text-[10px] text-gray-400">Ціна ₴</span>
-            <input key={`p-${item.product?.retail_price}`} type="number" min="0" step="0.01" inputMode="decimal"
-              defaultValue={retailStr} disabled={!isActive}
-              onBlur={(event) => onSetRetail(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-              className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-right text-sm font-semibold outline-none focus:border-blue-500" />
-          </div>
-        )}
+    <div className="grid grid-cols-1 gap-2 px-3 py-2.5 text-sm lg:grid-cols-[minmax(260px,1fr)_92px_104px_104px_92px_auto] lg:items-center lg:gap-3">
+      <div className="flex min-w-0 items-start gap-2">
         {canEditPrice && isActive && (
-          <div className="flex flex-col gap-0.5">
-            <button type="button" onClick={() => onMarkup('percent', 30)}
-              className="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-100">+30%</button>
-            <button type="button" onClick={() => onMarkup('table')}
-              className="rounded border border-blue-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 hover:bg-blue-50">табл</button>
+          <input type="checkbox" aria-label="Вибрати" checked={selected} onChange={onToggleSelect}
+            className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300" />
+        )}
+        <div className="min-w-0">
+          <p className="truncate font-medium text-gray-900">{product?.name ?? 'Товар'}</p>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-gray-500">
+            <span>{product?.sku || 'без SKU'}</span>
+            <span className="select-all text-gray-700">{barcode}</span>
+            {product?.storage_bin && <span className="text-blue-600">{product.storage_bin}</span>}
           </div>
+        </div>
+      </div>
+      <div>
+        <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Було</span>
+        <span className="font-semibold text-gray-800">{item.expected_stock} {unit}</span>
+      </div>
+      <div>
+        <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Закупка</span>
+        <span className="font-semibold text-gray-800">{formatMoney(product?.purchase_price ?? 0)}</span>
+      </div>
+      <div>
+        <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Продаж</span>
+        {canEditPrice ? (
+          <input key={`p-${product?.retail_price}`} type="number" min="0" step="0.01" inputMode="decimal"
+            defaultValue={retailStr} disabled={!isActive}
+            onBlur={(event) => onSetRetail(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
+            className="mt-0.5 w-24 rounded-lg border border-gray-300 px-2 py-1 text-right font-semibold outline-none focus:border-blue-500" />
+        ) : (
+          <span className="font-semibold text-gray-800">{formatMoney(product?.retail_price ?? 0)}</span>
+        )}
+      </div>
+      <div>
+        <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Факт</span>
+        <input key={`q-${item.counted_stock}`} type="number" min="0" step="0.001" inputMode="decimal"
+          defaultValue={String(item.counted_stock)} disabled={!isActive}
+          onBlur={(event) => onSetQty(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
+          className="mt-0.5 w-20 rounded-lg border border-yellow-300 px-2 py-1 text-center font-bold outline-none focus:border-yellow-500" />
+      </div>
+      <div className="flex items-center gap-1.5 lg:justify-end">
+        {canEditPrice && isActive && (
+          <>
+            <button type="button" onClick={() => onMarkup('percent', 30)}
+              className="rounded border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold text-gray-600 hover:bg-gray-100">+30%</button>
+            <button type="button" onClick={() => onMarkup('table')}
+              className="rounded border border-blue-200 bg-white px-2 py-1 text-[10px] font-semibold text-blue-600 hover:bg-blue-50">табл</button>
+          </>
         )}
         {isActive && (
           <button type="button" onClick={onRemove} aria-label="Прибрати"

@@ -137,6 +137,13 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
     const input = parsed.data
+    if (input.prepayment > 0) {
+      throw new AppError(
+        'PAYMENT_IN_POS_ONLY',
+        'Передоплата за замовлення приймається тільки через касу',
+        422,
+      )
+    }
 
     if (input.customer_id) {
       const { data } = await db.from('customers').select('id')
@@ -438,12 +445,13 @@ router.get('/', async (req, res, next) => {
     const status     = req.query.status as string | undefined
     const customerId = req.query.customer_id as string | undefined
     const chatId     = req.query.chat_id as string | undefined
+    const searchRaw  = String(req.query.search ?? '').trim()
     const perPage    = Math.min(parseInt(String(req.query.per_page ?? '200'), 10) || 200, 500)
     const offset     = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0)
 
     let query = db
       .from('customer_orders')
-      .select('*, customer:customers(id, phone, full_name), items:customer_order_items(*)')
+      .select('*, customer:customers(id, phone, full_name, card_barcode), items:customer_order_items(*)')
       .eq('tenant_id', req.user!.tenant_id)
       .is('deleted_at', null)
 
@@ -453,6 +461,55 @@ router.get('/', async (req, res, next) => {
       const statuses = status.split(',').map((s) => s.trim()).filter(Boolean)
       if (statuses.length === 1) query = query.eq('status', statuses[0])
       else query = query.in('status', statuses)
+    }
+    if (searchRaw) {
+      const safeSearch = searchRaw.replace(/[(),]/g, ' ').trim()
+      const digits = searchRaw.replace(/\D/g, '')
+      const customerIds: string[] = []
+
+      if (safeSearch || digits) {
+        const customerOr = [
+          ...(safeSearch ? [
+            `full_name.ilike.%${safeSearch}%`,
+            `phone.ilike.%${safeSearch}%`,
+            `card_barcode.ilike.%${safeSearch}%`,
+          ] : []),
+          ...(digits && digits !== safeSearch ? [
+            `phone.ilike.%${digits}%`,
+            `card_barcode.ilike.%${digits}%`,
+          ] : []),
+        ]
+
+        if (customerOr.length > 0) {
+          const { data: customers, error: customersError } = await db
+            .from('customers')
+            .select('id')
+            .eq('tenant_id', req.user!.tenant_id)
+            .is('deleted_at', null)
+            .or(customerOr.join(','))
+            .limit(100)
+
+          if (customersError) throw new AppError('DB_ERROR', customersError.message, 500)
+          customerIds.push(...(customers ?? []).map((c) => c.id))
+        }
+      }
+
+      const orderFilters: string[] = []
+      const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      if (uuidLike.test(searchRaw)) orderFilters.push(`id.eq.${searchRaw}`)
+      if (/^\d+$/.test(searchRaw)) orderFilters.push(`order_number.eq.${Number(searchRaw)}`)
+      if (safeSearch) {
+        orderFilters.push(`kp_number.ilike.%${safeSearch}%`)
+      }
+      if (customerIds.length > 0) {
+        orderFilters.push(`customer_id.in.(${customerIds.join(',')})`)
+      }
+
+      if (orderFilters.length > 0) {
+        query = query.or(orderFilters.join(','))
+      } else {
+        query = query.eq('id', '00000000-0000-0000-0000-000000000000')
+      }
     }
 
     const { data, error } = await query
@@ -1295,25 +1352,37 @@ router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req,
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
     if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Завершене замовлення не можна скасувати', 400)
 
-    // Повернення передоплати
-    if (parsed.data.refund_prepayment && order.prepayment > 0) {
+    const { data: payments } = await db
+      .from('order_payments')
+      .select('amount, method')
+      .eq('order_id', order.id)
+      .eq('tenant_id', req.user!.tenant_id)
+
+    const paidAmount = Math.max(
+      order.total_paid ?? 0,
+      order.prepayment ?? 0,
+      (payments ?? []).reduce((sum, p) => sum + (p.amount ?? 0), 0),
+    )
+
+    // Повернення оплати/передоплати, зробленої через касу.
+    if (parsed.data.refund_prepayment && paidAmount > 0) {
       const { data: anyShift } = await db
         .from('shifts').select('id').eq('status', 'open').eq('tenant_id', req.user!.tenant_id).limit(1).maybeSingle()
 
       await db.from('cash_operations').insert({
         tenant_id: req.user!.tenant_id, shift_id: anyShift?.id ?? null, type: 'out',
-        amount: order.prepayment,
-        note: `Повернення передоплати за замовленням #${order.id.slice(0, 8)}`,
+        amount: paidAmount,
+        note: `Повернення оплати за замовленням #${order.order_number ?? order.id.slice(0, 8)}`,
         created_by: req.user!.id,
       })
     }
 
     // Залишити як кредит клієнту (зменшуємо debt_balance — від'ємний борг)
-    if (parsed.data.keep_as_credit && order.prepayment > 0 && order.customer_id) {
+    if (parsed.data.keep_as_credit && paidAmount > 0 && order.customer_id) {
       const { data: customer } = await db.from('customers').select('debt_balance').eq('id', order.customer_id).single()
       if (customer) {
         await db.from('customers').update({
-          debt_balance: Math.max(0, (customer.debt_balance ?? 0) - order.prepayment),
+          debt_balance: Math.max(0, (customer.debt_balance ?? 0) - paidAmount),
         }).eq('id', order.customer_id)
       }
     }
@@ -1328,9 +1397,17 @@ router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req,
 
     if (statusErr) throw new AppError('DB_ERROR', statusErr.message, 500)
 
+    if (parsed.data.refund_prepayment && paidAmount > 0) {
+      await db.from('customer_orders').update({
+        total_paid: 0,
+        prepayment: 0,
+        updated_at: new Date().toISOString(),
+      }).eq('id', order.id)
+    }
+
     await db.from('order_activity_log').insert({
       order_id: order.id, user_id: req.user!.id, action: 'canceled',
-      details: { refund_prepayment: parsed.data.refund_prepayment, keep_as_credit: parsed.data.keep_as_credit, reason: parsed.data.reason, amount: order.prepayment },
+      details: { refund_prepayment: parsed.data.refund_prepayment, keep_as_credit: parsed.data.keep_as_credit, reason: parsed.data.reason, amount: paidAmount },
     })
 
     await auditOrder(req, 'order_canceled', order.id, order, {
@@ -1398,12 +1475,13 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
     if (parsed.data.comment !== undefined) updateFields.comment = parsed.data.comment
     if (parsed.data.vehicle_info !== undefined) updateFields.vehicle_info = parsed.data.vehicle_info
     if (parsed.data.customer_id !== undefined) updateFields.customer_id = parsed.data.customer_id
-    if (parsed.data.prepayment !== undefined) {
-      updateFields.prepayment = parsed.data.prepayment
-      updateFields.total_paid = parsed.data.prepayment // оновлюємо також total_paid
+    if ((parsed.data.prepayment ?? 0) > 0) {
+      throw new AppError(
+        'PAYMENT_IN_POS_ONLY',
+        'Оплату замовлення не можна змінювати у формі. Використайте касу.',
+        422,
+      )
     }
-    if (parsed.data.prepayment_method !== undefined) updateFields.prepayment_method = parsed.data.prepayment_method
-    if (parsed.data.prepayment_is_fiscal !== undefined) updateFields.prepayment_is_fiscal = parsed.data.prepayment_is_fiscal
     if (parsed.data.discount_amount !== undefined) updateFields.discount_amount = parsed.data.discount_amount
 
     // Оновлюємо позиції

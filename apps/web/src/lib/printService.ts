@@ -5,6 +5,7 @@ export interface PrintOptions {
   height?: number;
   pageSizeMm?: { width: number; height: number };
   preferDesktopNative?: boolean;
+  showDesktopPreview?: boolean;
   /** Друкувати на папері за налаштуванням драйвера (не задавати pageSize) —
    * для етикеткового HL80, який відхиляє власний pageSize («Invalid printer settings»). */
   useDriverPaper?: boolean;
@@ -73,6 +74,7 @@ export class PrintService {
       height = 700,
       pageSizeMm,
       preferDesktopNative = false,
+      showDesktopPreview = false,
       useDriverPaper = false,
       cleanupDelayMs = 30000,
       readyDelayMs = 100,
@@ -86,13 +88,31 @@ export class PrintService {
         widthMm: pageSizeMm.width,
         heightMm: pageSizeMm.height,
         silent: false,
+        showPreviewWindow: showDesktopPreview,
         useDriverPaper,
+      }).then(() => {
+        PrintService.endPrint();
       }).catch((error: unknown) => {
         console.error("Failed to print document through desktop bridge", error);
+        PrintService.endPrint();
         import("@/components/ui/Toast").then(({ toast }) => {
-          toast.error(error instanceof Error ? error.message : "Помилка друку");
+          toast.error(error instanceof Error ? error.message : "Помилка локального друку");
         });
-      }).finally(() => PrintService.endPrint());
+        if (desktopPrint) return;
+        window.setTimeout(() => {
+          try {
+            PrintService.printHtml(htmlContent, {
+              ...options,
+              preferDesktopNative: false,
+            });
+          } catch (fallbackError) {
+            console.error("Failed to open browser print fallback", fallbackError);
+            import("@/components/ui/Toast").then(({ toast }) => {
+              toast.error(fallbackError instanceof Error ? fallbackError.message : "Помилка друку");
+            });
+          }
+        }, 50);
+      });
       return;
     }
 

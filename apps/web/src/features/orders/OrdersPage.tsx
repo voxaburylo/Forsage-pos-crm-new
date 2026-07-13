@@ -10,7 +10,6 @@ import { useAuthStore } from '@/stores/authStore'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
 import { startRepeatOrder, formatOrderNo } from './orderActions'
-import { shiftApi } from '@/features/pos/shiftApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { Menu } from 'lucide-react'
@@ -621,8 +620,6 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
 }) {
   const [vehicleId, setVehicleId] = useState('')
   const [comment, setComment] = useState('')
-  const [prepayment, setPrepayment] = useState('0')
-  const [method, setMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [items, setItems] = useState<QuickOrderItem[]>([{ name: '', qty: '1', sell_price: '0' }])
   const [sendPrices, setSendPrices] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -644,8 +641,9 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
         source: 'messenger',
         vehicle_info: vehicle ? { make: vehicle.brand, model: vehicle.model, year: vehicle.year ?? undefined, vin: vehicle.vin ?? undefined } : null,
         comment: comment.trim() || null,
-        prepayment: Math.round(parseFloat(prepayment || '0') * 100),
-        prepayment_method: parseFloat(prepayment) > 0 ? method : null,
+        prepayment: 0,
+        prepayment_method: null,
+        prepayment_is_fiscal: false,
         items: validItems.map((r) => ({
           name: r.name.trim(), qty: parseFloat(r.qty) || 1,
           sell_price: Math.round(parseFloat(r.sell_price || '0') * 100),
@@ -726,19 +724,8 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
           </label>
         )}
 
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Передоплата (грн)" type="number" min="0" step="0.01" value={prepayment} onChange={(e) => setPrepayment(e.target.value)} />
-          {parseFloat(prepayment) > 0 && (
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Метод</label>
-              <select value={method} onChange={(e) => setMethod(e.target.value as 'cash' | 'card' | 'transfer')}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300">
-                <option value="cash">Готівка</option>
-                <option value="card">Картка</option>
-                <option value="transfer">Переказ</option>
-              </select>
-            </div>
-          )}
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Передоплату приймає касир у касі: знайдіть замовлення за номером, телефоном або штрихкодом картки клієнта.
         </div>
 
         <div>
@@ -1380,12 +1367,9 @@ export default function OrdersPage() {
   const composerRef = useRef<HTMLInputElement>(null)
 
   // модалки
-  const [payModal, setPayModal] = useState<CustomerOrder | null>(null)
   const [callbackModal, setCallbackModal] = useState<{ orderId: string; status: string } | null>(null)
   const [callbackDate, setCallbackDate] = useState('')
   const [callbackTime, setCallbackTime] = useState('')
-  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'mixed'>('cash')
-  const [isFiscal, setIsFiscal] = useState(false)
   const [cancelModal, setCancelModal] = useState<CustomerOrder | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const session = useAuthStore((s) => s.session)
@@ -1624,15 +1608,9 @@ export default function OrdersPage() {
     } catch { toast.error('Помилка') }
   }
 
-  async function handleComplete(order: CustomerOrder) {
-    try {
-      const shiftRes = await shiftApi.current().catch(() => ({ data: null }))
-      const shiftId = shiftRes.data?.id ?? null
-      await orderApi.complete(order.id, { payment_method: payMethod, is_fiscal: isFiscal, shift_id: shiftId })
-      toast.success('Замовлення видано')
-      setPayModal(null)
-      loadOrders()
-    } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+  function openOrderPaymentInPos(order: CustomerOrder) {
+    const searchValue = order.order_number ? String(order.order_number) : order.id
+    navigate(`/pos?order=${encodeURIComponent(searchValue)}`)
   }
 
   async function handleCancel(order: CustomerOrder, refund: boolean) {
@@ -1917,7 +1895,7 @@ export default function OrdersPage() {
                 onOpenChat={(chatId) => setSelection({ kind: 'chat', id: chatId })}
                 onChangeStatus={(s) => changeOrderStatus(selectedOrder.id, s)}
                 onItemStatus={(itemId, s) => updateItemStatus(selectedOrder.id, itemId, s)}
-                onPay={() => setPayModal(selectedOrder)}
+                onPay={() => openOrderPaymentInPos(selectedOrder)}
                 onCancel={() => setCancelModal(selectedOrder)}
                 onRepeat={() => startRepeatOrder(selectedOrder, navigate)}
               />
@@ -1971,54 +1949,19 @@ export default function OrdersPage() {
         </div>
       </div>
 
-      {/* ── Модал оплати ── */}
-      <Modal open={!!payModal} onClose={() => setPayModal(null)} title="Фінальний розрахунок" size="sm">
-        {payModal && (
-          <div className="space-y-4">
-            <div className="bg-green-50 rounded-xl p-4 space-y-1 text-sm">
-              <div className="flex justify-between"><span>Загальна сума:</span><span className="font-bold">{formatMoney(payModal.total_amount)}</span></div>
-              {payModal.prepayment > 0 && (
-                <div className="flex justify-between text-blue-600"><span>Передоплата:</span><span>{formatMoney(payModal.prepayment)}</span></div>
-              )}
-              <div className="border-t border-green-200 pt-1 flex justify-between text-lg font-bold">
-                <span>До сплати:</span>
-                <span className="text-green-700">{formatMoney(Math.max(0, payModal.total_amount - payModal.prepayment))}</span>
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Метод оплати</label>
-              <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as any)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                <option value="cash">Готівка</option>
-                <option value="card">Картка</option>
-                <option value="mixed">Змішана</option>
-              </select>
-            </div>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={isFiscal} onChange={(e) => setIsFiscal(e.target.checked)} className="w-4 h-4 accent-yellow-400" />
-              🧾 Фіскальний чек (ПРРО)
-            </label>
-            <div className="flex gap-3">
-              <Button onClick={() => handleComplete(payModal)} className="flex-1 bg-green-600 hover:bg-green-700">✅ Підтвердити видачу</Button>
-              <Button variant="secondary" onClick={() => setPayModal(null)}>Скасувати</Button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
       {/* ── Модал скасування ── */}
       <Modal open={!!cancelModal} onClose={() => setCancelModal(null)} title="Скасувати замовлення" size="sm">
         {cancelModal && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
-              {cancelModal.prepayment > 0
-                ? `Передоплата: ${formatMoney(cancelModal.prepayment)}. Що робити з грошима?`
+              {(cancelModal.total_paid ?? cancelModal.prepayment ?? 0) > 0
+                ? `Оплачено: ${formatMoney(cancelModal.total_paid ?? cancelModal.prepayment ?? 0)}. Що робити з грошима?`
                 : 'Ви впевнені, що хочете скасувати це замовлення?'}
             </p>
-            {cancelModal.prepayment > 0 ? (
+            {(cancelModal.total_paid ?? cancelModal.prepayment ?? 0) > 0 ? (
               <div className="space-y-2">
                 <Button onClick={() => handleCancel(cancelModal, true)} className="w-full bg-red-600 hover:bg-red-700 text-white">
-                  💰 Повернути {formatMoney(cancelModal.prepayment)}
+                  💰 Повернути {formatMoney(cancelModal.total_paid ?? cancelModal.prepayment ?? 0)}
                 </Button>
                 <Button variant="secondary" onClick={() => handleCancel(cancelModal, false)} className="w-full">
                   Залишити в магазині
@@ -2249,7 +2192,7 @@ function OrderInlineView({
           {draft ? (
             <Button icon={<FilePen size={14} />} onClick={onEditDraft}>Редагувати чернетку</Button>
           ) : canComplete && (
-            <Button onClick={onPay} className="bg-green-600 hover:bg-green-700 text-white">💰 Видати</Button>
+            <Button onClick={onPay} className="bg-green-600 hover:bg-green-700 text-white">💰 Оплата в касі</Button>
           )}
           {order.status === 'arrived' && (
             <>

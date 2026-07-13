@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Phone, MessageSquare, FilePen, DollarSign, ChevronDown, Pencil, Copy } from 'lucide-react'
+import { Phone, MessageSquare, FilePen, ChevronDown, Pencil, Copy } from 'lucide-react'
 import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
 import { formatOrderNo, startRepeatOrder } from './orderActions'
 import { printOrderReceipt } from './OrderReceiptPrint'
 import { printPickingList } from './PickingListPrint'
-import { shiftApi } from '@/features/pos/shiftApi'
 import { Layout } from '@/components/Layout'
-import { Button, Card, Badge, Input } from '@/components/ui'
+import { Button, Card, Badge } from '@/components/ui'
 import { Modal } from '@/components/ui/Modal'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
@@ -121,13 +120,6 @@ export default function OrderDetailPage() {
   const [loading, setLoading] = useState(true)
   const [now]                 = useState(() => new Date())
 
-  const [payModal, setPayModal]   = useState(false)
-  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'mixed'>('cash')
-  const [isFiscal, setIsFiscal]   = useState(false)
-  const [paying, setPaying]       = useState(false)
-  const [inlineAmount, setInlineAmount] = useState('')
-  const [inlinePayMethod, setInlinePayMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
-
   const [itemLabelModal, setItemLabelModal] = useState(false)
   const [selectedOrderItem, setSelectedOrderItem] = useState<any | null>(null)
   const [itemLabelCopies, setItemLabelCopies] = useState(1)
@@ -137,11 +129,6 @@ export default function OrderDetailPage() {
   const [canceling, setCanceling]     = useState(false)
 
   const [payments, setPayments] = useState<Payment[]>([])
-  const [addPayModal, setAddPayModal] = useState(false)
-  const [payAmount, setPayAmount] = useState('')
-  const [payMethodField, setPayMethodField] = useState<'cash' | 'card' | 'transfer'>('cash')
-  const [payFiscal, setPayFiscal] = useState(false)
-  const [paySaving, setPaySaving] = useState(false)
   const [actionsOpen, setActionsOpen] = useState(false)
 
   // Inline-редагування позицій та авто прямо на картці (без переходу на форму)
@@ -304,51 +291,10 @@ export default function OrderDetailPage() {
     }
   }
 
-  async function handleComplete() {
-    if (!id || !order) return
-    setPaying(true)
-    try {
-      const shiftRes = await shiftApi.current().catch(() => ({ data: null }))
-      const shiftId = shiftRes.data?.id ?? null
-
-      const inlineCents = Math.round(parseFloat(inlineAmount || '0') * 100)
-      if (inlineCents > 0) {
-        await api.post(`/api/v1/customer-orders/${id}/payments`, {
-          amount: inlineCents,
-          method: inlinePayMethod,
-          is_fiscal: isFiscal,
-          shift_id: shiftId
-        })
-      }
-
-      await orderApi.complete(id, { payment_method: payMethod, is_fiscal: isFiscal, shift_id: shiftId })
-      toast.success('Замовлення завершено')
-      setPayModal(false)
-      load()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка')
-    } finally { setPaying(false) }
-  }
-
-  async function handleAddPayment() {
-    if (!id || !order) return
-    const amount = Math.round(parseFloat(payAmount || '0') * 100)
-    if (amount <= 0) { toast.error('Вкажіть суму'); return }
-    const rem = order.total_amount - (order.discount_amount ?? 0) - (order.total_paid ?? order.prepayment)
-    if (amount > rem) { toast.error('Сума перевищує залишок'); return }
-
-    setPaySaving(true)
-    try {
-      const shiftRes = await shiftApi.current().catch(() => ({ data: null }))
-      await api.post(`/api/v1/customer-orders/${id}/payments`, {
-        amount, method: payMethodField, is_fiscal: payFiscal,
-        shift_id: shiftRes.data?.id ?? null,
-      })
-      toast.success('Оплату додано')
-      setAddPayModal(false); setPayAmount('')
-      load()
-    } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
-    finally { setPaySaving(false) }
+  function openOrderPaymentInPos() {
+    if (!order) return
+    const search = order.order_number ? String(order.order_number) : order.id
+    navigate(`/pos?order=${encodeURIComponent(search)}`)
   }
 
   async function handleCancel(refund: boolean) {
@@ -520,13 +466,8 @@ export default function OrderDetailPage() {
             </>
           )}
           {canComplete && !editItems && (
-            <Button onClick={() => {
-              setPayModal(true);
-              setInlineAmount((remaining / 100).toString());
-              setInlinePayMethod('cash');
-              setPayMethod('cash');
-            }} className="bg-green-600 hover:bg-green-700 text-white">
-              💰<span className="hidden sm:inline">&nbsp;Видати</span>
+            <Button onClick={openOrderPaymentInPos} className="bg-green-600 hover:bg-green-700 text-white">
+              💰<span className="hidden sm:inline">&nbsp;Оплата в касі</span>
             </Button>
           )}
           {hasPendingWarehouseItems && !editItems && !['completed', 'canceled'].includes(order.status) && (
@@ -552,7 +493,7 @@ export default function OrderDetailPage() {
                     onClick={() => navigate(`/orders/${id}/edit`)}
                     className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                   >
-                    📝 Повна форма (клієнт, оплата)
+                    📝 Повна форма
                   </button>
                 )}
                 <button
@@ -843,11 +784,16 @@ export default function OrderDetailPage() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-800">Оплати</h3>
             {!['completed', 'canceled'].includes(order.status) && (
-              <Button size="sm" variant="secondary" icon={<DollarSign size={14} />} onClick={() => setAddPayModal(true)}>
-                + Додати оплату
+              <Button size="sm" variant="secondary" onClick={openOrderPaymentInPos}>
+                Оплата тільки через касу
               </Button>
             )}
           </div>
+          {!['completed', 'canceled'].includes(order.status) && (
+            <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Гроші за замовлення приймаються тільки в касі: так оплата потрапляє у зміну, ПРРО, журнал і зарплатні нарахування менеджера.
+            </div>
+          )}
 
           {payments.length === 0 ? (
             <p className="text-sm text-gray-400">Ще не було оплат</p>
@@ -953,113 +899,19 @@ export default function OrderDetailPage() {
         )}
       </div>
 
-      {/* Модал видачі */}
-      <Modal open={payModal} onClose={() => setPayModal(false)} title="Фінальний розрахунок" size="sm">
-        {order && (
-          <div className="space-y-4">
-            <div className="bg-green-50 rounded-xl p-4 space-y-1 text-sm">
-              <div className="flex justify-between"><span>Загальна сума:</span><span className="font-bold">{formatMoney(order.total_amount)}</span></div>
-              {discount > 0 && (
-                <div className="flex justify-between text-red-600 font-semibold"><span>Знижка:</span><span>-{formatMoney(discount)}</span></div>
-              )}
-              {order.prepayment > 0 && (
-                <div className="flex justify-between text-blue-600"><span>Передоплата:</span><span>{formatMoney(order.prepayment)}</span></div>
-              )}
-              <div className="border-t border-green-200 pt-1 flex justify-between text-lg font-bold">
-                <span>До сплати:</span>
-                <span className="text-green-700">{formatMoney(Math.max(0, remaining))}</span>
-              </div>
-            </div>
-            {remaining > 0 && (
-              <div className="space-y-3">
-                <Input
-                  label="Внести оплату при видачі (грн)"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={inlineAmount}
-                  onChange={(e) => setInlineAmount(e.target.value)}
-                />
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Метод оплати</label>
-                  <select
-                    value={inlinePayMethod}
-                    onChange={(e) => {
-                      const m = e.target.value as 'cash' | 'card' | 'transfer';
-                      setInlinePayMethod(m);
-                      setPayMethod(m === 'transfer' ? 'cash' : m);
-                    }}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-                  >
-                    <option value="cash">Готівка</option>
-                    <option value="card">Картка</option>
-                    <option value="transfer">Переказ</option>
-                  </select>
-                </div>
-              </div>
-            )}
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={isFiscal} onChange={(e) => setIsFiscal(e.target.checked)} className="w-4 h-4 accent-yellow-400" />
-              🧾 Фіскальний чек (ПРРО)
-            </label>
-            <div className="flex gap-3">
-              <Button onClick={handleComplete} loading={paying} className="flex-1 bg-green-600 hover:bg-green-700">
-                ✅ Підтвердити видачу
-              </Button>
-              <Button variant="secondary" onClick={() => setPayModal(false)}>Скасувати</Button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      {/* Модал додавання оплати */}
-      <Modal open={addPayModal} onClose={() => setAddPayModal(false)} title="+ Додати оплату" size="sm">
-        {order && (
-          <div className="space-y-4">
-            <div className="bg-blue-50 rounded-xl p-3 text-sm space-y-1">
-              <div className="flex justify-between"><span>Загальна сума:</span><span className="font-bold">{formatMoney(order.total_amount)}</span></div>
-              {discount > 0 && (
-                <div className="flex justify-between text-red-600 font-semibold"><span>Знижка:</span><span>-{formatMoney(discount)}</span></div>
-              )}
-              <div className="flex justify-between"><span>Вже сплачено:</span><span className="font-semibold text-green-600">{formatMoney(totalPaid)}</span></div>
-              <div className="flex justify-between font-bold"><span>Залишок:</span><span className="text-orange-600">{formatMoney(remaining)}</span></div>
-            </div>
-            <Input label="Сума (грн)" type="number" min="0.01" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Метод оплати</label>
-              <select value={payMethodField} onChange={(e) => setPayMethodField(e.target.value as any)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                <option value="cash">Готівка</option>
-                <option value="card">Картка</option>
-                <option value="transfer">Переказ</option>
-              </select>
-            </div>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={payFiscal} onChange={(e) => setPayFiscal(e.target.checked)}
-                className="w-4 h-4 accent-yellow-400" />
-              🧾 Фіскальний чек (ПРРО)
-            </label>
-            <div className="flex gap-3">
-              <Button onClick={handleAddPayment} loading={paySaving} className="flex-1">💳 Додати оплату</Button>
-              <Button variant="secondary" onClick={() => setAddPayModal(false)}>Скасувати</Button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
       {/* Модал скасування */}
       <Modal open={cancelModal} onClose={() => setCancelModal(false)} title="Скасувати замовлення" size="sm">
         {order && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
-              {order.prepayment > 0
-                ? `Передоплата: ${formatMoney(order.prepayment)}. Що робити з грошима?`
+              {totalPaid > 0
+                ? `Оплачено: ${formatMoney(totalPaid)}. Що робити з грошима?`
                 : 'Ви впевнені, що хочете скасувати це замовлення?'}
             </p>
-            {order.prepayment > 0 ? (
+            {totalPaid > 0 ? (
               <div className="space-y-2">
                 <Button onClick={() => handleCancel(true)} loading={canceling} className="w-full bg-red-600 hover:bg-red-700 text-white">
-                  💰 Повернути {formatMoney(order.prepayment)}
+                  💰 Повернути {formatMoney(totalPaid)}
                 </Button>
                 <Button variant="secondary" onClick={() => handleCancel(false)} loading={canceling} className="w-full">
                   Залишити в магазині

@@ -29,6 +29,7 @@ interface DesktopPrintOptions {
   widthMm?: number
   heightMm?: number
   silent?: boolean
+  showPreviewWindow?: boolean
   /** true — не задавати pageSize, друкувати на папері за налаштуванням драйвера
    * (для чекового рулону 58/80мм, де висота змінна). */
   useDriverPaper?: boolean
@@ -117,8 +118,9 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
     title: options.title ?? 'Друк',
     width: Math.max(360, Math.round(widthMm * 10)),
     height: Math.max(320, Math.round(heightMm * 12)),
-    show: false,
+    show: options.showPreviewWindow === true,
     parent: mainWindow ?? undefined,
+    autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: {
       sandbox: true,
@@ -133,6 +135,10 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
       'Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)',
       true,
     )
+    if (options.showPreviewWindow === true) {
+      printWindow.show()
+      printWindow.focus()
+    }
     await new Promise((resolve) => setTimeout(resolve, 250))
 
     // Chromium приймає pageSize лише в портретній орієнтації (width <= height):

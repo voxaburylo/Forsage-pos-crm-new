@@ -283,9 +283,7 @@ export default function OrderFormPage() {
         }
         setComment(cleanComment)
         
-        // Prepayment
-        setPrepayment((o.prepayment / 100).toString())
-        setPrepaymentMethod((o.prepayment_method as any) || 'cash')
+        // Оплати замовлень більше не редагуються тут: гроші приймає касир у касі.
         
         // Discount
         setDiscount(o.discount_amount ? (o.discount_amount / 100).toString() : '0')
@@ -346,21 +344,9 @@ export default function OrderFormPage() {
   // Step 4: Summary & Checkout
   const [comment, setComment] = useState('')
   const [isUrgent, setIsUrgent] = useState(false)
-  const [prepayment, setPrepayment] = useState('0')
   const [discount, setDiscount] = useState('0')
   const [discountMode, setDiscountMode] = useState<'uah' | 'pct'>('uah')
-  const [prepaymentMethod, setPrepaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
-  const [isFiscal, setIsFiscal] = useState(false)
   const [saving, setSaving] = useState(false)
-
-  // Force isFiscal to true when card is selected
-  useEffect(() => {
-    if (prepaymentMethod === 'card') {
-      setIsFiscal(true)
-    } else {
-      setIsFiscal(false)
-    }
-  }, [prepaymentMethod])
 
   // Query parameter support
   useEffect(() => {
@@ -638,9 +624,6 @@ export default function OrderFormPage() {
     ? Math.round(totalKop * (Math.min(parseFloat(discount || '0'), 100) / 100))
     : Math.round(parseFloat(discount || '0') * 100)
   const toPayKop = Math.max(0, totalKop - discountKopMemo)
-  const prepaymentKopMemo = Math.round(parseFloat(prepayment || '0') * 100)
-  const changeKop = Math.max(0, prepaymentKopMemo - toPayKop)
-
   // Submit Order / Save Draft
   async function handleSave(asDraft: boolean) {
     const validItems = items.filter((row) => row.name.trim())
@@ -654,13 +637,6 @@ export default function OrderFormPage() {
     if (!asDraft && toPayKop === 0) {
       if (!confirm('Сума замовлення 0 ₴. Оформити замовлення без вартості?')) {
         setStep(3)
-        return
-      }
-    }
-
-    // ORD-6: передоплата більша за суму — підтвердити видачу решти
-    if (!asDraft && changeKop > 0) {
-      if (!confirm(`Передоплата перевищує суму до сплати.\nРешта клієнту: ${formatMoney(changeKop)}\n\nЗафіксувати передоплату ${formatMoney(toPayKop)} та видати решту?`)) {
         return
       }
     }
@@ -700,12 +676,6 @@ export default function OrderFormPage() {
       comment.trim(),
     ].filter(Boolean).join(' ')
 
-    // Передоплату обмежуємо сумою до сплати — решта видається готівкою, а не «з'їдається» (ORD-6)
-    const prepaymentKop = Math.min(prepaymentKopMemo, toPayKop)
-
-    // Draft orders have 0 prepayment in backend typically
-    const finalPrepayment = asDraft ? 0 : prepaymentKop
-
     const discountKop = discountKopMemo
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
@@ -713,9 +683,10 @@ export default function OrderFormPage() {
       parent_draft_id: !asDraft ? sourceDraftId : null,
       vehicle_info: vehicleInfo,
       comment: finalComment || null,
-      prepayment: finalPrepayment,
-      prepayment_method: finalPrepayment > 0 ? prepaymentMethod : null,
-      prepayment_is_fiscal: finalPrepayment > 0 ? isFiscal : false,
+      // Гроші приймаються тільки через касу: там є зміна, ПРРО, борги і журнал дій.
+      prepayment: 0,
+      prepayment_method: null,
+      prepayment_is_fiscal: false,
       discount_amount: discountKop,
       items: validItems.map((row) => ({
         name:        row.name.trim(),
@@ -745,18 +716,15 @@ export default function OrderFormPage() {
           toast.success('Чернетку збережено')
           navigate('/orders?tab=drafts')
         } else {
-          // If order prepayment is 0, backend creates it as 'lead'. Let's promote it to 'new' since manager explicitly checked it out as Order.
-          if (finalPrepayment === 0) {
-            try {
-              await orderApi.updateStatus(newOrder.id, 'new')
-            } catch (err) {
-              // Активація не вдалась (наприклад, нема залишку) — лід уже створено.
-              // Ведемо користувача на нього, інакше повторний клік наплодить дублі.
-              const msg = err instanceof Error ? err.message : 'Не вдалося активувати замовлення'
-              toast.warning(`${msg}. Збережено як чернетку — виправте і активуйте з картки замовлення.`)
-              navigate('/orders/' + newOrder.id)
-              return
-            }
+          // Без передоплати бекенд створює lead. Якщо менеджер натиснув "оформити замовлення",
+          // переводимо запис у робоче замовлення; оплату пізніше прийме касир у касі.
+          try {
+            await orderApi.updateStatus(newOrder.id, 'new')
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Не вдалося активувати замовлення'
+            toast.warning(`${msg}. Збережено як чернетку — виправте і активуйте з картки замовлення.`)
+            navigate('/orders/' + newOrder.id)
+            return
           }
           if (sourceDraftId) {
             await api.delete(`/api/v1/customer-orders/${sourceDraftId}`).catch(() => {})
@@ -1490,127 +1458,44 @@ export default function OrderFormPage() {
                 </div>
               </Card>
 
-              {/* Checkout Actions & Prepayment */}
+              {/* Checkout Actions */}
               <Card className="space-y-4">
-                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Оплата та Коментар</h4>
+                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Знижка та коментар</h4>
                 
-                {/* Prepayment Input */}
                 <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-4">
-                    {/* Знижка з перемикачем ₴ / % (ORD-21) */}
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="block text-xs font-semibold text-gray-500">Знижка</label>
-                        <div className="flex rounded-md overflow-hidden border border-gray-200">
-                          {(['uah', 'pct'] as const).map((m) => (
-                            <button
-                              key={m}
-                              type="button"
-                              onClick={() => setDiscountMode(m)}
-                              className={`px-2 py-0.5 text-xs font-bold transition-colors ${
-                                discountMode === m ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400 hover:bg-gray-50'
-                              }`}
-                            >
-                              {m === 'uah' ? '₴' : '%'}
-                            </button>
-                          ))}
-                        </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold text-gray-500">Знижка</label>
+                      <div className="flex rounded-md overflow-hidden border border-gray-200">
+                        {(['uah', 'pct'] as const).map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setDiscountMode(m)}
+                            className={`px-2 py-0.5 text-xs font-bold transition-colors ${
+                              discountMode === m ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400 hover:bg-gray-50'
+                            }`}
+                          >
+                            {m === 'uah' ? '₴' : '%'}
+                          </button>
+                        ))}
                       </div>
-                      <input
-                        value={discount}
-                        onChange={(e) => setDiscount(e.target.value)}
-                        type="number"
-                        min="0"
-                        max={discountMode === 'pct' ? '100' : undefined}
-                        step="any"
-                        className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                      />
                     </div>
-                    <Input
-                      label="Внести передоплату (грн)"
-                      value={prepayment}
-                      onChange={(e) => setPrepayment(e.target.value)}
+                    <input
+                      value={discount}
+                      onChange={(e) => setDiscount(e.target.value)}
                       type="number"
                       min="0"
+                      max={discountMode === 'pct' ? '100' : undefined}
                       step="any"
+                      className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
                     />
                   </div>
 
-                  {/* Швидкі дії оплати (ORD-22) */}
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPrepayment((toPayKop / 100).toFixed(2))}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors"
-                    >
-                      Сплатити повністю ({formatMoney(toPayKop)})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPrepayment((Math.round(toPayKop / 2) / 100).toFixed(2))}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100 transition-colors"
-                    >
-                      50%
-                    </button>
-                    {parseFloat(prepayment) > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setPrepayment('0')}
-                        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100 transition-colors"
-                      >
-                        Скинути
-                      </button>
-                    )}
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Передоплата та повна оплата приймаються тільки в касі. Менеджер оформлює замовлення,
+                    а касир знаходить його за номером, телефоном або штрихкодом картки клієнта.
                   </div>
-                  
-                  {changeKop > 0 && (
-                    <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 flex items-center justify-between">
-                      <span className="text-xs font-semibold text-orange-700">↩️ Решта клієнту:</span>
-                      <span className="text-sm font-bold text-orange-700">{formatMoney(changeKop)}</span>
-                    </div>
-                  )}
-
-                  {parseFloat(prepayment) > 0 && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-500 mb-1">Спосіб передоплати</label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {(['cash', 'card', 'transfer'] as const).map((method) => (
-                            <button
-                              key={method}
-                              type="button"
-                              onClick={() => setPrepaymentMethod(method)}
-                              className={`py-2 px-3 text-xs font-semibold rounded-lg border text-center transition-all ${
-                                prepaymentMethod === method
-                                  ? 'bg-yellow-400 border-yellow-400 text-black shadow-sm'
-                                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}
-                            >
-                              {method === 'cash' ? 'Готівка' : method === 'card' ? 'Картка' : 'Переказ'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="pt-2">
-                        <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={isFiscal}
-                            disabled={prepaymentMethod === 'card'}
-                            onChange={(e) => setIsFiscal(e.target.checked)}
-                            className="rounded text-yellow-500 focus:ring-yellow-400 h-4 w-4"
-                          />
-                          🧾 Фіскалізувати передоплату (ПРРО)
-                        </label>
-                        {prepaymentMethod === 'card' && (
-                          <p className="text-[10px] text-blue-500 mt-1 italic">
-                            * Оплата через термінал завжди фіскалізується в ПРРО
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
 
                 {/* Comment Box */}

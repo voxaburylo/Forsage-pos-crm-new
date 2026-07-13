@@ -18,7 +18,7 @@ const createSchema = z.object({
   period:        z.string().regex(/^\d{4}-\d{2}$/).optional().nullable(),
   note:          z.string().max(1000).optional().nullable(),
   shift_id:      z.string().uuid().optional().nullable(),
-  work_date:     z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  work_date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 })
 
 const dailyPayoutSchema = z.object({
@@ -26,7 +26,7 @@ const dailyPayoutSchema = z.object({
   employee_name: z.string().min(1).max(200),
   method:        z.enum(['cash', 'card', 'transfer']).default('cash'),
   shift_id:      z.string().uuid().optional().nullable(),
-  work_date:     z.string().regex(/^\d{4}-\d{2}$/),
+  work_date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 })
 
 // GET /api/v1/salary — список виплат
@@ -260,14 +260,14 @@ router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res
     const userId = req.query.user_id as string | undefined
     const tenantId = req.user!.tenant_id
 
-    // Вже нараховані комісії за цей місяць (тип bonus з прив'язкою до замовлення)
+    // Вже нараховані/сторновані комісії за цей місяць: замовлення + прямі касові продажі.
     let commQuery = db
       .from('salary_payments')
       .select('employee_id, employee_name, amount')
       .eq('tenant_id', tenantId)
       .eq('type', 'bonus')
       .eq('period', period)
-      .not('commission_source_order_id', 'is', null)
+      .in('source', ['commission', 'commission_reversal'])
     if (userId) commQuery = commQuery.eq('employee_id', userId)
     const { data: commissions, error: commErr } = await commQuery
     if (commErr) throw new AppError('DB_ERROR', commErr.message, 500)

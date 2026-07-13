@@ -436,8 +436,9 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
             )}
           </button>
         ) : (
-          <button onClick={onSelectCustomer} className="text-gray-600 text-xs hover:text-gray-400 touch-target ripple px-3 py-1.5 rounded-lg">
-            + Клієнт
+          <button onClick={onSelectCustomer}
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-yellow-400/70 bg-yellow-400 px-3 py-2 text-sm font-bold text-black shadow-sm hover:bg-yellow-300 active:bg-yellow-500">
+            <User size={15} /> Додати клієнта
           </button>
         )}
       </div>

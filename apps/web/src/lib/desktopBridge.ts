@@ -233,6 +233,7 @@ interface ForsageDesktopBridge {
       widthMm?: number
       heightMm?: number
       silent?: boolean
+      showPreviewWindow?: boolean
       useDriverPaper?: boolean
     }) => Promise<{ success: true }>
   }

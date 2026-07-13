@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Package, X, ChevronDown, Loader2, User } from 'lucide-react'
 import { api } from '@/lib/api'
 import { usePOSStore } from '@/stores/posStore'
@@ -20,7 +21,8 @@ interface OrderItem {
 
 interface ReadyOrder {
   id: string
-  customer: { id: string; phone: string; full_name: string | null } | null
+  order_number?: number | null
+  customer: { id: string; phone: string; full_name: string | null; card_barcode?: string | null } | null
   total_amount: number
   prepayment: number
   total_paid: number
@@ -32,6 +34,7 @@ interface ReadyOrder {
 
 export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileInline?: boolean; onCloseMobile?: () => void } = {}) {
   const store = usePOSStore()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [open, setOpen] = useState(false)
   const [orders, setOrders] = useState<ReadyOrder[]>([])
   const [loading, setLoading] = useState(false)
@@ -44,6 +47,17 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [payFiscal, setPayFiscal] = useState(false)
   const [paying, setPaying] = useState(false)
+
+  useEffect(() => {
+    const orderQuery = (searchParams.get('order') ?? searchParams.get('customer') ?? '').trim()
+    if (!orderQuery) return
+    setSearch(orderQuery)
+    setOpen(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('order')
+    next.delete('customer')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -94,8 +108,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       setPayAmount('')
       setPayFiscal(false)
       await load()
-    } catch (e: any) {
-      toast.error(e.message ?? 'Помилка внесення оплати')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Помилка внесення оплати')
     } finally {
       setPaying(false)
     }
@@ -131,7 +145,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     return (
       <div className="flex flex-col h-full bg-[#1A1A1A] text-white">
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
-          <span className="text-base font-bold tracking-wide">Видача готових замовлень</span>
+          <span className="text-base font-bold tracking-wide">Оплата та видача замовлень</span>
           {onCloseMobile && (
             <button onClick={onCloseMobile} aria-label="Закрити видачу" className="text-gray-400 hover:text-white p-1">
               <X size={20} />
@@ -144,7 +158,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Пошук замовлення (номер, телефон, клієнт)..."
+            placeholder="№ замовлення, телефон, клієнт або штрихкод картки..."
             className="w-full bg-[#2C2C2C] text-white placeholder-gray-500 text-sm rounded-xl px-4 py-2.5 
                        border border-gray-700 focus:outline-none focus:border-yellow-400"
           />
@@ -199,7 +213,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                       </span>
                     </div>
                     <div className="text-[11px] text-gray-400 mt-1.5">
-                      Код: #{order.id.slice(0, 8)} &nbsp;·&nbsp; {formatMoney(order.total_amount)}
+                      № {order.order_number ?? order.id.slice(0, 8)} &nbsp;·&nbsp; {formatMoney(order.total_amount)}
                       {remaining > 0 ? (
                         <span className="text-orange-400 ml-1">· залишок {formatMoney(remaining)}</span>
                       ) : (
@@ -254,7 +268,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         {payOrder && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
             <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5 w-full max-w-sm shadow-2xl">
-              <h3 className="text-white font-semibold text-sm mb-4">Прийняти оплату по замовленню</h3>
+              <h3 className="text-white font-semibold text-sm mb-4">Оплата / передоплата замовлення</h3>
               
               <div className="text-xs text-gray-400 mb-4 space-y-1">
                 <div>Клієнт: {payOrder.customer?.full_name ?? payOrder.customer?.phone}</div>
@@ -356,7 +370,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                    bg-gray-700 hover:bg-gray-600 text-white transition-colors"
       >
         <Package size={15} />
-        <span>Видати</span>
+        <span>Замовлення</span>
         {count > 0 && (
           <span className="bg-orange-500 text-white text-[10px] font-bold rounded-full
                            px-1.5 py-0.5 leading-none min-w-[18px] text-center">
@@ -370,7 +384,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         <div className="absolute right-0 top-full mt-1 w-[380px] max-w-[calc(100vw-1.5rem)] bg-gray-800 border border-gray-700
                         rounded-xl shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700">
-            <span className="text-sm font-semibold text-white">Видача готових замовлень</span>
+            <span className="text-sm font-semibold text-white">Оплата та видача замовлень</span>
             <button onClick={() => setOpen(false)} aria-label="Закрити видачу" className="text-gray-400 hover:text-white">
               <X size={15} />
             </button>
@@ -381,7 +395,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Пошук (номер, телефон, клієнт)..."
+              placeholder="№ замовлення, телефон, клієнт або штрихкод картки..."
               className="w-full bg-gray-900 text-white placeholder-gray-500 text-xs rounded-lg px-3 py-1.5 
                          border border-gray-700 focus:outline-none focus:border-yellow-500"
             />
@@ -400,7 +414,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               </div>
             )}
 
-            {!loading && orders.map((order: any) => {
+            {!loading && orders.map((order) => {
               const remaining = order.total_amount - (order.total_paid ?? 0)
               const isCompleting = completing === order.id
               const canAcceptPayment = remaining > 0 && !['completed', 'canceled'].includes(order.status)
@@ -437,7 +451,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                         </span>
                       </div>
                       <div className="text-[11px] text-gray-400 mt-1">
-                        Код: #{order.id.slice(0, 8)} &nbsp;·&nbsp; {formatMoney(order.total_amount)}
+                        № {order.order_number ?? order.id.slice(0, 8)} &nbsp;·&nbsp; {formatMoney(order.total_amount)}
                         {remaining > 0 ? (
                           <span className="text-orange-400 ml-1">· залишок {formatMoney(remaining)}</span>
                         ) : (
@@ -492,7 +506,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       {payOrder && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
           <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 w-full max-w-sm shadow-2xl">
-            <h3 className="text-white font-semibold text-sm mb-4">Прийняти оплату по замовленню</h3>
+            <h3 className="text-white font-semibold text-sm mb-4">Оплата / передоплата замовлення</h3>
             
             <div className="text-xs text-gray-400 mb-4 space-y-1">
               <div>Клієнт: {payOrder.customer?.full_name ?? payOrder.customer?.phone}</div>
