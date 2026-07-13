@@ -67,6 +67,9 @@ export interface ShopSettings {
   pos_quick_items?: QuickItemConfig[]
   quick_percents?: number[]
   markup_rules?: MarkupRule[]
+  price_rounding_enabled?: boolean
+  price_rounding_step?: 50 | 100 | 500 | 1000
+  price_rounding_dir?: 'up' | 'down' | 'nearest'
   employee_discount_pct?: number
   vin_decoder_url?: string | null
   vin_decoder_api_key?: string | null

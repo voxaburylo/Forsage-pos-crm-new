@@ -1,5 +1,5 @@
 ﻿import { db } from '../db/supabase.js'
-import { applyMarkup, type MarkupRule } from '../lib/markup.js'
+import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
@@ -975,7 +975,7 @@ export async function importFromCatalog(
 
   const { data: settings } = await db
     .from('shop_settings')
-    .select('markup_rules')
+    .select('markup_rules, price_rounding_enabled, price_rounding_step, price_rounding_dir')
     .eq('tenant_id', tenantId)
     .single()
 
@@ -983,7 +983,7 @@ export async function importFromCatalog(
 
   let retailPrice = input.retailPrice
   if (retailPrice === undefined || retailPrice === null) {
-    retailPrice = applyMarkup(purchasePrice, markupRules, 30)
+    retailPrice = applyMarkup(purchasePrice, markupRules, 30, roundingFromSettings(settings))
   }
 
   const normalized = {

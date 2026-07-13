@@ -1,6 +1,6 @@
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { findMarkupPct, type MarkupRule } from '../lib/markup.js'
+import { findMarkupPct, roundToStep, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 
 // No fallback TENANT_ID
 
@@ -158,19 +158,21 @@ export async function calculatePrice(params: PriceCalcParams, tenantId: string):
 
   if (retailPrice === 0 && params.purchasePrice > 0) {
     let markupPct: number | null = null;
-    
+
     if (params.categoryId) {
       markupPct = await getCategoryMarkup(params.categoryId, tenantId);
     }
-    
+
+    const { data: settings } = await db.from('shop_settings').select('markup_rules, price_rounding_enabled, price_rounding_step, price_rounding_dir').eq('tenant_id', tenantId).single();
+    const rounding = roundingFromSettings(settings);
+
     if (markupPct !== null) {
-      retailPrice = Math.round(params.purchasePrice * (1 + markupPct / 100));
+      retailPrice = roundToStep(Math.round(params.purchasePrice * (1 + markupPct / 100)), rounding);
     } else {
-      const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single();
       const rules = (settings as any)?.markup_rules as MarkupRule[] | undefined;
       const pct = findMarkupPct(rules, params.purchasePrice);
       if (pct !== null) {
-        retailPrice = Math.round(params.purchasePrice * (1 + pct / 100));
+        retailPrice = roundToStep(Math.round(params.purchasePrice * (1 + pct / 100)), rounding);
       }
     }
   }
@@ -223,19 +225,21 @@ export async function calculatePrice(params: PriceCalcParams, tenantId: string):
 // ── Авто-розрахунок роздрібної при зміні закупівлі ───────
 
 export async function autoRetailPrice(purchasePrice: number, tenantId: string, categoryId?: string): Promise<number | null> {
+  const { data: settings } = await db.from('shop_settings').select('markup_rules, price_rounding_enabled, price_rounding_step, price_rounding_dir').eq('tenant_id', tenantId).single();
+  const rounding = roundingFromSettings(settings);
+
   if (categoryId) {
     const markupPct = await getCategoryMarkup(categoryId, tenantId);
     if (markupPct !== null) {
-      return Math.round(purchasePrice * (1 + markupPct / 100));
+      return roundToStep(Math.round(purchasePrice * (1 + markupPct / 100)), rounding);
     }
   }
 
-  const { data: settings } = await db.from('shop_settings').select('markup_rules').eq('tenant_id', tenantId).single();
   const rules = (settings as any)?.markup_rules as Array<{ minPrice: number; maxPrice: number; markupPct: number }> | undefined;
   if (rules && rules.length > 0) {
     const rule = rules.find((r) => purchasePrice >= r.minPrice && purchasePrice < r.maxPrice);
     if (rule) {
-      return Math.round(purchasePrice * (1 + rule.markupPct / 100));
+      return roundToStep(Math.round(purchasePrice * (1 + rule.markupPct / 100)), rounding);
     }
   }
 

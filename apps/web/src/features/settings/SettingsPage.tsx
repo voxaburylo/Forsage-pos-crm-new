@@ -135,6 +135,9 @@ export default function SettingsPage() {
         return_days:        form.return_days,
         default_debt_limit_kopecks: form.default_debt_limit_kopecks,
         markup_rules:       form.markup_rules,
+        price_rounding_enabled: form.price_rounding_enabled ?? false,
+        price_rounding_step:    form.price_rounding_step ?? 100,
+        price_rounding_dir:     form.price_rounding_dir ?? 'nearest',
         quick_percents:     form.quick_percents,
         pos_quick_items:    form.pos_quick_items,
         employee_discount_pct: form.employee_discount_pct,
@@ -544,6 +547,58 @@ export default function SettingsPage() {
                 <button type="button" onClick={addRule} className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-bold px-4 py-2 rounded-lg text-sm transition-colors w-full md:w-auto h-[38px] shrink-0 cursor-pointer">
                   Додати
                 </button>
+              </div>
+
+              {/* Округлення підсумкової ціни */}
+              <div className="rounded-xl border border-gray-100 bg-white p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">Округляти ціну</p>
+                    <p className="text-xs text-gray-400">Роздрібну ціну після націнки округлювати до кроку</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input type="checkbox" aria-label="Округляти ціну"
+                      checked={form.price_rounding_enabled ?? false}
+                      onChange={(e) => set('price_rounding_enabled', e.target.checked)}
+                      className="sr-only peer" />
+                    <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-yellow-400 peer-focus:ring-2 peer-focus:ring-yellow-200 after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+                  </label>
+                </div>
+
+                {(form.price_rounding_enabled ?? false) && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-500 mb-1.5">Округляти до</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {([[50, '0.50 грн'], [100, '1 грн'], [500, '5 грн'], [1000, '10 грн']] as Array<[50 | 100 | 500 | 1000, string]>).map(([val, label]) => (
+                          <button key={val} type="button" onClick={() => set('price_rounding_step', val)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                              (form.price_rounding_step ?? 100) === val
+                                ? 'bg-yellow-400 border-yellow-400 text-black'
+                                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                            }`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-500 mb-1.5">Напрям</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {([['up', 'У більшу'], ['down', 'У меншу'], ['nearest', 'Найближче']] as Array<['up' | 'down' | 'nearest', string]>).map(([val, label]) => (
+                          <button key={val} type="button" onClick={() => set('price_rounding_dir', val)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                              (form.price_rounding_dir ?? 'nearest') === val
+                                ? 'bg-yellow-400 border-yellow-400 text-black'
+                                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                            }`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </Card>
