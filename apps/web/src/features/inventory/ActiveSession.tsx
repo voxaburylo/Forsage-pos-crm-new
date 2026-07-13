@@ -101,6 +101,84 @@ export default function ActiveSession() {
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Редагування цін товару прямо в сесії (без окремого вікна)
+  const canEditPrice = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
+  const [editRetail, setEditRetail] = useState('')
+  const [editPurchase, setEditPurchase] = useState('')
+  const [savingPrice, setSavingPrice] = useState(false)
+  // Масові операції над вибраними товарами
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [massBusy, setMassBusy] = useState(false)
+
+  function money2(kopecks: number | undefined | null): string {
+    return ((Number(kopecks) || 0) / 100).toFixed(2)
+  }
+
+  async function savePrice() {
+    if (!selected || !canEditPrice) return
+    const retail = Math.round(parseFloat(String(editRetail).replace(',', '.')) * 100)
+    const purchase = Math.round(parseFloat(String(editPurchase).replace(',', '.')) * 100)
+    if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна продажу'); return }
+    if (!Number.isFinite(purchase) || purchase < 0) { toast.error('Некоректна закупівельна ціна'); return }
+    setSavingPrice(true)
+    try {
+      await productApi.update(selected.id, { retail_price: retail, purchase_price: purchase } as any)
+      toast.success('Ціни товару оновлено')
+      setSelected((cur) => cur ? { ...cur, retail_price: retail, purchase_price: purchase } : cur)
+      playSuccessBeep()
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося оновити ціни')
+    } finally {
+      setSavingPrice(false)
+    }
+  }
+
+  // Порахувати роздрібну з націнки: швидкий % від закупки або за матрицею націнок.
+  async function applyMarkupToEdit(kind: 'percent' | 'table', pct?: number) {
+    const purchase = Math.round(parseFloat(String(editPurchase).replace(',', '.')) * 100)
+    if (!Number.isFinite(purchase) || purchase <= 0) { toast.error('Спершу вкажіть закупівельну ціну'); return }
+    if (kind === 'percent' && pct != null) {
+      setEditRetail(money2(Math.round(purchase * (1 + pct / 100))))
+      return
+    }
+    try {
+      const { data } = await api.get<{ data: { retail_price: number } }>(
+        `/api/v1/pricing/auto-retail?purchase=${purchase}`, { silent: true },
+      )
+      if (data?.retail_price) setEditRetail(money2(data.retail_price))
+      else toast.error('Матриця націнок не налаштована для цього діапазону')
+    } catch {
+      toast.error('Не вдалося порахувати за таблицею')
+    }
+  }
+
+  function toggleSelectId(productId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(productId)) next.delete(productId); else next.add(productId)
+      return next
+    })
+  }
+
+  async function applyMassPrice(action: { type: 'percent' | 'amount' | 'markup' | 'markup_table'; value: number }) {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) { toast.error('Виберіть товари'); return }
+    setMassBusy(true)
+    try {
+      await api.post('/api/v1/products/bulk-update', {
+        product_ids: ids,
+        updates: { retail_price_action: action },
+      })
+      toast.success(`Оновлено ${ids.length} товар(ів)`)
+      setSelectedIds(new Set())
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося оновити масово')
+    } finally {
+      setMassBusy(false)
+    }
+  }
 
   async function load(silent = false) {
     if (!id) return
@@ -168,9 +246,16 @@ export default function ActiveSession() {
     setQty('1')
     setPriceStatus('unchecked')
     setObservedPrice('')
+    setEditRetail(money2(product.retail_price))
+    setEditPurchase(money2(product.purchase_price))
     if (id) {
       api.get<{ data: ProductInfo }>(`/api/v1/inventory/${id}/product?product_id=${product.id}`, { silent: true })
-        .then(({ data }) => setSelected((current) => current?.id === product.id ? data : current))
+        .then(({ data }) => setSelected((current) => {
+          if (current?.id !== product.id) return current
+          setEditRetail(money2(data.retail_price))
+          setEditPurchase(money2(data.purchase_price))
+          return data
+        }))
         .catch(() => {})
     }
     window.setTimeout(() => document.getElementById('inventory-qty')?.focus(), 50)
@@ -472,6 +557,38 @@ export default function ActiveSession() {
               )}
             </div>
 
+            {canEditPrice && (
+              <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/40 p-3">
+                <p className="mb-2 text-sm font-semibold text-blue-900">Виправити ціни товару (тут, без окремого вікна)</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="mb-1 block text-xs text-gray-500">Закупівельна, ₴</label>
+                    <input type="number" min="0" step="0.01" inputMode="decimal" value={editPurchase}
+                      onChange={(event) => setEditPurchase(event.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-semibold outline-none focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-gray-500">Продажу, ₴</label>
+                    <input type="number" min="0" step="0.01" inputMode="decimal" value={editRetail}
+                      onChange={(event) => setEditRetail(event.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-bold outline-none focus:border-blue-500" />
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs text-gray-500">Націнка:</span>
+                  {[20, 30, 50, 100].map((p) => (
+                    <button key={p} type="button" onClick={() => applyMarkupToEdit('percent', p)}
+                      className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100">+{p}%</button>
+                  ))}
+                  <button type="button" onClick={() => applyMarkupToEdit('table')}
+                    className="rounded-lg border border-blue-300 bg-white px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100">По таблиці</button>
+                </div>
+                <Button variant="outline" size="sm" onClick={savePrice} loading={savingPrice} className="mt-2 w-full">
+                  Зберегти ціни товару
+                </Button>
+              </div>
+            )}
+
             <Button onClick={saveCount} loading={saving} className="mt-4 w-full" icon={<PackageCheck size={17} />}>
               Додати мій підрахунок
             </Button>
@@ -494,16 +611,42 @@ export default function ActiveSession() {
             <span className="font-semibold text-gray-900">Мої останні підрахунки ({session.my_entries.length})</span>
             <ChevronDown size={17} className={showRecent ? 'rotate-180' : ''} />
           </button>
+
+          {canEditPrice && isActive && selectedIds.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 bg-yellow-50 px-4 py-2.5">
+              <span className="text-xs font-semibold text-gray-700">Вибрано: {selectedIds.size}</span>
+              <span className="text-xs text-gray-500">Масова націнка:</span>
+              {[30, 50, 100].map((p) => (
+                <button key={p} type="button" disabled={massBusy}
+                  onClick={() => applyMassPrice({ type: 'markup', value: p })}
+                  className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-50">+{p}%</button>
+              ))}
+              <button type="button" disabled={massBusy}
+                onClick={() => applyMassPrice({ type: 'markup_table', value: 30 })}
+                className="rounded-lg border border-blue-300 bg-white px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50">По таблиці</button>
+              <button type="button" disabled={massBusy}
+                onClick={() => { const v = prompt('Підняти ціну продажу на, %:', '10'); const n = Number(v); if (v != null && Number.isFinite(n)) applyMassPrice({ type: 'percent', value: n }) }}
+                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-50">Ціна +%</button>
+              <button type="button" onClick={() => setSelectedIds(new Set())}
+                className="ml-auto text-xs text-gray-500 hover:text-gray-800">Зняти вибір</button>
+            </div>
+          )}
           {showRecent && (
             <div className="divide-y divide-gray-100 border-t border-gray-100">
               {session.my_entries.length === 0 ? (
                 <p className="py-6 text-center text-sm text-gray-400">Ви ще нічого не додали</p>
               ) : session.my_entries.map((entry) => (
-                <div key={entry.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                  <div className="min-w-0">
+                <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
+                  {canEditPrice && isActive && entry.product?.id && (
+                    <input type="checkbox" aria-label="Вибрати товар"
+                      checked={selectedIds.has(entry.product.id)}
+                      onChange={() => toggleSelectId(entry.product!.id)}
+                      className="h-4 w-4 shrink-0 rounded border-gray-300" />
+                  )}
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-gray-900">{entry.product?.name ?? 'Товар'}</p>
                     <p className="text-xs text-gray-500">
-                      +{entry.qty} {entry.product?.unit ?? 'шт'} · {new Date(entry.created_at).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}
+                      +{entry.qty} {entry.product?.unit ?? 'шт'} · {formatMoney(entry.product?.retail_price ?? 0)} · {new Date(entry.created_at).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}
                       {entry.price_checked ? ' · ціна ✓' : entry.observed_retail_price != null ? ' · ціна не збігається' : ''}
                     </p>
                   </div>

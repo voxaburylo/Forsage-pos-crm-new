@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
+import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import {
   createProductSchema,
   updateProductSchema,
@@ -155,7 +156,7 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
         brand_id: z.string().uuid().optional().nullable(),
         storage_bin: z.string().max(50).optional().nullable(),
         retail_price_action: z.object({
-          type: z.enum(['percent', 'amount', 'markup']),
+          type: z.enum(['percent', 'amount', 'markup', 'markup_table']),
           value: z.number(),
         }).optional(),
       }),
@@ -174,6 +175,19 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
         .eq('tenant_id', req.user!.tenant_id)
       if (fetchErr) throw new AppError('DB_ERROR', fetchErr.message, 500)
 
+      // Для «націнки по таблиці» тягнемо матрицю націнок + округлення один раз.
+      let tableRules: MarkupRule[] | undefined
+      let tableRounding = null as ReturnType<typeof roundingFromSettings>
+      if (retail_price_action.type === 'markup_table') {
+        const { data: settings } = await db
+          .from('shop_settings')
+          .select('markup_rules, price_rounding_enabled, price_rounding_step, price_rounding_dir')
+          .eq('tenant_id', req.user!.tenant_id)
+          .single()
+        tableRules = (settings as any)?.markup_rules as MarkupRule[] | undefined
+        tableRounding = roundingFromSettings(settings)
+      }
+
       await Promise.all((prods ?? []).map(async (prod: any) => {
         const prodUpdates: any = {
           ...standardUpdates,
@@ -189,6 +203,9 @@ export async function bulkUpdate(req: Request, res: Response, next: NextFunction
             newRetailPrice = prod.retail_price + retail_price_action.value
           } else if (retail_price_action.type === 'markup') {
             newRetailPrice = Math.round(newPurchasePrice * (1 + retail_price_action.value / 100))
+          } else if (retail_price_action.type === 'markup_table') {
+            // Кожному товару — націнка за його діапазоном закупівельної ціни (з округленням).
+            newRetailPrice = applyMarkup(newPurchasePrice ?? 0, tableRules, retail_price_action.value || 30, tableRounding)
           }
           prodUpdates.retail_price = Math.max(0, newRetailPrice)
         }
