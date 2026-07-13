@@ -161,6 +161,78 @@ export default function ActiveSession() {
     })
   }
 
+  // Скан/вибір товару → одразу додаємо рядок (+1), без картки й підтверджень.
+  async function addProduct(product: ProductInfo) {
+    if (!id) return
+    initAudio()
+    try {
+      const response = await api.post<{ data: unknown; session: SessionData }>(
+        `/api/v1/inventory/${id}/count`,
+        { product_id: product.id, qty: 1, price_checked: true, observed_retail_price: null },
+      )
+      setSession(response.session)
+      playSuccessBeep()
+      setQuery(''); setSearchResults([])
+      inputRef.current?.focus()
+    } catch (error) {
+      playErrorTone()
+      toast.error(error instanceof Error ? error.message : 'Не вдалося додати товар')
+    }
+  }
+
+  // Встановити абсолютну кількість рядка (редагування прямо в рядку).
+  async function setItemQty(item: InventoryItem, value: string) {
+    if (!id) return
+    const qty = Number(String(value).replace(',', '.'))
+    if (!Number.isFinite(qty) || qty < 0) { toast.error('Некоректна кількість'); return }
+    if (qty === item.counted_stock) return
+    try {
+      await api.put(`/api/v1/inventory/${id}/items/${item.id}`, { counted_stock: qty })
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити кількість')
+    }
+  }
+
+  // Встановити роздрібну ціну товару прямо з рядка.
+  async function setItemRetail(item: InventoryItem, value: string) {
+    if (!item.product || !canEditPrice) return
+    const retail = Math.round(parseFloat(String(value).replace(',', '.')) * 100)
+    if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна'); return }
+    if (retail === item.product.retail_price) return
+    try {
+      await productApi.update(item.product.id, { retail_price: retail } as any)
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
+    }
+  }
+
+  // Націнка на рядок: швидкий % від закупки або за матрицею націнок.
+  async function applyRowMarkup(item: InventoryItem, kind: 'percent' | 'table', pct?: number) {
+    if (!item.product || !canEditPrice) return
+    const purchase = item.product.purchase_price ?? 0
+    if (purchase <= 0) { toast.error('У товару нема закупівельної ціни'); return }
+    let retail: number
+    if (kind === 'percent' && pct != null) {
+      retail = Math.round(purchase * (1 + pct / 100))
+    } else {
+      try {
+        const { data } = await api.get<{ data: { retail_price: number } }>(
+          `/api/v1/pricing/auto-retail?purchase=${purchase}`, { silent: true },
+        )
+        if (!data?.retail_price) { toast.error('Матриця націнок не налаштована для цієї закупки'); return }
+        retail = data.retail_price
+      } catch { toast.error('Не вдалося порахувати за таблицею'); return }
+    }
+    try {
+      await productApi.update(item.product.id, { retail_price: retail } as any)
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Помилка націнки')
+    }
+  }
+
   async function applyMassPrice(action: { type: 'percent' | 'amount' | 'markup' | 'markup_table'; value: number }) {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) { toast.error('Виберіть товари'); return }
@@ -229,37 +301,13 @@ export default function ActiveSession() {
     return Math.round(summary.counted_products / summary.total_products * 100)
   }, [session?.summary])
 
-  function chooseProduct(product: ProductInfo) {
-    const aggregate = session?.items.find((item) => item.product_id === product.id)
-    setSelected({
-      ...product,
-      inventory_item: aggregate ? {
-        id: aggregate.id,
-        expected_stock: aggregate.expected_stock,
-        counted_stock: aggregate.counted_stock,
-        price_checked: aggregate.price_checked,
-        observed_retail_price: aggregate.observed_retail_price,
-      } : product.inventory_item,
-    })
-    setQuery('')
-    setSearchResults([])
-    setQty('1')
-    setPriceStatus('unchecked')
-    setObservedPrice('')
-    setEditRetail(money2(product.retail_price))
-    setEditPurchase(money2(product.purchase_price))
-    if (id) {
-      api.get<{ data: ProductInfo }>(`/api/v1/inventory/${id}/product?product_id=${product.id}`, { silent: true })
-        .then(({ data }) => setSelected((current) => {
-          if (current?.id !== product.id) return current
-          setEditRetail(money2(data.retail_price))
-          setEditPurchase(money2(data.purchase_price))
-          return data
-        }))
-        .catch(() => {})
-    }
-    window.setTimeout(() => document.getElementById('inventory-qty')?.focus(), 50)
-  }
+  // Рядки списку — товари, які вже додали (пораховані), найновіші зверху.
+  const countedRows = useMemo(
+    () => (session?.items ?? [])
+      .filter((it) => (it.counted_stock ?? 0) > 0)
+      .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? '')),
+    [session?.items],
+  )
 
   async function resolveCode(code: string) {
     if (!id || !code.trim()) return
@@ -269,8 +317,7 @@ export default function ActiveSession() {
       const { data } = await api.get<{ data: ProductInfo }>(
         `/api/v1/inventory/${id}/product?code=${encodeURIComponent(code.trim())}`,
       )
-      chooseProduct(data)
-      playSuccessBeep()
+      await addProduct(data)
     } catch (error) {
       playErrorTone()
       toast.error(error instanceof Error ? error.message : 'Товар не знайдено')
@@ -282,7 +329,7 @@ export default function ActiveSession() {
 
   async function submitSearch(event: React.FormEvent) {
     event.preventDefault()
-    if (searchResults[0]) chooseProduct(searchResults[0])
+    if (searchResults[0]) await addProduct(searchResults[0])
     else await resolveCode(query)
   }
 
@@ -331,17 +378,6 @@ export default function ActiveSession() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти підрахунок')
     } finally {
       setSaving(false)
-    }
-  }
-
-  async function undoEntry(entry: CountEntry) {
-    if (!id || !confirm(`Скасувати ваше внесення ${entry.qty} × ${entry.product?.name ?? 'товар'}?`)) return
-    try {
-      await api.delete(`/api/v1/inventory/${id}/entries/${entry.id}`)
-      await load(true)
-      toast.success('Останній підрахунок скасовано')
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося скасувати')
     }
   }
 
@@ -436,7 +472,7 @@ export default function ActiveSession() {
                       <button
                         key={product.id}
                         type="button"
-                        onClick={() => chooseProduct(product)}
+                        onClick={() => addProduct(product)}
                         className="flex w-full items-center justify-between gap-3 border-b border-gray-100 px-3 py-3 text-left last:border-0 hover:bg-yellow-50"
                       >
                         <div className="min-w-0">
@@ -608,7 +644,7 @@ export default function ActiveSession() {
         <Card padding="none">
           <button onClick={() => setShowRecent(!showRecent)}
             className="flex w-full items-center justify-between px-4 py-3 text-left">
-            <span className="font-semibold text-gray-900">Мої останні підрахунки ({session.my_entries.length})</span>
+            <span className="font-semibold text-gray-900">Додані товари ({countedRows.length})</span>
             <ChevronDown size={17} className={showRecent ? 'rotate-180' : ''} />
           </button>
 
@@ -633,30 +669,23 @@ export default function ActiveSession() {
           )}
           {showRecent && (
             <div className="divide-y divide-gray-100 border-t border-gray-100">
-              {session.my_entries.length === 0 ? (
-                <p className="py-6 text-center text-sm text-gray-400">Ви ще нічого не додали</p>
-              ) : session.my_entries.map((entry) => (
-                <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
-                  {canEditPrice && isActive && entry.product?.id && (
-                    <input type="checkbox" aria-label="Вибрати товар"
-                      checked={selectedIds.has(entry.product.id)}
-                      onChange={() => toggleSelectId(entry.product!.id)}
-                      className="h-4 w-4 shrink-0 rounded border-gray-300" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-gray-900">{entry.product?.name ?? 'Товар'}</p>
-                    <p className="text-xs text-gray-500">
-                      +{entry.qty} {entry.product?.unit ?? 'шт'} · {formatMoney(entry.product?.retail_price ?? 0)} · {new Date(entry.created_at).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}
-                      {entry.price_checked ? ' · ціна ✓' : entry.observed_retail_price != null ? ' · ціна не збігається' : ''}
-                    </p>
-                  </div>
-                  {isActive && (
-                    <button onClick={() => undoEntry(entry)}
-                      className="flex shrink-0 items-center gap-1 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100">
-                      <RotateCcw size={13} /> Скасувати
-                    </button>
-                  )}
-                </div>
+              {countedRows.length === 0 ? (
+                <p className="py-8 text-center text-sm text-gray-400">
+                  Скануйте штрихкод або знайдіть товар — він з'явиться тут рядком.
+                </p>
+              ) : countedRows.map((item) => (
+                <InventoryRow
+                  key={item.id}
+                  item={item}
+                  isActive={isActive}
+                  canEditPrice={canEditPrice}
+                  selected={item.product?.id ? selectedIds.has(item.product.id) : false}
+                  onToggleSelect={() => item.product?.id && toggleSelectId(item.product.id)}
+                  onSetQty={(value) => setItemQty(item, value)}
+                  onSetRetail={(value) => setItemRetail(item, value)}
+                  onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
+                  onRemove={() => setItemQty(item, '0')}
+                />
               ))}
             </div>
           )}
@@ -707,5 +736,71 @@ export default function ActiveSession() {
         )}
       </div>
     </Layout>
+  )
+}
+
+// Один рядок товару в ревізії: кількість і ціна редагуються прямо тут.
+// Поля неконтрольовані (defaultValue + key) — зберігаються на blur/Enter і
+// не збивають фокус при фоновому оновленні кожні 8с.
+function InventoryRow({
+  item, isActive, canEditPrice, selected,
+  onToggleSelect, onSetQty, onSetRetail, onMarkup, onRemove,
+}: {
+  item: InventoryItem
+  isActive: boolean
+  canEditPrice: boolean
+  selected: boolean
+  onToggleSelect: () => void
+  onSetQty: (value: string) => void
+  onSetRetail: (value: string) => void
+  onMarkup: (kind: 'percent' | 'table', pct?: number) => void
+  onRemove: () => void
+}) {
+  const retailStr = ((item.product?.retail_price ?? 0) / 100).toFixed(2)
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap">
+      {canEditPrice && isActive && (
+        <input type="checkbox" aria-label="Вибрати" checked={selected} onChange={onToggleSelect}
+          className="h-4 w-4 shrink-0 rounded border-gray-300" />
+      )}
+      <div className="min-w-0 flex-1 basis-full sm:basis-auto">
+        <p className="truncate text-sm font-medium text-gray-900">{item.product?.name ?? 'Товар'}</p>
+        <p className="truncate font-mono text-[11px] text-gray-500">
+          {item.product?.sku} · було {item.expected_stock}{item.product?.storage_bin ? ` · ${item.product.storage_bin}` : ''}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <div className="text-center">
+          <span className="block text-[10px] text-gray-400">К-сть</span>
+          <input key={`q-${item.counted_stock}`} type="number" min="0" step="0.001" inputMode="decimal"
+            defaultValue={String(item.counted_stock)} disabled={!isActive}
+            onBlur={(event) => onSetQty(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
+            className="w-16 rounded-lg border border-gray-300 px-2 py-1.5 text-center text-sm font-bold outline-none focus:border-yellow-500" />
+        </div>
+        {canEditPrice && (
+          <div className="text-center">
+            <span className="block text-[10px] text-gray-400">Ціна ₴</span>
+            <input key={`p-${item.product?.retail_price}`} type="number" min="0" step="0.01" inputMode="decimal"
+              defaultValue={retailStr} disabled={!isActive}
+              onBlur={(event) => onSetRetail(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
+              className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-right text-sm font-semibold outline-none focus:border-blue-500" />
+          </div>
+        )}
+        {canEditPrice && isActive && (
+          <div className="flex flex-col gap-0.5">
+            <button type="button" onClick={() => onMarkup('percent', 30)}
+              className="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-100">+30%</button>
+            <button type="button" onClick={() => onMarkup('table')}
+              className="rounded border border-blue-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 hover:bg-blue-50">табл</button>
+          </div>
+        )}
+        {isActive && (
+          <button type="button" onClick={onRemove} aria-label="Прибрати"
+            className="rounded-lg bg-red-50 p-1.5 text-red-600 hover:bg-red-100"><RotateCcw size={14} /></button>
+        )}
+      </div>
+    </div>
   )
 }
