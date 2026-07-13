@@ -1,18 +1,53 @@
 import { useEffect, useState } from 'react'
-import { Receipt } from 'lucide-react'
+import { Receipt, FolderOpen } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { toast } from '@/components/ui/Toast'
-import { desktopBridge, type DesktopFiscalConfig } from '@/lib/desktopBridge'
+import { desktopBridge, type DesktopFiscalConfig, type DesktopFiscalResult } from '@/lib/desktopBridge'
 
-// Налаштування інтеграції з ПРРО Cashalot (тільки desktop-додаток).
+// Повна панель налаштування ПРРО Cashalot (тільки desktop-додаток).
+// Дозволяє власнику самостійно підключити й перевірити фіскалізацію, а також
+// вручну керувати зміною (відкрити/закрити, X/Z-звіт, службові внесення/видача).
+
+interface ParsedStatus {
+  shiftState?: string
+  licEndDate?: string
+  raw: string
+}
+
+function parseStatus(result: DesktopFiscalResult): ParsedStatus {
+  const raw = result.JsonVal || result.Description || ''
+  try {
+    const json = JSON.parse(result.JsonVal || '{}')
+    const values = json.Values ?? {}
+    return {
+      shiftState: values.ShiftStateStr ?? values.ShiftState,
+      licEndDate: values.LicEndDate,
+      raw,
+    }
+  } catch {
+    return { raw }
+  }
+}
+
+function shiftStateLabel(state?: string): string {
+  if (!state) return '—'
+  const map: Record<string, string> = {
+    ShiftOpened: 'Зміна відкрита',
+    ShiftClosed: 'Зміна закрита',
+    ShiftsIsAbsent: 'Зміна не відкрита',
+    '0': 'Зміна не відкрита',
+    '1': 'Зміна відкрита',
+  }
+  return map[state] ?? state
+}
+
 export function FiscalSettingsCard() {
   const [config, setConfig] = useState<DesktopFiscalConfig | null>(null)
   const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [registering, setRegistering] = useState(false)
-  const [statusText, setStatusText] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [status, setStatus] = useState<ParsedStatus | null>(null)
 
   useEffect(() => {
     desktopBridge()?.fiscal?.getConfig()
@@ -52,40 +87,44 @@ export function FiscalSettingsCard() {
     }
   }
 
-  async function handleTest() {
+  async function pickFolder(field: 'cashalotDir' | 'certificateDir') {
     const desktop = desktopBridge()
     if (!desktop?.fiscal) return
-    setTesting(true)
-    setStatusText(null)
+    const picked = await desktop.fiscal.pickFolder(config?.[field] ?? undefined).catch(() => null)
+    if (picked) patch({ [field]: picked } as Partial<DesktopFiscalConfig>)
+  }
+
+  // Обгортка для дій, що вимагають зв'язку з Кашалотом
+  async function runAction(key: string, action: () => Promise<DesktopFiscalResult | { registered: boolean }>, okMsg: string) {
+    setBusy(key)
     try {
-      const result = await desktop.fiscal.status()
-      setStatusText(result.JsonVal || 'Зв’язок з Кашалотом працює')
-      toast.success('Кашалот відповів — інтеграція працює')
+      const result = await action()
+      if ('registered' in result) {
+        if (result.registered) toast.success('COM-бібліотеку Кашалота зареєстровано')
+        else toast.error('Реєстрація не пройшла')
+        patch({ comRegistered: (result as { registered: boolean }).registered })
+      } else {
+        toast.success(okMsg)
+        setStatus(parseStatus(result))
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setStatusText('Помилка: ' + message)
-      toast.error('Кашалот не відповів: ' + message)
+      toast.error((err instanceof Error ? err.message : 'Помилка') + '')
     } finally {
-      setTesting(false)
+      setBusy(null)
     }
   }
 
-  async function handleRegisterCom() {
+  async function serviceCash(direction: 'in' | 'out') {
     const desktop = desktopBridge()
     if (!desktop?.fiscal) return
-    setRegistering(true)
-    try {
-      const { registered } = await desktop.fiscal.registerCom()
-      patch({ comRegistered: registered })
-      if (registered) toast.success('COM-бібліотеку Кашалота зареєстровано')
-      else toast.error('Реєстрація не пройшла — підтвердіть запит адміністратора (UAC)')
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка реєстрації COM')
-    } finally {
-      setRegistering(false)
-    }
+    const input = window.prompt(direction === 'in' ? 'Сума внесення в касу (грн):' : 'Сума видачі з каси (грн):', '0')
+    if (input === null) return
+    const kopecks = Math.round(parseFloat(input.replace(',', '.')) * 100)
+    if (!Number.isFinite(kopecks) || kopecks <= 0) { toast.error('Некоректна сума'); return }
+    runAction('service', () => desktop.fiscal.serviceCash(kopecks, direction), direction === 'in' ? 'Внесення проведено' : 'Видачу проведено')
   }
 
+  const desktop = desktopBridge()
   const inputClass = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent'
 
   return (
@@ -110,18 +149,26 @@ export function FiscalSettingsCard() {
         «Фіскальний чек» у касі реєструється на податковій, номер і QR зберігаються в чеку.
       </p>
 
-      {!config.comRegistered && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3">
-          <p className="text-xs text-red-700">
-            COM-бібліотека Кашалота ще не зареєстрована в Windows — фіскалізація не працюватиме.
-            Реєстрація разова, для поточного користувача (без прав адміністратора).
-          </p>
-          <Button type="button" variant="secondary" loading={registering} onClick={handleRegisterCom} className="shrink-0">
-            Зареєструвати
+      {/* Крок 1: реєстрація COM */}
+      <div className="rounded-xl border border-amber-200 bg-white/70 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold text-gray-700">1. Реєстрація бібліотеки Кашалота</p>
+            <p className="text-xs text-gray-500">
+              {config.comRegistered
+                ? '✓ Зареєстровано на цьому ПК'
+                : 'Разова дія для поточного користувача (без прав адміністратора)'}
+            </p>
+          </div>
+          <Button type="button" variant="secondary"
+            loading={busy === 'register'}
+            onClick={() => runAction('register', () => desktop!.fiscal.registerCom(), '')}>
+            {config.comRegistered ? 'Перереєструвати' : 'Зареєструвати'}
           </Button>
         </div>
-      )}
+      </div>
 
+      {/* Крок 2: параметри підключення */}
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Фіскальний номер ПРРО</label>
@@ -132,17 +179,29 @@ export function FiscalSettingsCard() {
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Папка програми Кашалот</label>
-          <input value={config.cashalotDir}
-            onChange={(e) => patch({ cashalotDir: e.target.value })}
-            placeholder="C:\Users\...\AppData\Local\Cashalot"
-            className={inputClass} />
+          <div className="flex gap-2">
+            <input value={config.cashalotDir}
+              onChange={(e) => patch({ cashalotDir: e.target.value })}
+              placeholder="C:\Users\...\AppData\Local\Cashalot"
+              className={inputClass} />
+            <button type="button" onClick={() => pickFolder('cashalotDir')}
+              className="shrink-0 rounded-lg border border-gray-200 px-3 hover:bg-gray-50" title="Вибрати папку">
+              <FolderOpen size={16} className="text-gray-500" />
+            </button>
+          </div>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Папка файлового ключа касира (КЕП)</label>
-          <input value={config.certificateDir ?? ''}
-            onChange={(e) => patch({ certificateDir: e.target.value })}
-            placeholder="Порожньо — Кашалот сам спитає ключ"
-            className={inputClass} />
+          <div className="flex gap-2">
+            <input value={config.certificateDir ?? ''}
+              onChange={(e) => patch({ certificateDir: e.target.value })}
+              placeholder="Порожньо — Кашалот сам спитає ключ"
+              className={inputClass} />
+            <button type="button" onClick={() => pickFolder('certificateDir')}
+              className="shrink-0 rounded-lg border border-gray-200 px-3 hover:bg-gray-50" title="Вибрати папку">
+              <FolderOpen size={16} className="text-gray-500" />
+            </button>
+          </div>
           <p className="text-xs text-gray-400 mt-1">У папці має бути ключ і сертифікат лише одного касира</p>
         </div>
         <div>
@@ -156,13 +215,61 @@ export function FiscalSettingsCard() {
         </div>
       </div>
 
-      {statusText && (
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-white/80 px-3 py-2 font-mono text-[11px] text-gray-700">{statusText}</pre>
+      <div className="flex flex-wrap gap-3 pt-1">
+        <Button type="button" loading={saving} onClick={handleSave}>Зберегти</Button>
+        <Button type="button" variant="secondary" loading={busy === 'status'}
+          onClick={() => runAction('status', () => desktop!.fiscal.status(), 'Кашалот відповів — зв\'язок працює')}>
+          Перевірити зв'язок
+        </Button>
+      </div>
+
+      {/* Читабельний статус */}
+      {status && (
+        <div className="rounded-xl border border-gray-200 bg-white/80 px-4 py-3 text-sm">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-gray-400">Стан зміни</p>
+              <p className="font-semibold text-gray-800">{shiftStateLabel(status.shiftState)}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-gray-400">Ліцензія до</p>
+              <p className="font-semibold text-gray-800">
+                {status.licEndDate ? new Date(status.licEndDate).toLocaleDateString('uk-UA') : '—'}
+              </p>
+            </div>
+          </div>
+        </div>
       )}
 
-      <div className="flex gap-3 pt-1">
-        <Button type="button" loading={saving} onClick={handleSave}>Зберегти</Button>
-        <Button type="button" variant="secondary" loading={testing} onClick={handleTest}>Перевірити зв'язок</Button>
+      {/* Крок 3: ручне керування зміною (для налаштування/діагностики) */}
+      <div className="rounded-xl border border-amber-200 bg-white/70 px-4 py-3 space-y-2">
+        <p className="text-xs font-semibold text-gray-700">Ручне керування ПРРО</p>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="secondary" loading={busy === 'open'}
+            onClick={() => runAction('open', () => desktop!.fiscal.openShift(), 'Зміну ПРРО відкрито')}>
+            Відкрити зміну
+          </Button>
+          <Button type="button" variant="secondary" loading={busy === 'close'}
+            onClick={() => runAction('close', () => desktop!.fiscal.closeShift(), 'Зміну закрито, Z-звіт зареєстровано')}>
+            Закрити зміну (Z-звіт)
+          </Button>
+          <Button type="button" variant="secondary" loading={busy === 'x'}
+            onClick={() => runAction('x', () => desktop!.fiscal.xReport(), 'X-звіт сформовано')}>
+            X-звіт
+          </Button>
+          <Button type="button" variant="secondary" loading={busy === 'service'}
+            onClick={() => serviceCash('in')}>
+            Внесення готівки
+          </Button>
+          <Button type="button" variant="secondary" loading={busy === 'service'}
+            onClick={() => serviceCash('out')}>
+            Видача готівки
+          </Button>
+        </div>
+        <p className="text-xs text-gray-400">
+          Зазвичай зміна відкривається автоматично при першому чеку, а Z-звіт — при закритті зміни каси.
+          Ці кнопки — для налаштування й нештатних ситуацій.
+        </p>
       </div>
     </Card>
   )

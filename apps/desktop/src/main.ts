@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
 import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
 import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
@@ -223,6 +223,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:print:html', (_event, html: string, options?: DesktopPrintOptions) =>
     printHtmlDocument(html, options),
   )
+  ipcMain.handle('desktop:fiscal:pick-folder', async (_event, defaultPath?: string) => {
+    const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {
+      title: 'Виберіть папку',
+      defaultPath: defaultPath && defaultPath.trim() ? defaultPath : undefined,
+      properties: ['openDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
   ipcMain.handle('desktop:fiscal:get-config', () => requireCashalot().getPublicConfig())
   ipcMain.handle('desktop:fiscal:set-config', (_event, update: CashalotConfigUpdate) =>
     requireCashalot().updateConfig(update),

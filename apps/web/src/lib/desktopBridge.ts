@@ -232,6 +232,7 @@ interface ForsageDesktopBridge {
     }) => Promise<{ success: true }>
   }
   fiscal: {
+    pickFolder: (defaultPath?: string) => Promise<string | null>
     getConfig: () => Promise<DesktopFiscalConfig>
     setConfig: (update: DesktopFiscalConfigUpdate) => Promise<DesktopFiscalConfig>
     registerCom: () => Promise<{ registered: boolean }>

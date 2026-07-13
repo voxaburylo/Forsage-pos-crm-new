@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:print:html', html, options),
   },
   fiscal: {
+    pickFolder: (defaultPath?: string) => ipcRenderer.invoke('desktop:fiscal:pick-folder', defaultPath),
     getConfig: () => ipcRenderer.invoke('desktop:fiscal:get-config'),
     setConfig: (update: unknown) => ipcRenderer.invoke('desktop:fiscal:set-config', update),
     registerCom: () => ipcRenderer.invoke('desktop:fiscal:register-com'),
