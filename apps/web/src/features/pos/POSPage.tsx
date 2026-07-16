@@ -25,6 +25,7 @@ import { shiftApi } from './shiftApi'
 import type { POSItem, POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
 import type { Sale } from '@/types/sale'
+import type { Shift } from '@/types/shift'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { initAudio, playCashRegister } from '@/lib/audioService'
@@ -123,7 +124,7 @@ function savedCartTotal(cart: SavedCart): number {
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 
-function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: () => void }) {
+function OpenShiftScreen({ onOpened, onBack }: { onOpened: (shift?: Shift) => void; onBack: () => void }) {
   // Підставляємо залишок із закриття попередньої зміни (та сама каса)
   const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
   const [loading, setLoading] = useState(false)
@@ -141,7 +142,10 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: (
         await desktop.pos.openShift({ cashier_id: cashierId, opening_cash: kopecks })
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       } else {
-        await shiftApi.open(kopecks)
+        const { data } = await shiftApi.open(kopecks)
+        onOpened(data)
+        toast.success('Зміну відкрито')
+        return
       }
       toast.success('Зміну відкрито')
       onOpened()
@@ -507,7 +511,10 @@ export default function POSPage() {
     return (
       <OpenShiftScreen
         onBack={() => navigate('/dashboard')}
-        onOpened={checkShift}
+        onOpened={(openedShift) => {
+          if (openedShift) store.setCurrentShift(openedShift)
+          else checkShift()
+        }}
       />
     )
   }
