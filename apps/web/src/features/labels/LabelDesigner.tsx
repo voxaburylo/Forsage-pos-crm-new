@@ -601,7 +601,15 @@ function LabelPreview({ settings, product, binLabel, onPosChange }:
 // ================================================================
 // Друк етикеток
 // ================================================================
-export function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean) {
+export interface LabelPrintDocument {
+  html: string
+  title: string
+  widthMm: number
+  heightMm: number
+  count: number
+}
+
+export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean): LabelPrintDocument {
   const shopName = 'Форсаж'
   const esc = PrintService.escapeHtml
   const w = Math.max(20, Math.min(120, Number(settings.width_mm) || 40))
@@ -748,18 +756,33 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   ${labelsHtml}
 </body></html>`
 
-  PrintService.printHtml(html, {
-    mode: 'iframe',
+  return {
+    html,
     title: `Етикетки ${w}×${h} мм`,
-    pageSizeMm: { width: w, height: h },
+    widthMm: w,
+    heightMm: h,
+    count: items.length,
+  }
+}
+
+export function printLabelDocument(document: LabelPrintDocument) {
+  PrintService.printHtml(document.html, {
+    mode: 'iframe',
+    title: document.title,
+    pageSizeMm: { width: document.widthMm, height: document.heightMm },
     preferDesktopNative: true,
-    showDesktopPreview: true,
-    // У локальній версії попередній перегляд робимо власним вікном, а папір
-    // лишаємо драйверу принтера етикеток, щоб не ловити Invalid printer settings.
+    showDesktopPreview: false,
+    // Предпросмотр показываем прямо в интерфейсе программы. В Electron/Windows
+    // системный print preview часто недоступен, поэтому в драйвер отправляем
+    // только саму печать, без отдельного окна предпросмотра.
     useDriverPaper: true,
     cleanupDelayMs: 30000,
     readyDelayMs: 50,
   })
+}
+
+export function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean) {
+  printLabelDocument(buildLabelPrintDocument(settings, items, isBins))
 }
 
 // ================================================================
@@ -777,6 +800,7 @@ export default function LabelDesigner() {
   const [binMode, setBinMode] = useState(false)
   const [binInput, setBinInput] = useState('')
   const [binLabels, setBinLabels] = useState<string[]>([])
+  const [printPreviewDoc, setPrintPreviewDoc] = useState<LabelPrintDocument | null>(null)
   const [productSettings, setProductSettings] = useState<LabelSettings>(DEFAULT_LABEL)
   const [binSettings, setBinSettings] = useState<LabelSettings>(DEFAULT_BIN_LABEL)
   const settings = binMode ? binSettings : productSettings
@@ -1076,17 +1100,31 @@ export default function LabelDesigner() {
     }
   }
 
+  function buildCurrentPrintDocument(): LabelPrintDocument | null {
+    if (binMode) {
+      const items = binLabels.map((label) => ({ label }))
+      if (items.length === 0) { toast.error('Додайте хоча б одну комірку'); return null }
+      return buildLabelPrintDocument(settings, items, true)
+    }
+    const items = printItems.flatMap((p) => Array(p.copies).fill(p))
+    if (items.length === 0) { toast.error('Додайте товари для друку'); return null }
+    return buildLabelPrintDocument(settings, items, false)
+  }
+
   function handlePrint() {
     try {
-      if (binMode) {
-        const items = binLabels.map((label) => ({ label }))
-        if (items.length === 0) { toast.error('Додайте хоча б одну комірку'); return }
-        printLabels(settings, items, true)
-      } else {
-        const items = printItems.flatMap((p) => Array(p.copies).fill(p))
-        if (items.length === 0) { toast.error('Додайте товари для друку'); return }
-        printLabels(settings, items, false)
-      }
+      const document = buildCurrentPrintDocument()
+      if (document) setPrintPreviewDoc(document)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося підготувати друк')
+    }
+  }
+
+  function handleConfirmPrint() {
+    if (!printPreviewDoc) return
+    try {
+      printLabelDocument(printPreviewDoc)
+      setPrintPreviewDoc(null)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити друк')
     }
@@ -1317,7 +1355,7 @@ export default function LabelDesigner() {
                 icon={<Printer size={16} />}
                 onClick={() => {
                   try {
-                    printLabels(settings, binMode ? [{ label: 'A-1' }] : [DEMO_PRODUCT], binMode)
+                    setPrintPreviewDoc(buildLabelPrintDocument(settings, binMode ? [{ label: 'A-1' }] : [DEMO_PRODUCT], binMode))
                   } catch (error) {
                     toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити пробний друк')
                   }
@@ -1596,6 +1634,48 @@ export default function LabelDesigner() {
           </div>
         </div>
       )}
+
+      <Modal
+        open={Boolean(printPreviewDoc)}
+        onClose={() => setPrintPreviewDoc(null)}
+        title="Попередній перегляд друку"
+        size="xl"
+      >
+        {printPreviewDoc && (
+          <div className="space-y-4">
+            <div className="flex flex-col gap-2 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold">{printPreviewDoc.title}</p>
+                <p className="text-xs text-blue-700">
+                  {printPreviewDoc.count} шт · папір {printPreviewDoc.widthMm}×{printPreviewDoc.heightMm} мм
+                </p>
+              </div>
+              <div className="text-xs text-blue-700">
+                У драйвері принтера: масштаб 100%, поля немає.
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 bg-gray-200/70 p-4">
+              <div className="mx-auto max-h-[60dvh] overflow-auto rounded-lg bg-white shadow-inner">
+                <iframe
+                  title="Попередній перегляд етикеток"
+                  srcDoc={printPreviewDoc.html}
+                  className="block min-h-[55dvh] w-full border-0 bg-white"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={() => setPrintPreviewDoc(null)}>
+                Закрити
+              </Button>
+              <Button icon={<Printer size={16} />} onClick={handleConfirmPrint}>
+                Друк
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Модалка вибору накладної */}
       <Modal open={isInvoiceModalOpen} onClose={() => setIsInvoiceModalOpen(false)} title="Виберіть приходну накладну" size="lg">

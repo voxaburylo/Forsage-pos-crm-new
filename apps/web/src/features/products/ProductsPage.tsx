@@ -19,6 +19,7 @@ import { Button, Badge, Modal, ConfirmDialog, Drawer, SplitButton } from '@/comp
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
+import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import {
   printLabels,
   DEFAULT_LABEL,
@@ -182,6 +183,36 @@ export default function ProductsPage() {
   // Пише результат сторінки в мапу pages, щоб накопичувати для нескінченного скролу.
   const load = useCallback(async () => {
     setLoading(true)
+    const canUseDesktopCatalog =
+      page === 1
+      && !lowStock
+      && !stockFilter
+      && !categoryFilter
+      && !brandFilter
+      && (!sort || sort.field === 'name')
+    const desktopCatalog = canUseDesktopCatalog ? desktopBridge()?.catalog : null
+    if (desktopCatalog) {
+      try {
+        const desktopProducts = (debouncedSearch
+          ? await desktopCatalog.searchProducts(debouncedSearch, PRODUCTS_PER_PAGE)
+          : await desktopCatalog.listPopular(PRODUCTS_PER_PAGE)
+        ).map(desktopProductToProduct)
+        setResult({
+          data: desktopProducts,
+          pagination: {
+            page: 1,
+            per_page: PRODUCTS_PER_PAGE,
+            total: desktopProducts.length,
+            total_pages: 1,
+          },
+        })
+        setPages({ 1: desktopProducts })
+        setLoading(false)
+      } catch {
+        // Якщо desktop SQLite ще не готовий, продовжуємо стандартний шлях:
+        // IndexedDB → сервер.
+      }
+    }
     const local = await listProductsOffline({
       search: debouncedSearch || undefined,
       lowStock,

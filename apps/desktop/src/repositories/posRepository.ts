@@ -173,6 +173,54 @@ export class LocalPosRepository {
     }
   }
 
+  getShiftReport(cashierId: string, tenantId = DEFAULT_TENANT_ID): {
+    shift: NonNullable<ReturnType<LocalPosRepository['getOpenShift']>>
+    total_sales: number
+    total_revenue: number
+    by_method: { cash: number; card: number; debt: number }
+    sales: Array<{
+      id: string
+      sale_number: string
+      total: number
+      payment_method: string
+      status: string
+      completed_at: string
+    }>
+  } | null {
+    const shift = this.getOpenShift(cashierId, tenantId)
+    if (!shift) return null
+    const sales = this.db.prepare(`
+      SELECT id, sale_number, total, payment_method, status, completed_at,
+             cash_amount, card_amount
+      FROM sales
+      WHERE tenant_id = ? AND shift_id = ? AND deleted_at IS NULL
+      ORDER BY completed_at ASC
+    `).all(tenantId, shift.id) as unknown as Array<{
+      id: string
+      sale_number: string
+      total: number
+      payment_method: string
+      status: string
+      completed_at: string
+      cash_amount: number
+      card_amount: number
+    }>
+    const completed = sales.filter((sale) => sale.status === 'completed')
+    return {
+      shift,
+      total_sales: completed.length,
+      total_revenue: completed.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
+      by_method: {
+        cash: completed.reduce((sum, sale) => sum + Number(sale.cash_amount || 0), 0),
+        card: completed.reduce((sum, sale) => sum + Number(sale.card_amount || 0), 0),
+        debt: completed
+          .filter((sale) => sale.payment_method === 'debt')
+          .reduce((sum, sale) => sum + Number(sale.total || 0), 0),
+      },
+      sales,
+    }
+  }
+
   // Зберегти звірку каси локально (оновлюємо зміну очікуваною сумою й розбіжністю).
   reconcileShift(cashierId: string, actualAmount: number, comment: string | null, tenantId = DEFAULT_TENANT_ID): { ok: true } {
     const shift = this.getOpenShift(cashierId, tenantId)
@@ -190,6 +238,55 @@ export class LocalPosRepository {
       WHERE id = ? AND tenant_id = ?
     `).run(expected, variance, note ?? null, ts, ts, shift.id, tenantId)
     return { ok: true }
+  }
+
+  closeShift(cashierId: string, actualAmount: number, comment: string | null, tenantId = DEFAULT_TENANT_ID): { ok: true; id: string } {
+    return this.db.transaction(() => {
+      const shift = this.getOpenShift(cashierId, tenantId)
+      if (!shift) throw new Error('LOCAL_NO_SHIFT')
+      const expected = this.getExpectedCash(cashierId, tenantId)?.expected_amount ?? 0
+      const closingCash = money(actualAmount)
+      const variance = closingCash - expected
+      const timestamp = nowIso()
+      const note = comment?.trim()
+        ? `${shift.notes ? shift.notes + '\n' : ''}${comment.trim()}`
+        : shift.notes
+
+      this.db.prepare(`
+        UPDATE shifts
+        SET status = 'closed', closing_cash = ?, expected_cash = ?, cash_variance = ?,
+            closed_at = ?, notes = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(
+        closingCash,
+        expected,
+        variance,
+        timestamp,
+        note ?? null,
+        timestamp,
+        timestamp,
+        shift.id,
+        tenantId,
+      )
+
+      this.addOutbox(
+        tenantId,
+        'shift',
+        shift.id,
+        'shift.closed',
+        {
+          id: shift.id,
+          cashier_id: cashierId,
+          closing_cash: closingCash,
+          expected_cash: expected,
+          cash_variance: variance,
+          closed_at: timestamp,
+          notes: note ?? null,
+        },
+        timestamp,
+      )
+      return { ok: true, id: shift.id }
+    })
   }
 
   checkout(input: LocalSaleCheckoutInput): LocalSaleCheckoutResult {

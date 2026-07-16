@@ -8,13 +8,29 @@ function todayRange(): { from: string; to: string } {
   return { from: `${date}T00:00:00.000Z`, to: `${date}T23:59:59.999Z` }
 }
 
-function buildSummary(sales: Array<{ total: number; payment_method: string }>) {
+type SummarySale = {
+  total: number
+  payment_method: string
+  cash_amount?: number | null
+  card_amount?: number | null
+}
+
+function buildSummary(sales: SummarySale[]) {
+  const cash = sales.reduce((sum, sale) => {
+    if (sale.payment_method === 'cash') return sum + Number(sale.cash_amount || sale.total)
+    return sum + Number(sale.cash_amount ?? 0)
+  }, 0)
+  const card = sales.reduce((sum, sale) => {
+    if (sale.payment_method === 'card') return sum + Number(sale.card_amount || sale.total)
+    return sum + Number(sale.card_amount ?? 0)
+  }, 0)
+
   return {
     total_sales:   sales.length,
     total_revenue: sales.reduce((s, x) => s + x.total, 0),
     by_method: {
-      cash: sales.filter((s) => s.payment_method === 'cash').reduce((s, x) => s + x.total, 0),
-      card: sales.filter((s) => s.payment_method === 'card').reduce((s, x) => s + x.total, 0),
+      cash,
+      card,
       debt: sales.filter((s) => s.payment_method === 'debt').reduce((s, x) => s + x.total, 0),
     },
   }
@@ -25,7 +41,7 @@ export async function getSalesToday(tenantId: string) {
 
   const { data, error } = await db
     .from('sales')
-    .select('total, payment_method')
+    .select('total, payment_method, cash_amount, card_amount')
     .eq('tenant_id', tenantId)
     .gte('completed_at', from)
     .lte('completed_at', to)
@@ -43,7 +59,7 @@ export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
   // 1. Отримуємо продажі за період
   const { data: sales, error: salesErr } = await db
     .from('sales')
-    .select('id, sale_number, total, payment_method, status, completed_at, customer:customers(id,phone,full_name)')
+    .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount, customer:customers(id,phone,full_name)')
     .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)

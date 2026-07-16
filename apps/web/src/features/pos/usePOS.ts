@@ -137,7 +137,9 @@ export function usePOS() {
           })
 
           const fiscalResult = await desktop.fiscal.registerCheck(fiscalItems, {
-            cash: method === 'cash' && options?.cashReceived ? options.cashReceived : cashAmount,
+            // У ПРРО передаємо суму самого чека, а не отримані від клієнта
+            // купюри: решта не є виручкою й не повинна потрапляти в Z-звіт.
+            cash: cashAmount,
             card: cardAmount,
             bank: bankAmount,
             check_total: toPay,

@@ -388,6 +388,11 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'shift.closed') {
+    await applyShiftClosed(tenantId, operation)
+    return
+  }
+
   if (operation.operation_type === 'sale.completed') {
     await applySaleCompleted(tenantId, userId, operation)
     return
@@ -419,6 +424,30 @@ async function applyShiftOpened(tenantId: string, operation: SyncOutboxOperation
         payload.notes ?? null,
       ],
     )
+  })
+}
+
+async function applyShiftClosed(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  await runTransaction(async (client) => {
+    const result = await client.query(
+      `UPDATE shifts
+       SET status = 'closed', closing_cash = $3, expected_cash = $4,
+           cash_variance = $5, closed_at = $6, notes = COALESCE($7, notes)
+       WHERE id = $1 AND tenant_id = $2`,
+      [
+        operation.aggregate_id,
+        tenantId,
+        Number(payload.closing_cash ?? 0),
+        Number(payload.expected_cash ?? 0),
+        Number(payload.cash_variance ?? 0),
+        payload.closed_at ?? operation.created_at,
+        payload.notes ?? null,
+      ],
+    )
+    if (!result.rowCount) {
+      throw new AppError('SYNC_SHIFT_NOT_FOUND', 'Зміну для закриття не знайдено', 404)
+    }
   })
 }
 

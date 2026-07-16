@@ -36,6 +36,7 @@ import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } from '@/lib/offlineDB'
 import { OfflineSalesModal } from './OfflineSalesModal'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -104,13 +105,13 @@ function loadCart(): SavedCart | null {
       shiftId: typeof parsed.shiftId === 'string' ? parsed.shiftId : null,
     }
   } catch {
-    try { localStorage.removeItem(CART_KEY) } catch {}
+    try { localStorage.removeItem(CART_KEY) } catch { /* storage may be unavailable */ }
     return null
   }
 }
 
 function clearSavedCart() {
-  try { localStorage.removeItem(CART_KEY) } catch {}
+  try { localStorage.removeItem(CART_KEY) } catch { /* storage may be unavailable */ }
 }
 
 function savedCartTotal(cart: SavedCart): number {
@@ -134,7 +135,14 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: () => void; onBack: (
     const kopecks = Math.round(parsedCash * 100)
     setLoading(true)
     try {
-      await shiftApi.open(kopecks)
+      const desktop = desktopBridge()
+      const cashierId = useAuthStore.getState().session?.user?.id ?? ''
+      if (desktop && cashierId) {
+        await desktop.pos.openShift({ cashier_id: cashierId, opening_cash: kopecks })
+        window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      } else {
+        await shiftApi.open(kopecks)
+      }
       toast.success('Зміну відкрито')
       onOpened()
     } catch (e) {

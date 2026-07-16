@@ -11,6 +11,7 @@ import { CameraScanner } from './CameraScanner'
 import { findProductByScanOffline, getCachedCategories, getCachedProductsForScan, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -38,6 +39,16 @@ function reportScannerStage(stage: 'added' | 'failed', code: string, name?: stri
   }))
 }
 
+function normalizeScanCode(value: string): string {
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0)
+      return code > 31 && code !== 127 && !/\s/.test(character)
+    })
+    .join('')
+    .trim()
+}
+
 function findExactScannedProduct(products: any[], code: string): Product | undefined {
   const normalized = code.toLocaleLowerCase('uk-UA').replace(/[\s\-./_]/g, '')
   return products.find((product) => {
@@ -56,7 +67,7 @@ function addProductToScanIndex(index: Map<string, Product>, product: Product) {
   const barcodes = [
     product.barcode,
     ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
-  ].filter(Boolean).map((value) => String(value).replace(/[\u0000-\u001f\u007f\s]/g, ''))
+  ].filter(Boolean).map((value) => normalizeScanCode(String(value)))
   for (const barcode of barcodes) index.set(`barcode:${barcode}`, product)
   const sku = String(product.sku ?? '').replace(/[\s\-./_]/g, '').toUpperCase()
   if (sku) index.set(`sku:${sku}`, product)
@@ -170,14 +181,29 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
     timer.current = setTimeout(async () => {
       setLoading(true)
+      let localResultsShown = false
       try {
+        const desktopCatalog = desktopBridge()?.catalog
+        if (desktopCatalog && !categoryFilter) {
+          const localProducts = query.trim()
+            ? await desktopCatalog.searchProducts(query.trim(), 20)
+            : await desktopCatalog.listPopular(50)
+          if (epoch !== searchEpoch.current) return
+          setResults(localProducts.map(desktopProductToProduct))
+          setSupplierResults([])
+          localResultsShown = localProducts.length > 0 || !query.trim()
+          if (localResultsShown) setLoading(false)
+        }
+
         // Офлайн-режим: шукаємо в IndexedDB
-        if (!serverOnline) {
+        if (!serverOnline && !localResultsShown) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
           if (epoch !== searchEpoch.current) return
           setResults(offlineResults as Product[])
           setSupplierResults([])
           setLoading(false)
+          return
+        } else if (!serverOnline) {
           return
         }
 
@@ -230,7 +256,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   }
 
   function queueBarcodeScan(code: string) {
-    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+    const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
     const immediateProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
     if (immediateProduct) {
@@ -259,7 +285,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   }
 
   async function handleBarcodeScan(code: string) {
-    const normalizedCode = code.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+    const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
     // Штрих-код замовлення з друкованого чека (ORD-1043) → вікно оплати
     // задатку/залишку в панелі «Видати»
@@ -283,6 +309,16 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       addToReceipt(cachedProduct as Product)
       saveRecentItem('recent_scans', normalizedCode)
       reportScannerStage('added', normalizedCode, (cachedProduct as Product).name)
+      return
+    }
+
+    const desktopProduct = await desktopBridge()?.catalog.findByBarcode(normalizedCode).catch(() => null)
+    if (desktopProduct) {
+      const product = desktopProductToProduct(desktopProduct)
+      addProductToScanIndex(scanProductIndex.current, product)
+      addToReceipt(product)
+      saveRecentItem('recent_scans', normalizedCode)
+      reportScannerStage('added', normalizedCode, product.name)
       return
     }
 

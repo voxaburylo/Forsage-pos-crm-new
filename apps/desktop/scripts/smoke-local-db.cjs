@@ -148,6 +148,16 @@ async function main() {
     items: [{ product_id: product.id, qty: 2 }],
     payments: [{ method: 'cash', amount: 26000 }],
   });
+  const shiftReport = pos.getShiftReport('smoke-cashier');
+  if (!shiftReport || shiftReport.total_sales !== 1 || shiftReport.by_method.cash !== 26000) {
+    throw new Error('Local shift report did not include the completed cash sale');
+  }
+  const closeResult = pos.closeShift('smoke-cashier', 36000, 'Smoke close');
+  if (pos.getOpenShift('smoke-cashier') !== null) {
+    throw new Error('Local shift remained open after closeShift');
+  }
+  const closeQueued = sync.listPending(10).some((operation) => operation.operation_type === 'shift.closed');
+  if (!closeQueued) throw new Error('Local shift close was not queued for synchronization');
 
   db.prepare(`
     INSERT INTO sync_outbox(
@@ -197,6 +207,9 @@ async function main() {
     foundByExtraBarcode: foundByExtraBarcode?.id ?? null,
     importedByBarcode: importedByBarcode?.id ?? null,
     sale,
+    shiftReport,
+    closeResult,
+    closeQueued,
     pendingAfterCorruptPayload: pendingAfterCorruptPayload.length,
     corruptOutboxRow,
     backupPath,

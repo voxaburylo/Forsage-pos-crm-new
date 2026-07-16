@@ -153,18 +153,34 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
     // pageSize+landscape з «Invalid printer settings». Тому пробуємо каскадом:
     // спершу ідеальні налаштування, а якщо драйвер їх не приймає — простіші,
     // щоб друк узагалі відбувся, а не падав.
-    const base = {
+    const minimalBase = {
       silent: options.silent === true,
       printBackground: true,
+    }
+    const base = {
+      ...minimalBase,
       margins: { marginType: 'none' as const },
     }
     const attempts: Electron.WebContentsPrintOptions[] = options.useDriverPaper
-      ? [{ ...base }]
+      ? [
+          { ...base },
+          // Частина драйверів етикеток/чекових принтерів відхиляє навіть
+          // margins: none як "Invalid printer settings". У такому випадку
+          // віддаємо папір і поля повністю драйверу, щоб друк не падав.
+          { ...minimalBase },
+          { silent: options.silent === true },
+          {},
+        ]
       : [
           { ...base, pageSize, landscape },
           { ...base, pageSize },
           { ...base, landscape },
           { ...base },
+          { ...minimalBase, pageSize, landscape },
+          { ...minimalBase, pageSize },
+          { ...minimalBase, landscape },
+          { ...minimalBase },
+          {},
         ]
 
     const printOnce = (opts: Electron.WebContentsPrintOptions) =>
@@ -232,8 +248,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:pos:expected-cash', (_event, cashierId: string) =>
     requireLocalPos().getExpectedCash(cashierId),
   )
+  ipcMain.handle('desktop:pos:shift-report', (_event, cashierId: string) =>
+    requireLocalPos().getShiftReport(cashierId),
+  )
   ipcMain.handle('desktop:pos:reconcile', (_event, cashierId: string, actualAmount: number, comment: string | null) =>
     requireLocalPos().reconcileShift(cashierId, actualAmount, comment),
+  )
+  ipcMain.handle('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null) =>
+    requireLocalPos().closeShift(cashierId, actualAmount, comment),
   )
   ipcMain.handle('desktop:pos:open-shift', (_event, input: {
     cashier_id: string

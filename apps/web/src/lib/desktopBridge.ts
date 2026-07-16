@@ -217,7 +217,9 @@ interface ForsageDesktopBridge {
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listDebtors: (limit?: number) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number }>>
     expectedCash: (cashierId: string) => Promise<{ opening_cash: number; cash_sales: number; cash_returns: number; cash_in: number; cash_out: number; expected_amount: number } | null>
+    shiftReport: (cashierId: string) => Promise<import('@/types/shift').ShiftReport | null>
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true }>
+    closeShift: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true; id: string }>
   }
   sync: {
     listPending: (limit?: number) => Promise<DesktopSyncOutboxOperation[]>

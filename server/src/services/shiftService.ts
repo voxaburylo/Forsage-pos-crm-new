@@ -183,7 +183,7 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
 
   const { data: sales } = await db
     .from('sales')
-    .select('id, sale_number, total, payment_method, status, completed_at')
+    .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount')
     .eq('shift_id', shiftId)
     .eq('tenant_id', tenantId)
     .order('completed_at', { ascending: true })
@@ -193,8 +193,14 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
 
   const total_revenue = completed.reduce((s, x) => s + x.total, 0)
   const by_method = {
-    cash: completed.filter((s) => s.payment_method === 'cash').reduce((s, x) => s + x.total, 0),
-    card: completed.filter((s) => s.payment_method === 'card').reduce((s, x) => s + x.total, 0),
+    // cash_amount/card_amount зберігають фактичний розподіл оплати й тому
+    // правильно враховують також змішані чеки.
+    cash: completed.reduce((sum, sale) => sum + Number(
+      sale.payment_method === 'cash' ? sale.cash_amount || sale.total : sale.cash_amount ?? 0,
+    ), 0),
+    card: completed.reduce((sum, sale) => sum + Number(
+      sale.payment_method === 'card' ? sale.card_amount || sale.total : sale.card_amount ?? 0,
+    ), 0),
     debt: completed.filter((s) => s.payment_method === 'debt').reduce((s, x) => s + x.total, 0),
   }
 

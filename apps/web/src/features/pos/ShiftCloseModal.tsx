@@ -24,6 +24,9 @@ export function ShiftCloseModal({
   const session = useAuthStore((s) => s.session)
   const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
   const isOwnerOrAdmin = role === 'owner' || role === 'admin'
+  const cashierId = session?.user?.id ?? ''
+  const desktop = desktopBridge()
+  const isDesktop = Boolean(desktop)
 
   const [report, setReport]             = useState<ShiftReport | null>(null)
   const [cashBreakdown, setCashBreakdown] = useState<ExpectedCash | null>(null)
@@ -34,6 +37,21 @@ export function ShiftCloseModal({
 
   useEffect(() => {
     if (!open) return
+    const desktopRuntime = desktopBridge()
+    if (desktopRuntime && cashierId) {
+      setLoading(true)
+      Promise.all([
+        desktopRuntime.pos.shiftReport(cashierId),
+        desktopRuntime.pos.expectedCash(cashierId),
+      ])
+        .then(([localReport, localCash]) => {
+          setReport(localReport)
+          setCashBreakdown(localCash)
+        })
+        .catch(() => toast.error('Помилка завантаження локальних даних зміни'))
+        .finally(() => setLoading(false))
+      return
+    }
     if (offline) {
       setLoading(false)
       return
@@ -49,7 +67,7 @@ export function ShiftCloseModal({
       })
       .catch(() => toast.error('Помилка завантаження даних зміни'))
       .finally(() => setLoading(false))
-  }, [open, shiftId, offline])
+  }, [open, shiftId, offline, cashierId])
 
   if (!open) return null
 
@@ -59,7 +77,7 @@ export function ShiftCloseModal({
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
 
   async function handleClose() {
-    if (offline) {
+    if (offline && !isDesktop) {
       toast.error('Закриття зміни потребує інтернету')
       return
     }
@@ -73,21 +91,25 @@ export function ShiftCloseModal({
     }
     setClosing(true)
     try {
-      try {
-        await shiftApi.close(shiftId, cashReceived, comment || undefined)
-      } catch (err) {
-        // Бек вимагає запис звірки каси перед закриттям. Фактичну суму касир
-        // щойно ввів у цій модалці — створюємо звірку з неї і повторюємо закриття,
-        // замість того щоб відправляти касира шукати окрему кнопку «Звірка».
-        if (err instanceof Error && /звірку каси/i.test(err.message)) {
-          const { api } = await import('@/lib/api')
-          await api.post('/api/v1/shifts/current/reconcile', {
-            actual_amount: cashReceived,
-            comment: comment.trim() || null,
-          })
+      if (desktop && cashierId) {
+        await desktop.pos.closeShift(cashierId, cashReceived, comment.trim() || null)
+        window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      } else {
+        try {
           await shiftApi.close(shiftId, cashReceived, comment || undefined)
-        } else {
-          throw err
+        } catch (err) {
+          // Бек вимагає запис звірки каси перед закриттям. Фактичну суму касир
+          // щойно ввів у цій модалці — створюємо звірку з неї і повторюємо закриття.
+          if (err instanceof Error && /звірку каси/i.test(err.message)) {
+            const { api } = await import('@/lib/api')
+            await api.post('/api/v1/shifts/current/reconcile', {
+              actual_amount: cashReceived,
+              comment: comment.trim() || null,
+            })
+            await shiftApi.close(shiftId, cashReceived, comment || undefined)
+          } else {
+            throw err
+          }
         }
       }
       // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
@@ -95,7 +117,6 @@ export function ShiftCloseModal({
       toast.success('Зміну закрито')
 
       // Desktop + увімкнений ПРРО Кашалот: закриваємо фіскальну зміну (Z-звіт).
-      const desktop = desktopBridge()
       if (desktop?.fiscal) {
         try {
           const fiscalConfig = await desktop.fiscal.getConfig()
@@ -124,11 +145,16 @@ export function ShiftCloseModal({
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
       <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-5">
         <h2 className="text-white text-lg font-bold">Закрити зміну</h2>
-        {(offline || pendingOfflineSales > 0) && (
+        {((offline && !isDesktop) || pendingOfflineSales > 0) && (
           <div className="rounded-xl border border-red-500/50 bg-red-900/25 px-4 py-3 text-sm text-red-300">
-            {offline
+            {offline && !isDesktop
               ? 'Зміну не можна закрити без інтернету.'
               : `Не синхронізовано офлайн-чеків: ${pendingOfflineSales}. Спочатку передайте їх на сервер.`}
+          </div>
+        )}
+        {offline && isDesktop && (
+          <div className="rounded-xl border border-blue-500/40 bg-blue-900/20 px-4 py-3 text-sm text-blue-300">
+            Зміну буде закрито локально. Дані передадуться на сервер після відновлення інтернету.
           </div>
         )}
 
@@ -153,6 +179,10 @@ export function ShiftCloseModal({
                 <div className="flex justify-between text-gray-400">
                   <span>Продажі готівкою:</span>
                   <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_sales ?? 0)}</span>
+                </div>
+                <div className="flex justify-between text-gray-400">
+                  <span>Оплати через термінал:</span>
+                  <span className="text-blue-400">{formatMoney(report.by_method.card ?? 0)}</span>
                 </div>
                 {(cashBreakdown?.cash_in ?? 0) > 0 && (
                   <div className="flex justify-between text-gray-400">
@@ -180,6 +210,9 @@ export function ShiftCloseModal({
                   <span>Всього продажів: {report.total_sales} чек(ів)</span>
                   <span>Виручка: {formatMoney(report.total_revenue)}</span>
                 </div>
+                <p className="border-t border-gray-700 pt-2 text-[11px] leading-4 text-gray-500">
+                  У Z-звіті Кашалота це один звіт із окремими підсумками: готівка та безготівкова оплата.
+                </p>
               </div>
             )}
 
@@ -232,7 +265,7 @@ export function ShiftCloseModal({
             className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
             Скасувати
           </button>
-          <button onClick={handleClose} disabled={offline || pendingOfflineSales > 0 || closing || loading || (cashInput === '' && !loading)}
+          <button onClick={handleClose} disabled={(offline && !isDesktop) || pendingOfflineSales > 0 || closing || loading || (cashInput === '' && !loading)}
             style={{ minHeight: 56 }}
             className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-40 transition-colors">
             {closing ? 'Закриваємо...' : 'Закрити зміну'}

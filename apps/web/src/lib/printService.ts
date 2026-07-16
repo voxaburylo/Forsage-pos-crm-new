@@ -147,7 +147,6 @@ export class PrintService {
         import("@/components/ui/Toast").then(({ toast }) => {
           toast.error(error instanceof Error ? error.message : "Помилка локального друку");
         });
-        if (desktopPrint) return;
         window.setTimeout(() => {
           try {
             PrintService.printHtml(htmlContent, {
