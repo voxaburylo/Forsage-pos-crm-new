@@ -13,7 +13,21 @@ export async function getCurrentShift(cashierId: string, tenantId: string) {
     .eq('tenant_id', tenantId)
     .eq('status', 'open')
     .maybeSingle()
-  return data  // null якщо немає відкритої зміни
+  if (data) return data
+
+  // У браузерній касі один фізичний касовий ящик може працювати під різними
+  // сесіями/ролями. Якщо для поточного auth-id зміни немає, підхоплюємо
+  // відкриту зміну магазину, щоб POS не повертався на екран відкриття.
+  const { data: tenantShift } = await db
+    .from(TABLE)
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'open')
+    .order('opened_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  return tenantShift  // null якщо немає відкритої зміни
 }
 
 export async function getShift(id: string, tenantId: string) {
