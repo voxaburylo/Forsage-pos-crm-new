@@ -17,6 +17,8 @@ const PAY_LABEL: Record<string, string> = {
   cash: 'Готівка', card: 'Картка', debt: 'Борг', mixed: 'Змішано', transfer: 'Переказ',
 }
 
+const RECEIPT_SEARCH_TIMEOUT_MS = 10_000
+
 /**
  * Пошук і повторний друк будь-якого чека прямо з каси (як у великих мережах).
  * Бекенд уже вміє шукати за номером чека / телефоном / ім'ям / VIN — реюз saleApi.list.
@@ -43,10 +45,13 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
     const handle = setTimeout(async () => {
       setLoading(true)
       try {
-        const res = await saleApi.list(term ? { search: term, per_page: 20 } : { per_page: 20 })
+        const res = await saleApi.list(
+          term ? { search: term, per_page: 20 } : { per_page: 20 },
+          { silent: true, timeoutMs: RECEIPT_SEARCH_TIMEOUT_MS },
+        )
         setResults((res as any).data ?? [])
-      } catch {
-        toast.error('Не вдалося завантажити чеки')
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чеки')
       } finally {
         setLoading(false)
       }

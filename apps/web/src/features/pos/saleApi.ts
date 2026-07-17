@@ -1,4 +1,4 @@
-import { api } from '@/lib/api'
+import { api, type RequestOptions } from '@/lib/api'
 import type { Sale, PriceCalculation } from '@/types/sale'
 
 interface CreateSaleBody {
@@ -30,10 +30,13 @@ export const saleApi = {
   get: (id: string) =>
     api.get<{ data: Sale }>(`/api/v1/sales/${id}`),
 
-  list: (params: Record<string, string | number | undefined> = {}) => {
+  list: (
+    params: Record<string, string | number | undefined> = {},
+    opts: Pick<RequestOptions, 'silent' | 'timeoutMs'> = {},
+  ) => {
     const q = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => { if (v !== undefined) q.set(k, String(v)) })
-    return api.get<{ data: Sale[]; pagination: unknown }>(`/api/v1/sales?${q}`)
+    return api.get<{ data: Sale[]; pagination: unknown }>(`/api/v1/sales?${q}`, opts)
   },
 
   calculatePrice: (items: Array<{ product_id: string; qty: number }>) =>

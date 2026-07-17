@@ -32,6 +32,13 @@ interface ReadyOrder {
   pickup_cell: string | null
 }
 
+const READY_ORDER_READ_TIMEOUT_MS = 10_000
+const READY_ORDER_WRITE_TIMEOUT_MS = 30_000
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
+}
+
 export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileInline?: boolean; onCloseMobile?: () => void } = {}) {
   const store = usePOSStore()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -55,7 +62,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     if (payMethod === 'account') setPayMethod('cash')
     const customerId = payOrder?.customer?.id
     if (!customerId) return
-    api.get<{ data: { balance: number } }>(`/api/v1/customers/${customerId}/deposit`, { silent: true })
+    api.get<{ data: { balance: number } }>(`/api/v1/customers/${customerId}/deposit`, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
       .then((r) => setAccountBalance(r.data?.balance ?? 0))
       .catch(() => setAccountBalance(0))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -81,7 +88,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       const num = (event as CustomEvent<{ number?: string }>).detail?.number
       if (!num) return
       try {
-        const { data } = await api.get<{ data: any[] }>(`/api/v1/customer-orders?search=${encodeURIComponent(num)}&per_page=5`)
+        const { data } = await api.get<{ data: any[] }>(
+          `/api/v1/customer-orders?search=${encodeURIComponent(num)}&per_page=5`,
+          { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS },
+        )
         const order = (data ?? []).find((o) => String(o.order_number) === String(num)) ?? (data ?? [])[0]
         if (!order) { toast.error(`Замовлення №${num} не знайдено`); return }
         if (order.status === 'completed') { toast.error(`Замовлення №${num} вже видане`); return }
@@ -89,8 +99,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         setPayOrder(order)
         setPayAmount(remaining > 0 ? (remaining / 100).toString() : '')
         if (remaining <= 0) toast.success(`Замовлення №${num} сплачено повністю — можна видавати`)
-      } catch {
-        toast.error('Не вдалося знайти замовлення')
+      } catch (e) {
+        toast.error(getErrorMessage(e, 'Не вдалося знайти замовлення'))
       }
     }
     window.addEventListener('forsage:pos-pay-order', handler)
@@ -114,14 +124,16 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       const url = search.trim()
         ? `/api/v1/customer-orders?search=${encodeURIComponent(search.trim())}&per_page=50`
         : '/api/v1/customer-orders?status=ready'
-      const { data } = await api.get<{ data: ReadyOrder[] }>(url)
+      const { data } = await api.get<{ data: ReadyOrder[] }>(url, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
       setOrders(data ?? [])
-    } catch {
-      // silent
+    } catch (e) {
+      if (open || isMobileInline || search.trim()) {
+        toast.error(getErrorMessage(e, 'Не вдалося завантажити замовлення для видачі'))
+      }
     } finally {
       setLoading(false)
     }
-  }, [search])
+  }, [isMobileInline, open, search])
 
   useEffect(() => {
     load()
@@ -149,20 +161,25 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
     setPaying(true)
     try {
-      await api.post(`/api/v1/customer-orders/${payOrder.id}/payments`, {
-        amount: amountVal,
-        method: payMethod,
-        is_fiscal: payMethod === 'account' ? false : payFiscal,
-        shift_id: store.currentShift?.id || null,
-        notes: payMethod === 'account' ? 'Оплата з рахунку клієнта' : 'Касова оплата замовлення',
-      })
+      await api.post(
+        `/api/v1/customer-orders/${payOrder.id}/payments`,
+        {
+          amount: amountVal,
+          method: payMethod,
+          is_fiscal: payMethod === 'account' ? false : payFiscal,
+          shift_id: store.currentShift?.id || null,
+          notes: payMethod === 'account' ? 'Оплата з рахунку клієнта' : 'Касова оплата замовлення',
+        },
+        undefined,
+        { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
+      )
       toast.success(payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Оплату успішно внесено!')
       setPayOrder(null)
       setPayAmount('')
       setPayFiscal(false)
       await load()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка внесення оплати')
+      toast.error(getErrorMessage(e, 'Помилка внесення оплати'))
     } finally {
       setPaying(false)
     }
@@ -177,16 +194,21 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
     setCompleting(order.id)
     try {
-      await api.post(`/api/v1/customer-orders/${order.id}/complete`, {
-        payment_method: 'cash',
-        cash_amount: 0,
-        card_amount: 0,
-        is_fiscal: false,
-      })
+      await api.post(
+        `/api/v1/customer-orders/${order.id}/complete`,
+        {
+          payment_method: 'cash',
+          cash_amount: 0,
+          card_amount: 0,
+          is_fiscal: false,
+        },
+        undefined,
+        { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
+      )
       toast.success('Замовлення видано!')
       await load()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка видачі замовлення')
+      toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
     } finally {
       setCompleting(null)
     }

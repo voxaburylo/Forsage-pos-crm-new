@@ -58,6 +58,12 @@ const ACTION_LABELS: Record<string, string> = {
   deadline_critical: 'Прострочено!',
 }
 
+const ORDER_DETAIL_READ_TIMEOUT_MS = 10_000
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
+}
+
 // Редагована копія позиції для inline-редагування прямо на картці
 interface DraftEditItem {
   id?: string
@@ -203,12 +209,12 @@ export default function OrderDetailPage() {
           expected_date: i.expected_date,
           item_status: i.item_status,
         })),
-      })
+      }, { silent: true })
       toast.success('Замовлення оновлено')
       setEditItems(false)
       load()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка збереження')
+      toast.error(getErrorMessage(e, 'Помилка збереження'))
     } finally {
       setSavingItems(false)
     }
@@ -227,10 +233,10 @@ export default function OrderDetailPage() {
     if (!id) return
     setLoading(true)
     try {
-      const result = await orderApi.get(id)
+      const result = await orderApi.get(id, { silent: true })
       setOrder((result as { data: CustomerOrder }).data)
-    } catch {
-      toast.error('Замовлення не знайдено')
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Замовлення не знайдено'))
       navigate('/orders')
     } finally {
       setLoading(false)
@@ -240,7 +246,7 @@ export default function OrderDetailPage() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true })
+    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true, timeoutMs: ORDER_DETAIL_READ_TIMEOUT_MS })
       .then((result) => {
         const seen = new Set<string>()
         setSuppliers((result.data ?? []).filter((supplier) => {
@@ -266,7 +272,7 @@ export default function OrderDetailPage() {
 
   useEffect(() => {
     if (!id) return
-    api.get<{ data: Payment[] }>(`/api/v1/customer-orders/${id}/payments`)
+    api.get<{ data: Payment[] }>(`/api/v1/customer-orders/${id}/payments`, { silent: true, timeoutMs: ORDER_DETAIL_READ_TIMEOUT_MS })
       .then((r) => setPayments(r.data ?? []))
       .catch(() => {})
   }, [id])
@@ -274,20 +280,20 @@ export default function OrderDetailPage() {
   async function handleItemStatus(itemId: string, status: ItemStatus) {
     if (!id) return
     try {
-      await orderApi.updateItemStatus(id, itemId, status)
+      await orderApi.updateItemStatus(id, itemId, status, { silent: true })
       toast.success('Статус позиції оновлено')
       load()
-    } catch { toast.error('Помилка') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося оновити статус позиції')) }
   }
 
   async function handleOrderStatus(status: CustomerOrderStatus) {
     if (!id) return
     try {
-      await orderApi.updateStatus(id, status)
+      await orderApi.updateStatus(id, status, undefined, { silent: true })
       toast.success('Статус замовлення оновлено')
       load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити статус')
+      toast.error(getErrorMessage(error, 'Не вдалося змінити статус'))
     }
   }
 
@@ -301,22 +307,22 @@ export default function OrderDetailPage() {
     if (!id || !order) return
     setCanceling(true)
     try {
-      await orderApi.cancel(id, refund)
+      await orderApi.cancel(id, refund, undefined, undefined, { silent: true })
       toast.success(refund ? 'Скасовано, передоплату повернено' : 'Замовлення скасовано')
       setCancelModal(false)
       load()
-    } catch { toast.error('Помилка') } finally { setCanceling(false) }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) } finally { setCanceling(false) }
   }
 
   async function handleCancelAsCredit() {
     if (!id || !order) return
     setCanceling(true)
     try {
-      await orderApi.cancel(id, false, null, true)
+      await orderApi.cancel(id, false, null, true, { silent: true })
       toast.success('Скасовано, передоплата залишена як кредит клієнту')
       setCancelModal(false)
       load()
-    } catch { toast.error('Помилка') } finally { setCanceling(false) }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) } finally { setCanceling(false) }
   }
 
   async function handlePrintItemLabelConfirm() {

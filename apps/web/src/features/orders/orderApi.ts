@@ -1,4 +1,4 @@
-import { api } from '@/lib/api'
+import { api, type RequestOptions } from '@/lib/api'
 
 // ---------- Типи ----------
 
@@ -80,39 +80,46 @@ export interface CreateOrderPayload {
 
 // ---------- API ----------
 
+type OrderRequestOptions = Pick<RequestOptions, 'silent' | 'timeoutMs'>
+
+const ORDER_READ_TIMEOUT_MS = 10_000
+const ORDER_WRITE_TIMEOUT_MS = 15_000
+const ORDER_FINALIZE_TIMEOUT_MS = 30_000
+
 export const orderApi = {
-  list: (offset = 0) =>
+  list: (offset = 0, opts: OrderRequestOptions = {}) =>
     api.get<{ data: CustomerOrder[] }>(
       `/api/v1/customer-orders?per_page=200&offset=${offset}`,
+      { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts },
     ),
 
-  get: (id: string) =>
-    api.get<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id),
+  get: (id: string, opts: OrderRequestOptions = {}) =>
+    api.get<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts }),
 
-  create: (body: CreateOrderPayload) =>
-    api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body),
+  create: (body: CreateOrderPayload, opts: OrderRequestOptions = {}) =>
+    api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
 
-  update: (id: string, body: CreateOrderPayload) =>
-    api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body),
+  update: (id: string, body: CreateOrderPayload, opts: OrderRequestOptions = {}) =>
+    api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
 
-  delete: (id: string) =>
-    api.delete<{ data: { success: boolean } }>('/api/v1/customer-orders/' + id),
+  delete: (id: string, opts: OrderRequestOptions = {}) =>
+    api.delete<{ data: { success: boolean } }>('/api/v1/customer-orders/' + id, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
 
-  updateStatus: (id: string, status: CustomerOrderStatus, callback_at?: string | null) =>
-    api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status, callback_at }),
+  updateStatus: (id: string, status: CustomerOrderStatus, callback_at?: string | null, opts: OrderRequestOptions = {}) =>
+    api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status, callback_at }, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
 
-  updateItemStatus: (orderId: string, itemId: string, item_status: ItemStatus) =>
-    api.patch(`/api/v1/customer-orders/${orderId}/items/${itemId}/status`, { item_status }),
+  updateItemStatus: (orderId: string, itemId: string, item_status: ItemStatus, opts: OrderRequestOptions = {}) =>
+    api.patch(`/api/v1/customer-orders/${orderId}/items/${itemId}/status`, { item_status }, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
 
-  complete: (id: string, payload: { payment_method: string; is_fiscal: boolean; shift_id: string | null }) =>
-    api.post(`/api/v1/customer-orders/${id}/complete`, payload),
+  complete: (id: string, payload: { payment_method: string; is_fiscal: boolean; shift_id: string | null }, opts: OrderRequestOptions = {}) =>
+    api.post(`/api/v1/customer-orders/${id}/complete`, payload, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts }),
 
-  cancel: (id: string, refund_prepayment: boolean, reason?: string | null, keep_as_credit?: boolean) =>
-    api.post(`/api/v1/customer-orders/${id}/cancel`, { refund_prepayment, keep_as_credit: keep_as_credit ?? false, reason: reason ?? null }),
+  cancel: (id: string, refund_prepayment: boolean, reason?: string | null, keep_as_credit?: boolean, opts: OrderRequestOptions = {}) =>
+    api.post(`/api/v1/customer-orders/${id}/cancel`, { refund_prepayment, keep_as_credit: keep_as_credit ?? false, reason: reason ?? null }, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts }),
 
-  pendingItems: (supplierId: string) =>
-    api.get<{ data: any[] }>(`/api/v1/customer-orders/pending-items?supplier_id=${supplierId}`),
+  pendingItems: (supplierId: string, opts: OrderRequestOptions = {}) =>
+    api.get<{ data: any[] }>(`/api/v1/customer-orders/pending-items?supplier_id=${supplierId}`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts }),
 
-  bulkArrival: (item_ids: string[]) =>
-    api.post('/api/v1/customer-orders/bulk-arrival', { item_ids }),
+  bulkArrival: (item_ids: string[], opts: OrderRequestOptions = {}) =>
+    api.post('/api/v1/customer-orders/bulk-arrival', { item_ids }, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
 }

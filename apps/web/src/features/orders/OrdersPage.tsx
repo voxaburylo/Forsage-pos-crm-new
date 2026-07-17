@@ -37,6 +37,12 @@ const PLATFORM_COLORS: Record<string, string> = {
   telegram: 'bg-blue-500',
 }
 const PLATFORM_LABELS: Record<string, string> = { telegram: 'TG' }
+const ORDERS_READ_TIMEOUT_MS = 10_000
+const ORDERS_WRITE_TIMEOUT_MS = 15_000
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
+}
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 
@@ -315,14 +321,14 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   const loadData = useCallback(() => {
     setLoading(true)
     const promises: Promise<unknown>[] = [
-      api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?chat_id=${chat.id}&per_page=10`, { silent: true })
+      api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?chat_id=${chat.id}&per_page=10`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
         .then((r) => setChatOrders(r.data ?? []))
         .catch(() => { setChatOrders([]) }),
     ]
     if (customer?.id) {
       promises.push(
         customerVehiclesApi.list(customer.id).then((r) => setVehicles(r.data ?? [])),
-        api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?customer_id=${customer.id}&per_page=5`, { silent: true })
+        api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?customer_id=${customer.id}&per_page=5`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
           .then((r) => setOrders(r.data ?? []))
           .catch(() => {}),
       )
@@ -357,11 +363,11 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   async function linkCustomer(customerId: string) {
     setLinking(true)
     try {
-      await api.patch(`/api/v1/chats/${chat.id}/link-customer`, { customer_id: customerId })
+      await api.patch(`/api/v1/chats/${chat.id}/link-customer`, { customer_id: customerId }, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS })
       toast.success('Клієнта прив\'язано')
       onCustomerLinked(customerId)
       setSearchPhone(''); setSearchResults([])
-    } catch { toast.error('Помилка прив\'язки') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Помилка прив\'язки')) }
     finally { setLinking(false) }
   }
 
@@ -649,7 +655,7 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
           sell_price: Math.round(parseFloat(r.sell_price || '0') * 100),
           buy_price: 0, source_type: 'supplier' as const,
         })),
-      })
+      }, { silent: true })
       if (!result?.data?.id) throw new Error('Сервер не повернув ID')
 
       if (sendPrices && chatId) {
@@ -658,10 +664,10 @@ function QuickOrderModal({ customer, vehicles, chatId, onClose, onCreated }: {
           return `${i + 1}. ${r.name.trim()} — ${price} грн × ${parseFloat(r.qty) || 1}`
         }).join('\n')
         const msg = `🔧 *Нове замовлення #${result.data.id.slice(0, 8)}*\n\n${lines}\n\n💰 *Сума:* ${formatMoney(total)}\n\nМенеджер зв'яжеться з вами! 🚀`
-        api.post(`/api/v1/chats/${chatId}/send`, { text: msg }).catch(() => {})
+        api.post(`/api/v1/chats/${chatId}/send`, { text: msg }, undefined, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS }).catch(() => {})
       }
       onCreated()
-    } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+    } catch (e) { toast.error(getErrorMessage(e, 'Помилка створення замовлення')) }
     finally { setSaving(false) }
   }
 
@@ -769,11 +775,11 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
   async function handleDelete(orderId: string, clientName: string) {
     if (!confirm(`Видалити чернетку для "${clientName}"?`)) return
     try {
-      await api.delete(`/api/v1/customer-orders/${orderId}`)
+      await api.delete(`/api/v1/customer-orders/${orderId}`, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS })
       toast.success('Чернетку видалено')
       onLoad()
-    } catch {
-      toast.error('Помилка видалення')
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Помилка видалення'))
     }
   }
 
@@ -1385,7 +1391,7 @@ export default function OrdersPage() {
 
   // ── завантаження чатів ──
   const loadChats = useCallback(() => {
-    api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true })
+    api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
       .then((r) => { setChats((r.data ?? []).filter((chat) => chat.channel.platform === 'telegram')); setLoadingChats(false) })
       .catch(() => setLoadingChats(false))
   }, [])
@@ -1410,7 +1416,7 @@ export default function OrdersPage() {
     const cached = orderCacheRef.current.get(cacheKey)
     if (cached) setOrders(cached)
     setLoadingOrders(showLoading || !cached)
-    api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?${tabParams(tab, offset)}`, { silent: true })
+    api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?${tabParams(tab, offset)}`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
       .then((r) => {
         const next = r.data ?? []
         orderCacheRef.current.set(cacheKey, next)
@@ -1423,7 +1429,9 @@ export default function OrdersPage() {
         }
         setOrders(next)
       })
-      .catch(() => toast.error('Помилка завантаження замовлень'))
+      .catch((error) => {
+        if (showLoading) toast.error(getErrorMessage(error, 'Помилка завантаження замовлень'))
+      })
       .finally(() => setLoadingOrders(false))
   }, [tab, offset])
   useEffect(() => {
@@ -1434,7 +1442,7 @@ export default function OrdersPage() {
 
   // ── постачальники (для масового приймання) ──
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true })
+    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
       .then((r) => setSuppliers(uniqueNamed(r.data ?? [])))
       .catch(() => {})
   }, [])
@@ -1458,7 +1466,7 @@ export default function OrdersPage() {
   useEffect(() => {
     if (!activeChatId) { setMessages([]); return }
     function load() {
-      api.get<{ data: Message[] }>(`/api/v1/chats/${activeChatId}/messages`, { silent: true })
+      api.get<{ data: Message[] }>(`/api/v1/chats/${activeChatId}/messages`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
         .then((r) => setMessages(r.data ?? []))
         .catch(() => {})
     }
@@ -1549,23 +1557,23 @@ export default function OrdersPage() {
     const text = input.trim()
     setSending(true); setInput('')
     try {
-      await api.post(`/api/v1/chats/${selectedChat.id}/send`, { text })
+      await api.post(`/api/v1/chats/${selectedChat.id}/send`, { text }, undefined, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS })
       setMessages((p) => [...p, {
         id: Date.now().toString(), chat_id: selectedChat.id,
         sender_type: 'manager', text, created_at: new Date().toISOString(),
       }])
-    } catch { toast.error('Помилка відправлення') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Помилка відправлення')) }
     finally { setSending(false); composerRef.current?.focus() }
   }
 
   async function resolveChat(chat: Chat) {
     if (!confirm('Закрити чат? Нові повідомлення створять новий чат.')) return
     try {
-      await api.patch(`/api/v1/chats/${chat.id}/resolve`, {})
+      await api.patch(`/api/v1/chats/${chat.id}/resolve`, {}, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS })
       toast.success('Чат закрито')
       setSelection(null)
       loadChats()
-    } catch { toast.error('Помилка закриття чату') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Помилка закриття чату')) }
   }
 
   function handleCustomerLinked(_customerId: string) {
@@ -1583,11 +1591,11 @@ export default function OrdersPage() {
     }
 
     try {
-      await orderApi.updateStatus(orderId, status as any, callbackAt)
+      await orderApi.updateStatus(orderId, status as any, callbackAt, { silent: true })
       toast.success('Статус змінено')
       setCallbackModal(null)
       loadOrders()
-    } catch { toast.error('Помилка') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося змінити статус')) }
   }
 
   function handleConfirmCallback() {
@@ -1602,10 +1610,10 @@ export default function OrdersPage() {
 
   async function updateItemStatus(orderId: string, itemId: string, status: string) {
     try {
-      await orderApi.updateItemStatus(orderId, itemId, status as any)
+      await orderApi.updateItemStatus(orderId, itemId, status as any, { silent: true })
       toast.success('Статус змінено')
       loadOrders()
-    } catch { toast.error('Помилка') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося змінити статус позиції')) }
   }
 
   function openOrderPaymentInPos(order: CustomerOrder) {
@@ -1615,20 +1623,20 @@ export default function OrdersPage() {
 
   async function handleCancel(order: CustomerOrder, refund: boolean) {
     try {
-      await orderApi.cancel(order.id, refund)
+      await orderApi.cancel(order.id, refund, undefined, undefined, { silent: true })
       toast.success(refund ? 'Скасовано, передоплату повернено' : 'Замовлення скасовано')
       setCancelModal(null)
       loadOrders()
-    } catch { toast.error('Помилка') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) }
   }
 
   async function handleCancelAsCredit(order: CustomerOrder) {
     try {
-      await orderApi.cancel(order.id, false, null, true)
+      await orderApi.cancel(order.id, false, null, true, { silent: true })
       toast.success('Скасовано, передоплата залишена як кредит')
       setCancelModal(null)
       loadOrders()
-    } catch { toast.error('Помилка') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) }
   }
 
   async function handleDeleteOrder(order: CustomerOrder) {
@@ -1636,32 +1644,32 @@ export default function OrdersPage() {
     const client = order.customer?.full_name ?? order.customer?.phone ?? 'без клієнта'
     if (!confirm(`Видалити ${label} (${client}) зі списку?\n\nДія буде записана в журнал. Фінансові документи та історія залишаться збереженими.`)) return
     try {
-      await orderApi.delete(order.id)
+      await orderApi.delete(order.id, { silent: true })
       if (selection?.kind === 'order' && selection.id === order.id) setSelection(null)
       toast.success(`${label} видалено зі списку`)
       await loadOrders()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити замовлення')
+      toast.error(getErrorMessage(error, 'Не вдалося видалити замовлення'))
     }
   }
 
   async function loadBulkItems() {
     if (!bulkSupplier) return
     try {
-      const { data } = await orderApi.pendingItems(bulkSupplier)
+      const { data } = await orderApi.pendingItems(bulkSupplier, { silent: true })
       setBulkItems(data)
       setBulkSelected(new Set(data.map((i: any) => i.id)))
-    } catch { toast.error('Помилка завантаження') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Помилка завантаження')) }
   }
 
   async function handleBulkArrival() {
     if (bulkSelected.size === 0) { toast.error('Виберіть позиції'); return }
     try {
-      await orderApi.bulkArrival([...bulkSelected])
+      await orderApi.bulkArrival([...bulkSelected], { silent: true })
       toast.success(`Прийнято ${bulkSelected.size} позицій`)
       setBulkOpen(false); setBulkItems([]); setBulkSupplier('')
       loadOrders()
-    } catch { toast.error('Помилка') }
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося прийняти позиції')) }
   }
 
   // ── рендер ──
