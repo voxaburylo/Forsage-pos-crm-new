@@ -3,6 +3,7 @@ import { Banknote, CreditCard, BookOpen, Star, SplitSquareHorizontal, Smartphone
 import { usePOSStore } from '@/stores/posStore'
 import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface SplitAmounts {
   cash_amount: number
@@ -57,10 +58,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setPrintAfterPayment(false)
   }, [open])
 
-  // Авто-фіскалізація при оплаті карткою (обов'язково за законом)
-  useEffect(() => {
-    if (method === 'card') setFiscal(true)
-  }, [method])
+  // Правило фіскалізації: термінал (картка або карткова частина змішаної
+  // оплати) — фіскалізується ЗАВЖДИ, за законом. Готівка/переказ — за
+  // перемикачем «Фіскальний чек» (запам'ятовується). Сам перемикач при
+  // цьому НЕ перемикається карткою — щоб вибір касира для готівки не збивався.
 
   useEffect(() => {
     if (!open || !offline) return
@@ -171,6 +172,14 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const splitCardKopecks = Math.max(0, toPay - splitCashKopecks)
   const splitValid       = method !== 'mixed' || (splitCashKopecks > 0 && splitCashKopecks < toPay)
 
+  // Термінальна частина є → фіскалізація примусова (100% ПРРО)
+  const fiscalForced = method === 'card' || (method === 'mixed' && splitCardKopecks > 0)
+  // Desktop фіскалізує через Кашалот локально (ПРРО має власний офлайн-режим,
+  // чеки дореєструються у ФСКО самі) — тому офлайн НЕ вимикає фіскалізацію.
+  // Веб-каса без інтернету фіскалізувати не може — там фіскал недоступний.
+  const fiscalAvailable = Boolean(desktopBridge()) || !offline
+  const effectiveFiscal = fiscalAvailable && (fiscalForced || fiscal)
+
   function handleFiscalToggle() {
     const next = !fiscal
     setFiscal(next)
@@ -210,9 +219,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   async function submitSale(authCode?: string, shouldPrint = false) {
     try {
       if (method === 'mixed') {
-        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, offline ? false : fiscal, authCode, shouldPrint)
+        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, effectiveFiscal, authCode, shouldPrint)
       } else {
-        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, offline ? false : fiscal, authCode, shouldPrint)
+        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, effectiveFiscal, authCode, shouldPrint)
       }
     } finally {
       setLoading(false)
@@ -369,19 +378,19 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
                   <Receipt size={16} className="text-gray-400" />
                   <span className="text-gray-300 text-sm">🧾 Фіскальний чек</span>
                 </div>
-                <label className={`relative inline-flex items-center ${method === 'card' ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
-                  <input type="checkbox" checked={offline ? false : fiscal}
-                    onChange={method === 'card' ? undefined : handleFiscalToggle}
-                    disabled={method === 'card' || offline}
+                <label className={`relative inline-flex items-center ${fiscalForced ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                  <input type="checkbox" checked={effectiveFiscal}
+                    onChange={fiscalForced ? undefined : handleFiscalToggle}
+                    disabled={fiscalForced || !fiscalAvailable}
                     className="sr-only peer" />
                   <div className={`w-9 h-5 rounded-full after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full ${
-                    method === 'card'
+                    fiscalForced
                       ? 'bg-yellow-400 peer-checked:bg-yellow-400 opacity-80'
                       : 'bg-gray-600 peer-checked:bg-yellow-400'
                   }`} />
                 </label>
               </div>
-              {method === 'card' && (
+              {fiscalForced && (
                 <p className="text-yellow-500/70 text-[10px] mt-1 ml-0.5">
                   ⚖️ Оплата терміналом обов'язково фіскалізується
                 </p>
