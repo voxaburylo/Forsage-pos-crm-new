@@ -238,6 +238,15 @@ interface ForsageDesktopBridge {
       showPreviewWindow?: boolean
       useDriverPaper?: boolean
     }) => Promise<{ success: true }>
+    listPrinters: () => Promise<Array<{ name: string; displayName: string; isDefault: boolean }>>
+    labelsTspl: (html: string, options: {
+      printerName: string
+      widthMm: number
+      heightMm: number
+      gapMm?: number
+      density?: number
+      rotate180?: boolean
+    }) => Promise<{ success: true; labels: number }>
   }
   fiscal: {
     pickFolder: (defaultPath?: string) => Promise<string | null>

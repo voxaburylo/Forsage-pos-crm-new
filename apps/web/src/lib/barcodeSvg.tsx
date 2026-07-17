@@ -33,7 +33,13 @@ export function renderBarcodeSvg(value: string, options: BarcodeSvgOptions = {})
 
     const displayWidth = Math.max(1, Math.round(canvas.width / scale))
     const displayHeight = Math.max(1, Math.round(canvas.height / scale))
-    return `<img class="barcode-raster" src="${canvas.toDataURL('image/png')}" width="${displayWidth}" height="${displayHeight}" alt="">`
+    // data-code/data-modules читає прямий TSPL-друк на desktop: він ховає цю
+    // картинку і замість неї друкує рідний BARCODE принтера (крапка-в-крапку).
+    const modules = Math.max(1, Math.round(canvas.width / ((options.width ?? 1.2) * scale)))
+    const codeAttr = /[\x20-\x7e]+/.test(normalized) && !/[^\x20-\x7e]/.test(normalized)
+      ? ` data-code="${normalized.replace(/"/g, '')}" data-modules="${modules}"`
+      : ''
+    return `<img class="barcode-raster"${codeAttr} src="${canvas.toDataURL('image/png')}" width="${displayWidth}" height="${displayHeight}" alt="">`
   } catch (error) {
     console.error('Failed to generate barcode image', error)
     return ''

@@ -12,6 +12,7 @@ import {
   type FiscalCheckItemInput,
   type FiscalCheckPayInput,
 } from './fiscal/cashalotService'
+import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
@@ -288,6 +289,18 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:print:html', (_event, html: string, options?: DesktopPrintOptions) =>
     printHtmlDocument(html, options),
+  )
+  ipcMain.handle('desktop:print:list-printers', async () => {
+    if (!mainWindow) return []
+    const printers = await mainWindow.webContents.getPrintersAsync()
+    return printers.map((printer) => ({
+      name: printer.name,
+      displayName: printer.displayName || printer.name,
+      isDefault: (printer as unknown as { isDefault?: boolean }).isDefault === true,
+    }))
+  })
+  ipcMain.handle('desktop:print:labels-tspl', (_event, html: string, options: TsplPrintOptions) =>
+    printLabelsTspl(html, options),
   )
   ipcMain.handle('desktop:fiscal:pick-folder', async (_event, defaultPath?: string) => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {

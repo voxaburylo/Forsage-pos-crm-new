@@ -19,6 +19,7 @@ import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodeSvg } from '@/lib/barcodeSvg'
+import { printLabelDocument } from '@/features/labels/LabelDesigner'
 
 interface Payment {
   id: string
@@ -419,7 +420,15 @@ export default function OrderDetailPage() {
       ${labelsHtml}
     </body></html>`
 
-      PrintService.printHtml(html, { mode: 'iframe', cleanupDelayMs: 120000, readyDelayMs: 50 })
+      // Через printLabelDocument: на desktop з увімкненим TSPL піде прямим
+      // друком без драйвера (як усі етикетки), інакше — звичайний шлях.
+      printLabelDocument({
+        html,
+        title: 'Етикетка замовлення',
+        widthMm: w,
+        heightMm: h,
+        count: (html.match(/label-page/g) ?? []).length,
+      })
 
       setItemLabelModal(false)
     } catch {

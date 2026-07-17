@@ -48,6 +48,9 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   print: {
     html: (html: string, options?: unknown) =>
       ipcRenderer.invoke('desktop:print:html', html, options),
+    listPrinters: () => ipcRenderer.invoke('desktop:print:list-printers'),
+    labelsTspl: (html: string, options: unknown) =>
+      ipcRenderer.invoke('desktop:print:labels-tspl', html, options),
   },
   fiscal: {
     pickFolder: (defaultPath?: string) => ipcRenderer.invoke('desktop:fiscal:pick-folder', defaultPath),
