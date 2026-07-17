@@ -40,7 +40,7 @@ export function usePOS() {
       return
     }
 
-    shiftApi.current()
+    shiftApi.current({ silent: true })
       .then(({ data }) => {
         setCurrentShift(data)
         setInitError(null)

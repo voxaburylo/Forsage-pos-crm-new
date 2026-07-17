@@ -124,6 +124,12 @@ function savedCartTotal(cart: SavedCart): number {
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 
+function isShiftAlreadyOpenError(error: unknown) {
+  const status = (error as { status?: number } | null)?.status
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  return status === 409 || message.includes('вже є відкрита зміна') || message.includes('already open')
+}
+
 function OpenShiftScreen({ onOpened, onBack }: { onOpened: (shift?: Shift) => void; onBack: () => void }) {
   // Підставляємо залишок із закриття попередньої зміни (та сама каса)
   const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
@@ -142,7 +148,7 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: (shift?: Shift) => vo
         await desktop.pos.openShift({ cashier_id: cashierId, opening_cash: kopecks })
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       } else {
-        const { data } = await shiftApi.open(kopecks)
+        const { data } = await shiftApi.open(kopecks, undefined, { silent: true })
         onOpened(data)
         toast.success('Зміну відкрито')
         return
@@ -150,6 +156,11 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: (shift?: Shift) => vo
       toast.success('Зміну відкрито')
       onOpened()
     } catch (e) {
+      if (isShiftAlreadyOpenError(e)) {
+        toast.warning('Зміна вже відкрита. Оновлюємо касу...')
+        onOpened()
+        return
+      }
       toast.error(e instanceof Error ? e.message : 'Помилка')
     } finally {
       setLoading(false)

@@ -11,7 +11,13 @@ const FIELD_AVG_INTERVAL_MS = 90
 const FIELD_MIN_LENGTH = 5
 
 function normalizeCode(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f\s]/g, '').trim()
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0)
+      return code > 31 && code !== 127 && !/\s/.test(character)
+    })
+    .join('')
+    .trim()
 }
 
 function looksLikeBarcode(value: string): boolean {
@@ -61,10 +67,14 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     let idleTimer: number | null = null
 
     // ─── «Чорна скринька» сканера (тимчасова діагностика) ──────────────────
-    // Пише КОЖЕН keydown + події фокуса/фулскріна/перезавантаження і надсилає
-    // на сервер у scanner-keys.log. Переживає перезавантаження сторінки.
+    // У бойовій касі вимкнена: localStorage на кожному символі може гальмувати
+    // швидке сканування. Якщо треба знову діагностувати сканер:
+    // localStorage.setItem('pos_scanner_debug', '1')
     const BLACKBOX_LS = 'pos_scanner_blackbox_v1'
-    let bbEvents: any[] = []
+    const scannerDebugEnabled = (() => {
+      try { return localStorage.getItem('pos_scanner_debug') === '1' } catch { return false }
+    })()
+    const bbEvents: any[] = []
     let bbFlushTimer: number | null = null
     let bbLastKeyAt = 0
     const bbDescribeActive = () => {
@@ -79,6 +89,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       return tag
     }
     const bbFlush = (note?: string) => {
+      if (!scannerDebugEnabled) return
       if (bbFlushTimer !== null) { window.clearTimeout(bbFlushTimer); bbFlushTimer = null }
       if (bbEvents.length === 0) return
       const events = bbEvents.splice(0)
@@ -89,6 +100,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       })
     }
     const bbLog = (rec: Record<string, any>) => {
+      if (!scannerDebugEnabled) return
       rec.t = Date.now()
       bbEvents.push(rec)
       if (bbEvents.length > 500) bbEvents.splice(0, bbEvents.length - 500)
@@ -97,6 +109,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       bbFlushTimer = window.setTimeout(() => bbFlush(), 600)
     }
     const bbLogKey = (event: KeyboardEvent) => {
+      if (!scannerDebugEnabled) return
       const now = Date.now()
       const dt = bbLastKeyAt ? now - bbLastKeyAt : null
       bbLastKeyAt = now
@@ -109,16 +122,20 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       })
     }
     // Незлиті події з минулого запуску (наприклад, після перезавантаження)
-    try {
-      const leftover = localStorage.getItem(BLACKBOX_LS)
-      if (leftover) {
-        localStorage.removeItem(BLACKBOX_LS)
-        const events = JSON.parse(leftover)
-        if (Array.isArray(events) && events.length > 0) {
-          api.post('/api/v1/debug/scanner-keys', { events, note: 'restored-after-unload' }, undefined, { silent: true }).catch(() => {})
+    if (scannerDebugEnabled) {
+      try {
+        const leftover = localStorage.getItem(BLACKBOX_LS)
+        if (leftover) {
+          localStorage.removeItem(BLACKBOX_LS)
+          const events = JSON.parse(leftover)
+          if (Array.isArray(events) && events.length > 0) {
+            api.post('/api/v1/debug/scanner-keys', { events, note: 'restored-after-unload' }, undefined, { silent: true }).catch(() => {})
+          }
         }
-      }
-    } catch { /* ignore */ }
+      } catch { /* ignore */ }
+    } else {
+      try { localStorage.removeItem(BLACKBOX_LS) } catch { /* ignore */ }
+    }
     const navEntry = performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined
     bbLog({ type: 'boot', nav: navEntry?.type ?? 'unknown', ae: bbDescribeActive() })
     const bbOnFullscreen = () => bbLog({ type: 'fullscreen', on: !!document.fullscreenElement })
@@ -126,6 +143,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     const bbOnFocus = () => bbLog({ type: 'window', focus: true })
     const bbOnVis = () => bbLog({ type: 'visibility', state: document.visibilityState })
     const bbOnUnload = () => {
+      if (!scannerDebugEnabled) return
       try { localStorage.setItem(BLACKBOX_LS, JSON.stringify([...bbEvents, { type: 'unload', t: Date.now() }])) } catch { /* ignore */ }
     }
     document.addEventListener('fullscreenchange', bbOnFullscreen)
