@@ -93,6 +93,13 @@ export function hasAnyOfflineCredential(): boolean {
   return readAll().length > 0
 }
 
+/** Остання збережена сесія — для тихого відновлення на холодному старті,
+ * коли Supabase не може відповісти (нема інтернету, протухлий токен). */
+export function loadLastCachedSession(): Session | null {
+  const record = readAll()[0]
+  return record ? record.session : null
+}
+
 // Оновлюємо збережену сесію (напр. після авто-refresh токена онлайн),
 // не чіпаючи хеш пароля — щоб офлайн-вхід лишався валідним.
 export function refreshCachedSession(emailKey: string, session: Session): void {
