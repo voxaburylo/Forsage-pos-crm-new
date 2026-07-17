@@ -81,6 +81,10 @@ interface SessionData {
   summary: Summary
 }
 
+const INVENTORY_READ_TIMEOUT_MS = 10_000
+const INVENTORY_WRITE_TIMEOUT_MS = 15_000
+const INVENTORY_COMPLETE_TIMEOUT_MS = 30_000
+
 export default function ActiveSession() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
@@ -124,7 +128,11 @@ export default function ActiveSession() {
     if (!Number.isFinite(purchase) || purchase < 0) { toast.error('Некоректна закупівельна ціна'); return }
     setSavingPrice(true)
     try {
-      await productApi.update(selected.id, { retail_price: retail, purchase_price: purchase } as any)
+      await productApi.update(
+        selected.id,
+        { retail_price: retail, purchase_price: purchase } as any,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
       toast.success('Ціни товару оновлено')
       setSelected((cur) => cur ? { ...cur, retail_price: retail, purchase_price: purchase } : cur)
       playSuccessBeep()
@@ -146,7 +154,8 @@ export default function ActiveSession() {
     }
     try {
       const { data } = await api.get<{ data: { retail_price: number } }>(
-        `/api/v1/pricing/auto-retail?purchase=${purchase}`, { silent: true },
+        `/api/v1/pricing/auto-retail?purchase=${purchase}`,
+        { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
       )
       if (data?.retail_price) setEditRetail(money2(data.retail_price))
       else toast.error('Матриця націнок не налаштована для цього діапазону')
@@ -171,6 +180,8 @@ export default function ActiveSession() {
       const response = await api.post<{ data: unknown; session: SessionData }>(
         `/api/v1/inventory/${id}/count`,
         { product_id: product.id, qty: 1, price_checked: true, observed_retail_price: null },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       setSession(response.session)
       playSuccessBeep()
@@ -189,7 +200,11 @@ export default function ActiveSession() {
     if (!Number.isFinite(qty) || qty < 0) { toast.error('Некоректна кількість'); return }
     if (qty === item.counted_stock) return
     try {
-      await api.put(`/api/v1/inventory/${id}/items/${item.id}`, { counted_stock: qty })
+      await api.put(
+        `/api/v1/inventory/${id}/items/${item.id}`,
+        { counted_stock: qty },
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
       load(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити кількість')
@@ -203,7 +218,11 @@ export default function ActiveSession() {
     if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна'); return }
     if (retail === item.product.retail_price) return
     try {
-      await productApi.update(item.product.id, { retail_price: retail } as any)
+      await productApi.update(
+        item.product.id,
+        { retail_price: retail } as any,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
       load(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
@@ -221,14 +240,19 @@ export default function ActiveSession() {
     } else {
       try {
         const { data } = await api.get<{ data: { retail_price: number } }>(
-          `/api/v1/pricing/auto-retail?purchase=${purchase}`, { silent: true },
+          `/api/v1/pricing/auto-retail?purchase=${purchase}`,
+          { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
         )
         if (!data?.retail_price) { toast.error('Матриця націнок не налаштована для цієї закупки'); return }
         retail = data.retail_price
       } catch { toast.error('Не вдалося порахувати за таблицею'); return }
     }
     try {
-      await productApi.update(item.product.id, { retail_price: retail } as any)
+      await productApi.update(
+        item.product.id,
+        { retail_price: retail } as any,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
       load(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Помилка націнки')
@@ -243,7 +267,7 @@ export default function ActiveSession() {
       await api.post('/api/v1/products/bulk-update', {
         product_ids: ids,
         updates: { retail_price_action: action },
-      })
+      }, undefined, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       toast.success(`Оновлено ${ids.length} товар(ів)`)
       setSelectedIds(new Set())
       load(true)
@@ -258,11 +282,14 @@ export default function ActiveSession() {
     if (!id) return
     if (!silent) setLoading(true)
     try {
-      const { data } = await api.get<{ data: SessionData }>(`/api/v1/inventory/${id}`, { silent })
+      const { data } = await api.get<{ data: SessionData }>(
+        `/api/v1/inventory/${id}`,
+        { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
+      )
       setSession(data)
-    } catch {
+    } catch (error) {
       if (!silent) {
-        toast.error('Не вдалося завантажити ревізію')
+        toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити ревізію')
         navigate('/inventory')
       }
     } finally {
@@ -286,7 +313,10 @@ export default function ActiveSession() {
     const timer = window.setTimeout(async () => {
       setSearching(true)
       try {
-        const { data } = await productApi.search(value, 12)
+        const { data } = await productApi.search(value, 12, {
+          silent: true,
+          timeoutMs: INVENTORY_READ_TIMEOUT_MS,
+        })
         setSearchResults(data as ProductInfo[])
       } catch {
         setSearchResults([])
@@ -318,6 +348,7 @@ export default function ActiveSession() {
     try {
       const { data } = await api.get<{ data: ProductInfo }>(
         `/api/v1/inventory/${id}/product?code=${encodeURIComponent(code.trim())}`,
+        { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
       )
       await addProduct(data)
     } catch (error) {
@@ -368,6 +399,8 @@ export default function ActiveSession() {
           price_checked: priceStatus === 'match' || willApplyPrice,
           observed_retail_price: willApplyPrice ? null : observedKopecks,
         },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       let freshSession = response.session
       if (willApplyPrice) {
@@ -375,6 +408,8 @@ export default function ActiveSession() {
           const applied = await api.post<{ data: unknown; session: SessionData }>(
             `/api/v1/inventory/${id}/apply-price`,
             { product_id: selected.id, retail_price: observedKopecks },
+            undefined,
+            { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
           )
           freshSession = applied.session
           toast.success(`Ціну змінено: ${selected.name} → ${formatMoney(observedKopecks!)}`)
@@ -406,6 +441,8 @@ export default function ActiveSession() {
       const response = await api.post<{ data: unknown; session: SessionData }>(
         `/api/v1/inventory/${id}/apply-price`,
         { product_id: issue.product.id, retail_price: issue.observed_retail_price },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       setSession(response.session)
       toast.success(`Ціну змінено: ${issue.product.name} → ${formatMoney(issue.observed_retail_price)}`)
@@ -430,10 +467,15 @@ export default function ActiveSession() {
       return
     }
     try {
-      const response = await api.post<{ data: { items_updated: number } }>(`/api/v1/inventory/${id}/complete`, {
-        confirm_unfinished: missing > 0,
-        confirm_price_issues: priceIssues > 0,
-      })
+      const response = await api.post<{ data: { items_updated: number } }>(
+        `/api/v1/inventory/${id}/complete`,
+        {
+          confirm_unfinished: missing > 0,
+          confirm_price_issues: priceIssues > 0,
+        },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS },
+      )
       toast.success(`Ревізію завершено. Оновлено ${response.data.items_updated} товарів.`)
       navigate('/inventory')
     } catch (error) {

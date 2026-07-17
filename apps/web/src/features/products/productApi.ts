@@ -32,6 +32,11 @@ export interface ProductFilters {
   sort_dir?: 'asc' | 'desc'
 }
 
+type ProductRequestOptions = {
+  silent?: boolean
+  timeoutMs?: number
+}
+
 function buildQuery(filters: ProductFilters): string {
   const params = new URLSearchParams()
   Object.entries(filters).forEach(([k, v]) => {
@@ -109,13 +114,13 @@ export const productApi = {
   get: (id: string) =>
     api.get<{ data: Product }>(`/api/v1/products/${id}`),
 
-  search: (q: string, limit = 10) =>
-    api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  search: (q: string, limit = 10, opts?: ProductRequestOptions) =>
+    api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts),
 
   create: (form: ProductFormData) =>
     api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form)),
 
-  update: (id: string, form: Partial<ProductFormData>, opts?: { silent?: boolean }) =>
+  update: (id: string, form: Partial<ProductFormData>, opts?: ProductRequestOptions) =>
     api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts),
 
   delete: (id: string) =>

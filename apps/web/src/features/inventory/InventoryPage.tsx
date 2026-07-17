@@ -23,6 +23,9 @@ const STATUS_BADGE: Record<string, { color: 'yellow' | 'blue' | 'green'; label: 
   completed: { color: 'green', label: 'Завершена' },
 }
 
+const INVENTORY_LIST_TIMEOUT_MS = 10_000
+const INVENTORY_START_TIMEOUT_MS = 30_000
+
 export default function InventoryPage() {
   const navigate = useNavigate()
   const { session } = useAuthStore()
@@ -41,12 +44,20 @@ export default function InventoryPage() {
     setLoading(true)
     try {
       const [sessRes, usersRes] = await Promise.all([
-        api.get<{ data: Session[] }>('/api/v1/inventory'),
-        api.get<{ data: any[] }>('/api/v1/admin/staff-options').catch(() => ({ data: [] })),
+        api.get<{ data: Session[] }>('/api/v1/inventory', {
+          silent: true,
+          timeoutMs: INVENTORY_LIST_TIMEOUT_MS,
+        }),
+        api.get<{ data: any[] }>('/api/v1/admin/staff-options', {
+          silent: true,
+          timeoutMs: INVENTORY_LIST_TIMEOUT_MS,
+        }).catch(() => ({ data: [] })),
       ])
       setSessions(sessRes.data)
       setUsers(usersRes.data ?? [])
-    } catch { toast.error('Помилка завантаження') }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Помилка завантаження')
+    }
     finally { setLoading(false) }
   }
 
@@ -73,28 +84,47 @@ export default function InventoryPage() {
     if (!name.trim()) return
     setCreating(true)
     try {
-      const { data } = await api.post<{ data: Session }>('/api/v1/inventory', {
-        name: name.trim(),
-        created_by: managerId || undefined,
-        created_at: date ? new Date(date).toISOString() : undefined,
-      })
-      const started = await api.post<{ data: { total_products?: number } }>(`/api/v1/inventory/${data.id}/start`, {})
+      const { data } = await api.post<{ data: Session }>(
+        '/api/v1/inventory',
+        {
+          name: name.trim(),
+          created_by: managerId || undefined,
+          created_at: date ? new Date(date).toISOString() : undefined,
+        },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS },
+      )
+      const started = await api.post<{ data: { total_products?: number } }>(
+        `/api/v1/inventory/${data.id}/start`,
+        {},
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS },
+      )
       toast.success(`Ревізію розпочато: ${started.data.total_products ?? 0} товарів у знімку`)
       setModalOpen(false)
       setName('')
       setDate(new Date().toISOString().split('T')[0])
       if (session?.user?.id) setManagerId(session.user.id)
       navigate(`/inventory/${data.id}`)
-    } catch { toast.error('Помилка') }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Помилка')
+    }
     finally { setCreating(false) }
   }
 
   async function startSession(session: Session) {
     try {
-      const response = await api.post<{ data: { total_products?: number } }>(`/api/v1/inventory/${session.id}/start`, {})
+      const response = await api.post<{ data: { total_products?: number } }>(
+        `/api/v1/inventory/${session.id}/start`,
+        {},
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS },
+      )
       toast.success(`Ревізію розпочато: ${response.data.total_products ?? 0} товарів`)
       navigate(`/inventory/${session.id}`)
-    } catch { toast.error('Помилка') }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Помилка')
+    }
   }
 
   const columns = [

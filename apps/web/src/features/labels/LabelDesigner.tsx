@@ -1108,6 +1108,13 @@ export default function LabelDesigner() {
     }
     const items = printItems.flatMap((p) => Array(p.copies).fill(p))
     if (items.length === 0) { toast.error('Додайте товари для друку'); return null }
+    if (settings.show_barcode) {
+      const missingBarcodeCount = printItems.filter((p) => !p.barcode).length
+      if (missingBarcodeCount > 0) {
+        toast.error(`У ${missingBarcodeCount} товар(ів) немає штрихкоду. Спочатку натисніть «Згенерувати штрих-коди».`)
+        return null
+      }
+    }
     return buildLabelPrintDocument(settings, items, false)
   }
 

@@ -50,6 +50,11 @@ export class PrintService {
     }
   }
 
+  private static notifyPrintError(error: unknown, fallbackMessage = "Помилка друку"): void {
+    const message = error instanceof Error ? error.message : fallbackMessage;
+    import("@/components/ui/Toast").then(({ toast }) => toast.error(message));
+  }
+
   /**
    * Browser print preview can be created before data-URL images are decoded.
    * Thermal labels then contain the barcode digits but no bars. Wait for every
@@ -206,6 +211,7 @@ export class PrintService {
           } catch (error) {
             cleanup();
             console.error("Failed to print document", error);
+            PrintService.notifyPrintError(error);
           }
         };
         window.setTimeout(start, readyDelayMs);
@@ -247,6 +253,7 @@ export class PrintService {
           } catch (error) {
             cleanup();
             console.error("Failed to print document", error);
+            PrintService.notifyPrintError(error);
           }
         };
         window.setTimeout(start, readyDelayMs);
