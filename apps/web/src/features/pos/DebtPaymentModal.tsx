@@ -135,20 +135,8 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
           <button onClick={onClose} aria-label="Закрити" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
-        {/* Перемикач: борг / поповнення рахунку */}
-        <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl bg-[#2C2C2C] p-1">
-          <button onClick={() => setMode('debt')}
-            className={`py-2 rounded-lg text-sm font-semibold transition-colors ${
-              isDebt ? 'bg-red-500/90 text-white' : 'text-gray-400 hover:text-white'
-            }`}>
-            Погасити борг
-          </button>
-          <button onClick={() => setMode('deposit')}
-            className={`py-2 rounded-lg text-sm font-semibold transition-colors ${
-              !isDebt ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
-            }`}>
-            Поповнити рахунок
-          </button>
+        <div className="mb-4 rounded-xl border border-yellow-700/40 bg-yellow-950/20 px-3 py-2 text-xs leading-relaxed text-yellow-100">
+          Передоплату приймайте через <b>«Замовлення / передоплата»</b>, щоб гроші одразу були прив’язані до замовлення або чернетки.
         </div>
 
         <div className="space-y-4">

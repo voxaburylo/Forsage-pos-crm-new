@@ -34,6 +34,7 @@ interface ReadyOrder {
 
 const READY_ORDER_READ_TIMEOUT_MS = 10_000
 const READY_ORDER_WRITE_TIMEOUT_MS = 30_000
+const ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
@@ -123,9 +124,9 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     try {
       const url = search.trim()
         ? `/api/v1/customer-orders?search=${encodeURIComponent(search.trim())}&per_page=50`
-        : '/api/v1/customer-orders?status=ready'
+        : `/api/v1/customer-orders?status=${ACTIVE_ORDER_STATUSES}&per_page=80`
       const { data } = await api.get<{ data: ReadyOrder[] }>(url, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
-      setOrders(data ?? [])
+      setOrders((data ?? []).filter((order) => !['completed', 'canceled', 'archived'].includes(order.status)))
     } catch (e) {
       if (open || isMobileInline || search.trim()) {
         toast.error(getErrorMessage(e, 'Не вдалося завантажити замовлення для видачі'))
@@ -150,7 +151,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
 
     const remaining = payOrder.total_amount - (payOrder.total_paid ?? 0)
-    if (amountVal > remaining) {
+    const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(payOrder.status) && remaining <= 0
+    if (!canAcceptOpenDraftDeposit && amountVal > remaining) {
       toast.error('Сума перевищує залишок до сплати')
       return
     }
@@ -168,7 +170,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           method: payMethod,
           is_fiscal: payMethod === 'account' ? false : payFiscal,
           shift_id: store.currentShift?.id || null,
-          notes: payMethod === 'account' ? 'Оплата з рахунку клієнта' : 'Касова оплата замовлення',
+          notes: payMethod === 'account' ? 'Оплата з рахунку клієнта' : (canAcceptOpenDraftDeposit ? 'Касова передоплата чернетки' : 'Касова оплата замовлення'),
         },
         undefined,
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
@@ -220,7 +222,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     return (
       <div className="flex flex-col h-full bg-[#1A1A1A] text-white">
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
-          <span className="text-base font-bold tracking-wide">Оплата та видача замовлень</span>
+          <span className="text-base font-bold tracking-wide">Замовлення / передоплата</span>
           {onCloseMobile && (
             <button onClick={onCloseMobile} aria-label="Закрити видачу" className="text-gray-400 hover:text-white p-1">
               <X size={20} />
@@ -248,14 +250,14 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
           {!loading && orders.length === 0 && (
             <div className="text-center py-12 text-gray-500 text-sm">
-              {search.trim() ? 'Нічого не знайдено' : 'Немає готових замовлень'}
+              {search.trim() ? 'Нічого не знайдено' : 'Немає активних замовлень'}
             </div>
           )}
 
           {!loading && orders.map((order) => {
             const remaining = order.total_amount - (order.total_paid ?? 0)
             const isCompleting = completing === order.id
-            const canAcceptPayment = remaining > 0 && !['completed', 'canceled'].includes(order.status)
+            const canAcceptPayment = !['completed', 'canceled', 'archived'].includes(order.status) && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
             
             let statusLabel = order.status
             let statusColor = 'bg-gray-700 text-gray-300'
@@ -265,6 +267,21 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             } else if (order.status === 'lead') {
               statusLabel = 'Чернетка'
               statusColor = 'bg-yellow-950 text-yellow-300'
+            } else if (order.status === 'in_progress') {
+              statusLabel = 'В роботі'
+              statusColor = 'bg-indigo-900/60 text-indigo-300'
+            } else if (order.status === 'ordered') {
+              statusLabel = 'Замовлено'
+              statusColor = 'bg-purple-900/60 text-purple-300'
+            } else if (order.status === 'arrived') {
+              statusLabel = 'Приїхало'
+              statusColor = 'bg-cyan-900/60 text-cyan-300'
+            } else if (order.status === 'called' || order.status === 'no_answer') {
+              statusLabel = order.status === 'called' ? 'Подзвонили' : 'Не відповів'
+              statusColor = 'bg-orange-950 text-orange-300'
+            } else if (order.status === 'quoted') {
+              statusLabel = 'Пропозиція'
+              statusColor = 'bg-amber-950 text-amber-300'
             } else if (order.status === 'new') {
               statusLabel = 'Новий'
               statusColor = 'bg-blue-900/60 text-blue-300'
@@ -308,13 +325,13 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     <button
                       onClick={() => {
                         setPayOrder(order);
-                        setPayAmount((remaining / 100).toString());
+                        setPayAmount(remaining > 0 ? (remaining / 100).toString() : '');
                       }}
                       style={{ minHeight: 44 }}
                       className="flex-1 py-2.5 text-sm rounded-xl bg-yellow-600 hover:bg-yellow-500
                                  active:bg-yellow-700 text-white font-semibold transition-colors"
                     >
-                      Оплатити {formatMoney(remaining)}
+                      {remaining > 0 ? 'Внести ' + formatMoney(remaining) : 'Внести передоплату'}
                     </button>
                   )}
                   {order.status === 'ready' && remaining <= 0 && (
@@ -354,7 +371,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">Сума оплати (₴)</label>
+                  <label className="block text-xs text-gray-400 mb-1">Сума передоплати / оплати (₴)</label>
                   <input
                     type="number"
                     step="0.01"
@@ -453,13 +470,13 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     <div className="relative">
       <button
         onClick={() => { setOpen((v) => !v); if (!open) load() }}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
-                   bg-gray-700 hover:bg-gray-600 text-white transition-colors"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold
+                   bg-yellow-500 hover:bg-yellow-400 text-black transition-colors"
       >
         <Package size={15} />
-        <span>Замовлення</span>
+        <span>Замовлення / передоплата</span>
         {count > 0 && (
-          <span className="bg-orange-500 text-white text-[10px] font-bold rounded-full
+          <span className="bg-black/20 text-black text-[10px] font-bold rounded-full
                            px-1.5 py-0.5 leading-none min-w-[18px] text-center">
             {count}
           </span>
@@ -471,7 +488,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         <div className="absolute right-0 top-full mt-1 w-[380px] max-w-[calc(100vw-1.5rem)] bg-gray-800 border border-gray-700
                         rounded-xl shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700">
-            <span className="text-sm font-semibold text-white">Оплата та видача замовлень</span>
+            <span className="text-sm font-semibold text-white">Замовлення / передоплата</span>
             <button onClick={() => setOpen(false)} aria-label="Закрити видачу" className="text-gray-400 hover:text-white">
               <X size={15} />
             </button>
@@ -497,14 +514,14 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
             {!loading && orders.length === 0 && (
               <div className="text-center py-8 text-gray-500 text-sm">
-                {search.trim() ? 'Нічого не знайдено' : 'Немає готових замовлень'}
+                {search.trim() ? 'Нічого не знайдено' : 'Немає активних замовлень'}
               </div>
             )}
 
             {!loading && orders.map((order) => {
               const remaining = order.total_amount - (order.total_paid ?? 0)
               const isCompleting = completing === order.id
-              const canAcceptPayment = remaining > 0 && !['completed', 'canceled'].includes(order.status)
+              const canAcceptPayment = !['completed', 'canceled', 'archived'].includes(order.status) && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
               
               // Helper to style status label
               let statusLabel = order.status
@@ -515,6 +532,21 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               } else if (order.status === 'lead') {
                 statusLabel = 'Чернетка'
                 statusColor = 'bg-yellow-950 text-yellow-300'
+              } else if (order.status === 'in_progress') {
+                statusLabel = 'В роботі'
+                statusColor = 'bg-indigo-900/60 text-indigo-300'
+              } else if (order.status === 'ordered') {
+                statusLabel = 'Замовлено'
+                statusColor = 'bg-purple-900/60 text-purple-300'
+              } else if (order.status === 'arrived') {
+                statusLabel = 'Приїхало'
+                statusColor = 'bg-cyan-900/60 text-cyan-300'
+              } else if (order.status === 'called' || order.status === 'no_answer') {
+                statusLabel = order.status === 'called' ? 'Подзвонили' : 'Не відповів'
+                statusColor = 'bg-orange-950 text-orange-300'
+              } else if (order.status === 'quoted') {
+                statusLabel = 'Пропозиція'
+                statusColor = 'bg-amber-950 text-amber-300'
               } else if (order.status === 'new') {
                 statusLabel = 'Новий'
                 statusColor = 'bg-blue-900/60 text-blue-300'
@@ -558,12 +590,12 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                       <button
                         onClick={() => {
                           setPayOrder(order);
-                          setPayAmount((remaining / 100).toString());
+                          setPayAmount(remaining > 0 ? (remaining / 100).toString() : '');
                         }}
                         className="flex-1 py-2.5 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500
                                    active:bg-yellow-700 text-white font-semibold transition-colors"
                       >
-                        Оплатити {formatMoney(remaining)}
+                        {remaining > 0 ? 'Внести ' + formatMoney(remaining) : 'Внести передоплату'}
                       </button>
                     )}
                     {order.status === 'ready' && remaining <= 0 && (
@@ -604,7 +636,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Сума оплати (₴)</label>
+                <label className="block text-xs text-gray-400 mb-1">Сума передоплати / оплати (₴)</label>
                 <input
                   type="number"
                   step="0.01"

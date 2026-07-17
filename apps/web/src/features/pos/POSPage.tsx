@@ -124,6 +124,7 @@ function savedCartTotal(cart: SavedCart): number {
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 const POS_READ_TIMEOUT_MS = 10_000
+const POS_ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
 
 function isShiftAlreadyOpenError(error: unknown) {
   const status = (error as { status?: number } | null)?.status
@@ -260,7 +261,6 @@ export default function POSPage() {
     setLockedPIN(true)
   }
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
-  const [scannerStats, setScannerStats] = useState({ captured: 0, added: 0, failed: 0, lastCode: '' })
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
   const earlyBarcodeScans = useRef<string[]>([])
@@ -289,23 +289,6 @@ export default function POSPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [store.isInitializing])
 
-  useEffect(() => {
-    const handleScannerStage = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        stage?: 'captured' | 'added' | 'failed'
-        code?: string
-      }>).detail
-      if (!detail?.stage) return
-      setScannerStats((current) => ({
-        captured: current.captured + (detail.stage === 'captured' ? 1 : 0),
-        added: current.added + (detail.stage === 'added' ? 1 : 0),
-        failed: current.failed + (detail.stage === 'failed' ? 1 : 0),
-        lastCode: detail.code ?? current.lastCode,
-      }))
-    }
-    window.addEventListener('forsage:pos-scanner-stage', handleScannerStage)
-    return () => window.removeEventListener('forsage:pos-scanner-stage', handleScannerStage)
-  }, [])
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended({ silent: true }).then((res) => setSuspendedCount(res.data.length)).catch(() => {})
@@ -352,9 +335,9 @@ export default function POSPage() {
       })
       .catch(() => {})
 
-    // Кількість готових замовлень для мобільного таба
+    // Кількість активних замовлень для мобільного таба
     const loadReadyCount = () => {
-      api.get('/api/v1/customer-orders?status=ready', { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
+      api.get(`/api/v1/customer-orders?status=${POS_ACTIVE_ORDER_STATUSES}&per_page=80`, { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
         .then((res: any) => {
           const data = res.data
           if (Array.isArray(data)) setReadyOrdersCount(data.length)
@@ -833,18 +816,6 @@ export default function POSPage() {
             <Zap className="text-yellow-400 size-3.5 md:size-4" />
             <span className="text-white font-semibold text-xs md:text-sm tracking-wide">Форсаж</span>
             <span className="text-emerald-400 text-[9px] md:text-[10px] font-medium bg-emerald-900/40 px-1.5 py-0.5 rounded-full border border-emerald-800/30">Зміна</span>
-            <span
-              className={`hidden lg:inline-flex text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${
-                scannerStats.failed > 0 || scannerStats.captured !== scannerStats.added
-                  ? 'text-amber-300 bg-amber-950/60 border-amber-800/60'
-                  : 'text-emerald-300 bg-emerald-950/50 border-emerald-800/40'
-              }`}
-              title={scannerStats.lastCode
-                ? `Останній код: ${scannerStats.lastCode}. Помилок: ${scannerStats.failed}`
-                : 'Сканер готовий'}
-            >
-              Сканер {scannerStats.captured}/{scannerStats.added}
-            </span>
           </div>
           {/* Manager select — тільки desktop */}
           <select value={store.managerId ?? session?.user?.id ?? ''}
@@ -853,7 +824,7 @@ export default function POSPage() {
             title="Працівник, якому буде зараховано продаж або роботу"
             className="hidden md:block bg-transparent text-gray-400 text-xs border border-gray-800 rounded-lg px-2 py-1.5 focus:outline-none focus:border-yellow-400/50 max-w-[110px] cursor-pointer hover:text-gray-300 appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}>
-            {staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role)).map((u) => (
+            {staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer'].includes(u.role)).map((u) => (
               <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
             ))}
           </select>
@@ -902,8 +873,8 @@ export default function POSPage() {
           </button>
           <button onClick={() => setDebtPayOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-red-400 hover:text-red-300 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Оплата боргу / поповнення рахунку клієнта">
-            <DollarSign size={15} /><span className="hidden xl:inline">Борг/Рахунок</span>
+            title="Погашення старого боргу клієнта. Передоплата — через «Замовлення / передоплата».">
+            <DollarSign size={15} /><span className="hidden xl:inline">Борги</span>
           </button>
           <button onClick={() => navigate('/returns')}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-orange-400 hover:text-orange-300 hover:bg-gray-800 transition-colors text-xs font-medium"
@@ -1018,7 +989,7 @@ export default function POSPage() {
               <select value={store.managerId ?? session?.user?.id ?? ''}
                 onChange={(e) => store.setManagerId(e.target.value || null)}
                 className="w-full bg-[#2C2C2C] text-gray-300 text-sm border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-yellow-400/50">
-                {staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role)).map((u) => (
+                {staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer'].includes(u.role)).map((u) => (
                   <option key={u.id} value={u.id} className="bg-[#1A1A1A]">{u.full_name || u.id.slice(0, 6)}</option>
                 ))}
               </select>
@@ -1039,7 +1010,7 @@ export default function POSPage() {
                 { icon: '⏸️', label: 'Відкласти', action: () => { setSuspendOpen(true); setMobileMenuOpen(false) }, disabled: store.items.length === 0 },
                 { icon: '📦', label: 'Відкладені', action: () => { setSuspendedOpen(true); setMobileMenuOpen(false) }, badge: suspendedCount },
                 { icon: '↔️', label: 'Каса', action: () => { setCashOpen(true); setMobileMenuOpen(false) } },
-                { icon: '💸', label: 'Борг', action: () => { setDebtPayOpen(true); setMobileMenuOpen(false) } },
+                { icon: '💸', label: 'Борги', action: () => { setDebtPayOpen(true); setMobileMenuOpen(false) } },
                 { icon: '↩️', label: 'Повернення', action: () => { setMobileMenuOpen(false); navigate('/returns') } },
                 { icon: '📊', label: 'Звірка', action: () => { setReconcileOpen(true); setMobileMenuOpen(false) } },
                 { icon: '🔒', label: 'Блок', action: () => { handleLock(); setMobileMenuOpen(false) } },
@@ -1132,7 +1103,7 @@ export default function POSPage() {
               </span>
             )}
           </span>
-          <span>Видача</span>
+          <span>Замовлення</span>
         </button>
 
         <button
@@ -1162,7 +1133,7 @@ export default function POSPage() {
       <QuickChargeModal
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}
-        staff={staffUsers.filter((u) => ['owner','admin','manager','cashier','sto_viewer'].includes(u.role))}
+        staff={staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer'].includes(u.role))}
         offline={!serverOnline}
         onClose={() => setQuickCharge(null)}
       />
