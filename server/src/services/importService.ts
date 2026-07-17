@@ -249,6 +249,26 @@ function detectDelimiter(firstLine: string): string {
   return sep
 }
 
+function normalizeImportBarcode(value: string | null | undefined): string | null {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+
+  const compact = raw.replace(/\s+/g, '').replace(',', '.')
+
+  // Excel часто перетворює штрихкоди на 2000998788926.0 або 2.000998788926E+12.
+  // EAN/Code128 коди магазину значно менші за MAX_SAFE_INTEGER, тому безпечно
+  // повертаємо їх назад у звичайний рядок без дробової частини.
+  if (/^\d+\.0+$/.test(compact)) {
+    return compact.replace(/\.0+$/, '')
+  }
+  if (/^\d+(?:\.\d+)?e\+\d+$/i.test(compact)) {
+    const numeric = Number(compact)
+    if (Number.isSafeInteger(numeric)) return String(numeric)
+  }
+
+  return compact
+}
+
 function checkHasHeader(firstLine: string, sep: string, mapping: any): boolean {
   const parts = firstLine.split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ""))
   let looksLikeHeader = false
@@ -278,6 +298,7 @@ function parseImportLines(
   const temporaryItems: TemporaryItem[] = []
   const conflicts: PreviewConflict[] = []
   const seenSkus = new Set<string>()
+  const seenBarcodes = new Set<string>()
 
   for (let i = startLine; i < lines.length; i++) {
     const parts = lines[i].split(sep).map((s) => s.trim().replace(/^["']|["']$/g, ""))
@@ -347,7 +368,16 @@ function parseImportLines(
       seenSkus.add(normSku)
     }
 
-    const barcode = mapping.barcode !== null && mapping.barcode !== undefined ? (parts[mapping.barcode] ?? "").trim() : null
+    const barcode = mapping.barcode !== null && mapping.barcode !== undefined
+      ? normalizeImportBarcode(parts[mapping.barcode] ?? "")
+      : null
+    if (barcode) {
+      if (seenBarcodes.has(barcode)) {
+        conflicts.push({ row: rowNum, sku, name, reason: "Дублікат штрихкоду в імпортованому файлі" })
+        continue
+      }
+      seenBarcodes.add(barcode)
+    }
     const storage_bin = mapping.storage_bin !== null && mapping.storage_bin !== undefined ? (parts[mapping.storage_bin] ?? "").trim() : null
     const category_name = mapping.category !== null && mapping.category !== undefined
       ? (parts[mapping.category] ?? "").trim().slice(0, 200) || null
@@ -374,11 +404,12 @@ function parseImportLines(
 async function fetchDbProducts(temporaryItems: TemporaryItem[], tenantId: string): Promise<any[]> {
   // Унікалізуємо значення — щоб не гнати дублі у запити
   const skus = [...new Set(temporaryItems.map(i => normalizeArticle(i.sku)).filter(Boolean))]
-  const barcodes = [...new Set(temporaryItems.map(i => i.barcode).filter(Boolean) as string[])]
+  const barcodes = [...new Set(temporaryItems.map(i => normalizeImportBarcode(i.barcode)).filter(Boolean) as string[])]
   const names = [...new Set(temporaryItems.map(i => i.name.trim()).filter(Boolean))]
 
-  const SELECT = "id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, storage_bin"
+  const SELECT = "id, sku, name, purchase_price, retail_price, qty_on_hand, barcode, additional_barcodes, storage_bin"
   const dbProductsMap = new Map<string, any>()
+  const barcodeAliases = new Map<string, string>()
 
   // PostgREST кладе .in(...) у query-рядок URL. На великих списках URL перевищує
   // ліміт і запит падає. Кирилиця (назви) в URL кодується ВТРИЧІ довше, тому для
@@ -416,7 +447,41 @@ async function fetchDbProducts(temporaryItems: TemporaryItem[], tenantId: string
 
   if (skus.length > 0) await queryIn("sku", skus, 200, 6)          // ASCII-артикули
   if (barcodes.length > 0) await queryIn("barcode", barcodes, 200, 6)
+  if (barcodes.length > 0) {
+    const productIds = new Set<string>()
+    const slices: string[][] = []
+    for (let i = 0; i < barcodes.length; i += 200) slices.push(barcodes.slice(i, i + 200))
+
+    for (const slice of slices) {
+      try {
+        const { data, error } = await db
+          .from("product_barcodes")
+          .select("product_id, barcode")
+          .eq("tenant_id", tenantId)
+          .in("barcode", slice)
+        if (error) throw new Error(error.message)
+        for (const row of data ?? []) {
+          const normalized = normalizeImportBarcode(row.barcode)
+          if (!normalized || !row.product_id) continue
+          barcodeAliases.set(normalized, row.product_id)
+          productIds.add(row.product_id)
+        }
+      } catch (e: any) {
+        logger.warn({ err: e?.message }, "[import] пошук додаткових штрихкодів не вдався")
+      }
+    }
+
+    if (productIds.size > 0) await queryIn("id", [...productIds], 200, 6)
+  }
   if (names.length > 0) await queryIn("name", names, 25, 8)        // кирилиця → дрібніше
+
+  for (const [barcode, productId] of barcodeAliases.entries()) {
+    const product = dbProductsMap.get(productId)
+    if (!product) continue
+    const aliases = Array.isArray(product._import_barcode_aliases) ? product._import_barcode_aliases : []
+    aliases.push(barcode)
+    product._import_barcode_aliases = aliases
+  }
 
   return Array.from(dbProductsMap.values())
 }
@@ -542,8 +607,20 @@ export async function previewImport(input: PreviewImportInput, tenantId: string)
   const byBarcode = new Map<string, any>()
   const byName = new Map<string, any>()
   for (const p of dbProductsList) {
-    if (p.sku) bySku.set(String(p.sku), p)
-    if (p.barcode) byBarcode.set(String(p.barcode), p)
+    if (p.sku) bySku.set(normalizeArticle(String(p.sku)), p)
+    if (p.barcode) byBarcode.set(normalizeImportBarcode(String(p.barcode)) ?? String(p.barcode), p)
+    if (Array.isArray(p.additional_barcodes)) {
+      for (const barcode of p.additional_barcodes) {
+        const normalized = normalizeImportBarcode(String(barcode))
+        if (normalized) byBarcode.set(normalized, p)
+      }
+    }
+    if (Array.isArray(p._import_barcode_aliases)) {
+      for (const barcode of p._import_barcode_aliases) {
+        const normalized = normalizeImportBarcode(String(barcode))
+        if (normalized) byBarcode.set(normalized, p)
+      }
+    }
     if (p.name) byName.set(String(p.name).trim().toLowerCase(), p)
   }
   const idx = { bySku, byBarcode, byName }
@@ -705,6 +782,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
     if (!retail) retail = applyMarkup(i.price, rules, 30, rounding)
     return {
       sku,
+      product_id: i.product_id ?? null,
       barcode: i.barcode ?? null,
       name: i.name,
       retail_price: retail,

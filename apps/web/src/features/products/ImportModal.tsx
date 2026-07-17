@@ -113,7 +113,7 @@ export function ImportModal({ onClose, onImported }: Props) {
   // Попередній перегляд (Step 3)
   const [previewData, setPreviewData] = useState<PreviewResponse | null>(null)
   const [loadingPreview, setLoadingPreview] = useState(false)
-  const [previewTab, setPreviewTab] = useState<'create' | 'update' | 'conflicts'>('create')
+  const [previewTab, setPreviewTab] = useState<'create' | 'update' | 'conflicts'>('update')
   
   // Опції імпорту
   const [mode, setMode] = useState<'replace' | 'add'>('replace')
@@ -329,11 +329,12 @@ export function ImportModal({ onClose, onImported }: Props) {
       const data = res.data ?? res
       setPreviewData(data)
       
-      // Перемикаємо таб прев'ю на той, який має товари
-      if (data.summary.toCreate > 0) {
-        setPreviewTab('create')
-      } else if (data.summary.toUpdate > 0) {
+      // Для повторного великого прайсу головний сценарій — оновити існуючі,
+      // а не випадково створити дублікати. Тому спочатку показуємо оновлення.
+      if (data.summary.toUpdate > 0) {
         setPreviewTab('update')
+      } else if (data.summary.toCreate > 0) {
+        setPreviewTab('create')
       } else {
         setPreviewTab('conflicts')
       }
@@ -735,17 +736,26 @@ export function ImportModal({ onClose, onImported }: Props) {
                       <span>Оновлювати роздрібну ціну</span>
                     </label>
 
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <label className={`flex items-center gap-2 cursor-pointer select-none rounded-lg border px-2 py-1 ${
+                      createMissing ? 'border-yellow-200 bg-yellow-50 text-yellow-800' : 'border-green-200 bg-green-50 text-green-700'
+                    }`}>
                       <input
                         type="checkbox"
                         checked={createMissing}
                         onChange={(e) => setCreateMissing(e.target.checked)}
                         className="rounded text-yellow-500 focus:ring-yellow-400"
                       />
-                      <span>Створювати нові товари (відсутні в базі)</span>
+                      <span>{createMissing ? 'Оновити знайдені + створити відсутні' : 'Не створювати нові — тільки оновити існуючі'}</span>
                     </label>
                   </div>
                 </div>
+
+                {!createMissing && previewData.summary.toCreate > 0 && (
+                  <div className="border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-semibold text-amber-800">
+                    ⚠️ У файлі знайдено {previewData.summary.toCreate} позицій, які не збіглися з каталогом.
+                    У безпечному режимі вони будуть пропущені, щоб не створити дублікати. Якщо це справді нові товари — увімкніть створення нових вручну.
+                  </div>
+                )}
 
                 {/* Вкладки статистики */}
                 <div className="flex border-b border-gray-100 shrink-0">
@@ -757,9 +767,9 @@ export function ImportModal({ onClose, onImported }: Props) {
                         : 'border-transparent text-gray-500 hover:text-gray-700'
                     }`}
                   >
-                    <span>🆕 Створення нових</span>
+                    <span>{createMissing ? '🆕 Створення нових' : '⏭️ Нові будуть пропущені'}</span>
                     <span className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded-full font-bold">
-                      {previewData.summary.toCreate}
+                      {createMissing ? previewData.summary.toCreate : 0}
                     </span>
                   </button>
 
@@ -985,6 +995,9 @@ export function ImportModal({ onClose, onImported }: Props) {
                     Знайдено <span className="font-bold text-gray-900">{previewData.items.length}</span> валідних рядків, з них: 
                     <span className="text-blue-600 font-bold ml-1">{createMissing ? previewData.summary.toCreate : 0}</span> до створення, 
                     <span className="text-yellow-600 font-bold ml-1">{previewData.summary.toUpdate}</span> до оновлення.
+                    {!createMissing && previewData.summary.toCreate > 0 && (
+                      <span className="text-amber-600 font-bold ml-1">{previewData.summary.toCreate} нових буде пропущено.</span>
+                    )}
                     {previewData.summary.conflicts > 0 && (
                       <span className="text-red-500 font-bold ml-1">{previewData.summary.conflicts} буде пропущено.</span>
                     )}
