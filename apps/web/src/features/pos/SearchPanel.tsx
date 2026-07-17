@@ -161,7 +161,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   // Load categories dynamically
   useEffect(() => {
     if (serverOnline) {
-      api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories', { silent: true })
+      api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories', { silent: true, timeoutMs: 10000 })
         .then((res) => setCategories(res.data ?? []))
         .catch(() => {})
     } else if (scopeKey) {
@@ -176,8 +176,12 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
     timer.current = setTimeout(async () => {
       setLoading(true)
-      let localResultsShown = false
       try {
+        // Desktop: локальна SQLite — джерело правди для каси. Відповідає
+        // миттєво і працює без інтернету. Сервер тут лише ДОПОВНЮЄ видачу
+        // прайсами постачальників (з таймаутом і без затирання локального
+        // списку) — інакше холодний старт без інтернету висів на мережевих
+        // таймаутах і стирав уже показані товари.
         const desktopCatalog = desktopBridge()?.catalog
         if (desktopCatalog && !categoryFilter) {
           const localProducts = query.trim()
@@ -186,19 +190,26 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           if (epoch !== searchEpoch.current) return
           setResults(localProducts.map(desktopProductToProduct))
           setSupplierResults([])
-          localResultsShown = localProducts.length > 0 || !query.trim()
-          if (localResultsShown) setLoading(false)
+          setLoading(false)
+          if (serverOnline && query.trim()) {
+            api.get<{ data: { supplier_catalog: any[] } }>(
+              `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`,
+              { silent: true, timeoutMs: 6000 },
+            ).then(({ data }) => {
+              if (epoch !== searchEpoch.current) return
+              setSupplierResults(data?.supplier_catalog || [])
+            }).catch(() => {})
+          }
+          return
         }
 
-        // Офлайн-режим: шукаємо в IndexedDB
-        if (!serverOnline && !localResultsShown) {
+        // Офлайн-режим (браузер/PWA): шукаємо в IndexedDB
+        if (!serverOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
           if (epoch !== searchEpoch.current) return
           setResults(offlineResults as Product[])
           setSupplierResults([])
           setLoading(false)
-          return
-        } else if (!serverOnline) {
           return
         }
 
@@ -206,7 +217,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           // Fetch products with large limit and filter by category name
           const { data } = await api.get<{ data: Product[] }>(
             `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`,
-            { silent: true },
+            { silent: true, timeoutMs: 10000 },
           )
           if (epoch !== searchEpoch.current) return
           setResults((data ?? []).filter((p) => p.category?.name === categoryFilter))
@@ -214,7 +225,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         } else if (query.trim()) {
           const { data } = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(
             `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`,
-            { silent: true },
+            { silent: true, timeoutMs: 10000 },
           )
           if (epoch !== searchEpoch.current) return
           setResults(data?.warehouse || [])
@@ -223,7 +234,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           // If query is empty and no category filter, load first page of active products
           const res = await api.get<{ data: Product[] }>(
             '/api/v1/products?per_page=50&is_active=true',
-            { silent: true },
+            { silent: true, timeoutMs: 10000 },
           )
           if (epoch !== searchEpoch.current) return
           setResults(res.data ?? [])
@@ -234,7 +245,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         if (epoch !== searchEpoch.current) return
         setResults(offlineResults as Product[])
         setSupplierResults([])
-      } finally { 
+      } finally {
         if (epoch === searchEpoch.current) setLoading(false)
       }
     }, 200)
