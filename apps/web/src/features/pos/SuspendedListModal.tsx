@@ -21,9 +21,9 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
   useEffect(() => {
     if (!open) return
     setLoading(true)
-    saleApi.listSuspended()
+    saleApi.listSuspended({ silent: true })
       .then((res) => setSales(res.data))
-      .catch(() => toast.error('Помилка завантаження'))
+      .catch((error) => toast.error(error instanceof Error ? error.message : 'Помилка завантаження'))
       .finally(() => setLoading(false))
   }, [open])
 
@@ -33,12 +33,12 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
     if (operatingId) return
     setOperatingId(sale.id)
     try {
-      const { data } = await saleApi.resume(sale.id)
+      const { data } = await saleApi.resume(sale.id, { silent: true })
       const restored = onResume(data)
       if (!restored) {
         throw new Error('Не вдалося відновити позиції. Звільніть одну вкладку чека та повторіть.')
       }
-      await saleApi.confirmResume(sale.id)
+      await saleApi.confirmResume(sale.id, { silent: true })
       setSales((current) => current.filter((item) => item.id !== sale.id))
       onChanged?.()
       toast.success(`Чек #${sale.sale_number} повернено в кошик`)
@@ -55,7 +55,7 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
     if (!window.confirm(`Видалити відкладений чек #${sale.sale_number}? Товари не списувалися зі складу.`)) return
     setOperatingId(sale.id)
     try {
-      await saleApi.discardSuspended(sale.id)
+      await saleApi.discardSuspended(sale.id, { silent: true })
       setSales((current) => current.filter((item) => item.id !== sale.id))
       onChanged?.()
       toast.success('Відкладений чек видалено')

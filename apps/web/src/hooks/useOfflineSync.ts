@@ -15,6 +15,7 @@ import {
   type SyncChanges,
 } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 
 export const LOCAL_SYNC_IDLE_INTERVAL_MS = 30 * 1000
 export const LOCAL_SYNC_PENDING_INTERVAL_MS = 5 * 1000
@@ -25,6 +26,7 @@ let globalSyncInProgress = false
 
 export function useOfflineSync(serverOnline: boolean) {
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
+  const desktopRuntime = isDesktopRuntime()
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
   const [lastCached, setLastCached] = useState<Date | null>(null)
@@ -32,6 +34,7 @@ export function useOfflineSync(serverOnline: boolean) {
   const retryAttemptRef = useRef(0)
 
   useEffect(() => {
+    if (desktopRuntime) return
     countPendingSales().then(setPendingCount).catch(() => {})
     ensurePersistentStorage().catch(() => {})
     if (scopeKey) {
@@ -40,7 +43,7 @@ export function useOfflineSync(serverOnline: boolean) {
         setLastSyncError(state.last_error)
       }).catch(() => {})
     }
-  }, [scopeKey])
+  }, [desktopRuntime, scopeKey])
 
   const pushPendingSales = useCallback(async () => {
     const pending = await getPendingSales()
@@ -86,7 +89,7 @@ export function useOfflineSync(serverOnline: boolean) {
   }, [])
 
   const pullChanges = useCallback(async (forceSnapshot = false) => {
-    if (!scopeKey) return
+    if (!scopeKey || desktopRuntime) return
     const localState = await getLocalSyncState(scopeKey)
     const since = forceSnapshot ? null : localState.cursor
     const includeReferences = !since
@@ -118,12 +121,12 @@ export function useOfflineSync(serverOnline: boolean) {
     const syncedAt = new Date()
     setLastCached(syncedAt)
     setLastSyncError(null)
-  }, [scopeKey])
+  }, [desktopRuntime, scopeKey])
 
   const syncNow = useCallback(async (
     options: { forceSnapshot?: boolean; notify?: boolean } = {},
   ) => {
-    if (!serverOnline || !scopeKey || globalSyncInProgress) return
+    if (desktopRuntime || !serverOnline || !scopeKey || globalSyncInProgress) return
 
     globalSyncInProgress = true
     setSyncing(true)
@@ -154,9 +157,10 @@ export function useOfflineSync(serverOnline: boolean) {
       setSyncing(false)
       setPendingCount(await countPendingSales().catch(() => 0))
     }
-  }, [serverOnline, scopeKey, pushPendingSales, pullChanges])
+  }, [desktopRuntime, serverOnline, scopeKey, pushPendingSales, pullChanges])
 
   useEffect(() => {
+    if (desktopRuntime) return
     if (!serverOnline || !scopeKey) return
 
     let cancelled = false
@@ -202,7 +206,7 @@ export function useOfflineSync(serverOnline: boolean) {
       window.removeEventListener('online', requestImmediateSync)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [serverOnline, scopeKey, syncNow])
+  }, [desktopRuntime, serverOnline, scopeKey, syncNow])
 
   const refreshProductCache = useCallback(
     async (force = false) => syncNow({ forceSnapshot: force, notify: false }),
@@ -217,6 +221,7 @@ export function useOfflineSync(serverOnline: boolean) {
     refreshProductCache,
     syncPendingSales: () => syncNow({ notify: true }),
     incrementPending: () => {
+      if (desktopRuntime) return
       setPendingCount((count) => count + 1)
       window.dispatchEvent(new Event('forsage:sync-requested'))
     },

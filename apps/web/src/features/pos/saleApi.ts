@@ -16,6 +16,11 @@ interface CreateSaleBody {
   terminal_auth_code?: string | null
 }
 
+type SaleRequestOptions = Pick<RequestOptions, 'silent' | 'timeoutMs'>
+
+const SALE_READ_TIMEOUT_MS = 10_000
+const SALE_WRITE_TIMEOUT_MS = 20_000
+
 export const saleApi = {
   create: (body: CreateSaleBody, idempotencyKey?: string) => {
     const headers = idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : undefined
@@ -27,8 +32,8 @@ export const saleApi = {
     return api.post<{ data: Sale }>('/api/v1/sales', body, headers, { timeoutMs, silent: true })
   },
 
-  get: (id: string) =>
-    api.get<{ data: Sale }>(`/api/v1/sales/${id}`),
+  get: (id: string, opts: SaleRequestOptions = {}) =>
+    api.get<{ data: Sale }>(`/api/v1/sales/${id}`, { timeoutMs: SALE_READ_TIMEOUT_MS, ...opts }),
 
   list: (
     params: Record<string, string | number | undefined> = {},
@@ -39,8 +44,8 @@ export const saleApi = {
     return api.get<{ data: Sale[]; pagination: unknown }>(`/api/v1/sales?${q}`, opts)
   },
 
-  calculatePrice: (items: Array<{ product_id: string; qty: number }>) =>
-    api.post<{ data: PriceCalculation[] }>('/api/v1/sales/calculate-price', { items }),
+  calculatePrice: (items: Array<{ product_id: string; qty: number }>, opts: SaleRequestOptions = {}) =>
+    api.post<{ data: PriceCalculation[] }>('/api/v1/sales/calculate-price', { items }, undefined, { timeoutMs: SALE_READ_TIMEOUT_MS, ...opts }),
 
   suspend: (body: {
     confirmed_by_cashier: true
@@ -48,20 +53,21 @@ export const saleApi = {
     items: Array<{ product_id: string; qty: number; unit_price: number; discount: number }>
     payment_method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
     notes?: string; pickup_cell?: string | null; expires_at?: string
-  }) => api.post<{ data: Sale }>('/api/v1/sales/suspend', body),
+  }, opts: SaleRequestOptions = {}) =>
+    api.post<{ data: Sale }>('/api/v1/sales/suspend', body, undefined, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts }),
 
-  listSuspended: () =>
-    api.get<{ data: Sale[] }>('/api/v1/sales/suspended'),
+  listSuspended: (opts: SaleRequestOptions = {}) =>
+    api.get<{ data: Sale[] }>('/api/v1/sales/suspended', { timeoutMs: SALE_READ_TIMEOUT_MS, ...opts }),
 
-  checkAfterPayment: (shiftId: string, after: string) =>
-    api.get<{ data: Sale | null }>(`/api/v1/sales/check-after-payment?shift_id=${shiftId}&after=${encodeURIComponent(after)}`),
+  checkAfterPayment: (shiftId: string, after: string, opts: SaleRequestOptions = {}) =>
+    api.get<{ data: Sale | null }>(`/api/v1/sales/check-after-payment?shift_id=${shiftId}&after=${encodeURIComponent(after)}`, { timeoutMs: SALE_READ_TIMEOUT_MS, ...opts }),
 
-  resume: (id: string) =>
-    api.post<{ data: Sale }>(`/api/v1/sales/${id}/resume`, {}),
+  resume: (id: string, opts: SaleRequestOptions = {}) =>
+    api.post<{ data: Sale }>(`/api/v1/sales/${id}/resume`, {}, undefined, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts }),
 
-  confirmResume: (id: string) =>
-    api.post<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/resume/confirm`, {}),
+  confirmResume: (id: string, opts: SaleRequestOptions = {}) =>
+    api.post<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/resume/confirm`, {}, undefined, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts }),
 
-  discardSuspended: (id: string) =>
-    api.delete<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/suspended`),
+  discardSuspended: (id: string, opts: SaleRequestOptions = {}) =>
+    api.delete<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/suspended`, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts }),
 }

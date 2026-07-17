@@ -123,6 +123,7 @@ function savedCartTotal(cart: SavedCart): number {
 }
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
+const POS_READ_TIMEOUT_MS = 10_000
 
 function isShiftAlreadyOpenError(error: unknown) {
   const status = (error as { status?: number } | null)?.status
@@ -226,13 +227,13 @@ export default function POSPage() {
   // (інакше window.print() надрукував би обидва — селектор друку не прив'язаний до екземпляра).
   async function handleReprintSale(saleId: string) {
     try {
-      const { data } = await saleApi.get(saleId)
+      const { data } = await saleApi.get(saleId, { silent: true })
       paymentPrintChoiceRef.current = null
       skipNextAutoPrintRef.current = true   // це повторний друк, не новий продаж — не плутати з авто-друком
       setLastSale(data as Sale)
       setTimeout(() => printReceipt(), 300)
-    } catch {
-      toast.error('Не вдалося завантажити чек')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити чек')
     }
   }
   const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
@@ -307,7 +308,7 @@ export default function POSPage() {
   }, [])
 
   const refreshSuspendedCount = useCallback(() => {
-    saleApi.listSuspended().then((res) => setSuspendedCount(res.data.length)).catch(() => {})
+    saleApi.listSuspended({ silent: true }).then((res) => setSuspendedCount(res.data.length)).catch(() => {})
   }, [])
 
   const shift = store.currentShift
@@ -327,7 +328,10 @@ export default function POSPage() {
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/staff-options')
+    api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/staff-options', {
+      silent: true,
+      timeoutMs: POS_READ_TIMEOUT_MS,
+    })
       .then((res) => {
         setStaffUsers(res.data)
       })
@@ -350,7 +354,7 @@ export default function POSPage() {
 
     // Кількість готових замовлень для мобільного таба
     const loadReadyCount = () => {
-      api.get('/api/v1/customer-orders?status=ready')
+      api.get('/api/v1/customer-orders?status=ready', { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
         .then((res: any) => {
           const data = res.data
           if (Array.isArray(data)) setReadyOrdersCount(data.length)
@@ -404,7 +408,7 @@ export default function POSPage() {
     if (!raw) return
     try {
       const attempt = JSON.parse(raw) as { shift_id: string; attempt_at: string }
-      saleApi.checkAfterPayment(attempt.shift_id, attempt.attempt_at)
+      saleApi.checkAfterPayment(attempt.shift_id, attempt.attempt_at, { silent: true })
         .then(({ data }) => {
           if (data?.id) {
             setCrashSale(data as Sale)
@@ -650,10 +654,10 @@ export default function POSPage() {
       return localReceipt
     }
 
-    // Офлайн-режим: лише повноготівкові/переказ без ПРРО.
-    // Картка, борг і змішана (має карткову частину) недоступні — термінал/звірку
-    // офлайн не провести, інакше продаж синхронізується з неповними даними.
-    if (!serverOnline) {
+    // Браузерна PWA без інтернету пише продажі в IndexedDB-чергу.
+    // Desktop/EXE має власну SQLite-касу, тому навіть без інтернету йде через
+    // completeSale() і не дублює чек у браузерному кеші.
+    if (!serverOnline && !desktopBridge()) {
       await saveOfflineSale()
       return
     }

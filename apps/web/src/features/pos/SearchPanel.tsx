@@ -8,7 +8,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { findProductByScanOffline, getCachedCategories, getCachedProductsForScan, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
+import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
@@ -111,6 +111,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const scanQueue               = useRef<string[]>([])
   const scanQueueRunning        = useRef(false)
   const scanProductIndex        = useRef<Map<string, Product>>(new Map())
+  const BARCODE_SERVER_LOOKUP_TIMEOUT_MS = 1_800
 
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
@@ -137,23 +138,17 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
 
   useEffect(() => {
-    let cancelled = false
-
-    const rebuildScanIndex = async () => {
-      const products = await getCachedProductsForScan(scopeKey).catch(() => [])
-      if (cancelled) return
-      const index = new Map<string, Product>()
-      for (const product of products as Product[]) {
-        addProductToScanIndex(index, product)
-      }
-      scanProductIndex.current = index
-    }
-
-    void rebuildScanIndex()
-    window.addEventListener('forsage:offline-products-refreshed', rebuildScanIndex)
+    // Не читаємо весь каталог у пам'ять при старті каси: на великих базах це
+    // давало хвилини очікування першого локального запуску. Сканер і так має
+    // точні IndexedDB-індекси by_barcode/by_sku; in-memory мапа лишається
+    // коротким кешем тільки для товарів, які вже знайшли в цій зміні.
+    scanProductIndex.current = new Map()
+    const clearSessionScanIndex = () => { scanProductIndex.current = new Map() }
+    window.addEventListener('forsage:offline-products-refreshed', clearSessionScanIndex)
+    window.addEventListener('forsage:offline-stock-updated', clearSessionScanIndex)
     return () => {
-      cancelled = true
-      window.removeEventListener('forsage:offline-products-refreshed', rebuildScanIndex)
+      window.removeEventListener('forsage:offline-products-refreshed', clearSessionScanIndex)
+      window.removeEventListener('forsage:offline-stock-updated', clearSessionScanIndex)
     }
   }, [scopeKey])
 
@@ -306,6 +301,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     const cachedProduct = memoryProduct
       ?? await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
     if (cachedProduct) {
+      addProductToScanIndex(scanProductIndex.current, cachedProduct as Product)
       addToReceipt(cachedProduct as Product)
       saveRecentItem('recent_scans', normalizedCode)
       reportScannerStage('added', normalizedCode, (cachedProduct as Product).name)
@@ -363,7 +359,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     try {
       const res = await api.get<any>(
         `/api/v1/search/barcode/${encodeURIComponent(normalizedCode)}`,
-        { silent: true, timeoutMs: 5_000 },
+        { silent: true, timeoutMs: BARCODE_SERVER_LOOKUP_TIMEOUT_MS },
       )
       const result = typeof res === 'object' && 'data' in res ? (res as any).data : res
       if (result?.type === 'customer' && result?.data) {

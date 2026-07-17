@@ -27,27 +27,30 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
 
     setSaving(true)
     try {
-      await saleApi.suspend({
-        confirmed_by_cashier: true,
-        shift_id:       currentShift.id,
-        customer_id:    customer?.id ?? null,
-        manager_id:     managerId,
-        items:          items.map((i) => ({
-          product_id: i.productId,
-          qty:        i.qty,
-          unit_price: i.unitPrice,
-          discount:   i.discount,
-        })),
-        payment_method: 'cash',
-        notes:          notes || undefined,
-        pickup_cell:    cell.trim() || null,
-        expires_at:     expiresAt,
-      })
+      await saleApi.suspend(
+        {
+          confirmed_by_cashier: true,
+          shift_id:       currentShift.id,
+          customer_id:    customer?.id ?? null,
+          manager_id:     managerId,
+          items:          items.map((i) => ({
+            product_id: i.productId,
+            qty:        i.qty,
+            unit_price: i.unitPrice,
+            discount:   i.discount,
+          })),
+          payment_method: 'cash',
+          notes:          notes || undefined,
+          pickup_cell:    cell.trim() || null,
+          expires_at:     expiresAt,
+        },
+        { silent: true },
+      )
       store.clearReceipt()
       toast.success(`Чек відкладено${cell.trim() ? ' у комірку ' + cell.trim() : ''}`)
       onSuspended()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка')
+      toast.error(e instanceof Error ? e.message : 'Не вдалося відкласти чек')
     } finally {
       setSaving(false)
     }
