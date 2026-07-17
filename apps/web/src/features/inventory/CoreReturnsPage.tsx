@@ -100,11 +100,11 @@ export default function CoreReturnsPage() {
   }
 
   return (
-    <Layout title="Повернення серцевин (Core Exchange)">
+    <Layout title="Повернення старих деталей">
       <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <p className="text-gray-500 text-sm">
-            Керування обміном та заставною вартістю деталей (стартери, супорти, генератори)
+            Для товарів із заставною деталлю: приймаємо стару деталь від клієнта, повертаємо заставу або відмічаємо повернення постачальнику.
           </p>
         </div>
         <Button onClick={loadData} disabled={loading} className="flex items-center gap-2">
@@ -122,7 +122,7 @@ export default function CoreReturnsPage() {
               : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
           }`}
         >
-          <User size={16} /> Повернення від клієнтів ({clientReturns.length})
+          <User size={16} /> Від клієнтів ({clientReturns.length})
         </button>
         <button
           onClick={() => setActiveTab('supplier')}
@@ -132,7 +132,7 @@ export default function CoreReturnsPage() {
               : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
           }`}
         >
-          <Truck size={16} /> Борг перед постачальниками ({supplierDebts.length})
+          <Truck size={16} /> До постачальника ({supplierDebts.length})
         </button>
       </div>
 

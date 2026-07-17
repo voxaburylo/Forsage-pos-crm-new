@@ -394,14 +394,13 @@ export default function ProductsPage() {
             <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт каталогу</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>
           </span>
-          {/* Масове поштучне додавання через прихідну накладну — зручно з телефона */}
           {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
-            <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/suppliers/invoices/new')}>
-              <span className="hidden sm:inline">Накладна</span>
+            <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/suppliers/invoices/new')} title="Створити прихідну накладну">
+              Прихід
             </Button>
           )}
-          <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/products/new')}>
-            <span className="hidden sm:inline">Новий товар</span>
+          <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/products/new')} title="Створити одну картку товару">
+            Товар
           </Button>
         </div>
       }
@@ -510,9 +509,98 @@ export default function ProductsPage() {
             </div>
           )}
 
-          {/* Таблиця */}
+          {/* Список */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
+            <div className="md:hidden divide-y divide-gray-100">
+              {loading ? (
+                Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="p-3 animate-pulse">
+                    <div className="h-4 bg-gray-100 rounded w-3/4 mb-3" />
+                    <div className="h-3 bg-gray-100 rounded w-1/2 mb-2" />
+                    <div className="h-10 bg-gray-100 rounded" />
+                  </div>
+                ))
+              ) : products.length === 0 ? (
+                <div className="text-center py-12">
+                  <Package size={36} className="mx-auto text-gray-200 mb-3" />
+                  <p className="text-gray-400 text-sm">Товарів не знайдено</p>
+                  {search && <p className="text-gray-300 text-xs mt-1">Спробуйте інший запит</p>}
+                </div>
+              ) : products.map((p) => {
+                const stock = stockStatus(p)
+                const barcodes = [...new Set([
+                  p.barcode,
+                  ...(Array.isArray(p.additional_barcodes) ? p.additional_barcodes : []),
+                ].filter((value): value is string => Boolean(value)))]
+                return (
+                  <div key={p.id} className={`p-3 ${selectedIds.has(p.id) ? 'bg-yellow-50/60' : 'bg-white'} ${p.is_active === false ? 'opacity-60' : ''}`}>
+                    <div className="flex items-start gap-3">
+                      <input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)}
+                        aria-label={`Обрати товар ${p.name}`}
+                        className="mt-1 accent-yellow-500 shrink-0" />
+                      {p.photo_url ? (
+                        <img src={p.photo_url} alt="" className="w-12 h-12 object-cover rounded-lg border border-gray-200 shrink-0" />
+                      ) : (
+                        <div className="w-12 h-12 bg-gray-100 rounded-lg shrink-0 flex items-center justify-center text-gray-300">
+                          <Package size={18} />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <button onClick={() => navigate(`/products/${p.id}`)}
+                          className="block w-full text-left text-[15px] font-semibold leading-snug text-gray-900 break-words hover:text-yellow-700">
+                          {p.name}
+                        </button>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
+                          {p.category && <span className="text-[11px] text-gray-400">{p.category.name}</span>}
+                          {p.brand?.name && <span className="text-[11px] text-gray-400">{p.brand.name}</span>}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                      <div className="rounded-lg bg-gray-50 border border-gray-100 px-2.5 py-2">
+                        <p className="text-[10px] uppercase font-semibold text-gray-400 mb-0.5">Ціна</p>
+                        <p className="font-bold text-gray-900 nums-tabular">{kopecksToHryvnia(p.retail_price)} ₴</p>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 border border-gray-100 px-2.5 py-2 text-right">
+                        <p className="text-[10px] uppercase font-semibold text-gray-400 mb-0.5">Залишок</p>
+                        <p className={stock === 'out' ? 'text-red-500 font-bold nums-tabular' : stock === 'low' ? 'text-orange-600 font-bold nums-tabular' : 'text-gray-900 font-bold nums-tabular'}>
+                          {p.qty_available ?? p.qty_on_hand} {p.unit}
+                        </p>
+                        {p.qty_reserved !== undefined && p.qty_reserved > 0 && (
+                          <p className="text-[10px] text-gray-400 mt-0.5">резерв: {p.qty_reserved}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {barcodes.length > 0 ? barcodes.slice(0, 2).map((barcode) => (
+                        <button key={barcode} type="button" onClick={() => copyBarcode(barcode)}
+                          className="min-w-0 inline-flex max-w-full items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] font-semibold text-gray-600">
+                          <span className="truncate">{barcode}</span>
+                          <Copy size={10} className="shrink-0 opacity-40" />
+                        </button>
+                      )) : <span className="text-xs text-gray-300">Штрихкоду немає</span>}
+                      {p.storage_bin && <span className="text-[11px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-2 py-1">{p.storage_bin}</span>}
+                      <Badge color={STATUS_COLOR[stock]}>{STATUS_LABEL[stock]}</Badge>
+                    </div>
+
+                    <div className="mt-3 flex gap-2">
+                      <Button size="sm" className="flex-1" onClick={() => navigate(`/products/${p.id}/edit`)}>Редагувати</Button>
+                      <Button size="sm" variant="secondary" className="flex-1" onClick={() => setQuickView(p)}>Перегляд</Button>
+                      {isAdmin && (
+                        <Button size="sm" variant="danger-outline" onClick={() => askDelete(p)} aria-label={`Видалити ${p.name}`}>
+                          <Trash2 size={13} />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="sticky top-0 z-20 bg-gray-50 border-b border-gray-200">
                   <tr>

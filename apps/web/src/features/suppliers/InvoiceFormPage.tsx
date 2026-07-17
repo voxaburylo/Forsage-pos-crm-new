@@ -900,33 +900,36 @@ export default function InvoiceFormPage() {
         {/* Спосіб додавання товарів */}
         {!isEdit && (
           <Card className="mb-6">
-            <div className="flex flex-wrap gap-1.5 border-b border-gray-100 pb-3 mb-4">
+            <div className="grid grid-cols-3 gap-1.5 border-b border-gray-100 pb-3 mb-4">
               <button type="button" onClick={() => setImportTab('manual')}
-                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'manual' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
-                🔎 Пошук та сканер
+                className={`px-2 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'manual' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
+                Швидко
               </button>
               <button type="button" onClick={() => setImportTab('file')}
-                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'file' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
-                📄 Імпорт Excel / CSV
+                className={`px-2 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'file' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
+                Excel
               </button>
               <button type="button" onClick={() => setImportTab('clipboard')}
-                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'clipboard' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
-                📋 З буфера обміну
+                className={`px-2 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'clipboard' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
+                Буфер
               </button>
             </div>
 
             {importTab === 'manual' && (
-              <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="Пошук товарів за назвою, штрихкодом або SKU..." className="flex-1" autoFocus />
-                <Button type="button" onClick={addDraftItem}>
-                  Рядок у накладну
-                </Button>
-                <Button type="button" variant="outline" onClick={() => {
-                  setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
-                  setProductModal(true)
-                }}>
-                  Новий товар
-                </Button>
+              <div className="space-y-2">
+                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" autoFocus />
+                <div className="grid grid-cols-2 gap-2">
+                  <Button type="button" onClick={addDraftItem} className="min-h-[44px]">
+                    Додати рядок
+                  </Button>
+                  <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => {
+                    setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
+                    setProductModal(true)
+                  }}>
+                    Картка товару
+                  </Button>
+                </div>
+                <p className="text-xs text-gray-400">Для приходу з телефона зазвичай натискайте «Додати рядок» і заповнюйте товар прямо нижче.</p>
               </div>
             )}
 
@@ -1191,7 +1194,7 @@ export default function InvoiceFormPage() {
           {/* Мобільний вигляд позицій — картки замість широкої таблиці */}
           <div className="md:hidden divide-y divide-gray-100">
             {items.map((item, i) => (
-              <div key={i} className="p-3 space-y-2">
+              <div key={i} className="p-3 space-y-3">
                 <div className="flex items-start gap-2">
                   <RowPhotoCell
                     photoUrl={item.photo_url ?? null}
@@ -1200,52 +1203,78 @@ export default function InvoiceFormPage() {
                       setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, photo_url: newUrl } : it))
                     }}
                   />
-                  <input type="text" value={item.product_name}
-                    onChange={(e) => updateItem(i, 'product_name', e.target.value)}
-                    disabled={isEdit}
-                    placeholder="Назва товару"
-                    className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  <div className="min-w-0 flex-1">
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Назва</label>
+                    <input type="text" value={item.product_name}
+                      onChange={(e) => updateItem(i, 'product_name', e.target.value)}
+                      disabled={isEdit}
+                      placeholder="Назва товару"
+                      className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  </div>
                   {!isEdit && (
                     <button type="button" onClick={() => removeItem(i)}
-                      className="shrink-0 p-2 text-red-300 hover:text-red-500"><Trash2 size={16} /></button>
+                      className="shrink-0 p-2 text-red-300 hover:text-red-500" aria-label="Видалити рядок"><Trash2 size={16} /></button>
                   )}
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <input type="text" value={item.sku}
-                    onChange={(e) => updateItem(i, 'sku', e.target.value)}
-                    disabled={isEdit}
-                    placeholder="Артикул"
-                    className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
-                  <div className="flex gap-1">
-                    <input type="text" value={item.barcode ?? ''}
-                      onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+
+                <div className="grid grid-cols-1 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Артикул</label>
+                    <input type="text" value={item.sku}
+                      onChange={(e) => updateItem(i, 'sku', e.target.value)}
                       disabled={isEdit}
-                      placeholder="Штрихкод"
-                      autoComplete="off"
-                      className={`flex-1 min-w-0 border rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
-                    <button type="button" disabled={isEdit} onClick={() => generateBarcodeForRow(i)}
-                      title="Згенерувати штрихкод"
-                      className="shrink-0 px-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 disabled:opacity-40">
-                      <Barcode size={14} />
-                    </button>
+                      placeholder="Артикул"
+                      className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Штрихкод</label>
+                    <div className="flex gap-1">
+                      <input type="text" value={item.barcode ?? ''}
+                        onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+                        disabled={isEdit}
+                        placeholder="Сканувати або вписати"
+                        autoComplete="off"
+                        className={`flex-1 min-w-0 border rounded-lg px-2.5 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
+                      <button type="button" disabled={isEdit} onClick={() => generateBarcodeForRow(i)}
+                        title="Згенерувати штрихкод"
+                        className="shrink-0 px-3 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 disabled:opacity-40">
+                        <Barcode size={15} />
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">К-сть</label>
                     <div className="flex items-center gap-1">
                       <button type="button" disabled={isEdit || item.qty <= 1}
                         onClick={() => updateItem(i, 'qty', Math.max(1, item.qty - 1))}
-                        className="shrink-0 w-8 h-9 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
+                        className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
                       <input type="number" step="0.001" min="0.001" value={item.qty}
                         onChange={(e) => updateItem(i, 'qty', e.target.value)}
                         disabled={isEdit}
                         className="w-full min-w-0 text-center border border-gray-200 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                       <button type="button" disabled={isEdit}
                         onClick={() => updateItem(i, 'qty', item.qty + 1)}
-                        className="shrink-0 w-8 h-9 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
+                        className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
                     </div>
                   </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Націнка %</label>
+                    <input type="number" min="-100"
+                      value={item.purchase_price > 0 ? Math.round((item.retail_price / item.purchase_price - 1) * 100) : 0}
+                      onChange={(e) => {
+                        const pct = Number(e.target.value) || 0
+                        const retail = Math.round(item.purchase_price * (1 + pct / 100))
+                        updateItem(i, 'retail_price', retail)
+                      }}
+                      disabled={isEdit || item.purchase_price <= 0}
+                      className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Закупка, грн</label>
                     <input type="number" step="0.01" min="0"
@@ -1256,7 +1285,7 @@ export default function InvoiceFormPage() {
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Роздріб, грн</label>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Продаж, грн</label>
                     <input type="number" step="0.01" min="0"
                       value={(item.retail_price / 100).toFixed(2)}
                       onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
@@ -1264,7 +1293,8 @@ export default function InvoiceFormPage() {
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                 </div>
-                <div className="flex items-center justify-between gap-2">
+
+                <div className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2.5 py-2">
                   {!isEdit && quickPercents.length > 0 ? (
                     <select
                       onChange={(e) => {
@@ -1272,18 +1302,18 @@ export default function InvoiceFormPage() {
                         if (val) { applySingleQuickPercent(i, parseFloat(val)); e.target.value = '' }
                       }}
                       className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white">
-                      <option value="">⚡ Націнка %</option>
+                      <option value="">Швидкий %</option>
                       {quickPercents.map((pct) => (
                         <option key={pct} value={pct}>{pct}%</option>
                       ))}
                     </select>
                   ) : <span />}
-                  <span className="text-sm font-semibold font-mono">{formatMoney(item.total)}</span>
+                  <span className="text-sm font-semibold font-mono">Сума: {formatMoney(item.total)}</span>
                 </div>
               </div>
             ))}
             {items.length === 0 && (
-              <div className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</div>
+              <div className="text-center text-gray-400 text-sm py-6">Позицій немає. Натисніть «Додати рядок».</div>
             )}
             {items.length > 0 && (
               <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 font-semibold text-sm">

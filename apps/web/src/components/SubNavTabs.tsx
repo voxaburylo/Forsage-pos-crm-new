@@ -1,4 +1,4 @@
-﻿import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 
 interface TabItem {
   label: string
@@ -99,7 +99,6 @@ export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Список постачальників', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/pos', label: 'Замовлення постачальникам' },
   { to: '/auto-purchase', label: 'Автозакупівля', roles: ['owner', 'admin', 'manager'] },
-  { to: '/core-returns', label: 'Застава (core)', roles: ['owner', 'admin', 'manager'] },
 ]
 
 // Поступлення товарів — єдиний дім для приходу (накладні + імпорт), щоб не дублювати
@@ -115,6 +114,7 @@ export const INVENTORY_TABS = [
   { to: '/inventory/movements', label: 'Між комірками', roles: ['owner', 'admin', 'storekeeper'] },
   { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
   { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },
+  { to: '/core-returns', label: 'Повернення старих деталей', roles: ['owner', 'admin', 'manager'] },
   { to: '/internal', label: 'Потреби магазину', roles: ['owner', 'admin', 'manager'] },
 ]
 
