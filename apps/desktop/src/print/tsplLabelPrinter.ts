@@ -263,7 +263,9 @@ export async function printLabelsTspl(html: string, options: TsplPrintOptions): 
         `SIZE ${widthMm} mm,${heightMm} mm\r\n` +
         `GAP ${gapMm} mm,0 mm\r\n` +
         `DENSITY ${density}\r\n` +
-        `DIRECTION ${options.rotate180 ? 0 : 1}\r\n` +
+        // DIRECTION 0 — правильна орієнтація на HL80 (з DIRECTION 1 друкував
+        // догори ногами); rotate180 лишили як аварійний перемикач для інших.
+        `DIRECTION ${options.rotate180 ? 1 : 0}\r\n` +
         `REFERENCE 0,0\r\n` +
         `CLS\r\n`,
         'ascii',
