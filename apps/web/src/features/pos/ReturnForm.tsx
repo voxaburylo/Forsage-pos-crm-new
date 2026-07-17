@@ -23,6 +23,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
 const METHODS = Object.entries(REFUND_METHOD_LABELS) as [RefundMethod, string][]
@@ -74,6 +75,10 @@ export default function ReturnForm() {
 
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
+  // Фіскальний номер оригінального чека (якщо продаж був через ПРРО)
+  const [saleFiscalNumber, setSaleFiscalNumber] = useState<string | null>(null)
+  // Фіскальний номер чека повернення (після FiscalizeReturnCheck)
+  const [returnFiscalNumber, setReturnFiscalNumber] = useState<string | null>(null)
   const [searchParams] = useSearchParams()
 
   // Коли змінюється condition — автопідбираємо stock_action
@@ -112,6 +117,7 @@ export default function ReturnForm() {
     setSaleItems([])
     setSelected([])
     setCandidates([])
+    setSaleFiscalNumber(null)
     setStep(1)
 
     try {
@@ -142,6 +148,7 @@ export default function ReturnForm() {
       const itemsResult = await returnApi.getSaleItems(sale.id)
       const data = itemsResult.data
       setSaleItems(data.items)
+      setSaleFiscalNumber(data.sale.fiscal_number ?? null)
       const initSelected: SelectedItem[] = data.items.map((item) => ({
         id: item.id,
         product_id: item.product_id,
@@ -201,6 +208,44 @@ export default function ReturnForm() {
 
     setSubmitting(true)
     try {
+      // Фіскалізація повернення через ПРРО Кашалот (desktop-каса) — ДО запису
+      // на сервер: якщо ФСКО відхилить чек повернення, повернення не проводиться.
+      // Фіскалізуємо лише коли гроші реально повертаються (готівка/термінал)
+      // і оригінальний чек був фіскальним.
+      let fiscalReturnNum: string | null = null
+      const desktop = desktopBridge()
+      if (desktop?.fiscal && saleFiscalNumber && (method === 'cash' || method === 'terminal')) {
+        const config = await desktop.fiscal.getConfig().catch(() => null)
+        if (config?.enabled) {
+          try {
+            const fiscalItems = activeItems.map((i) => ({
+              name: i.product_name,
+              vendor_code: i.sku || i.product_name,
+              unit: i.unit,
+              qty: i.qty,
+              unit_price: i.unit_price,
+              amount: i.qty * i.unit_price,
+            }))
+            const fiscalResult = await desktop.fiscal.registerReturn(fiscalItems, {
+              cash: method === 'cash' ? totalRefund : 0,
+              card: method === 'terminal' ? totalRefund : 0,
+              check_total: totalRefund,
+            }, saleFiscalNumber)
+            fiscalReturnNum = fiscalResult.ReceiptFiscalNum || null
+            if (fiscalResult.OfflineMode) {
+              toast.warning('ПРРО в режимі офлайн — чек повернення буде дореєстровано автоматично')
+            }
+          } catch (error) {
+            toast.error('Фіскалізація повернення не пройшла: '
+              + (error instanceof Error ? error.message : 'невідома помилка')
+              + '. Повернення НЕ проведено.')
+            return
+          }
+        } else if (config) {
+          toast.warning('Чек був фіскальним, але ПРРО вимкнено — повернення пройде без фіскального чека')
+        }
+      }
+
       await returnApi.create({
         sale_id: found.id,
         reason,
@@ -214,6 +259,7 @@ export default function ReturnForm() {
           condition: globalCondition,
         })),
       })
+      setReturnFiscalNumber(fiscalReturnNum)
       toast.success('Повернення оформлено')
       setDone(true)
     } catch (err) {
@@ -234,6 +280,8 @@ export default function ReturnForm() {
     setMethod('cash')
     setGlobalCondition('good')
     setStockAction('return_to_stock')
+    setSaleFiscalNumber(null)
+    setReturnFiscalNumber(null)
     setStep(1)
   }
 
@@ -250,9 +298,15 @@ export default function ReturnForm() {
           <p className="text-gray-500 text-sm mb-2">
             {ITEM_CONDITION_LABELS[globalCondition] + ' → ' + STOCK_ACTION_LABELS[stockAction]}
           </p>
-          <p className="text-gray-500 text-sm mb-6">
+          <p className="text-gray-500 text-sm mb-2">
             {REFUND_METHOD_LABELS[method]}
           </p>
+          {returnFiscalNumber && (
+            <p className="text-gray-500 text-sm mb-2">
+              {'Фіскальний чек повернення: ' + returnFiscalNumber}
+            </p>
+          )}
+          <div className="mb-4" />
           <Button onClick={reset}>Нове повернення</Button>
         </Card>
       </Layout>

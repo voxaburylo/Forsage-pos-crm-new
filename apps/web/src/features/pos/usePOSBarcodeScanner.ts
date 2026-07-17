@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react'
-import { api } from '@/lib/api'
 
 const IDLE_COMPLETE_MS = 220
 const SEQUENCE_RESET_MS = 900
@@ -65,93 +64,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     let terminatorGuardUntil = 0
     let prefixGuardUntil = 0
     let idleTimer: number | null = null
-
-    // ─── «Чорна скринька» сканера (тимчасова діагностика) ──────────────────
-    // У бойовій касі вимкнена: localStorage на кожному символі може гальмувати
-    // швидке сканування. Якщо треба знову діагностувати сканер:
-    // localStorage.setItem('pos_scanner_debug', '1')
-    const BLACKBOX_LS = 'pos_scanner_blackbox_v1'
-    const scannerDebugEnabled = (() => {
-      try { return localStorage.getItem('pos_scanner_debug') === '1' } catch { return false }
-    })()
-    const bbEvents: any[] = []
-    let bbFlushTimer: number | null = null
-    let bbLastKeyAt = 0
-    const bbDescribeActive = () => {
-      const el = document.activeElement as HTMLElement | null
-      if (!el) return 'null'
-      let tag = el.tagName
-      if (el.dataset?.posScannerCapture === 'true') tag += '[sink]'
-      if (el.dataset?.posSearch === 'true') tag += '[search]'
-      if (el instanceof HTMLInputElement && el.type) tag += `(${el.type})`
-      const label = el.getAttribute?.('aria-label')
-      if (label) tag += `{${label.slice(0, 25)}}`
-      return tag
-    }
-    const bbFlush = (note?: string) => {
-      if (!scannerDebugEnabled) return
-      if (bbFlushTimer !== null) { window.clearTimeout(bbFlushTimer); bbFlushTimer = null }
-      if (bbEvents.length === 0) return
-      const events = bbEvents.splice(0)
-      try { localStorage.removeItem(BLACKBOX_LS) } catch { /* ignore */ }
-      api.post('/api/v1/debug/scanner-keys', { events, note: note ?? null }, undefined, { silent: true }).catch(() => {
-        // сервер недоступний — повертаємо в localStorage, надішлемо пізніше
-        try { localStorage.setItem(BLACKBOX_LS, JSON.stringify(events)) } catch { /* ignore */ }
-      })
-    }
-    const bbLog = (rec: Record<string, any>) => {
-      if (!scannerDebugEnabled) return
-      rec.t = Date.now()
-      bbEvents.push(rec)
-      if (bbEvents.length > 500) bbEvents.splice(0, bbEvents.length - 500)
-      try { localStorage.setItem(BLACKBOX_LS, JSON.stringify(bbEvents)) } catch { /* ignore */ }
-      if (bbFlushTimer !== null) window.clearTimeout(bbFlushTimer)
-      bbFlushTimer = window.setTimeout(() => bbFlush(), 600)
-    }
-    const bbLogKey = (event: KeyboardEvent) => {
-      if (!scannerDebugEnabled) return
-      const now = Date.now()
-      const dt = bbLastKeyAt ? now - bbLastKeyAt : null
-      bbLastKeyAt = now
-      bbLog({
-        type: 'key', dt,
-        k: event.key, c: event.code, w: event.keyCode,
-        mods: `${event.shiftKey ? 'S' : ''}${event.ctrlKey ? 'C' : ''}${event.altKey ? 'A' : ''}${event.metaKey ? 'M' : ''}` || null,
-        rep: event.repeat || undefined,
-        ae: bbDescribeActive(),
-      })
-    }
-    // Незлиті події з минулого запуску (наприклад, після перезавантаження)
-    if (scannerDebugEnabled) {
-      try {
-        const leftover = localStorage.getItem(BLACKBOX_LS)
-        if (leftover) {
-          localStorage.removeItem(BLACKBOX_LS)
-          const events = JSON.parse(leftover)
-          if (Array.isArray(events) && events.length > 0) {
-            api.post('/api/v1/debug/scanner-keys', { events, note: 'restored-after-unload' }, undefined, { silent: true }).catch(() => {})
-          }
-        }
-      } catch { /* ignore */ }
-    } else {
-      try { localStorage.removeItem(BLACKBOX_LS) } catch { /* ignore */ }
-    }
-    const navEntry = performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined
-    bbLog({ type: 'boot', nav: navEntry?.type ?? 'unknown', ae: bbDescribeActive() })
-    const bbOnFullscreen = () => bbLog({ type: 'fullscreen', on: !!document.fullscreenElement })
-    const bbOnBlur = () => bbLog({ type: 'window', focus: false })
-    const bbOnFocus = () => bbLog({ type: 'window', focus: true })
-    const bbOnVis = () => bbLog({ type: 'visibility', state: document.visibilityState })
-    const bbOnUnload = () => {
-      if (!scannerDebugEnabled) return
-      try { localStorage.setItem(BLACKBOX_LS, JSON.stringify([...bbEvents, { type: 'unload', t: Date.now() }])) } catch { /* ignore */ }
-    }
-    document.addEventListener('fullscreenchange', bbOnFullscreen)
-    window.addEventListener('blur', bbOnBlur)
-    window.addEventListener('focus', bbOnFocus)
-    document.addEventListener('visibilitychange', bbOnVis)
-    window.addEventListener('beforeunload', bbOnUnload)
-    // ────────────────────────────────────────────────────────────────────────
 
     // Окремий буфер для набору всередині явних полів вводу
     let fieldBuf = ''
@@ -238,8 +150,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     const focusFrame = window.requestAnimationFrame(focusScannerSurface)
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Чорна скринька: фіксуємо ВСЕ, включно з Ctrl/Alt-комбінаціями сканера
-      bbLogKey(event)
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
 
       // Префікс сканера: сканер магазину шле F7 перед КОЖНИМ кодом. Chrome на
@@ -348,13 +258,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       clearTimer()
       window.removeEventListener('keydown', handleKeyDown, true)
       scannerSink.remove()
-      bbFlush('unmount')
-      if (bbFlushTimer !== null) window.clearTimeout(bbFlushTimer)
-      document.removeEventListener('fullscreenchange', bbOnFullscreen)
-      window.removeEventListener('blur', bbOnBlur)
-      window.removeEventListener('focus', bbOnFocus)
-      document.removeEventListener('visibilitychange', bbOnVis)
-      window.removeEventListener('beforeunload', bbOnUnload)
     }
   }, [])
 }

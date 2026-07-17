@@ -484,6 +484,9 @@ export class LocalPosRepository {
           discount,
           total,
           payment_method: method,
+          is_fiscal: input.is_fiscal === true,
+          fiscal_number: input.fiscal_number ?? null,
+          fiscal_qr_url: input.fiscal_qr_url ?? null,
           payments: input.payments,
           items: preparedItems.map((item) => ({
             product_id: item.product_id,
