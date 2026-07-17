@@ -481,17 +481,24 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
     const paymentMethod = normalizePaymentMethod(payload.payment_method)
     const saleId = payload.sale_id ?? operation.aggregate_id
     const completedAt = payload.completed_at ?? operation.created_at
+    // Старі збірки каси не клали fiscal-поля в payload — дістаємо номер з платежів
+    const fiscalNumber = payload.fiscal_number
+      ?? payments.find((p: { fiscal_number?: string | null }) => p?.fiscal_number)?.fiscal_number
+      ?? null
+    const isFiscal = payload.is_fiscal === true || fiscalNumber !== null
 
     await client.query(
       `INSERT INTO sales (
         id, tenant_id, sale_number, customer_id, cashier_id, shift_id, status,
         subtotal, discount, total, payment_method, is_debt, notes, manager_id,
-        cash_amount, card_amount, is_fiscal, completed_at, created_at, updated_at
+        cash_amount, card_amount, is_fiscal, fiscal_number, fiscal_qr_url,
+        completed_at, created_at, updated_at
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, 'completed',
         $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, false, $16, $16, $16
+        $14, $15, $16, $17, $18,
+        $19, $19, $19
       )`,
       [
         saleId,
@@ -509,6 +516,9 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
         payload.manager_id ?? payload.cashier_id ?? userId,
         cashAmount,
         cardAmount,
+        isFiscal,
+        fiscalNumber,
+        payload.fiscal_qr_url ?? null,
         completedAt,
       ],
     )

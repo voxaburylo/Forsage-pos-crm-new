@@ -99,6 +99,8 @@ export interface SaleForReturn {
     customer_id: string | null
     total: number
     completed_at: string
+    is_fiscal?: boolean
+    fiscal_number?: string | null
   }
   items: SaleItemForReturn[]
 }

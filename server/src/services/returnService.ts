@@ -53,7 +53,7 @@ export async function getReturn(id: string, tenantId: string) {
 export async function getSaleItems(saleId: string, tenantId: string) {
   const { data: sale, error: saleErr } = await db
     .from('sales')
-    .select('id, sale_number, status, customer_id, total, completed_at')
+    .select('id, sale_number, status, customer_id, total, completed_at, is_fiscal, fiscal_number')
     .eq('id', saleId)
     .eq('tenant_id', tenantId)
     .single()
@@ -118,6 +118,8 @@ export async function getSaleItems(saleId: string, tenantId: string) {
       customer_id: sale.customer_id,
       total: sale.total,
       completed_at: sale.completed_at,
+      is_fiscal: sale.is_fiscal === true,
+      fiscal_number: sale.fiscal_number ?? null,
     },
     items,
   }
