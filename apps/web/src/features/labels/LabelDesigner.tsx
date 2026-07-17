@@ -11,6 +11,8 @@ import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodeSvg } from '@/lib/barcodeSvg'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { loadTsplSettings, saveTsplSettings, type TsplLabelPrintSettings } from './tsplPrintSettings'
 
 type Tab = 'design' | 'print'
 
@@ -765,7 +767,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   }
 }
 
-export function printLabelDocument(document: LabelPrintDocument) {
+function printLabelDocumentViaDriver(document: LabelPrintDocument) {
   PrintService.printHtml(document.html, {
     mode: 'iframe',
     title: document.title,
@@ -779,6 +781,36 @@ export function printLabelDocument(document: LabelPrintDocument) {
     cleanupDelayMs: 30000,
     readyDelayMs: 50,
   })
+}
+
+export function printLabelDocument(document: LabelPrintDocument) {
+  // Прямий TSPL-друк (desktop): рендер точно під 203 dpi термоголовку і RAW
+  // у спулер повз растеризацію драйвера — без артефактів і «мила». При
+  // помилці відкатуємось на звичайний друк через драйвер.
+  const desktop = desktopBridge()
+  const tspl = loadTsplSettings()
+  if (desktop?.print?.labelsTspl && tspl.enabled && tspl.printerName) {
+    desktop.print.labelsTspl(document.html, {
+      printerName: tspl.printerName,
+      widthMm: document.widthMm,
+      heightMm: document.heightMm,
+      gapMm: tspl.gapMm,
+      density: tspl.density,
+      rotate180: tspl.rotate180,
+    }).then(({ labels }) => {
+      import('@/components/ui/Toast').then(({ toast }) =>
+        toast.success(`Надруковано ${labels} етикеток (TSPL)`))
+    }).catch((error: unknown) => {
+      console.error('TSPL label print failed, falling back to driver', error)
+      import('@/components/ui/Toast').then(({ toast }) =>
+        toast.error('Прямий друк TSPL не вдався ('
+          + (error instanceof Error ? error.message : 'помилка')
+          + ') — друкую через драйвер'))
+      printLabelDocumentViaDriver(document)
+    })
+    return
+  }
+  printLabelDocumentViaDriver(document)
 }
 
 export function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean) {
@@ -804,6 +836,48 @@ export default function LabelDesigner() {
   const [productSettings, setProductSettings] = useState<LabelSettings>(DEFAULT_LABEL)
   const [binSettings, setBinSettings] = useState<LabelSettings>(DEFAULT_BIN_LABEL)
   const settings = binMode ? binSettings : productSettings
+
+  // Прямий TSPL-друк (лише desktop-каса)
+  const desktopPrint = desktopBridge()?.print
+  const tsplAvailable = typeof desktopPrint?.labelsTspl === 'function'
+  const [tsplSettings, setTsplSettings] = useState<TsplLabelPrintSettings>(loadTsplSettings)
+  const [systemPrinters, setSystemPrinters] = useState<Array<{ name: string; displayName: string; isDefault: boolean }>>([])
+  const [tsplTesting, setTsplTesting] = useState(false)
+
+  useEffect(() => {
+    if (!tsplAvailable || typeof desktopPrint?.listPrinters !== 'function') return
+    desktopPrint.listPrinters().then(setSystemPrinters).catch(() => setSystemPrinters([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tsplAvailable])
+
+  function updateTspl(patch: Partial<TsplLabelPrintSettings>) {
+    setTsplSettings((prev) => {
+      const next = { ...prev, ...patch }
+      saveTsplSettings(next)
+      return next
+    })
+  }
+
+  async function handleTsplTest() {
+    if (!desktopPrint?.labelsTspl || !tsplSettings.printerName) return
+    setTsplTesting(true)
+    try {
+      const doc = buildLabelPrintDocument(settings, binMode ? [{ label: 'A-1' }] : [DEMO_PRODUCT], binMode)
+      await desktopPrint.labelsTspl(doc.html, {
+        printerName: tsplSettings.printerName,
+        widthMm: doc.widthMm,
+        heightMm: doc.heightMm,
+        gapMm: tsplSettings.gapMm,
+        density: tsplSettings.density,
+        rotate180: tsplSettings.rotate180,
+      })
+      toast.success('Тестова етикетка відправлена на принтер')
+    } catch (error) {
+      toast.error('Тест не вдався: ' + (error instanceof Error ? error.message : 'помилка'))
+    } finally {
+      setTsplTesting(false)
+    }
+  }
 
   // Стан для масового створення ячейок
   const [binPrefix, setBinPrefix] = useState('A-')
@@ -1638,6 +1712,84 @@ export default function LabelDesigner() {
               У вікні друку залиште масштаб <strong>100%</strong> і поля <strong>Немає</strong>.
               Не натискайте «Друк» повторно, поки попереднє вікно не закрите — програма також блокує випадковий подвійний запуск.
             </div>
+
+            {tsplAvailable && (
+              <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-3">
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                    Прямий друк TSPL (без драйвера)
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={tsplSettings.enabled}
+                    onChange={(e) => updateTspl({ enabled: e.target.checked })}
+                    className="accent-yellow-500 w-4 h-4"
+                  />
+                </label>
+                <p className="text-[11px] leading-relaxed text-gray-500">
+                  Етикетка готується точно під термоголовку 203 dpi і йде на принтер повз драйвер —
+                  без артефактів і розмиття, штрихкод друкує сам принтер. Для принтерів, що розуміють
+                  TSPL (PS-HL80, Xprinter тощо). Якщо виходить порожня етикетка або «сміття» — принтер
+                  не TSPL, вимкніть цю опцію.
+                </p>
+                {tsplSettings.enabled && (
+                  <>
+                    <div>
+                      <label className="block text-[10px] text-gray-400 mb-1">Принтер етикеток</label>
+                      <select
+                        value={tsplSettings.printerName}
+                        onChange={(e) => updateTspl({ printerName: e.target.value })}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white"
+                      >
+                        <option value="">— оберіть принтер —</option>
+                        {systemPrinters.map((printer) => (
+                          <option key={printer.name} value={printer.name}>
+                            {printer.displayName}{printer.isDefault ? ' (за замовчуванням)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 items-end">
+                      <div>
+                        <label className="block text-[10px] text-gray-400 mb-1">Зазор, мм</label>
+                        <input
+                          type="number" min={0} max={10} step={0.5}
+                          value={tsplSettings.gapMm}
+                          onChange={(e) => updateTspl({ gapMm: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
+                          className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-gray-400 mb-1">Щільність 0-15</label>
+                        <input
+                          type="number" min={0} max={15}
+                          value={tsplSettings.density}
+                          onChange={(e) => updateTspl({ density: Math.max(0, Math.min(15, Math.round(Number(e.target.value) || 0))) })}
+                          className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent bg-white h-[30px]"
+                        />
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer pb-1.5">
+                        <input
+                          type="checkbox"
+                          checked={tsplSettings.rotate180}
+                          onChange={(e) => updateTspl({ rotate180: e.target.checked })}
+                          className="accent-yellow-500"
+                        />
+                        180°
+                      </label>
+                    </div>
+                    <Button
+                      size="sm" variant="outline" className="w-full"
+                      onClick={handleTsplTest}
+                      loading={tsplTesting}
+                      disabled={!tsplSettings.printerName}
+                    >
+                      Тестова етикетка
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
