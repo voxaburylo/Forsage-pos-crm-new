@@ -32,7 +32,7 @@ router.post('/:id/close', async (req, res, next) => {
   try {
     const parsed = closeShiftSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть фактичний залишок готівки', 422, parsed.error.flatten())
-    const shift = await shiftService.closeShift(String(req.params.id), req.user!.id, parsed.data, req.user!.tenant_id)
+    const shift = await shiftService.closeShift(String(req.params.id), req.user!.id, parsed.data, req.user!.tenant_id, req.user!.role)
     res.json({ data: shift })
   } catch (err) { next(err) }
 })

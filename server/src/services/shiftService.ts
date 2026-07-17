@@ -62,10 +62,17 @@ export async function openShift(cashierId: string, tenantId: string, input: Open
   return data
 }
 
-export async function closeShift(shiftId: string, cashierId: string, input: CloseShiftInput, tenantId: string) {
+export async function closeShift(
+  shiftId: string,
+  cashierId: string,
+  input: CloseShiftInput,
+  tenantId: string,
+  userRole = 'cashier',
+) {
   const shift = await getShift(shiftId, tenantId)
 
-  if (shift.cashier_id !== cashierId) {
+  const canCloseTenantShift = userRole === 'owner' || userRole === 'admin'
+  if (shift.cashier_id !== cashierId && !canCloseTenantShift) {
     throw new AppError('FORBIDDEN', 'Це не ваша зміна', 403)
   }
   if (shift.status === 'closed') {
