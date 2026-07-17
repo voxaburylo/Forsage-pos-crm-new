@@ -117,8 +117,8 @@ export const productApi = {
   search: (q: string, limit = 10, opts?: ProductRequestOptions) =>
     api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts),
 
-  create: (form: ProductFormData) =>
-    api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form)),
+  create: (form: ProductFormData, opts?: ProductRequestOptions) =>
+    api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form), undefined, opts),
 
   update: (id: string, form: Partial<ProductFormData>, opts?: ProductRequestOptions) =>
     api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts),

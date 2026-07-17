@@ -30,6 +30,45 @@ interface LineItem {
   is_new?: boolean
 }
 
+function normalizeSkuValue(raw: string): string {
+  return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
+}
+
+function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
+  return {
+    product_name: '',
+    sku: '',
+    barcode: '',
+    qty: 1,
+    purchase_price: 0,
+    retail_price: 0,
+    category_id: null,
+    total: 0,
+    storage_bin: null,
+    photo_url: null,
+    is_new: true,
+    ...overrides,
+  }
+}
+
+function isDuplicateProductError(err: unknown): boolean {
+  const anyErr = err as any
+  const message = String(anyErr?.message ?? '')
+  return anyErr?.code === 'SKU_DUPLICATE'
+    || anyErr?.code === 'BARCODE_TAKEN'
+    || /артикул.+вже існує/i.test(message)
+    || /штрихкод.+вже/i.test(message)
+    || /duplicate|unique constraint|already exists/i.test(message)
+}
+
+function duplicateProductMessage(err: unknown, itemName?: string): string {
+  const message = String((err as any)?.message ?? '')
+  const prefix = itemName ? `«${itemName}»: ` : ''
+  if (/штрихкод/i.test(message)) return `${prefix}товар з таким штрихкодом вже існує`
+  if (/артикул|sku/i.test(message)) return `${prefix}товар з таким артикулом вже існує`
+  return `${prefix}такий товар вже існує. Перевірте артикул або штрихкод.`
+}
+
 interface RowPhotoCellProps {
   photoUrl: string | null
   productId: string
@@ -153,6 +192,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
         ref={fileInputRef}
         onChange={handleFileChange}
         accept="image/*"
+        capture="environment"
         className="hidden"
       />
     </div>
@@ -355,6 +395,12 @@ export default function InvoiceFormPage() {
       .catch(() => {})
   }
 
+  function addDraftItem() {
+    setItems((prev) => [...prev, makeDraftItem()])
+    setProductSearch('')
+    setProductResults([])
+  }
+
   function updateItem(index: number, field: keyof LineItem, value: string | number) {
     setItems((prev) => {
       const next = [...prev]
@@ -426,7 +472,10 @@ export default function InvoiceFormPage() {
     })
   }
 
-  async function handleCreateProduct() {
+  // addMore=true — «Створити і додати ще»: товар летить у накладну, модалка лишається
+  // відкритою з очищеними полями (категорія/бренд зберігаються) — швидке поштучне
+  // набивання накладної, особливо з телефона.
+  async function handleCreateProduct(addMore = false) {
     if (!newProductName.trim()) { toast.error('Назва обов’язкова'); return }
     if (!newProductSku.trim()) { toast.error('Артикул (SKU) обов’язковий'); return }
     setCreatingProduct(true)
@@ -449,20 +498,29 @@ export default function InvoiceFormPage() {
         photo_url: newProductPhotoUrl,
         specs: {}
       }
-      const res = await productApi.create(form)
-      toast.success('Товар створено')
+      const res = await productApi.create(form, { silent: true })
+      toast.success(`Товар "${res.data.name}" додано в накладну`)
       addItem(res.data)
-      setProductModal(false)
       setNewProductName('')
-      setNewProductSku('')
+      setNewProductSku(addMore ? `AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}` : '')
       setNewProductBarcode('')
-      setNewProductCategoryId('')
-      setNewProductBrandId('')
       setNewProductPurchase('')
       setNewProductRetail('')
       setNewProductPhotoUrl(null)
+      if (!addMore) {
+        setProductModal(false)
+        setNewProductCategoryId('')
+        setNewProductBrandId('')
+      }
     } catch (err) {
-      toast.error('Помилка створення товару')
+      // api.ts вже показав toast з текстом сервера (напр. «Артикул вже існує»)
+      if (isDuplicateProductError(err)) {
+        toast.error(duplicateProductMessage(err, newProductName.trim()))
+        return
+      }
+      if (!(err as any).status) {
+        toast.error(err instanceof Error ? err.message : 'Помилка створення товару')
+      }
     } finally {
       setCreatingProduct(false)
     }
@@ -622,6 +680,31 @@ export default function InvoiceFormPage() {
 
   const total = items.reduce((sum, i) => sum + i.total, 0)
 
+  async function findExistingProductForItem(item: LineItem): Promise<Product | null> {
+    const skuTrim = (item.sku || '').trim()
+    const barcodeTrim = (item.barcode || '').trim()
+    const matches: Product[] = []
+
+    if (skuTrim) {
+      const existing = await productApi.list({ search: skuTrim, per_page: 20 })
+      const normalizedSku = normalizeSkuValue(skuTrim)
+      const match = existing.data.find((p) => normalizeSkuValue(p.sku || '') === normalizedSku)
+      if (match) matches.push(match)
+    }
+
+    if (barcodeTrim) {
+      const existing = await productApi.list({ search: barcodeTrim, per_page: 20 })
+      const match = existing.data.find((p) => (p.barcode || '').trim() === barcodeTrim)
+      if (match) matches.push(match)
+    }
+
+    const uniqueMatches = [...new Map(matches.map((p) => [p.id, p])).values()]
+    if (uniqueMatches.length > 1) {
+      throw new Error(`У рядку «${item.product_name || skuTrim || barcodeTrim}» артикул і штрихкод належать різним товарам. Перевірте цей рядок.`)
+    }
+    return uniqueMatches[0] ?? null
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (items.length === 0) { toast.error('Додайте хоча б один товар'); return }
@@ -635,20 +718,26 @@ export default function InvoiceFormPage() {
           if (item.product_id && !item.is_new) {
             return item
           }
-          // Search if SKU exists to avoid duplication (лише якщо артикул заданий)
-          const skuTrim = (item.sku || '').trim()
-          if (skuTrim) {
-            try {
-              const existing = await productApi.list({ search: skuTrim })
-              const match = existing.data.find(p => p.sku === skuTrim)
-              if (match) {
-                return { ...item, product_id: match.id, is_new: false }
-              }
-            } catch { /* товар не знайдено в базі — створимо новий нижче */ }
+          // Якщо рядок з телефона повторює вже наявний товар за артикулом або ШК —
+          // прив'язуємо його до існуючого товару, а не змушуємо відкривати модалку.
+          const match = await findExistingProductForItem(item)
+          if (match) {
+            return {
+              ...item,
+              product_id: match.id,
+              is_new: false,
+              sku: match.sku,
+              barcode: item.barcode || match.barcode || '',
+              product_name: item.product_name || match.name,
+              category_id: item.category_id ?? match.category_id ?? null,
+              storage_bin: item.storage_bin ?? match.storage_bin ?? null,
+              photo_url: item.photo_url ?? match.photo_url ?? null,
+            }
           }
 
           // Бракує даних — не блокуємо збереження/проведення: підставляємо авто-артикул/назву
           // (товар створюється з плейсхолдером, який можна допиляти пізніше в картці).
+          const skuTrim = (item.sku || '').trim()
           const genSku  = skuTrim || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 100)}`
           const genName = (item.product_name || '').trim() || `Товар ${genSku}`
 
@@ -671,7 +760,7 @@ export default function InvoiceFormPage() {
             photo_url: item.photo_url || null,
             specs: {}
           }
-          const res = await productApi.create(form)
+          const res = await productApi.create(form, { silent: true })
           // Повертаємо згенеровані артикул/назву, щоб подальший патч не затер їх порожніми
           return { ...item, product_id: res.data.id, is_new: false, sku: genSku, product_name: genName }
         })
@@ -755,8 +844,12 @@ export default function InvoiceFormPage() {
         }
       }
       navigate(`/suppliers/invoices`)
-    } catch {
-      toast.error('Помилка збереження накладної')
+    } catch (err) {
+      if (isDuplicateProductError(err)) {
+        toast.error(duplicateProductMessage(err))
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Помилка збереження накладної')
+      }
     } finally {
       setSaving(false)
     }
@@ -807,7 +900,7 @@ export default function InvoiceFormPage() {
         {/* Спосіб додавання товарів */}
         {!isEdit && (
           <Card className="mb-6">
-            <div className="flex gap-1.5 border-b border-gray-100 pb-3 mb-4">
+            <div className="flex flex-wrap gap-1.5 border-b border-gray-100 pb-3 mb-4">
               <button type="button" onClick={() => setImportTab('manual')}
                 className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors ${importTab === 'manual' ? 'bg-yellow-400 text-black' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>
                 🔎 Пошук та сканер
@@ -823,8 +916,11 @@ export default function InvoiceFormPage() {
             </div>
 
             {importTab === 'manual' && (
-              <div className="flex gap-2 items-center">
+              <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
                 <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="Пошук товарів за назвою, штрихкодом або SKU..." className="flex-1" autoFocus />
+                <Button type="button" onClick={addDraftItem}>
+                  Рядок у накладну
+                </Button>
                 <Button type="button" variant="outline" onClick={() => {
                   setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
                   setProductModal(true)
@@ -931,6 +1027,7 @@ export default function InvoiceFormPage() {
             </div>
           )}
 
+          <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
@@ -1078,17 +1175,123 @@ export default function InvoiceFormPage() {
                 )
               })}
               {items.length === 0 && (
-                <tr><td colSpan={9} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
+                <tr><td colSpan={10} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}
             </tbody>
             <tfoot>
               <tr className="font-semibold bg-gray-50">
-                <td colSpan={7} className="px-4 py-2 text-right">Всього:</td>
+                <td colSpan={8} className="px-4 py-2 text-right">Всього:</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(total)}</td>
                 <td></td>
               </tr>
             </tfoot>
           </table>
+          </div>
+
+          {/* Мобільний вигляд позицій — картки замість широкої таблиці */}
+          <div className="md:hidden divide-y divide-gray-100">
+            {items.map((item, i) => (
+              <div key={i} className="p-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  <RowPhotoCell
+                    photoUrl={item.photo_url ?? null}
+                    productId={item.product_id || 'new_' + i}
+                    onPhotoUpdated={(newUrl) => {
+                      setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, photo_url: newUrl } : it))
+                    }}
+                  />
+                  <input type="text" value={item.product_name}
+                    onChange={(e) => updateItem(i, 'product_name', e.target.value)}
+                    disabled={isEdit}
+                    placeholder="Назва товару"
+                    className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  {!isEdit && (
+                    <button type="button" onClick={() => removeItem(i)}
+                      className="shrink-0 p-2 text-red-300 hover:text-red-500"><Trash2 size={16} /></button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input type="text" value={item.sku}
+                    onChange={(e) => updateItem(i, 'sku', e.target.value)}
+                    disabled={isEdit}
+                    placeholder="Артикул"
+                    className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  <div className="flex gap-1">
+                    <input type="text" value={item.barcode ?? ''}
+                      onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+                      disabled={isEdit}
+                      placeholder="Штрихкод"
+                      autoComplete="off"
+                      className={`flex-1 min-w-0 border rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
+                    <button type="button" disabled={isEdit} onClick={() => generateBarcodeForRow(i)}
+                      title="Згенерувати штрихкод"
+                      className="shrink-0 px-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 disabled:opacity-40">
+                      <Barcode size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">К-сть</label>
+                    <div className="flex items-center gap-1">
+                      <button type="button" disabled={isEdit || item.qty <= 1}
+                        onClick={() => updateItem(i, 'qty', Math.max(1, item.qty - 1))}
+                        className="shrink-0 w-8 h-9 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
+                      <input type="number" step="0.001" min="0.001" value={item.qty}
+                        onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                        disabled={isEdit}
+                        className="w-full min-w-0 text-center border border-gray-200 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
+                      <button type="button" disabled={isEdit}
+                        onClick={() => updateItem(i, 'qty', item.qty + 1)}
+                        className="shrink-0 w-8 h-9 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Закупка, грн</label>
+                    <input type="number" step="0.01" min="0"
+                      value={(item.purchase_price / 100).toFixed(2)}
+                      onChange={(e) => updateItem(i, 'purchase_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      onBlur={() => { if (!isEdit) recalcRetail(i) }}
+                      disabled={isEdit}
+                      className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Роздріб, грн</label>
+                    <input type="number" step="0.01" min="0"
+                      value={(item.retail_price / 100).toFixed(2)}
+                      onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      disabled={isEdit}
+                      className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  {!isEdit && quickPercents.length > 0 ? (
+                    <select
+                      onChange={(e) => {
+                        const val = e.target.value
+                        if (val) { applySingleQuickPercent(i, parseFloat(val)); e.target.value = '' }
+                      }}
+                      className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white">
+                      <option value="">⚡ Націнка %</option>
+                      {quickPercents.map((pct) => (
+                        <option key={pct} value={pct}>{pct}%</option>
+                      ))}
+                    </select>
+                  ) : <span />}
+                  <span className="text-sm font-semibold font-mono">{formatMoney(item.total)}</span>
+                </div>
+              </div>
+            ))}
+            {items.length === 0 && (
+              <div className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</div>
+            )}
+            {items.length > 0 && (
+              <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 font-semibold text-sm">
+                <span>Всього:</span>
+                <span className="font-mono">{formatMoney(total)}</span>
+              </div>
+            )}
+          </div>
         </Card>
 
         {/* Оплата постачальнику (тільки при створенні) */}
@@ -1237,11 +1440,14 @@ export default function InvoiceFormPage() {
               <Input label="Роздріб, грн" type="number" step="0.01" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
             </div>
 
-            <div className="flex gap-3 pt-2">
-              <Button loading={creatingProduct} onClick={handleCreateProduct} className="flex-1">
-                Створити товар
+            <div className="flex flex-wrap gap-2 pt-2">
+              <Button loading={creatingProduct} onClick={() => handleCreateProduct(true)} className="flex-1 min-w-[45%]">
+                ➕ Створити і додати ще
               </Button>
-              <Button variant="secondary" onClick={() => setProductModal(false)}>Скасувати</Button>
+              <Button variant="outline" loading={creatingProduct} onClick={() => handleCreateProduct(false)} className="flex-1 min-w-[45%]">
+                Створити і закрити
+              </Button>
+              <Button variant="secondary" onClick={() => setProductModal(false)} className="w-full sm:w-auto">Скасувати</Button>
             </div>
           </div>
         </div>

@@ -17,6 +17,19 @@ async function getAccessToken(): Promise<string | null> {
   }
 }
 
+function humanizeApiError(message: string, code?: string): string {
+  if (code === 'SKU_DUPLICATE') return message || 'Товар з таким артикулом вже існує'
+  if (code === 'BARCODE_TAKEN') return message || 'Товар з таким штрихкодом вже існує'
+
+  const lower = message.toLowerCase()
+  if (lower.includes('duplicate key') || lower.includes('unique constraint') || lower.includes('already exists')) {
+    if (lower.includes('barcode') || lower.includes('штрих')) return 'Товар з таким штрихкодом вже існує'
+    if (lower.includes('sku') || lower.includes('артикул')) return 'Товар з таким артикулом вже існує'
+    return 'Такий товар вже існує. Перевірте артикул або штрихкод.'
+  }
+  return message
+}
+
 async function refreshToken(): Promise<string | null> {
   try {
     const { supabase } = await import('./supabase')
@@ -77,11 +90,14 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
 
   if (!res.ok) {
     let errorMessage = `HTTP ${res.status}`
+    let errorCode: string | undefined
     try {
       const body = await res.json()
+      errorCode = body?.error?.code
       errorMessage = body?.error?.message ?? errorMessage
       // Технічні префікси кодів із БД-помилок (INSUFFICIENT_STOCK: ...) користувачу не потрібні
       errorMessage = errorMessage.replace(/^[A-Z][A-Z_]{2,}:\s*/, '')
+      errorMessage = humanizeApiError(errorMessage, errorCode)
     } catch { /* response не JSON */ }
 
     if (!silent) {
@@ -89,6 +105,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
     }
     const err = new Error(errorMessage)
     ;(err as any).status = res.status
+    ;(err as any).code = errorCode
     throw err
   }
 

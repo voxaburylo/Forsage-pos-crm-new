@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
   ChevronUp, ChevronDown, ChevronsUpDown, Search,
-  Trash2, Eye, GitMerge, ExternalLink, Copy,
+  Trash2, Eye, GitMerge, ExternalLink, Copy, FileText,
 } from 'lucide-react'
 import { MergeModal } from './MergeModal'
 import { CategorySidebar } from './CategorySidebar'
@@ -394,6 +394,12 @@ export default function ProductsPage() {
             <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт каталогу</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>
           </span>
+          {/* Масове поштучне додавання через прихідну накладну — зручно з телефона */}
+          {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
+            <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/suppliers/invoices/new')}>
+              <span className="hidden sm:inline">Накладна</span>
+            </Button>
+          )}
           <Button size="sm" icon={<Plus size={15} />} onClick={() => navigate('/products/new')}>
             <span className="hidden sm:inline">Новий товар</span>
           </Button>

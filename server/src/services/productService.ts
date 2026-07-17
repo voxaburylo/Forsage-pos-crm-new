@@ -1,4 +1,4 @@
-﻿import { db } from '../db/supabase.js'
+import { db } from '../db/supabase.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -189,19 +189,52 @@ export async function getProduct(id: string, tenantId: string) {
 }
 
 export async function createProduct(input: CreateProductInput, _userId: string, tenantId: string) {
+  // Унікальний індекс products_tenant_id_sku_key покриває і soft-deleted рядки,
+  // тому шукаємо дубль БЕЗ фільтра deleted_at — інакше «привид» у кошику
+  // валив insert сирою помилкою constraint.
   const { data: existing } = await db
     .from(TABLE)
-    .select('id')
+    .select('id, deleted_at')
     .eq('sku', input.sku)
     .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
     .maybeSingle()
 
-  if (existing) throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує`, 409)
+  if (existing && !existing.deleted_at) {
+    throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує`, 409)
+  }
+
+  if (input.barcode) {
+    const { data: barcodeDuplicate } = await db
+      .from(TABLE)
+      .select('id, name')
+      .eq('barcode', input.barcode)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (barcodeDuplicate) {
+      throw new AppError('BARCODE_TAKEN', `Штрихкод "${input.barcode}" вже у товара "${barcodeDuplicate.name}"`, 409)
+    }
+  }
 
   const normalized = {
     normalized_oem: normalizeOemValue(input.oem_number),
     normalized_supplier_article: normalizeOemValue((input as any).supplier_article),
+  }
+
+  // Дубль лише серед видалених — «воскрешаємо» той самий рядок під новими даними
+  // (створити новий не дасть унікальний індекс, а відновлення зберігає історію товару)
+  if (existing && existing.deleted_at) {
+    const { data, error } = await db
+      .from(TABLE)
+      .update({ ...input, ...normalized, deleted_at: null, updated_at: new Date().toISOString() })
+      .eq('id', existing.id)
+      .eq('tenant_id', tenantId)
+      .select('*, brand:brands(id,name), category:categories(id,name)')
+      .single()
+
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    await searchCache.clear()
+    return data
   }
 
   const { data, error } = await db
@@ -210,7 +243,17 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .single()
 
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    if (error.code === '23505') {
+      const message = String((error as any).message ?? '')
+      const details = String((error as any).details ?? '')
+      if (/barcode/i.test(message) || /barcode/i.test(details)) {
+        throw new AppError('BARCODE_TAKEN', `Штрихкод "${input.barcode}" вже використовується іншим товаром`, 409)
+      }
+      throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує`, 409)
+    }
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
   await searchCache.clear()
   return data
 }
@@ -270,7 +313,12 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .single()
 
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    if (error.code === '23505') {
+      throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує (можливо, у видаленому товарі)`, 409)
+    }
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
 
   if (priceChanges.length > 0) {
     await db.from('product_price_history').insert(
