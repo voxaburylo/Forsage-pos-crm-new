@@ -16,11 +16,19 @@ export interface TsplLabelPrintSettings {
 const STORAGE_KEY = 'forsage_label_tspl_v1'
 
 export const DEFAULT_TSPL_SETTINGS: TsplLabelPrintSettings = {
-  enabled: false,
+  // Увімкнено за замовчуванням: якщо в системі є принтер етикеток, друкуємо
+  // одразу якісно (прямий TSPL), нічого вмикати не треба.
+  enabled: true,
   printerName: '',
   gapMm: 2,
   density: 8,
   rotate180: false,
+}
+
+/** Впізнаємо принтер етикеток за назвою (HL80, HiLabel, Xprinter тощо). */
+export function pickLabelPrinter(printers: Array<{ name: string }>): string | null {
+  const match = printers.find((p) => /hl80|hilabel|label|xprinter|tspl|3\s*inch/i.test(p.name))
+  return match ? match.name : null
 }
 
 export function loadTsplSettings(): TsplLabelPrintSettings {
@@ -29,7 +37,7 @@ export function loadTsplSettings(): TsplLabelPrintSettings {
     if (!raw) return { ...DEFAULT_TSPL_SETTINGS }
     const parsed = JSON.parse(raw) as Partial<TsplLabelPrintSettings>
     return {
-      enabled: parsed.enabled === true,
+      enabled: parsed.enabled !== false,
       printerName: typeof parsed.printerName === 'string' ? parsed.printerName : '',
       gapMm: Number.isFinite(Number(parsed.gapMm)) ? Math.max(0, Math.min(10, Number(parsed.gapMm))) : 2,
       density: Number.isFinite(Number(parsed.density)) ? Math.max(0, Math.min(15, Math.round(Number(parsed.density)))) : 8,
