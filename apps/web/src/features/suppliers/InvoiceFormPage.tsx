@@ -384,9 +384,82 @@ export default function InvoiceFormPage() {
     return () => clearTimeout(timer)
   }, [productSearch, searchProducts])
 
+  async function handleProductSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape') {
+      setProductSearch('')
+      setProductResults([])
+      return
+    }
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+
+    const query = productSearch.trim()
+    if (!query) {
+      addDraftItem()
+      return
+    }
+
+    const existingResult = productResults[0]
+    if (existingResult) {
+      addItem(existingResult)
+      return
+    }
+
+    try {
+      const res = await productApi.list({ search: query, per_page: 10 })
+      if (res.data[0]) {
+        addItem(res.data[0])
+        return
+      }
+    } catch {
+      // якщо пошук не відповів — все одно дамо створити рядок вручну нижче
+    }
+
+    const looksLikeBarcode = /^\d{6,}$/.test(query)
+    addDraftItem(looksLikeBarcode ? { barcode: query } : { product_name: query }, looksLikeBarcode ? 'name' : 'sku')
+  }
   // Швидке сканування штрихкодів: реф на кожен інпут ШК + режим-гід «по черзі»
   const barcodeRefs = useRef<(HTMLInputElement | null)[]>([])
   const [scanGuide, setScanGuide] = useState(false)
+
+  type RowField = 'name' | 'sku' | 'barcode' | 'qty' | 'purchase' | 'retail'
+  const rowNameRefs = useRef<(HTMLInputElement | null)[]>([])
+  const skuRefs = useRef<(HTMLInputElement | null)[]>([])
+  const qtyRefs = useRef<(HTMLInputElement | null)[]>([])
+  const purchaseRefs = useRef<(HTMLInputElement | null)[]>([])
+  const retailRefs = useRef<(HTMLInputElement | null)[]>([])
+
+  function refsForField(field: RowField) {
+    if (field === 'name') return rowNameRefs
+    if (field === 'sku') return skuRefs
+    if (field === 'barcode') return barcodeRefs
+    if (field === 'qty') return qtyRefs
+    if (field === 'purchase') return purchaseRefs
+    return retailRefs
+  }
+
+  function focusRowField(index: number, field: RowField = 'name') {
+    window.setTimeout(() => {
+      const el = refsForField(field).current[index]
+      if (el) { el.focus(); el.select() }
+    }, 0)
+  }
+
+  function handleRowFieldKeyDown(e: React.KeyboardEvent<HTMLInputElement>, index: number, field: RowField) {
+    if (e.key !== 'Enter' || e.shiftKey) return
+    e.preventDefault()
+    const order: RowField[] = ['name', 'sku', 'barcode', 'qty', 'purchase', 'retail']
+    const pos = order.indexOf(field)
+    if (pos >= 0 && pos < order.length - 1) {
+      focusRowField(index, order[pos + 1])
+      return
+    }
+    if (!isEdit && index >= items.length - 1) {
+      addDraftItem()
+    } else {
+      focusRowField(index + 1, 'name')
+    }
+  }
 
   function focusBarcodeRow(idx: number) {
     const el = barcodeRefs.current[idx]
@@ -432,11 +505,17 @@ export default function InvoiceFormPage() {
     }
   }
 
-  function addItem(product: Product) {
-    if (items.some((i) => i.product_id === product.id)) {
-      toast.warning('Товар вже додано')
+  function addItem(product: Product, focusField: RowField = 'purchase') {
+    const existingIndex = items.findIndex((i) => i.product_id === product.id)
+    if (existingIndex !== -1) {
+      setItems((prev) => prev.map((it, idx) => idx === existingIndex ? { ...it, qty: it.qty + 1, total: Math.round((it.qty + 1) * it.purchase_price) } : it))
+      setProductSearch('')
+      setProductResults([])
+      focusRowField(existingIndex, 'qty')
+      toast.success('Товар вже був у накладній — кількість збільшено на 1')
       return
     }
+    const nextIndex = items.length
     setItems((prev) => [...prev, {
       product_id: product.id,
       product_name: product.name,
@@ -450,6 +529,7 @@ export default function InvoiceFormPage() {
       sku: product.sku,
       barcode: product.barcode ?? '',
     }])
+    focusRowField(nextIndex, focusField)
     setProductSearch('')
     setProductResults([])
 
@@ -460,10 +540,12 @@ export default function InvoiceFormPage() {
       .catch(() => {})
   }
 
-  function addDraftItem() {
-    setItems((prev) => [...prev, makeDraftItem()])
+  function addDraftItem(overrides: Partial<LineItem> = {}, focusField: RowField = 'name') {
+    const nextIndex = items.length
+    setItems((prev) => [...prev, makeDraftItem(overrides)])
     setProductSearch('')
     setProductResults([])
+    focusRowField(nextIndex, focusField)
   }
 
   function updateItem(index: number, field: keyof LineItem, value: string | number) {
@@ -471,7 +553,8 @@ export default function InvoiceFormPage() {
       const next = [...prev]
       const item = { ...next[index] }
       if (field === 'qty') {
-        item.qty = Number(value) || 0
+        const qty = parseDecimalInput(value, 0)
+        item.qty = qty > 0 ? qty : 0
         item.total = Math.round(item.qty * item.purchase_price)
       } else if (field === 'purchase_price') {
         item.purchase_price = Number(value) || 0
@@ -625,7 +708,7 @@ export default function InvoiceFormPage() {
   function processRawRows(rawRows: any[][]) {
     if (!rawRows || rawRows.length === 0) return
     const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase())
-    const hasHeader = headers.some(h => /^(sku|артикул|код|арт|name|назва|наименование|товар|модель|qty|кол|кільк|количество|purchase|закуп|ціна|цена|вхідна|retail|роздріб|розница|продаж|bin|комірка|ячейка|ящик)$/.test(h))
+    const hasHeader = headers.some(h => /(sku|артикул|код|арт|name|назва|наименование|товар|модель|qty|кол|кільк|количество|purchase|закуп|ціна|цена|вхідна|retail|роздріб|розница|продаж|bin|комірка|ячейка|ящик)/.test(h))
     
     let nameIdx = headers.findIndex(h => /(name|назва|наименование|товар|модель)/.test(h))
     let skuIdx = headers.findIndex(h => /(sku|артикул|код|арт)/.test(h))
@@ -1016,9 +1099,9 @@ export default function InvoiceFormPage() {
 
             {importTab === 'manual' && (
               <div className="space-y-2">
-                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" autoFocus />
+                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" autoFocus />
                 <div className="grid grid-cols-2 gap-2">
-                  <Button type="button" onClick={addDraftItem} className="min-h-[44px]">
+                  <Button type="button" onClick={() => addDraftItem()} className="min-h-[44px]">
                     Додати рядок
                   </Button>
                   <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => {
@@ -1028,7 +1111,7 @@ export default function InvoiceFormPage() {
                     Картка товару
                   </Button>
                 </div>
-                <p className="text-xs text-gray-400">Для приходу з телефона зазвичай натискайте «Додати рядок» і заповнюйте товар прямо нижче.</p>
+                <p className="text-xs text-gray-400">У локальній програмі: Enter у пошуку додає перший знайдений товар; Enter у рядку переходить до наступного поля.</p>
               </div>
             )}
 
@@ -1038,7 +1121,7 @@ export default function InvoiceFormPage() {
                 <label htmlFor="file-import" className="cursor-pointer flex flex-col items-center justify-center gap-2">
                   <span className="p-3 bg-yellow-100 text-yellow-700 rounded-full">📁</span>
                   <span className="font-semibold text-sm text-gray-700">Оберіть Excel (.xlsx) або CSV файл</span>
-                  <span className="text-xs text-gray-400">Перший рядок файлу має містити заголовки: SKU, Назва, Кількість, Закупка...</span>
+                  <span className="text-xs text-gray-400">Можна з заголовками або без них: SKU/Артикул, Назва, Кількість, Закупка...</span>
                 </label>
               </div>
             )}
@@ -1162,15 +1245,17 @@ export default function InvoiceFormPage() {
                     />
                   </td>
                   <td className="px-4 py-2 font-medium min-w-[200px]">
-                    <input type="text" value={item.product_name}
+                    <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
+                      onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
                       disabled={isEdit}
                       placeholder="Назва товару"
                       className="w-full border border-transparent hover:border-gray-200 focus:border-yellow-400 rounded px-2 py-1 text-sm bg-transparent focus:bg-white font-medium" />
                     <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
                       <span className="text-gray-400 font-semibold uppercase text-[10px]">SKU:</span>
-                      <input type="text" value={item.sku}
+                      <input ref={(el) => { skuRefs.current[i] = el }} type="text" value={item.sku}
                         onChange={(e) => updateItem(i, 'sku', e.target.value)}
+                        onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'sku')}
                         disabled={isEdit}
                         placeholder="Артикул"
                         className="w-32 border border-transparent hover:border-gray-200 focus:border-yellow-400 rounded px-1.5 py-0.5 text-xs bg-transparent focus:bg-white font-mono" />
@@ -1189,7 +1274,7 @@ export default function InvoiceFormPage() {
                         ref={(el) => { barcodeRefs.current[i] = el }}
                         type="text" value={item.barcode ?? ''}
                         onChange={(e) => updateItem(i, 'barcode', e.target.value)}
-                        onKeyDown={(e) => onBarcodeKeyDown(e, i)}
+                        onKeyDown={(e) => scanGuide ? onBarcodeKeyDown(e, i) : handleRowFieldKeyDown(e, i, 'barcode')}
                         disabled={isEdit}
                         placeholder="скан / ввід"
                         autoComplete="off"
@@ -1209,17 +1294,19 @@ export default function InvoiceFormPage() {
                       className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
-                    <input type="number" step="0.001" min="0.001" value={item.qty}
+                    <input ref={(el) => { qtyRefs.current[i] = el }} type="number" step="1" min="0" value={item.qty}
                       onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                      onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'qty')}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
-                    <input type="text" inputMode="decimal"
+                    <input ref={(el) => { purchaseRefs.current[i] = el }} type="text" inputMode="decimal"
                       value={moneyValue(i, 'purchase_price', item.purchase_price)}
                       onFocus={(e) => beginMoneyEdit(i, 'purchase_price', item.purchase_price, e.currentTarget)}
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'purchase_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
+                      onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'purchase')}
                       onBlur={() => finishMoneyEdit(i, 'purchase_price')}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
@@ -1244,11 +1331,12 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <div className="flex flex-col gap-1 items-end">
-                      <input type="text" inputMode="decimal"
+                      <input ref={(el) => { retailRefs.current[i] = el }} type="text" inputMode="decimal"
                         value={moneyValue(i, 'retail_price', item.retail_price)}
                       onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
+                      onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'retail')}
                         onBlur={() => finishMoneyEdit(i, 'retail_price')}
                         disabled={isEdit}
                         className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
@@ -1355,7 +1443,7 @@ export default function InvoiceFormPage() {
                       <button type="button" disabled={isEdit || item.qty <= 1}
                         onClick={() => updateItem(i, 'qty', Math.max(1, item.qty - 1))}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
-                      <input type="number" step="0.001" min="0.001" value={item.qty}
+                      <input type="number" step="1" min="0" value={item.qty}
                         onChange={(e) => updateItem(i, 'qty', e.target.value)}
                         disabled={isEdit}
                         className="w-full min-w-0 text-center border border-gray-200 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
