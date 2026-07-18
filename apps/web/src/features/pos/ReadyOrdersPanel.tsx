@@ -36,10 +36,15 @@ interface ReadyOrder {
 const READY_ORDER_READ_TIMEOUT_MS = 10_000
 const READY_ORDER_WRITE_TIMEOUT_MS = 30_000
 const ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
+const NON_ISSUEABLE_STATUSES = ['lead', 'quoted', 'completed', 'canceled', 'archived']
 type PaymentAction = 'deposit' | 'full'
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
+}
+
+function canIssueOrder(order: ReadyOrder) {
+  return !NON_ISSUEABLE_STATUSES.includes(order.status)
 }
 
 export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileInline?: boolean; onCloseMobile?: () => void } = {}) {
@@ -198,7 +203,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
 
     const orderToComplete = payOrder
-    const shouldCompleteAfterPayment = payAction === 'full' && closeAfterPayment && orderToComplete.status === 'ready'
+    const shouldCompleteAfterPayment = payAction === 'full' && closeAfterPayment && canIssueOrder(orderToComplete)
 
     setPaying(true)
     try {
@@ -247,8 +252,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       toast.error(`Залишок до оплати: ${formatMoney(remaining)}. Спочатку внесіть оплату в замовленні.`)
       return
     }
-    if (!options.skipPaymentCheck && order.status !== 'ready') {
-      toast.error('Видати можна тільки замовлення зі статусом «Готовий»')
+    if (!options.skipPaymentCheck && !canIssueOrder(order)) {
+      toast.error('Чернетку або скасоване замовлення не можна видати через касу')
       return
     }
 
@@ -281,7 +286,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     const isActive = !['completed', 'canceled', 'archived'].includes(order.status)
     const canDeposit = isActive && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
     const canFullPay = isActive && remaining > 0
-    const canIssue = order.status === 'ready' && remaining <= 0
+    const canIssue = canIssueOrder(order) && remaining <= 0
     const rounded = density === 'mobile' ? 'rounded-xl' : 'rounded-lg'
     const minHeight = density === 'mobile' ? { minHeight: 44 } : undefined
 
@@ -514,7 +519,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     className="h-4 w-4 accent-yellow-500" />
                   Провести через ПРРО (фіскальний чек)
                 </label>
-                {payAction === 'full' && payOrder.status === 'ready' && (
+                {payAction === 'full' && canIssueOrder(payOrder) && (
                   <label className="flex items-center gap-3 rounded-xl border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
                     <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
                       className="h-4 w-4 accent-green-500" />
@@ -756,7 +761,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                   className="h-4 w-4 accent-yellow-500" />
                 Провести через ПРРО (фіскальний чек)
               </label>
-                {payAction === 'full' && payOrder.status === 'ready' && (
+                {payAction === 'full' && canIssueOrder(payOrder) && (
                   <label className="flex items-center gap-3 rounded-lg border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
                     <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
                       className="h-4 w-4 accent-green-500" />
