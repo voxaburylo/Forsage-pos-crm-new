@@ -24,6 +24,7 @@ interface ReadyOrder {
   order_number?: number | null
   customer: { id: string; phone: string; full_name: string | null; card_barcode?: string | null } | null
   total_amount: number
+  discount_amount?: number
   prepayment: number
   total_paid: number
   items: OrderItem[]
@@ -35,6 +36,7 @@ interface ReadyOrder {
 const READY_ORDER_READ_TIMEOUT_MS = 10_000
 const READY_ORDER_WRITE_TIMEOUT_MS = 30_000
 const ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
+type PaymentAction = 'deposit' | 'full'
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
@@ -52,6 +54,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [search, setSearch] = useState('')
   const [payOrder, setPayOrder] = useState<ReadyOrder | null>(null)
   const [payAmount, setPayAmount] = useState('')
+  const [payAction, setPayAction] = useState<PaymentAction>('deposit')
+  const [closeAfterPayment, setCloseAfterPayment] = useState(false)
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account'>('cash')
   const [payFiscal, setPayFiscal] = useState(false)
   const [paying, setPaying] = useState(false)
@@ -83,11 +87,13 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
   }, [open, isMobileInline])
 
-  // Скан штрих-коду замовлення (ORD-1043) на касі → одразу вікно оплати
+  // Скан штрих-коду замовлення (ORD-1043) на касі → відкриває список з діями
   useEffect(() => {
     const handler = async (event: Event) => {
       const num = (event as CustomEvent<{ number?: string }>).detail?.number
       if (!num) return
+      setSearch(num)
+      setOpen(true)
       try {
         const { data } = await api.get<{ data: any[] }>(
           `/api/v1/customer-orders?search=${encodeURIComponent(num)}&per_page=5`,
@@ -96,10 +102,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         const order = (data ?? []).find((o) => String(o.order_number) === String(num)) ?? (data ?? [])[0]
         if (!order) { toast.error(`Замовлення №${num} не знайдено`); return }
         if (order.status === 'completed') { toast.error(`Замовлення №${num} вже видане`); return }
-        const remaining = order.total_amount - (order.total_paid ?? 0)
-        setPayOrder(order)
-        setPayAmount(remaining > 0 ? (remaining / 100).toString() : '')
-        if (remaining <= 0) toast.success(`Замовлення №${num} сплачено повністю — можна видавати`)
+        toast.success(`Знайдено замовлення №${order.order_number ?? order.id.slice(0, 8)} — оберіть дію`)
       } catch (e) {
         toast.error(getErrorMessage(e, 'Не вдалося знайти замовлення'))
       }
@@ -142,24 +145,60 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     return () => clearInterval(id)
   }, [load])
 
+  function payableTotal(order: ReadyOrder) {
+    return Math.max(0, order.total_amount - (order.discount_amount ?? 0))
+  }
+
+  function remainingDue(order: ReadyOrder) {
+    return Math.max(0, payableTotal(order) - (order.total_paid ?? order.prepayment ?? 0))
+  }
+
+  function openPayment(order: ReadyOrder, action: PaymentAction) {
+    const remaining = remainingDue(order)
+    if (action === 'full' && remaining <= 0) {
+      toast.success('Замовлення вже сплачено повністю — можна видавати')
+      return
+    }
+    setPayOrder(order)
+    setPayAction(action)
+    setCloseAfterPayment(action === 'full' && order.status === 'ready')
+    setPayAmount(action === 'full' ? (remaining / 100).toFixed(2) : '')
+    setPayFiscal(false)
+  }
+
+  function closePaymentModal() {
+    setPayOrder(null)
+    setPayAmount('')
+    setPayFiscal(false)
+    setCloseAfterPayment(false)
+    setPayAction('deposit')
+  }
+
   async function handleAddPayment() {
     if (!payOrder) return
-    const amountVal = Math.round(parseFloat(payAmount) * 100)
+    const remaining = remainingDue(payOrder)
+    const amountVal = payAction === 'full' ? remaining : Math.round(parseFloat(payAmount) * 100)
     if (isNaN(amountVal) || amountVal <= 0) {
-      toast.error('Некоректна сума')
+      toast.error(payAction === 'full' ? 'Замовлення вже сплачено' : 'Некоректна сума')
       return
     }
 
-    const remaining = payOrder.total_amount - (payOrder.total_paid ?? 0)
     const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(payOrder.status) && remaining <= 0
     if (!canAcceptOpenDraftDeposit && amountVal > remaining) {
       toast.error('Сума перевищує залишок до сплати')
+      return
+    }
+    if (payAction === 'full' && amountVal !== remaining) {
+      toast.error('Для повної оплати потрібно закрити весь залишок')
       return
     }
     if (payMethod === 'account' && amountVal > (accountBalance ?? 0)) {
       toast.error(`На рахунку клієнта лише ${formatMoney(accountBalance ?? 0)}`)
       return
     }
+
+    const orderToComplete = payOrder
+    const shouldCompleteAfterPayment = payAction === 'full' && closeAfterPayment && orderToComplete.status === 'ready'
 
     setPaying(true)
     try {
@@ -170,16 +209,28 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           method: payMethod,
           is_fiscal: payMethod === 'account' ? false : payFiscal,
           shift_id: store.currentShift?.id || null,
-          notes: payMethod === 'account' ? 'Оплата з рахунку клієнта' : (canAcceptOpenDraftDeposit ? 'Касова передоплата чернетки' : 'Касова оплата замовлення'),
+          notes: payMethod === 'account'
+            ? 'Оплата замовлення з рахунку клієнта'
+            : payAction === 'full'
+              ? 'Касова повна оплата замовлення'
+              : (canAcceptOpenDraftDeposit ? 'Касова передоплата чернетки' : 'Касова передоплата замовлення'),
         },
         undefined,
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
       )
-      toast.success(payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Оплату успішно внесено!')
-      setPayOrder(null)
-      setPayAmount('')
-      setPayFiscal(false)
-      await load()
+
+      closePaymentModal()
+
+      if (shouldCompleteAfterPayment) {
+        await completeOrder(
+          { ...orderToComplete, total_paid: (orderToComplete.total_paid ?? 0) + amountVal },
+          { skipPaymentCheck: true, quietSuccess: true, method: payMethod === 'card' ? 'card' : 'cash' },
+        )
+        toast.success('Оплату внесено, замовлення видано!')
+      } else {
+        toast.success(payAction === 'full' ? 'Повну оплату внесено!' : (payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Передоплату внесено!'))
+        await load()
+      }
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка внесення оплати'))
     } finally {
@@ -187,10 +238,17 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
   }
 
-  async function completeOrder(order: ReadyOrder) {
-    const remaining = order.total_amount - (order.total_paid ?? 0)
-    if (remaining > 0) {
+  async function completeOrder(
+    order: ReadyOrder,
+    options: { skipPaymentCheck?: boolean; quietSuccess?: boolean; method?: 'cash' | 'card' | 'mixed' } = {},
+  ) {
+    const remaining = remainingDue(order)
+    if (!options.skipPaymentCheck && remaining > 0) {
       toast.error(`Залишок до оплати: ${formatMoney(remaining)}. Спочатку внесіть оплату в замовленні.`)
+      return
+    }
+    if (!options.skipPaymentCheck && order.status !== 'ready') {
+      toast.error('Видати можна тільки замовлення зі статусом «Готовий»')
       return
     }
 
@@ -199,21 +257,70 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       await api.post(
         `/api/v1/customer-orders/${order.id}/complete`,
         {
-          payment_method: 'cash',
+          payment_method: options.method ?? 'cash',
           cash_amount: 0,
           card_amount: 0,
           is_fiscal: false,
+          shift_id: store.currentShift?.id || null,
         },
         undefined,
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
       )
-      toast.success('Замовлення видано!')
+      if (!options.quietSuccess) toast.success('Замовлення видано!')
       await load()
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
     } finally {
       setCompleting(null)
     }
+  }
+
+  function renderOrderActions(order: ReadyOrder, density: 'mobile' | 'desktop') {
+    const remaining = remainingDue(order)
+    const isCompleting = completing === order.id
+    const isActive = !['completed', 'canceled', 'archived'].includes(order.status)
+    const canDeposit = isActive && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
+    const canFullPay = isActive && remaining > 0
+    const canIssue = order.status === 'ready' && remaining <= 0
+    const rounded = density === 'mobile' ? 'rounded-xl' : 'rounded-lg'
+    const minHeight = density === 'mobile' ? { minHeight: 44 } : undefined
+
+    if (!canDeposit && !canFullPay && !canIssue) {
+      return <div className="text-xs text-gray-500 pt-1">Оплачено, чекає готовності</div>
+    }
+
+    return (
+      <div className="grid grid-cols-2 gap-2">
+        {canDeposit && (
+          <button
+            onClick={() => openPayment(order, 'deposit')}
+            style={minHeight}
+            className={`py-2.5 text-sm ${rounded} bg-yellow-600 hover:bg-yellow-500 active:bg-yellow-700 text-white font-semibold transition-colors`}
+          >
+            Передоплата
+          </button>
+        )}
+        {canFullPay && (
+          <button
+            onClick={() => openPayment(order, 'full')}
+            style={minHeight}
+            className={`py-2.5 text-sm ${rounded} bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold transition-colors`}
+          >
+            Повна оплата
+          </button>
+        )}
+        {canIssue && (
+          <button
+            onClick={() => completeOrder(order)}
+            disabled={isCompleting}
+            style={minHeight}
+            className={`py-2.5 text-sm ${rounded} font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-green-600 hover:bg-green-500 active:bg-green-700 text-white ${canDeposit || canFullPay ? '' : 'col-span-2'}`}
+          >
+            {isCompleting ? <Loader2 size={12} className="animate-spin mx-auto" /> : 'Видати'}
+          </button>
+        )}
+      </div>
+    )
   }
 
   const count = orders.length
@@ -255,9 +362,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           )}
 
           {!loading && orders.map((order) => {
-            const remaining = order.total_amount - (order.total_paid ?? 0)
-            const isCompleting = completing === order.id
-            const canAcceptPayment = !['completed', 'canceled', 'archived'].includes(order.status) && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
+            const remaining = remainingDue(order)
             
             let statusLabel = order.status
             let statusColor = 'bg-gray-700 text-gray-300'
@@ -319,38 +424,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     )}
                   </div>
                 </div>
-
-                <div className="flex gap-2">
-                  {canAcceptPayment && (
-                    <button
-                      onClick={() => {
-                        setPayOrder(order);
-                        setPayAmount(remaining > 0 ? (remaining / 100).toString() : '');
-                      }}
-                      style={{ minHeight: 44 }}
-                      className="flex-1 py-2.5 text-sm rounded-xl bg-yellow-600 hover:bg-yellow-500
-                                 active:bg-yellow-700 text-white font-semibold transition-colors"
-                    >
-                      {remaining > 0 ? 'Внести ' + formatMoney(remaining) : 'Внести передоплату'}
-                    </button>
-                  )}
-                  {order.status === 'ready' && remaining <= 0 && (
-                    <button
-                      onClick={() => completeOrder(order)}
-                      disabled={isCompleting || remaining > 0}
-                      style={{ minHeight: 44 }}
-                      className="flex-1 py-2.5 text-sm rounded-xl font-semibold transition-colors
-                                 disabled:opacity-50 disabled:cursor-not-allowed
-                                 bg-green-600 hover:bg-green-500 active:bg-green-700 text-white"
-                    >
-                      {isCompleting ? (
-                        <Loader2 size={12} className="animate-spin mx-auto" />
-                      ) : (
-                        'Видати'
-                      )}
-                    </button>
-                  )}
-                </div>
+                {renderOrderActions(order, 'mobile')}
               </div>
             )
           })}
@@ -360,22 +434,23 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         {payOrder && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
             <div className="bg-gray-800 border border-gray-700 rounded-2xl p-5 w-full max-w-sm shadow-2xl">
-              <h3 className="text-white font-semibold text-sm mb-4">Оплата / передоплата замовлення</h3>
+              <h3 className="text-white font-semibold text-sm mb-4">{payAction === 'full' ? 'Повна оплата замовлення' : 'Передоплата замовлення'}</h3>
               
               <div className="text-xs text-gray-400 mb-4 space-y-1">
                 <div>Клієнт: {payOrder.customer?.full_name ?? payOrder.customer?.phone}</div>
-                <div>Сума замовлення: {formatMoney(payOrder.total_amount)}</div>
+                <div>До сплати за замовлення: {formatMoney(payableTotal(payOrder))}</div>
                 <div>Вже сплачено: {formatMoney(payOrder.total_paid)}</div>
-                <div className="text-white font-medium">Залишок до сплати: {formatMoney(payOrder.total_amount - (payOrder.total_paid ?? 0))}</div>
+                <div className="text-white font-medium">Залишок до сплати: {formatMoney(remainingDue(payOrder))}</div>
               </div>
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">Сума передоплати / оплати (₴)</label>
+                  <label className="block text-xs text-gray-400 mb-1">{payAction === 'full' ? 'Повна оплата (₴)' : 'Сума передоплати (₴)'}</label>
                   <input
                     type="number"
                     step="0.01"
                     inputMode="decimal"
+                    readOnly={payAction === 'full'}
                     value={payAmount}
                     onChange={(e) => setPayAmount(e.target.value)}
                     className="w-full bg-gray-900 border border-gray-700 text-white text-lg font-semibold rounded-xl px-3 py-3
@@ -439,11 +514,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     className="h-4 w-4 accent-yellow-500" />
                   Провести через ПРРО (фіскальний чек)
                 </label>
+                {payAction === 'full' && payOrder.status === 'ready' && (
+                  <label className="flex items-center gap-3 rounded-xl border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
+                    <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
+                      className="h-4 w-4 accent-green-500" />
+                    Оплатити і одразу видати замовлення
+                  </label>
+                )}
 
                 <div className="flex gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={() => setPayOrder(null)}
+                    onClick={closePaymentModal}
                     className="flex-1 py-3 text-sm rounded-xl bg-gray-700 hover:bg-gray-600 text-gray-300 font-semibold"
                   >
                     Скасувати
@@ -455,7 +537,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     className="flex-1 py-3 text-sm rounded-xl bg-green-600 hover:bg-green-500 text-white font-semibold
                                disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                   >
-                    {paying ? <Loader2 size={12} className="animate-spin" /> : 'Внести'}
+                    {paying ? <Loader2 size={12} className="animate-spin" /> : payAction === 'full' ? (closeAfterPayment ? 'Оплатити і видати' : 'Прийняти оплату') : 'Внести передоплату'}
                   </button>
                 </div>
               </div>
@@ -519,9 +601,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             )}
 
             {!loading && orders.map((order) => {
-              const remaining = order.total_amount - (order.total_paid ?? 0)
-              const isCompleting = completing === order.id
-              const canAcceptPayment = !['completed', 'canceled', 'archived'].includes(order.status) && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
+              const remaining = remainingDue(order)
               
               // Helper to style status label
               let statusLabel = order.status
@@ -584,36 +664,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                       )}
                     </div>
                   </div>
-
-                  <div className="flex gap-2">
-                    {canAcceptPayment && (
-                      <button
-                        onClick={() => {
-                          setPayOrder(order);
-                          setPayAmount(remaining > 0 ? (remaining / 100).toString() : '');
-                        }}
-                        className="flex-1 py-2.5 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500
-                                   active:bg-yellow-700 text-white font-semibold transition-colors"
-                      >
-                        {remaining > 0 ? 'Внести ' + formatMoney(remaining) : 'Внести передоплату'}
-                      </button>
-                    )}
-                    {order.status === 'ready' && remaining <= 0 && (
-                      <button
-                        onClick={() => completeOrder(order)}
-                        disabled={isCompleting || remaining > 0}
-                        className="flex-1 py-2.5 text-sm rounded-lg font-semibold transition-colors
-                                   disabled:opacity-50 disabled:cursor-not-allowed
-                                   bg-green-600 hover:bg-green-500 active:bg-green-700 text-white"
-                      >
-                        {isCompleting ? (
-                          <Loader2 size={12} className="animate-spin mx-auto" />
-                        ) : (
-                          'Видати'
-                        )}
-                      </button>
-                    )}
-                  </div>
+                {renderOrderActions(order, 'desktop')}
                 </div>
               )
             })}
@@ -625,23 +676,24 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       {payOrder && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
           <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 w-full max-w-sm shadow-2xl">
-            <h3 className="text-white font-semibold text-sm mb-4">Оплата / передоплата замовлення</h3>
+            <h3 className="text-white font-semibold text-sm mb-4">{payAction === 'full' ? 'Повна оплата замовлення' : 'Передоплата замовлення'}</h3>
             
             <div className="text-xs text-gray-400 mb-4 space-y-1">
               <div>Клієнт: {payOrder.customer?.full_name ?? payOrder.customer?.phone}</div>
-              <div>Сума замовлення: {formatMoney(payOrder.total_amount)}</div>
+              <div>До сплати за замовлення: {formatMoney(payableTotal(payOrder))}</div>
               <div>Вже сплачено: {formatMoney(payOrder.total_paid)}</div>
-              <div className="text-white font-medium">Залишок до сплати: {formatMoney(payOrder.total_amount - (payOrder.total_paid ?? 0))}</div>
+              <div className="text-white font-medium">Залишок до сплати: {formatMoney(remainingDue(payOrder))}</div>
             </div>
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Сума передоплати / оплати (₴)</label>
+                <label className="block text-xs text-gray-400 mb-1">{payAction === 'full' ? 'Повна оплата (₴)' : 'Сума передоплати (₴)'}</label>
                 <input
                   type="number"
                   step="0.01"
                   inputMode="decimal"
-                  value={payAmount}
+                  readOnly={payAction === 'full'}
+                    value={payAmount}
                   onChange={(e) => setPayAmount(e.target.value)}
                   className="w-full bg-gray-900 border border-gray-700 text-white text-lg font-semibold rounded-lg px-3 py-3
                              focus:outline-none focus:border-yellow-500"
@@ -704,11 +756,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                   className="h-4 w-4 accent-yellow-500" />
                 Провести через ПРРО (фіскальний чек)
               </label>
+                {payAction === 'full' && payOrder.status === 'ready' && (
+                  <label className="flex items-center gap-3 rounded-lg border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
+                    <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
+                      className="h-4 w-4 accent-green-500" />
+                    Оплатити і одразу видати замовлення
+                  </label>
+                )}
 
-              <div className="flex gap-2 pt-2">
+                <div className="flex gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setPayOrder(null)}
+                  onClick={closePaymentModal}
                   className="flex-1 py-3 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 font-semibold"
                 >
                   Скасувати
@@ -720,7 +779,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                   className="flex-1 py-3 text-sm rounded-lg bg-green-600 hover:bg-green-500 text-white font-semibold
                              disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                 >
-                  {paying ? <Loader2 size={12} className="animate-spin" /> : 'Внести'}
+                  {paying ? <Loader2 size={12} className="animate-spin" /> : payAction === 'full' ? (closeAfterPayment ? 'Оплатити і видати' : 'Прийняти оплату') : 'Внести передоплату'}
                 </button>
               </div>
             </div>
