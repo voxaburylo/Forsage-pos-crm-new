@@ -119,6 +119,7 @@ export default function ActiveSession() {
   const [applyNewPrice, setApplyNewPrice] = useState(true)
   const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [completing, setCompleting] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -344,6 +345,45 @@ export default function ActiveSession() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити закупку')
     }
+  }
+
+  async function updateItemProduct(item: InventoryItem, patch: Partial<Pick<ProductInfo, 'sku' | 'name'>>) {
+    if (!item.product || !canEditPrice) return
+    const payload: Partial<Pick<ProductInfo, 'sku' | 'name'>> = {}
+    if (patch.sku !== undefined) {
+      const sku = patch.sku.trim()
+      if (!sku) { toast.error('Артикул не може бути порожнім'); return }
+      if (sku === item.product.sku) return
+      payload.sku = sku
+    }
+    if (patch.name !== undefined) {
+      const name = patch.name.trim()
+      if (name.length < 2) { toast.error('Назва товару закоротка'); return }
+      if (name === item.product.name) return
+      payload.name = name
+    }
+    if (Object.keys(payload).length === 0) return
+    try {
+      const response = await api.put<{ data: ProductInfo }>(
+        `/api/v1/products/${item.product.id}`,
+        payload,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
+      setSelected((cur) => cur?.id === item.product?.id ? { ...cur, ...response.data } : cur)
+      toast.success('Товар оновлено')
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося оновити товар')
+      load(true)
+    }
+  }
+
+  async function setItemSku(item: InventoryItem, value: string) {
+    await updateItemProduct(item, { sku: value })
+  }
+
+  async function setItemName(item: InventoryItem, value: string) {
+    await updateItemProduct(item, { name: value })
   }
 
   // Націнка на рядок: швидкий % від закупки або за матрицею націнок.
@@ -634,7 +674,7 @@ export default function ActiveSession() {
   }
 
   async function completeSession() {
-    if (!id || !session || !canComplete) return
+    if (!id || !session || !canComplete || completing) return
     const missing = Math.max(0, session.summary.total_products - session.summary.counted_products)
     const priceIssues = session.summary.price_mismatch_products ?? 0
     if (missing > 0 || priceIssues > 0) {
@@ -646,8 +686,9 @@ export default function ActiveSession() {
     } else if (!confirm('Завершити ревізію та застосувати всі фактичні залишки?')) {
       return
     }
+    setCompleting(true)
     try {
-      const response = await api.post<{ data: { items_updated: number } }>(
+      const response = await api.post<{ data: { items_updated?: number } }>(
         `/api/v1/inventory/${id}/complete`,
         {
           confirm_unfinished: missing > 0,
@@ -656,10 +697,14 @@ export default function ActiveSession() {
         undefined,
         { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS },
       )
-      toast.success(`Ревізію завершено. Оновлено ${response.data.items_updated} товарів.`)
+      const updated = Number((response.data as any)?.items_updated ?? 0)
+      toast.success(`Ревізію завершено. Оновлено ${Number.isFinite(updated) ? updated : 0} товарів.`)
       navigate('/inventory')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завершити ревізію')
+      load(true)
+    } finally {
+      setCompleting(false)
     }
   }
 
@@ -1041,6 +1086,8 @@ export default function ActiveSession() {
                   selected={item.product?.id ? selectedIds.has(item.product.id) : false}
                   onToggleSelect={() => item.product?.id && toggleSelectId(item.product.id)}
                   onSetQty={(value) => setItemQty(item, value)}
+                  onSetSku={(value) => setItemSku(item, value)}
+                  onSetName={(value) => setItemName(item, value)}
                   onSetPurchase={(value) => setItemPurchase(item, value)}
                   onSetRetail={(value) => setItemRetail(item, value)}
                   onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
@@ -1100,8 +1147,8 @@ export default function ActiveSession() {
 
         {isActive && canComplete && (
           <div className="flex justify-end">
-            <Button onClick={completeSession} icon={<CheckCircle size={16} />}>
-              Завершити та застосувати залишки
+            <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
+              {completing ? 'Завершую...' : 'Завершити та застосувати залишки'}
             </Button>
           </div>
         )}
@@ -1118,7 +1165,7 @@ export default function ActiveSession() {
 // не збивають фокус при фоновому оновленні кожні 8с.
 function InventoryRow({
   item, isActive, canEditPrice, selected,
-  onToggleSelect, onSetQty, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, onRemove,
+  onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, onRemove,
 }: {
   item: InventoryItem
   isActive: boolean
@@ -1126,6 +1173,8 @@ function InventoryRow({
   selected: boolean
   onToggleSelect: () => void
   onSetQty: (value: string) => void
+  onSetSku: (value: string) => void
+  onSetName: (value: string) => void
   onSetPurchase: (value: string) => void
   onSetRetail: (value: string) => void
   onMarkup: (kind: 'percent' | 'table', pct?: number) => void
@@ -1145,10 +1194,43 @@ function InventoryRow({
           <input type="checkbox" aria-label="Вибрати" checked={selected} onChange={onToggleSelect}
             className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300" />
         )}
-        <div className="min-w-0">
-          <p className="truncate font-medium text-gray-900">{product?.name ?? 'Товар'}</p>
+        <div className="min-w-0 flex-1">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Назва</span>
+          {canEditPrice && product ? (
+            <textarea
+              key={`name-${product.name}`}
+              defaultValue={product.name}
+              disabled={!isActive}
+              rows={2}
+              title={product.name}
+              onBlur={(event) => onSetName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  ;(event.target as HTMLTextAreaElement).blur()
+                }
+              }}
+              className="w-full resize-y rounded-lg border border-gray-200 px-2 py-1.5 text-sm font-semibold leading-snug text-gray-900 outline-none focus:border-yellow-500 disabled:bg-gray-50"
+            />
+          ) : (
+            <p className="whitespace-normal break-words font-medium text-gray-900" title={product?.name}>{product?.name ?? 'Товар'}</p>
+          )}
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-gray-500">
-            <span>{product?.sku || 'без SKU'}</span>
+            <span className="flex items-center gap-1">
+              <span className="font-sans font-semibold uppercase tracking-wide text-gray-400">Арт.</span>
+              {canEditPrice && product ? (
+                <input
+                  key={`sku-${product.sku}`}
+                  defaultValue={product.sku}
+                  disabled={!isActive}
+                  onBlur={(event) => onSetSku(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
+                  className="w-32 rounded border border-gray-200 px-1.5 py-0.5 font-mono text-[11px] text-gray-800 outline-none focus:border-yellow-500 disabled:bg-gray-50"
+                />
+              ) : (
+                <span>{product?.sku || 'без SKU'}</span>
+              )}
+            </span>
             <span className="select-all text-gray-700">{barcode}</span>
             {product?.storage_bin && <span className="text-blue-600">{product.storage_bin}</span>}
           </div>
