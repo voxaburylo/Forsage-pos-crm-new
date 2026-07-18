@@ -254,6 +254,22 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
   const returnRecord = typeof data === 'string' ? JSON.parse(data) : data
 
   // ==================================================================
+  // 5.4. Фіскальний номер чека повернення (ПРРО Кашалот).
+  //      RPC process_return його не знає — дописуємо окремим UPDATE,
+  //      щоб в історії повернень було видно, яким чеком проведено відкат.
+  // ==================================================================
+  if (input.fiscal_number) {
+    const { error: fiscalErr } = await db
+      .from('returns')
+      .update({ fiscal_number: input.fiscal_number })
+      .eq('id', returnRecord.id)
+      .eq('tenant_id', tenantId)
+    if (fiscalErr) {
+      logger.error({ error: fiscalErr.message, returnId: returnRecord.id }, 'Failed to save return fiscal_number')
+    }
+  }
+
+  // ==================================================================
   // 5.5. Connected Returns Mappings (P1 Fix 10)
   // ==================================================================
   try {
@@ -319,6 +335,7 @@ export async function createReturn(userId: string, tenantId: string, input: Crea
       refund_kopecks: returnRecord.refund_kopecks,
       items_count: input.items.length,
       stock_action: stockAction,
+      fiscal_number: input.fiscal_number ?? null,
     },
   })
 

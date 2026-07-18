@@ -34,6 +34,7 @@ export const createReturnSchema = z.object({
   reason_note:   z.string().max(500).optional().nullable(),
   refund_method: z.enum(REFUND_METHODS),
   stock_action:  z.enum(STOCK_ACTIONS).default('return_to_stock'),
+  fiscal_number: z.string().max(128).optional().nullable(),
   items:         z.array(returnItemSchema).min(1),
 })
 

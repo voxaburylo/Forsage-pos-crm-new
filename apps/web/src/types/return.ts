@@ -120,6 +120,8 @@ export interface CreateReturnBody {
   reason_note?: string | null
   refund_method: RefundMethod
   stock_action: StockAction
+  /** Фіскальний номер чека повернення з ПРРО (якщо повернення фіскалізовано) */
+  fiscal_number?: string | null
   items: ReturnItemBody[]
 }
 
@@ -137,6 +139,7 @@ export interface CustomerReturn {
   status: string
   approved_by: string
   created_at: string
+  fiscal_number?: string | null
   sale?: { id: string; sale_number: string; total: number }
   customer?: { id: string; phone: string; full_name: string | null } | null
   return_items?: Array<{

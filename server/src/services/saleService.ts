@@ -94,7 +94,7 @@ export async function listSales(query: SaleListQuery, tenantId: string) {
 export async function getSale(id: string, tenantId: string) {
   const { data, error } = await db
     .from(TABLE)
-    .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name)')
+    .select('*, sale_items(*, product:products(id,sku,name,unit)), customer:customers(id,phone,full_name), returns(id, refund_kopecks, refund_method, fiscal_number, created_at)')
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .single()

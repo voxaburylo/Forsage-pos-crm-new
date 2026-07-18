@@ -248,7 +248,28 @@ export default function SalesPage() {
                   {detail.status === 'returned' ? 'Повернено' : detail.status === 'completed' ? 'Виконано' : detail.status}
                 </Badge>
               </div>
+              {detail.fiscal_number && (
+                <>
+                  <div className="text-gray-500">Фіскальний чек</div>
+                  <div className="text-right text-gray-800 font-mono text-xs">{detail.fiscal_number}</div>
+                </>
+              )}
             </div>
+
+            {/* Повернення по чеку (з фіскальними номерами чеків повернення ПРРО) */}
+            {(detail.returns?.length ?? 0) > 0 && (
+              <div className="border border-red-100 bg-red-50/40 rounded-xl p-3 space-y-1.5">
+                <p className="text-xs font-semibold text-red-700 uppercase">Повернення по чеку</p>
+                {detail.returns!.map((r) => (
+                  <div key={r.id} className="flex items-center justify-between text-xs text-gray-700 gap-2">
+                    <span>{formatDateTime(r.created_at)} — {formatMoney(r.refund_kopecks)}</span>
+                    {r.fiscal_number
+                      ? <span className="font-mono text-gray-800" title="Фіскальний номер чека повернення">ФН {r.fiscal_number}</span>
+                      : <span className="text-gray-400">без фіск. чека</span>}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Позиції */}
             <div className="border border-gray-100 rounded-xl overflow-hidden">

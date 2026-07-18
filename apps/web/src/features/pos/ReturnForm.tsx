@@ -252,6 +252,7 @@ export default function ReturnForm() {
         reason_note: reasonNote || null,
         refund_method: method,
         stock_action: stockAction,
+        fiscal_number: fiscalReturnNum,
         items: activeItems.map((i) => ({
           sale_item_id: i.id,
           product_id: i.product_id,

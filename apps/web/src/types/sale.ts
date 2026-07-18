@@ -34,6 +34,14 @@ export interface Sale {
   sale_items?: SaleItem[]
   customer?: { id: string; phone: string; full_name: string | null } | null
   manager?: { id: string; full_name: string } | null
+  /** Повернення по цьому чеку (з фіскальними номерами чеків повернення ПРРО) */
+  returns?: Array<{
+    id: string
+    refund_kopecks: number
+    refund_method: string
+    fiscal_number: string | null
+    created_at: string
+  }>
 }
 
 export interface PriceCalculation {
