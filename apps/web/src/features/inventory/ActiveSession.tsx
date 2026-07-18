@@ -537,6 +537,23 @@ export default function ActiveSession() {
     return Math.max(loadedCopies, summaryCopies)
   }, [countedRows, session?.summary?.total_counted_units])
 
+  function mergeFastScannedItem(item: InventoryItem) {
+    setSession((current) => {
+      if (!current) return current
+      const previous = current.items.find((row) => row.id === item.id)
+      const previousCount = Number(previous?.counted_stock ?? 0)
+      const nextItems = [item, ...current.items.filter((row) => row.id !== item.id)]
+      const nextSummary = current.summary
+        ? {
+            ...current.summary,
+            counted_products: current.summary.counted_products + (!previous && Number(item.counted_stock) === 1 ? 1 : 0),
+            total_counted_units: Number(current.summary.total_counted_units ?? 0) + Math.max(0, Number(item.counted_stock ?? 0) - previousCount || 1),
+          }
+        : current.summary
+      return { ...current, items: nextItems, summary: nextSummary }
+    })
+  }
+
   function queueInventoryScan(code: string) {
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
@@ -550,13 +567,50 @@ export default function ActiveSession() {
     try {
       while (scanQueue.current.length > 0) {
         const code = scanQueue.current.shift()
-        if (code) await resolveCode(code, { fromHardware: true })
+        if (code) await scanCodeFast(code, { fromHardware: true })
       }
     } finally {
       scanQueueRunning.current = false
       if (scanQueue.current.length > 0) void drainInventoryScanQueue()
     }
   }
+
+  async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean } = {}) {
+    if (!id) return
+    const normalizedCode = normalizeScanCode(code)
+    if (!normalizedCode) return
+    initAudio()
+    try {
+      const response = await api.post<{ data: { item: InventoryItem } }>(
+        '/api/v1/inventory/' + id + '/scan',
+        { barcode: normalizedCode },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
+      const item = response.data.item
+      mergeFastScannedItem(item)
+      setShowRecent(true)
+      setHighlightedItemId(item.id)
+      toast.success((item.product?.name ?? 'Товар') + ' × ' + (Number(item.counted_stock) || 1))
+      playSuccessBeep()
+      setQuickCreateOpen(false)
+      setSelected(null)
+      setSearchResults([])
+      setQuery('')
+      window.setTimeout(() => inputRef.current?.focus(), 0)
+    } catch (error) {
+      playErrorTone()
+      if ((error as any)?.status === 404 && canEditPrice) {
+        if (options.fromCamera) setCameraOpen(false)
+        toast.error('Товар не знайдено — можна створити його тут')
+        openQuickCreate(normalizedCode)
+      } else {
+        toast.error(error instanceof Error ? error.message : 'Товар не знайдено')
+      }
+      inputRef.current?.focus()
+    }
+  }
+
 
   async function resolveCode(code: string, options: { fromCamera?: boolean; fromHardware?: boolean } = {}) {
     if (!id || !code.trim()) return
@@ -1092,8 +1146,8 @@ export default function ActiveSession() {
           continuous
           onClose={() => setCameraOpen(false)}
           onScan={(code) => {
-            setQuery(code)
-            resolveCode(code, { fromCamera: true })
+            setQuery(normalizeScanCode(code))
+            scanCodeFast(code, { fromCamera: true })
           }}
         />
 <Card padding="none">

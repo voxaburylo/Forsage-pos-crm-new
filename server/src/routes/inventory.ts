@@ -196,35 +196,99 @@ router.post('/:id/count', requireRole(...COUNTER_ROLES), async (req, res, next) 
   } catch (error) { next(error) }
 })
 
-// Сумісність зі старим сканером: один скан = атомарно +1.
+// Швидкий скан ревізії: один запит = точний пошук товару + атомарно +1.
+// Не перезавантажуємо всю ревізію після кожного піку — повертаємо тільки змінений рядок.
 router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) => {
   try {
     const schema = z.object({
-      barcode: z.string().trim().optional(),
+      barcode: z.string().trim().max(100).optional(),
       product_id: z.string().uuid().optional(),
     }).refine((value) => value.barcode || value.product_id)
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Потрібен штрихкод або товар', 422)
-    let productId = parsed.data.product_id
-    if (!productId && parsed.data.barcode) {
-      const { data: product } = await db.from('products').select('id')
-        .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
-        .eq('barcode', parsed.data.barcode).maybeSingle()
-      productId = product?.id
-    }
-    if (!productId) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
+
     const sessionId = String(req.params.id)
-    const { error } = await db.rpc('add_inventory_count', {
+    await requireInventorySession(sessionId, req.user!.tenant_id, true)
+
+    const productSelect = 'id,sku,name,barcode,additional_barcodes,unit,qty_on_hand,retail_price,purchase_price,storage_bin'
+    let product: any = null
+
+    if (parsed.data.product_id) {
+      const byId = await db.from('products')
+        .select(productSelect)
+        .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+        .eq('id', parsed.data.product_id).maybeSingle()
+      if (byId.error) throw new AppError('DB_ERROR', byId.error.message, 500)
+      product = byId.data
+    }
+
+    const code = parsed.data.barcode
+    if (!product && code) {
+      const byBarcode = await db.from('products')
+        .select(productSelect)
+        .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+        .eq('barcode', code).maybeSingle()
+      if (byBarcode.error) throw new AppError('DB_ERROR', byBarcode.error.message, 500)
+      product = byBarcode.data
+    }
+
+    if (!product && code) {
+      const barcodeRow = await db.from('product_barcodes')
+        .select('product_id')
+        .eq('tenant_id', req.user!.tenant_id)
+        .eq('barcode', code)
+        .maybeSingle()
+      if (barcodeRow.error) throw new AppError('DB_ERROR', barcodeRow.error.message, 500)
+      if (barcodeRow.data?.product_id) {
+        const byExtraBarcode = await db.from('products')
+          .select(productSelect)
+          .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+          .eq('id', barcodeRow.data.product_id).maybeSingle()
+        if (byExtraBarcode.error) throw new AppError('DB_ERROR', byExtraBarcode.error.message, 500)
+        product = byExtraBarcode.data
+      }
+    }
+
+    if (!product && code) {
+      const bySku = await db.from('products')
+        .select(productSelect)
+        .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+        .ilike('sku', code).limit(1).maybeSingle()
+      if (bySku.error) throw new AppError('DB_ERROR', bySku.error.message, 500)
+      product = bySku.data
+    }
+
+    if (!product && code) {
+      const additional = await db.from('products')
+        .select(productSelect)
+        .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+        .contains('additional_barcodes', [code]).limit(1).maybeSingle()
+      if (additional.error) throw new AppError('DB_ERROR', additional.error.message, 500)
+      product = additional.data
+    }
+
+    if (!product?.id) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
+
+    const counted = await db.rpc('add_inventory_count', {
       p_session_id: sessionId,
       p_tenant_id: req.user!.tenant_id,
-      p_product_id: productId,
+      p_product_id: product.id,
       p_user_id: req.user!.id,
       p_qty: 1,
-      p_price_checked: false,
+      p_price_checked: true,
       p_observed_retail_price: null,
     })
-    if (error) throw new AppError('DB_ERROR', error.message, 400)
-    res.json({ data: (await loadSessionData(sessionId, req.user!.tenant_id, req.user!.id)).items })
+    if (counted.error) throw new AppError('DB_ERROR', counted.error.message, 400)
+
+    const itemId = (counted.data as any)?.item_id
+    let itemQuery = db.from('inventory_items')
+      .select('id,product_id,expected_stock,counted_stock,price_checked,observed_retail_price,updated_at,product:products(id,sku,name,barcode,additional_barcodes,unit,retail_price,purchase_price,storage_bin)')
+      .eq('session_id', sessionId)
+    itemQuery = itemId ? itemQuery.eq('id', itemId) : itemQuery.eq('product_id', product.id)
+    const { data: item, error: itemError } = await itemQuery.single()
+    if (itemError) throw new AppError('DB_ERROR', itemError.message, 500)
+
+    res.status(201).json({ data: { item } })
   } catch (error) { next(error) }
 })
 
