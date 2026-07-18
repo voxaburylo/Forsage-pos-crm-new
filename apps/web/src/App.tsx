@@ -7,113 +7,63 @@ import { LocalSyncAgent } from '@/components/LocalSyncAgent'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import '@/stores/authStore'
 
-const CHUNK_RELOAD_KEY = 'forsage_chunk_reload_at'
-
-function ChunkLoadError() {
-  async function recover() {
-    try {
-      sessionStorage.removeItem(CHUNK_RELOAD_KEY)
-      const registrations = await navigator.serviceWorker?.getRegistrations()
-      await Promise.all((registrations ?? []).map((registration) => registration.unregister()))
-      const cacheNames = await caches?.keys()
-      await Promise.all((cacheNames ?? []).map((name) => caches.delete(name)))
-    } catch {
-      // Навіть якщо очищення PWA-кешу недоступне, звичайне оновлення ще може допомогти.
-    }
-    window.location.reload()
-  }
-
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-100 p-6">
-      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm">
-        <h1 className="text-lg font-bold text-gray-900">Потрібно завершити оновлення</h1>
-        <p className="mt-2 text-sm text-gray-500">
-          Браузер зберіг стару версію одного з файлів програми. Дані магазину не пошкоджені.
-        </p>
-        <button
-          type="button"
-          onClick={recover}
-          className="mt-5 rounded-xl bg-yellow-400 px-5 py-2.5 text-sm font-bold text-black hover:bg-yellow-300"
-        >
-          Очистити кеш і відкрити програму
-        </button>
-      </div>
-    </div>
-  )
+function lazyPage(componentImport: () => Promise<any>) {
+  return lazy(componentImport)
 }
 
-function lazyWithRetry(componentImport: () => Promise<any>) {
-  return lazy(async () => {
-    try {
-      const component = await componentImport()
-      sessionStorage.removeItem(CHUNK_RELOAD_KEY)
-      return component
-    } catch (error) {
-      console.error('Failed to load application chunk', error)
-      const lastReload = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) ?? 0)
-      if (!lastReload || Date.now() - lastReload > 60_000) {
-        sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()))
-        window.location.reload()
-        return new Promise(() => {}) // Тримаємо loader лише під час єдиної спроби reload.
-      }
-      return { default: ChunkLoadError }
-    }
-  })
-}
-
-const LoginPage            = lazyWithRetry(() => import('@/pages/LoginPage'))
-const DashboardPage        = lazyWithRetry(() => import('@/pages/DashboardPage'))
-const ProductsPage         = lazyWithRetry(() => import('@/features/products/ProductsPage'))
-const ProductFormPage      = lazyWithRetry(() => import('@/features/products/ProductFormPage'))
-const ProductDetailPage    = lazyWithRetry(() => import('@/features/products/ProductDetailPage'))
-const CustomersPage        = lazyWithRetry(() => import('@/features/customers/CustomersPage'))
-const CustomerFormPage     = lazyWithRetry(() => import('@/features/customers/CustomerFormPage'))
-const CustomerDetailPage   = lazyWithRetry(() => import('@/features/customers/CustomerDetailPage'))
-const POSPage              = lazyWithRetry(() => import('@/features/pos/POSPage'))
-const SalesPage            = lazyWithRetry(() => import('@/features/sales/SalesPage'))
-const ReturnForm           = lazyWithRetry(() => import('@/features/pos/ReturnForm'))
-const DailyReport          = lazyWithRetry(() => import('@/features/reports/DailyReport'))
-const AdminPage            = lazyWithRetry(() => import('@/features/admin/AdminPage'))
-const SettingsPage         = lazyWithRetry(() => import('@/features/settings/SettingsPage'))
+const LoginPage            = lazyPage(() => import('@/pages/LoginPage'))
+const DashboardPage        = lazyPage(() => import('@/pages/DashboardPage'))
+const ProductsPage         = lazyPage(() => import('@/features/products/ProductsPage'))
+const ProductFormPage      = lazyPage(() => import('@/features/products/ProductFormPage'))
+const ProductDetailPage    = lazyPage(() => import('@/features/products/ProductDetailPage'))
+const CustomersPage        = lazyPage(() => import('@/features/customers/CustomersPage'))
+const CustomerFormPage     = lazyPage(() => import('@/features/customers/CustomerFormPage'))
+const CustomerDetailPage   = lazyPage(() => import('@/features/customers/CustomerDetailPage'))
+const POSPage              = lazyPage(() => import('@/features/pos/POSPage'))
+const SalesPage            = lazyPage(() => import('@/features/sales/SalesPage'))
+const ReturnForm           = lazyPage(() => import('@/features/pos/ReturnForm'))
+const DailyReport          = lazyPage(() => import('@/features/reports/DailyReport'))
+const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
+const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
 // CommissionRulesPage merged
-const SuppliersPage        = lazyWithRetry(() => import('@/features/suppliers/SuppliersPage'))
-const ReceivingPage        = lazyWithRetry(() => import('@/features/receiving/ReceivingPage'))
-const SupplierFormPage     = lazyWithRetry(() => import('@/features/suppliers/SupplierFormPage'))
-const SupplierDetailPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierDetailPage'))
-const InvoicesPage         = lazyWithRetry(() => import('@/features/suppliers/InvoicesPage'))
-const InvoiceFormPage      = lazyWithRetry(() => import('@/features/suppliers/InvoiceFormPage'))
-const InvoiceDetailPage    = lazyWithRetry(() => import('@/features/suppliers/InvoiceDetailPage'))
-const ImportPage           = lazyWithRetry(() => import('@/features/suppliers/ImportPage'))
-const BulkImportPage       = lazyWithRetry(() => import('@/features/suppliers/BulkImportPage'))
-const SupplierPricesPage   = lazyWithRetry(() => import('@/features/suppliers/SupplierPricesPage'))
-const WriteoffsPage        = lazyWithRetry(() => import('@/features/inventory/WriteoffsPage'))
-const WriteoffFormPage     = lazyWithRetry(() => import('@/features/inventory/WriteoffFormPage'))
-const WriteoffDetailPage   = lazyWithRetry(() => import('@/features/inventory/WriteoffDetailPage'))
-const StaffPage            = lazyWithRetry(() => import('@/features/staff/StaffPage'))
+const SuppliersPage        = lazyPage(() => import('@/features/suppliers/SuppliersPage'))
+const ReceivingPage        = lazyPage(() => import('@/features/receiving/ReceivingPage'))
+const SupplierFormPage     = lazyPage(() => import('@/features/suppliers/SupplierFormPage'))
+const SupplierDetailPage   = lazyPage(() => import('@/features/suppliers/SupplierDetailPage'))
+const InvoicesPage         = lazyPage(() => import('@/features/suppliers/InvoicesPage'))
+const InvoiceFormPage      = lazyPage(() => import('@/features/suppliers/InvoiceFormPage'))
+const InvoiceDetailPage    = lazyPage(() => import('@/features/suppliers/InvoiceDetailPage'))
+const ImportPage           = lazyPage(() => import('@/features/suppliers/ImportPage'))
+const BulkImportPage       = lazyPage(() => import('@/features/suppliers/BulkImportPage'))
+const SupplierPricesPage   = lazyPage(() => import('@/features/suppliers/SupplierPricesPage'))
+const WriteoffsPage        = lazyPage(() => import('@/features/inventory/WriteoffsPage'))
+const WriteoffFormPage     = lazyPage(() => import('@/features/inventory/WriteoffFormPage'))
+const WriteoffDetailPage   = lazyPage(() => import('@/features/inventory/WriteoffDetailPage'))
+const StaffPage            = lazyPage(() => import('@/features/staff/StaffPage'))
 // StaffSalaryPage merged
-const InternalConsumptionsPage = lazyWithRetry(() => import('@/features/inventory/InternalConsumptionsPage'))
-const ABCAnalysis          = lazyWithRetry(() => import('@/features/analytics/ABCAnalysis'))
-const StaffAnalytics       = lazyWithRetry(() => import('@/features/analytics/StaffAnalytics'))
-const WaitlistPage         = lazyWithRetry(() => import('@/features/waitlist/WaitlistPage'))
-const SettingsChannels     = lazyWithRetry(() => import('@/features/chats/SettingsChannels'))
-const InventoryPage        = lazyWithRetry(() => import('@/features/inventory/InventoryPage'))
-const ActiveSession        = lazyWithRetry(() => import('@/features/inventory/ActiveSession'))
-const LabelDesigner        = lazyWithRetry(() => import('@/features/labels/LabelDesigner'))
-const OrdersPage           = lazyWithRetry(() => import('@/features/orders/OrdersPage'))
-const NeedsActionPage      = lazyWithRetry(() => import('@/features/orders/NeedsActionPage'))
-const OrderFormPage        = lazyWithRetry(() => import('@/features/orders/OrderFormPage'))
-const OrderDetailPage      = lazyWithRetry(() => import('@/features/orders/OrderDetailPage'))
-const QuickDraftPage       = lazyWithRetry(() => import('@/features/quotes/QuickDraftPage'))
-const CashflowPage         = lazyWithRetry(() => import('@/features/cashflow/CashflowPage'))
-const ReservesList         = lazyWithRetry(() => import('@/features/inventory/ReservesList'))
-const SupplierPOsPage      = lazyWithRetry(() => import('@/features/suppliers/SupplierPOsPage'))
-const WarehousePicking     = lazyWithRetry(() => import('@/features/inventory/WarehousePicking'))
-const WarehouseMovementPage = lazyWithRetry(() => import('@/features/inventory/WarehouseMovementPage'))
-const InboxPage             = lazyWithRetry(() => import('@/features/notifications/InboxPage'))
-const AutoPurchasePage      = lazyWithRetry(() => import('@/features/autoPurchase/AutoPurchasePage'))
-const CoreReturnsPage       = lazyWithRetry(() => import('@/features/inventory/CoreReturnsPage'))
-const AuditLogPage          = lazyWithRetry(() => import('@/features/admin/AuditLogPage'))
-const TemplateEditor        = lazyWithRetry(() => import('@/features/notifications/TemplateEditor'))
+const InternalConsumptionsPage = lazyPage(() => import('@/features/inventory/InternalConsumptionsPage'))
+const ABCAnalysis          = lazyPage(() => import('@/features/analytics/ABCAnalysis'))
+const StaffAnalytics       = lazyPage(() => import('@/features/analytics/StaffAnalytics'))
+const WaitlistPage         = lazyPage(() => import('@/features/waitlist/WaitlistPage'))
+const SettingsChannels     = lazyPage(() => import('@/features/chats/SettingsChannels'))
+const InventoryPage        = lazyPage(() => import('@/features/inventory/InventoryPage'))
+const ActiveSession        = lazyPage(() => import('@/features/inventory/ActiveSession'))
+const LabelDesigner        = lazyPage(() => import('@/features/labels/LabelDesigner'))
+const OrdersPage           = lazyPage(() => import('@/features/orders/OrdersPage'))
+const NeedsActionPage      = lazyPage(() => import('@/features/orders/NeedsActionPage'))
+const OrderFormPage        = lazyPage(() => import('@/features/orders/OrderFormPage'))
+const OrderDetailPage      = lazyPage(() => import('@/features/orders/OrderDetailPage'))
+const QuickDraftPage       = lazyPage(() => import('@/features/quotes/QuickDraftPage'))
+const CashflowPage         = lazyPage(() => import('@/features/cashflow/CashflowPage'))
+const ReservesList         = lazyPage(() => import('@/features/inventory/ReservesList'))
+const SupplierPOsPage      = lazyPage(() => import('@/features/suppliers/SupplierPOsPage'))
+const WarehousePicking     = lazyPage(() => import('@/features/inventory/WarehousePicking'))
+const WarehouseMovementPage = lazyPage(() => import('@/features/inventory/WarehouseMovementPage'))
+const InboxPage             = lazyPage(() => import('@/features/notifications/InboxPage'))
+const AutoPurchasePage      = lazyPage(() => import('@/features/autoPurchase/AutoPurchasePage'))
+const CoreReturnsPage       = lazyPage(() => import('@/features/inventory/CoreReturnsPage'))
+const AuditLogPage          = lazyPage(() => import('@/features/admin/AuditLogPage'))
+const TemplateEditor        = lazyPage(() => import('@/features/notifications/TemplateEditor'))
 
 const OFFICE_ROLES = ['owner', 'admin', 'manager']
 const ADMIN_ROLES = ['owner', 'admin']
@@ -121,7 +71,7 @@ const WAREHOUSE_ROLES = ['owner', 'admin', 'storekeeper']
 const INVENTORY_COUNTER_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer']
 const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
-const AiAssistantPage       = lazyWithRetry(() => import('@/features/ai/AiAssistantPage'))
+const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
 
 function Loader() {
   return (
