@@ -34,6 +34,13 @@ function normalizeSkuValue(raw: string): string {
   return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
 }
 
+function parseMoneyToKopecks(raw: string): number {
+  const normalized = raw.replace(/\s/g, '').replace(',', '.')
+  const value = Number.parseFloat(normalized)
+  if (!Number.isFinite(value) || value < 0) return 0
+  return Math.round(value * 100)
+}
+
 function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
   return {
     product_name: '',
@@ -1116,9 +1123,11 @@ export default function InvoiceFormPage() {
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
-                    <input type="number" step="0.01" min="0"
+                    <input type="number" step="1" min="0" inputMode="decimal"
                       value={(item.purchase_price / 100).toFixed(2)}
-                      onChange={(e) => updateItem(i, 'purchase_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'purchase_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
+                      onChange={(e) => updateItem(i, 'purchase_price', parseMoneyToKopecks(e.target.value))}
                       onBlur={() => { if (!isEdit) recalcRetail(i) }}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
@@ -1143,9 +1152,11 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <div className="flex flex-col gap-1 items-end">
-                      <input type="number" step="0.01" min="0"
+                      <input type="number" step="1" min="0" inputMode="decimal"
                         value={(item.retail_price / 100).toFixed(2)}
-                        onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'retail_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
+                      onChange={(e) => updateItem(i, 'retail_price', parseMoneyToKopecks(e.target.value))}
                         disabled={isEdit}
                         className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
                       {!isEdit && quickPercents.length > 0 && (
@@ -1277,18 +1288,22 @@ export default function InvoiceFormPage() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Закупка, грн</label>
-                    <input type="number" step="0.01" min="0"
+                    <input type="number" step="1" min="0" inputMode="decimal"
                       value={(item.purchase_price / 100).toFixed(2)}
-                      onChange={(e) => updateItem(i, 'purchase_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'purchase_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
+                      onChange={(e) => updateItem(i, 'purchase_price', parseMoneyToKopecks(e.target.value))}
                       onBlur={() => { if (!isEdit) recalcRetail(i) }}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Продаж, грн</label>
-                    <input type="number" step="0.01" min="0"
+                    <input type="number" step="1" min="0" inputMode="decimal"
                       value={(item.retail_price / 100).toFixed(2)}
-                      onChange={(e) => updateItem(i, 'retail_price', String(Math.round(parseFloat(e.target.value || '0') * 100)))}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'retail_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
+                      onChange={(e) => updateItem(i, 'retail_price', parseMoneyToKopecks(e.target.value))}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
@@ -1466,8 +1481,8 @@ export default function InvoiceFormPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Закупка, грн" type="number" step="0.01" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
-              <Input label="Роздріб, грн" type="number" step="0.01" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
+              <Input label="Закупка, грн" type="number" step="1" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
+              <Input label="Роздріб, грн" type="number" step="1" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
             </div>
 
             <div className="flex flex-wrap gap-2 pt-2">
