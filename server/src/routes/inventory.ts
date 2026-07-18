@@ -430,11 +430,36 @@ router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, nex
   try {
     const sessionId = String(req.params.id)
     const session = await requireInventorySession(sessionId, req.user!.tenant_id, true)
-    const { data, error } = await db.rpc('complete_inventory_session', {
-      p_session_id: sessionId,
-      p_tenant_id: req.user!.tenant_id,
-    })
-    if (error) throw new AppError('DB_ERROR', error.message, 400)
+
+    const { data: countedItems, error: itemsError } = await db.from('inventory_items')
+      .select('product_id,counted_stock')
+      .eq('session_id', sessionId)
+      .eq('was_counted', true)
+    if (itemsError) throw new AppError('DB_ERROR', itemsError.message, 500)
+
+    let itemsApplied = 0
+    const now = new Date().toISOString()
+    for (const item of countedItems ?? []) {
+      const productId = (item as any).product_id
+      const countedStock = Number((item as any).counted_stock ?? 0)
+      if (!productId || !Number.isFinite(countedStock)) continue
+
+      const { error: updateError } = await db.from('products')
+        .update({ qty_on_hand: countedStock, updated_at: now })
+        .eq('id', productId)
+        .eq('tenant_id', req.user!.tenant_id)
+      if (updateError) throw new AppError('DB_ERROR', updateError.message, 500)
+      itemsApplied += 1
+    }
+
+    const { error: sessionError } = await db.from('inventory_sessions')
+      .update({ status: 'completed', completed_at: now })
+      .eq('id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .eq('status', 'in_progress')
+    if (sessionError) throw new AppError('DB_ERROR', sessionError.message, 500)
+
+    const data = { items_updated: itemsApplied }
     await logAction({
       tenantId: req.user!.tenant_id,
       userId: req.user!.id,
