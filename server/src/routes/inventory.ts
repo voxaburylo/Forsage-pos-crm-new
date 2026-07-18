@@ -22,11 +22,42 @@ async function requireInventorySession(sessionId: string, tenantId: string, acti
   return data
 }
 
+async function refreshInventoryExpectedStock(sessionId: string, tenantId: string, productId: string, currentQty?: unknown) {
+  let expectedStock = Number(currentQty)
+  if (!Number.isFinite(expectedStock)) {
+    const { data: product, error } = await db.from('products')
+      .select('qty_on_hand')
+      .eq('id', productId)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    expectedStock = Number((product as any)?.qty_on_hand ?? 0)
+  }
+  if (!Number.isFinite(expectedStock)) expectedStock = 0
+
+  const payload = { expected_stock: expectedStock, updated_at: new Date().toISOString() }
+  const uncounted = await db.from('inventory_items')
+    .update(payload)
+    .eq('session_id', sessionId)
+    .eq('product_id', productId)
+    .eq('was_counted', false)
+  if (uncounted.error) throw new AppError('DB_ERROR', uncounted.error.message, 500)
+
+  if (expectedStock > 0) {
+    const zeroExpected = await db.from('inventory_items')
+      .update(payload)
+      .eq('session_id', sessionId)
+      .eq('product_id', productId)
+      .eq('expected_stock', 0)
+    if (zeroExpected.error) throw new AppError('DB_ERROR', zeroExpected.error.message, 500)
+  }
+}
 async function loadSessionData(sessionId: string, tenantId: string, userId: string) {
   const session = await requireInventorySession(sessionId, tenantId)
   const [itemsRes, priceIssuesRes, entriesRes, summaryRes] = await Promise.all([
     db.from('inventory_items')
-      .select('*, product:products(id,sku,name,barcode,additional_barcodes,unit,retail_price,purchase_price,storage_bin)')
+      .select('*, product:products(id,sku,name,barcode,additional_barcodes,unit,qty_on_hand,retail_price,purchase_price,storage_bin)')
       .eq('session_id', sessionId)
       .eq('was_counted', true)
       .order('updated_at', { ascending: false })
@@ -179,6 +210,8 @@ router.post('/:id/count', requireRole(...COUNTER_ROLES), async (req, res, next) 
     const parsed = countSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Перевірте кількість і ціну', 422)
     const sessionId = String(req.params.id)
+    await requireInventorySession(sessionId, req.user!.tenant_id, true)
+    await refreshInventoryExpectedStock(sessionId, req.user!.tenant_id, parsed.data.product_id)
     const { data, error } = await db.rpc('add_inventory_count', {
       p_session_id: sessionId,
       p_tenant_id: req.user!.tenant_id,
@@ -269,6 +302,7 @@ router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) =
 
     if (!product?.id) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
 
+    await refreshInventoryExpectedStock(sessionId, req.user!.tenant_id, product.id, product.qty_on_hand)
     const counted = await db.rpc('add_inventory_count', {
       p_session_id: sessionId,
       p_tenant_id: req.user!.tenant_id,
@@ -282,7 +316,7 @@ router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) =
 
     const itemId = (counted.data as any)?.item_id
     let itemQuery = db.from('inventory_items')
-      .select('id,product_id,expected_stock,counted_stock,price_checked,observed_retail_price,updated_at,product:products(id,sku,name,barcode,additional_barcodes,unit,retail_price,purchase_price,storage_bin)')
+      .select('id,product_id,expected_stock,counted_stock,price_checked,observed_retail_price,updated_at,product:products(id,sku,name,barcode,additional_barcodes,unit,qty_on_hand,retail_price,purchase_price,storage_bin)')
       .eq('session_id', sessionId)
     itemQuery = itemId ? itemQuery.eq('id', itemId) : itemQuery.eq('product_id', product.id)
     const { data: item, error: itemError } = await itemQuery.single()
@@ -297,7 +331,7 @@ router.get('/:id/labels', requireRole(...COUNTER_ROLES), async (req, res, next) 
     const sessionId = String(req.params.id)
     await requireInventorySession(sessionId, req.user!.tenant_id)
     const { data, error } = await db.from('inventory_items')
-      .select('id,product_id,expected_stock,counted_stock,price_checked,observed_retail_price,updated_at,product:products(id,sku,name,barcode,additional_barcodes,unit,retail_price,purchase_price,storage_bin)')
+      .select('id,product_id,expected_stock,counted_stock,price_checked,observed_retail_price,updated_at,product:products(id,sku,name,barcode,additional_barcodes,unit,qty_on_hand,retail_price,purchase_price,storage_bin)')
       .eq('session_id', sessionId)
       .eq('was_counted', true)
       .gt('counted_stock', 0)
