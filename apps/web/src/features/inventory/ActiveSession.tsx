@@ -9,7 +9,7 @@ import { productApi } from '@/features/products/productApi'
 import { adminApi } from '@/features/admin/adminApi'
 import { DEFAULT_LABEL, printLabels } from '@/features/labels/LabelDesigner'
 import { Layout } from '@/components/Layout'
-import { Badge, Button, Card } from '@/components/ui'
+import { Badge, Button, Card, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { playErrorTone, playSuccessBeep, initAudio } from '@/lib/audioService'
 import { CameraScanner } from '@/features/pos/CameraScanner'
@@ -86,7 +86,7 @@ interface SessionData {
 
 const INVENTORY_READ_TIMEOUT_MS = 10_000
 const INVENTORY_WRITE_TIMEOUT_MS = 15_000
-const INVENTORY_COMPLETE_TIMEOUT_MS = 30_000
+const INVENTORY_COMPLETE_TIMEOUT_MS = 120_000
 
 const emptyQuickProduct = {
   sku: '',
@@ -131,6 +131,7 @@ export default function ActiveSession() {
   const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [completing, setCompleting] = useState(false)
+  const [completeConfirmOpen, setCompleteConfirmOpen] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
@@ -793,18 +794,10 @@ export default function ActiveSession() {
 
   async function completeSession() {
     if (!id || !session || !canComplete || completing) return
-    const missing = Math.max(0, session.summary.total_products - session.summary.counted_products)
-    const priceIssues = session.summary.price_mismatch_products ?? 0
-    if (missing > 0 || priceIssues > 0) {
-      const typed = prompt(
-        `УВАГА!\nНе пораховано: ${missing} товарів.\nРозбіжностей цін: ${priceIssues}.\n`
-        + 'Непораховані залишки стануть нульовими. Для підтвердження введіть ЗАВЕРШИТИ',
-      )
-      if (typed?.trim().toUpperCase() !== 'ЗАВЕРШИТИ') return
-    } else if (!confirm('Завершити ревізію та застосувати всі фактичні залишки?')) {
-      return
-    }
+    const missing = Math.max(0, Number(session.summary.total_products ?? 0) - Number(session.summary.counted_products ?? 0))
+    const priceIssues = Number(session.summary.price_mismatch_products ?? 0)
     setCompleting(true)
+    toast.success('Застосовую залишки ревізії...')
     try {
       const response = await api.post<{ data: { items_updated?: number } }>(
         `/api/v1/inventory/${id}/complete`,
@@ -817,6 +810,7 @@ export default function ActiveSession() {
       )
       const updated = Number((response.data as any)?.items_updated ?? 0)
       toast.success(`Ревізію завершено. Оновлено ${Number.isFinite(updated) ? updated : 0} товарів.`)
+      setCompleteConfirmOpen(false)
       navigate('/inventory')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завершити ревізію')
@@ -836,6 +830,9 @@ export default function ActiveSession() {
   }
   if (!session) return null
   const isActive = session.status === 'in_progress'
+  const completeMissing = Math.max(0, Number(session.summary.total_products ?? 0) - Number(session.summary.counted_products ?? 0))
+  const completePriceIssues = Number(session.summary.price_mismatch_products ?? 0)
+  const completeIsDangerous = completeMissing > 0 || completePriceIssues > 0
 
   return (
     <Layout title={`Ревізія: ${session.name}`} onBack={() => navigate('/inventory')}>
@@ -1264,15 +1261,44 @@ export default function ActiveSession() {
         )}
 
         {isActive && canComplete && (
-          <div className="flex justify-end">
-            <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
-              {completing ? 'Завершую...' : 'Завершити та застосувати залишки'}
-            </Button>
+          <div className="space-y-2">
+            <div className="flex justify-end">
+              <Button onClick={() => setCompleteConfirmOpen(true)} loading={completing} icon={<CheckCircle size={16} />}>
+                {completing ? 'Застосовую залишки...' : 'Завершити та застосувати залишки'}
+              </Button>
+            </div>
+            {completing && (
+              <p className="text-right text-xs font-medium text-blue-700">
+                Йде запис залишків у склад. Не закривайте сторінку.
+              </p>
+            )}
           </div>
         )}
         {isActive && !canComplete && (
           <p className="text-center text-xs text-gray-500">Завершує ревізію власник або адміністратор.</p>
         )}
+
+        <ConfirmDialog
+          open={completeConfirmOpen}
+          onClose={() => setCompleteConfirmOpen(false)}
+          onConfirm={completeSession}
+          title="Завершити ревізію?"
+          danger={completeIsDangerous}
+          confirmLabel={completeIsDangerous ? 'Так, застосувати' : 'Застосувати залишки'}
+          cancelLabel="Скасувати"
+          message={
+            <div className="space-y-2">
+              <p>Після підтвердження фактичні кількості з цієї ревізії будуть записані в складські залишки.</p>
+              {completeMissing > 0 && (
+                <p className="font-semibold">Не пораховано товарів: {completeMissing}. Для них залишок стане 0.</p>
+              )}
+              {completePriceIssues > 0 && (
+                <p className="font-semibold">Є розбіжності цін: {completePriceIssues}. Вони залишаться в історії ревізії.</p>
+              )}
+              <p className="text-xs opacity-80">Запис може зайняти час на великій ревізії — після натискання буде показано процес.</p>
+            </div>
+          }
+        />
       </div>
     </Layout>
   )
