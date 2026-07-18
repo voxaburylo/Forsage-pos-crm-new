@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, Truck, PackageCheck, XCircle } from 'lucide-react'
+import { Truck, PackageCheck, XCircle } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Card, Button, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -33,19 +33,15 @@ const STATUS_CONFIG: Record<SupplierPO['status'], { label: string; color: 'gray'
 
 export default function SupplierPOsPage() {
   const [pos, setPos] = useState<SupplierPO[]>([])
-  const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<'active' | 'all'>('active')
   const [actionId, setActionId] = useState<string | null>(null)
 
   async function load() {
-    setLoading(true)
     try {
       const res = await api.get<{ data: SupplierPO[] }>('/api/v1/supplier-pos')
       setPos(res.data ?? [])
     } catch {
       toast.error('Помилка завантаження замовлень постачальникам')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -83,9 +79,6 @@ export default function SupplierPOsPage() {
               </button>
             ))}
           </div>
-          <Button onClick={load} disabled={loading} variant="secondary" size="sm" icon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} />}>
-            Оновити
-          </Button>
         </div>
       </div>
 

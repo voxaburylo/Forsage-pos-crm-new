@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
   ChevronDown, UserCog, Users,
-  Bell, X, PackagePlus, MessageSquare, Sparkles,
+  X, PackagePlus,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -35,8 +35,6 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/pos',                 icon: <Zap size={18} />,             label: 'Каса (POS)' },
-      { to: '/ai-assistant',        icon: <Sparkles size={18} />,        label: 'Допомога АІ',          roles: ['owner','admin','manager'] },
-      { to: '/notifications',       icon: <Bell size={18} />,            label: 'Сповіщення',           roles: ['owner','admin','manager'] },
     ],
   },
   {
@@ -44,12 +42,11 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
-      { to: '/chats',               icon: <MessageSquare size={18} />,   label: 'Чат-боти',             roles: ['owner','admin','manager'] },
       { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
       { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
-      { to: '/receiving',           icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','storekeeper'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
       { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
     ],
@@ -197,7 +194,6 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
   const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
 
   const [pickingCount, setPickingCount] = useState(0)
-  const [notifCount, setNotifCount]   = useState(0)
 
   useEffect(() => {
     const isStorekeeper = role === 'storekeeper'
@@ -210,20 +206,13 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
         .then((r) => setPickingCount((r.data ?? []).length))
         .catch(() => {})
     }
-    function fetchNotif() {
-      api.get<{ data: { count: number } }>('/api/v1/notifications/inbox/count', { silent: true } as any)
-        .then((r) => setNotifCount(r.data?.count ?? 0))
-        .catch(() => {})
-    }
-
-    fetchPicking(); fetchNotif()
-    const t = setInterval(() => { fetchPicking(); fetchNotif() }, 120_000)
+    fetchPicking()
+    const t = setInterval(fetchPicking, 120_000)
     return () => clearInterval(t)
   }, [role, location.pathname, location.search])
 
   const badgeMap: Record<string, number> = {
     '/inventory/picking': pickingCount,
-    '/notifications': notifCount,
   }
 
   async function handleSignOut() {

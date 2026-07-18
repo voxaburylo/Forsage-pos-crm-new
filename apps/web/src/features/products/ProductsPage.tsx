@@ -446,7 +446,7 @@ export default function ProductsPage() {
         <div className="flex-1 min-w-0 flex flex-col gap-3">
 
           {/* Панель пошуку */}
-          <div className="flex gap-2 items-center">
+          <div className="flex flex-col md:flex-row gap-2 md:items-center">
             <div className="relative flex-1 min-w-0">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
@@ -459,7 +459,7 @@ export default function ProductsPage() {
               value={brandFilter}
               onChange={(e) => { setBrandFilter(e.target.value); setPage(1) }}
               aria-label="Фільтр за брендом"
-              className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 text-gray-700 cursor-pointer"
+              className="w-full md:w-auto px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 text-gray-700 cursor-pointer"
             >
               <option value="">Всі бренди</option>
               {brands.map((b) => (
@@ -469,21 +469,21 @@ export default function ProductsPage() {
               ))}
             </select>
             <button onClick={() => { setLowStock(!lowStock); setPage(1) }}
-              className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+              className={`w-full md:w-auto justify-center flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
                 lowStock ? 'bg-orange-100 border-orange-300 text-orange-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
               }`}>
               <AlertTriangle size={14} /> Мало на складі
             </button>
             <button onClick={() => { setStockFilter(stockFilter === 'negative' ? '' : 'negative'); setPage(1) }}
               title="Товари, що пішли в мінус через продаж при нульовому залишку — вирівняйте ревізією"
-              className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+              className={`w-full md:w-auto justify-center flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
                 stockFilter === 'negative' ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
               }`}>
               − Мінуси
             </button>
             <button onClick={() => { setStockFilter(stockFilter === 'no_price' ? '' : 'no_price'); setPage(1) }}
               title="Товари з роздрібною ціною 0 грн (ціну не розпізнано при імпорті) — впишіть ціну"
-              className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+              className={`w-full md:w-auto justify-center flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
                 stockFilter === 'no_price' ? 'bg-amber-100 border-amber-300 text-amber-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
               }`}>
               ₴0 Без ціни
@@ -492,11 +492,11 @@ export default function ProductsPage() {
 
           {/* Bulk toolbar */}
           {selectedIds.size > 0 && (
-            <div className="flex items-center justify-between px-4 py-2 bg-yellow-50 border border-yellow-200 rounded-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-2 bg-yellow-50 border border-yellow-200 rounded-xl">
               <span className="text-sm text-yellow-800 font-medium">Вибрано {selectedIds.size} товарів</span>
               <div className="flex gap-2">
                 <Button size="sm" onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
-                <Button size="sm" variant="secondary" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
+                <Button size="sm" variant="secondary" className="hidden sm:inline-flex" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
                 {isAdmin && (
                   <Button size="sm" variant="secondary"
                     onClick={askBulkDelete}

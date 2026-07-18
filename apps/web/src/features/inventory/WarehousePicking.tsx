@@ -546,9 +546,6 @@ export default function WarehousePicking() {
           <p className="text-sm text-gray-500">
             Черга для комірника: взяти товари зі складу, скласти одне замовлення разом і передати його в зону видачі.
           </p>
-          <Button size="sm" variant="secondary" onClick={loadOrders} loading={loadingOrders}>
-            Оновити
-          </Button>
         </div>
 
         <PickingSteps active={1} />

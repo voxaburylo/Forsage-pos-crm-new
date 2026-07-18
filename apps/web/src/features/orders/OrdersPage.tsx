@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, Truck, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
-  Trash2, X, Check, RefreshCw, Pencil, Copy, ArrowRight, Clock, Camera,
+  Trash2, X, Check, Pencil, Copy, ArrowRight, Clock, Camera,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -952,7 +952,6 @@ interface OrdersTableProps {
   loading: boolean
   search: string
   setSearch: (s: string) => void
-  onRefresh: () => void
   offset: number
   onPrevPage: () => void
   onNextPage: () => void
@@ -964,7 +963,7 @@ interface OrdersTableProps {
   onStatusTab: (t: Tab) => void
 }
 
-function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, onPrevPage, onNextPage, hasMore, onQuickView, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
+function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, onNextPage, hasMore, onQuickView, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
   const navigate = useNavigate()
 
   const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
@@ -999,15 +998,6 @@ function OrdersTable({ orders, loading, search, setSearch, onRefresh, offset, on
                 </button>
               )}
             </div>
-            <button
-              onClick={onRefresh}
-              disabled={loading}
-              className="p-2 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 text-gray-500 cursor-pointer disabled:cursor-wait disabled:opacity-60"
-              title="Оновити"
-              aria-label={loading ? 'Оновлення замовлень' : 'Оновити замовлення'}
-            >
-              <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-            </button>
           </div>
         </div>
 
@@ -1762,10 +1752,6 @@ export default function OrdersPage() {
                 <input value={search} onChange={(e) => setSearch(e.target.value)}
                   placeholder="Пошук..."
                   className="w-full bg-gray-50 border border-gray-200 rounded-lg pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-yellow-300" />
-                <button onClick={() => { loadChats(); loadOrders() }}
-                  className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100" title="Оновити">
-                  <RefreshCw size={13} />
-                </button>
               </div>
             </div>
 
@@ -1942,7 +1928,6 @@ export default function OrdersPage() {
               loading={loadingOrders}
               search={search} 
               setSearch={setSearch} 
-              onRefresh={() => { loadChats(); loadOrders() }} 
               offset={offset}
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}

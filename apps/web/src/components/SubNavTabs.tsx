@@ -77,16 +77,12 @@ export const CUSTOMERS_TABS = [
 ]
 
 export const PRODUCTS_TABS = [
-  { to: '/products', label: 'Товари' },
-  { to: '/settings/draft-nomenclature', label: 'Чорнова номенклатура', roles: ['owner', 'admin', 'manager'] },
-  { to: '/labels', label: 'Друк етикеток', roles: ['owner', 'admin'] }
+  { to: '/products', label: 'Товари' }
 ]
 
 export const ORDERS_TABS = [
-  { to: '/needs-action', label: 'Потребує дії' },
-  { to: '/orders', label: 'Список замовлень' },
-  { to: '/orders?tab=drafts', label: 'Чернетки' },
-  { to: '/waitlist', label: 'Лист очікування' }
+  { to: '/orders', label: 'Замовлення' },
+  { to: '/orders?tab=drafts', label: 'Чернетки' }
 ]
 
 export const FINANCE_TABS = [
@@ -96,17 +92,15 @@ export const FINANCE_TABS = [
 ]
 
 export const SUPPLIERS_TABS = [
-  { to: '/suppliers', label: 'Список постачальників', roles: ['owner', 'admin', 'manager'] },
+  { to: '/suppliers', label: 'Постачальники', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/pos', label: 'Замовлення постачальникам' },
-  { to: '/auto-purchase', label: 'Автозакупівля', roles: ['owner', 'admin', 'manager'] },
 ]
 
 // Поступлення товарів — єдиний дім для приходу (накладні + імпорт), щоб не дублювати
 // з керуванням постачальниками.
 export const RECEIVING_TABS = [
-  { to: '/receiving', label: 'Огляд' },
-  { to: '/suppliers/invoices', label: 'Прихідні накладні' },
-  { to: '/suppliers/import', label: 'Імпорт накладної' },
+  { to: '/suppliers/invoices', label: 'Накладні' },
+  { to: '/suppliers/import', label: 'Імпорт' },
 ]
 
 export const INVENTORY_TABS = [
@@ -115,23 +109,17 @@ export const INVENTORY_TABS = [
   { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
   { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },
   { to: '/core-returns', label: 'Повернення старих деталей', roles: ['owner', 'admin', 'manager'] },
-  { to: '/internal', label: 'Потреби магазину', roles: ['owner', 'admin', 'manager'] },
 ]
 
 export const ANALYTICS_TABS = [
   { to: '/dashboard', label: 'Дашборд', roles: ['owner', 'admin', 'manager'] },
   { to: '/reports', label: 'Денний звіт', roles: ['owner', 'admin', 'manager'] },
-  { to: '/abc', label: 'ABC-аналіз', roles: ['owner', 'admin', 'manager'] }
 ]
 
 export const STAFF_TABS = [
-  { to: '/staff', label: 'Команда та ЗП', roles: ['owner', 'admin'] },
-  { to: '/staff-analytics', label: 'Аналітика персоналу', roles: ['owner', 'admin'] }
+  { to: '/staff', label: 'Команда та ЗП', roles: ['owner', 'admin'] }
 ]
 
 export const SETTINGS_TABS = [
-  { to: '/settings', label: 'Загальні', roles: ['owner', 'admin'] },
-  { to: '/settings/channels', label: 'Канали зв\'язку', roles: ['owner', 'admin'] },
-  { to: '/settings/templates', label: 'Шаблони сповіщень', roles: ['owner', 'admin'] },
-  { to: '/audit', label: 'Журнал аудиту', roles: ['owner', 'admin'] }
+  { to: '/settings', label: 'Налаштування', roles: ['owner', 'admin'] }
 ]

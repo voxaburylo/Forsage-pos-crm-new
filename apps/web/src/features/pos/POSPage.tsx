@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, LogOut, Printer, ArrowLeftRight, RotateCcw, Home, Keyboard, Maximize, Minimize, Lock, DollarSign, Users, Receipt, LayoutGrid, PauseCircle, Inbox, Scale, MoreVertical, CircleDollarSign, Wrench } from 'lucide-react'
+import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
@@ -20,7 +20,7 @@ import { QuickChargeModal } from './QuickChargeModal'
 import { HelpModal } from './HelpModal'
 import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
-import { LockScreenOverlay, isLocked, setLocked } from './LockScreenOverlay'
+import { LockScreenOverlay, isLocked } from './LockScreenOverlay'
 import { shiftApi } from './shiftApi'
 import type { POSItem, POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
@@ -205,7 +205,6 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 
 export default function POSPage() {
   const navigate = useNavigate()
-  const isStandalonePWA = window.matchMedia('(display-mode: standalone)').matches
   const { store, completeSale, checkShift } = usePOS()
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
@@ -215,7 +214,7 @@ export default function POSPage() {
   const [debtPayOpen, setDebtPayOpen] = useState(false)
   const [suspendOpen, setSuspendOpen]   = useState(false)
   const [suspendedOpen, setSuspendedOpen] = useState(false)
-  const [suspendedCount, setSuspendedCount] = useState(0)
+  const [, setSuspendedCount] = useState(0)
   const [lastSale, setLastSale]         = useState<Sale | null>(null)
   const autoPrintRef                    = useRef(false)
   const paymentPrintChoiceRef           = useRef<boolean | null>(null)
@@ -240,26 +239,10 @@ export default function POSPage() {
   const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
-  const [bigFont, setBigFont]           = useState(() => !isStandalonePWA && localStorage.getItem('pos_big_font') === '1')
-  const [isFullscreen, setIsFullscreen] = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
   const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
-  const [isEmployeeSale, setIsEmployeeSale] = useState(false)
-  const [employeeDiscountPct, setEmployeeDiscountPct] = useState(0)
-
-  function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {})
-    } else {
-      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {})
-    }
-  }
-
-  function handleLock() {
-    setLocked(true)
-    setLockedPIN(true)
-  }
+  const [isEmployeeSale] = useState(false)
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
   const session = useAuthStore((s) => s.session)
   const searchRef = useRef<SearchPanelHandle>(null)
@@ -297,7 +280,6 @@ export default function POSPage() {
   const shift = store.currentShift
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickCharge, setQuickCharge] = useState<'tire_service' | 'free_sale' | null>(null)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
@@ -329,7 +311,6 @@ export default function POSPage() {
     adminApi.getSettings()
       .then((res: any) => {
         const data = res.data
-        setEmployeeDiscountPct(data.employee_discount_pct ?? 0)
         autoPrintRef.current = data.auto_print_receipt ?? false
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
       })
@@ -701,12 +682,6 @@ export default function POSPage() {
     <div className="fixed inset-0 overflow-hidden bg-[#1A1A1A]">
       <div
         className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
-        style={bigFont && !isStandalonePWA ? {
-          transform: 'scale(1.18)',
-          transformOrigin: 'top left',
-          width: 'calc(100vw / 1.18)',
-          height: 'calc(100dvh / 1.18)',
-        } : undefined}
       >
       {/* Lock Screen */}
       {isLockedPIN && (
@@ -820,128 +795,17 @@ export default function POSPage() {
 
         {/* Desktop права частина — щоденні дії з підписами, решта в меню «Ще» */}
         <div className="hidden md:flex items-center gap-0.5">
-          {/* Чеки */}
-          {lastSale && (
-            <button onClick={printReceipt}
-              className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
-              title="Надрукувати останній чек">
-              <Printer size={15} /><span className="hidden xl:inline">Друк</span>
-            </button>
-          )}
-          <button onClick={() => setFindReceiptOpen(true)}
-            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Знайти і надрукувати чек (F6)">
-            <Receipt size={15} /><span className="hidden xl:inline">Знайти чек</span>
-          </button>
           <ReadyOrdersPanel />
-          <button onClick={() => { if (store.items.length > 0) setSuspendOpen(true) }}
-            disabled={store.items.length === 0}
-            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium disabled:opacity-30"
-            title="Відкласти поточний чек (F7)">
-            <PauseCircle size={15} /><span className="hidden xl:inline">Відкласти</span>
-          </button>
-          <button onClick={() => setSuspendedOpen(true)}
-            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium relative"
-            title="Відкладені чеки (F5)">
-            <Inbox size={15} /><span className="hidden xl:inline">Відкладені</span>
-            {suspendedCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                {suspendedCount > 9 ? '9+' : suspendedCount}
-              </span>
-            )}
-          </button>
-
-          <div className="w-px h-7 bg-gray-800 mx-1" />
-
-          {/* Гроші */}
           <button onClick={() => setCashOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
             title="Внесення та витрата готівки">
             <ArrowLeftRight size={15} /><span className="hidden xl:inline">Каса</span>
-          </button>
-          <button onClick={() => setDebtPayOpen(true)}
-            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-red-400 hover:text-red-300 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Погашення старого боргу клієнта. Передоплата — через «Замовлення / передоплата».">
-            <DollarSign size={15} /><span className="hidden xl:inline">Борги</span>
           </button>
           <button onClick={() => navigate('/returns')}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-orange-400 hover:text-orange-300 hover:bg-gray-800 transition-colors text-xs font-medium"
             title="Повернення товару за чеком">
             <RotateCcw size={15} /><span className="hidden xl:inline">Повернення</span>
           </button>
-          <button onClick={() => setReconcileOpen(true)}
-            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-yellow-400 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Звірка готівки в касі">
-            <Scale size={15} /><span className="hidden xl:inline">Звірка</span>
-          </button>
-
-          <div className="w-px h-7 bg-gray-800 mx-1" />
-
-          {/* Рідковживане — меню «Ще» */}
-          <div className="relative">
-            <button onClick={() => setMoreOpen((v) => !v)}
-              className={`flex items-center justify-center rounded-lg w-10 h-10 transition-colors ${
-                moreOpen || isEmployeeSale || bigFont
-                  ? 'text-yellow-400 bg-gray-800'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
-              }`}
-              title="Ще: блокування, довідка, шрифт, повний екран">
-              <MoreVertical size={17} />
-            </button>
-            {moreOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 w-64 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden py-1">
-                  {employeeDiscountPct > 0 && (
-                    <button
-                      onClick={() => {
-                        const next = !isEmployeeSale
-                        setIsEmployeeSale(next)
-                        store.setAutomaticDiscountPct(next ? employeeDiscountPct : (store.customer?.tierDiscountPct ?? 0))
-                        toast.success(next
-                          ? `Знижка працівника ${employeeDiscountPct}% увімкнена`
-                          : 'Знижку працівника вимкнено')
-                        setMoreOpen(false)
-                      }}
-                      className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left transition-colors ${
-                        isEmployeeSale ? 'text-green-400 bg-green-900/20' : 'text-gray-300 hover:bg-gray-700'
-                      }`}>
-                      <Users size={15} /> Продаж працівнику ({employeeDiscountPct}%)
-                      {isEmployeeSale && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
-                    </button>
-                  )}
-                  {['owner','admin'].includes(String(session?.user?.user_metadata?.role ?? '')) && (
-                    <button onClick={() => { setMoreOpen(false); navigate('/staff') }}
-                      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-emerald-300 hover:bg-gray-700 text-left transition-colors">
-                      <DollarSign size={15} /> Зарплата за сьогодні
-                    </button>
-                  )}
-                  <button onClick={() => { setMoreOpen(false); handleLock() }}
-                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
-                    <Lock size={15} /> Заблокувати касу
-                  </button>
-                  <button onClick={() => { setMoreOpen(false); setHelpOpen(true) }}
-                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
-                    <Keyboard size={15} /> Гарячі клавіші (F1)
-                  </button>
-                  {!isStandalonePWA && (
-                    <button onClick={() => { const v = !bigFont; setBigFont(v); localStorage.setItem('pos_big_font', v ? '1' : '0'); setMoreOpen(false) }}
-                      className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left transition-colors ${
-                        bigFont ? 'text-yellow-400 bg-yellow-900/10' : 'text-gray-300 hover:bg-gray-700'
-                      }`}>
-                      <span className="font-bold text-[15px] leading-none w-[15px]">A+</span> Великий шрифт
-                      {bigFont && <span className="ml-auto text-[10px] font-bold">УВІМК</span>}
-                    </button>
-                  )}
-                  <button onClick={() => { setMoreOpen(false); toggleFullscreen() }}
-                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-300 hover:bg-gray-700 text-left transition-colors">
-                    {isFullscreen ? <Minimize size={15} /> : <Maximize size={15} />} {isFullscreen ? 'Вийти з повного екрана' : 'На весь екран'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-
           <div className="w-px h-7 bg-gray-800 mx-1" />
           <div className="flex items-center gap-2 mr-1">
             <span className="text-yellow-400 font-bold text-lg tabular-nums tracking-tight">{formatMoney(store.total)}</span>
@@ -972,34 +836,17 @@ export default function POSPage() {
             <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-5" />
 
             {/* Сітка дій */}
-            <div className="grid grid-cols-4 gap-3 mb-4">
+            <div className="grid grid-cols-2 gap-3 mb-4">
               {[
-                ...(['owner','admin'].includes(String(session?.user?.user_metadata?.role ?? '')) ? [
-                  { icon: '💵', label: 'Зарплата', action: () => { setMobileMenuOpen(false); navigate('/staff') } },
-                ] : []),
                 { icon: '🛞', label: 'Шиномонтаж', action: () => { setQuickCharge('tire_service'); setMobileMenuOpen(false) } },
                 { icon: '💰', label: 'Вільна сума', action: () => { setQuickCharge('free_sale'); setMobileMenuOpen(false) } },
-                { icon: '🖨️', label: 'Друк', action: () => { printReceipt(); setMobileMenuOpen(false) }, disabled: !lastSale },
-                { icon: '🧾', label: 'Знайти чек', action: () => { setFindReceiptOpen(true); setMobileMenuOpen(false) } },
-                { icon: '⏸️', label: 'Відкласти', action: () => { setSuspendOpen(true); setMobileMenuOpen(false) }, disabled: store.items.length === 0 },
-                { icon: '📦', label: 'Відкладені', action: () => { setSuspendedOpen(true); setMobileMenuOpen(false) }, badge: suspendedCount },
                 { icon: '↔️', label: 'Каса', action: () => { setCashOpen(true); setMobileMenuOpen(false) } },
-                { icon: '💸', label: 'Борги', action: () => { setDebtPayOpen(true); setMobileMenuOpen(false) } },
                 { icon: '↩️', label: 'Повернення', action: () => { setMobileMenuOpen(false); navigate('/returns') } },
-                { icon: '📊', label: 'Звірка', action: () => { setReconcileOpen(true); setMobileMenuOpen(false) } },
-                { icon: '🔒', label: 'Блок', action: () => { handleLock(); setMobileMenuOpen(false) } },
-                { icon: '❓', label: 'Довідка', action: () => { setHelpOpen(true); setMobileMenuOpen(false) } },
-                { icon: isFullscreen ? '⬜' : '⛶', label: 'Екран', action: () => { toggleFullscreen(); setMobileMenuOpen(false) } },
-              ].map(({ icon, label, action, disabled, badge }) => (
-                <button key={label} onClick={action} disabled={disabled}
+              ].map(({ icon, label, action }) => (
+                <button key={label} onClick={action}
                   className="relative flex flex-col items-center gap-1.5 p-3 bg-[#2C2C2C] rounded-xl active:bg-gray-600 disabled:opacity-30 transition-colors">
                   <span className="text-2xl leading-none">{icon}</span>
                   <span className="text-[11px] text-gray-400">{label}</span>
-                  {!!badge && badge > 0 && (
-                    <span className="absolute top-1.5 right-1.5 bg-red-500 text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                      {badge > 9 ? '9+' : badge}
-                    </span>
-                  )}
                 </button>
               ))}
             </div>

@@ -6,8 +6,7 @@ import {
   Loader2, 
   History, 
   FileText, 
-  Settings, 
-  RefreshCw 
+  Settings
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { supplierImportsApi } from './supplierImportsApi'
@@ -597,16 +596,6 @@ export default function BulkImportPage() {
             <History size={20} className="text-gray-500" />
             Історія останніх імпортів
           </h3>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={fetchHistory} 
-            disabled={loadingHistory}
-            className="flex items-center gap-1.5"
-          >
-            <RefreshCw size={14} className={loadingHistory ? 'animate-spin' : ''} />
-            Оновити
-          </Button>
         </div>
 
         <Card padding="none" className="shadow-md border border-gray-100 overflow-hidden">

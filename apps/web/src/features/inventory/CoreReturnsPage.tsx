@@ -4,7 +4,7 @@ import { Card, Button, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatDate } from '@/lib/utils'
 import { api } from '@/lib/api'
-import { RefreshCw, ArrowLeftRight, User, Truck, DollarSign, Wallet } from 'lucide-react'
+import { ArrowLeftRight, User, Truck, DollarSign, Wallet } from 'lucide-react'
 
 export interface ClientCoreReturn {
   id: string
@@ -34,20 +34,16 @@ export default function CoreReturnsPage() {
   const [activeTab, setActiveTab] = useState<'client' | 'supplier'>('client')
   const [clientReturns, setClientReturns] = useState<ClientCoreReturn[]>([])
   const [supplierDebts, setSupplierDebts] = useState<SupplierCoreDebt[]>([])
-  const [loading, setLoading] = useState(false)
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
   const [returnQty, setReturnQty] = useState<Record<string, string>>({})
 
   async function loadData() {
-    setLoading(true)
     try {
       const res = await api.get<{ clientReturns: ClientCoreReturn[]; supplierDebts: SupplierCoreDebt[] }>('/api/v1/core-returns')
       setClientReturns(res.clientReturns ?? [])
       setSupplierDebts(res.supplierDebts ?? [])
     } catch {
       toast.error('Помилка завантаження даних повернень')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -107,9 +103,6 @@ export default function CoreReturnsPage() {
             Для товарів із заставною деталлю: приймаємо стару деталь від клієнта, повертаємо заставу або відмічаємо повернення постачальнику.
           </p>
         </div>
-        <Button onClick={loadData} disabled={loading} className="flex items-center gap-2">
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Оновити
-        </Button>
       </div>
 
       {/* Tabs */}
