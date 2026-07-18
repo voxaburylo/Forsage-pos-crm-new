@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangle, Camera, CheckCircle, ChevronDown, Copy, PackageCheck,
-  RotateCcw, Search,
+  Plus, Search, Trash2,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { productApi } from '@/features/products/productApi'
@@ -85,6 +85,16 @@ const INVENTORY_READ_TIMEOUT_MS = 10_000
 const INVENTORY_WRITE_TIMEOUT_MS = 15_000
 const INVENTORY_COMPLETE_TIMEOUT_MS = 30_000
 
+const emptyQuickProduct = {
+  sku: '',
+  name: '',
+  barcode: '',
+  qty: '1',
+  purchase_price: '',
+  retail_price: '',
+  storage_bin: '',
+}
+
 export default function ActiveSession() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
@@ -99,6 +109,9 @@ export default function ActiveSession() {
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState<ProductInfo | null>(null)
   const [qty, setQty] = useState('1')
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false)
+  const [quickProduct, setQuickProduct] = useState(emptyQuickProduct)
+  const [creatingProduct, setCreatingProduct] = useState(false)
   const [priceStatus, setPriceStatus] = useState<'unchecked' | 'match' | 'mismatch'>('unchecked')
   const [observedPrice, setObservedPrice] = useState('')
   const [applyNewPrice, setApplyNewPrice] = useState(true)
@@ -120,6 +133,29 @@ export default function ActiveSession() {
     return ((Number(kopecks) || 0) / 100).toFixed(2)
   }
 
+  function kopecksFromInput(value: string): number | null {
+    const parsed = Number(String(value).replace(',', '.'))
+    if (!Number.isFinite(parsed) || parsed < 0) return null
+    return Math.round(parsed * 100)
+  }
+
+  function openQuickCreate(seed = query) {
+    const code = seed.trim()
+    const looksLikeBarcode = /^\d{6,}$/.test(code)
+    setSelected(null)
+    setSearchResults([])
+    setQuickCreateOpen(true)
+    setQuickProduct({
+      ...emptyQuickProduct,
+      sku: code,
+      barcode: looksLikeBarcode ? code : '',
+    })
+  }
+
+  function updateQuickProduct(patch: Partial<typeof emptyQuickProduct>) {
+    setQuickProduct((prev) => ({ ...prev, ...patch }))
+  }
+
   async function savePrice() {
     if (!selected || !canEditPrice) return
     const retail = Math.round(parseFloat(String(editRetail).replace(',', '.')) * 100)
@@ -128,9 +164,9 @@ export default function ActiveSession() {
     if (!Number.isFinite(purchase) || purchase < 0) { toast.error('Некоректна закупівельна ціна'); return }
     setSavingPrice(true)
     try {
-      await productApi.update(
-        selected.id,
-        { retail_price: retail, purchase_price: purchase } as any,
+      await api.put(
+        `/api/v1/products/${selected.id}`,
+        { retail_price: retail, purchase_price: purchase },
         { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       toast.success('Ціни товару оновлено')
@@ -185,6 +221,7 @@ export default function ActiveSession() {
       )
       setSession(response.session)
       playSuccessBeep()
+      setQuickCreateOpen(false)
       setQuery(''); setSearchResults([])
       inputRef.current?.focus()
     } catch (error) {
@@ -211,21 +248,60 @@ export default function ActiveSession() {
     }
   }
 
+  async function removeItem(item: InventoryItem) {
+    if (!id) return
+    if (!confirm(`Прибрати з ревізії "${item.product?.name ?? 'товар'}"?`)) return
+    try {
+      await api.put(
+        `/api/v1/inventory/${id}/items/${item.id}`,
+        { counted_stock: 0 },
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (item.product?.id) next.delete(item.product.id)
+        return next
+      })
+      toast.success('Товар прибрано з ревізії')
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося прибрати товар')
+    }
+  }
+
   // Встановити роздрібну ціну товару прямо з рядка.
   async function setItemRetail(item: InventoryItem, value: string) {
     if (!item.product || !canEditPrice) return
-    const retail = Math.round(parseFloat(String(value).replace(',', '.')) * 100)
-    if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна'); return }
+    const retail = kopecksFromInput(value)
+    if (retail === null) { toast.error('Некоректна ціна'); return }
     if (retail === item.product.retail_price) return
     try {
-      await productApi.update(
-        item.product.id,
-        { retail_price: retail } as any,
+      await api.put(
+        `/api/v1/products/${item.product.id}`,
+        { retail_price: retail },
         { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       load(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
+    }
+  }
+
+  // Встановити закупівельну ціну товару прямо з рядка.
+  async function setItemPurchase(item: InventoryItem, value: string) {
+    if (!item.product || !canEditPrice) return
+    const purchase = kopecksFromInput(value)
+    if (purchase === null) { toast.error('Некоректна закупівельна ціна'); return }
+    if (purchase === (item.product.purchase_price ?? 0)) return
+    try {
+      await api.put(
+        `/api/v1/products/${item.product.id}`,
+        { purchase_price: purchase },
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
+      load(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити закупку')
     }
   }
 
@@ -248,9 +324,9 @@ export default function ActiveSession() {
       } catch { toast.error('Не вдалося порахувати за таблицею'); return }
     }
     try {
-      await productApi.update(
-        item.product.id,
-        { retail_price: retail } as any,
+      await api.put(
+        `/api/v1/products/${item.product.id}`,
+        { retail_price: retail },
         { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       load(true)
@@ -353,7 +429,12 @@ export default function ActiveSession() {
       await addProduct(data)
     } catch (error) {
       playErrorTone()
-      toast.error(error instanceof Error ? error.message : 'Товар не знайдено')
+      if ((error as any)?.status === 404 && canEditPrice) {
+        toast.error('Товар не знайдено — можна створити його тут')
+        openQuickCreate(code)
+      } else {
+        toast.error(error instanceof Error ? error.message : 'Товар не знайдено')
+      }
       inputRef.current?.focus()
     } finally {
       setSearching(false)
@@ -430,6 +511,59 @@ export default function ActiveSession() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти підрахунок')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function createProductFromInventory() {
+    if (!id) return
+    const draft = quickProduct
+    const sku = draft.sku.trim()
+    const name = draft.name.trim()
+    const countedQty = Number(String(draft.qty).replace(',', '.'))
+    if (!sku) { toast.error('Вкажіть артикул або код'); return }
+    if (name.length < 2) { toast.error('Вкажіть назву товару'); return }
+    if (!Number.isFinite(countedQty) || countedQty <= 0) { toast.error('Кількість має бути більше 0'); return }
+    setCreatingProduct(true)
+    try {
+      const created = await productApi.create({
+        sku,
+        name,
+        barcode: draft.barcode.trim(),
+        brand_id: '',
+        category_id: '',
+        unit: 'шт',
+        purchase_price: draft.purchase_price,
+        retail_price: draft.retail_price,
+        qty_on_hand: '0',
+        reorder_point: '0',
+        notes: 'Створено під час інвентаризації',
+        is_active: true,
+        is_service: false,
+        storage_bin: draft.storage_bin.trim(),
+        is_favorite: false,
+        photo_url: null,
+        specs: {},
+        requires_core_return: false,
+        core_deposit_amount: '',
+      }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+      const response = await api.post<{ data: unknown; session: SessionData }>(
+        `/api/v1/inventory/${id}/count`,
+        { product_id: created.data.id, qty: countedQty, price_checked: true, observed_retail_price: null },
+        undefined,
+        { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
+      )
+      setSession(response.session)
+      setQuickProduct(emptyQuickProduct)
+      setQuickCreateOpen(false)
+      setQuery('')
+      toast.success(`Створено і додано: ${name} × ${countedQty}`)
+      playSuccessBeep()
+      inputRef.current?.focus()
+    } catch (error) {
+      playErrorTone()
+      toast.error(error instanceof Error ? error.message : 'Не вдалося створити товар')
+    } finally {
+      setCreatingProduct(false)
     }
   }
 
@@ -538,8 +672,8 @@ export default function ActiveSession() {
                 <input
                   ref={inputRef}
                   value={query}
-                  onChange={(event) => { setQuery(event.target.value); setSelected(null) }}
-                  placeholder="Назва, артикул або штрихкод"
+                  onChange={(event) => { setQuery(event.target.value); setSelected(null); setQuickCreateOpen(false) }}
+                  placeholder="Назва, VIN/артикул або штрихкод"
                   autoFocus
                   className="w-full rounded-xl border-2 border-yellow-400 bg-white py-3.5 pl-10 pr-3 text-base outline-none focus:border-yellow-500"
                 />
@@ -575,6 +709,75 @@ export default function ActiveSession() {
               </button>
               <Button type="submit" loading={searching} className="hidden sm:flex">Знайти</Button>
             </form>
+            {canEditPrice && query.trim().length >= 2 && searchResults.length === 0 && !searching && (
+              <button
+                type="button"
+                onClick={() => openQuickCreate(query)}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-yellow-400 bg-yellow-50 px-3 py-2.5 text-sm font-semibold text-yellow-900 hover:bg-yellow-100"
+              >
+                <Plus size={16} /> Не знайшли? Створити товар тут
+              </button>
+            )}
+          </Card>
+        )}
+
+        {canEditPrice && quickCreateOpen && isActive && (
+          <Card>
+            <div className="mb-3">
+              <p className="text-base font-bold text-gray-900">Новий товар у ревізії</p>
+              <p className="text-xs text-gray-500">Заповніть мінімум — товар одразу створиться і додасться в цей підрахунок.</p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Код / VIN / артикул</label>
+                <input value={quickProduct.sku} onChange={(event) => updateQuickProduct({ sku: event.target.value })}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base font-semibold outline-none focus:border-yellow-500" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Штрихкод</label>
+                <input value={quickProduct.barcode} onChange={(event) => updateQuickProduct({ barcode: event.target.value })}
+                  inputMode="numeric"
+                  className="w-full rounded-xl border border-gray-300 px-3 py-3 font-mono text-base outline-none focus:border-yellow-500" />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Назва</label>
+                <input value={quickProduct.name} onChange={(event) => updateQuickProduct({ name: event.target.value })}
+                  placeholder="Наприклад: Фільтр масляний..."
+                  className="w-full rounded-xl border-2 border-yellow-400 px-3 py-3 text-base font-semibold outline-none focus:border-yellow-500" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Факт, шт</label>
+                <input type="number" min="1" step="1" inputMode="numeric" value={quickProduct.qty}
+                  onChange={(event) => updateQuickProduct({ qty: event.target.value })}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-3 text-center text-xl font-bold outline-none focus:border-yellow-500" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Комірка</label>
+                <input value={quickProduct.storage_bin} onChange={(event) => updateQuickProduct({ storage_bin: event.target.value })}
+                  placeholder="Полиця / ячейка"
+                  className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base outline-none focus:border-yellow-500" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Закупка, ₴</label>
+                <input type="number" min="0" step="0.01" inputMode="decimal" value={quickProduct.purchase_price}
+                  onChange={(event) => updateQuickProduct({ purchase_price: event.target.value })}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base font-semibold outline-none focus:border-yellow-500" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Продаж, ₴</label>
+                <input type="number" min="0" step="0.01" inputMode="decimal" value={quickProduct.retail_price}
+                  onChange={(event) => updateQuickProduct({ retail_price: event.target.value })}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base font-bold outline-none focus:border-yellow-500" />
+              </div>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Button onClick={createProductFromInventory} loading={creatingProduct} className="flex-1" icon={<PackageCheck size={17} />}>
+                Створити і додати
+              </Button>
+              <Button variant="outline" onClick={() => setQuickCreateOpen(false)}>
+                Скасувати
+              </Button>
+            </div>
           </Card>
         )}
 
@@ -628,8 +831,8 @@ export default function ActiveSession() {
                 id="inventory-qty"
                 type="number"
                 min="0"
-                step="0.001"
-                inputMode="decimal"
+                step="1"
+                inputMode="numeric"
                 value={qty}
                 onChange={(event) => setQty(event.target.value)}
                 onKeyDown={(event) => { if (event.key === 'Enter') saveCount() }}
@@ -780,9 +983,10 @@ export default function ActiveSession() {
                   selected={item.product?.id ? selectedIds.has(item.product.id) : false}
                   onToggleSelect={() => item.product?.id && toggleSelectId(item.product.id)}
                   onSetQty={(value) => setItemQty(item, value)}
+                  onSetPurchase={(value) => setItemPurchase(item, value)}
                   onSetRetail={(value) => setItemRetail(item, value)}
                   onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
-                  onRemove={() => setItemQty(item, '0')}
+                  onRemove={() => removeItem(item)}
                 />
               ))}
             </div>
@@ -854,7 +1058,7 @@ export default function ActiveSession() {
 // не збивають фокус при фоновому оновленні кожні 8с.
 function InventoryRow({
   item, isActive, canEditPrice, selected,
-  onToggleSelect, onSetQty, onSetRetail, onMarkup, onRemove,
+  onToggleSelect, onSetQty, onSetPurchase, onSetRetail, onMarkup, onRemove,
 }: {
   item: InventoryItem
   isActive: boolean
@@ -862,11 +1066,13 @@ function InventoryRow({
   selected: boolean
   onToggleSelect: () => void
   onSetQty: (value: string) => void
+  onSetPurchase: (value: string) => void
   onSetRetail: (value: string) => void
   onMarkup: (kind: 'percent' | 'table', pct?: number) => void
   onRemove: () => void
 }) {
   const retailStr = ((item.product?.retail_price ?? 0) / 100).toFixed(2)
+  const purchaseStr = ((item.product?.purchase_price ?? 0) / 100).toFixed(2)
   const product = item.product
   const unit = product?.unit ?? 'шт'
   const barcode = product?.barcode || 'без штрихкоду'
@@ -892,7 +1098,15 @@ function InventoryRow({
       </div>
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Закупка</span>
-        <span className="font-semibold text-gray-800">{formatMoney(product?.purchase_price ?? 0)}</span>
+        {canEditPrice ? (
+          <input key={`b-${product?.purchase_price}`} type="number" min="0" step="0.01" inputMode="decimal"
+            defaultValue={purchaseStr} disabled={!isActive}
+            onBlur={(event) => onSetPurchase(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
+            className="mt-0.5 w-24 rounded-lg border border-gray-300 px-2 py-1 text-right font-semibold outline-none focus:border-blue-500" />
+        ) : (
+          <span className="font-semibold text-gray-800">{formatMoney(product?.purchase_price ?? 0)}</span>
+        )}
       </div>
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Продаж</span>
@@ -908,7 +1122,7 @@ function InventoryRow({
       </div>
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Факт</span>
-        <input key={`q-${item.counted_stock}`} type="number" min="0" step="0.001" inputMode="decimal"
+        <input key={`q-${item.counted_stock}`} type="number" min="0" step="1" inputMode="numeric"
           defaultValue={String(item.counted_stock)} disabled={!isActive}
           onBlur={(event) => onSetQty(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
@@ -925,7 +1139,7 @@ function InventoryRow({
         )}
         {isActive && (
           <button type="button" onClick={onRemove} aria-label="Прибрати"
-            className="rounded-lg bg-red-50 p-1.5 text-red-600 hover:bg-red-100"><RotateCcw size={14} /></button>
+            className="rounded-lg bg-red-50 p-1.5 text-red-600 hover:bg-red-100"><Trash2 size={14} /></button>
         )}
       </div>
     </div>

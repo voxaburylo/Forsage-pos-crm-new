@@ -250,8 +250,19 @@ router.put('/:id/items/:itemId', requireRole(...MANAGER_ROLES), async (req, res,
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна кількість', 422)
     const sessionId = String(req.params.id)
     await requireInventorySession(sessionId, req.user!.tenant_id, true)
+    const countedStock = parsed.data.counted_stock
+    const updatePayload: Record<string, unknown> = {
+      counted_stock: countedStock,
+      was_counted: countedStock > 0,
+      updated_at: new Date().toISOString(),
+    }
+    if (countedStock <= 0) {
+      updatePayload.price_checked = false
+      updatePayload.observed_retail_price = null
+      updatePayload.last_counted_by = null
+    }
     const { data, error } = await db.from('inventory_items')
-      .update({ counted_stock: parsed.data.counted_stock, was_counted: true, updated_at: new Date().toISOString() })
+      .update(updatePayload)
       .eq('id', req.params.itemId).eq('session_id', sessionId)
       .select().single()
     if (error) throw new AppError('DB_ERROR', error.message, 500)

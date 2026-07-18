@@ -482,7 +482,7 @@ export default function OrderDetailPage() {
           )}
           {canComplete && !editItems && (
             <Button onClick={openOrderPaymentInPos} className="bg-green-600 hover:bg-green-700 text-white">
-              💰<span className="hidden sm:inline">&nbsp;Оплата в касі</span>
+              {remaining > 0 ? <>💰<span className="hidden sm:inline">&nbsp;Оплата / видача в касі</span></> : <>📦<span className="hidden sm:inline">&nbsp;Видати товар</span></>}
             </Button>
           )}
           {hasPendingWarehouseItems && !editItems && !['completed', 'canceled'].includes(order.status) && (
@@ -800,13 +800,13 @@ export default function OrderDetailPage() {
             <h3 className="font-semibold text-gray-800">Оплати</h3>
             {!['completed', 'canceled'].includes(order.status) && (
               <Button size="sm" variant="secondary" onClick={openOrderPaymentInPos}>
-                Оплата тільки через касу
+                {canComplete && remaining <= 0 ? 'Видати товар через касу' : 'Оплата / видача через касу'}
               </Button>
             )}
           </div>
           {!['completed', 'canceled'].includes(order.status) && (
             <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Гроші за замовлення приймаються тільки в касі: так оплата потрапляє у зміну, ПРРО, журнал і зарплатні нарахування менеджера.
+              Гроші за замовлення приймаються тільки в касі, а видача товару закривається там же: так оплата потрапляє у зміну, ПРРО, журнал і зарплатні нарахування менеджера.
             </div>
           )}
 
