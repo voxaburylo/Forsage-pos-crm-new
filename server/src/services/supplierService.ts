@@ -163,7 +163,7 @@ export async function listSupplyInvoices(query: SupplyInvoiceListQuery, tenantId
 export async function getSupplyInvoice(id: string, tenantId: string) {
   const { data, error } = await db
     .from(INVOICE_TABLE)
-    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode,storage_bin,category_id)), payments:supplier_payments(*)')
+    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,purchase_price,retail_price,barcode,storage_bin,category_id,photo_url)), payments:supplier_payments(*)')
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .single()
@@ -255,7 +255,7 @@ export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoice
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', tenantId)
-    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,retail_price,barcode,storage_bin,category_id))')
+    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,purchase_price,retail_price,barcode,storage_bin,category_id,photo_url))')
     .single()
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)

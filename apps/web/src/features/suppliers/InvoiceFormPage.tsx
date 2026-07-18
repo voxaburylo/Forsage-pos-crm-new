@@ -34,11 +34,27 @@ function normalizeSkuValue(raw: string): string {
   return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
 }
 
-function parseMoneyToKopecks(raw: string): number {
-  const normalized = raw.replace(/\s/g, '').replace(',', '.')
+function parseDecimalInput(raw: unknown, fallback = 0): number {
+  const normalized = String(raw ?? '')
+    .replace(/[\s\u00a0\u202f]/g, '')
+    .replace(',', '.')
   const value = Number.parseFloat(normalized)
-  if (!Number.isFinite(value) || value < 0) return 0
+  return Number.isFinite(value) ? value : fallback
+}
+
+function parseMoneyToKopecks(raw: unknown): number {
+  const value = parseDecimalInput(raw, 0)
+  if (value < 0) return 0
   return Math.round(value * 100)
+}
+
+function parseQty(raw: unknown, fallback = 1): number {
+  const value = parseDecimalInput(raw, fallback)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function kopecksForForm(kopecks: number): string {
+  return (Math.max(0, Number(kopecks) || 0) / 100).toFixed(2)
 }
 
 function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
@@ -250,6 +266,46 @@ export default function InvoiceFormPage() {
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
   const [generatingBarcode, setGeneratingBarcode] = useState(false)
+  const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
+
+  function moneyKey(index: number, field: 'purchase_price' | 'retail_price') {
+    return `${index}:${field}`
+  }
+
+  function moneyValue(index: number, field: 'purchase_price' | 'retail_price', kopecks: number) {
+    return moneyDrafts[moneyKey(index, field)] ?? kopecksForForm(kopecks)
+  }
+
+  function beginMoneyEdit(index: number, field: 'purchase_price' | 'retail_price', kopecks: number, target: HTMLInputElement) {
+    setMoneyDrafts((prev) => ({ ...prev, [moneyKey(index, field)]: kopecksForForm(kopecks) }))
+    window.setTimeout(() => target.select(), 0)
+  }
+
+  function changeMoney(index: number, field: 'purchase_price' | 'retail_price', raw: string) {
+    setMoneyDrafts((prev) => ({ ...prev, [moneyKey(index, field)]: raw }))
+    updateItem(index, field, parseMoneyToKopecks(raw))
+  }
+
+  function pasteMoney(index: number, field: 'purchase_price' | 'retail_price', raw: string) {
+    const kopecks = parseMoneyToKopecks(raw)
+    const normalized = kopecksForForm(kopecks)
+    setMoneyDrafts((prev) => ({ ...prev, [moneyKey(index, field)]: normalized }))
+    updateItem(index, field, kopecks)
+  }
+
+  function finishMoneyEdit(index: number, field: 'purchase_price' | 'retail_price') {
+    const key = moneyKey(index, field)
+    setMoneyDrafts((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+    if (field === 'purchase_price' && !isEdit) {
+      const draftValue = moneyDrafts[key]
+      const purchaseForRecalc = draftValue !== undefined ? parseMoneyToKopecks(draftValue) : items[index]?.purchase_price
+      void recalcRetail(index, false, purchaseForRecalc)
+    }
+  }
 
   // Завантажуємо постачальників
   useEffect(() => {
@@ -277,6 +333,7 @@ export default function InvoiceFormPage() {
           total: i.total,
           storage_bin: i.product?.storage_bin ?? null,
           sku: i.product?.sku ?? '',
+          barcode: (i.product as any)?.barcode ?? '',
           photo_url: (i.product as any)?.photo_url ?? null,
         })))
       }).catch(() => {
@@ -305,6 +362,7 @@ export default function InvoiceFormPage() {
         total: i.total,
         storage_bin: i.product?.storage_bin ?? null,
         sku: i.product?.sku ?? '',
+        barcode: (i.product as any)?.barcode ?? '',
         photo_url: (i.product as any)?.photo_url ?? null,
       })))
       toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
@@ -429,14 +487,15 @@ export default function InvoiceFormPage() {
   }
 
   // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
-  async function recalcRetail(onlyIndex?: number, forceUseGrid?: boolean) {
+  async function recalcRetail(onlyIndex?: number, forceUseGrid?: boolean, purchaseOverride?: number) {
     const targets = onlyIndex !== undefined ? [onlyIndex] : items.map((_, i) => i)
     const updates = await Promise.all(targets.map(async (idx) => {
       const it = items[idx]
-      if (!it || it.purchase_price <= 0) return null
+      const purchasePrice = purchaseOverride !== undefined && onlyIndex !== undefined ? purchaseOverride : it?.purchase_price
+      if (!it || !purchasePrice || purchasePrice <= 0) return null
       try {
         const categoryId = forceUseGrid ? undefined : (it.category_id ?? undefined)
-        const r = await pricingApi.autoRetail(it.purchase_price, categoryId)
+        const r = await pricingApi.autoRetail(purchasePrice, categoryId)
         return r.data?.retail_price != null ? { idx, retail: r.data.retail_price } : null
       } catch { return null }
     }))
@@ -492,8 +551,8 @@ export default function InvoiceFormPage() {
         sku: newProductSku.trim(),
         barcode: newProductBarcode.trim(),
         unit: 'шт',
-        purchase_price: newProductPurchase.trim() || '0',
-        retail_price: newProductRetail.trim() || '0',
+        purchase_price: kopecksForForm(parseMoneyToKopecks(newProductPurchase)),
+        retail_price: kopecksForForm(parseMoneyToKopecks(newProductRetail)),
         qty_on_hand: '0',
         reorder_point: '0',
         notes: '',
@@ -566,6 +625,7 @@ export default function InvoiceFormPage() {
   function processRawRows(rawRows: any[][]) {
     if (!rawRows || rawRows.length === 0) return
     const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase())
+    const hasHeader = headers.some(h => /^(sku|артикул|код|арт|name|назва|наименование|товар|модель|qty|кол|кільк|количество|purchase|закуп|ціна|цена|вхідна|retail|роздріб|розница|продаж|bin|комірка|ячейка|ящик)$/.test(h))
     
     let nameIdx = headers.findIndex(h => /(name|назва|наименование|товар|модель)/.test(h))
     let skuIdx = headers.findIndex(h => /(sku|артикул|код|арт)/.test(h))
@@ -581,7 +641,7 @@ export default function InvoiceFormPage() {
     if (retailIdx === -1) retailIdx = 4
 
     const newItems: LineItem[] = []
-    const startRow = (skuIdx === 0 || nameIdx === 1) ? 1 : 0
+    const startRow = hasHeader ? 1 : 0
     
     for (let r = startRow; r < rawRows.length; r++) {
       const row = rawRows[r]
@@ -590,9 +650,9 @@ export default function InvoiceFormPage() {
       const name = String(row[nameIdx] || '').trim()
       if (!sku && !name) continue
 
-      const qty = parseFloat(row[qtyIdx]) || 1
-      const purchase = Math.round((parseFloat(row[purchaseIdx]) || 0) * 100)
-      const retail = Math.round((parseFloat(row[retailIdx]) || 0) * 100)
+      const qty = parseQty(row[qtyIdx], 1)
+      const purchase = parseMoneyToKopecks(row[purchaseIdx])
+      const retail = parseMoneyToKopecks(row[retailIdx])
       const bin = binIdx !== -1 ? String(row[binIdx] || '').trim() : null
 
       newItems.push({
@@ -602,7 +662,7 @@ export default function InvoiceFormPage() {
         purchase_price: purchase,
         retail_price: retail,
         category_id: null,
-        total: qty * purchase,
+        total: Math.round(qty * purchase),
         storage_bin: bin || null,
         is_new: true,
       })
@@ -629,9 +689,9 @@ export default function InvoiceFormPage() {
       const name = cols[1]?.trim() || ''
       if (!sku && !name) return
       
-      const qty = parseFloat(cols[2]) || 1
-      const purchase = Math.round((parseFloat(cols[3]) || 0) * 100)
-      const retail = Math.round((parseFloat(cols[4]) || 0) * 100)
+      const qty = parseQty(cols[2], 1)
+      const purchase = parseMoneyToKopecks(cols[3])
+      const retail = parseMoneyToKopecks(cols[4])
       const bin = cols[5]?.trim() || null
 
       newItems.push({
@@ -641,7 +701,7 @@ export default function InvoiceFormPage() {
         purchase_price: purchase,
         retail_price: retail,
         category_id: null,
-        total: qty * purchase,
+        total: Math.round(qty * purchase),
         storage_bin: bin || null,
         is_new: true,
       })
@@ -682,6 +742,7 @@ export default function InvoiceFormPage() {
   }
 
   function removeItem(index: number) {
+    setMoneyDrafts({})
     setItems((prev) => prev.filter((_, i) => i !== index))
   }
 
@@ -719,59 +780,89 @@ export default function InvoiceFormPage() {
 
     setSaving(true)
     try {
-      // 1. Create missing products first
-      const resolvedItems = await Promise.all(
-        items.map(async (item) => {
-          if (item.product_id && !item.is_new) {
-            return item
-          }
-          // Якщо рядок з телефона повторює вже наявний товар за артикулом або ШК —
-          // прив'язуємо його до існуючого товару, а не змушуємо відкривати модалку.
-          const match = await findExistingProductForItem(item)
-          if (match) {
-            return {
-              ...item,
-              product_id: match.id,
-              is_new: false,
-              sku: match.sku,
-              barcode: item.barcode || match.barcode || '',
-              product_name: item.product_name || match.name,
-              category_id: item.category_id ?? match.category_id ?? null,
-              storage_bin: item.storage_bin ?? match.storage_bin ?? null,
-              photo_url: item.photo_url ?? match.photo_url ?? null,
-            }
-          }
+      // 1. Create missing products first. Робимо послідовно, щоб два однакові
+      // рядки з імпорту/телефона не створювали товар паралельно і не ловили duplicate.
+      const productCache = new Map<string, Product>()
 
-          // Бракує даних — не блокуємо збереження/проведення: підставляємо авто-артикул/назву
-          // (товар створюється з плейсхолдером, який можна допиляти пізніше в картці).
-          const skuTrim = (item.sku || '').trim()
-          const genSku  = skuTrim || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 100)}`
-          const genName = (item.product_name || '').trim() || `Товар ${genSku}`
+      function rememberProduct(product: Product) {
+        const sku = (product.sku || '').trim()
+        const barcode = (product.barcode || '').trim()
+        if (sku) productCache.set(`sku:${normalizeSkuValue(sku)}`, product)
+        if (barcode) productCache.set(`barcode:${barcode}`, product)
+      }
 
-          // Create new product
-          const form: ProductFormData = {
-            name: genName,
-            sku: genSku,
-            barcode: item.barcode || '',
-            unit: 'шт',
-            purchase_price: (item.purchase_price / 100).toFixed(2),
-            retail_price: (item.retail_price / 100).toFixed(2),
-            qty_on_hand: '0',
-            reorder_point: '0',
-            notes: '',
-            is_active: true,
-            storage_bin: item.storage_bin ?? '',
-            is_favorite: false,
-            brand_id: '',
-            category_id: '',
-            photo_url: item.photo_url || null,
-            specs: {}
-          }
-          const res = await productApi.create(form, { silent: true })
-          // Повертаємо згенеровані артикул/назву, щоб подальший патч не затер їх порожніми
-          return { ...item, product_id: res.data.id, is_new: false, sku: genSku, product_name: genName }
-        })
-      )
+      function cachedProductForItem(item: LineItem): Product | null {
+        const sku = (item.sku || '').trim()
+        const barcode = (item.barcode || '').trim()
+        return (sku ? productCache.get(`sku:${normalizeSkuValue(sku)}`) : null)
+          ?? (barcode ? productCache.get(`barcode:${barcode}`) : null)
+          ?? null
+      }
+
+      function bindProductToItem(item: LineItem, product: Product): LineItem {
+        return {
+          ...item,
+          product_id: product.id,
+          is_new: false,
+          sku: product.sku,
+          barcode: item.barcode || product.barcode || '',
+          product_name: item.product_name || product.name,
+          category_id: item.category_id ?? product.category_id ?? null,
+          storage_bin: item.storage_bin ?? product.storage_bin ?? null,
+          photo_url: item.photo_url ?? product.photo_url ?? null,
+        }
+      }
+
+      const resolvedItems: LineItem[] = []
+      for (const item of items) {
+        if (item.product_id && !item.is_new) {
+          resolvedItems.push(item)
+          continue
+        }
+
+        const cached = cachedProductForItem(item)
+        if (cached) {
+          resolvedItems.push(bindProductToItem(item, cached))
+          continue
+        }
+
+        // Якщо рядок з телефона повторює вже наявний товар за артикулом або ШК —
+        // прив'язуємо його до існуючого товару, а не змушуємо відкривати модалку.
+        const match = await findExistingProductForItem(item)
+        if (match) {
+          rememberProduct(match)
+          resolvedItems.push(bindProductToItem(item, match))
+          continue
+        }
+
+        // Бракує даних — не блокуємо збереження/проведення: підставляємо авто-артикул/назву
+        // (товар створюється з плейсхолдером, який можна допиляти пізніше в картці).
+        const skuTrim = (item.sku || '').trim()
+        const genSku  = skuTrim || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 100)}`
+        const genName = (item.product_name || '').trim() || `Товар ${genSku}`
+
+        const form: ProductFormData = {
+          name: genName,
+          sku: genSku,
+          barcode: item.barcode || '',
+          unit: 'шт',
+          purchase_price: kopecksForForm(item.purchase_price),
+          retail_price: kopecksForForm(item.retail_price),
+          qty_on_hand: '0',
+          reorder_point: '0',
+          notes: '',
+          is_active: true,
+          storage_bin: item.storage_bin ?? '',
+          is_favorite: false,
+          brand_id: '',
+          category_id: '',
+          photo_url: item.photo_url || null,
+          specs: {}
+        }
+        const res = await productApi.create(form, { silent: true })
+        rememberProduct(res.data)
+        resolvedItems.push({ ...item, product_id: res.data.id, is_new: false, sku: genSku, product_name: genName })
+      }
 
       const body = {
         supplier_id: supplierId,
@@ -788,19 +879,20 @@ export default function InvoiceFormPage() {
         await supplierApi.updateInvoice(id!, { invoice_number: body.invoice_number, notes: body.notes })
         toast.success('Накладну оновлено')
       } else {
-        const shift = paidAmount && fundSource === 'cashbox'
+        const paidKopecks = parseMoneyToKopecks(paidAmount)
+        const shift = paidKopecks > 0 && fundSource === 'cashbox'
           ? await shiftApi.current().catch(() => null)
           : null
         const shiftId = (shift as any)?.data?.id ?? null
-        if (Number(paidAmount) > 0 && fundSource === 'cashbox' && !shiftId) {
+        if (paidKopecks > 0 && fundSource === 'cashbox' && !shiftId) {
           toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
           return
         }
         const created = await supplierApi.createInvoice({
           ...body,
-          paid_amount: paidAmount ? Math.round(parseFloat(paidAmount) * 100) : 0,
-          payment_method: paidAmount ? paymentMethod : null,
-          fund_source: paidAmount ? fundSource : null,
+          paid_amount: paidKopecks,
+          payment_method: paidKopecks > 0 ? paymentMethod : null,
+          fund_source: paidKopecks > 0 ? fundSource : null,
           shift_id: shiftId,
         })
 
@@ -812,7 +904,7 @@ export default function InvoiceFormPage() {
               sku: item.sku,
               storage_bin: item.storage_bin ?? '',
             }
-            if (item.retail_price > 0) patch.retail_price = (item.retail_price / 100).toFixed(2)
+            if (item.retail_price > 0) patch.retail_price = kopecksForForm(item.retail_price)
             if (item.photo_url) patch.photo_url = item.photo_url   // фото з накладної → у товар при проведенні
             await productApi.update(item.product_id!, patch)
           })
@@ -1123,12 +1215,12 @@ export default function InvoiceFormPage() {
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
-                    <input type="number" step="1" min="0" inputMode="decimal"
-                      value={(item.purchase_price / 100).toFixed(2)}
-                      onFocus={(e) => e.currentTarget.select()}
-                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'purchase_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
-                      onChange={(e) => updateItem(i, 'purchase_price', parseMoneyToKopecks(e.target.value))}
-                      onBlur={() => { if (!isEdit) recalcRetail(i) }}
+                    <input type="text" inputMode="decimal"
+                      value={moneyValue(i, 'purchase_price', item.purchase_price)}
+                      onFocus={(e) => beginMoneyEdit(i, 'purchase_price', item.purchase_price, e.currentTarget)}
+                      onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'purchase_price', e.clipboardData.getData('text')) }}
+                      onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
+                      onBlur={() => finishMoneyEdit(i, 'purchase_price')}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
@@ -1152,11 +1244,12 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <div className="flex flex-col gap-1 items-end">
-                      <input type="number" step="1" min="0" inputMode="decimal"
-                        value={(item.retail_price / 100).toFixed(2)}
-                      onFocus={(e) => e.currentTarget.select()}
-                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'retail_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
-                      onChange={(e) => updateItem(i, 'retail_price', parseMoneyToKopecks(e.target.value))}
+                      <input type="text" inputMode="decimal"
+                        value={moneyValue(i, 'retail_price', item.retail_price)}
+                      onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
+                      onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
+                      onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
+                        onBlur={() => finishMoneyEdit(i, 'retail_price')}
                         disabled={isEdit}
                         className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
                       {!isEdit && quickPercents.length > 0 && (
@@ -1288,22 +1381,23 @@ export default function InvoiceFormPage() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Закупка, грн</label>
-                    <input type="number" step="1" min="0" inputMode="decimal"
-                      value={(item.purchase_price / 100).toFixed(2)}
-                      onFocus={(e) => e.currentTarget.select()}
-                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'purchase_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
-                      onChange={(e) => updateItem(i, 'purchase_price', parseMoneyToKopecks(e.target.value))}
-                      onBlur={() => { if (!isEdit) recalcRetail(i) }}
+                    <input type="text" inputMode="decimal"
+                      value={moneyValue(i, 'purchase_price', item.purchase_price)}
+                      onFocus={(e) => beginMoneyEdit(i, 'purchase_price', item.purchase_price, e.currentTarget)}
+                      onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'purchase_price', e.clipboardData.getData('text')) }}
+                      onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
+                      onBlur={() => finishMoneyEdit(i, 'purchase_price')}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Продаж, грн</label>
-                    <input type="number" step="1" min="0" inputMode="decimal"
-                      value={(item.retail_price / 100).toFixed(2)}
-                      onFocus={(e) => e.currentTarget.select()}
-                      onPaste={(e) => { e.preventDefault(); updateItem(i, 'retail_price', parseMoneyToKopecks(e.clipboardData.getData('text'))) }}
-                      onChange={(e) => updateItem(i, 'retail_price', parseMoneyToKopecks(e.target.value))}
+                    <input type="text" inputMode="decimal"
+                      value={moneyValue(i, 'retail_price', item.retail_price)}
+                      onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
+                      onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
+                      onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
+                      onBlur={() => finishMoneyEdit(i, 'retail_price')}
                       disabled={isEdit}
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
@@ -1350,8 +1444,9 @@ export default function InvoiceFormPage() {
               <div className="w-44">
                 <label className="block text-xs font-medium text-gray-500 mb-1">Сума оплати, грн</label>
                 <input
-                  type="number" min="0" step="0.01"
+                  type="text" inputMode="decimal"
                   value={paidAmount}
+                  onPaste={(e) => { e.preventDefault(); setPaidAmount(kopecksForForm(parseMoneyToKopecks(e.clipboardData.getData('text')))) }}
                   onChange={(e) => setPaidAmount(e.target.value)}
                   placeholder="0.00"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-semibold text-right focus:outline-none focus:ring-2 focus:ring-yellow-400"
@@ -1384,7 +1479,7 @@ export default function InvoiceFormPage() {
               </Button>
             </div>
             {(() => {
-              const paid = paidAmount ? Math.round(parseFloat(paidAmount) * 100) : 0
+              const paid = parseMoneyToKopecks(paidAmount)
               const debt = Math.max(0, total - Math.min(paid, total))
               if (debt > 0) return (
                 <p className="text-xs text-orange-600 font-semibold mt-2.5">
@@ -1481,8 +1576,8 @@ export default function InvoiceFormPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Закупка, грн" type="number" step="1" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
-              <Input label="Роздріб, грн" type="number" step="1" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
+              <Input label="Закупка, грн" type="text" inputMode="decimal" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
+              <Input label="Роздріб, грн" type="text" inputMode="decimal" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
             </div>
 
             <div className="flex flex-wrap gap-2 pt-2">

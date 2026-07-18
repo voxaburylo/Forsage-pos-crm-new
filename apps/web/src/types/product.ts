@@ -64,7 +64,7 @@ export interface PaginatedProducts {
 export const kopecksToHryvnia = (k: number): string => (k / 100).toFixed(2)
 export const hryvniaToKopecks = (s: string | number | undefined): number => {
   if (s === undefined || s === '') return 0
-  const n = typeof s === 'number' ? s : parseFloat(String(s).replace(',', '.'))
+  const n = typeof s === 'number' ? s : parseFloat(String(s).replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'))
   return isNaN(n) ? 0 : Math.round(n * 100)
 }
 
