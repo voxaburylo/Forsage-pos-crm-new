@@ -122,6 +122,7 @@ export default function ActiveSession() {
   const [completing, setCompleting] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   // Редагування цін товару прямо в сесії (без окремого вікна)
   const canEditPrice = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
@@ -264,6 +265,10 @@ export default function ActiveSession() {
       setSession(response.session)
       const updatedItem = response.session.items.find((item) => item.product_id === product.id)
       const counted = Number(updatedItem?.counted_stock ?? 1)
+      if (updatedItem?.id) {
+        setShowRecent(true)
+        setHighlightedItemId(updatedItem.id)
+      }
       toast.success(product.name + ' × ' + (Number.isFinite(counted) ? counted : 1))
       playSuccessBeep()
       setQuickCreateOpen(false)
@@ -458,6 +463,19 @@ export default function ActiveSession() {
   }
 
   useEffect(() => { load() }, [id])
+
+  useEffect(() => {
+    if (!highlightedItemId || !showRecent) return
+    const timer = window.setTimeout(() => {
+      document.getElementById(`inventory-row-${highlightedItemId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      window.setTimeout(() => inputRef.current?.focus(), 250)
+    }, 80)
+    const clearTimer = window.setTimeout(() => setHighlightedItemId(null), 2200)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(clearTimer)
+    }
+  }, [highlightedItemId, showRecent])
   useEffect(() => {
     if (!session || session.status !== 'in_progress') return
     const timer = window.setInterval(() => load(true), 8_000)
@@ -1096,6 +1114,7 @@ export default function ActiveSession() {
                   onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
                   onPrintLabel={() => printInventoryLabels(item)}
                   labelPrinting={printingLabels === item.id}
+                  highlighted={highlightedItemId === item.id}
                   onRemove={() => removeItem(item)}
                 />
               ))}
@@ -1168,7 +1187,7 @@ export default function ActiveSession() {
 // не збивають фокус при фоновому оновленні кожні 8с.
 function InventoryRow({
   item, isActive, canEditPrice, selected,
-  onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, onRemove,
+  onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, highlighted, onRemove,
 }: {
   item: InventoryItem
   isActive: boolean
@@ -1183,6 +1202,7 @@ function InventoryRow({
   onMarkup: (kind: 'percent' | 'table', pct?: number) => void
   onPrintLabel: () => void
   labelPrinting: boolean
+  highlighted: boolean
   onRemove: () => void
 }) {
   const retailStr = ((item.product?.retail_price ?? 0) / 100).toFixed(2)
@@ -1191,7 +1211,7 @@ function InventoryRow({
   const unit = product?.unit ?? 'шт'
   const barcode = product?.barcode || 'без штрихкоду'
   return (
-    <div className="grid grid-cols-1 gap-2 px-3 py-2.5 text-sm lg:grid-cols-[minmax(260px,1fr)_92px_104px_104px_92px_auto] lg:items-center lg:gap-3">
+    <div id={`inventory-row-${item.id}`} className={`grid grid-cols-1 gap-2 px-3 py-2.5 text-sm transition-all duration-500 lg:grid-cols-[minmax(260px,1fr)_92px_104px_104px_92px_auto] lg:items-center lg:gap-3 ${highlighted ? 'bg-yellow-100 ring-2 ring-yellow-400 shadow-[0_0_0_3px_rgba(250,204,21,0.18)]' : 'bg-white'}`}>
       <div className="flex min-w-0 items-start gap-2">
         {canEditPrice && isActive && (
           <input type="checkbox" aria-label="Вибрати" checked={selected} onChange={onToggleSelect}
