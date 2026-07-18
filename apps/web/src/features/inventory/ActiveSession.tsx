@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangle, Camera, CheckCircle, ChevronDown, Copy, PackageCheck,
-  Plus, Search, Trash2,
+  Plus, Printer, Search, Trash2,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { productApi } from '@/features/products/productApi'
+import { adminApi } from '@/features/admin/adminApi'
+import { DEFAULT_LABEL, printLabels } from '@/features/labels/LabelDesigner'
 import { Layout } from '@/components/Layout'
 import { Badge, Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -128,6 +130,7 @@ export default function ActiveSession() {
   // Масові операції над вибраними товарами
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [massBusy, setMassBusy] = useState(false)
+  const [printingLabels, setPrintingLabels] = useState<string | null>(null)
 
   function money2(kopecks: number | undefined | null): string {
     return ((Number(kopecks) || 0) / 100).toFixed(2)
@@ -154,6 +157,44 @@ export default function ActiveSession() {
 
   function updateQuickProduct(patch: Partial<typeof emptyQuickProduct>) {
     setQuickProduct((prev) => ({ ...prev, ...patch }))
+  }
+
+  function labelCopiesForItem(item: InventoryItem): number {
+    return Math.max(1, Math.min(999, Math.ceil(Number(item.counted_stock) || 0)))
+  }
+
+  async function printInventoryLabels(item?: InventoryItem) {
+    if (!id) return
+    const busyKey = item?.id ?? 'all'
+    setPrintingLabels(busyKey)
+    try {
+      let sourceRows = item ? [item] : countedRows
+      if (!item) {
+        const response = await api.get<{ data: InventoryItem[] }>(
+          `/api/v1/inventory/${id}/labels`,
+          { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
+        )
+        sourceRows = response.data
+      }
+      const rows = sourceRows.filter((row) => row.product && (row.counted_stock ?? 0) > 0)
+      if (rows.length === 0) {
+        toast.error('Немає товарів для друку етикеток')
+        return
+      }
+      const items = rows.flatMap((row) => Array(labelCopiesForItem(row)).fill(row.product))
+      if (items.length === 0) {
+        toast.error('Немає етикеток для друку')
+        return
+      }
+      const settingsRes = await adminApi.getSettings()
+      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      printLabels(settings as any, items as any, false)
+      toast.success(item ? `Відправлено етикетки: ${item.product?.name}` : `Відправлено етикеток: ${items.length}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетки')
+    } finally {
+      setPrintingLabels(null)
+    }
   }
 
   async function savePrice() {
@@ -416,6 +457,11 @@ export default function ActiveSession() {
       .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? '')),
     [session?.items],
   )
+  const totalLabelCopies = useMemo(() => {
+    const loadedCopies = countedRows.reduce((sum, item) => sum + labelCopiesForItem(item), 0)
+    const summaryCopies = Math.ceil(Number(session?.summary?.total_counted_units) || 0)
+    return Math.max(loadedCopies, summaryCopies)
+  }, [countedRows, session?.summary?.total_counted_units])
 
   async function resolveCode(code: string) {
     if (!id || !code.trim()) return
@@ -943,11 +989,23 @@ export default function ActiveSession() {
         />
 
         <Card padding="none">
-          <button onClick={() => setShowRecent(!showRecent)}
-            className="flex w-full items-center justify-between px-4 py-3 text-left">
-            <span className="font-semibold text-gray-900">Додані товари ({countedRows.length})</span>
-            <ChevronDown size={17} className={showRecent ? 'rotate-180' : ''} />
-          </button>
+          <div className="flex items-center gap-2 px-4 py-3">
+            <button onClick={() => setShowRecent(!showRecent)}
+              className="flex min-w-0 flex-1 items-center justify-between text-left">
+              <span className="truncate font-semibold text-gray-900">Додані товари ({countedRows.length})</span>
+              <ChevronDown size={17} className={showRecent ? 'rotate-180 shrink-0' : 'shrink-0'} />
+            </button>
+            {countedRows.length > 0 && (
+              <button
+                type="button"
+                disabled={printingLabels === 'all'}
+                onClick={() => printInventoryLabels()}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-yellow-300 bg-yellow-50 px-2.5 py-1.5 text-xs font-semibold text-yellow-900 hover:bg-yellow-100 disabled:opacity-50"
+              >
+                <Printer size={14} /> {printingLabels === 'all' ? 'Друк...' : `Етикетки всі (${totalLabelCopies})`}
+              </button>
+            )}
+          </div>
 
           {canEditPrice && isActive && selectedIds.size > 0 && (
             <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 bg-yellow-50 px-4 py-2.5">
@@ -986,6 +1044,8 @@ export default function ActiveSession() {
                   onSetPurchase={(value) => setItemPurchase(item, value)}
                   onSetRetail={(value) => setItemRetail(item, value)}
                   onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
+                  onPrintLabel={() => printInventoryLabels(item)}
+                  labelPrinting={printingLabels === item.id}
                   onRemove={() => removeItem(item)}
                 />
               ))}
@@ -1058,7 +1118,7 @@ export default function ActiveSession() {
 // не збивають фокус при фоновому оновленні кожні 8с.
 function InventoryRow({
   item, isActive, canEditPrice, selected,
-  onToggleSelect, onSetQty, onSetPurchase, onSetRetail, onMarkup, onRemove,
+  onToggleSelect, onSetQty, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, onRemove,
 }: {
   item: InventoryItem
   isActive: boolean
@@ -1069,6 +1129,8 @@ function InventoryRow({
   onSetPurchase: (value: string) => void
   onSetRetail: (value: string) => void
   onMarkup: (kind: 'percent' | 'table', pct?: number) => void
+  onPrintLabel: () => void
+  labelPrinting: boolean
   onRemove: () => void
 }) {
   const retailStr = ((item.product?.retail_price ?? 0) / 100).toFixed(2)
@@ -1136,6 +1198,10 @@ function InventoryRow({
             <button type="button" onClick={() => onMarkup('table')}
               className="rounded border border-blue-200 bg-white px-2 py-1 text-[10px] font-semibold text-blue-600 hover:bg-blue-50">табл</button>
           </>
+        )}
+        {product && (
+          <button type="button" onClick={onPrintLabel} disabled={labelPrinting} aria-label="Надрукувати етикетки"
+            className="rounded-lg bg-yellow-50 p-1.5 text-yellow-700 hover:bg-yellow-100 disabled:opacity-50"><Printer size={14} /></button>
         )}
         {isActive && (
           <button type="button" onClick={onRemove} aria-label="Прибрати"

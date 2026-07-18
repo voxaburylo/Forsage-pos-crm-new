@@ -228,6 +228,20 @@ router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) =
   } catch (error) { next(error) }
 })
 
+router.get('/:id/labels', requireRole(...COUNTER_ROLES), async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.id)
+    await requireInventorySession(sessionId, req.user!.tenant_id)
+    const { data, error } = await db.from('inventory_items')
+      .select('id,product_id,expected_stock,counted_stock,price_checked,observed_retail_price,updated_at,product:products(id,sku,name,barcode,additional_barcodes,unit,retail_price,purchase_price,storage_bin)')
+      .eq('session_id', sessionId)
+      .eq('was_counted', true)
+      .gt('counted_stock', 0)
+      .order('updated_at', { ascending: false })
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.json({ data: data ?? [] })
+  } catch (error) { next(error) }
+})
 router.delete('/:id/entries/:entryId', requireRole(...COUNTER_ROLES), async (req, res, next) => {
   try {
     const allowAny = ['owner', 'admin'].includes(req.user!.role)
