@@ -166,7 +166,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
     setPayOrder(order)
     setPayAction(action)
-    setCloseAfterPayment(action === 'full' && order.status === 'ready')
+    setCloseAfterPayment(action === 'full' && canIssueOrder(order))
     setPayAmount(action === 'full' ? (remaining / 100).toFixed(2) : '')
     setPayFiscal(false)
   }
@@ -286,11 +286,12 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     const isActive = !['completed', 'canceled', 'archived'].includes(order.status)
     const canDeposit = isActive && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
     const canFullPay = isActive && remaining > 0
-    const canIssue = canIssueOrder(order) && remaining <= 0
+    const canIssueNow = canIssueOrder(order) && remaining <= 0
+    const canPayAndIssue = canIssueOrder(order) && remaining > 0
     const rounded = density === 'mobile' ? 'rounded-xl' : 'rounded-lg'
     const minHeight = density === 'mobile' ? { minHeight: 44 } : undefined
 
-    if (!canDeposit && !canFullPay && !canIssue) {
+    if (!canDeposit && !canFullPay && !canIssueNow) {
       return <div className="text-xs text-gray-500 pt-1">Оплачено, чекає готовності</div>
     }
 
@@ -311,17 +312,17 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             style={minHeight}
             className={`py-2.5 text-sm ${rounded} bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold transition-colors`}
           >
-            Повна оплата
+            {canPayAndIssue ? 'Оплатити і видати' : 'Повна оплата'}
           </button>
         )}
-        {canIssue && (
+        {canIssueNow && (
           <button
             onClick={() => completeOrder(order)}
             disabled={isCompleting}
             style={minHeight}
             className={`py-2.5 text-sm ${rounded} font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-green-600 hover:bg-green-500 active:bg-green-700 text-white ${canDeposit || canFullPay ? '' : 'col-span-2'}`}
           >
-            {isCompleting ? <Loader2 size={12} className="animate-spin mx-auto" /> : 'Видати'}
+            {isCompleting ? <Loader2 size={12} className="animate-spin mx-auto" /> : 'Видати товар'}
           </button>
         )}
       </div>
