@@ -13,6 +13,7 @@ import { Badge, Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { playErrorTone, playSuccessBeep, initAudio } from '@/lib/audioService'
 import { CameraScanner } from '@/features/pos/CameraScanner'
+import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { useAuthStore } from '@/stores/authStore'
 import { formatMoney } from '@/lib/utils'
 
@@ -97,6 +98,16 @@ const emptyQuickProduct = {
   storage_bin: '',
 }
 
+function normalizeScanCode(value: string): string {
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0)
+      return code > 31 && code !== 127 && !/\s/.test(character)
+    })
+    .join('')
+    .trim()
+}
+
 export default function ActiveSession() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
@@ -133,6 +144,8 @@ export default function ActiveSession() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [massBusy, setMassBusy] = useState(false)
   const [printingLabels, setPrintingLabels] = useState<string | null>(null)
+  const scanQueue = useRef<string[]>([])
+  const scanQueueRunning = useRef(false)
 
   function money2(kopecks: number | undefined | null): string {
     return ((Number(kopecks) || 0) / 100).toFixed(2)
@@ -524,7 +537,28 @@ export default function ActiveSession() {
     return Math.max(loadedCopies, summaryCopies)
   }, [countedRows, session?.summary?.total_counted_units])
 
-  async function resolveCode(code: string, options: { fromCamera?: boolean } = {}) {
+  function queueInventoryScan(code: string) {
+    const normalizedCode = normalizeScanCode(code)
+    if (!normalizedCode) return
+    scanQueue.current.push(normalizedCode)
+    void drainInventoryScanQueue()
+  }
+
+  async function drainInventoryScanQueue() {
+    if (scanQueueRunning.current) return
+    scanQueueRunning.current = true
+    try {
+      while (scanQueue.current.length > 0) {
+        const code = scanQueue.current.shift()
+        if (code) await resolveCode(code, { fromHardware: true })
+      }
+    } finally {
+      scanQueueRunning.current = false
+      if (scanQueue.current.length > 0) void drainInventoryScanQueue()
+    }
+  }
+
+  async function resolveCode(code: string, options: { fromCamera?: boolean; fromHardware?: boolean } = {}) {
     if (!id || !code.trim()) return
     setSearching(true)
     initAudio()
@@ -548,6 +582,14 @@ export default function ActiveSession() {
       setSearching(false)
     }
   }
+
+  usePOSBarcodeScanner({
+    onScan: (code) => {
+      if (session?.status !== 'in_progress' || cameraOpen) return
+      setQuery(normalizeScanCode(code))
+      queueInventoryScan(code)
+    },
+  })
 
   async function submitSearch(event: React.FormEvent) {
     event.preventDefault()
