@@ -262,10 +262,13 @@ export default function ActiveSession() {
         { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS },
       )
       setSession(response.session)
+      const updatedItem = response.session.items.find((item) => item.product_id === product.id)
+      const counted = Number(updatedItem?.counted_stock ?? 1)
+      toast.success(product.name + ' × ' + (Number.isFinite(counted) ? counted : 1))
       playSuccessBeep()
       setQuickCreateOpen(false)
       setQuery(''); setSearchResults([])
-      inputRef.current?.focus()
+      window.setTimeout(() => inputRef.current?.focus(), 0)
     } catch (error) {
       playErrorTone()
       toast.error(error instanceof Error ? error.message : 'Не вдалося додати товар')
@@ -503,7 +506,7 @@ export default function ActiveSession() {
     return Math.max(loadedCopies, summaryCopies)
   }, [countedRows, session?.summary?.total_counted_units])
 
-  async function resolveCode(code: string) {
+  async function resolveCode(code: string, options: { fromCamera?: boolean } = {}) {
     if (!id || !code.trim()) return
     setSearching(true)
     initAudio()
@@ -516,6 +519,7 @@ export default function ActiveSession() {
     } catch (error) {
       playErrorTone()
       if ((error as any)?.status === 404 && canEditPrice) {
+        if (options.fromCamera) setCameraOpen(false)
         toast.error('Товар не знайдено — можна створити його тут')
         openQuickCreate(code)
       } else {
@@ -1025,15 +1029,14 @@ export default function ActiveSession() {
 
         <CameraScanner
           open={cameraOpen}
+          continuous
           onClose={() => setCameraOpen(false)}
           onScan={(code) => {
-            setCameraOpen(false)
             setQuery(code)
-            resolveCode(code)
+            resolveCode(code, { fromCamera: true })
           }}
         />
-
-        <Card padding="none">
+<Card padding="none">
           <div className="flex items-center gap-2 px-4 py-3">
             <button onClick={() => setShowRecent(!showRecent)}
               className="flex min-w-0 flex-1 items-center justify-between text-left">

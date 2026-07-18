@@ -4,13 +4,16 @@ import { X, Camera, AlertTriangle } from 'lucide-react'
 interface Props {
   open: boolean
   onClose: () => void
-  onScan: (code: string) => void
+  onScan: (code: string) => void | Promise<void>
+  continuous?: boolean
 }
 
-export function CameraScanner({ open, onClose, onScan }: Props) {
+export function CameraScanner({ open, onClose, onScan, continuous = false }: Props) {
   const videoRef = useRef<HTMLDivElement>(null)
   const scannerRef = useRef<any>(null)
   const scanHandledRef = useRef(false)
+  const scanBusyRef = useRef(false)
+  const lastScanRef = useRef<{ code: string; at: number } | null>(null)
   const onScanRef = useRef(onScan)
   const scannerId = `scanner-${useId().replace(/:/g, '')}`
   const [error, setError] = useState('')
@@ -24,6 +27,8 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
     if (!open) return
     let mounted = true
     scanHandledRef.current = false
+    scanBusyRef.current = false
+    lastScanRef.current = null
     setError('')
     setStarting(true)
 
@@ -60,6 +65,23 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
             },
           },
           async (decodedText: string) => {
+            const code = decodedText.trim()
+            if (!code) return
+
+            if (continuous) {
+              const now = Date.now()
+              const lastScan = lastScanRef.current
+              if (scanBusyRef.current || (lastScan?.code === code && now - lastScan.at < 900)) return
+              scanBusyRef.current = true
+              lastScanRef.current = { code, at: now }
+              try {
+                if (mounted) await onScanRef.current(code)
+              } finally {
+                window.setTimeout(() => { scanBusyRef.current = false }, 250)
+              }
+              return
+            }
+
             if (scanHandledRef.current) return
             scanHandledRef.current = true
             try {
@@ -67,7 +89,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
               scanner.clear()
             } catch { /* камера могла вже зупинитися після успішного сканування */ }
             scannerRef.current = null
-            if (mounted) onScanRef.current(decodedText)
+            if (mounted) await onScanRef.current(code)
           },
           () => {},
         )
@@ -97,7 +119,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
           })
       }
     }
-  }, [open, scannerId])
+  }, [open, scannerId, continuous])
 
   if (!open) return null
 
@@ -134,7 +156,7 @@ export function CameraScanner({ open, onClose, onScan }: Props) {
       </div>
 
       <div className="px-4 py-4 bg-gray-900 text-center text-gray-400 text-sm shrink-0">
-        Наведіть камеру на штрих-код товару
+        {continuous ? 'Скануйте товари підряд — кожен новий скан додає +1' : 'Наведіть камеру на штрих-код товару'}
       </div>
       </div>
     </div>
