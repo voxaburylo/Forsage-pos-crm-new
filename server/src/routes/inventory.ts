@@ -394,25 +394,8 @@ router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storek
 
 router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const confirmation = z.object({
-      confirm_unfinished: z.boolean().default(false),
-      confirm_price_issues: z.boolean().default(false),
-    }).parse(req.body)
     const sessionId = String(req.params.id)
     const session = await requireInventorySession(sessionId, req.user!.tenant_id, true)
-    const { data: summary, error: summaryError } = await db.rpc('get_inventory_session_summary', {
-      p_session_id: sessionId,
-      p_tenant_id: req.user!.tenant_id,
-    })
-    if (summaryError) throw new AppError('DB_ERROR', summaryError.message, 500)
-    const missing = Math.max(0, Number(summary?.total_products ?? 0) - Number(summary?.counted_products ?? 0))
-    const priceIssues = Number(summary?.price_mismatch_products ?? 0)
-    if (missing > 0 && !confirmation.confirm_unfinished) {
-      throw new AppError('INVENTORY_UNFINISHED', `Не пораховано товарів: ${missing}`, 409)
-    }
-    if (priceIssues > 0 && !confirmation.confirm_price_issues) {
-      throw new AppError('INVENTORY_PRICE_ISSUES', `Не перевірено розбіжностей цін: ${priceIssues}`, 409)
-    }
     const { data, error } = await db.rpc('complete_inventory_session', {
       p_session_id: sessionId,
       p_tenant_id: req.user!.tenant_id,
