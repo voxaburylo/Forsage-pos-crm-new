@@ -1,4 +1,4 @@
-﻿import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { ToastContainer } from '@/components/ui'
@@ -8,7 +8,6 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import '@/stores/authStore'
 
 const CHUNK_RELOAD_KEY = 'forsage_chunk_reload_at'
-const APP_UPDATE_CHECK_MS = 120_000
 
 function ChunkLoadError() {
   async function recover() {
@@ -132,64 +131,6 @@ function Loader() {
   )
 }
 
-function currentEntryScript(): string | null {
-  const script = document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')
-  return script?.src ?? null
-}
-
-function AppUpdateNotice({ disabled }: { disabled: boolean }) {
-  const [updateAvailable, setUpdateAvailable] = useState(false)
-
-  useEffect(() => {
-    if (disabled || window.location.protocol === 'file:') return
-    let stopped = false
-    const currentScript = currentEntryScript()
-    if (!currentScript) return
-
-    async function checkForUpdate() {
-      try {
-        const response = await fetch('/?update-check=' + Date.now(), {
-          cache: 'no-store',
-          headers: { 'Cache-Control': 'no-cache' },
-        })
-        const html = await response.text()
-        if (stopped) return
-        const doc = new DOMParser().parseFromString(html, 'text/html')
-        const latestScript = doc.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')?.src
-        if (latestScript && latestScript !== currentScript) setUpdateAvailable(true)
-      } catch {
-        // Немає мережі або сервер тимчасово недоступний — просто не показуємо плашку.
-      }
-    }
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void checkForUpdate()
-    }
-    void checkForUpdate()
-    const timer = window.setInterval(checkForUpdate, APP_UPDATE_CHECK_MS)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => {
-      stopped = true
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    }
-  }, [disabled])
-
-  if (!updateAvailable) return null
-
-  return (
-    <div className="fixed left-1/2 top-3 z-[200] flex -translate-x-1/2 items-center gap-3 rounded-xl border border-yellow-300 bg-yellow-50 px-4 py-2.5 shadow-lg">
-      <span className="text-sm font-semibold text-gray-900">Доступне оновлення програми</span>
-      <button
-        type="button"
-        onClick={() => window.location.reload()}
-        className="rounded-lg bg-yellow-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-yellow-300"
-      >
-        Оновити
-      </button>
-    </div>
-  )
-}
 
 function App() {
   const desktop = isDesktopRuntime()
@@ -198,7 +139,6 @@ function App() {
   return (
     <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <LocalSyncAgent />
-      <AppUpdateNotice disabled={desktop} />
       <Suspense fallback={<Loader />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
