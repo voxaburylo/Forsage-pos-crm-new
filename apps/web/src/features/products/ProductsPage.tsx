@@ -12,6 +12,7 @@ import { BulkEditModal } from './BulkEditModal'
 import { productApi } from './productApi'
 import type { ProductFilters } from './productApi'
 import { adminApi } from '@/features/admin/adminApi'
+import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import type { Product, PaginatedProducts } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { Layout } from '@/components/Layout'
@@ -117,6 +118,15 @@ export default function ProductsPage() {
       .catch(() => {})
   }
 
+  usePOSBarcodeScanner({
+    onScan: (code) => {
+      setSearch(code)
+      setDebouncedSearch(code)
+      setPage(1)
+      setPages({})
+    },
+  })
+
   function startEditPrice(p: Product) {
     setEditPriceId(p.id)
     setPriceDraft(kopecksToHryvnia(p.retail_price))
@@ -183,38 +193,34 @@ export default function ProductsPage() {
   // Пише результат сторінки в мапу pages, щоб накопичувати для нескінченного скролу.
   const load = useCallback(async () => {
     setLoading(true)
-    const canUseDesktopCatalog =
-      !lowStock
-      && !stockFilter
-      && !categoryFilter
-      && !brandFilter
-      && sort?.field !== 'brand'
-    const desktopCatalog = canUseDesktopCatalog ? desktopBridge()?.catalog : null
+    const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog) {
       try {
         if (typeof desktopCatalog.listProducts === 'function') {
           const desktopResult = await desktopCatalog.listProducts({
             query: debouncedSearch || undefined,
+            categoryId: categoryFilter || undefined,
+            brandId: brandFilter || undefined,
+            lowStock,
+            stockFilter,
             limit: PRODUCTS_PER_PAGE,
             offset: (page - 1) * PRODUCTS_PER_PAGE,
-            sortField: sort?.field !== 'brand' ? sort?.field : undefined,
+            sortField: sort?.field,
             sortDir: sort?.dir,
           })
           const desktopProducts = desktopResult.data.map(desktopProductToProduct)
-          if (desktopResult.total > 0 || !debouncedSearch) {
-            setResult({
-              data: desktopProducts,
-              pagination: {
-                page,
-                per_page: PRODUCTS_PER_PAGE,
-                total: desktopResult.total,
-                total_pages: Math.max(1, Math.ceil(desktopResult.total / PRODUCTS_PER_PAGE)),
-              },
-            })
-            setPages((prev) => page === 1 ? { 1: desktopProducts } : { ...prev, [page]: desktopProducts })
-            setLoading(false)
-            return
-          }
+          setResult({
+            data: desktopProducts,
+            pagination: {
+              page,
+              per_page: PRODUCTS_PER_PAGE,
+              total: desktopResult.total,
+              total_pages: Math.max(1, Math.ceil(desktopResult.total / PRODUCTS_PER_PAGE)),
+            },
+          })
+          setPages((prev) => page === 1 ? { 1: desktopProducts } : { ...prev, [page]: desktopProducts })
+          setLoading(false)
+          return
         }
 
         if (page === 1) {
@@ -232,24 +238,31 @@ export default function ProductsPage() {
               return sort.dir === 'desc' ? -cmp : cmp
             })
           }
-          if (desktopProducts.length > 0 || !debouncedSearch) {
-            setResult({
-              data: desktopProducts,
-              pagination: {
-                page: 1,
-                per_page: PRODUCTS_PER_PAGE,
-                total: desktopProducts.length,
-                total_pages: 1,
-              },
-            })
-            setPages({ 1: desktopProducts })
-            setLoading(false)
-            return
-          }
+          setResult({
+            data: desktopProducts,
+            pagination: {
+              page: 1,
+              per_page: PRODUCTS_PER_PAGE,
+              total: desktopProducts.length,
+              total_pages: 1,
+            },
+          })
+          setPages({ 1: desktopProducts })
+          setLoading(false)
+          return
         }
-      } catch {
-        // Якщо desktop SQLite ще не готовий, продовжуємо стандартний шлях:
-        // IndexedDB → сервер.
+
+        setResult({
+          data: [],
+          pagination: { page, per_page: PRODUCTS_PER_PAGE, total: 0, total_pages: 1 },
+        })
+        setPages((prev) => page === 1 ? { 1: [] } : { ...prev, [page]: [] })
+        setLoading(false)
+        return
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Помилка локального каталогу')
+        setLoading(false)
+        return
       }
     }
     const local = await listProductsOffline({

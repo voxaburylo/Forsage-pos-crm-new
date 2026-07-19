@@ -15,20 +15,30 @@ export interface DesktopProduct {
   sku: string
   name: string
   barcode: string | null
+  brand_id?: string | null
+  brand_name?: string | null
+  category_id?: string | null
+  category_name?: string | null
   unit: string
   purchase_price: number
   retail_price: number
   qty_on_hand: number
+  reorder_point?: number
   is_active: number
   is_service: number
   storage_bin: string | null
+  photo_url?: string | null
 }
 
 export interface DesktopCatalogListOptions {
   query?: string
   limit?: number
   offset?: number
-  sortField?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand'
+  categoryId?: string
+  brandId?: string
+  lowStock?: boolean
+  stockFilter?: 'negative' | 'no_price' | ''
+  sortField?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'brand'
   sortDir?: 'asc' | 'desc'
 }
 
@@ -321,13 +331,13 @@ export function desktopProductToProduct(product: DesktopProduct): Product {
     retail_price: product.retail_price,
     qty_on_hand: Number(product.qty_on_hand),
     qty_available: Number(product.qty_on_hand),
-    reorder_point: 0,
+    reorder_point: Number(product.reorder_point ?? 0),
     notes: null,
     is_active: product.is_active === 1,
     is_service: product.is_service === 1,
     storage_bin: product.storage_bin,
     is_favorite: false,
-    photo_url: null,
+    photo_url: product.photo_url ?? null,
     specs: null,
     created_at: '',
     updated_at: '',

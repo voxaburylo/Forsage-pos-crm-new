@@ -18,11 +18,15 @@ export function normalizeSearchText(value: string | null | undefined): string {
     .trim()
 }
 
-export type LocalProductSortField = 'sku' | 'name' | 'retail_price' | 'qty_on_hand'
+export type LocalProductSortField = 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'brand'
 export type LocalProductSortDir = 'asc' | 'desc'
 
 export interface LocalProductListOptions {
   query?: string
+  categoryId?: string
+  brandId?: string
+  lowStock?: boolean
+  stockFilter?: 'negative' | 'no_price' | ''
   limit?: number
   offset?: number
   sortField?: LocalProductSortField
@@ -32,6 +36,28 @@ export interface LocalProductListOptions {
 export interface LocalProductListResult {
   data: LocalProduct[]
   total: number
+}
+function productSearchNeedles(raw: string): string[] {
+  const values = new Set<string>()
+  const normalized = normalizeSearchText(raw)
+  if (normalized) values.add(normalized)
+
+  const latinToCyrillic: Array<[RegExp, string]> = [
+    [/\bbooster\b/gi, 'бустер'],
+    [/\bboost\b/gi, 'бустер'],
+    [/\bwires?\b/gi, 'провода'],
+  ]
+  const cyrillicToLatin: Array<[RegExp, string]> = [
+    [/бустер/gi, 'booster'],
+    [/провод/gi, 'wire'],
+  ]
+
+  for (const [pattern, replacement] of [...latinToCyrillic, ...cyrillicToLatin]) {
+    const variant = normalizeSearchText(raw.replace(pattern, replacement))
+    if (variant) values.add(variant)
+  }
+
+  return [...values]
 }
 function productSearchText(product: LocalProductUpsert): string {
   return normalizeSearchText([
@@ -181,7 +207,7 @@ export class LocalCatalogRepository {
 
   listProducts(options: LocalProductListOptions = {}, tenantId = DEFAULT_TENANT_ID): LocalProductListResult {
     const raw = (options.query ?? '').trim()
-    const normalized = normalizeSearchText(raw)
+    const needles = productSearchNeedles(raw)
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500))
     const offset = Math.max(0, Number(options.offset ?? 0) || 0)
     const sortColumns: Record<LocalProductSortField, string> = {
@@ -189,6 +215,7 @@ export class LocalCatalogRepository {
       name: 'p.name COLLATE NOCASE',
       retail_price: 'p.retail_price',
       qty_on_hand: 'p.qty_on_hand',
+      brand: 'br.name COLLATE NOCASE',
     }
     const sortField = options.sortField && sortColumns[options.sortField]
       ? options.sortField
@@ -197,21 +224,43 @@ export class LocalCatalogRepository {
 
     const where = ['p.tenant_id = ?', 'p.deleted_at IS NULL', 'p.is_active = 1']
     const params: Array<string | number> = [tenantId]
+    if (options.categoryId) {
+      where.push('p.category_id = ?')
+      params.push(options.categoryId)
+    }
+    if (options.brandId) {
+      where.push('p.brand_id = ?')
+      params.push(options.brandId)
+    }
+    if (options.lowStock) {
+      where.push('p.qty_on_hand <= p.reorder_point')
+    }
+    if (options.stockFilter === 'negative') {
+      where.push('p.qty_on_hand < 0')
+    }
+    if (options.stockFilter === 'no_price') {
+      where.push('p.retail_price = 0')
+    }
     if (raw) {
-      where.push(`(
-        p.sku = ?
-        OR p.barcode = ?
-        OR p.search_text LIKE ?
-        OR p.name LIKE ?
-        OR EXISTS (
+      const searchClauses = [
+        'p.sku = ?',
+        'p.barcode = ?',
+        'p.name LIKE ?',
+        `EXISTS (
           SELECT 1 FROM product_barcodes b
           WHERE b.tenant_id = p.tenant_id
             AND b.product_id = p.id
             AND b.deleted_at IS NULL
             AND b.barcode LIKE ?
-        )
-      )`)
-      params.push(raw, raw, `%${normalized}%`, `%${raw}%`, `%${raw}%`)
+        )`,
+      ]
+      const searchParams: Array<string | number> = [raw, raw, `%${raw}%`, `%${raw}%`]
+      for (const needle of needles) {
+        searchClauses.push('p.search_text LIKE ?')
+        searchParams.push(`%${needle}%`)
+      }
+      where.push(`(${searchClauses.join(' OR ')})`)
+      params.push(...searchParams)
     }
 
     const whereSql = where.join(' AND ')
@@ -236,9 +285,13 @@ export class LocalCatalogRepository {
     `).get(...params) as { total?: number } | undefined
 
     const data = this.db.prepare(`
-      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.unit, p.purchase_price, p.retail_price,
-             p.qty_on_hand, p.is_active, p.is_service, p.storage_bin
+      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode,
+             p.brand_id, br.name AS brand_name, p.category_id, c.name AS category_name,
+             p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
+             p.is_active, p.is_service, p.storage_bin, p.photo_url
       FROM products p
+      LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
+      LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL
       WHERE ${whereSql}
       ORDER BY ${orderParts.join(', ')}
       LIMIT ? OFFSET ?

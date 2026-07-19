@@ -6,6 +6,10 @@ export interface LocalProduct {
   sku: string
   name: string
   barcode: string | null
+  brand_id?: string | null
+  brand_name?: string | null
+  category_id?: string | null
+  category_name?: string | null
   unit: string
   purchase_price: number
   retail_price: number

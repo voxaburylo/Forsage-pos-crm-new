@@ -18,6 +18,8 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
     (tab) => !tab.roles || !currentRole || tab.roles.includes(currentRole)
   )
 
+  if (visibleTabs.length <= 1) return null
+
   // Чи активна якась під-вкладка з query на поточному pathname — тоді базову (без query)
   // вкладку того ж pathname не підсвічуємо, щоб не світилися дві одразу.
   const queryTabActive = visibleTabs.some((t) => {
@@ -30,7 +32,7 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
   })
 
   return (
-    <div className="flex border-b border-gray-100 mb-4 -mx-4 px-4 -mt-4 md:-mx-6 md:px-6 md:-mt-6 bg-white shrink-0 sticky top-0 z-10">
+    <div className="flex border-b border-gray-100 mb-4 -mx-4 px-4 -mt-4 md:-mx-6 md:px-6 md:-mt-6 bg-white shrink-0">
       <div className="flex flex-wrap gap-x-5 gap-y-0">
         {visibleTabs.map((tab) => {
           const isActive = (() => {
