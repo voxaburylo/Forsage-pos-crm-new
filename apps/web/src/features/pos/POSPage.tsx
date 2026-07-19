@@ -124,6 +124,7 @@ function savedCartTotal(cart: SavedCart): number {
 
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 const POS_READ_TIMEOUT_MS = 10_000
+const POS_ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
 
 function isShiftAlreadyOpenError(error: unknown) {
   const status = (error as { status?: number } | null)?.status
@@ -352,9 +353,9 @@ export default function POSPage() {
       })
       .catch(() => {})
 
-    // Кількість готових замовлень для мобільного таба
+    // Кількість активних замовлень для мобільного таба
     const loadReadyCount = () => {
-      api.get('/api/v1/customer-orders?status=ready', { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
+      api.get(`/api/v1/customer-orders?status=${POS_ACTIVE_ORDER_STATUSES}&per_page=80`, { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
         .then((res: any) => {
           const data = res.data
           if (Array.isArray(data)) setReadyOrdersCount(data.length)

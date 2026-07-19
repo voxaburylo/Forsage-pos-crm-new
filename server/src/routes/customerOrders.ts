@@ -870,7 +870,8 @@ router.post('/:id/payments', async (req, res, next) => {
     if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Замовлення вже завершено', 400)
 
     const remaining = order.total_amount - (order.discount_amount ?? 0) - (order.total_paid ?? 0)
-    if (parsed.data.amount > remaining) {
+    const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
+    if (!canAcceptOpenDraftDeposit && parsed.data.amount > remaining) {
       throw new AppError('OVERPAYMENT', 'Сума перевищує залишок до сплати', 400)
     }
 
@@ -946,7 +947,7 @@ router.post('/:id/payments', async (req, res, next) => {
         shift_id:   parsed.data.shift_id,
         type:       'in',
         amount:     parsed.data.amount,
-        note:       `Оплата замовлення #${order.id.slice(0, 8)} (часткова)`,
+        note:       `${canAcceptOpenDraftDeposit ? 'Передоплата' : 'Оплата'} замовлення #${order.id.slice(0, 8)}`,
         created_by: req.user!.id,
       })
     }
