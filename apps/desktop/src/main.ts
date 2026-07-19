@@ -234,6 +234,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:find-by-barcode', (_event, barcode: string) =>
     requireLocalCatalog().findByBarcode(barcode),
   )
+  ipcMain.handle('desktop:catalog:list-products', (_event, options) =>
+    requireLocalCatalog().listProducts(options),
+  )
   ipcMain.handle('desktop:catalog:search-products', (_event, query: string, limit?: number) =>
     requireLocalCatalog().searchProducts(query, undefined, limit),
   )

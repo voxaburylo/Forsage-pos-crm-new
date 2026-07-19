@@ -184,30 +184,69 @@ export default function ProductsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     const canUseDesktopCatalog =
-      page === 1
-      && !lowStock
+      !lowStock
       && !stockFilter
       && !categoryFilter
       && !brandFilter
-      && (!sort || sort.field === 'name')
+      && sort?.field !== 'brand'
     const desktopCatalog = canUseDesktopCatalog ? desktopBridge()?.catalog : null
     if (desktopCatalog) {
       try {
-        const desktopProducts = (debouncedSearch
-          ? await desktopCatalog.searchProducts(debouncedSearch, PRODUCTS_PER_PAGE)
-          : await desktopCatalog.listPopular(PRODUCTS_PER_PAGE)
-        ).map(desktopProductToProduct)
-        setResult({
-          data: desktopProducts,
-          pagination: {
-            page: 1,
-            per_page: PRODUCTS_PER_PAGE,
-            total: desktopProducts.length,
-            total_pages: 1,
-          },
-        })
-        setPages({ 1: desktopProducts })
-        setLoading(false)
+        if (typeof desktopCatalog.listProducts === 'function') {
+          const desktopResult = await desktopCatalog.listProducts({
+            query: debouncedSearch || undefined,
+            limit: PRODUCTS_PER_PAGE,
+            offset: (page - 1) * PRODUCTS_PER_PAGE,
+            sortField: sort?.field !== 'brand' ? sort?.field : undefined,
+            sortDir: sort?.dir,
+          })
+          const desktopProducts = desktopResult.data.map(desktopProductToProduct)
+          if (desktopResult.total > 0 || !debouncedSearch) {
+            setResult({
+              data: desktopProducts,
+              pagination: {
+                page,
+                per_page: PRODUCTS_PER_PAGE,
+                total: desktopResult.total,
+                total_pages: Math.max(1, Math.ceil(desktopResult.total / PRODUCTS_PER_PAGE)),
+              },
+            })
+            setPages((prev) => page === 1 ? { 1: desktopProducts } : { ...prev, [page]: desktopProducts })
+            setLoading(false)
+            return
+          }
+        }
+
+        if (page === 1) {
+          let desktopProducts = (debouncedSearch
+            ? await desktopCatalog.searchProducts(debouncedSearch, PRODUCTS_PER_PAGE)
+            : await desktopCatalog.listPopular(PRODUCTS_PER_PAGE)
+          ).map(desktopProductToProduct)
+          if (sort?.field && sort.field !== 'brand') {
+            desktopProducts = [...desktopProducts].sort((a, b) => {
+              const av = a[sort.field]
+              const bv = b[sort.field]
+              const cmp = typeof av === 'number' && typeof bv === 'number'
+                ? av - bv
+                : String(av ?? '').localeCompare(String(bv ?? ''), 'uk')
+              return sort.dir === 'desc' ? -cmp : cmp
+            })
+          }
+          if (desktopProducts.length > 0 || !debouncedSearch) {
+            setResult({
+              data: desktopProducts,
+              pagination: {
+                page: 1,
+                per_page: PRODUCTS_PER_PAGE,
+                total: desktopProducts.length,
+                total_pages: 1,
+              },
+            })
+            setPages({ 1: desktopProducts })
+            setLoading(false)
+            return
+          }
+        }
       } catch {
         // Якщо desktop SQLite ще не готовий, продовжуємо стандартний шлях:
         // IndexedDB → сервер.

@@ -1,6 +1,7 @@
 import { api } from '@/lib/api'
 import type { Product, PaginatedProducts, ProductFormData } from '@/types/product'
 import { hryvniaToKopecks } from '@/types/product'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 export interface StockBreakdown {
   on_hand: number
@@ -54,6 +55,35 @@ function cleanSpecs(raw: Record<string, string> | undefined | null): Record<stri
   return Object.keys(specs).length > 0 ? specs : null
 }
 
+async function mirrorProductToDesktop(product: Product): Promise<void> {
+  const desktopCatalog = desktopBridge()?.catalog
+  if (!desktopCatalog?.upsertProduct) return
+  try {
+    await desktopCatalog.upsertProduct({
+      id: product.id,
+      sku: product.sku,
+      name: product.name,
+      barcode: product.barcode,
+      additional_barcodes: Array.isArray(product.additional_barcodes) ? product.additional_barcodes : [],
+      brand_id: product.brand_id,
+      category_id: product.category_id,
+      unit: product.unit,
+      purchase_price: product.purchase_price,
+      retail_price: product.retail_price,
+      qty_on_hand: product.qty_on_hand,
+      reorder_point: product.reorder_point,
+      notes: product.notes,
+      is_active: product.is_active,
+      is_service: product.is_service,
+      storage_bin: product.storage_bin,
+      is_favorite: product.is_favorite === true,
+      photo_url: product.photo_url,
+      specs: product.specs ?? {},
+    })
+  } catch {
+    // API вже зберіг товар; локальний каталог підтягнеться наступною синхронізацією.
+  }
+}
 // Create — требует ВСЕ поля формы, маппит с дефолтами.
 function formToCreatePayload(form: ProductFormData) {
   return {
@@ -117,11 +147,17 @@ export const productApi = {
   search: (q: string, limit = 10, opts?: ProductRequestOptions) =>
     api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts),
 
-  create: (form: ProductFormData, opts?: ProductRequestOptions) =>
-    api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form), undefined, opts),
+  create: async (form: ProductFormData, opts?: ProductRequestOptions) => {
+    const response = await api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form), undefined, opts)
+    await mirrorProductToDesktop(response.data)
+    return response
+  },
 
-  update: (id: string, form: Partial<ProductFormData>, opts?: ProductRequestOptions) =>
-    api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts),
+  update: async (id: string, form: Partial<ProductFormData>, opts?: ProductRequestOptions) => {
+    const response = await api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts)
+    await mirrorProductToDesktop(response.data)
+    return response
+  },
 
   delete: (id: string) =>
     api.delete<void>(`/api/v1/products/${id}`),
@@ -132,8 +168,11 @@ export const productApi = {
   priceHistory: (id: string) =>
     api.get<{ data: unknown[] }>(`/api/v1/products/${id}/price-history`),
 
-  generateBarcode: (id: string) =>
-    api.post<{ data: Product }>(`/api/v1/products/${id}/generate-barcode`, {}),
+  generateBarcode: async (id: string) => {
+    const response = await api.post<{ data: Product }>(`/api/v1/products/${id}/generate-barcode`, {})
+    await mirrorProductToDesktop(response.data)
+    return response
+  },
 
   merge: (primaryId: string, duplicateId: string) =>
     api.post<{ data: Product }>('/api/v1/products/merge', {

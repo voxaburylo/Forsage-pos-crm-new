@@ -18,6 +18,21 @@ export function normalizeSearchText(value: string | null | undefined): string {
     .trim()
 }
 
+export type LocalProductSortField = 'sku' | 'name' | 'retail_price' | 'qty_on_hand'
+export type LocalProductSortDir = 'asc' | 'desc'
+
+export interface LocalProductListOptions {
+  query?: string
+  limit?: number
+  offset?: number
+  sortField?: LocalProductSortField
+  sortDir?: LocalProductSortDir
+}
+
+export interface LocalProductListResult {
+  data: LocalProduct[]
+  total: number
+}
 function productSearchText(product: LocalProductUpsert): string {
   return normalizeSearchText([
     product.sku,
@@ -164,6 +179,73 @@ export class LocalCatalogRepository {
     return row ?? null
   }
 
+  listProducts(options: LocalProductListOptions = {}, tenantId = DEFAULT_TENANT_ID): LocalProductListResult {
+    const raw = (options.query ?? '').trim()
+    const normalized = normalizeSearchText(raw)
+    const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500))
+    const offset = Math.max(0, Number(options.offset ?? 0) || 0)
+    const sortColumns: Record<LocalProductSortField, string> = {
+      sku: 'p.sku COLLATE NOCASE',
+      name: 'p.name COLLATE NOCASE',
+      retail_price: 'p.retail_price',
+      qty_on_hand: 'p.qty_on_hand',
+    }
+    const sortField = options.sortField && sortColumns[options.sortField]
+      ? options.sortField
+      : null
+    const sortDir = options.sortDir === 'desc' ? 'DESC' : 'ASC'
+
+    const where = ['p.tenant_id = ?', 'p.deleted_at IS NULL', 'p.is_active = 1']
+    const params: Array<string | number> = [tenantId]
+    if (raw) {
+      where.push(`(
+        p.sku = ?
+        OR p.barcode = ?
+        OR p.search_text LIKE ?
+        OR p.name LIKE ?
+        OR EXISTS (
+          SELECT 1 FROM product_barcodes b
+          WHERE b.tenant_id = p.tenant_id
+            AND b.product_id = p.id
+            AND b.deleted_at IS NULL
+            AND b.barcode LIKE ?
+        )
+      )`)
+      params.push(raw, raw, `%${normalized}%`, `%${raw}%`, `%${raw}%`)
+    }
+
+    const whereSql = where.join(' AND ')
+    const orderParts: string[] = []
+    const dataParams = [...params]
+    if (raw) {
+      orderParts.push('CASE WHEN p.sku = ? OR p.barcode = ? THEN 0 ELSE 1 END')
+      dataParams.push(raw, raw)
+    }
+    if (sortField) {
+      orderParts.push(`${sortColumns[sortField]} ${sortDir}`)
+    } else {
+      orderParts.push('p.is_favorite DESC', 'p.name COLLATE NOCASE ASC')
+    }
+    if (sortField !== 'name') orderParts.push('p.name COLLATE NOCASE ASC')
+    orderParts.push('p.id ASC')
+
+    const totalRow = this.db.prepare(`
+      SELECT COUNT(*) AS total
+      FROM products p
+      WHERE ${whereSql}
+    `).get(...params) as { total?: number } | undefined
+
+    const data = this.db.prepare(`
+      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.unit, p.purchase_price, p.retail_price,
+             p.qty_on_hand, p.is_active, p.is_service, p.storage_bin
+      FROM products p
+      WHERE ${whereSql}
+      ORDER BY ${orderParts.join(', ')}
+      LIMIT ? OFFSET ?
+    `).all(...dataParams, limit, offset) as unknown as LocalProduct[]
+
+    return { data, total: Number(totalRow?.total ?? data.length) }
+  }
   // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі
   // до вводу назви, коли поле пошуку порожнє.
   listPopular(tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {

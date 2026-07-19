@@ -938,7 +938,7 @@ export default function InvoiceFormPage() {
           storage_bin: item.storage_bin ?? '',
           is_favorite: false,
           brand_id: '',
-          category_id: '',
+          category_id: item.category_id ?? '',
           photo_url: item.photo_url || null,
           specs: {}
         }
@@ -985,6 +985,7 @@ export default function InvoiceFormPage() {
             const patch: Partial<ProductFormData> = {
               name: item.product_name,
               sku: item.sku,
+              category_id: item.category_id ?? '',
               storage_bin: item.storage_bin ?? '',
             }
             if (item.retail_price > 0) patch.retail_price = kopecksForForm(item.retail_price)
@@ -1218,6 +1219,7 @@ export default function InvoiceFormPage() {
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
                 <th className="w-12 px-2 py-2">Фото</th>
                 <th className="text-left px-4 py-2">Товар</th>
+                <th className="text-left px-2 py-2 w-44">Папка</th>
                 <th className="text-left px-2 py-2 w-40">Штрихкод</th>
                 <th className="text-left px-2 py-2 w-28">Комірка</th>
                 <th className="text-right px-2 py-2 w-16">К-сть</th>
@@ -1267,6 +1269,18 @@ export default function InvoiceFormPage() {
                         {cheaperElsewhere && ` (дешевше за поточну на ${((item.purchase_price - best.price) / 100).toFixed(2)} грн)`}
                       </div>
                     )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <select
+                      value={item.category_id ?? ''}
+                      onChange={(e) => updateItem(i, 'category_id', e.target.value)}
+                      disabled={isEdit}
+                      title="Папка/категорія товару"
+                      className="w-40 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
+                    >
+                      <option value="">Без папки</option>
+                      {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
                   </td>
                   <td className="px-2 py-2">
                     <div className="flex items-center gap-1">
@@ -1370,12 +1384,12 @@ export default function InvoiceFormPage() {
                 )
               })}
               {items.length === 0 && (
-                <tr><td colSpan={10} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
+                <tr><td colSpan={11} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}
             </tbody>
             <tfoot>
               <tr className="font-semibold bg-gray-50">
-                <td colSpan={8} className="px-4 py-2 text-right">Всього:</td>
+                <td colSpan={9} className="px-4 py-2 text-right">Всього:</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(total)}</td>
                 <td></td>
               </tr>
@@ -1417,6 +1431,18 @@ export default function InvoiceFormPage() {
                       disabled={isEdit}
                       placeholder="Артикул"
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Папка</label>
+                    <select
+                      value={item.category_id ?? ''}
+                      onChange={(e) => updateItem(i, 'category_id', e.target.value)}
+                      disabled={isEdit}
+                      className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
+                    >
+                      <option value="">Без папки</option>
+                      {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Штрихкод</label>

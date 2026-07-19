@@ -24,6 +24,18 @@ export interface DesktopProduct {
   storage_bin: string | null
 }
 
+export interface DesktopCatalogListOptions {
+  query?: string
+  limit?: number
+  offset?: number
+  sortField?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand'
+  sortDir?: 'asc' | 'desc'
+}
+
+export interface DesktopCatalogListResult {
+  data: DesktopProduct[]
+  total: number
+}
 export interface DesktopCheckoutInput {
   cashier_id: string
   shift_id?: string | null
@@ -196,6 +208,7 @@ interface ForsageDesktopBridge {
   }
   catalog: {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
+    listProducts?: (options?: DesktopCatalogListOptions) => Promise<DesktopCatalogListResult>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
     upsertProduct: (product: {
       id: string
@@ -205,9 +218,18 @@ interface ForsageDesktopBridge {
       retail_price?: number
       purchase_price?: number
       qty_on_hand?: number
+      reorder_point?: number
+      notes?: string | null
+      brand_id?: string | null
+      category_id?: string | null
       is_service?: boolean
       is_active?: boolean
+      is_favorite?: boolean
       barcode?: string | null
+      additional_barcodes?: string[]
+      storage_bin?: string | null
+      photo_url?: string | null
+      specs?: Record<string, string>
     }) => Promise<DesktopProduct>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }

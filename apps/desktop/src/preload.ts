@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   catalog: {
     findByBarcode: (barcode: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
+    listProducts: (options?: unknown) =>
+      ipcRenderer.invoke('desktop:catalog:list-products', options),
     searchProducts: (query: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
     upsertProduct: (product: unknown) =>
