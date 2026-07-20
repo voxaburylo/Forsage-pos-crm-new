@@ -369,8 +369,8 @@ export default function SettingsPage() {
                     <h3 className="text-sm font-semibold text-emerald-900">Локальна база на цьому ПК</h3>
                   </div>
                   <p className="text-xs text-emerald-700">
-                    Завантажує товари, категорії, бренди, постачальників, клієнтів, авто, штрихкоди та аналоги
-                    з сервера в SQLite-базу desktop-додатку. Після цього каса й пошук працюють з локальних даних.
+                    SQLite-база цього ПК — основне джерело для каси, товарів, пошуку, накладних і ревізії.
+                    Кнопка праворуч потрібна тільки для ручного оновлення локальної бази з резервної хмарної копії.
                   </p>
                   {desktopRuntime && (
                     <p className="mt-2 truncate rounded-lg bg-white/70 px-2 py-1 font-mono text-[11px] text-emerald-800">
@@ -1143,3 +1143,4 @@ export default function SettingsPage() {
     </Layout>
   )
 }
+

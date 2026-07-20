@@ -241,6 +241,8 @@ export default function POSPage() {
   const [helpOpen, setHelpOpen]         = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
   const serverOnline = useServerStatus()
+  const desktopRuntime = Boolean(desktopBridge())
+  const effectiveOnline = desktopRuntime || serverOnline
   const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
   const [isEmployeeSale] = useState(false)
   const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
@@ -715,7 +717,7 @@ export default function POSPage() {
       )}
 
       {/* Connectivity banner */}
-      {!serverOnline && (
+      {!desktopRuntime && !serverOnline && (
         <div className="shrink-0 bg-red-900/80 border-b border-red-500 px-4 py-2 flex items-center gap-2 text-red-200 text-sm font-medium">
           <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse inline-block" />
           <span>ОФЛАЙН — продажі зберігаються локально і відправляться при відновленні зв'язку</span>
@@ -731,13 +733,13 @@ export default function POSPage() {
           </button>
         </div>
       )}
-      {serverOnline && syncing && (
+      {!desktopRuntime && serverOnline && syncing && (
         <div className="shrink-0 bg-blue-900/60 border-b border-blue-500 px-4 py-1.5 flex items-center gap-2 text-blue-200 text-xs">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-300 animate-pulse inline-block" />
           Синхронізація офлайн-продажів...
         </div>
       )}
-      {serverOnline && !syncing && pendingCount > 0 && (
+      {!desktopRuntime && serverOnline && !syncing && pendingCount > 0 && (
         <div className="shrink-0 bg-amber-900/60 border-b border-amber-500 px-4 py-1.5 flex items-center justify-between gap-3 text-amber-100 text-xs">
           <span>Є несинхронізовані офлайн-чеки: {pendingCount}</span>
           <div className="flex items-center gap-2">
@@ -961,12 +963,12 @@ export default function POSPage() {
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}
         staff={staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer'].includes(u.role))}
-        offline={!serverOnline}
+        offline={!effectiveOnline}
         onClose={() => setQuickCharge(null)}
       />
       <OfflineSalesModal
         open={offlineSalesOpen}
-        online={serverOnline}
+        online={effectiveOnline}
         syncing={syncing}
         refreshKey={pendingCount}
         onClose={() => setOfflineSalesOpen(false)}
@@ -977,7 +979,7 @@ export default function POSPage() {
       <ShiftCloseModal
         open={closeOpen}
         shiftId={shift.id}
-        offline={!serverOnline}
+        offline={!effectiveOnline}
         pendingOfflineSales={pendingCount}
         onClose={() => setCloseOpen(false)}
         onClosed={() => {
@@ -991,14 +993,14 @@ export default function POSPage() {
 
       <PaymentModal
         open={payOpen}
-        offline={!serverOnline}
+        offline={!effectiveOnline}
         onClose={() => setPayOpen(false)}
         onConfirm={handleConfirmPayment}
       />
 
       <QuickCustomerModal
         open={customerOpen}
-        offline={!serverOnline}
+        offline={!effectiveOnline}
         onClose={() => setCustomerOpen(false)}
         onCreated={(c: Customer) => {
           // Режим «накопичення»: % не знижує чек, а нараховується на рахунок
@@ -1075,3 +1077,4 @@ export default function POSPage() {
     </div>
   )
 }
+

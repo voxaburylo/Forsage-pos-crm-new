@@ -92,6 +92,8 @@ export interface SearchPanelHandle {
 
 const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const serverOnline = useServerStatus()
+  const desktopRuntime = Boolean(desktopBridge())
+  const effectiveOnline = desktopRuntime || serverOnline
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
@@ -166,14 +168,14 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       local().then(setCategories).catch(() => setCategories([]))
       return
     }
-    if (serverOnline) {
+    if (effectiveOnline) {
       api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories', { silent: true, timeoutMs: 10000 })
         .then((res) => setCategories(res.data ?? []))
         .catch(() => {})
     } else if (scopeKey) {
       getCachedCategories(scopeKey).then(setCategories).catch(() => setCategories([]))
     }
-  }, [serverOnline, scopeKey])
+  }, [effectiveOnline, scopeKey])
   // Debounced search
   useEffect(() => {
     clearTimeout(timer.current)
@@ -218,7 +220,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           return
         }
         // Офлайн-режим (браузер/PWA): шукаємо в IndexedDB
-        if (!serverOnline) {
+        if (!effectiveOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
           if (epoch !== searchEpoch.current) return
           setResults(offlineResults as Product[])
@@ -264,7 +266,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       }
     }, 200)
     return () => clearTimeout(timer.current)
-  }, [query, categoryFilter, categories, serverOnline, scopeKey, offlineStockVersion])
+  }, [query, categoryFilter, categories, effectiveOnline, scopeKey, offlineStockVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
@@ -343,7 +345,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       return
     }
 
-    if (!serverOnline) {
+    if (!effectiveOnline) {
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
@@ -533,7 +535,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   return (
     <div className="flex flex-col flex-1 min-h-0 min-w-0 bg-[#1A1A1A] p-3 md:p-4">
       {/* Офлайн-індикатор */}
-      {!serverOnline && (
+      {!effectiveOnline && (
         <div className="mb-2 px-3 py-1.5 bg-red-900/30 rounded-lg flex items-center gap-2 text-red-300 text-xs">
           <WifiOff size={12} /> Офлайн — пошук по кешу
         </div>
@@ -548,7 +550,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             onKeyDown={handleKeyDown}
             placeholder="Натисніть тут для пошуку товару"
             className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
-              serverOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
+              effectiveOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}
           />
         </div>
@@ -958,3 +960,4 @@ SearchPanelComponent.displayName = 'SearchPanel'
 
 // Зміни корзини не повинні перемальовувати великий каталог результатів.
 export const SearchPanel = memo(SearchPanelComponent)
+
