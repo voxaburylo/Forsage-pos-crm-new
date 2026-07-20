@@ -100,7 +100,7 @@ export const inventoryApi = {
     })
   },
 
-  scan: async (id: string, body: { barcode?: string; product_id?: string }, opts: RequestOptions = {}): Promise<ApiResponse<{ item: any }>> => {
+  scan: async (id: string, body: { barcode?: string; product_id?: string; qty?: number }, opts: RequestOptions = {}): Promise<ApiResponse<{ item: any }>> => {
     const local = localInventory()
     if (local?.scan) return { data: await local.scan(id, withUser(body)) }
     return api.post<ApiResponse<{ item: any }>>(`/api/v1/inventory/${id}/scan`, body, undefined, {

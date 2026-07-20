@@ -17,6 +17,7 @@ import { CameraScanner } from '@/features/pos/CameraScanner'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { useAuthStore } from '@/stores/authStore'
 import { formatMoney } from '@/lib/utils'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface ProductInfo {
   id: string
@@ -109,12 +110,19 @@ function normalizeScanCode(value: string): string {
     .trim()
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if ((error as any)?.status === 404) return true
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /не\s*знайден|не\s*найден|not\s*found/i.test(message)
+}
+
 export default function ActiveSession() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const authSession = useAuthStore((state) => state.session)
   const role = (authSession?.user?.user_metadata?.role as string) ?? 'cashier'
   const canComplete = ['owner', 'admin'].includes(role)
+  const desktopRuntime = Boolean(desktopBridge())
 
   const [session, setSession] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -324,7 +332,6 @@ export default function ActiveSession() {
 
   async function removeItem(item: InventoryItem) {
     if (!id) return
-    if (!confirm(`Прибрати з ревізії "${item.product?.name ?? 'товар'}"?`)) return
     try {
       await inventoryApi.setItemQty(id, item.id, 0, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
       setSelectedIds((prev) => {
@@ -490,10 +497,10 @@ export default function ActiveSession() {
     }
   }, [highlightedItemId, showRecent])
   useEffect(() => {
-    if (!session || session.status !== 'in_progress') return
+    if (!session || session.status !== 'in_progress' || desktopRuntime) return
     const timer = window.setInterval(() => load(true), 8_000)
     return () => window.clearInterval(timer)
-  }, [id, session?.status])
+  }, [id, session?.status, desktopRuntime])
 
   useEffect(() => {
     const value = query.trim()
@@ -575,13 +582,13 @@ export default function ActiveSession() {
     }
   }
 
-  async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean } = {}) {
+  async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean; qty?: number } = {}) {
     if (!id) return
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
     initAudio()
     try {
-      const response = await inventoryApi.scan(id, { barcode: normalizedCode }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: { item: InventoryItem } }
+      const response = await inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: { item: InventoryItem } }
       const item = response.data.item
       mergeFastScannedItem(item)
       setShowRecent(true)
@@ -595,7 +602,7 @@ export default function ActiveSession() {
       window.setTimeout(() => inputRef.current?.focus(), 0)
     } catch (error) {
       playErrorTone()
-      if ((error as any)?.status === 404 && canEditPrice) {
+      if (isNotFoundError(error) && canEditPrice) {
         if (options.fromCamera) setCameraOpen(false)
         toast.error('Товар не знайдено — можна створити його тут')
         openQuickCreate(normalizedCode)
@@ -616,7 +623,7 @@ export default function ActiveSession() {
       await addProduct(data)
     } catch (error) {
       playErrorTone()
-      if ((error as any)?.status === 404 && canEditPrice) {
+      if (isNotFoundError(error) && canEditPrice) {
         if (options.fromCamera) setCameraOpen(false)
         toast.error('Товар не знайдено — можна створити його тут')
         openQuickCreate(code)
@@ -801,7 +808,7 @@ export default function ActiveSession() {
                 <Badge color={session.status === 'completed' ? 'green' : session.status === 'draft' ? 'yellow' : 'blue'}>
                   {session.status === 'completed' ? 'Завершена' : session.status === 'draft' ? 'Чернетка' : 'Спільний підрахунок'}
                 </Badge>
-                {isActive && <span className="text-xs text-gray-500">Оновлення кожні 8 секунд</span>}
+                {isActive && !desktopRuntime && <span className="text-xs text-gray-500">Оновлення кожні 8 секунд</span>}
               </div>
               <p className="mt-2 text-sm text-gray-600">
                 Пораховано товарів: <strong>{session.summary.counted_products}</strong> із {session.summary.total_products}
@@ -922,13 +929,13 @@ export default function ActiveSession() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-semibold text-gray-500">Закупка, ₴</label>
-                <input type="number" min="0" step="0.01" inputMode="decimal" value={quickProduct.purchase_price}
+                <input type="number" min="0" step="1" inputMode="decimal" value={quickProduct.purchase_price}
                   onChange={(event) => updateQuickProduct({ purchase_price: event.target.value })}
                   className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base font-semibold outline-none focus:border-yellow-500" />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-semibold text-gray-500">Продаж, ₴</label>
-                <input type="number" min="0" step="0.01" inputMode="decimal" value={quickProduct.retail_price}
+                <input type="number" min="0" step="1" inputMode="decimal" value={quickProduct.retail_price}
                   onChange={(event) => updateQuickProduct({ retail_price: event.target.value })}
                   className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base font-bold outline-none focus:border-yellow-500" />
               </div>
@@ -1036,7 +1043,7 @@ export default function ActiveSession() {
               {priceStatus === 'mismatch' && (
                 <div className="mt-3">
                   <label className="mb-1 block text-xs text-red-600">Яка ціна вказана фактично, ₴</label>
-                  <input type="number" min="0" step="0.01" inputMode="decimal" value={observedPrice}
+                  <input type="number" min="0" step="1" inputMode="decimal" value={observedPrice}
                     onChange={(event) => setObservedPrice(event.target.value)}
                     className="w-full rounded-lg border border-red-300 px-3 py-2 text-lg font-bold outline-none focus:border-red-500" />
                   {canEditPrice && (
@@ -1063,13 +1070,13 @@ export default function ActiveSession() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="mb-1 block text-xs text-gray-500">Закупівельна, ₴</label>
-                    <input type="number" min="0" step="0.01" inputMode="decimal" value={editPurchase}
+                    <input type="number" min="0" step="1" inputMode="decimal" value={editPurchase}
                       onChange={(event) => setEditPurchase(event.target.value)}
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-semibold outline-none focus:border-blue-500" />
                   </div>
                   <div>
                     <label className="mb-1 block text-xs text-gray-500">Продажу, ₴</label>
-                    <input type="number" min="0" step="0.01" inputMode="decimal" value={editRetail}
+                    <input type="number" min="0" step="1" inputMode="decimal" value={editRetail}
                       onChange={(event) => setEditRetail(event.target.value)}
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-bold outline-none focus:border-blue-500" />
                   </div>
@@ -1379,7 +1386,7 @@ function InventoryRow({
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Закупка</span>
         {canEditPrice ? (
-          <input key={`b-${product?.purchase_price}`} type="number" min="0" step="0.01" inputMode="decimal"
+          <input key={`b-${product?.purchase_price}`} type="number" min="0" step="1" inputMode="decimal"
             defaultValue={purchaseStr} disabled={!isActive}
             onBlur={(event) => onSetPurchase(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
@@ -1391,7 +1398,7 @@ function InventoryRow({
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Продаж</span>
         {canEditPrice ? (
-          <input key={`p-${product?.retail_price}`} type="number" min="0" step="0.01" inputMode="decimal"
+          <input key={`p-${product?.retail_price}`} type="number" min="0" step="1" inputMode="decimal"
             defaultValue={retailStr} disabled={!isActive}
             onBlur={(event) => onSetRetail(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}

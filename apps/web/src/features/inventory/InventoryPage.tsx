@@ -88,8 +88,8 @@ export default function InventoryPage() {
         },
         { silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS },
       )
-      const started = await inventoryApi.startSession(data.id, { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS })
-      toast.success(`Ревізію розпочато: ${started.data.total_products ?? 0} товарів у знімку`)
+      await inventoryApi.startSession(data.id, { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS })
+      toast.success('Ревізію розпочато. Скануйте тільки ті товари, які треба перерахувати.')
       setModalOpen(false)
       setName('')
       setDate(new Date().toISOString().split('T')[0])
@@ -103,8 +103,8 @@ export default function InventoryPage() {
 
   async function startSession(session: Session) {
     try {
-      const response = await inventoryApi.startSession(session.id, { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS })
-      toast.success(`Ревізію розпочато: ${response.data.total_products ?? 0} товарів`)
+      await inventoryApi.startSession(session.id, { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS })
+      toast.success('Ревізію розпочато. Скануйте тільки ті товари, які треба перерахувати.')
       navigate(`/inventory/${session.id}`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Помилка')
@@ -185,7 +185,7 @@ export default function InventoryPage() {
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Нова ревізія" size="sm">
         <form onSubmit={handleCreate} className="space-y-4">
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            Під час великої ревізії призупиніть продажі, приходи та списання. На старті система зафіксує повний знімок активних складських товарів.
+            Ревізія змінює тільки ті товари, які ви додали в цей підрахунок. Інші залишки не будуть обнулені або перезаписані.
           </div>
           <Input
             label="Дата ревізії *"

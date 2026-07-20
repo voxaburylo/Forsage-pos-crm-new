@@ -168,20 +168,55 @@ export class LocalInventoryRepository {
     return { data: { item_id: itemId }, session: this.getSessionData(sessionId, tenantId, userId) }
   }
 
-  scan(sessionId: string, input: { tenant_id?: string; user_id?: string; barcode?: string; product_id?: string }): { item: any } {
+  scan(sessionId: string, input: { tenant_id?: string; user_id?: string; barcode?: string; product_id?: string; qty?: number }): { item: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const userId = input.user_id ?? ''
+    this.requireActiveSession(sessionId, tenantId)
+    const qty = Math.max(1, Math.floor(num(input.qty) || 1))
     const product = input.product_id
       ? this.findProductById(input.product_id, tenantId)
       : this.findProductByCode(input.barcode ?? '', tenantId)
     if (!product) throw new Error('Товар не знайдено')
-    this.countProduct(sessionId, {
-      tenant_id: tenantId,
-      user_id: input.user_id,
-      product_id: product.id,
-      qty: 1,
-      price_checked: true,
-      observed_retail_price: null,
+
+    const timestamp = nowIso()
+    let itemId = ''
+    this.db.transaction(() => {
+      const existing = this.findItemByProduct(sessionId, product.id, tenantId)
+      itemId = existing?.id ?? randomUUID()
+      const nextQty = num(existing?.counted_stock) + qty
+      this.db.prepare(`
+        INSERT INTO inventory_items (
+          id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
+          price_checked, observed_retail_price, last_counted_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, ?, ?, ?)
+        ON CONFLICT(session_id, product_id) DO UPDATE SET
+          counted_stock = excluded.counted_stock,
+          was_counted = 1,
+          price_checked = 1,
+          observed_retail_price = NULL,
+          last_counted_by = excluded.last_counted_by,
+          updated_at = excluded.updated_at,
+          deleted_at = NULL
+      `).run(
+        itemId,
+        tenantId,
+        sessionId,
+        product.id,
+        num(product.qty_on_hand),
+        nextQty,
+        userId || null,
+        timestamp,
+        timestamp,
+      )
+      this.db.prepare(`
+        INSERT INTO inventory_count_entries (
+          id, tenant_id, session_id, inventory_item_id, product_id, counted_by,
+          qty, price_checked, observed_retail_price, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)
+      `).run(randomUUID(), tenantId, sessionId, itemId, product.id, userId || 'local', qty, timestamp)
+      this.touchSession(sessionId, tenantId, timestamp)
     })
+
     const item = this.findItemByProduct(sessionId, product.id, tenantId)
     return { item: this.decorateItem(item, tenantId) }
   }
@@ -389,7 +424,7 @@ export class LocalInventoryRepository {
       SELECT id, product_id, expected_stock, counted_stock, price_checked,
              observed_retail_price, updated_at, was_counted
       FROM inventory_items
-      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1
+      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1 AND counted_stock > 0
       ORDER BY updated_at DESC
       LIMIT ?
     `).all(sessionId, tenantId, limit) as any[]
@@ -439,7 +474,7 @@ export class LocalInventoryRepository {
         SUM(expected_stock) AS total_expected_units,
         SUM(counted_stock) AS total_counted_units
       FROM inventory_items
-      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1
+      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1 AND counted_stock > 0
     `).get(sessionId, tenantId) as any
     return {
       total_products: totalProducts,
