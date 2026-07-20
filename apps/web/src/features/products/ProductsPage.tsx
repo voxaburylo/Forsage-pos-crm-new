@@ -76,6 +76,7 @@ export default function ProductsPage() {
   const isAdmin  = ['owner', 'admin'].includes(role)
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
+  const loadRequestRef             = useRef(0)
   const [search, setSearch]         = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [lowStock, setLowStock]     = useState(false)
@@ -205,22 +206,46 @@ export default function ProductsPage() {
   // Завантаження товарів (серверне сортування, крім 'brand' — передається окремо).
   // Пише результат сторінки в мапу pages, щоб накопичувати для нескінченного скролу.
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current
+    const isCurrentRequest = () => requestId === loadRequestRef.current
     setLoading(true)
     const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog) {
       try {
+        // Для введеного запиту використовуємо той самий перевірений локальний
+        // пошук, що й каса. Він одразу знаходить точний штрихкод, артикул або
+        // слова назви незалежно від активної папки та інших фільтрів.
+        if (debouncedSearch.trim()) {
+          const desktopProducts = (
+            await desktopCatalog.searchProducts(debouncedSearch.trim(), 500)
+          ).map(desktopProductToProduct)
+          if (!isCurrentRequest()) return
+          setResult({
+            data: desktopProducts,
+            pagination: {
+              page: 1,
+              per_page: 500,
+              total: desktopProducts.length,
+              total_pages: 1,
+            },
+          })
+          setPages({ 1: desktopProducts })
+          setLoading(false)
+          return
+        }
+
         if (typeof desktopCatalog.listProducts === 'function') {
           const desktopResult = await desktopCatalog.listProducts({
-            query: debouncedSearch || undefined,
-            categoryId: debouncedSearch ? undefined : categoryFilter || undefined,
-            brandId: debouncedSearch ? undefined : brandFilter || undefined,
-            lowStock: debouncedSearch ? false : lowStock,
-            stockFilter: debouncedSearch ? '' : stockFilter,
+            categoryId: categoryFilter || undefined,
+            brandId: brandFilter || undefined,
+            lowStock,
+            stockFilter,
             limit: PRODUCTS_PER_PAGE,
             offset: (page - 1) * PRODUCTS_PER_PAGE,
             sortField: sort?.field,
             sortDir: sort?.dir,
           })
+          if (!isCurrentRequest()) return
           const desktopProducts = desktopResult.data.map(desktopProductToProduct)
           setResult({
             data: desktopProducts,
@@ -241,6 +266,7 @@ export default function ProductsPage() {
             ? await desktopCatalog.searchProducts(debouncedSearch, PRODUCTS_PER_PAGE)
             : await desktopCatalog.listPopular(PRODUCTS_PER_PAGE)
           ).map(desktopProductToProduct)
+          if (!isCurrentRequest()) return
           if (sort?.field && sort.field !== 'brand') {
             desktopProducts = [...desktopProducts].sort((a, b) => {
               const av = a[sort.field]
@@ -273,6 +299,7 @@ export default function ProductsPage() {
         setLoading(false)
         return
       } catch (e) {
+        if (!isCurrentRequest()) return
         toast.error(e instanceof Error ? e.message : 'Помилка локального каталогу')
         setLoading(false)
         return
@@ -290,6 +317,7 @@ export default function ProductsPage() {
       sortDir: sort?.dir,
       scopeKey,
     }).catch(() => null)
+    if (!isCurrentRequest()) return
     if (local?.data.length || local?.pagination.total) {
       setResult(local as PaginatedProducts)
       setPages((prev) => ({ ...prev, [page]: local!.data }))
@@ -308,11 +336,14 @@ export default function ProductsPage() {
         sort_field: serverSortField,
         sort_dir: sort?.dir,
       })
+      if (!isCurrentRequest()) return
       setResult(data)
       setPages((prev) => ({ ...prev, [page]: data.data }))
     } catch (e) {
       if (!local?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
-    } finally { setLoading(false) }
+    } finally {
+      if (isCurrentRequest()) setLoading(false)
+    }
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
 
   useEffect(() => { load() }, [load])
