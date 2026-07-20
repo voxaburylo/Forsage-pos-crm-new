@@ -58,6 +58,51 @@ interface PaymentInput {
 export class LocalSupplyRepository {
   constructor(private readonly db: LocalDatabase) {}
 
+  listSuppliers(filters: { tenant_id?: string; search?: string; is_active?: string; page?: number; per_page?: number } = {}): { data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } } {
+    const tenantId = filters.tenant_id ?? DEFAULT_TENANT_ID
+    const page = Math.max(1, Number(filters.page ?? 1))
+    const perPage = Math.max(1, Math.min(200, Number(filters.per_page ?? 50)))
+    const offset = (page - 1) * perPage
+    const where = ['tenant_id = ?', 'deleted_at IS NULL']
+    const params: any[] = [tenantId]
+    if (filters.is_active === 'true') where.push('is_active = 1')
+    if (filters.is_active === 'false') where.push('is_active = 0')
+    const search = text(filters.search)
+    if (search) {
+      where.push('(lower(name) LIKE ? OR lower(COALESCE(contact_name, \'\')) LIKE ? OR phone LIKE ?)')
+      const like = `%${search.toLowerCase()}%`
+      params.push(like, like, `%${search}%`)
+    }
+    const whereSql = where.join(' AND ')
+    const totalRow = this.db.prepare(`SELECT count(*) AS count FROM suppliers WHERE ${whereSql}`).get(...params) as { count: number }
+    const rows = this.db.prepare(`
+      SELECT id, name, phone, email, contact_name, notes, is_active, created_at, updated_at, deleted_at
+      FROM suppliers
+      WHERE ${whereSql}
+      ORDER BY name ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, perPage, offset) as any[]
+    return {
+      data: rows.map((row) => ({ ...row, is_active: Boolean(row.is_active) })),
+      pagination: {
+        page,
+        per_page: perPage,
+        total: Number(totalRow?.count ?? 0),
+        total_pages: Math.ceil(Number(totalRow?.count ?? 0) / perPage),
+      },
+    }
+  }
+
+  getSupplier(id: string, tenantId = DEFAULT_TENANT_ID): any {
+    const row = this.db.prepare(`
+      SELECT id, name, phone, email, contact_name, notes, is_active, created_at, updated_at, deleted_at
+      FROM suppliers
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(id, tenantId) as any | undefined
+    if (!row) throw new Error('Постачальника не знайдено')
+    return { ...row, is_active: Boolean(row.is_active) }
+  }
   listInvoices(filters: {
     tenant_id?: string
     status?: string

@@ -307,6 +307,8 @@ interface ForsageDesktopBridge {
     complete: (orderId: string, input?: any) => Promise<any>
   }
   supply?: {
+    listSuppliers?: (input?: any) => Promise<any>
+    getSupplier?: (id: string, tenantId?: string) => Promise<any>
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>

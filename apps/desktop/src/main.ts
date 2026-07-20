@@ -330,6 +330,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:orders:complete', (_event, orderId: string, input?: any) =>
     requireLocalOrders().completeOrder(orderId, input),
   )
+  ipcMain.handle('desktop:supply:list-suppliers', (_event, input?: any) =>
+    requireLocalSupply().listSuppliers(input),
+  )
+  ipcMain.handle('desktop:supply:get-supplier', (_event, id: string, tenantId?: string) =>
+    requireLocalSupply().getSupplier(id, tenantId),
+  )
   ipcMain.handle('desktop:supply:list-invoices', (_event, input?: any) =>
     requireLocalSupply().listInvoices(input),
   )

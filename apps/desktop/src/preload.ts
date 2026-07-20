@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     complete: (orderId: string, input?: unknown) => ipcRenderer.invoke('desktop:orders:complete', orderId, input),
   },
   supply: {
+    listSuppliers: (input?: unknown) => ipcRenderer.invoke('desktop:supply:list-suppliers', input),
+    getSupplier: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:get-supplier', id, tenantId),
     listInvoices: (input?: unknown) => ipcRenderer.invoke('desktop:supply:list-invoices', input),
     getInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:get-invoice', id, tenantId),
     createInvoice: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice', input),

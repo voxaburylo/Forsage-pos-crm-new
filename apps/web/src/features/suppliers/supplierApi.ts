@@ -39,11 +39,17 @@ function buildQuery(filters: object): string {
 
 export const supplierApi = {
   // Постачальники
-  list: (filters: SupplierFilters = {}) =>
-    api.get<PaginatedSuppliers>(`/api/v1/suppliers${buildQuery(filters)}`),
+  list: async (filters: SupplierFilters = {}) => {
+    const local = localSupply()
+    if (local?.listSuppliers) return local.listSuppliers(filters) as Promise<PaginatedSuppliers>
+    return api.get<PaginatedSuppliers>(`/api/v1/suppliers${buildQuery(filters)}`)
+  },
 
-  get: (id: string) =>
-    api.get<{ data: Supplier }>(`/api/v1/suppliers/${id}`),
+  get: async (id: string) => {
+    const local = localSupply()
+    if (local?.getSupplier) return { data: await local.getSupplier(id) } as { data: Supplier }
+    return api.get<{ data: Supplier }>(`/api/v1/suppliers/${id}`)
+  },
 
   create: (body: { name: string; phone?: string | null; email?: string | null; contact_name?: string | null; notes?: string | null }) =>
     api.post<{ data: Supplier }>('/api/v1/suppliers', body),
