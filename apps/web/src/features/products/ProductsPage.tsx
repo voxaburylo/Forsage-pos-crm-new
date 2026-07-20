@@ -78,7 +78,6 @@ export default function ProductsPage() {
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const loadRequestRef             = useRef(0)
   const skipNextLoadRef            = useRef(false)
-  const desktopRuntimeRef          = useRef(Boolean(desktopBridge()))
   const [search, setSearch]         = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [lowStock, setLowStock]     = useState(false)
@@ -185,6 +184,16 @@ export default function ProductsPage() {
 
   // Завантаження категорій та брендів
   const loadMeta = useCallback(async () => {
+    const desktopCatalog = desktopBridge()?.catalog
+    if (desktopCatalog) {
+      const [localCategories, localBrands] = await Promise.all([
+        desktopCatalog.listCategories?.().catch(() => []),
+        desktopCatalog.listBrands?.().catch(() => []),
+      ])
+      setCategories(localCategories ?? [])
+      setBrands(localBrands ?? [])
+      return
+    }
     if (scopeKey) {
       const [cachedCategories, cachedBrands] = await Promise.all([
         getCachedCategories(scopeKey).catch(() => []),
@@ -193,7 +202,6 @@ export default function ProductsPage() {
       if (cachedCategories.length) setCategories(cachedCategories)
       if (cachedBrands.length) setBrands(cachedBrands)
     }
-    if (desktopRuntimeRef.current) return
     adminApi.listCategories().then((r) => setCategories(r.data)).catch(() => {})
     adminApi.listBrands().then((r) => setBrands(r.data)).catch(() => {})
   }, [scopeKey])
@@ -632,7 +640,7 @@ export default function ProductsPage() {
           {/* Список */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
             <div className="md:hidden divide-y divide-gray-100">
-              {loading ? (
+              {loading && products.length === 0 ? (
                 Array.from({ length: 6 }).map((_, i) => (
                   <div key={i} className="p-3 animate-pulse">
                     <div className="h-4 bg-gray-100 rounded w-3/4 mb-3" />
@@ -741,7 +749,7 @@ export default function ProductsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {loading ? (
+                  {loading && products.length === 0 ? (
                     Array.from({ length: 8 }).map((_, i) => (
                       <tr key={i} className="animate-pulse">
                         <td colSpan={10} className="px-3 py-3">

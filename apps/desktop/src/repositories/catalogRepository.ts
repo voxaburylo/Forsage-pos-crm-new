@@ -37,6 +37,17 @@ export interface LocalProductListResult {
   data: LocalProduct[]
   total: number
 }
+
+export interface LocalCatalogCategory {
+  id: string
+  name: string
+  sort_order: number
+}
+
+export interface LocalCatalogBrand {
+  id: string
+  name: string
+}
 function productSearchNeedles(raw: string): string[] {
   const values = new Set<string>()
   const normalized = normalizeSearchText(raw)
@@ -354,6 +365,24 @@ export class LocalCatalogRepository {
     `).all(...dataParams, limit, offset) as unknown as LocalProduct[]
 
     return { data, total: Number(totalRow?.total ?? data.length) }
+  }
+
+  listCategories(tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory[] {
+    return this.db.prepare(`
+      SELECT id, name, sort_order
+      FROM categories
+      WHERE tenant_id = ? AND deleted_at IS NULL
+      ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
+    `).all(tenantId) as unknown as LocalCatalogCategory[]
+  }
+
+  listBrands(tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand[] {
+    return this.db.prepare(`
+      SELECT id, name
+      FROM brands
+      WHERE tenant_id = ? AND deleted_at IS NULL
+      ORDER BY name COLLATE NOCASE ASC, id ASC
+    `).all(tenantId) as unknown as LocalCatalogBrand[]
   }
   // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі
   // до вводу назви, коли поле пошуку порожнє.

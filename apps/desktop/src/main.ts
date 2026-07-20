@@ -264,6 +264,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:list-products', (_event, options) =>
     requireLocalCatalog().listProducts(options),
   )
+  ipcMain.handle('desktop:catalog:list-categories', () =>
+    requireLocalCatalog().listCategories(),
+  )
+  ipcMain.handle('desktop:catalog:list-brands', () =>
+    requireLocalCatalog().listBrands(),
+  )
   ipcMain.handle('desktop:catalog:search-products', (_event, query: string, limit?: number) =>
     requireLocalCatalog().searchProducts(query, undefined, limit),
   )

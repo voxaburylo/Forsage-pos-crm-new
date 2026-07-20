@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:find-by-id', id),
     listProducts: (options?: unknown) =>
       ipcRenderer.invoke('desktop:catalog:list-products', options),
+    listCategories: () =>
+      ipcRenderer.invoke('desktop:catalog:list-categories'),
+    listBrands: () =>
+      ipcRenderer.invoke('desktop:catalog:list-brands'),
     searchProducts: (query: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
     upsertProduct: (product: unknown) =>

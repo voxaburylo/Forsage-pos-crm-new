@@ -239,6 +239,8 @@ interface ForsageDesktopBridge {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
     listProducts?: (options?: DesktopCatalogListOptions) => Promise<DesktopCatalogListResult>
+    listCategories?: () => Promise<Array<{ id: string; name: string; sort_order: number }>>
+    listBrands?: () => Promise<Array<{ id: string; name: string }>>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
     upsertProduct: (product: {
       id: string
