@@ -1,4 +1,6 @@
 import path from 'node:path'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
 import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
@@ -30,6 +32,7 @@ let localPos: LocalPosRepository | null = null
 let localSupply: LocalSupplyRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let cashalot: CashalotService | null = null
+let desktopDataRoot: string | null = null
 
 interface DesktopPrintOptions {
   title?: string
@@ -240,6 +243,7 @@ app.whenReady().then(async () => {
   const dataRoot = process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'Forsage')
     : app.getPath('userData')
+  desktopDataRoot = dataRoot
   localDatabase = new LocalDatabase(dataRoot)
   localBootstrap = new LocalBootstrapRepository(localDatabase)
   localCatalog = new LocalCatalogRepository(localDatabase)
@@ -264,6 +268,29 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:list-products', (_event, options) =>
     requireLocalCatalog().listProducts(options),
   )
+  ipcMain.handle('desktop:catalog:save-photo', async (_event, folder: string, rawBytes: ArrayBuffer | Uint8Array) => {
+    if (!desktopDataRoot) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    const safeFolder = String(folder || 'product').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100) || 'product'
+    const bytes = Buffer.from(rawBytes instanceof ArrayBuffer ? new Uint8Array(rawBytes) : rawBytes)
+    if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error('Неприпустимий розмір фото')
+    const photoDir = path.join(desktopDataRoot, 'photos', safeFolder)
+    await mkdir(photoDir, { recursive: true })
+    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + '.jpg')
+    await writeFile(photoPath, bytes)
+    return pathToFileURL(photoPath).href
+  })
+  ipcMain.handle('desktop:catalog:delete-photo', async (_event, photoUrl: string) => {
+    if (!desktopDataRoot || !String(photoUrl).startsWith('file:')) return { ok: true }
+    const photosRoot = path.resolve(desktopDataRoot, 'photos')
+    const photoPath = path.resolve(fileURLToPath(photoUrl))
+    if (photoPath !== photosRoot && !photoPath.startsWith(photosRoot + path.sep)) {
+      throw new Error('Видалення фото поза локальним сховищем заборонено')
+    }
+    await unlink(photoPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+    })
+    return { ok: true }
+  })
   ipcMain.handle('desktop:catalog:list-categories', () =>
     requireLocalCatalog().listCategories(),
   )

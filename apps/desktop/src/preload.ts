@@ -44,6 +44,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:upsert-product', product),
     saveProduct: (product: unknown) =>
       ipcRenderer.invoke('desktop:catalog:save-product', product),
+    savePhoto: (folder: string, bytes: ArrayBuffer) =>
+      ipcRenderer.invoke('desktop:catalog:save-photo', folder, bytes),
+    deletePhoto: (photoUrl: string) =>
+      ipcRenderer.invoke('desktop:catalog:delete-photo', photoUrl),
     deleteProduct: (id: string) =>
       ipcRenderer.invoke('desktop:catalog:delete-product', id),
     listPopular: (limit?: number) =>

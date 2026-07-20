@@ -295,6 +295,8 @@ interface ForsageDesktopBridge {
       photo_url?: string | null
       specs?: Record<string, string>
     }) => Promise<DesktopProduct>
+    savePhoto?: (folder: string, bytes: ArrayBuffer) => Promise<string>
+    deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }

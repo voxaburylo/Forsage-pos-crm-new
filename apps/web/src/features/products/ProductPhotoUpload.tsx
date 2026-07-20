@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Upload, X, Star, ImagePlus, Clipboard, Camera } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface Props {
   productId?: string          // undefined = новий товар (фото збережуться після create)
@@ -40,6 +41,9 @@ export async function compressToJpeg(source: File | Blob): Promise<Blob> {
 
 // ─── Завантаження у Supabase Storage ─────────────────────────────────────────
 export async function uploadToStorage(blob: Blob, folder: string): Promise<string> {
+  const localSave = desktopBridge()?.catalog.savePhoto
+  if (localSave) return localSave(folder, await blob.arrayBuffer())
+
   const { supabase } = await import('@/lib/supabase')
   const ext  = 'jpg'
   const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
@@ -56,6 +60,11 @@ export async function uploadToStorage(blob: Blob, folder: string): Promise<strin
 
 async function deleteFromStorage(url: string): Promise<void> {
   try {
+    const localDelete = desktopBridge()?.catalog.deletePhoto
+    if (localDelete && url.startsWith('file:')) {
+      await localDelete(url)
+      return
+    }
     const { supabase } = await import('@/lib/supabase')
     const prefix = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/`
     if (!url.startsWith(prefix)) return
