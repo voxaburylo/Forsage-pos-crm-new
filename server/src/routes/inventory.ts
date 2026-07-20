@@ -468,6 +468,7 @@ router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, nex
       .select('product_id,counted_stock')
       .eq('session_id', sessionId)
       .eq('was_counted', true)
+      .gt('counted_stock', 0)
     if (itemsError) throw new AppError('DB_ERROR', itemsError.message, 500)
 
     let itemsApplied = 0

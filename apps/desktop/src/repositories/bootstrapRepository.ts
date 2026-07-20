@@ -51,6 +51,8 @@ export class LocalBootstrapRepository {
       supplier_payments: 0,
       categories: 0,
       brands: 0,
+      inventory_sessions: 0,
+      inventory_items: 0,
     }
 
     this.db.transaction(() => {
@@ -176,6 +178,18 @@ export class LocalBootstrapRepository {
         this.upsertCustomerVehicle(tenantId, vehicle, appliedAt)
         counts.customer_vehicles++
       }
+
+      for (const session of changes.inventory_sessions ?? []) {
+        this.upsertInventorySession(tenantId, session, appliedAt)
+        counts.inventory_sessions++
+      }
+
+      for (const item of changes.inventory_items ?? []) {
+        if (!this.refExists('inventory_sessions', tenantId, item.session_id)) continue
+        if (!this.refExists('products', tenantId, item.product_id)) continue
+        this.upsertInventoryItem(tenantId, item, appliedAt)
+        counts.inventory_items++
+      }
     })
 
     return { applied_at: appliedAt, cursor: changes.cursor, counts }
@@ -204,6 +218,8 @@ export class LocalBootstrapRepository {
       deleted_supply_invoices: 0,
       supply_invoice_items: 0,
       supplier_payments: 0,
+      inventory_sessions: 0,
+      inventory_items: 0,
     }
 
     this.db.transaction(() => {
@@ -292,6 +308,18 @@ export class LocalBootstrapRepository {
         if (!this.refExists('supply_invoices', tenantId, payment.invoice_id)) continue
         this.upsertSupplierPayment(tenantId, payment, importedAt)
         counts.supplier_payments++
+      }
+
+      for (const session of snapshot.inventory_sessions ?? []) {
+        this.upsertInventorySession(tenantId, session, importedAt)
+        counts.inventory_sessions++
+      }
+
+      for (const item of snapshot.inventory_items ?? []) {
+        if (!this.refExists('inventory_sessions', tenantId, item.session_id)) continue
+        if (!this.refExists('products', tenantId, item.product_id)) continue
+        this.upsertInventoryItem(tenantId, item, importedAt)
+        counts.inventory_items++
       }
 
       this.db.prepare(`
@@ -956,6 +984,73 @@ export class LocalBootstrapRepository {
       payment.deleted_at ?? null,
     )
   }
+
+  private upsertInventorySession(tenantId: string, session: any, importedAt: string): void {
+    const updatedAt = timestamp(session, importedAt)
+    this.db.prepare(`
+      INSERT INTO inventory_sessions (
+        id, tenant_id, session_name, status, started_by, started_at, completed_at,
+        remote_updated_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        session_name = excluded.session_name,
+        status = excluded.status,
+        started_by = COALESCE(inventory_sessions.started_by, excluded.started_by),
+        started_at = excluded.started_at,
+        completed_at = excluded.completed_at,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE inventory_sessions.dirty_at IS NULL
+    `).run(
+      session.id,
+      tenantId,
+      session.name ?? session.session_name ?? 'Ревізія',
+      session.status ?? 'completed',
+      session.started_by ?? session.created_by ?? null,
+      session.started_at ?? session.created_at ?? updatedAt,
+      session.completed_at ?? null,
+      updatedAt,
+      session.created_at ?? updatedAt,
+      updatedAt,
+      session.deleted_at ?? null,
+    )
+  }
+
+  private upsertInventoryItem(tenantId: string, item: any, importedAt: string): void {
+    const updatedAt = timestamp(item, importedAt)
+    this.db.prepare(`
+      INSERT INTO inventory_items (
+        id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
+        price_checked, observed_retail_price, last_counted_by, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, product_id) DO UPDATE SET
+        expected_stock = excluded.expected_stock,
+        counted_stock = excluded.counted_stock,
+        was_counted = excluded.was_counted,
+        price_checked = excluded.price_checked,
+        observed_retail_price = excluded.observed_retail_price,
+        last_counted_by = excluded.last_counted_by,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+    `).run(
+      item.id,
+      tenantId,
+      item.session_id,
+      item.product_id,
+      item.expected_stock ?? 0,
+      item.counted_stock ?? 0,
+      boolInt(item.was_counted, true),
+      boolInt(item.price_checked, true),
+      item.observed_retail_price ?? null,
+      item.last_counted_by ?? null,
+      item.created_at ?? updatedAt,
+      updatedAt,
+      item.deleted_at ?? null,
+    )
+  }
   private markDeleted(table: 'products' | 'customers' | 'suppliers' | 'customer_orders' | 'supply_invoices', tenantId: string, id: string, deletedAt: string): void {
     const dirtyGuard = table === 'products' || table === 'customer_orders' || table === 'supply_invoices' ? ' AND dirty_at IS NULL' : ''
     this.db.prepare(`
@@ -974,7 +1069,7 @@ export class LocalBootstrapRepository {
     this.db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId)
   }
 
-  private refExists(table: 'brands' | 'categories' | 'products' | 'customers' | 'customer_orders' | 'supply_invoices', tenantId: string, id: string): boolean {
+  private refExists(table: 'brands' | 'categories' | 'products' | 'customers' | 'customer_orders' | 'supply_invoices' | 'inventory_sessions', tenantId: string, id: string): boolean {
     const row = this.db.prepare(`
       SELECT id
       FROM ${table}

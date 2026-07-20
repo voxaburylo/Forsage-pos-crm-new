@@ -106,6 +106,8 @@ export async function getSyncChanges({
     supplyInvoices,
     supplyInvoiceItems,
     supplierPayments,
+    inventorySessions,
+    inventoryItems,
   ] = await Promise.all([
     fetchAll((from, to) => {
       let query = db
@@ -244,6 +246,25 @@ export async function getSyncChanges({
       if (since) query = query.gt('created_at', since)
       return query.range(from, to)
     }),
+    fetchAll((from, to) => {
+      let query = db
+        .from('inventory_sessions')
+        .select('id,tenant_id,name,status,created_by,started_by,started_at,completed_at,created_at')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+      if (since && !referencesIncluded) query = query.or(`completed_at.gt.${since},started_at.gt.${since},created_at.gt.${since}`)
+      return query.range(from, to)
+    }),
+    fetchAll((from, to) => {
+      let query = db
+        .from('inventory_items')
+        .select('id,session_id,product_id,expected_stock,counted_stock,was_counted,price_checked,observed_retail_price,last_counted_by,created_at,updated_at,product:products!inner(tenant_id)')
+        .eq('product.tenant_id', tenantId)
+        .gt('counted_stock', 0)
+        .order('updated_at', { ascending: true })
+      if (since && !referencesIncluded) query = query.gt('updated_at', since)
+      return query.range(from, to)
+    }),
   ])
 
   const deletedProductIds = productRows.filter((row) => row.deleted_at).map((row) => row.id)
@@ -283,6 +304,7 @@ export async function getSyncChanges({
   const activeOrderPayments = orderPayments.map((row) => ({ ...row, order: undefined }))
   const activeSupplyInvoiceItems = supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined }))
   const activeSupplierPayments = supplierPayments.map((row) => ({ ...row, invoice: undefined }))
+  const activeInventoryItems = inventoryItems.map((row) => ({ ...row, product: undefined }))
 
   return {
     tenant_id: tenantId,
@@ -308,6 +330,8 @@ export async function getSyncChanges({
     deleted_supply_invoice_ids: [],
     supply_invoice_items: activeSupplyInvoiceItems,
     supplier_payments: activeSupplierPayments,
+    inventory_sessions: inventorySessions,
+    inventory_items: activeInventoryItems,
     references_included: referencesIncluded,
   }
 }
@@ -330,6 +354,8 @@ export async function getBootstrapSnapshot(tenantId: string) {
     supplyInvoices,
     supplyInvoiceItems,
     supplierPayments,
+    inventorySessions,
+    inventoryItems,
   ] = await Promise.all([
     listUsers(tenantId),
     fetchAll((from, to) => db
@@ -423,6 +449,19 @@ export async function getBootstrapSnapshot(tenantId: string) {
       .eq('invoice.tenant_id', tenantId)
       .order('created_at', { ascending: true })
       .range(from, to)),
+    fetchAll((from, to) => db
+      .from('inventory_sessions')
+      .select('id,tenant_id,name,status,created_by,started_by,started_at,completed_at,created_at')
+      .eq('tenant_id', tenantId)
+      .order('created_at', { ascending: true })
+      .range(from, to)),
+    fetchAll((from, to) => db
+      .from('inventory_items')
+      .select('id,session_id,product_id,expected_stock,counted_stock,was_counted,price_checked,observed_retail_price,last_counted_by,created_at,updated_at,product:products!inner(tenant_id)')
+      .eq('product.tenant_id', tenantId)
+      .gt('counted_stock', 0)
+      .order('updated_at', { ascending: true })
+      .range(from, to)),
   ])
 
   return {
@@ -444,6 +483,8 @@ export async function getBootstrapSnapshot(tenantId: string) {
     supply_invoices: supplyInvoices,
     supply_invoice_items: supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined })),
     supplier_payments: supplierPayments.map((row) => ({ ...row, invoice: undefined })),
+    inventory_sessions: inventorySessions,
+    inventory_items: inventoryItems.map((row) => ({ ...row, product: undefined })),
     counts: {
       staff: staff.length,
       categories: categories.length,
@@ -461,6 +502,8 @@ export async function getBootstrapSnapshot(tenantId: string) {
       supply_invoices: supplyInvoices.length,
       supply_invoice_items: supplyInvoiceItems.length,
       supplier_payments: supplierPayments.length,
+      inventory_sessions: inventorySessions.length,
+      inventory_items: inventoryItems.length,
     },
   }
 }
@@ -1020,7 +1063,11 @@ async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperat
 async function applyInventoryCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const sessionId = String(payload.id ?? operation.aggregate_id)
-  const items = Array.isArray(payload.items) ? payload.items : []
+  const items = (Array.isArray(payload.items) ? payload.items : [])
+    .filter((item: any) => {
+      const countedStock = Number(item?.counted_stock ?? 0)
+      return Boolean(item?.product_id) && Number.isFinite(countedStock) && countedStock > 0
+    })
   const createdBy = payload.created_by ?? userId
   const createdAt = payload.created_at ?? operation.created_at
   const completedAt = payload.completed_at ?? operation.created_at

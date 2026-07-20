@@ -105,6 +105,8 @@ export interface LocalBootstrapSnapshot {
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: any[]
   supplier_payments?: any[]
+  inventory_sessions?: any[]
+  inventory_items?: any[]
   counts?: Record<string, number>
 }
 
@@ -130,6 +132,8 @@ export interface LocalBootstrapImportResult {
     deleted_supply_invoices: number
     supply_invoice_items: number
     supplier_payments: number
+    inventory_sessions: number
+    inventory_items: number
   }
 }
 
@@ -184,6 +188,8 @@ export interface LocalSyncPullChanges {
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: any[]
   supplier_payments?: any[]
+  inventory_sessions?: any[]
+  inventory_items?: any[]
   references_included?: boolean
 }
 
@@ -211,5 +217,7 @@ export interface LocalSyncPullResult {
     supplier_payments: number
     categories: number
     brands: number
+    inventory_sessions: number
+    inventory_items: number
   }
 }
