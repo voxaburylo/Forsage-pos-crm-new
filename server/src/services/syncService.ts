@@ -379,7 +379,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
       .from('customers')
       .select([
         'id', 'tenant_id', 'phone', 'full_name', 'email', 'debt_balance',
-        'notes', 'tags', 'price_tier_id', 'bonus_balance', 'vip_level',
+        'deposit_balance', 'loyalty_mode', 'notes', 'tags', 'price_tier_id', 'bonus_balance', 'vip_level',
         'risk_profile', 'discount_pct', 'client_status', 'card_barcode',
         'created_at', 'updated_at', 'deleted_at',
       ].join(','))
@@ -548,6 +548,16 @@ async function applyLocalOperation(params: {
 
   if (operation.operation_type === 'order.completed') {
     await applyOrderCompleted(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'customer.debt_paid') {
+    await applyCustomerDebtPaid(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'customer.deposit_changed') {
+    await applyCustomerDepositChanged(tenantId, userId, operation)
     return
   }
   if (operation.operation_type === 'supplier_invoice.created') {
@@ -1077,6 +1087,85 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
 }
 
 
+async function applyCustomerDebtPaid(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const customerId = String(payload.customer_id ?? operation.aggregate_id)
+  const amount = Number(payload.amount ?? 0)
+  const method = payload.method === 'card' || payload.method === 'transfer' ? payload.method : 'cash'
+  if (!customerId || !Number.isFinite(amount) || amount <= 0) {
+    throw new AppError('SYNC_CUSTOMER_DEBT_INVALID', 'Некоректна оплата боргу', 400)
+  }
+
+  await runTransaction(async (client) => {
+    const customerResult = await client.query(
+      'SELECT id, full_name, phone, COALESCE(debt_balance, 0) AS debt_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+      [customerId, tenantId],
+    )
+    if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+    const customer = customerResult.rows[0]
+    if (Number(customer.debt_balance ?? 0) <= 0) return
+    const paid = Math.min(amount, Number(customer.debt_balance ?? 0))
+    const balanceAfter = Number(customer.debt_balance ?? 0) - paid
+    await client.query(
+      'UPDATE customers SET debt_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
+      [customerId, tenantId, balanceAfter, payload.created_at ?? operation.created_at],
+    )
+    if (method === 'cash' && payload.shift_id) {
+      await client.query(
+        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, created_at)
+         VALUES ($1, $2, 'in', $3, $4, $5, $6)`,
+        [tenantId, payload.shift_id, paid, payload.notes ?? (`Оплата боргу: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+      )
+    }
+  })
+}
+
+async function applyCustomerDepositChanged(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const customerId = String(payload.customer_id ?? operation.aggregate_id)
+  const transactionId = String(payload.transaction_id ?? operation.operation_id)
+  const amount = Number(payload.amount ?? 0)
+  const method = payload.method === 'card' || payload.method === 'transfer' || payload.method === 'account' || payload.method === 'correction'
+    ? payload.method
+    : 'cash'
+  if (!customerId || !transactionId || !Number.isFinite(amount) || amount === 0) {
+    throw new AppError('SYNC_CUSTOMER_DEPOSIT_INVALID', 'Некоректний рух рахунку клієнта', 400)
+  }
+
+  await runTransaction(async (client) => {
+    const existing = await client.query('SELECT id FROM customer_deposit_transactions WHERE id = $1 LIMIT 1', [transactionId])
+    if (existing.rowCount && existing.rowCount > 0) return
+
+    const customerResult = await client.query(
+      'SELECT id, full_name, phone, COALESCE(deposit_balance, 0) AS deposit_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+      [customerId, tenantId],
+    )
+    if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+    const customer = customerResult.rows[0]
+    const balanceAfter = Number(customer.deposit_balance ?? 0) + amount
+    if (balanceAfter < 0) throw new AppError('INSUFFICIENT_DEPOSIT', 'Недостатньо коштів на рахунку клієнта', 400)
+
+    await client.query(
+      'UPDATE customers SET deposit_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
+      [customerId, tenantId, balanceAfter, payload.created_at ?? operation.created_at],
+    )
+    await client.query(
+      `INSERT INTO customer_deposit_transactions (
+        id, tenant_id, customer_id, amount, balance_after, method, order_id, sale_id,
+        shift_id, notes, created_by, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [transactionId, tenantId, customerId, amount, balanceAfter, method, payload.order_id ?? null, payload.sale_id ?? null, payload.shift_id ?? null, payload.notes ?? null, payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+    )
+
+    if (amount > 0 && method === 'cash' && payload.shift_id) {
+      await client.query(
+        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, created_at)
+         VALUES ($1, $2, 'in', $3, $4, $5, $6)`,
+        [tenantId, payload.shift_id, amount, payload.notes ?? (`Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+      )
+    }
+  })
+}
 async function applyOrderPaymentAdded(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const orderId = String(payload.order_id ?? operation.aggregate_id)
@@ -1103,6 +1192,32 @@ async function applyOrderPaymentAdded(tenantId: string, userId: string, operatio
     const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
     if (!canAcceptOpenDraftDeposit && amount > remaining) {
       throw new AppError('SYNC_ORDER_OVERPAYMENT', 'Сума перевищує залишок до сплати', 400)
+    }
+
+    if (method === 'account') {
+      if (!order.customer_id) throw new AppError('NO_CUSTOMER', 'Замовлення без клієнта — оплата з рахунку неможлива', 400)
+      const transactionId = String(payload.account_transaction_id ?? paymentId)
+      const existingTransaction = await client.query('SELECT id FROM customer_deposit_transactions WHERE id = $1 LIMIT 1', [transactionId])
+      if (!existingTransaction.rowCount) {
+        const customerResult = await client.query(
+          'SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+          [order.customer_id, tenantId],
+        )
+        if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+        const balanceAfter = Number(customerResult.rows[0].deposit_balance ?? 0) - amount
+        if (balanceAfter < 0) throw new AppError('INSUFFICIENT_DEPOSIT', 'Недостатньо коштів на рахунку клієнта', 400)
+        await client.query(
+          'UPDATE customers SET deposit_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
+          [order.customer_id, tenantId, balanceAfter, payload.created_at ?? operation.created_at],
+        )
+        await client.query(
+          `INSERT INTO customer_deposit_transactions (
+            id, tenant_id, customer_id, amount, balance_after, method, order_id,
+            notes, created_by, created_at
+          ) VALUES ($1, $2, $3, $4, $5, 'account', $6, $7, $8, $9)`,
+          [transactionId, tenantId, order.customer_id, -amount, balanceAfter, orderId, payload.notes ?? (`Оплата замовлення #${order.order_number ?? String(orderId).slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        )
+      }
     }
 
     await client.query(

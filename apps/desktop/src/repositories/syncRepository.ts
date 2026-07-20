@@ -236,6 +236,24 @@ export class LocalSyncRepository {
       return
     }
 
+    if (operation.operation_type === 'customer.debt_paid' || operation.operation_type === 'customer.deposit_changed') {
+      this.db.prepare(`
+        UPDATE customers
+        SET dirty_at = NULL
+        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      try {
+        const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+        if (payload?.transaction_id) {
+          this.db.prepare(`
+            UPDATE customer_deposit_transactions
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(payload.transaction_id, operation.created_at)
+        }
+      } catch { /* ignore */ }
+      return
+    }
     if (operation.operation_type === 'order.payment_added') {
       this.db.prepare(`
         UPDATE customer_orders
@@ -244,6 +262,21 @@ export class LocalSyncRepository {
       `).run(operation.aggregate_id, operation.created_at)
       try {
         const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+        if (payload?.customer_id) {
+          this.db.prepare(`
+            UPDATE customers
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(payload.customer_id, operation.created_at)
+        }
+        if (payload?.account_transaction_id) {
+          this.db.prepare(`
+            UPDATE customer_deposit_transactions
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(payload.account_transaction_id, operation.created_at)
+        }
+
         if (payload?.payment_id) {
           this.db.prepare(`
             UPDATE order_payments
@@ -283,6 +316,21 @@ export class LocalSyncRepository {
       `).run(operation.aggregate_id, operation.created_at)
       try {
         const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+        if (payload?.customer_id) {
+          this.db.prepare(`
+            UPDATE customers
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(payload.customer_id, operation.created_at)
+        }
+        if (payload?.account_transaction_id) {
+          this.db.prepare(`
+            UPDATE customer_deposit_transactions
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(payload.account_transaction_id, operation.created_at)
+        }
+
         if (payload?.payment_id) {
           this.db.prepare(`
             UPDATE supplier_payments

@@ -142,17 +142,18 @@ async function main() {
   const foundByExtraBarcode = catalog.findByBarcode('2999999999999');
   const importedByBarcode = catalog.findByBarcode('2111111111111');
   const shiftId = pos.openShift({ cashier_id: 'smoke-cashier', opening_cash: 10000 });
+  const saleAmount = product.retail_price * 2;
   const sale = pos.checkout({
     cashier_id: 'smoke-cashier',
     shift_id: shiftId,
     items: [{ product_id: product.id, qty: 2 }],
-    payments: [{ method: 'cash', amount: 26000 }],
+    payments: [{ method: 'cash', amount: saleAmount }],
   });
   const shiftReport = pos.getShiftReport('smoke-cashier');
-  if (!shiftReport || shiftReport.total_sales !== 1 || shiftReport.by_method.cash !== 26000) {
+  if (!shiftReport || shiftReport.total_sales !== 1 || shiftReport.by_method.cash !== saleAmount) {
     throw new Error('Local shift report did not include the completed cash sale');
   }
-  const closeResult = pos.closeShift('smoke-cashier', 36000, 'Smoke close');
+  const closeResult = pos.closeShift('smoke-cashier', 10000 + saleAmount, 'Smoke close');
   if (pos.getOpenShift('smoke-cashier') !== null) {
     throw new Error('Local shift remained open after closeShift');
   }

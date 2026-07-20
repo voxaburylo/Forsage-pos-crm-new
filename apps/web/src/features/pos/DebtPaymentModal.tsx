@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react'
 import { DollarSign, Wallet, X } from 'lucide-react'
-import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
-import { shiftApi } from './shiftApi'
+import { usePOSStore } from '@/stores/posStore'
+import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 
 interface Customer {
   id: string
   full_name: string | null
-  phone: string
+  phone: string | null
   debt_balance: number
   deposit_balance?: number
 }
@@ -30,6 +30,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
   const [saving, setSaving] = useState(false)
+  const currentShift = usePOSStore((state) => state.currentShift)
 
   useEffect(() => {
     if (!open) {
@@ -67,7 +68,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
     setAmount('')
     if (mode === 'debt') {
       setLoading(true)
-      api.get<{ data: Customer[] }>('/api/v1/customers?has_debt=true&sort=debt&per_page=100')
+      posCustomerMoneyApi.listDebtors(100)
         .then((r) => setCustomers((r.data ?? []).filter((c) => c.debt_balance > 0)))
         .catch(() => toast.error('Не вдалося завантажити список боргів'))
         .finally(() => setLoading(false))
@@ -80,10 +81,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
     if (!open || search.length < 2) return
     const timer = window.setTimeout(() => {
       setLoading(true)
-      const url = mode === 'debt'
-        ? `/api/v1/customers?search=${encodeURIComponent(search)}&has_debt=true&per_page=50`
-        : `/api/v1/customers?search=${encodeURIComponent(search)}&per_page=50`
-      api.get<{ data: Customer[] }>(url)
+      posCustomerMoneyApi.searchCustomers({ search, has_debt: mode === 'debt', limit: 50 })
         .then((r) => setCustomers(mode === 'debt' ? (r.data?.filter((c) => c.debt_balance > 0) ?? []) : (r.data ?? [])))
         .catch(() => {})
         .finally(() => setLoading(false))
@@ -99,16 +97,15 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
 
     setSaving(true)
     try {
-      const shift = await shiftApi.current().catch(() => null)
-      const shiftId = (shift as any)?.data?.id ?? null
+      const shiftId = currentShift?.id ?? null
       if (mode === 'debt') {
-        await api.post(`/api/v1/customers/${selected.id}/pay-debt`, {
+        await posCustomerMoneyApi.payDebt(selected.id, {
           amount: kopecks, method,
           shift_id: shiftId,
         })
         toast.success(`Борг оплачено: ${formatMoney(kopecks)}`)
       } else {
-        const res = await api.post<{ data: { balance: number } }>(`/api/v1/customers/${selected.id}/deposit`, {
+        const res = await posCustomerMoneyApi.addDeposit(selected.id, {
           amount: kopecks, method,
           shift_id: shiftId,
         })

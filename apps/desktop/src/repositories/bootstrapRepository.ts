@@ -606,17 +606,19 @@ export class LocalBootstrapRepository {
     const updatedAt = timestamp(customer, importedAt)
     this.db.prepare(`
       INSERT INTO customers (
-        id, tenant_id, phone, full_name, email, debt_balance, notes, tags_json,
+        id, tenant_id, phone, full_name, email, debt_balance, deposit_balance, loyalty_mode, notes, tags_json,
         price_tier_id, bonus_balance, vip_level, risk_profile, discount_pct,
         client_status, card_barcode, remote_updated_at, created_at, updated_at,
         deleted_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         phone = excluded.phone,
         full_name = excluded.full_name,
         email = excluded.email,
         debt_balance = excluded.debt_balance,
+        deposit_balance = excluded.deposit_balance,
+        loyalty_mode = excluded.loyalty_mode,
         notes = excluded.notes,
         tags_json = excluded.tags_json,
         price_tier_id = excluded.price_tier_id,
@@ -636,6 +638,8 @@ export class LocalBootstrapRepository {
       text(customer.full_name),
       text(customer.email),
       customer.debt_balance ?? 0,
+      customer.deposit_balance ?? 0,
+      customer.loyalty_mode ?? 'discount',
       customer.notes ?? null,
       json(customer.tags, []),
       customer.price_tier_id ?? null,

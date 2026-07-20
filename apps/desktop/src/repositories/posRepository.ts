@@ -127,18 +127,165 @@ export class LocalPosRepository {
     full_name: string | null
     phone: string | null
     debt_balance: number
+    deposit_balance: number
   }> {
     return this.db.prepare(`
-      SELECT id, full_name, phone, debt_balance
+      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance
       FROM customers
       WHERE tenant_id = ? AND deleted_at IS NULL AND debt_balance > 0
       ORDER BY debt_balance DESC
       LIMIT ?
     `).all(tenantId, limit) as unknown as Array<{
-      id: string; full_name: string | null; phone: string | null; debt_balance: number
+      id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number
     }>
   }
 
+  searchCustomers(input: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number } = {}): Array<{
+    id: string
+    full_name: string | null
+    phone: string | null
+    debt_balance: number
+    deposit_balance: number
+  }> {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const limit = Math.max(1, Math.min(200, input.limit ?? 50))
+    const search = String(input.search ?? '').trim().toLowerCase()
+    const digits = search.replace(/\D/g, '')
+    const params: any[] = [tenantId]
+    let where = 'tenant_id = ? AND deleted_at IS NULL'
+    if (input.has_debt) where += ' AND debt_balance > 0'
+    if (search) {
+      where += ` AND (
+        lower(COALESCE(full_name, '')) LIKE ?
+        OR COALESCE(phone, '') LIKE ?
+        OR lower(COALESCE(email, '')) LIKE ?
+        OR lower(COALESCE(card_barcode, '')) LIKE ?
+      )`
+      const q = `%${search}%`
+      params.push(q, `%${digits || search}%`, q, q)
+    }
+    params.push(limit)
+    return this.db.prepare(`
+      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance
+      FROM customers
+      WHERE ${where}
+      ORDER BY ${input.has_debt ? 'debt_balance DESC,' : ''} updated_at DESC
+      LIMIT ?
+    `).all(...params) as unknown as Array<{
+      id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number
+    }>
+  }
+
+  getCustomerDeposit(customerId: string, tenantId = DEFAULT_TENANT_ID): {
+    balance: number
+    transactions: any[]
+  } {
+    const customer = this.db.prepare(`
+      SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance
+      FROM customers
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(customerId, tenantId) as { id: string; deposit_balance: number } | undefined
+    if (!customer) throw new Error('Клієнта не знайдено')
+    const transactions = this.db.prepare(`
+      SELECT id, amount, balance_after, method, order_id, sale_id, shift_id, notes, created_at
+      FROM customer_deposit_transactions
+      WHERE tenant_id = ? AND customer_id = ? AND deleted_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).all(tenantId, customerId)
+    return { balance: Number(customer.deposit_balance ?? 0), transactions }
+  }
+
+  payDebt(input: {
+    tenant_id?: string
+    customer_id: string
+    amount: number
+    method: 'cash' | 'card' | 'transfer'
+    shift_id?: string | null
+    user_id?: string | null
+    notes?: string | null
+  }): { data: any } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Вкажіть коректну суму')
+    return this.db.transaction(() => {
+      const customer = this.getCustomerForMoney(input.customer_id, tenantId)
+      if (customer.debt_balance <= 0) throw new Error('У клієнта немає боргу')
+      if (amount > customer.debt_balance) throw new Error('Сума перевищує борг клієнта')
+      const timestamp = nowIso()
+      const balanceAfter = customer.debt_balance - amount
+      this.db.prepare(`
+        UPDATE customers
+        SET debt_balance = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
+
+      if (input.method === 'cash' && input.shift_id) {
+        this.addCashOperation(tenantId, input.shift_id, input.user_id ?? null, 'cash_in', amount, `Оплата боргу: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`, timestamp)
+      }
+
+      this.addOutbox(tenantId, 'customer', customer.id, 'customer.debt_paid', {
+        customer_id: customer.id,
+        amount,
+        method: input.method,
+        shift_id: input.shift_id ?? null,
+        notes: input.notes ?? null,
+        created_by: input.user_id ?? null,
+        created_at: timestamp,
+      }, timestamp)
+      this.addAudit(tenantId, input.user_id ?? 'local', 'customer.debt_paid', 'customer', customer.id, { amount, method: input.method, debt_balance: balanceAfter }, timestamp)
+      return { data: { ...customer, debt_balance: balanceAfter } }
+    })
+  }
+
+  addCustomerDeposit(input: {
+    tenant_id?: string
+    customer_id: string
+    amount: number
+    method: 'cash' | 'card' | 'transfer'
+    shift_id?: string | null
+    user_id?: string | null
+    notes?: string | null
+  }): { data: { balance: number } } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Вкажіть коректну суму')
+    return this.db.transaction(() => {
+      const customer = this.getCustomerForMoney(input.customer_id, tenantId)
+      const timestamp = nowIso()
+      const balanceAfter = Number(customer.deposit_balance ?? 0) + amount
+      const transactionId = randomUUID()
+      this.db.prepare(`
+        UPDATE customers
+        SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
+      this.db.prepare(`
+        INSERT INTO customer_deposit_transactions (
+          id, tenant_id, customer_id, amount, balance_after, method, shift_id,
+          notes, created_by, dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(transactionId, tenantId, customer.id, amount, balanceAfter, input.method, input.shift_id ?? null, input.notes ?? 'Поповнення рахунку на касі', input.user_id ?? null, timestamp, timestamp, timestamp)
+
+      if (input.method === 'cash' && input.shift_id) {
+        this.addCashOperation(tenantId, input.shift_id, input.user_id ?? null, 'cash_in', amount, `Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`, timestamp)
+      }
+
+      this.addOutbox(tenantId, 'customer', customer.id, 'customer.deposit_changed', {
+        customer_id: customer.id,
+        transaction_id: transactionId,
+        amount,
+        method: input.method,
+        shift_id: input.shift_id ?? null,
+        notes: input.notes ?? 'Поповнення рахунку на касі',
+        created_by: input.user_id ?? null,
+        created_at: timestamp,
+      }, timestamp)
+      this.addAudit(tenantId, input.user_id ?? 'local', 'customer.deposit_changed', 'customer', customer.id, { amount, method: input.method, balance_after: balanceAfter }, timestamp)
+      return { data: { balance: balanceAfter } }
+    })
+  }
   // Очікувана готівка у відкритій зміні (звірка каси) — з локальних даних.
   getExpectedCash(cashierId: string, tenantId = DEFAULT_TENANT_ID): {
     opening_cash: number
@@ -447,6 +594,14 @@ export class LocalPosRepository {
         )
       }
 
+      if (payments.debt > 0 && input.customer_id) {
+        const customer = this.getCustomerForMoney(input.customer_id, tenantId)
+        this.db.prepare(`
+          UPDATE customers
+          SET debt_balance = ?, dirty_at = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(Number(customer.debt_balance ?? 0) + payments.debt, timestamp, timestamp, input.customer_id, tenantId)
+      }
       if (payments.cash > 0) {
         this.db.prepare(`
           INSERT INTO cash_operations (
@@ -564,6 +719,39 @@ export class LocalPosRepository {
     }, { cash: 0, card: 0, transfer: 0, debt: 0 })
   }
 
+  private getCustomerForMoney(customerId: string, tenantId: string): {
+    id: string
+    full_name: string | null
+    phone: string | null
+    debt_balance: number
+    deposit_balance: number
+  } {
+    const row = this.db.prepare(`
+      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance
+      FROM customers
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(customerId, tenantId) as { id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number } | undefined
+    if (!row) throw new Error('Клієнта не знайдено')
+    return row
+  }
+
+  private addCashOperation(
+    tenantId: string,
+    shiftId: string,
+    userId: string | null,
+    type: 'cash_in' | 'cash_out',
+    amount: number,
+    notes: string,
+    timestamp: string,
+  ): void {
+    this.db.prepare(`
+      INSERT INTO cash_operations (
+        id, tenant_id, shift_id, user_id, type, source, amount, notes,
+        dirty_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'cashbox', ?, ?, ?, ?, ?)
+    `).run(randomUUID(), tenantId, shiftId, userId, type, amount, notes, timestamp, timestamp, timestamp)
+  }
   private addOutbox(
     tenantId: string,
     aggregateType: string,

@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Package, X, ChevronDown, Loader2, User } from 'lucide-react'
-import { api } from '@/lib/api'
 import { posOrderApi } from '@/features/pos/posOrderApi'
 import { usePOSStore } from '@/stores/posStore'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
+import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 
 interface OrderItem {
   id: string
@@ -73,7 +73,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     if (payMethod === 'account') setPayMethod('cash')
     const customerId = payOrder?.customer?.id
     if (!customerId) return
-    api.get<{ data: { balance: number } }>(`/api/v1/customers/${customerId}/deposit`, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
+    posCustomerMoneyApi.getDeposit(customerId, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
       .then((r) => setAccountBalance(r.data?.balance ?? 0))
       .catch(() => setAccountBalance(0))
     // eslint-disable-next-line react-hooks/exhaustive-deps

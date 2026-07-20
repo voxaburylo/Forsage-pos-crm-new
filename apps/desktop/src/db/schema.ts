@@ -1,4 +1,4 @@
-export const LOCAL_SCHEMA_VERSION = 3
+export const LOCAL_SCHEMA_VERSION = 4
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -640,6 +640,33 @@ const MIGRATION_003_SUPPLY_INVOICES_SQL = `
   CREATE INDEX IF NOT EXISTS idx_supplier_payments_tenant
     ON supplier_payments(tenant_id, created_at DESC);
 `
+
+const MIGRATION_004_CUSTOMER_DEPOSITS_SQL = `
+  ALTER TABLE customers ADD COLUMN deposit_balance INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE customers ADD COLUMN loyalty_mode TEXT NOT NULL DEFAULT 'discount';
+
+  CREATE TABLE IF NOT EXISTS customer_deposit_transactions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    amount INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    method TEXT NOT NULL DEFAULT 'cash',
+    order_id TEXT REFERENCES customer_orders(id) ON DELETE SET NULL,
+    sale_id TEXT REFERENCES sales(id) ON DELETE SET NULL,
+    shift_id TEXT REFERENCES shifts(id) ON DELETE SET NULL,
+    notes TEXT,
+    created_by TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_deposit_transactions_customer
+    ON customer_deposit_transactions(tenant_id, customer_id, created_at DESC);
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -649,4 +676,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 1, sql: MIGRATION_001_CORE_SQL },
   { version: 2, sql: MIGRATION_002_BUSINESS_SQL },
   { version: 3, sql: MIGRATION_003_SUPPLY_INVOICES_SQL },
+  { version: 4, sql: MIGRATION_004_CUSTOMER_DEPOSITS_SQL },
 ]

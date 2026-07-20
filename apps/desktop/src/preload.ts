@@ -65,6 +65,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listDebtors: (limit?: number) => ipcRenderer.invoke('desktop:pos:list-debtors', limit),
+    searchCustomers: (input?: unknown) => ipcRenderer.invoke('desktop:pos:search-customers', input),
+    getCustomerDeposit: (customerId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer-deposit', customerId, tenantId),
+    payDebt: (input: unknown) => ipcRenderer.invoke('desktop:pos:pay-debt', input),
+    addCustomerDeposit: (input: unknown) => ipcRenderer.invoke('desktop:pos:add-customer-deposit', input),
     expectedCash: (cashierId: string) => ipcRenderer.invoke('desktop:pos:expected-cash', cashierId),
     shiftReport: (cashierId: string) => ipcRenderer.invoke('desktop:pos:shift-report', cashierId),
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) =>

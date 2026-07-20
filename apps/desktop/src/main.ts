@@ -363,6 +363,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:pos:list-debtors', (_event, limit?: number) =>
     requireLocalPos().listDebtors(undefined, limit),
   )
+  ipcMain.handle('desktop:pos:search-customers', (_event, input?: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number }) =>
+    requireLocalPos().searchCustomers(input),
+  )
+  ipcMain.handle('desktop:pos:get-customer-deposit', (_event, customerId: string, tenantId?: string) =>
+    requireLocalPos().getCustomerDeposit(customerId, tenantId),
+  )
+  ipcMain.handle('desktop:pos:pay-debt', (_event, input: any) =>
+    requireLocalPos().payDebt(input),
+  )
+  ipcMain.handle('desktop:pos:add-customer-deposit', (_event, input: any) =>
+    requireLocalPos().addCustomerDeposit(input),
+  )
   ipcMain.handle('desktop:pos:expected-cash', (_event, cashierId: string) =>
     requireLocalPos().getExpectedCash(cashierId),
   )

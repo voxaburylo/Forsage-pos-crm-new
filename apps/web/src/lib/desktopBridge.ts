@@ -322,7 +322,11 @@ interface ForsageDesktopBridge {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
     getOpenShift: (cashierId: string) => Promise<Shift | null>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
-    listDebtors: (limit?: number) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number }>>
+    listDebtors: (limit?: number) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
+    searchCustomers?: (input?: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number }) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
+    getCustomerDeposit?: (customerId: string, tenantId?: string) => Promise<{ balance: number; transactions: unknown[] }>
+    payDebt?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
+    addCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>
     expectedCash: (cashierId: string) => Promise<{ opening_cash: number; cash_sales: number; cash_returns: number; cash_in: number; cash_out: number; expected_amount: number } | null>
     shiftReport: (cashierId: string) => Promise<import('@/types/shift').ShiftReport | null>
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true }>

@@ -91,14 +91,50 @@ export class LocalOrderRepository {
     const remaining = this.remainingDue(order)
     const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
     if (!canAcceptOpenDraftDeposit && amount > remaining) throw new Error('Сума перевищує залишок до сплати')
-    if (input.method === 'account') throw new Error('Оплата з рахунку клієнта поки потребує серверної синхронізації')
+    if (input.method === 'account' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата з рахунку неможлива')
 
     const timestamp = nowIso()
     const paymentId = randomUUID()
+    const accountTransactionId = input.method === 'account' ? randomUUID() : null
     const nextPaid = num(order.total_paid ?? order.prepayment) + amount
     const nextStatus = (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
 
     this.db.transaction(() => {
+      if (input.method === 'account') {
+        const customer = this.db.prepare(`
+          SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance
+          FROM customers
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+          LIMIT 1
+        `).get(order.customer_id, tenantId) as { id: string; deposit_balance: number } | undefined
+        if (!customer) throw new Error('Клієнта не знайдено')
+        if (Number(customer.deposit_balance ?? 0) < amount) throw new Error('Недостатньо коштів на рахунку клієнта')
+        const balanceAfter = Number(customer.deposit_balance ?? 0) - amount
+        this.db.prepare(`
+          UPDATE customers
+          SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
+        this.db.prepare(`
+          INSERT INTO customer_deposit_transactions (
+            id, tenant_id, customer_id, amount, balance_after, method, order_id,
+            notes, created_by, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'account', ?, ?, ?, ?, ?, ?)
+        `).run(
+          accountTransactionId,
+          tenantId,
+          customer.id,
+          -amount,
+          balanceAfter,
+          orderId,
+          input.notes ?? `Оплата замовлення #${order.order_number ?? order.id.slice(0, 8)}`,
+          input.user_id ?? null,
+          timestamp,
+          timestamp,
+          timestamp,
+        )
+      }
+
       this.db.prepare(`
         INSERT INTO order_payments (
           id, tenant_id, order_id, amount, method, is_fiscal, shift_id, created_by,
@@ -131,6 +167,8 @@ export class LocalOrderRepository {
         notes: input.notes ?? null,
         created_by: input.user_id ?? null,
         created_at: timestamp,
+        customer_id: order.customer_id ?? null,
+        account_transaction_id: accountTransactionId,
       }, timestamp)
     })
 
