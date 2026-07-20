@@ -1028,6 +1028,48 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
     }
 
     for (const barcode of barcodes) {
+      const duplicateFromIndex = await client.query(
+        `SELECT p.name, p.sku
+         FROM product_barcodes b
+         JOIN products p ON p.id = b.product_id AND p.tenant_id = b.tenant_id
+         WHERE b.tenant_id = $1
+           AND b.barcode = $2
+           AND b.deleted_at IS NULL
+           AND b.product_id <> $3
+           AND p.deleted_at IS NULL
+         LIMIT 1`,
+        [tenantId, barcode, productId],
+      )
+      const duplicateFromProduct = duplicateFromIndex.rowCount && duplicateFromIndex.rowCount > 0
+        ? duplicateFromIndex
+        : await client.query(
+          `SELECT name, sku
+           FROM products
+           WHERE tenant_id = $1
+             AND barcode = $2
+             AND deleted_at IS NULL
+             AND id <> $3
+           LIMIT 1`,
+          [tenantId, barcode, productId],
+        )
+      if (duplicateFromProduct.rowCount && duplicateFromProduct.rowCount > 0) {
+        const duplicate = duplicateFromProduct.rows[0]
+        const label = duplicate.name || duplicate.sku || 'іншого товару'
+        throw new AppError('BARCODE_TAKEN', `Штрихкод "${barcode}" вже у товару "${label}"`, 409)
+      }
+    }
+
+    await client.query(
+      `UPDATE product_barcodes
+       SET deleted_at = $3, updated_at = $3, is_primary = false
+       WHERE product_id = $1
+         AND tenant_id = $2
+         AND deleted_at IS NULL
+         AND NOT (barcode = ANY($4::text[]))`,
+      [productId, tenantId, updatedAt, barcodes],
+    )
+
+    for (const barcode of barcodes) {
       await client.query(
         `INSERT INTO product_barcodes (
           id, tenant_id, product_id, barcode, barcode_type, is_primary, created_at, updated_at, deleted_at
@@ -1036,7 +1078,8 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
           product_id = excluded.product_id,
           is_primary = excluded.is_primary,
           updated_at = excluded.updated_at,
-          deleted_at = NULL`,
+          deleted_at = NULL
+        WHERE product_barcodes.product_id = excluded.product_id`,
         [randomUUID(), tenantId, productId, barcode, barcode === payload.barcode, updatedAt],
       )
     }

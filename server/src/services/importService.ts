@@ -739,7 +739,41 @@ async function syncImportedBarcodeIndex(tenantId: string, items: Array<{ product
     }))
   if (indexRows.length === 0) return
 
-  const { error } = await db.from('product_barcodes').upsert(indexRows, { onConflict: 'tenant_id,barcode' })
+  const existingByBarcode = new Map<string, string>()
+  const uniqueIndexBarcodes = [...new Set(indexRows.map((row) => row.barcode).filter((barcode): barcode is string => Boolean(barcode)))]
+  if (uniqueIndexBarcodes.length > 0) {
+    const { data: existingIndexRows, error: existingIndexError } = await db
+      .from('product_barcodes')
+      .select('barcode,product_id')
+      .eq('tenant_id', tenantId)
+      .in('barcode', uniqueIndexBarcodes)
+      .is('deleted_at', null)
+    if (existingIndexError) throw existingIndexError
+    for (const row of existingIndexRows ?? []) {
+      if (row.barcode && row.product_id) existingByBarcode.set(row.barcode, row.product_id)
+    }
+  }
+
+  const safeRowsByBarcode = new Map<string, typeof indexRows[number]>()
+  for (const row of indexRows) {
+    const barcode = row.barcode
+    if (!barcode) continue
+    const existingProductId = existingByBarcode.get(barcode)
+    if (existingProductId && existingProductId !== row.product_id) {
+      logger.warn({ barcode, productId: row.product_id, existingProductId }, '[import] штрихкод вже належить іншому товару, індекс не перезаписано')
+      continue
+    }
+    const previous = safeRowsByBarcode.get(barcode)
+    if (previous && previous.product_id !== row.product_id) {
+      logger.warn({ barcode, productId: row.product_id, previousProductId: previous.product_id }, '[import] дубль штрихкоду в імпорті, індекс не перезаписано')
+      continue
+    }
+    safeRowsByBarcode.set(barcode, row)
+  }
+  const safeIndexRows = [...safeRowsByBarcode.values()]
+  if (safeIndexRows.length === 0) return
+
+  const { error } = await db.from('product_barcodes').upsert(safeIndexRows, { onConflict: 'tenant_id,barcode' })
   if (error) throw error
 }
 

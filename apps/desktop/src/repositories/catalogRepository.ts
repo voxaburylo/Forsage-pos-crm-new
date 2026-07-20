@@ -182,28 +182,82 @@ export class LocalCatalogRepository {
         timestamp,
       )
 
-      const barcodes = new Set([
-        input.barcode ?? null,
-        ...(input.additional_barcodes ?? []),
-      ].filter((barcode): barcode is string => Boolean(barcode?.trim())))
+      const barcodeEntries = new Map<string, { isPrimary: boolean }>()
+      const collectBarcode = (value: string | null | undefined, isPrimary: boolean) => {
+        const barcode = String(value ?? '').trim()
+        if (!barcode) return
+        const previous = barcodeEntries.get(barcode)
+        barcodeEntries.set(barcode, { isPrimary: isPrimary || previous?.isPrimary === true })
+      }
+      collectBarcode(input.barcode, true)
+      for (const barcode of input.additional_barcodes ?? []) collectBarcode(barcode, false)
+      const barcodeValues = [...barcodeEntries.keys()]
 
-      for (const barcode of barcodes) {
+      for (const barcode of barcodeValues) {
+        const duplicateFromIndex = this.db.prepare(`
+          SELECT p.name, p.sku
+          FROM product_barcodes b
+          JOIN products p ON p.id = b.product_id AND p.tenant_id = b.tenant_id
+          WHERE b.tenant_id = ?
+            AND b.barcode = ?
+            AND b.deleted_at IS NULL
+            AND b.product_id <> ?
+            AND p.deleted_at IS NULL
+          LIMIT 1
+        `).get(tenantId, barcode, input.id) as { name?: string; sku?: string } | undefined
+        const duplicateFromProduct = duplicateFromIndex ?? this.db.prepare(`
+          SELECT name, sku
+          FROM products
+          WHERE tenant_id = ?
+            AND barcode = ?
+            AND deleted_at IS NULL
+            AND id <> ?
+          LIMIT 1
+        `).get(tenantId, barcode, input.id) as { name?: string; sku?: string } | undefined
+        if (duplicateFromProduct) {
+          const label = duplicateFromProduct.name || duplicateFromProduct.sku || 'іншого товару'
+          throw new Error(`Штрихкод "${barcode}" вже у товару "${label}"`)
+        }
+      }
+
+      if (barcodeValues.length > 0) {
+        const placeholders = barcodeValues.map(() => '?').join(', ')
+        this.db.prepare(`
+          UPDATE product_barcodes
+          SET deleted_at = ?, updated_at = ?, is_primary = 0
+          WHERE tenant_id = ?
+            AND product_id = ?
+            AND deleted_at IS NULL
+            AND barcode NOT IN (${placeholders})
+        `).run(timestamp, timestamp, tenantId, input.id, ...barcodeValues)
+      } else {
+        this.db.prepare(`
+          UPDATE product_barcodes
+          SET deleted_at = ?, updated_at = ?, is_primary = 0
+          WHERE tenant_id = ?
+            AND product_id = ?
+            AND deleted_at IS NULL
+        `).run(timestamp, timestamp, tenantId, input.id)
+      }
+
+      for (const [barcode, meta] of barcodeEntries) {
         this.db.prepare(`
           INSERT INTO product_barcodes (
-            id, tenant_id, product_id, barcode, is_primary, created_at, updated_at
+            id, tenant_id, product_id, barcode, is_primary, created_at, updated_at, deleted_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
           ON CONFLICT(tenant_id, barcode) DO UPDATE SET
             product_id = excluded.product_id,
             is_primary = excluded.is_primary,
             updated_at = excluded.updated_at,
             deleted_at = NULL
+          WHERE product_barcodes.product_id = excluded.product_id
         `).run(
           randomUUID(),
           tenantId,
           input.id,
           barcode,
-          barcode === input.barcode ? 1 : 0,
+          meta.isPrimary ? 1 : 0,
           timestamp,
           timestamp,
         )
