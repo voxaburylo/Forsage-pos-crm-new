@@ -118,8 +118,21 @@ export default function ProductsPage() {
       .catch(() => {})
   }
 
+  function resetSearchScope() {
+    setCategoryFilter('')
+    setBrandFilter('')
+    setLowStock(false)
+    setStockFilter('')
+  }
+
+  function handleSearchChange(value: string) {
+    setSearch(value)
+    if (value.trim()) resetSearchScope()
+  }
+
   usePOSBarcodeScanner({
     onScan: (code) => {
+      resetSearchScope()
       setSearch(code)
       setDebouncedSearch(code)
       setPage(1)
@@ -199,10 +212,10 @@ export default function ProductsPage() {
         if (typeof desktopCatalog.listProducts === 'function') {
           const desktopResult = await desktopCatalog.listProducts({
             query: debouncedSearch || undefined,
-            categoryId: categoryFilter || undefined,
-            brandId: brandFilter || undefined,
-            lowStock,
-            stockFilter,
+            categoryId: debouncedSearch ? undefined : categoryFilter || undefined,
+            brandId: debouncedSearch ? undefined : brandFilter || undefined,
+            lowStock: debouncedSearch ? false : lowStock,
+            stockFilter: debouncedSearch ? '' : stockFilter,
             limit: PRODUCTS_PER_PAGE,
             offset: (page - 1) * PRODUCTS_PER_PAGE,
             sortField: sort?.field,
@@ -267,10 +280,10 @@ export default function ProductsPage() {
     }
     const local = await listProductsOffline({
       search: debouncedSearch || undefined,
-      lowStock,
-      stockFilter,
-      categoryId: categoryFilter || undefined,
-      brandId: brandFilter || undefined,
+      lowStock: debouncedSearch ? false : lowStock,
+      stockFilter: debouncedSearch ? '' : stockFilter,
+      categoryId: debouncedSearch ? undefined : categoryFilter || undefined,
+      brandId: debouncedSearch ? undefined : brandFilter || undefined,
       page,
       perPage: PRODUCTS_PER_PAGE,
       sortField: sort?.field,
@@ -286,10 +299,10 @@ export default function ProductsPage() {
       const serverSortField = sort?.field !== 'brand' ? sort?.field as ProductFilters['sort_field'] : undefined
       const data = await productApi.list({
         search: debouncedSearch || undefined,
-        low_stock: lowStock ? 'true' : undefined,
-        stock_filter: stockFilter || undefined,
-        category_id: categoryFilter || undefined,
-        brand_id: brandFilter || undefined,
+        low_stock: debouncedSearch ? undefined : lowStock ? 'true' : undefined,
+        stock_filter: debouncedSearch ? undefined : stockFilter || undefined,
+        category_id: debouncedSearch ? undefined : categoryFilter || undefined,
+        brand_id: debouncedSearch ? undefined : brandFilter || undefined,
         page,
         per_page: PRODUCTS_PER_PAGE,
         sort_field: serverSortField,
@@ -502,7 +515,7 @@ export default function ProductsPage() {
             <div className="relative flex-1 min-w-0">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
-                value={search} onChange={(e) => setSearch(e.target.value)}
+                value={search} onChange={(e) => handleSearchChange(e.target.value)}
                 placeholder="Пошук за артикулом, назвою, штрихкодом... (oem: для OEM)"
                 className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
               />

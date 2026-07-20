@@ -318,14 +318,19 @@ export function desktopBridge(): ForsageDesktopBridge | null {
 }
 
 export function desktopProductToProduct(product: DesktopProduct): Product {
+  const brandId = product.brand_id ?? null
+  const brandName = product.brand_name ?? null
+  const categoryId = product.category_id ?? null
+  const categoryName = product.category_name ?? null
+
   return {
     id: product.id,
     sku: product.sku,
     name: product.name,
     barcode: product.barcode,
     additional_barcodes: null,
-    brand_id: null,
-    category_id: null,
+    brand_id: brandId,
+    category_id: categoryId,
     unit: product.unit,
     purchase_price: product.purchase_price,
     retail_price: product.retail_price,
@@ -341,8 +346,8 @@ export function desktopProductToProduct(product: DesktopProduct): Product {
     specs: null,
     created_at: '',
     updated_at: '',
-    brand: null,
-    category: null,
+    brand: brandId || brandName ? { id: brandId ?? '', name: brandName ?? '' } : null,
+    category: categoryId || categoryName ? { id: categoryId ?? '', name: categoryName ?? '' } : null,
   }
 }
 
