@@ -9,7 +9,7 @@ function boolInt(value: unknown): number { return value === true || value === 1 
 function parseJson(value: string | null): any { if (!value) return null; try { return JSON.parse(value) } catch { return null } }
 
 const ACTIVE_STATUSES = ['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']
-const NON_ISSUEABLE = new Set(['lead', 'quoted', 'completed', 'canceled', 'archived'])
+const NON_ISSUEABLE = new Set(['completed', 'canceled', 'archived'])
 
 type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
 
@@ -416,7 +416,7 @@ export class LocalOrderRepository {
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
     if (order.status === 'completed') throw new Error('Замовлення вже видане')
-    if (NON_ISSUEABLE.has(order.status)) throw new Error('Чернетку або скасоване замовлення не можна видати через касу')
+    if (NON_ISSUEABLE.has(order.status)) throw new Error('Це замовлення не можна видати через касу')
     const remaining = this.remainingDue(order)
     if (remaining > 0) throw new Error('Не всі оплати проведено')
     const cashierId = input.user_id ?? order.manager_id ?? 'local'

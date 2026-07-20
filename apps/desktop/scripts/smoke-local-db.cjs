@@ -7,6 +7,7 @@ const { LocalBootstrapRepository } = require('../dist/repositories/bootstrapRepo
 const { LocalCatalogRepository } = require('../dist/repositories/catalogRepository.js');
 const { LocalPosRepository } = require('../dist/repositories/posRepository.js');
 const { LocalWarehouseRepository } = require('../dist/repositories/warehouseRepository.js');
+const { LocalOrderRepository } = require('../dist/repositories/orderRepository.js');
 const { LocalStaffRepository } = require('../dist/repositories/staffRepository.js');
 const { LocalSyncRepository } = require('../dist/repositories/syncRepository.js');
 
@@ -19,6 +20,7 @@ async function main() {
   const catalog = new LocalCatalogRepository(db);
   const pos = new LocalPosRepository(db);
   const warehouse = new LocalWarehouseRepository(db);
+  const orders = new LocalOrderRepository(db);
   const staff = new LocalStaffRepository(db);
   const sync = new LocalSyncRepository(db);
 
@@ -174,6 +176,40 @@ async function main() {
   if (recordedCommissions.length !== 1 || recordedCommissions[0].amount !== 2500) {
     throw new Error('Local sale commission was not calculated');
   }
+  const draftOrder = orders.saveOrder({
+    customer_id: 'smoke-customer-1',
+    manager_id: 'smoke-cashier',
+    source: 'walk_in',
+    items: [{
+      product_id: product.id,
+      sku: product.sku,
+      name: product.name,
+      source_type: 'warehouse',
+      item_type: 'product',
+      item_status: 'pending',
+      buy_price: product.purchase_price,
+      sell_price: product.retail_price,
+      qty: 1,
+    }],
+  });
+  const orderPayment = orders.addPayment(draftOrder.id, {
+    user_id: 'smoke-cashier',
+    amount: product.retail_price,
+    method: 'card',
+    shift_id: shiftId,
+    notes: 'Smoke order full payment',
+  });
+  const completedOrderResult = orders.completeOrder(draftOrder.id, {
+    user_id: 'smoke-cashier',
+    shift_id: shiftId,
+    payment_method: 'card',
+  });
+  const completedOrder = orders.getOrder(draftOrder.id);
+  const productAfterOrder = catalog.findById(product.id);
+  if (orderPayment.order?.total_paid !== product.retail_price) throw new Error('Local order payment was not linked to the order');
+  if (!completedOrderResult.data.success || completedOrder?.status !== 'completed') throw new Error('Local order was not completed from cashdesk flow');
+  if (!completedOrder.items.every((item) => item.item_status === 'handed')) throw new Error('Local order items were not handed');
+  if (productAfterOrder?.qty_on_hand !== 2) throw new Error('Local order completion did not reduce product stock');
   const dailyPayout = staff.dailyPayout({
     employee_id: 'smoke-cashier',
     employee_name: 'Smoke Cashier',
@@ -193,7 +229,7 @@ async function main() {
   if (pos.getOpenShift('smoke-cashier') !== null) {
     throw new Error('Local shift remained open after closeShift');
   }
-  const closeQueued = sync.listPending(10).some((operation) => operation.operation_type === 'shift.closed');
+  const closeQueued = sync.listPending(100).some((operation) => operation.operation_type === 'shift.closed');
   if (!closeQueued) throw new Error('Local shift close was not queued for synchronization');
   const movement = warehouse.createMovement({
     product_id: product.id,
@@ -221,7 +257,7 @@ async function main() {
   if (movement.to_bin !== 'A-17' || productAfterWarehouse?.storage_bin !== 'A-17') {
     throw new Error('Local warehouse movement did not update the storage bin');
   }
-  if (productAfterWarehouse?.qty_on_hand !== 2) {
+  if (productAfterWarehouse?.qty_on_hand !== 1) {
     throw new Error('Local writeoff did not reduce product stock');
   }
   if (writeoff.items?.length !== 1) throw new Error('Local writeoff item was not persisted');
@@ -274,6 +310,11 @@ async function main() {
     foundByExtraBarcode: foundByExtraBarcode?.id ?? null,
     importedByBarcode: importedByBarcode?.id ?? null,
     sale,
+    draftOrder,
+    orderPayment,
+    completedOrderResult,
+    completedOrder,
+    productAfterOrder,
     shiftReport,
     closeResult,
     closeQueued,
