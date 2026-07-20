@@ -96,6 +96,14 @@ export interface LocalBootstrapSnapshot {
   product_cross_numbers?: any[]
   customers?: any[]
   customer_vehicles?: any[]
+  customer_orders?: any[]
+  deleted_customer_order_ids?: string[]
+  customer_order_items?: any[]
+  order_payments?: any[]
+  supply_invoices?: any[]
+  deleted_supply_invoice_ids?: string[]
+  supply_invoice_items?: any[]
+  supplier_payments?: any[]
   counts?: Record<string, number>
 }
 
@@ -113,6 +121,14 @@ export interface LocalBootstrapImportResult {
     product_cross_numbers: number
     customers: number
     customer_vehicles: number
+    customer_orders: number
+    deleted_customer_orders: number
+    customer_order_items: number
+    order_payments: number
+    supply_invoices: number
+    deleted_supply_invoices: number
+    supply_invoice_items: number
+    supplier_payments: number
   }
 }
 
@@ -159,6 +175,14 @@ export interface LocalSyncPullChanges {
   product_aliases?: any[]
   product_cross_numbers?: any[]
   customer_vehicles?: any[]
+  customer_orders?: any[]
+  deleted_customer_order_ids?: string[]
+  customer_order_items?: any[]
+  order_payments?: any[]
+  supply_invoices?: any[]
+  deleted_supply_invoice_ids?: string[]
+  supply_invoice_items?: any[]
+  supplier_payments?: any[]
   references_included?: boolean
 }
 
@@ -176,6 +200,14 @@ export interface LocalSyncPullResult {
     product_aliases: number
     product_cross_numbers: number
     customer_vehicles: number
+    customer_orders: number
+    deleted_customer_orders: number
+    customer_order_items: number
+    order_payments: number
+    supply_invoices: number
+    deleted_supply_invoices: number
+    supply_invoice_items: number
+    supplier_payments: number
     categories: number
     brands: number
   }

@@ -39,6 +39,23 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     applyPrice: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:apply-price', sessionId, input),
     complete: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:complete', sessionId, input),
   },
+  orders: {
+    listReady: (input?: unknown) => ipcRenderer.invoke('desktop:orders:list-ready', input),
+    get: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:get', id, tenantId),
+    listPayments: (orderId: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:list-payments', orderId, tenantId),
+    addPayment: (orderId: string, input: unknown) => ipcRenderer.invoke('desktop:orders:add-payment', orderId, input),
+    complete: (orderId: string, input?: unknown) => ipcRenderer.invoke('desktop:orders:complete', orderId, input),
+  },
+  supply: {
+    listInvoices: (input?: unknown) => ipcRenderer.invoke('desktop:supply:list-invoices', input),
+    getInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:get-invoice', id, tenantId),
+    createInvoice: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice', input),
+    updateInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:update-invoice', id, input),
+    payInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:pay-invoice', id, input),
+    postInvoice: (id: string, input?: unknown) => ipcRenderer.invoke('desktop:supply:post-invoice', id, input),
+    cancelInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:cancel-invoice', id, tenantId),
+    deleteInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:delete-invoice', id, tenantId),
+  },
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) =>
       ipcRenderer.invoke('desktop:pos:open-shift', input),

@@ -41,6 +41,14 @@ export class LocalBootstrapRepository {
       product_aliases: 0,
       product_cross_numbers: 0,
       customer_vehicles: 0,
+      customer_orders: 0,
+      deleted_customer_orders: 0,
+      customer_order_items: 0,
+      order_payments: 0,
+      supply_invoices: 0,
+      deleted_supply_invoices: 0,
+      supply_invoice_items: 0,
+      supplier_payments: 0,
       categories: 0,
       brands: 0,
     }
@@ -119,6 +127,50 @@ export class LocalBootstrapRepository {
         counts.deleted_suppliers++
       }
 
+      for (const order of changes.customer_orders ?? []) {
+        this.upsertCustomerOrder(tenantId, order, appliedAt)
+        counts.customer_orders++
+      }
+
+      for (const orderId of changes.deleted_customer_order_ids ?? []) {
+        this.markDeleted('customer_orders', tenantId, orderId, appliedAt)
+        counts.deleted_customer_orders++
+      }
+
+      for (const item of changes.customer_order_items ?? []) {
+        if (!this.refExists('customer_orders', tenantId, item.order_id)) continue
+        this.upsertCustomerOrderItem(tenantId, item, appliedAt)
+        counts.customer_order_items++
+      }
+
+      for (const payment of changes.order_payments ?? []) {
+        if (!this.refExists('customer_orders', tenantId, payment.order_id)) continue
+        this.upsertOrderPayment(tenantId, payment, appliedAt)
+        counts.order_payments++
+      }
+      for (const invoice of changes.supply_invoices ?? []) {
+        this.upsertSupplyInvoice(tenantId, invoice, appliedAt)
+        counts.supply_invoices++
+      }
+
+      for (const invoiceId of changes.deleted_supply_invoice_ids ?? []) {
+        this.markDeleted('supply_invoices', tenantId, invoiceId, appliedAt)
+        counts.deleted_supply_invoices++
+      }
+
+      for (const item of changes.supply_invoice_items ?? []) {
+        if (!this.refExists('supply_invoices', tenantId, item.invoice_id)) continue
+        if (!this.refExists('products', tenantId, item.product_id)) continue
+        this.upsertSupplyInvoiceItem(tenantId, item, appliedAt)
+        counts.supply_invoice_items++
+      }
+
+      for (const payment of changes.supplier_payments ?? []) {
+        if (!this.refExists('supply_invoices', tenantId, payment.invoice_id)) continue
+        this.upsertSupplierPayment(tenantId, payment, appliedAt)
+        counts.supplier_payments++
+      }
+
       for (const vehicle of changes.customer_vehicles ?? []) {
         if (!this.refExists('customers', tenantId, vehicle.customer_id)) continue
         this.upsertCustomerVehicle(tenantId, vehicle, appliedAt)
@@ -144,6 +196,14 @@ export class LocalBootstrapRepository {
       product_cross_numbers: 0,
       customers: 0,
       customer_vehicles: 0,
+      customer_orders: 0,
+      deleted_customer_orders: 0,
+      customer_order_items: 0,
+      order_payments: 0,
+      supply_invoices: 0,
+      deleted_supply_invoices: 0,
+      supply_invoice_items: 0,
+      supplier_payments: 0,
     }
 
     this.db.transaction(() => {
@@ -198,6 +258,40 @@ export class LocalBootstrapRepository {
       for (const vehicle of snapshot.customer_vehicles ?? []) {
         this.upsertCustomerVehicle(tenantId, vehicle, importedAt)
         counts.customer_vehicles++
+      }
+
+      for (const order of snapshot.customer_orders ?? []) {
+        this.upsertCustomerOrder(tenantId, order, importedAt)
+        counts.customer_orders++
+      }
+
+      for (const item of snapshot.customer_order_items ?? []) {
+        if (!this.refExists('customer_orders', tenantId, item.order_id)) continue
+        this.upsertCustomerOrderItem(tenantId, item, importedAt)
+        counts.customer_order_items++
+      }
+
+      for (const payment of snapshot.order_payments ?? []) {
+        if (!this.refExists('customer_orders', tenantId, payment.order_id)) continue
+        this.upsertOrderPayment(tenantId, payment, importedAt)
+        counts.order_payments++
+      }
+      for (const invoice of snapshot.supply_invoices ?? []) {
+        this.upsertSupplyInvoice(tenantId, invoice, importedAt)
+        counts.supply_invoices++
+      }
+
+      for (const item of snapshot.supply_invoice_items ?? []) {
+        if (!this.refExists('supply_invoices', tenantId, item.invoice_id)) continue
+        if (!this.refExists('products', tenantId, item.product_id)) continue
+        this.upsertSupplyInvoiceItem(tenantId, item, importedAt)
+        counts.supply_invoice_items++
+      }
+
+      for (const payment of snapshot.supplier_payments ?? []) {
+        if (!this.refExists('supply_invoices', tenantId, payment.invoice_id)) continue
+        this.upsertSupplierPayment(tenantId, payment, importedAt)
+        counts.supplier_payments++
       }
 
       this.db.prepare(`
@@ -592,8 +686,269 @@ export class LocalBootstrapRepository {
     )
   }
 
-  private markDeleted(table: 'products' | 'customers' | 'suppliers', tenantId: string, id: string, deletedAt: string): void {
-    const dirtyGuard = table === 'products' ? ' AND dirty_at IS NULL' : ''
+  private upsertCustomerOrder(tenantId: string, order: any, importedAt: string): void {
+    const updatedAt = timestamp(order, importedAt)
+    this.db.prepare(`
+      INSERT INTO customer_orders (
+        id, tenant_id, order_number, kp_number, customer_id, chat_id, manager_id,
+        vehicle_info_json, status, prepayment, prepayment_method, prepayment_is_fiscal,
+        total_amount, total_paid, discount_amount, pickup_deadline_at, pickup_cell,
+        comment, source, sent_to_telegram_at, remote_updated_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        order_number = excluded.order_number,
+        kp_number = excluded.kp_number,
+        customer_id = excluded.customer_id,
+        chat_id = excluded.chat_id,
+        manager_id = excluded.manager_id,
+        vehicle_info_json = excluded.vehicle_info_json,
+        status = excluded.status,
+        prepayment = excluded.prepayment,
+        prepayment_method = excluded.prepayment_method,
+        prepayment_is_fiscal = excluded.prepayment_is_fiscal,
+        total_amount = excluded.total_amount,
+        total_paid = excluded.total_paid,
+        discount_amount = excluded.discount_amount,
+        pickup_deadline_at = excluded.pickup_deadline_at,
+        pickup_cell = excluded.pickup_cell,
+        comment = excluded.comment,
+        source = excluded.source,
+        sent_to_telegram_at = excluded.sent_to_telegram_at,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE customer_orders.dirty_at IS NULL
+    `).run(
+      order.id,
+      tenantId,
+      order.order_number ?? null,
+      text(order.kp_number),
+      order.customer_id ?? order.customer?.id ?? null,
+      order.chat_id ?? null,
+      order.manager_id ?? null,
+      json(order.vehicle_info, null),
+      order.status ?? 'lead',
+      order.prepayment ?? 0,
+      order.prepayment_method ?? null,
+      boolInt(order.prepayment_is_fiscal, false),
+      order.total_amount ?? 0,
+      order.total_paid ?? order.prepayment ?? 0,
+      order.discount_amount ?? 0,
+      order.pickup_deadline_at ?? null,
+      order.pickup_cell ?? null,
+      order.comment ?? null,
+      order.source ?? 'walk_in',
+      order.sent_to_telegram_at ?? null,
+      updatedAt,
+      order.created_at ?? updatedAt,
+      updatedAt,
+      order.deleted_at ?? null,
+    )
+  }
+
+  private upsertCustomerOrderItem(tenantId: string, item: any, importedAt: string): void {
+    const updatedAt = timestamp(item, importedAt)
+    this.db.prepare(`
+      INSERT INTO customer_order_items (
+        id, tenant_id, order_id, name, sku, product_id, supplier_id, source_type,
+        item_type, item_status, buy_price, sell_price, qty, expected_date,
+        core_deposit_amount, core_return_status, remote_updated_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        sku = excluded.sku,
+        product_id = excluded.product_id,
+        supplier_id = excluded.supplier_id,
+        source_type = excluded.source_type,
+        item_type = excluded.item_type,
+        item_status = excluded.item_status,
+        buy_price = excluded.buy_price,
+        sell_price = excluded.sell_price,
+        qty = excluded.qty,
+        expected_date = excluded.expected_date,
+        core_deposit_amount = excluded.core_deposit_amount,
+        core_return_status = excluded.core_return_status,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE customer_order_items.dirty_at IS NULL
+    `).run(
+      item.id,
+      tenantId,
+      item.order_id,
+      item.name ?? 'Товар',
+      text(item.sku),
+      item.product_id ?? null,
+      item.supplier_id ?? null,
+      item.source_type ?? 'warehouse',
+      item.item_type ?? 'product',
+      item.item_status ?? 'pending',
+      item.buy_price ?? 0,
+      item.sell_price ?? 0,
+      item.qty ?? 1,
+      item.expected_date ?? null,
+      item.core_deposit_amount ?? 0,
+      item.core_return_status ?? null,
+      updatedAt,
+      item.created_at ?? updatedAt,
+      updatedAt,
+      item.deleted_at ?? null,
+    )
+  }
+
+  private upsertOrderPayment(tenantId: string, payment: any, importedAt: string): void {
+    const updatedAt = timestamp(payment, importedAt)
+    this.db.prepare(`
+      INSERT INTO order_payments (
+        id, tenant_id, order_id, amount, method, is_fiscal, shift_id, created_by,
+        notes, remote_updated_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        amount = excluded.amount,
+        method = excluded.method,
+        is_fiscal = excluded.is_fiscal,
+        shift_id = excluded.shift_id,
+        created_by = excluded.created_by,
+        notes = excluded.notes,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE order_payments.dirty_at IS NULL
+    `).run(
+      payment.id,
+      tenantId,
+      payment.order_id,
+      payment.amount ?? 0,
+      payment.method ?? 'cash',
+      boolInt(payment.is_fiscal, false),
+      payment.shift_id ?? null,
+      payment.created_by ?? null,
+      payment.notes ?? null,
+      updatedAt,
+      payment.created_at ?? updatedAt,
+      updatedAt,
+      payment.deleted_at ?? null,
+    )
+  }
+
+  private upsertSupplyInvoice(tenantId: string, invoice: any, importedAt: string): void {
+    const updatedAt = timestamp(invoice, importedAt)
+    this.db.prepare(`
+      INSERT INTO supply_invoices (
+        id, tenant_id, supplier_id, invoice_number, status, total, paid_amount,
+        payment_method, notes, posted_by, posted_at, remote_updated_at, created_at,
+        updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        supplier_id = excluded.supplier_id,
+        invoice_number = excluded.invoice_number,
+        status = excluded.status,
+        total = excluded.total,
+        paid_amount = excluded.paid_amount,
+        payment_method = excluded.payment_method,
+        notes = excluded.notes,
+        posted_by = excluded.posted_by,
+        posted_at = excluded.posted_at,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE supply_invoices.dirty_at IS NULL
+    `).run(
+      invoice.id,
+      tenantId,
+      invoice.supplier_id ?? invoice.supplier?.id ?? null,
+      text(invoice.invoice_number),
+      invoice.status ?? 'draft',
+      invoice.total ?? 0,
+      invoice.paid_amount ?? 0,
+      invoice.payment_method ?? null,
+      invoice.notes ?? null,
+      invoice.posted_by ?? null,
+      invoice.posted_at ?? null,
+      updatedAt,
+      invoice.created_at ?? updatedAt,
+      updatedAt,
+      invoice.deleted_at ?? null,
+    )
+  }
+
+  private upsertSupplyInvoiceItem(tenantId: string, item: any, importedAt: string): void {
+    const updatedAt = timestamp(item, importedAt)
+    this.db.prepare(`
+      INSERT INTO supply_invoice_items (
+        id, tenant_id, invoice_id, product_id, qty, purchase_price, total,
+        remote_updated_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        invoice_id = excluded.invoice_id,
+        product_id = excluded.product_id,
+        qty = excluded.qty,
+        purchase_price = excluded.purchase_price,
+        total = excluded.total,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE supply_invoice_items.dirty_at IS NULL
+    `).run(
+      item.id,
+      tenantId,
+      item.invoice_id,
+      item.product_id,
+      item.qty ?? 0,
+      item.purchase_price ?? 0,
+      item.total ?? 0,
+      updatedAt,
+      item.created_at ?? updatedAt,
+      updatedAt,
+      item.deleted_at ?? null,
+    )
+  }
+
+  private upsertSupplierPayment(tenantId: string, payment: any, importedAt: string): void {
+    const updatedAt = timestamp(payment, importedAt)
+    this.db.prepare(`
+      INSERT INTO supplier_payments (
+        id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source,
+        shift_id, note, created_by, remote_updated_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        invoice_id = excluded.invoice_id,
+        supplier_id = excluded.supplier_id,
+        amount = excluded.amount,
+        payment_method = excluded.payment_method,
+        fund_source = excluded.fund_source,
+        shift_id = excluded.shift_id,
+        note = excluded.note,
+        created_by = excluded.created_by,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE supplier_payments.dirty_at IS NULL
+    `).run(
+      payment.id,
+      tenantId,
+      payment.invoice_id,
+      payment.supplier_id ?? null,
+      payment.amount ?? 0,
+      payment.payment_method ?? 'cash',
+      payment.fund_source ?? 'cashbox',
+      payment.shift_id ?? null,
+      payment.note ?? null,
+      payment.created_by ?? null,
+      updatedAt,
+      payment.created_at ?? updatedAt,
+      updatedAt,
+      payment.deleted_at ?? null,
+    )
+  }
+  private markDeleted(table: 'products' | 'customers' | 'suppliers' | 'customer_orders' | 'supply_invoices', tenantId: string, id: string, deletedAt: string): void {
+    const dirtyGuard = table === 'products' || table === 'customer_orders' || table === 'supply_invoices' ? ' AND dirty_at IS NULL' : ''
     this.db.prepare(`
       UPDATE ${table}
       SET deleted_at = ?,
@@ -610,7 +965,7 @@ export class LocalBootstrapRepository {
     this.db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId)
   }
 
-  private refExists(table: 'brands' | 'categories' | 'products' | 'customers', tenantId: string, id: string): boolean {
+  private refExists(table: 'brands' | 'categories' | 'products' | 'customers' | 'customer_orders' | 'supply_invoices', tenantId: string, id: string): boolean {
     const row = this.db.prepare(`
       SELECT id
       FROM ${table}

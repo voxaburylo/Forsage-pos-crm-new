@@ -5,7 +5,9 @@ import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput
 import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
+import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
+import { LocalSupplyRepository } from './repositories/supplyRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
 import {
   CashalotService,
@@ -23,7 +25,9 @@ let localDatabase: LocalDatabase | null = null
 let localBootstrap: LocalBootstrapRepository | null = null
 let localCatalog: LocalCatalogRepository | null = null
 let localInventory: LocalInventoryRepository | null = null
+let localOrders: LocalOrderRepository | null = null
 let localPos: LocalPosRepository | null = null
+let localSupply: LocalSupplyRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let cashalot: CashalotService | null = null
 
@@ -59,6 +63,11 @@ function requireLocalInventory(): LocalInventoryRepository {
   return localInventory
 }
 
+function requireLocalOrders(): LocalOrderRepository {
+  if (!localOrders) throw new Error('LOCAL_ORDERS_NOT_READY')
+  return localOrders
+}
+
 function requireLocalBootstrap(): LocalBootstrapRepository {
   if (!localBootstrap) throw new Error('LOCAL_BOOTSTRAP_NOT_READY')
   return localBootstrap
@@ -67,6 +76,11 @@ function requireLocalBootstrap(): LocalBootstrapRepository {
 function requireLocalPos(): LocalPosRepository {
   if (!localPos) throw new Error('LOCAL_POS_NOT_READY')
   return localPos
+}
+
+function requireLocalSupply(): LocalSupplyRepository {
+  if (!localSupply) throw new Error('LOCAL_SUPPLY_NOT_READY')
+  return localSupply
 }
 
 function requireLocalSync(): LocalSyncRepository {
@@ -230,7 +244,9 @@ app.whenReady().then(async () => {
   localBootstrap = new LocalBootstrapRepository(localDatabase)
   localCatalog = new LocalCatalogRepository(localDatabase)
   localInventory = new LocalInventoryRepository(localDatabase)
+  localOrders = new LocalOrderRepository(localDatabase)
   localPos = new LocalPosRepository(localDatabase)
+  localSupply = new LocalSupplyRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
 
@@ -298,6 +314,45 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:inventory:complete', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
     requireLocalInventory().complete(sessionId, input),
+  )
+  ipcMain.handle('desktop:orders:list-ready', (_event, input?: { tenant_id?: string; search?: string; limit?: number }) =>
+    requireLocalOrders().listReadyOrders(input),
+  )
+  ipcMain.handle('desktop:orders:get', (_event, id: string, tenantId?: string) =>
+    requireLocalOrders().getOrder(id, tenantId),
+  )
+  ipcMain.handle('desktop:orders:list-payments', (_event, orderId: string, tenantId?: string) =>
+    requireLocalOrders().listPayments(orderId, tenantId),
+  )
+  ipcMain.handle('desktop:orders:add-payment', (_event, orderId: string, input: any) =>
+    requireLocalOrders().addPayment(orderId, input),
+  )
+  ipcMain.handle('desktop:orders:complete', (_event, orderId: string, input?: any) =>
+    requireLocalOrders().completeOrder(orderId, input),
+  )
+  ipcMain.handle('desktop:supply:list-invoices', (_event, input?: any) =>
+    requireLocalSupply().listInvoices(input),
+  )
+  ipcMain.handle('desktop:supply:get-invoice', (_event, id: string, tenantId?: string) =>
+    requireLocalSupply().getInvoice(id, tenantId),
+  )
+  ipcMain.handle('desktop:supply:create-invoice', (_event, input: any) =>
+    requireLocalSupply().createInvoice(input),
+  )
+  ipcMain.handle('desktop:supply:update-invoice', (_event, id: string, input: any) =>
+    requireLocalSupply().updateInvoice(id, input),
+  )
+  ipcMain.handle('desktop:supply:pay-invoice', (_event, id: string, input: any) =>
+    requireLocalSupply().payInvoice(id, input),
+  )
+  ipcMain.handle('desktop:supply:post-invoice', (_event, id: string, input?: any) =>
+    requireLocalSupply().postInvoice(id, input),
+  )
+  ipcMain.handle('desktop:supply:cancel-invoice', (_event, id: string, tenantId?: string) =>
+    requireLocalSupply().cancelInvoice(id, tenantId),
+  )
+  ipcMain.handle('desktop:supply:delete-invoice', (_event, id: string, tenantId?: string) =>
+    requireLocalSupply().deleteInvoice(id, tenantId),
   )
   ipcMain.handle('desktop:pos:list-debtors', (_event, limit?: number) =>
     requireLocalPos().listDebtors(undefined, limit),

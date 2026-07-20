@@ -1,4 +1,4 @@
-export const LOCAL_SCHEMA_VERSION = 2
+export const LOCAL_SCHEMA_VERSION = 3
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -277,6 +277,93 @@ const MIGRATION_002_BUSINESS_SQL = `
     ON customer_vehicles(tenant_id, vin)
     WHERE deleted_at IS NULL AND vin IS NOT NULL;
 
+  CREATE TABLE IF NOT EXISTS customer_orders (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    order_number INTEGER,
+    kp_number TEXT,
+    customer_id TEXT REFERENCES customers(id),
+    chat_id TEXT,
+    manager_id TEXT,
+    vehicle_info_json TEXT,
+    status TEXT NOT NULL DEFAULT 'lead',
+    prepayment INTEGER NOT NULL DEFAULT 0,
+    prepayment_method TEXT,
+    prepayment_is_fiscal INTEGER NOT NULL DEFAULT 0,
+    total_amount INTEGER NOT NULL DEFAULT 0,
+    total_paid INTEGER NOT NULL DEFAULT 0,
+    discount_amount INTEGER NOT NULL DEFAULT 0,
+    pickup_deadline_at TEXT,
+    pickup_cell TEXT,
+    comment TEXT,
+    source TEXT NOT NULL DEFAULT 'walk_in',
+    sent_to_telegram_at TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_status
+    ON customer_orders(tenant_id, status, updated_at DESC)
+    WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_number
+    ON customer_orders(tenant_id, order_number)
+    WHERE deleted_at IS NULL AND order_number IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_customer
+    ON customer_orders(tenant_id, customer_id, updated_at DESC)
+    WHERE deleted_at IS NULL;
+
+  CREATE TABLE IF NOT EXISTS customer_order_items (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    order_id TEXT NOT NULL REFERENCES customer_orders(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    sku TEXT,
+    product_id TEXT REFERENCES products(id),
+    supplier_id TEXT REFERENCES suppliers(id),
+    source_type TEXT NOT NULL DEFAULT 'warehouse',
+    item_type TEXT NOT NULL DEFAULT 'product',
+    item_status TEXT NOT NULL DEFAULT 'pending',
+    buy_price INTEGER NOT NULL DEFAULT 0,
+    sell_price INTEGER NOT NULL DEFAULT 0,
+    qty NUMERIC NOT NULL DEFAULT 1,
+    expected_date TEXT,
+    core_deposit_amount INTEGER NOT NULL DEFAULT 0,
+    core_return_status TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_order_items_order
+    ON customer_order_items(order_id);
+  CREATE INDEX IF NOT EXISTS idx_customer_order_items_product
+    ON customer_order_items(product_id);
+
+  CREATE TABLE IF NOT EXISTS order_payments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    order_id TEXT NOT NULL REFERENCES customer_orders(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    method TEXT NOT NULL,
+    is_fiscal INTEGER NOT NULL DEFAULT 0,
+    shift_id TEXT,
+    created_by TEXT,
+    notes TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_order_payments_order
+    ON order_payments(order_id, created_at);
+
   CREATE TABLE IF NOT EXISTS shifts (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -482,6 +569,77 @@ const MIGRATION_002_BUSINESS_SQL = `
     ON inventory_count_entries(session_id, created_at DESC);
 `
 
+const MIGRATION_003_SUPPLY_INVOICES_SQL = `
+  CREATE TABLE IF NOT EXISTS supply_invoices (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    supplier_id TEXT REFERENCES suppliers(id),
+    invoice_number TEXT,
+    status TEXT NOT NULL DEFAULT 'draft'
+      CHECK (status IN ('draft', 'posted', 'cancelled')),
+    total INTEGER NOT NULL DEFAULT 0,
+    paid_amount INTEGER NOT NULL DEFAULT 0,
+    payment_method TEXT,
+    notes TEXT,
+    posted_by TEXT,
+    posted_at TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_supply_invoices_tenant_status
+    ON supply_invoices(tenant_id, status, created_at DESC)
+    WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_supply_invoices_supplier
+    ON supply_invoices(tenant_id, supplier_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+
+  CREATE TABLE IF NOT EXISTS supply_invoice_items (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    invoice_id TEXT NOT NULL REFERENCES supply_invoices(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    qty NUMERIC NOT NULL,
+    purchase_price INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_supply_invoice_items_invoice
+    ON supply_invoice_items(invoice_id);
+  CREATE INDEX IF NOT EXISTS idx_supply_invoice_items_product
+    ON supply_invoice_items(product_id);
+
+  CREATE TABLE IF NOT EXISTS supplier_payments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    invoice_id TEXT NOT NULL REFERENCES supply_invoices(id) ON DELETE CASCADE,
+    supplier_id TEXT REFERENCES suppliers(id) ON DELETE SET NULL,
+    amount INTEGER NOT NULL,
+    payment_method TEXT NOT NULL,
+    fund_source TEXT NOT NULL DEFAULT 'cashbox',
+    shift_id TEXT REFERENCES shifts(id) ON DELETE SET NULL,
+    note TEXT,
+    created_by TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_supplier_payments_invoice
+    ON supplier_payments(invoice_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_supplier_payments_tenant
+    ON supplier_payments(tenant_id, created_at DESC);
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -490,4 +648,5 @@ export interface LocalMigration {
 export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 1, sql: MIGRATION_001_CORE_SQL },
   { version: 2, sql: MIGRATION_002_BUSINESS_SQL },
+  { version: 3, sql: MIGRATION_003_SUPPLY_INVOICES_SQL },
 ]

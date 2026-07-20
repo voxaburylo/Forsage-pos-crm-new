@@ -232,21 +232,85 @@ export class LocalSyncRepository {
         SET dirty_at = NULL
         WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
       `).run(operation.aggregate_id, operation.created_at)
+      this.clearDirtyProductsFromPayload(operation)
+      return
+    }
+
+    if (operation.operation_type === 'order.payment_added') {
+      this.db.prepare(`
+        UPDATE customer_orders
+        SET dirty_at = NULL
+        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
       try {
         const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
-        const ids: string[] = Array.isArray(payload?.items)
-          ? [...new Set<string>(payload.items.map((item: any) => item?.product_id).filter((id: any): id is string => typeof id === 'string' && id.length > 0))]
-          : []
-        for (const productId of ids) {
+        if (payload?.payment_id) {
           this.db.prepare(`
-            UPDATE products
+            UPDATE order_payments
             SET dirty_at = NULL
             WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(productId, operation.created_at)
+          `).run(payload.payment_id, operation.created_at)
         }
-      } catch {
-        // Якщо payload пошкоджений, pull пізніше вирівняє серверний стан.
+      } catch { /* ignore */ }
+      return
+    }
+
+    if (operation.operation_type === 'order.completed') {
+      this.db.prepare(`
+        UPDATE customer_orders
+        SET dirty_at = NULL
+        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      this.db.prepare(`
+        UPDATE customer_order_items
+        SET dirty_at = NULL
+        WHERE order_id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      this.clearDirtyProductsFromPayload(operation)
+      return
+    }
+
+    if (operation.operation_type.startsWith('supplier_invoice.')) {
+      this.db.prepare(`
+        UPDATE supply_invoices
+        SET dirty_at = NULL
+        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      this.db.prepare(`
+        UPDATE supply_invoice_items
+        SET dirty_at = NULL
+        WHERE invoice_id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      try {
+        const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+        if (payload?.payment_id) {
+          this.db.prepare(`
+            UPDATE supplier_payments
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(payload.payment_id, operation.created_at)
+        }
+      } catch { /* ignore */ }
+      this.clearDirtyProductsFromPayload(operation)
+      return
+    }
+  }
+
+  private clearDirtyProductsFromPayload(operation: { payload_json: string | null; created_at: string }): void {
+    try {
+      const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+      const ids: string[] = Array.isArray(payload?.items)
+        ? [...new Set<string>(payload.items.map((item: any) => item?.product_id).filter((id: any): id is string => typeof id === 'string' && id.length > 0))]
+        : []
+      for (const productId of ids) {
+        this.db.prepare(`
+          UPDATE products
+          SET dirty_at = NULL
+          WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+        `).run(productId, operation.created_at)
       }
+    } catch {
+      // Якщо payload пошкоджений, pull пізніше вирівняє серверний стан.
     }
   }
 

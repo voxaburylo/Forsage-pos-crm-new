@@ -100,6 +100,12 @@ export async function getSyncChanges({
     productAliases,
     productCrossNumbers,
     customerVehicles,
+    customerOrders,
+    customerOrderItems,
+    orderPayments,
+    supplyInvoices,
+    supplyInvoiceItems,
+    supplierPayments,
   ] = await Promise.all([
     fetchAll((from, to) => {
       let query = db
@@ -184,6 +190,60 @@ export async function getSyncChanges({
           .eq('tenant_id', tenantId)
           .range(from, to))
       : Promise.resolve([]),
+    fetchAll((from, to) => {
+      let query = db
+        .from('customer_orders')
+        .select('*,customer:customers(id,phone,full_name,card_barcode)')
+        .eq('tenant_id', tenantId)
+        .order('updated_at', { ascending: true })
+      query = withChangedSince(query, since)
+      if (!since) query = query.is('deleted_at', null)
+      return query.range(from, to)
+    }),
+    fetchAll((from, to) => {
+      const query = db
+        .from('customer_order_items')
+        .select('*,order:customer_orders!inner(tenant_id)')
+        .eq('order.tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+      if (since) query.gt('created_at', since)
+      return query.range(from, to)
+    }),
+    fetchAll((from, to) => {
+      let query = db
+        .from('order_payments')
+        .select('*,order:customer_orders!inner(tenant_id)')
+        .eq('order.tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+      if (since) query = query.gt('created_at', since)
+      return query.range(from, to)
+    }),    fetchAll((from, to) => {
+      let query = db
+        .from('supply_invoices')
+        .select('*,supplier:suppliers(id,name)')
+        .eq('tenant_id', tenantId)
+        .order('updated_at', { ascending: true })
+      if (since) query = query.gt('updated_at', since)
+      return query.range(from, to)
+    }),
+    fetchAll((from, to) => {
+      let query = db
+        .from('supply_invoice_items')
+        .select('*,invoice:supply_invoices!inner(tenant_id)')
+        .eq('invoice.tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+      if (since) query = query.gt('created_at', since)
+      return query.range(from, to)
+    }),
+    fetchAll((from, to) => {
+      let query = db
+        .from('supplier_payments')
+        .select('*,invoice:supply_invoices!inner(tenant_id)')
+        .eq('invoice.tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+      if (since) query = query.gt('created_at', since)
+      return query.range(from, to)
+    }),
   ])
 
   const deletedProductIds = productRows.filter((row) => row.deleted_at).map((row) => row.id)
@@ -215,6 +275,14 @@ export async function getSyncChanges({
 
   const deletedSupplierIds = supplierRows.filter((row) => row.deleted_at).map((row) => row.id)
   const suppliers = supplierRows.filter((row) => !row.deleted_at)
+  const deletedCustomerOrderIds = customerOrders.filter((row) => row.deleted_at).map((row) => row.id)
+  const activeCustomerOrders = customerOrders.filter((row) => !row.deleted_at)
+  const activeCustomerOrderItems = customerOrderItems
+    .filter((row) => !row.deleted_at)
+    .map((row) => ({ ...row, order: undefined }))
+  const activeOrderPayments = orderPayments.map((row) => ({ ...row, order: undefined }))
+  const activeSupplyInvoiceItems = supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined }))
+  const activeSupplierPayments = supplierPayments.map((row) => ({ ...row, invoice: undefined }))
 
   return {
     tenant_id: tenantId,
@@ -232,6 +300,14 @@ export async function getSyncChanges({
     product_aliases: productAliases,
     product_cross_numbers: productCrossNumbers,
     customer_vehicles: customerVehicles,
+    customer_orders: activeCustomerOrders,
+    deleted_customer_order_ids: deletedCustomerOrderIds,
+    customer_order_items: activeCustomerOrderItems,
+    order_payments: activeOrderPayments,
+    supply_invoices: supplyInvoices,
+    deleted_supply_invoice_ids: [],
+    supply_invoice_items: activeSupplyInvoiceItems,
+    supplier_payments: activeSupplierPayments,
     references_included: referencesIncluded,
   }
 }
@@ -248,6 +324,12 @@ export async function getBootstrapSnapshot(tenantId: string) {
     productCrossNumbers,
     customers,
     customerVehicles,
+    customerOrders,
+    customerOrderItems,
+    orderPayments,
+    supplyInvoices,
+    supplyInvoiceItems,
+    supplierPayments,
   ] = await Promise.all([
     listUsers(tenantId),
     fetchAll((from, to) => db
@@ -308,6 +390,39 @@ export async function getBootstrapSnapshot(tenantId: string) {
       .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at')
       .eq('tenant_id', tenantId)
       .range(from, to)),
+    fetchAll((from, to) => db
+      .from('customer_orders')
+      .select('*,customer:customers(id,phone,full_name,card_barcode)')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .range(from, to)),
+    fetchAll((from, to) => db
+      .from('customer_order_items')
+      .select('*,order:customer_orders!inner(tenant_id)')
+      .eq('order.tenant_id', tenantId)
+      .order('created_at', { ascending: true })
+      .range(from, to)),
+    fetchAll((from, to) => db
+      .from('order_payments')
+      .select('*,order:customer_orders!inner(tenant_id)')
+      .eq('order.tenant_id', tenantId)
+      .range(from, to)),    fetchAll((from, to) => db
+      .from('supply_invoices')
+      .select('*,supplier:suppliers(id,name)')
+      .eq('tenant_id', tenantId)
+      .range(from, to)),
+    fetchAll((from, to) => db
+      .from('supply_invoice_items')
+      .select('*,invoice:supply_invoices!inner(tenant_id)')
+      .eq('invoice.tenant_id', tenantId)
+      .order('created_at', { ascending: true })
+      .range(from, to)),
+    fetchAll((from, to) => db
+      .from('supplier_payments')
+      .select('*,invoice:supply_invoices!inner(tenant_id)')
+      .eq('invoice.tenant_id', tenantId)
+      .order('created_at', { ascending: true })
+      .range(from, to)),
   ])
 
   return {
@@ -323,6 +438,12 @@ export async function getBootstrapSnapshot(tenantId: string) {
     product_cross_numbers: productCrossNumbers,
     customers,
     customer_vehicles: customerVehicles,
+    customer_orders: customerOrders,
+    customer_order_items: customerOrderItems.map((row) => ({ ...row, order: undefined })),
+    order_payments: orderPayments.map((row) => ({ ...row, order: undefined })),
+    supply_invoices: supplyInvoices,
+    supply_invoice_items: supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined })),
+    supplier_payments: supplierPayments.map((row) => ({ ...row, invoice: undefined })),
     counts: {
       staff: staff.length,
       categories: categories.length,
@@ -334,6 +455,12 @@ export async function getBootstrapSnapshot(tenantId: string) {
       product_cross_numbers: productCrossNumbers.length,
       customers: customers.length,
       customer_vehicles: customerVehicles.length,
+      customer_orders: customerOrders.length,
+      customer_order_items: customerOrderItems.length,
+      order_payments: orderPayments.length,
+      supply_invoices: supplyInvoices.length,
+      supply_invoice_items: supplyInvoiceItems.length,
+      supplier_payments: supplierPayments.length,
     },
   }
 }
@@ -414,9 +541,199 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'order.payment_added') {
+    await applyOrderPaymentAdded(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'order.completed') {
+    await applyOrderCompleted(tenantId, userId, operation)
+    return
+  }
+  if (operation.operation_type === 'supplier_invoice.created') {
+    await applySupplierInvoiceCreated(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'supplier_invoice.updated') {
+    await applySupplierInvoiceUpdated(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'supplier_invoice.posted') {
+    await applySupplierInvoicePosted(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'supplier_invoice.payment_added') {
+    await applySupplierInvoicePaymentAdded(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'supplier_invoice.cancelled') {
+    await applySupplierInvoiceCancelled(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'supplier_invoice.deleted') {
+    await applySupplierInvoiceDeleted(tenantId, operation)
+    return
+  }
+
   throw new AppError('SYNC_UNSUPPORTED_OPERATION', `Непідтримувана операція: ${operation.operation_type}`, 400)
 }
 
+function invoiceLineTotal(item: any): number {
+  const itemQty = Number(item?.qty ?? 0)
+  const purchasePrice = Number(item?.purchase_price ?? 0)
+  const total = Number(item?.total ?? itemQty * purchasePrice)
+  return Math.max(0, Math.round(total))
+}
+
+async function applySupplierInvoiceCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const invoiceId = String(payload.id || operation.aggregate_id)
+  const items = Array.isArray(payload.items) ? payload.items : []
+  if (items.length === 0) throw new AppError('SYNC_INVOICE_EMPTY', 'У накладній немає товарів', 422)
+  const total = items.reduce((sum: number, item: any) => sum + invoiceLineTotal(item), 0)
+  const paidAmount = Math.max(0, Math.min(Number(payload.paid_amount ?? 0), total))
+  const timestamp = operation.created_at || new Date().toISOString()
+
+  await runTransaction(async (client) => {
+    const existing = await client.query('SELECT id FROM supply_invoices WHERE id = $1 AND tenant_id = $2 LIMIT 1', [invoiceId, tenantId])
+    if (existing.rowCount && existing.rowCount > 0) return
+
+    await client.query(
+      `INSERT INTO supply_invoices (
+        id, tenant_id, supplier_id, invoice_number, status, total, paid_amount,
+        payment_method, notes, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$9)`,
+      [invoiceId, tenantId, payload.supplier_id ?? null, payload.invoice_number ?? null, total, paidAmount, paidAmount > 0 ? (payload.payment_method ?? 'cash') : null, payload.notes ?? null, timestamp],
+    )
+
+    for (const item of items) {
+      await client.query(
+        `INSERT INTO supply_invoice_items (id, tenant_id, invoice_id, product_id, qty, purchase_price, total, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (id) DO NOTHING`,
+        [item.id ?? randomUUID(), tenantId, invoiceId, item.product_id, Number(item.qty ?? 0), Number(item.purchase_price ?? 0), invoiceLineTotal(item), timestamp],
+      )
+    }
+
+    if (paidAmount > 0) {
+      const paymentId = payload.payment_id ?? randomUUID()
+      const method = payload.payment_method ?? 'cash'
+      const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
+      await client.query(
+        `INSERT INTO supplier_payments
+         (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (id) DO NOTHING`,
+        [paymentId, tenantId, invoiceId, payload.supplier_id ?? null, paidAmount, method, fundSource, payload.shift_id ?? null, 'Оплата під час створення накладної', userId, timestamp],
+      )
+      if (fundSource === 'cashbox') {
+        await client.query(
+          `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, source, created_by, created_at)
+           VALUES ($1,$2,'out',$3,$4,'cashbox',$5,$6)`,
+          [tenantId, payload.shift_id ?? null, paidAmount, 'Оплата постачальнику під час створення накладної', userId, timestamp],
+        )
+      }
+    }
+  })
+}
+
+async function applySupplierInvoiceUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  await runTransaction(async (client) => {
+    const invoice = await client.query('SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [operation.aggregate_id, tenantId])
+    if (!invoice.rowCount) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
+    if (invoice.rows[0].status !== 'draft') throw new AppError('INVOICE_POSTED', 'Не можна редагувати проведену накладну', 400)
+    await client.query(
+      'UPDATE supply_invoices SET invoice_number = $1, notes = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4',
+      [payload.invoice_number ?? null, payload.notes ?? null, operation.aggregate_id, tenantId],
+    )
+  })
+}
+
+async function applySupplierInvoicePosted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const { data: invoice } = await db
+    .from('supply_invoices')
+    .select('id,status')
+    .eq('id', operation.aggregate_id)
+    .eq('tenant_id', tenantId)
+    .single()
+  if (!invoice) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
+  if (invoice.status === 'posted') return
+  const { error } = await db.rpc('post_supply_invoice', {
+    p_invoice_id: operation.aggregate_id,
+    p_user_id: userId,
+  })
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+}
+
+async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const paymentId = String(payload.payment_id || operation.operation_id)
+  const amount = Math.round(Number(payload.amount ?? 0))
+  if (amount <= 0) throw new AppError('INVALID_AMOUNT', 'Сума оплати має бути більше нуля', 422)
+  await runTransaction(async (client) => {
+    const existing = await client.query('SELECT id FROM supplier_payments WHERE id = $1 LIMIT 1', [paymentId])
+    if (existing.rowCount && existing.rowCount > 0) return
+    const invoiceResult = await client.query(
+      `SELECT id, supplier_id, total, COALESCE(paid_amount, 0) AS paid_amount
+       FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [operation.aggregate_id, tenantId],
+    )
+    const invoice = invoiceResult.rows[0]
+    if (!invoice) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
+    const remaining = Number(invoice.total) - Number(invoice.paid_amount)
+    if (amount > remaining) throw new AppError('PAYMENT_TOO_LARGE', 'Сума перевищує борг за накладною', 422)
+    const method = payload.payment_method ?? 'cash'
+    const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
+    await client.query(
+      `INSERT INTO supplier_payments
+       (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [paymentId, tenantId, operation.aggregate_id, invoice.supplier_id, amount, method, fundSource, payload.shift_id ?? null, payload.note ?? null, userId],
+    )
+    await client.query(
+      'UPDATE supply_invoices SET paid_amount = COALESCE(paid_amount, 0) + $1, payment_method = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4',
+      [amount, method, operation.aggregate_id, tenantId],
+    )
+    if (fundSource === 'cashbox') {
+      await client.query(
+        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, source)
+         VALUES ($1,$2,'out',$3,$4,$5,'cashbox')`,
+        [tenantId, payload.shift_id ?? null, amount, payload.note || 'Оплата постачальнику', userId],
+      )
+    }
+  })
+}
+
+async function applySupplierInvoiceCancelled(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const { data: invoice } = await db
+    .from('supply_invoices')
+    .select('id,status')
+    .eq('id', operation.aggregate_id)
+    .eq('tenant_id', tenantId)
+    .single()
+  if (!invoice) return
+  if (invoice.status === 'cancelled') return
+  const { error } = await db.rpc('cancel_supply_invoice', { p_invoice_id: operation.aggregate_id })
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+}
+
+async function applySupplierInvoiceDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  await runTransaction(async (client) => {
+    const invoiceResult = await client.query('SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [operation.aggregate_id, tenantId])
+    const invoice = invoiceResult.rows[0]
+    if (!invoice) return
+    if (invoice.status === 'posted') throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну', 400)
+    await client.query('DELETE FROM supplier_payments WHERE invoice_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+    await client.query('DELETE FROM supply_invoice_items WHERE invoice_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+    await client.query('DELETE FROM supply_invoices WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+  })
+}
 async function applyShiftOpened(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   await runTransaction(async (client) => {
@@ -756,6 +1073,107 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
         [countedStock, completedAt, productId, tenantId],
       )
     }
+  })
+}
+
+
+async function applyOrderPaymentAdded(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const orderId = String(payload.order_id ?? operation.aggregate_id)
+  const paymentId = String(payload.payment_id ?? operation.operation_id)
+  const amount = Number(payload.amount ?? 0)
+  const method = payload.method === 'card' || payload.method === 'transfer' || payload.method === 'account' ? payload.method : 'cash'
+  if (!orderId || !paymentId || !Number.isFinite(amount) || amount <= 0) {
+    throw new AppError('SYNC_ORDER_PAYMENT_INVALID', 'Некоректний платіж замовлення', 400)
+  }
+
+  await runTransaction(async (client) => {
+    const orderResult = await client.query(
+      'SELECT id, status, total_amount, discount_amount, total_paid, prepayment, customer_id, order_number FROM customer_orders WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+      [orderId, tenantId],
+    )
+    if (!orderResult.rowCount) throw new AppError('SYNC_ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
+    const order = orderResult.rows[0]
+    if (order.status === 'completed') return
+
+    const existing = await client.query('SELECT id FROM order_payments WHERE id = $1 LIMIT 1', [paymentId])
+    if (existing.rowCount && existing.rowCount > 0) return
+
+    const remaining = Number(order.total_amount ?? 0) - Number(order.discount_amount ?? 0) - Number(order.total_paid ?? order.prepayment ?? 0)
+    const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
+    if (!canAcceptOpenDraftDeposit && amount > remaining) {
+      throw new AppError('SYNC_ORDER_OVERPAYMENT', 'Сума перевищує залишок до сплати', 400)
+    }
+
+    await client.query(
+      `INSERT INTO order_payments (
+        id, tenant_id, order_id, amount, method, is_fiscal, shift_id, created_by, notes, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [paymentId, tenantId, orderId, amount, method, payload.is_fiscal === true, payload.shift_id ?? null, payload.created_by ?? userId, payload.notes ?? null, payload.created_at ?? operation.created_at],
+    )
+
+    const newTotalPaid = Number(order.total_paid ?? order.prepayment ?? 0) + amount
+    const updatedStatus = (order.status === 'lead' || order.status === 'quoted') && newTotalPaid > 0 ? 'new' : order.status
+    await client.query(
+      'UPDATE customer_orders SET total_paid = $3, status = $4, updated_at = $5 WHERE id = $1 AND tenant_id = $2',
+      [orderId, tenantId, newTotalPaid, updatedStatus, payload.created_at ?? operation.created_at],
+    )
+
+    if (method === 'cash' && payload.shift_id) {
+      await client.query(
+        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, created_at)
+         VALUES ($1, $2, 'in', $3, $4, $5, $6)`,
+        [tenantId, payload.shift_id, amount, payload.notes ?? ('Оплата замовлення #' + (order.order_number ?? String(orderId).slice(0, 8))), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+      )
+    }
+
+    await client.query(
+      `INSERT INTO order_activity_log (order_id, user_id, action, details, created_at)
+       VALUES ($1, $2, 'payment_added', $3, $4)`,
+      [orderId, payload.created_by ?? userId, { amount, method, offline: true }, payload.created_at ?? operation.created_at],
+    )
+  })
+}
+
+async function applyOrderCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const orderId = String(payload.order_id ?? operation.aggregate_id)
+  if (!orderId) throw new AppError('SYNC_ORDER_COMPLETE_INVALID', 'Некоректна видача замовлення', 400)
+
+  const { data: order, error: orderError } = await db
+    .from('customer_orders')
+    .select('id,status,total_amount,discount_amount,total_paid,prepayment')
+    .eq('id', orderId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+  if (orderError) throw new AppError('DB_ERROR', orderError.message, 500)
+  if (!order) throw new AppError('SYNC_ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
+  if (order.status === 'completed') return
+
+  const totalPaid = Number(order.total_paid ?? order.prepayment ?? 0)
+  const remaining = Number(order.total_amount ?? 0) - Number(order.discount_amount ?? 0) - totalPaid
+  if (remaining > 0) throw new AppError('SYNC_ORDER_INCOMPLETE_PAYMENT', 'Не всі оплати проведено', 400)
+
+  const paymentMethod = payload.payment_method === 'card' || payload.payment_method === 'mixed' ? payload.payment_method : 'cash'
+  const { error } = await db.rpc('complete_customer_order', {
+    p_tenant_id: tenantId,
+    p_order_id: orderId,
+    p_cashier_id: payload.cashier_id ?? userId,
+    p_shift_id: payload.shift_id ?? null,
+    p_payment_method: paymentMethod,
+    p_cash_amount: 0,
+    p_card_amount: 0,
+  })
+  if (error) {
+    if (error.message.includes('INSUFFICIENT_STOCK')) throw new AppError('INSUFFICIENT_STOCK', error.message, 422)
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
+
+  await db.from('order_activity_log').insert({
+    order_id: orderId,
+    user_id: payload.cashier_id ?? userId,
+    action: 'completed',
+    details: { method: paymentMethod, offline: true, shift_id: payload.shift_id ?? null },
   })
 }
 

@@ -98,6 +98,14 @@ export interface DesktopBootstrapSnapshot {
   product_cross_numbers?: unknown[]
   customers?: unknown[]
   customer_vehicles?: unknown[]
+  customer_orders?: unknown[]
+  deleted_customer_order_ids?: string[]
+  customer_order_items?: unknown[]
+  order_payments?: unknown[]
+  supply_invoices?: unknown[]
+  deleted_supply_invoice_ids?: string[]
+  supply_invoice_items?: unknown[]
+  supplier_payments?: unknown[]
   counts?: Record<string, number>
 }
 
@@ -151,6 +159,14 @@ export interface DesktopSyncPullChanges {
   product_aliases?: unknown[]
   product_cross_numbers?: unknown[]
   customer_vehicles?: unknown[]
+  customer_orders?: unknown[]
+  deleted_customer_order_ids?: string[]
+  customer_order_items?: unknown[]
+  order_payments?: unknown[]
+  supply_invoices?: unknown[]
+  deleted_supply_invoice_ids?: string[]
+  supply_invoice_items?: unknown[]
+  supplier_payments?: unknown[]
   references_included?: boolean
 }
 
@@ -282,6 +298,23 @@ interface ForsageDesktopBridge {
     labels: (sessionId: string, tenantId?: string) => Promise<any[]>
     applyPrice: (sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }) => Promise<any>
     complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
+  }
+  orders?: {
+    listReady: (input?: { tenant_id?: string; search?: string; limit?: number }) => Promise<any[]>
+    get: (id: string, tenantId?: string) => Promise<any | null>
+    listPayments: (orderId: string, tenantId?: string) => Promise<any[]>
+    addPayment: (orderId: string, input: any) => Promise<any>
+    complete: (orderId: string, input?: any) => Promise<any>
+  }
+  supply?: {
+    listInvoices: (input?: any) => Promise<any>
+    getInvoice: (id: string, tenantId?: string) => Promise<any>
+    createInvoice: (input: any) => Promise<any>
+    updateInvoice: (id: string, input: any) => Promise<any>
+    payInvoice: (id: string, input: any) => Promise<any>
+    postInvoice: (id: string, input?: any) => Promise<any>
+    cancelInvoice: (id: string, tenantId?: string) => Promise<any>
+    deleteInvoice: (id: string, tenantId?: string) => Promise<void>
   }
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Package, X, ChevronDown, Loader2, User } from 'lucide-react'
 import { api } from '@/lib/api'
+import { posOrderApi } from '@/features/pos/posOrderApi'
 import { usePOSStore } from '@/stores/posStore'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
@@ -100,10 +101,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       setSearch(num)
       setOpen(true)
       try {
-        const { data } = await api.get<{ data: any[] }>(
-          `/api/v1/customer-orders?search=${encodeURIComponent(num)}&per_page=5`,
-          { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS },
-        )
+        const { data } = await posOrderApi.listReady({ search: num, limit: 5 }, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
         const order = (data ?? []).find((o) => String(o.order_number) === String(num)) ?? (data ?? [])[0]
         if (!order) { toast.error(`Замовлення №${num} не знайдено`); return }
         if (order.status === 'completed') { toast.error(`Замовлення №${num} вже видане`); return }
@@ -130,10 +128,12 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const url = search.trim()
-        ? `/api/v1/customer-orders?search=${encodeURIComponent(search.trim())}&per_page=50`
-        : `/api/v1/customer-orders?status=${ACTIVE_ORDER_STATUSES}&per_page=80`
-      const { data } = await api.get<{ data: ReadyOrder[] }>(url, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
+      const { data } = await posOrderApi.listReady(
+        search.trim()
+          ? { search: search.trim(), limit: 50 }
+          : { activeStatuses: ACTIVE_ORDER_STATUSES, limit: 80 },
+        { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS },
+      ) as { data: ReadyOrder[] }
       setOrders((data ?? []).filter((order) => !['completed', 'canceled', 'archived'].includes(order.status)))
     } catch (e) {
       if (open || isMobileInline || search.trim()) {
@@ -207,8 +207,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
     setPaying(true)
     try {
-      await api.post(
-        `/api/v1/customer-orders/${payOrder.id}/payments`,
+      await posOrderApi.addPayment(
+        payOrder.id,
         {
           amount: amountVal,
           method: payMethod,
@@ -220,7 +220,6 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               ? 'Касова повна оплата замовлення'
               : (canAcceptOpenDraftDeposit ? 'Касова передоплата чернетки' : 'Касова передоплата замовлення'),
         },
-        undefined,
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
       )
 
@@ -259,8 +258,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
     setCompleting(order.id)
     try {
-      await api.post(
-        `/api/v1/customer-orders/${order.id}/complete`,
+      await posOrderApi.complete(
+        order.id,
         {
           payment_method: options.method ?? 'cash',
           cash_amount: 0,
@@ -268,7 +267,6 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           is_fiscal: false,
           shift_id: store.currentShift?.id || null,
         },
-        undefined,
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
       )
       if (!options.quietSuccess) toast.success('Замовлення видано!')

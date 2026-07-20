@@ -1,4 +1,7 @@
-﻿import { api } from '@/lib/api'
+import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { requestDesktopSync } from '@/features/products/productApi'
+import { useAuthStore } from '@/stores/authStore'
 import type {
   Supplier, PaginatedSuppliers,
   SupplyInvoice, PaginatedInvoices, SupplierDebtsResult,
@@ -16,6 +19,14 @@ export interface InvoiceFilters {
   supplier_id?: string
   page?: number
   per_page?: number
+}
+
+function currentUserId(): string | undefined {
+  return useAuthStore.getState().session?.user?.id ?? undefined
+}
+
+function localSupply() {
+  return desktopBridge()?.supply ?? null
 }
 
 function buildQuery(filters: object): string {
@@ -54,32 +65,81 @@ export const supplierApi = {
     api.get<{ data: SupplierDebtsResult }>('/api/v1/suppliers/debts'),
 
   // Приходні накладні
-  listInvoices: (filters: InvoiceFilters = {}) =>
-    api.get<PaginatedInvoices>(`/api/v1/suppliers/invoices${buildQuery(filters)}`),
+  listInvoices: async (filters: InvoiceFilters = {}) => {
+    const local = localSupply()
+    if (local?.listInvoices) return local.listInvoices(filters) as Promise<PaginatedInvoices>
+    return api.get<PaginatedInvoices>(`/api/v1/suppliers/invoices${buildQuery(filters)}`)
+  },
 
-  getInvoice: (id: string) =>
-    api.get<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`),
+  getInvoice: async (id: string) => {
+    const local = localSupply()
+    if (local?.getInvoice) return { data: await local.getInvoice(id) } as { data: SupplyInvoice }
+    return api.get<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`)
+  },
 
-  createInvoice: (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; fund_source?: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card' | null; shift_id?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) =>
-    api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices', body),
+  createInvoice: async (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; fund_source?: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card' | null; shift_id?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) => {
+    const local = localSupply()
+    if (local?.createInvoice) {
+      const data = await local.createInvoice({ ...body, user_id: currentUserId() })
+      requestDesktopSync()
+      return { data } as { data: SupplyInvoice }
+    }
+    return api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices', body)
+  },
 
-  updateInvoice: (id: string, body: { invoice_number?: string | null; notes?: string | null }) =>
-    api.put<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`, body),
+  updateInvoice: async (id: string, body: { invoice_number?: string | null; notes?: string | null }) => {
+    const local = localSupply()
+    if (local?.updateInvoice) {
+      const data = await local.updateInvoice(id, { ...body, user_id: currentUserId() })
+      requestDesktopSync()
+      return { data } as { data: SupplyInvoice }
+    }
+    return api.put<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`, body)
+  },
 
-  payInvoice: (id: string, body: {
+  payInvoice: async (id: string, body: {
     amount: number
     payment_method: 'cash' | 'card' | 'transfer'
     fund_source: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
     shift_id?: string | null
     note?: string | null
-  }) => api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/pay`, body),
+  }) => {
+    const local = localSupply()
+    if (local?.payInvoice) {
+      const data = await local.payInvoice(id, { ...body, user_id: currentUserId() })
+      requestDesktopSync()
+      return { data } as { data: SupplyInvoice }
+    }
+    return api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/pay`, body)
+  },
 
-  postInvoice: (id: string) =>
-    api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/post`, {}),
+  postInvoice: async (id: string) => {
+    const local = localSupply()
+    if (local?.postInvoice) {
+      const data = await local.postInvoice(id, { user_id: currentUserId() })
+      requestDesktopSync()
+      return { data } as { data: SupplyInvoice }
+    }
+    return api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/post`, {})
+  },
 
-  cancelInvoice: (id: string) =>
-    api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/cancel`, {}),
+  cancelInvoice: async (id: string) => {
+    const local = localSupply()
+    if (local?.cancelInvoice) {
+      const data = await local.cancelInvoice(id)
+      requestDesktopSync()
+      return { data } as { data: SupplyInvoice }
+    }
+    return api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/cancel`, {})
+  },
 
-  deleteInvoice: (id: string) =>
-    api.delete<void>(`/api/v1/suppliers/invoices/${id}`),
+  deleteInvoice: async (id: string) => {
+    const local = localSupply()
+    if (local?.deleteInvoice) {
+      await local.deleteInvoice(id)
+      requestDesktopSync()
+      return
+    }
+    return api.delete<void>(`/api/v1/suppliers/invoices/${id}`)
+  },
 }
