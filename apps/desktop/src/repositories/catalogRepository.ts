@@ -59,6 +59,21 @@ function productSearchNeedles(raw: string): string[] {
 
   return [...values]
 }
+
+function productSearchTokens(raw: string): string[] {
+  const tokens = new Set<string>()
+  for (const needle of productSearchNeedles(raw)) {
+    for (const token of needle.split(/\s+/)) {
+      if (token.length >= 2) tokens.add(token)
+    }
+  }
+  return [...tokens]
+}
+
+function compactLookupCode(raw: string): string {
+  return raw.replace(/[\s\-._/]+/g, '').trim()
+}
+
 function productSearchText(product: LocalProductUpsert): string {
   return normalizeSearchText([
     product.sku,
@@ -180,6 +195,7 @@ export class LocalCatalogRepository {
   findByBarcode(barcode: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
     const normalized = barcode.trim()
     if (!normalized) return null
+    const compact = compactLookupCode(normalized)
 
     const row = this.db.prepare(`
       SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.unit, p.purchase_price,
@@ -188,7 +204,7 @@ export class LocalCatalogRepository {
       WHERE p.tenant_id = ?
         AND p.deleted_at IS NULL
         AND p.is_active = 1
-        AND p.barcode = ?
+        AND (p.barcode = ? OR p.barcode = ?)
       UNION
       SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.unit, p.purchase_price,
              p.retail_price, p.qty_on_hand, p.is_active, p.is_service, p.storage_bin
@@ -196,18 +212,19 @@ export class LocalCatalogRepository {
       JOIN products p ON p.id = b.product_id
       WHERE b.tenant_id = ?
         AND b.deleted_at IS NULL
-        AND b.barcode = ?
+        AND (b.barcode = ? OR b.barcode = ?)
         AND p.deleted_at IS NULL
         AND p.is_active = 1
       LIMIT 1
-    `).get(tenantId, normalized, tenantId, normalized) as LocalProduct | undefined
+    `).get(tenantId, normalized, compact, tenantId, normalized, compact) as LocalProduct | undefined
 
     return row ?? null
   }
-
   listProducts(options: LocalProductListOptions = {}, tenantId = DEFAULT_TENANT_ID): LocalProductListResult {
     const raw = (options.query ?? '').trim()
     const needles = productSearchNeedles(raw)
+    const tokens = productSearchTokens(raw)
+    const compact = compactLookupCode(raw)
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500))
     const offset = Math.max(0, Number(options.offset ?? 0) || 0)
     const sortColumns: Record<LocalProductSortField, string> = {
@@ -244,20 +261,37 @@ export class LocalCatalogRepository {
     if (raw) {
       const searchClauses = [
         'p.sku = ?',
+        'p.sku = ?',
         'p.barcode = ?',
+        'p.barcode = ?',
+        'p.barcode LIKE ?',
         'p.name LIKE ?',
         `EXISTS (
           SELECT 1 FROM product_barcodes b
           WHERE b.tenant_id = p.tenant_id
             AND b.product_id = p.id
             AND b.deleted_at IS NULL
-            AND b.barcode LIKE ?
+            AND (b.barcode = ? OR b.barcode = ? OR b.barcode LIKE ?)
         )`,
       ]
-      const searchParams: Array<string | number> = [raw, raw, `%${raw}%`, `%${raw}%`]
+      const searchParams: Array<string | number> = [
+        raw,
+        compact,
+        raw,
+        compact,
+        `%${raw}%`,
+        `%${raw}%`,
+        raw,
+        compact,
+        `%${raw}%`,
+      ]
       for (const needle of needles) {
         searchClauses.push('p.search_text LIKE ?')
         searchParams.push(`%${needle}%`)
+      }
+      if (tokens.length > 1) {
+        searchClauses.push(`(${tokens.map(() => 'p.search_text LIKE ?').join(' AND ')})`)
+        searchParams.push(...tokens.map((token) => `%${token}%`))
       }
       where.push(`(${searchClauses.join(' OR ')})`)
       params.push(...searchParams)
@@ -319,7 +353,27 @@ export class LocalCatalogRepository {
     const exact = this.findByBarcode(raw, tenantId)
     if (exact) return [exact]
 
-    const needle = `%${normalizeSearchText(raw)}%`
+    const needles = productSearchNeedles(raw)
+    const tokens = productSearchTokens(raw)
+    const compact = compactLookupCode(raw)
+    const clauses = [
+      'sku = ?',
+      'sku = ?',
+      'barcode = ?',
+      'barcode = ?',
+      'barcode LIKE ?',
+      'name LIKE ?',
+    ]
+    const params: Array<string | number> = [tenantId, raw, compact, raw, compact, `%${raw}%`, `%${raw}%`]
+    for (const needle of needles) {
+      clauses.push('search_text LIKE ?')
+      params.push(`%${needle}%`)
+    }
+    if (tokens.length > 1) {
+      clauses.push(`(${tokens.map(() => 'search_text LIKE ?').join(' AND ')})`)
+      params.push(...tokens.map((token) => `%${token}%`))
+    }
+
     return this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
              qty_on_hand, is_active, is_service, storage_bin
@@ -327,16 +381,12 @@ export class LocalCatalogRepository {
       WHERE tenant_id = ?
         AND deleted_at IS NULL
         AND is_active = 1
-        AND (
-          sku = ?
-          OR search_text LIKE ?
-          OR name LIKE ?
-        )
+        AND (${clauses.join(' OR ')})
       ORDER BY
-        CASE WHEN sku = ? THEN 0 ELSE 1 END,
+        CASE WHEN sku = ? OR sku = ? OR barcode = ? OR barcode = ? THEN 0 ELSE 1 END,
         is_favorite DESC,
         name ASC
       LIMIT ?
-    `).all(tenantId, raw, needle, `%${raw}%`, raw, limit) as unknown as LocalProduct[]
+    `).all(...params, raw, compact, raw, compact, limit) as unknown as LocalProduct[]
   }
 }
