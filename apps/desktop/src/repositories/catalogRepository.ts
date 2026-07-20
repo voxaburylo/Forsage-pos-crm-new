@@ -661,8 +661,15 @@ export class LocalCatalogRepository {
       'barcode = ?',
       'barcode LIKE ?',
       'name LIKE ?',
+      `EXISTS (
+        SELECT 1 FROM product_barcodes b
+        WHERE b.tenant_id = products.tenant_id
+          AND b.product_id = products.id
+          AND b.deleted_at IS NULL
+          AND (b.barcode = ? OR b.barcode = ? OR b.barcode LIKE ?)
+      )`,
     ]
-    const params: Array<string | number> = [tenantId, raw, compact, raw, compact, `%${raw}%`, `%${raw}%`]
+    const params: Array<string | number> = [tenantId, raw, compact, raw, compact, `%${raw}%`, `%${raw}%`, raw, compact, `%${raw}%`]
     for (const needle of needles) {
       clauses.push('search_text LIKE ?')
       params.push(`%${needle}%`)
