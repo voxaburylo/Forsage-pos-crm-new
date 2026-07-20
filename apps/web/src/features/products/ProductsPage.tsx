@@ -9,7 +9,7 @@ import { MergeModal } from './MergeModal'
 import { CategorySidebar } from './CategorySidebar'
 import { ImportModal } from './ImportModal'
 import { BulkEditModal } from './BulkEditModal'
-import { mirrorProductToDesktop, productApi } from './productApi'
+import { productApi } from './productApi'
 import type { ProductFilters } from './productApi'
 import { adminApi } from '@/features/admin/adminApi'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
@@ -77,6 +77,8 @@ export default function ProductsPage() {
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const loadRequestRef             = useRef(0)
+  const skipNextLoadRef            = useRef(false)
+  const desktopRuntimeRef          = useRef(Boolean(desktopBridge()))
   const [search, setSearch]         = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [lowStock, setLowStock]     = useState(false)
@@ -191,6 +193,7 @@ export default function ProductsPage() {
       if (cachedCategories.length) setCategories(cachedCategories)
       if (cachedBrands.length) setBrands(cachedBrands)
     }
+    if (desktopRuntimeRef.current) return
     adminApi.listCategories().then((r) => setCategories(r.data)).catch(() => {})
     adminApi.listBrands().then((r) => setBrands(r.data)).catch(() => {})
   }, [scopeKey])
@@ -219,19 +222,6 @@ export default function ProductsPage() {
           let desktopProducts = (
             await desktopCatalog.searchProducts(debouncedSearch.trim(), 500)
           ).map(desktopProductToProduct)
-
-          if (desktopProducts.length === 0) {
-            const serverResult = await productApi.search(debouncedSearch.trim(), 500, {
-              silent: true,
-              timeoutMs: 10_000,
-            }).catch(() => null)
-            if (!isCurrentRequest()) return
-            const serverProducts = serverResult?.data ?? []
-            if (serverProducts.length > 0) {
-              desktopProducts = serverProducts
-              void Promise.allSettled(serverProducts.map((product) => mirrorProductToDesktop(product)))
-            }
-          }
 
           if (!isCurrentRequest()) return
           setResult({
@@ -360,9 +350,29 @@ export default function ProductsPage() {
     }
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
 
-  useEffect(() => { load() }, [load])
-  // Зміна фільтрів/пошуку/сортування — починаємо накопичення заново з 1-ї сторінки
-  useEffect(() => { setPage(1); setPages({}) }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
+  const filterKey = useMemo(() => JSON.stringify({
+    debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort,
+  }), [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
+  const previousFilterKeyRef = useRef(filterKey)
+
+  // Зміна фільтрів/пошуку/сортування — починаємо накопичення заново з 1-ї сторінки.
+  // Догрузка следующей страницы не должна сбрасывать список и бросать скролл вверх.
+  useEffect(() => {
+    if (previousFilterKeyRef.current === filterKey) return
+    previousFilterKeyRef.current = filterKey
+    loadRequestRef.current++
+    if (page !== 1) skipNextLoadRef.current = true
+    setPage(1)
+    setPages({})
+  }, [filterKey, page])
+
+  useEffect(() => {
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false
+      return
+    }
+    load()
+  }, [load])
 
   // Накопичені товари з усіх завантажених сторінок (нескінченний скрол), без дублів
   const accumulated = useMemo(() => {
