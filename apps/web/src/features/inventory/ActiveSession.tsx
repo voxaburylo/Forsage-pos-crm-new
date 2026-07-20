@@ -9,7 +9,7 @@ import { productApi } from '@/features/products/productApi'
 import { adminApi } from '@/features/admin/adminApi'
 import { DEFAULT_LABEL, printLabels } from '@/features/labels/LabelDesigner'
 import { Layout } from '@/components/Layout'
-import { Badge, Button, Card } from '@/components/ui'
+import { Badge, Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { playErrorTone, playSuccessBeep, initAudio } from '@/lib/audioService'
 import { CameraScanner } from '@/features/pos/CameraScanner'
@@ -144,6 +144,8 @@ export default function ActiveSession() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [massBusy, setMassBusy] = useState(false)
   const [printingLabels, setPrintingLabels] = useState<string | null>(null)
+  const [labelRows, setLabelRows] = useState<InventoryItem[] | null>(null)
+  const [labelQtys, setLabelQtys] = useState<Record<string, number>>({})
   const scanQueue = useRef<string[]>([])
   const scanQueueRunning = useRef(false)
 
@@ -196,22 +198,49 @@ export default function ActiveSession() {
         toast.error('Немає товарів для друку етикеток')
         return
       }
-      const items = rows.flatMap((row) => Array(labelCopiesForItem(row)).fill(row.product))
-      if (items.length === 0) {
-        toast.error('Немає етикеток для друку')
-        return
-      }
+      setLabelRows(rows)
+      setLabelQtys(Object.fromEntries(rows.map((row) => [row.id, labelCopiesForItem(row)])))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося підготувати етикетки')
+    } finally {
+      setPrintingLabels(null)
+    }
+  }
+
+  function setInventoryLabelQty(itemId: string, value: number) {
+    const qty = Number.isFinite(value) ? Math.max(0, Math.min(9999, Math.floor(value))) : 0
+    setLabelQtys((prev) => ({ ...prev, [itemId]: qty }))
+  }
+
+  function closeInventoryLabelModal() {
+    setLabelRows(null)
+    setLabelQtys({})
+  }
+
+  async function confirmInventoryLabelPrint() {
+    if (!labelRows?.length) return
+    const items = labelRows.flatMap((row) => {
+      const count = labelQtys[row.id] ?? 0
+      if (!row.product || count <= 0) return []
+      return Array(count).fill(row.product)
+    })
+    if (items.length === 0) {
+      toast.error('Вкажіть кількість етикеток')
+      return
+    }
+    setPrintingLabels('confirm')
+    try {
       const settingsRes = await adminApi.getSettings()
       const settings = settingsRes.data.label_settings || DEFAULT_LABEL
       printLabels(settings as any, items as any, false)
-      toast.success(item ? `Відправлено етикетки: ${item.product?.name}` : `Відправлено етикеток: ${items.length}`)
+      toast.success(`Відправлено етикеток: ${items.length}`)
+      closeInventoryLabelModal()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетки')
     } finally {
       setPrintingLabels(null)
     }
   }
-
   async function savePrice() {
     if (!selected || !canEditPrice) return
     const retail = Math.round(parseFloat(String(editRetail).replace(',', '.')) * 100)
@@ -1128,6 +1157,62 @@ export default function ActiveSession() {
           </Card>
         )}
 
+        {labelRows && (
+          <Modal open onClose={closeInventoryLabelModal} title="Друк етикеток ревізії" size="md">
+            <div className="space-y-4">
+              <p className="text-sm text-gray-500">
+                Перед друком можна змінити кількість етикеток. За замовчуванням — фактична кількість з ревізії.
+              </p>
+              <div className="max-h-96 overflow-y-auto rounded-xl border border-gray-200">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Товар</th>
+                      <th className="w-28 px-3 py-2 text-center font-medium">Етикеток</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {labelRows.map((row) => (
+                      <tr key={row.id}>
+                        <td className="px-3 py-2">
+                          <p className="font-semibold text-gray-900">{row.product?.name ?? 'Товар'}</p>
+                          <p className="font-mono text-xs text-gray-500">{row.product?.sku} · факт: {row.counted_stock}</p>
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={9999}
+                            step={1}
+                            inputMode="numeric"
+                            value={labelQtys[row.id] ?? 0}
+                            onChange={(event) => setInventoryLabelQty(row.id, Number(event.target.value))}
+                            className="w-full rounded-lg border border-gray-300 px-2 py-1 text-center font-semibold outline-none focus:border-yellow-500"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between rounded-xl bg-gray-50 px-3 py-2 text-sm">
+                <span className="text-gray-500">Всього етикеток</span>
+                <strong className="text-gray-900">{Object.values(labelQtys).reduce((sum, qty) => sum + qty, 0)}</strong>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                <Button variant="secondary" onClick={closeInventoryLabelModal} className="w-full sm:w-auto">Скасувати</Button>
+                <Button
+                  onClick={confirmInventoryLabelPrint}
+                  loading={printingLabels === 'confirm'}
+                  disabled={Object.values(labelQtys).reduce((sum, qty) => sum + qty, 0) === 0}
+                  className="w-full sm:w-auto"
+                >
+                  Друкувати
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        )}
         <CameraScanner
           open={cameraOpen}
           continuous

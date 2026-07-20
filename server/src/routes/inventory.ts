@@ -127,6 +127,39 @@ router.post('/', requireRole(...MANAGER_ROLES), async (req, res, next) => {
   } catch (error) { next(error) }
 })
 
+router.delete('/:id', requireRole(...MANAGER_ROLES), async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.id)
+    const session = await requireInventorySession(sessionId, req.user!.tenant_id)
+    if (session.status === 'completed') {
+      throw new AppError('INVENTORY_COMPLETED', 'Завершену ревізію видаляти не можна', 400)
+    }
+
+    const counted = await db.from('inventory_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sessionId)
+      .eq('was_counted', true)
+    if (counted.error) throw new AppError('DB_ERROR', counted.error.message, 500)
+
+    const entries = await db.from('inventory_count_entries')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sessionId)
+    if (entries.error) throw new AppError('DB_ERROR', entries.error.message, 500)
+
+    if ((counted.count ?? 0) > 0 || (entries.count ?? 0) > 0) {
+      throw new AppError('INVENTORY_NOT_EMPTY', 'Ревізія вже має пораховані товари — видаляти можна тільки порожні незавершені ревізії', 400)
+    }
+
+    const { error } = await db.from('inventory_sessions')
+      .delete()
+      .eq('id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .neq('status', 'completed')
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+
+    res.json({ data: { ok: true } })
+  } catch (error) { next(error) }
+})
 router.get('/:id', requireRole(...COUNTER_ROLES), async (req, res, next) => {
   try {
     res.json({ data: await loadSessionData(String(req.params.id), req.user!.tenant_id, req.user!.id) })

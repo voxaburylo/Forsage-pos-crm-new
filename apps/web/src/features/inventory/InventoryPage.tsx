@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, ClipboardList, Play } from 'lucide-react'
+import { Plus, ClipboardList, Play, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { Layout } from '@/components/Layout'
@@ -39,6 +39,7 @@ export default function InventoryPage() {
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0])
   const [managerId, setManagerId] = useState('')
   const [creating, setCreating] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   async function load() {
     setLoading(true)
@@ -127,6 +128,20 @@ export default function InventoryPage() {
     }
   }
 
+
+  async function deleteEmptySession(session: Session) {
+    if (!window.confirm(`Видалити порожню ревізію "${session.name}"?`)) return
+    setDeletingId(session.id)
+    try {
+      await api.delete<void>(`/api/v1/inventory/${session.id}`)
+      setSessions((prev) => prev.filter((item) => item.id !== session.id))
+      toast.success('Порожню ревізію видалено')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити ревізію')
+    } finally {
+      setDeletingId(null)
+    }
+  }
   const columns = [
     { key: 'name', header: 'Назва', render: (s: Session) => {
       const creator = users.find((u) => u.id === s.created_by)
@@ -147,12 +162,25 @@ export default function InventoryPage() {
       const b = STATUS_BADGE[s.status] ?? { color: 'gray' as const, label: s.status }
       return <Badge color={b.color}>{b.label}</Badge>
     }},
-    { key: 'actions', header: '', className: 'w-32 text-right', render: (s: Session) => (
-      s.status === 'draft' && canManage ? (
-        <Button size="sm" variant="outline" icon={<Play size={14} />} onClick={() => startSession(s)}>Почати</Button>
-      ) : s.status === 'in_progress' ? (
-        <Button size="sm" variant="outline" icon={<ClipboardList size={14} />} onClick={() => navigate(`/inventory/${s.id}`)}>Відкрити</Button>
-      ) : null
+    { key: 'actions', header: '', className: 'w-44 text-right', render: (s: Session) => (
+      <div className="flex justify-end gap-1.5">
+        {s.status === 'draft' && canManage ? (
+          <Button size="sm" variant="outline" icon={<Play size={14} />} onClick={() => startSession(s)}>Почати</Button>
+        ) : s.status === 'in_progress' ? (
+          <Button size="sm" variant="outline" icon={<ClipboardList size={14} />} onClick={() => navigate(`/inventory/${s.id}`)}>Відкрити</Button>
+        ) : null}
+        {canManage && s.status !== 'completed' && (
+          <button
+            type="button"
+            disabled={deletingId === s.id}
+            title="Видалити порожню ревізію"
+            onClick={() => deleteEmptySession(s)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-100 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
     )},
   ]
 

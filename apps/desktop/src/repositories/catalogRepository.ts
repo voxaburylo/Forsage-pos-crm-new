@@ -112,6 +112,8 @@ export class LocalCatalogRepository {
     const searchText = productSearchText(input)
 
     this.db.transaction(() => {
+      this.ensureReferencePlaceholders(input, tenantId, timestamp)
+
       this.db.prepare(`
         INSERT INTO products (
           id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
@@ -148,8 +150,8 @@ export class LocalCatalogRepository {
         input.sku,
         input.name,
         input.barcode ?? null,
-        input.brand_id ?? null,
-        input.category_id ?? null,
+        input.brand_id?.trim() || null,
+        input.category_id?.trim() || null,
         input.unit ?? 'шт',
         input.purchase_price ?? 0,
         input.retail_price ?? 0,
@@ -409,6 +411,31 @@ export class LocalCatalogRepository {
       LIMIT ?
     `).all(...params, raw, compact, raw, compact, limit) as unknown as LocalProduct[]
   }
+  private ensureReferencePlaceholders(input: LocalProductUpsert, tenantId: string, timestamp: string): void {
+    const brandId = input.brand_id?.trim()
+    if (brandId && !this.referenceExists('brands', brandId, tenantId)) {
+      this.db.prepare(`
+        INSERT INTO brands (id, tenant_id, name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING
+      `).run(brandId, tenantId, `Бренд ${brandId.slice(0, 8)}`, timestamp, timestamp)
+    }
+
+    const categoryId = input.category_id?.trim()
+    if (categoryId && !this.referenceExists('categories', categoryId, tenantId)) {
+      this.db.prepare(`
+        INSERT INTO categories (id, tenant_id, name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING
+      `).run(categoryId, tenantId, `Папка ${categoryId.slice(0, 8)}`, timestamp, timestamp)
+    }
+  }
+
+  private referenceExists(table: 'brands' | 'categories', id: string, tenantId: string): boolean {
+    const row = this.db.prepare(`SELECT 1 AS ok FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`).get(id, tenantId)
+    return Boolean(row)
+  }
+
   private addProductOutbox(operationType: 'product.upsert' | 'product.deleted', productId: string, payload: LocalProductUpsert): void {
     const timestamp = nowIso()
     const tenantId = payload.tenant_id ?? DEFAULT_TENANT_ID
