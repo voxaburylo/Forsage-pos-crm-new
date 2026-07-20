@@ -6,6 +6,8 @@ const { DEFAULT_TENANT_ID } = require('../dist/db/localTypes.js');
 const { LocalBootstrapRepository } = require('../dist/repositories/bootstrapRepository.js');
 const { LocalCatalogRepository } = require('../dist/repositories/catalogRepository.js');
 const { LocalPosRepository } = require('../dist/repositories/posRepository.js');
+const { LocalWarehouseRepository } = require('../dist/repositories/warehouseRepository.js');
+const { LocalStaffRepository } = require('../dist/repositories/staffRepository.js');
 const { LocalSyncRepository } = require('../dist/repositories/syncRepository.js');
 
 const baseDir = path.join('C:\\tmp', `forsage-desktop-smoke-${Date.now()}`);
@@ -16,6 +18,8 @@ async function main() {
   const bootstrap = new LocalBootstrapRepository(db);
   const catalog = new LocalCatalogRepository(db);
   const pos = new LocalPosRepository(db);
+  const warehouse = new LocalWarehouseRepository(db);
+  const staff = new LocalStaffRepository(db);
   const sync = new LocalSyncRepository(db);
 
   const bootstrapResult = bootstrap.importSnapshot({
@@ -141,24 +145,81 @@ async function main() {
   const foundByBarcode = catalog.findByBarcode('2000000000011');
   const foundByExtraBarcode = catalog.findByBarcode('2999999999999');
   const importedByBarcode = catalog.findByBarcode('2111111111111');
+  const updatedCashier = staff.updateUser('smoke-cashier', { base_rate: 5000, rate_period: 'day' });
+  staff.setPin('smoke-cashier', '2468');
+  const pinValid = staff.verifyPin('smoke-cashier', '2468');
+  const pinInvalid = staff.verifyPin('smoke-cashier', '1111');
+  if (!pinValid.valid || pinInvalid.valid) throw new Error('Local PIN verification failed');
+  const commissionRule = staff.createCommissionRule({
+    user_id: 'smoke-cashier',
+    pct_from_revenue: 10,
+    pct_from_profit: 0,
+    rule_type: 'personal_sales',
+  });
   const shiftId = pos.openShift({ cashier_id: 'smoke-cashier', opening_cash: 10000 });
   const saleAmount = product.retail_price * 2;
   const sale = pos.checkout({
     cashier_id: 'smoke-cashier',
+    manager_id: 'smoke-cashier',
     shift_id: shiftId,
     items: [{ product_id: product.id, qty: 2 }],
     payments: [{ method: 'cash', amount: saleAmount }],
   });
+  const recordedCommissions = staff.recordSaleCommissions(sale.sale_id, DEFAULT_TENANT_ID, 'smoke-cashier');
+  if (recordedCommissions.length !== 1 || recordedCommissions[0].amount !== 2500) {
+    throw new Error('Local sale commission was not calculated');
+  }
+  const dailyPayout = staff.dailyPayout({
+    employee_id: 'smoke-cashier',
+    employee_name: 'Smoke Cashier',
+    method: 'cash',
+    shift_id: shiftId,
+    work_date: new Date().toISOString().slice(0, 10),
+    user_id: 'smoke-cashier',
+  });
+  if (dailyPayout.amount !== 7500) throw new Error('Local daily salary payout has incorrect amount');
+  const expectedAfterSalary = pos.getExpectedCash('smoke-cashier');
+  if (expectedAfterSalary?.expected_amount !== 27500) throw new Error('Salary payout did not reduce expected cash');
   const shiftReport = pos.getShiftReport('smoke-cashier');
   if (!shiftReport || shiftReport.total_sales !== 1 || shiftReport.by_method.cash !== saleAmount) {
     throw new Error('Local shift report did not include the completed cash sale');
   }
-  const closeResult = pos.closeShift('smoke-cashier', 10000 + saleAmount, 'Smoke close');
+  const closeResult = pos.closeShift('smoke-cashier', 10000 + saleAmount - dailyPayout.amount, 'Smoke close');
   if (pos.getOpenShift('smoke-cashier') !== null) {
     throw new Error('Local shift remained open after closeShift');
   }
   const closeQueued = sync.listPending(10).some((operation) => operation.operation_type === 'shift.closed');
   if (!closeQueued) throw new Error('Local shift close was not queued for synchronization');
+  const movement = warehouse.createMovement({
+    product_id: product.id,
+    qty: 2,
+    to_bin: 'A-17',
+    note: 'Smoke movement',
+    user_id: 'smoke-cashier',
+  });
+  const reserve = warehouse.createReserve({
+    product_id: product.id,
+    qty: 1,
+    customer_id: 'smoke-customer-1',
+    user_id: 'smoke-cashier',
+  });
+  if (warehouse.listReserves().length !== 1) throw new Error('Local reserve was not created');
+  warehouse.releaseReserve(reserve.id);
+  if (warehouse.listReserves().length !== 0) throw new Error('Local reserve was not released');
+  const writeoff = warehouse.createWriteoff({
+    reason: 'damage',
+    notes: 'Smoke writeoff',
+    user_id: 'smoke-cashier',
+    items: [{ product_id: product.id, qty: 1 }],
+  });
+  const productAfterWarehouse = catalog.findById(product.id);
+  if (movement.to_bin !== 'A-17' || productAfterWarehouse?.storage_bin !== 'A-17') {
+    throw new Error('Local warehouse movement did not update the storage bin');
+  }
+  if (productAfterWarehouse?.qty_on_hand !== 2) {
+    throw new Error('Local writeoff did not reduce product stock');
+  }
+  if (writeoff.items?.length !== 1) throw new Error('Local writeoff item was not persisted');
 
   db.prepare(`
     INSERT INTO sync_outbox(
@@ -176,7 +237,7 @@ async function main() {
     '{broken-json',
     new Date().toISOString(),
   );
-  const pendingAfterCorruptPayload = sync.listPending(10);
+  const pendingAfterCorruptPayload = sync.listPending(100);
   const corruptOutboxRow = db.prepare(`
     SELECT status, attempts, last_error
     FROM sync_outbox
@@ -211,6 +272,17 @@ async function main() {
     shiftReport,
     closeResult,
     closeQueued,
+    updatedCashier,
+    pinValid,
+    pinInvalid,
+    commissionRule,
+    recordedCommissions,
+    dailyPayout,
+    expectedAfterSalary,
+    movement,
+    reserveReleased: true,
+    writeoff,
+    productAfterWarehouse,
     pendingAfterCorruptPayload: pendingAfterCorruptPayload.length,
     corruptOutboxRow,
     backupPath,

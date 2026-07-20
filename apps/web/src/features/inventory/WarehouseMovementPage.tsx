@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, Package, MapPin, Plus, X, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useAuthStore } from '@/stores/authStore'
+import { productApi } from '@/features/products/productApi'
+import { warehouseApi } from './warehouseApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -26,11 +27,6 @@ interface ProductSearchResult {
 }
 
 export default function WarehouseMovementPage() {
-  const { session } = useAuthStore()
-  const token = session?.access_token
-  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3001'
-  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-
   const [movements, setMovements] = useState<Movement[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -50,29 +46,36 @@ export default function WarehouseMovementPage() {
   const fetchMovements = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${apiBase}/api/v1/warehouse/movements?page=${page}&per_page=20`, { headers })
-      const json = await res.json()
-      setMovements(json.data ?? [])
-      setTotalPages(json.pagination?.total_pages ?? 1)
-    } catch { /* */ }
-    finally { setLoading(false) }
-  }, [page, apiBase, token])
+      const result = await warehouseApi.listMovements({ page, per_page: 20 })
+      setMovements(result.data ?? [])
+      setTotalPages(result.pagination?.total_pages ?? 1)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити переміщення')
+    } finally {
+      setLoading(false)
+    }
+  }, [page])
 
   useEffect(() => { fetchMovements() }, [fetchMovements])
 
-  // Product search
+  // Пошук завжди читає той самий локальний каталог, що каса та інвентаризація.
   useEffect(() => {
-    if (searchQuery.length < 2) { setSearchResults([]); return }
-    const t = setTimeout(async () => {
+    if (searchQuery.trim().length < 2) { setSearchResults([]); return }
+    const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`${apiBase}/api/v1/products?search=${encodeURIComponent(searchQuery)}&per_page=8`, { headers })
-        const json = await res.json()
-        setSearchResults((json.data ?? []).map((p: any) => ({
-          id: p.id, name: p.name, sku: p.sku, storage_bin: p.storage_bin, qty_on_hand: p.qty_on_hand,
+        const result = await productApi.list({ search: searchQuery.trim(), per_page: 8 })
+        setSearchResults(result.data.map((product) => ({
+          id: product.id,
+          name: product.name,
+          sku: product.sku,
+          storage_bin: product.storage_bin ?? null,
+          qty_on_hand: product.qty_on_hand ?? 0,
         })))
-      } catch { /* */ }
-    }, 300)
-    return () => clearTimeout(t)
+      } catch {
+        setSearchResults([])
+      }
+    }, 180)
+    return () => clearTimeout(timer)
   }, [searchQuery])
 
   const handleSubmit = async () => {
@@ -80,20 +83,13 @@ export default function WarehouseMovementPage() {
     setSubmitting(true)
     setFormError(null)
     try {
-      const res = await fetch(`${apiBase}/api/v1/warehouse/movements`, {
-        method: 'POST', headers,
-        body: JSON.stringify({
-          product_id: selectedProduct.id,
-          qty: parseFloat(qty),
-          from_bin: selectedProduct.storage_bin || null,
-          to_bin: toBin.trim(),
-          note: note.trim() || null,
-        }),
+      await warehouseApi.createMovement({
+        product_id: selectedProduct.id,
+        qty: parseFloat(qty),
+        from_bin: selectedProduct.storage_bin || null,
+        to_bin: toBin.trim(),
+        note: note.trim() || null,
       })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err?.error?.message || `HTTP ${res.status}`)
-      }
       // reset
       setShowForm(false)
       setSelectedProduct(null)

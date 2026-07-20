@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
 import { adminApi } from '@/features/admin/adminApi'
+import { productApi } from './productApi'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import type { ProductFormData } from '@/types/product'
 import { Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 
@@ -15,6 +18,40 @@ interface Category { id: string; name: string }
 
 type RetailMode = 'none' | 'fixed' | 'percent' | 'amount' | 'markup'
 type PurchaseMode = 'none' | 'fixed' | 'percent' | 'amount'
+
+function adjustedPrice(current: number, action: { type: string; value: number } | undefined, purchasePrice: number): number {
+  if (!action) return current
+  if (action.type === 'percent') return Math.max(0, Math.round(current * (1 + action.value / 100)))
+  if (action.type === 'amount') return Math.max(0, Math.round(current + action.value))
+  if (action.type === 'markup') return Math.max(0, Math.round(purchasePrice * (1 + action.value / 100)))
+  return current
+}
+
+async function updateLocalProducts(productIds: string[], updates: Record<string, any>): Promise<void> {
+  const chunkSize = 20
+  for (let offset = 0; offset < productIds.length; offset += chunkSize) {
+    await Promise.all(productIds.slice(offset, offset + chunkSize).map(async (id) => {
+      const current = (await productApi.get(id)).data
+      const purchasePrice = updates.purchase_price !== undefined
+        ? Number(updates.purchase_price)
+        : adjustedPrice(
+            Number(current.purchase_price),
+            updates.purchase_price_action,
+            Number(current.purchase_price),
+          )
+      const retailPrice = updates.retail_price !== undefined
+        ? Number(updates.retail_price)
+        : adjustedPrice(Number(current.retail_price), updates.retail_price_action, purchasePrice)
+      const form: Partial<ProductFormData> = {
+        purchase_price: (purchasePrice / 100).toFixed(2),
+        retail_price: (retailPrice / 100).toFixed(2),
+      }
+      if (updates.category_id !== undefined) form.category_id = updates.category_id
+      if (updates.is_active !== undefined) form.is_active = updates.is_active
+      await productApi.update(id, form)
+    }))
+  }
+}
 
 export function BulkEditModal({ open, productIds, onClose, onUpdated }: Props) {
   const [retailMode, setRetailMode] = useState<RetailMode>('none')
@@ -92,7 +129,8 @@ export function BulkEditModal({ open, productIds, onClose, onUpdated }: Props) {
 
     setSaving(true)
     try {
-      await api.post('/api/v1/products/bulk-update', { product_ids: productIds, updates })
+      if (isDesktopRuntime()) await updateLocalProducts(productIds, updates)
+      else await api.post('/api/v1/products/bulk-update', { product_ids: productIds, updates })
       toast.success(`Оновлено ${productIds.length} товарів`)
       onUpdated()
       onClose()

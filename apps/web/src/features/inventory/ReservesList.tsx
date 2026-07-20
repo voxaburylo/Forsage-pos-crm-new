@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, Search, Trash2, Calendar, ShieldAlert, User, ShoppingBag, Box } from 'lucide-react'
-import { api } from '@/lib/api'
+import { warehouseApi } from './warehouseApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Table, Badge, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -76,7 +76,7 @@ export default function ReservesList() {
   async function loadReserves() {
     setLoading(true)
     try {
-      const { data } = await api.get<{ data: Reserve[] }>('/api/v1/reserves')
+      const { data } = await warehouseApi.listReserves()
       setReserves(data)
     } catch {
       toast.error('Помилка завантаження списку резервів')
@@ -131,11 +131,11 @@ export default function ReservesList() {
   async function handleCancelReserve(id: string) {
     if (!confirm('Ви впевнені, що хочете зняти цей резерв?')) return
     try {
-      await api.delete(`/api/v1/reserves/${id}`)
+      await warehouseApi.releaseReserve(id)
       toast.success('Резерв успішно знято')
       loadReserves()
     } catch (err: any) {
-      toast.error(err.response?.data?.error?.message || 'Помилка при знятті резерву')
+      toast.error(err?.response?.data?.error?.message || err?.message || 'Помилка при знятті резерву')
     }
   }
 
@@ -155,7 +155,7 @@ export default function ReservesList() {
 
     setCreating(true)
     try {
-      await api.post('/api/v1/reserves', {
+      await warehouseApi.createReserve({
         product_id: selectedProduct.id,
         qty: numQty,
         customer_id: selectedCustomer?.id || null,
@@ -174,7 +174,7 @@ export default function ReservesList() {
       setOrderId('')
       loadReserves()
     } catch (err: any) {
-      toast.error(err.response?.data?.error?.message || 'Помилка при створенні резерву')
+      toast.error(err?.response?.data?.error?.message || err?.message || 'Помилка при створенні резерву')
     } finally {
       setCreating(false)
     }

@@ -4,7 +4,7 @@ import {
   AlertTriangle, Camera, CheckCircle, ChevronDown, Copy, PackageCheck,
   Plus, Printer, Search, Trash2,
 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { pricingApi } from '@/features/admin/pricingApi'
 import { productApi } from '@/features/products/productApi'
 import { inventoryApi } from '@/features/inventory/inventoryApi'
 import { adminApi } from '@/features/admin/adminApi'
@@ -268,10 +268,7 @@ export default function ActiveSession() {
       return
     }
     try {
-      const { data } = await api.get<{ data: { retail_price: number } }>(
-        `/api/v1/pricing/auto-retail?purchase=${purchase}`,
-        { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
-      )
+      const { data } = await pricingApi.autoRetail(purchase)
       if (data?.retail_price) setEditRetail(money2(data.retail_price))
       else toast.error('Матриця націнок не налаштована для цього діапазону')
     } catch {
@@ -415,10 +412,7 @@ export default function ActiveSession() {
       retail = Math.round(purchase * (1 + pct / 100))
     } else {
       try {
-        const { data } = await api.get<{ data: { retail_price: number } }>(
-          `/api/v1/pricing/auto-retail?purchase=${purchase}`,
-          { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
-        )
+        const { data } = await pricingApi.autoRetail(purchase)
         if (!data?.retail_price) { toast.error('Матриця націнок не налаштована для цієї закупки'); return }
         retail = data.retail_price
       } catch { toast.error('Не вдалося порахувати за таблицею'); return }
@@ -448,10 +442,7 @@ export default function ActiveSession() {
         else if (action.type === 'amount') nextRetail = currentRetail + Math.round(action.value)
         else if (action.type === 'markup') nextRetail = Math.round(purchase * (1 + action.value / 100))
         else if (action.type === 'markup_table') {
-          const { data } = await api.get<{ data: { retail_price: number } }>(
-            `/api/v1/pricing/auto-retail?purchase=${purchase}`,
-            { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS },
-          )
+          const { data } = await pricingApi.autoRetail(purchase)
           nextRetail = Number(data?.retail_price ?? 0)
         }
         if (nextRetail === null || !Number.isFinite(nextRetail) || nextRetail < 0) continue

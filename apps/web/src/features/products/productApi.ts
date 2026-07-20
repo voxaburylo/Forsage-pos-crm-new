@@ -267,11 +267,19 @@ export const productApi = {
     return api.delete<void>(`/api/v1/products/${id}`)
   },
 
-  getStock: (id: string) =>
-    api.get<{ data: StockBreakdown }>(`/api/v1/products/${id}/stock`),
+  getStock: async (id: string) => {
+    const local = desktopBridge()?.catalog.findById
+    if (local) {
+      const product = await local(id)
+      if (!product) throw new Error('Товар не знайдено')
+      const onHand = Number(product.qty_on_hand ?? 0)
+      return { data: { on_hand: onHand, reserved: 0, available: onHand } }
+    }
+    return api.get<{ data: StockBreakdown }>(`/api/v1/products/${id}/stock`)
+  },
 
   priceHistory: (id: string) =>
-    api.get<{ data: unknown[] }>(`/api/v1/products/${id}/price-history`),
+    desktopBridge() ? Promise.resolve({ data: [] as unknown[] }) : api.get<{ data: unknown[] }>(`/api/v1/products/${id}/price-history`),
 
   generateBarcode: async (id: string) => {
     const desktopCatalog = desktopBridge()?.catalog
@@ -296,7 +304,7 @@ export const productApi = {
     }),
 
   getAnalogs: (id: string) =>
-    api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`),
+    desktopBridge() ? Promise.resolve({ analogs: [], grouped: {} }) : api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`),
 
   addAnalog: (id: string, analogProductId: string, analogType: 'substitute' | 'oem' | 'cross') =>
     api.post(`/api/v1/products/${id}/analogs`, {
@@ -308,7 +316,7 @@ export const productApi = {
     api.delete(`/api/v1/products/${id}/analogs/${analogId}`),
 
   getCrossNumbers: (id: string) =>
-    api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`),
+    desktopBridge() ? Promise.resolve({ data: [] as ProductCrossNumber[] }) : api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`),
 
   addCrossNumbers: (
     id: string,
@@ -332,16 +340,16 @@ export const productApi = {
     ),
 
   getFitment: (id: string) =>
-    api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),
+    desktopBridge() ? Promise.resolve({ fitments: [], grouped: {} }) : api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),
 
   getHistory: (id: string) =>
-    api.get<{ data: any[] }>(`/api/v1/products/${id}/history`),
+    desktopBridge() ? Promise.resolve({ data: [] as any[] }) : api.get<{ data: any[] }>(`/api/v1/products/${id}/history`),
 
   getSupplierPrices: (id: string) =>
-    api.get<{ data: Array<{ supplier_id: string; supplier_name: string; price: number; date: string }> }>(`/api/v1/products/${id}/supplier-prices`),
+    desktopBridge() ? Promise.resolve({ data: [] }) : api.get<{ data: Array<{ supplier_id: string; supplier_name: string; price: number; date: string }> }>(`/api/v1/products/${id}/supplier-prices`),
 
   getCobuy: (id: string) =>
-    api.get<any[]>(`/api/v1/products/${id}/cobuy`),
+    desktopBridge() ? Promise.resolve([] as any[]) : api.get<any[]>(`/api/v1/products/${id}/cobuy`),
 
   generateBarcodeOnly: async () => {
     const local = desktopBridge()?.catalog.generateBarcode

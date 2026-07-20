@@ -19,7 +19,8 @@ import {
   type ProductLabelPresetKey,
 } from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
-import { api } from '@/lib/api'
+import { warehouseApi } from '@/features/inventory/warehouseApi'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 
 function StockBadge({ product }: { product: Product }) {
@@ -100,7 +101,7 @@ export default function ProductDetailPage() {
       try {
         const { data } = await productApi.list({ search: analogSearch, per_page: 5 })
         // Filter out current product
-        setAnalogSuggestions(((data as any).data || []).filter((p: any) => p.id !== id))
+        setAnalogSuggestions((data ?? []).filter((p) => p.id !== id))
         setSuggestionsOpen(true)
       } catch (err) {
         console.error(err)
@@ -275,7 +276,7 @@ export default function ProductDetailPage() {
     setReserving(true)
     try {
       const expires = new Date(); expires.setDate(expires.getDate() + 3)
-      await api.post('/api/v1/reserves', {
+      await warehouseApi.createReserve({
         product_id: product.id,
         qty,
         customer_id: null,
@@ -494,6 +495,7 @@ export default function ProductDetailPage() {
 
 
                 {/* ?Аналоги? */}
+        {!isDesktopRuntime() && (
         <Card>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <h3 className="font-semibold text-gray-800">🔗 Крос-номери та аналоги</h3>
@@ -670,6 +672,7 @@ export default function ProductDetailPage() {
             </div>
           )}
         </Card>
+        )}
 
         {/* Fitment — сумісність з авто */}
         {fitment && Object.keys(fitment.grouped).length > 0 && (

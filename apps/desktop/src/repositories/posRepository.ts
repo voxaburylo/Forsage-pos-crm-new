@@ -768,7 +768,7 @@ export class LocalPosRepository {
     const rows = this.db.prepare(`
       SELECT id, shift_id, user_id, type, amount, notes, created_at
       FROM cash_operations
-      WHERE shift_id = ? AND tenant_id = ? AND type IN ('cash_in', 'cash_out')
+      WHERE shift_id = ? AND tenant_id = ? AND deleted_at IS NULL AND type IN ('cash_in', 'cash_out')
       ORDER BY created_at DESC
     `).all(shiftId, tenantId) as any[]
     return rows.map((row) => ({
@@ -812,7 +812,7 @@ export class LocalPosRepository {
     const rows = this.db.prepare(`
       SELECT type, SUM(amount) AS total
       FROM cash_operations
-      WHERE tenant_id = ? AND shift_id = ?
+      WHERE tenant_id = ? AND shift_id = ? AND deleted_at IS NULL
       GROUP BY type
     `).all(tenantId, shift.id) as Array<{ type: string; total: number }>
     const by: Record<string, number> = {}

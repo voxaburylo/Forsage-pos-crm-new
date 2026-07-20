@@ -65,7 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Адміністрування',
     roles: ['owner', 'admin'],
     items: [
-      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда та ЗП',        roles: ['owner','admin'], desktopHidden: true },
+      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда та ЗП',        roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
     ],
   },

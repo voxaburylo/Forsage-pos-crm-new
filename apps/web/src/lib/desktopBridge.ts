@@ -300,6 +300,34 @@ interface ForsageDesktopBridge {
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
+  staff?: {
+    listUsers: () => Promise<any[]>
+    createUser: (input: any) => Promise<any>
+    updateUser: (id: string, input: any) => Promise<any>
+    deleteUser: (id: string) => Promise<{ ok: true }>
+    resetPassword: (id: string, password: string) => Promise<{ success: true }>
+    setPin: (userId: string, pin: string) => Promise<{ success: true }>
+    verifyPin: (userId: string, pin: string) => Promise<{ valid: boolean; error?: string }>
+    listCommissionRules: () => Promise<any[]>
+    createCommissionRule: (input: any) => Promise<any>
+    deleteCommissionRule: (id: string) => Promise<{ ok: true }>
+    listSalary: (input?: any) => Promise<any[]>
+    salarySummary: (period?: string) => Promise<any[]>
+    dailySummary: (workDate?: string) => Promise<any[]>
+    createSalary: (input: any) => Promise<any>
+    dailyPayout: (input: any) => Promise<any>
+    deleteSalary: (id: string) => Promise<{ success: true }>
+  }
+  warehouse?: {
+    listMovements: (input?: any) => Promise<any>
+    createMovement: (input: any) => Promise<any>
+    listReserves: (tenantId?: string) => Promise<any[]>
+    createReserve: (input: any) => Promise<any>
+    releaseReserve: (id: string, tenantId?: string) => Promise<{ ok: true }>
+    listWriteoffs: (input?: any) => Promise<any>
+    getWriteoff: (id: string, tenantId?: string) => Promise<any>
+    createWriteoff: (input: any) => Promise<any>
+  }
   inventory?: {
     listSessions: (input?: { tenant_id?: string }) => Promise<any[]>
     createSession: (input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) => Promise<any>

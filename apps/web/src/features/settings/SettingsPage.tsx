@@ -71,6 +71,7 @@ export default function SettingsPage() {
   const [aiTesting, setAiTesting] = useState(false)
 
   useEffect(() => {
+    if (isDesktopRuntime()) return
     aiApi.status()
       .then(({ data }) => { setAiStatus(data); setAiModel(data.model); setAiEnabled(data.enabled) })
       .catch(() => {})
@@ -834,6 +835,7 @@ export default function SettingsPage() {
 
         {/* ========== Помічник АІ (Gemini) ========== */}
         {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}
+        {!isDesktopRuntime() && (
         <Card className="mt-6 space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
@@ -908,8 +910,10 @@ export default function SettingsPage() {
             </Button>
           </div>
         </Card>
+        )}
 
         {/* ========== Небезпечна зона (Скидання всіх даних) ========== */}
+        {!isDesktopRuntime() && (
         <Card className="mt-6 border-red-200 bg-red-50/50 space-y-4">
           <div className="flex items-center gap-2 pb-3 border-b border-red-100">
             <Trash2 size={18} className="text-red-600" />
@@ -925,11 +929,12 @@ export default function SettingsPage() {
             </Button>
           </div>
         </Card>
+        )}
       </div>
 
       {/* Модальне вікно підтвердження повного скидання */}
       <Modal
-        open={resetModalOpen}
+        open={!isDesktopRuntime() && resetModalOpen}
         onClose={() => { setResetModalOpen(false); setResetConfirmText('') }}
         title="Повне скидання даних"
         size="sm"

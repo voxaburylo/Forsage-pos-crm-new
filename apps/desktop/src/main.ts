@@ -10,6 +10,8 @@ import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSupplyRepository } from './repositories/supplyRepository'
+import { LocalStaffRepository } from './repositories/staffRepository'
+import { LocalWarehouseRepository } from './repositories/warehouseRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
 import {
   CashalotService,
@@ -30,6 +32,8 @@ let localInventory: LocalInventoryRepository | null = null
 let localOrders: LocalOrderRepository | null = null
 let localPos: LocalPosRepository | null = null
 let localSupply: LocalSupplyRepository | null = null
+let localStaff: LocalStaffRepository | null = null
+let localWarehouse: LocalWarehouseRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
@@ -84,6 +88,15 @@ function requireLocalPos(): LocalPosRepository {
 function requireLocalSupply(): LocalSupplyRepository {
   if (!localSupply) throw new Error('LOCAL_SUPPLY_NOT_READY')
   return localSupply
+}
+
+function requireLocalStaff(): LocalStaffRepository {
+  if (!localStaff) throw new Error('LOCAL_STAFF_NOT_READY')
+  return localStaff
+}
+function requireLocalWarehouse(): LocalWarehouseRepository {
+  if (!localWarehouse) throw new Error('LOCAL_WAREHOUSE_NOT_READY')
+  return localWarehouse
 }
 
 function requireLocalSync(): LocalSyncRepository {
@@ -251,6 +264,8 @@ app.whenReady().then(async () => {
   localOrders = new LocalOrderRepository(localDatabase)
   localPos = new LocalPosRepository(localDatabase)
   localSupply = new LocalSupplyRepository(localDatabase)
+  localStaff = new LocalStaffRepository(localDatabase)
+  localWarehouse = new LocalWarehouseRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
 
@@ -342,6 +357,46 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
   )
+  ipcMain.handle('desktop:staff:list-users', () => requireLocalStaff().listUsers())
+  ipcMain.handle('desktop:staff:create-user', (_event, input: any) => requireLocalStaff().createUser(input))
+  ipcMain.handle('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
+  ipcMain.handle('desktop:staff:delete-user', (_event, id: string) => requireLocalStaff().deleteUser(id))
+  ipcMain.handle('desktop:staff:reset-password', (_event, id: string, password: string) => requireLocalStaff().resetPassword(id, password))
+  ipcMain.handle('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
+  ipcMain.handle('desktop:staff:verify-pin', (_event, userId: string, pin: string) => requireLocalStaff().verifyPin(userId, pin))
+  ipcMain.handle('desktop:staff:list-commission-rules', () => requireLocalStaff().listCommissionRules())
+  ipcMain.handle('desktop:staff:create-commission-rule', (_event, input: any) => requireLocalStaff().createCommissionRule(input))
+  ipcMain.handle('desktop:staff:delete-commission-rule', (_event, id: string) => requireLocalStaff().deleteCommissionRule(id))
+  ipcMain.handle('desktop:staff:list-salary', (_event, input?: any) => requireLocalStaff().listSalary(input))
+  ipcMain.handle('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
+  ipcMain.handle('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
+  ipcMain.handle('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary(input))
+  ipcMain.handle('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout(input))
+  ipcMain.handle('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
+  ipcMain.handle('desktop:warehouse:list-movements', (_event, input?: any) =>
+    requireLocalWarehouse().listMovements(input),
+  )
+  ipcMain.handle('desktop:warehouse:create-movement', (_event, input: any) =>
+    requireLocalWarehouse().createMovement(input),
+  )
+  ipcMain.handle('desktop:warehouse:list-reserves', (_event, tenantId?: string) =>
+    requireLocalWarehouse().listReserves(tenantId),
+  )
+  ipcMain.handle('desktop:warehouse:create-reserve', (_event, input: any) =>
+    requireLocalWarehouse().createReserve(input),
+  )
+  ipcMain.handle('desktop:warehouse:release-reserve', (_event, id: string, tenantId?: string) =>
+    requireLocalWarehouse().releaseReserve(id, tenantId),
+  )
+  ipcMain.handle('desktop:warehouse:list-writeoffs', (_event, input?: any) =>
+    requireLocalWarehouse().listWriteoffs(input),
+  )
+  ipcMain.handle('desktop:warehouse:get-writeoff', (_event, id: string, tenantId?: string) =>
+    requireLocalWarehouse().getWriteoff(id, tenantId),
+  )
+  ipcMain.handle('desktop:warehouse:create-writeoff', (_event, input: any) =>
+    requireLocalWarehouse().createWriteoff(input),
+  )
   ipcMain.handle('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string }) =>
     requireLocalInventory().listSessions(input?.tenant_id),
   )
@@ -414,9 +469,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:orders:add-payment', (_event, orderId: string, input: any) =>
     requireLocalOrders().addPayment(orderId, input),
   )
-  ipcMain.handle('desktop:orders:complete', (_event, orderId: string, input?: any) =>
-    requireLocalOrders().completeOrder(orderId, input),
-  )
+  ipcMain.handle('desktop:orders:complete', (_event, orderId: string, input?: any) => {
+    const result = requireLocalOrders().completeOrder(orderId, input)
+    requireLocalStaff().recordOrderCommissions(orderId, input?.tenant_id, input?.user_id ?? null)
+    return result
+  })
   ipcMain.handle('desktop:supply:list-suppliers', (_event, input?: any) =>
     requireLocalSupply().listSuppliers(input),
   )
@@ -527,9 +584,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:pos:get-open-shift', (_event, cashierId: string) =>
     requireLocalPos().getOpenShift(cashierId),
   )
-  ipcMain.handle('desktop:pos:checkout', (_event, input: LocalSaleCheckoutInput) =>
-    requireLocalPos().checkout(input),
-  )
+  ipcMain.handle('desktop:pos:checkout', (_event, input: LocalSaleCheckoutInput) => {
+    const result = requireLocalPos().checkout(input)
+    requireLocalStaff().recordSaleCommissions(result.sale_id, undefined, input.cashier_id)
+    return result
+  })
   ipcMain.handle('desktop:pos:list-sales', (_event, input) =>
     requireLocalPos().listSales(input),
   )

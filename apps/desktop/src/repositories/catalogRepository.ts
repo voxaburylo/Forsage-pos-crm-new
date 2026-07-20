@@ -499,7 +499,7 @@ export class LocalCatalogRepository {
   }
   listStaff(tenantId = DEFAULT_TENANT_ID): any[] {
     return (this.db.prepare(`
-      SELECT id, full_name, role, phone, is_active, created_at
+      SELECT id, full_name, role, phone, is_active, base_rate, rate_period, created_at
       FROM staff_users
       WHERE tenant_id = ? AND deleted_at IS NULL
       ORDER BY is_active DESC, full_name COLLATE NOCASE ASC
@@ -507,8 +507,8 @@ export class LocalCatalogRepository {
       ...row,
       email: '',
       is_active: row.is_active === 1,
-      base_rate: 0,
-      rate_period: 'day',
+      base_rate: Number(row.base_rate ?? 0),
+      rate_period: row.rate_period === 'month' ? 'month' : 'day',
     }))
   }
 

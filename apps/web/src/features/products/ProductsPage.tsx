@@ -20,7 +20,7 @@ import { Button, Badge, Modal, ConfirmDialog, Drawer, SplitButton } from '@/comp
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
-import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
+import { desktopBridge, desktopProductToProduct, isDesktopRuntime } from '@/lib/desktopBridge'
 import {
   printLabels,
   DEFAULT_LABEL,
@@ -464,14 +464,32 @@ export default function ProductsPage() {
 
   async function handleExport() {
     try {
-      const { supabase } = await import('@/lib/supabase')
-      const token = (await supabase.auth.getSession()).data.session?.access_token ?? ''
-      const res = await fetch(`${API_URL}/api/v1/products/export`, { headers: { Authorization: `Bearer ${token}` } })
-      const blob = await res.blob()
+      let blob: Blob
+      if (isDesktopRuntime()) {
+        const rows: Product[] = []
+        for (let page = 1; page <= 1000; page += 1) {
+          const result = await productApi.list({ page, per_page: 500 })
+          rows.push(...result.data)
+          if (page >= result.pagination.total_pages) break
+        }
+        const csvCell = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+        const lines = [
+          ['Артикул', 'Назва', 'Штрихкод', 'Категорія', 'Бренд', 'Закупка, грн', 'Продаж, грн', 'Залишок'],
+          ...rows.map((product) => [product.sku, product.name, product.barcode ?? '', product.category?.name ?? '', product.brand?.name ?? '', product.purchase_price / 100, product.retail_price / 100, product.qty_on_hand]),
+        ]
+        blob = new Blob(['\uFEFF' + lines.map((line) => line.map(csvCell).join(';')).join('\r\n')], { type: 'text/csv;charset=utf-8' })
+      } else {
+        const { supabase } = await import('@/lib/supabase')
+        const token = (await supabase.auth.getSession()).data.session?.access_token ?? ''
+        const res = await fetch(`${API_URL}/api/v1/products/export`, { headers: { Authorization: `Bearer ${token}` } })
+        if (!res.ok) throw new Error('Не вдалося експортувати товари')
+        blob = await res.blob()
+      }
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url; a.download = 'products.csv'; a.click()
       URL.revokeObjectURL(url)
-    } catch { toast.error('Помилка експорту') }
+      toast.success('Товари експортовано')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Помилка експорту') }
   }
 
   // Підтвердження видалення (одиничного або масового)

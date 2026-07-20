@@ -1,4 +1,6 @@
 import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { adminApi } from './adminApi'
 
 export interface PriceTier {
   id:           string
@@ -42,10 +44,24 @@ export const pricingApi = {
     api.delete<void>('/api/v1/pricing/markups/' + categoryId),
 
   // Авто-розрахунок
-  autoRetail: (purchaseKopecks: number, categoryId?: string) =>
-    api.get<{ data: { retail_price: number | null } }>(
+  autoRetail: async (purchaseKopecks: number, categoryId?: string) => {
+    if (desktopBridge()) {
+      const { data: settings } = await adminApi.getSettings()
+      const rules = Array.isArray(settings.markup_rules) ? settings.markup_rules : []
+      const rule = rules.find((candidate) => purchaseKopecks >= Number(candidate.minPrice) && purchaseKopecks < Number(candidate.maxPrice))
+      let retail = Math.round(purchaseKopecks * (1 + Number(rule?.markupPct ?? 30) / 100))
+      if (settings.price_rounding_enabled) {
+        const step = Math.max(1, Number(settings.price_rounding_step) || 100)
+        const scaled = retail / step
+        retail = (settings.price_rounding_dir === 'up' ? Math.ceil(scaled)
+          : settings.price_rounding_dir === 'down' ? Math.floor(scaled) : Math.round(scaled)) * step
+      }
+      return { data: { retail_price: retail } }
+    }
+    return api.get<{ data: { retail_price: number | null } }>(
       '/api/v1/pricing/auto-retail?purchase=' + purchaseKopecks + (categoryId ? '&category_id=' + categoryId : '')
-    ),
+    )
+  },
 
   // Розрахунок для конкретного клієнта
   calculate: (body: { purchase_price: number; retail_price: number; category_id?: string; customer_id?: string }) =>

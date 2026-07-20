@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { listCustomersOffline } from '@/lib/offlineDB'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 
 const PER_PAGE = 50
 
@@ -63,6 +64,7 @@ export default function CustomersPage() {
   }
 
   useEffect(() => {
+    if (isDesktopRuntime()) return
     customerGroupsApi.list().then((res) => {
       const seen = new Set<string>()
       const unique = (res.data ?? []).filter((g) => {

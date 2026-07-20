@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Lock, User } from 'lucide-react'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface Props {
   onUnlock: () => void
@@ -26,34 +27,39 @@ export function LockScreenOverlay({ onUnlock }: Props) {
   const name = session?.user?.user_metadata?.full_name ?? 'Касир'
   const role = session?.user?.user_metadata?.role ?? ''
 
-  async function handleSubmit() {
-    if (pin.length < 4) return
+  async function handleSubmit(pinValue = pin) {
+    if (pinValue.length < 4) return
     setError(false)
     try {
-      // Перевіряємо PIN через API
-      const res = await api.post('/api/v1/auth/verify-pin', { pin }) as any
-      if (res.data?.valid) {
+      const local = desktopBridge()?.staff?.verifyPin
+      const userId = session?.user?.id
+      const result = local && userId
+        ? await local(userId, pinValue)
+        : ((await api.post('/api/v1/auth/verify-pin', { pin: pinValue })) as any).data
+      if (result?.valid) {
         setLocked(false)
         onUnlock()
       } else {
         setError(true)
         setPin('')
+        if (result?.error) {
+          import('@/components/ui/Toast').then(({ toast }) => toast.error(result.error))
+        }
       }
     } catch (err: any) {
       setError(true)
       setPin('')
       import('@/components/ui/Toast').then(({ toast }) => {
-        toast.error(err?.message ?? 'Помилка зв\'язку з сервером при перевірці PIN')
+        toast.error(err?.message ?? 'Не вдалося перевірити PIN-код')
       })
     }
   }
-
   function pressDigit(d: string) {
     if (pin.length >= 4) return
     const newPin = pin + d
     setPin(newPin)
     if (newPin.length === 4) {
-      setTimeout(() => handleSubmit(), 200)
+      setTimeout(() => { void handleSubmit(newPin) }, 120)
     }
   }
 
@@ -115,7 +121,7 @@ export function LockScreenOverlay({ onUnlock }: Props) {
 
         {/* Кнопка підтвердження — для сенсорних екранів */}
         <button
-          onClick={handleSubmit}
+          onClick={() => { void handleSubmit() }}
           disabled={pin.length < 4}
           className="w-full rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-30 text-black text-base font-bold transition-colors mb-3"
           style={{ minHeight: 52 }}

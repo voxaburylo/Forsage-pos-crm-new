@@ -327,20 +327,24 @@ export class LocalBootstrapRepository {
 
   private upsertStaff(tenantId: string, user: any, importedAt: string): void {
     const updatedAt = timestamp(user, importedAt)
+    const baseRate = Math.max(0, Math.round(Number(user.base_rate ?? 0) || 0))
+    const ratePeriod = user.rate_period === 'month' ? 'month' : 'day'
     this.db.prepare(`
       INSERT INTO staff_users (
-        id, tenant_id, full_name, role, phone, is_active, remote_updated_at,
-        created_at, updated_at, deleted_at
+        id, tenant_id, full_name, role, phone, is_active, base_rate, rate_period,
+        remote_updated_at, created_at, updated_at, deleted_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        full_name = excluded.full_name,
-        role = excluded.role,
-        phone = excluded.phone,
-        is_active = excluded.is_active,
+        full_name = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.full_name ELSE staff_users.full_name END,
+        role = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.role ELSE staff_users.role END,
+        phone = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.phone ELSE staff_users.phone END,
+        is_active = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.is_active ELSE staff_users.is_active END,
+        base_rate = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.base_rate ELSE staff_users.base_rate END,
+        rate_period = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.rate_period ELSE staff_users.rate_period END,
         remote_updated_at = excluded.remote_updated_at,
-        updated_at = excluded.updated_at,
-        deleted_at = excluded.deleted_at
+        updated_at = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.updated_at ELSE staff_users.updated_at END,
+        deleted_at = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.deleted_at ELSE staff_users.deleted_at END
     `).run(
       user.id,
       tenantId,
@@ -348,13 +352,14 @@ export class LocalBootstrapRepository {
       user.role ?? 'cashier',
       text(user.phone),
       boolInt(user.is_active, true),
+      baseRate,
+      ratePeriod,
       updatedAt,
       user.created_at ?? updatedAt,
       updatedAt,
       user.deleted_at ?? null,
     )
   }
-
   private upsertBrand(tenantId: string, brand: any, importedAt: string): void {
     const updatedAt = timestamp(brand, importedAt)
     this.db.prepare(`

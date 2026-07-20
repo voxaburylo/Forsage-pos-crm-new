@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Edit, Trash2, CreditCard, ShoppingBag, Car, Plus, Copy, ClipboardList } from 'lucide-react'
-import { desktopBridge } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { customerApi } from './customerApi'
 import { orderApi } from '@/features/orders/orderApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
@@ -415,20 +415,13 @@ export default function CustomerDetailPage() {
           )}
         </Card>
 
-        {/* Бонуси */}
-        <Card>
-          <CustomerLoyalty customerId={customer.id} />
-        </Card>
-
-        {/* Нотатки */}
-        <Card>
-          <CustomerNotes customerId={customer.id} />
-        </Card>
-
-        {/* Уподобання сповіщень */}
-        <Card>
-          <CustomerPreferences customerId={customer.id} />
-        </Card>
+        {!isDesktopRuntime() && (
+          <>
+            <Card><CustomerLoyalty customerId={customer.id} /></Card>
+            <Card><CustomerNotes customerId={customer.id} /></Card>
+            <Card><CustomerPreferences customerId={customer.id} /></Card>
+          </>
+        )}
 
         {/* Замовлення клієнта */}
         <Card padding="none">

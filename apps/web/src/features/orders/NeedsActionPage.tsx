@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { FilePen, Phone, PackageCheck, Wallet, Clock, ChevronRight } from 'lucide-react'
 import { api } from '@/lib/api'
 import { customerApi } from '@/features/customers/customerApi'
+import { orderApi } from '@/features/orders/orderApi'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { Layout } from '@/components/Layout'
 import { formatMoney } from '@/lib/utils'
 
@@ -37,11 +39,19 @@ export default function NeedsActionPage() {
     let alive = true
     async function load() {
       setLoading(true)
+      const desktop = isDesktopRuntime()
+      const localOrders = desktop ? await orderApi.list(0, { silent: true }, 1000).catch(() => ({ data: [] })) : null
       const [leadRes, readyRes, debtRes, waitRes] = await Promise.all([
-        api.get<{ data: OrderLite[] }>('/api/v1/customer-orders?status=lead&per_page=200', { silent: true }).catch(() => ({ data: [] })),
-        api.get<{ data: OrderLite[] }>('/api/v1/customer-orders?status=ready&per_page=200', { silent: true }).catch(() => ({ data: [] })),
+        desktop
+          ? Promise.resolve({ data: (localOrders?.data ?? []).filter((order) => order.status === 'lead') as OrderLite[] })
+          : api.get<{ data: OrderLite[] }>('/api/v1/customer-orders?status=lead&per_page=200', { silent: true }).catch(() => ({ data: [] })),
+        desktop
+          ? Promise.resolve({ data: (localOrders?.data ?? []).filter((order) => order.status === 'ready') as OrderLite[] })
+          : api.get<{ data: OrderLite[] }>('/api/v1/customer-orders?status=ready&per_page=200', { silent: true }).catch(() => ({ data: [] })),
         customerApi.list({ has_debt: 'true', sort: 'debt', per_page: 100 }).catch(() => null),
-        api.get<{ data: Array<{ status: string }> }>('/api/v1/waitlist', { silent: true }).catch(() => ({ data: [] })),
+        desktop
+          ? Promise.resolve({ data: [] as Array<{ status: string }> })
+          : api.get<{ data: Array<{ status: string }> }>('/api/v1/waitlist', { silent: true }).catch(() => ({ data: [] })),
       ])
       if (!alive) return
 

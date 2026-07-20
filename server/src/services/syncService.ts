@@ -924,9 +924,14 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
 
   await runTransaction(async (client) => {
     const existing = await client.query(
-      'SELECT id FROM products WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, photo_url FROM products WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [productId, tenantId],
     )
+
+    const requestedPhotoUrl = payload.photo_url ?? null
+    const photoUrl = typeof requestedPhotoUrl === 'string' && /^file:/i.test(requestedPhotoUrl)
+      ? existing.rows[0]?.photo_url ?? null
+      : requestedPhotoUrl
 
     const values = [
       productId,
@@ -946,7 +951,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       payload.is_service === true,
       payload.storage_bin ?? null,
       payload.is_favorite === true,
-      payload.photo_url ?? null,
+      photoUrl,
       payload.specs ?? {},
       updatedAt,
     ]

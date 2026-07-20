@@ -12,7 +12,7 @@ import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, 
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
-import { mirrorProductToDesktop } from '@/features/products/productApi'
+import { mirrorProductToDesktop, productApi } from '@/features/products/productApi'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -439,7 +439,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     if (analogs[productId]) return
     setAnalogsLoading(productId)
     try {
-      const { data } = await api.get<any>(`/api/v1/products/${productId}/analogs`)
+      const data = await productApi.getAnalogs(productId) as any
       const list: Product[] = Array.isArray(data) ? data : data?.analogs ?? data?.data ?? []
       const grouped: Record<string, Product[]> = data?.grouped ?? { standard: list }
       setAnalogs((prev) => ({ ...prev, [productId]: { analogs: list, grouped } }))

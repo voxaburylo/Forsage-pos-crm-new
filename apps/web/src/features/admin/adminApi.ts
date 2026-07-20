@@ -97,15 +97,26 @@ export const adminApi = {
     if (local) return { data: await local() as AdminUser[] }
     return api.get<{ data: AdminUser[] }>('/api/v1/admin/users')
   },
-  createUser: (body: { phone: string; password: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) =>
-    api.post<{ data: AdminUser }>('/api/v1/admin/users', body),
-  updateUser: (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number; rate_period?: 'day' | 'month'; phone?: string }) =>
-    api.put<{ data: AdminUser }>(`/api/v1/admin/users/${id}`, body),
-  deleteUser: (id: string) =>
-    api.delete<void>(`/api/v1/admin/users/${id}`),
-  resetPassword: (id: string, password: string) =>
-    api.put<{ data: { success: boolean } }>(`/api/v1/admin/users/${id}/password`, { password }),
-
+  createUser: async (body: { phone: string; password: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) => {
+    const local = desktopBridge()?.staff?.createUser
+    if (local) return { data: await local(body) as AdminUser }
+    return api.post<{ data: AdminUser }>('/api/v1/admin/users', body)
+  },
+  updateUser: async (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number; rate_period?: 'day' | 'month'; phone?: string }) => {
+    const local = desktopBridge()?.staff?.updateUser
+    if (local) return { data: await local(id, body) as AdminUser }
+    return api.put<{ data: AdminUser }>(`/api/v1/admin/users/${id}`, body)
+  },
+  deleteUser: async (id: string) => {
+    const local = desktopBridge()?.staff?.deleteUser
+    if (local) { await local(id); return }
+    return api.delete<void>(`/api/v1/admin/users/${id}`)
+  },
+  resetPassword: async (id: string, password: string) => {
+    const local = desktopBridge()?.staff?.resetPassword
+    if (local) return { data: await local(id, password) }
+    return api.put<{ data: { success: boolean } }>(`/api/v1/admin/users/${id}/password`, { password })
+  },
   // Categories
   listCategories: async () => {
     const local = desktopBridge()?.catalog.listCategories

@@ -12,17 +12,14 @@ import type { CommissionRule } from '@/features/settings/commissionApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal, Input, Badge, Table, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { api } from '@/lib/api'
+import { staffApi } from './staffApi'
+import type { EmployeeSummary, SalaryPayment, DailySummary } from './staffApi'
 import { formatMoney } from '@/lib/utils'
 import { shiftApi } from '@/features/pos/shiftApi'
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 const ROLE_COLORS: Record<UserRole, BadgeColor> = { owner:'yellow', admin:'blue', manager:'green', cashier:'gray', storekeeper:'orange', sto_viewer:'gray' } as const
 type SalaryMode = 'only_rate' | 'only_pct' | 'rate_and_pct'
-
-interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
-interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string }
-interface DailySummary { employee_id:string; employee_name:string; earned:number; paid:number; penalty:number; balance:number }
 
 const TYPE_CONFIG = {
   salary:  { label: 'Ставка',  color: 'bg-green-100 text-green-700',  icon: <DollarSign size={12}/> },
@@ -65,7 +62,7 @@ export default function StaffPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [usersRes,summaryRes,paymentsRes,rulesRes,dailyRes] = await Promise.all([adminApi.listUsers(),api.get<{data:EmployeeSummary[]}>(`/api/v1/salary/summary?period=${period}`),api.get<{data:SalaryPayment[]}>(`/api/v1/salary?period=${period}`),commissionApi.listRules(),api.get<{data:DailySummary[]}>(`/api/v1/salary/daily-summary?date=${localDate()}`)])
+      const [usersRes,summaryRes,paymentsRes,rulesRes,dailyRes] = await Promise.all([adminApi.listUsers(),staffApi.summary(period),staffApi.listSalary(period),commissionApi.listRules(),staffApi.dailySummary(localDate())])
       setUsers(usersRes.data); setSummary(summaryRes.data??[]); setPayments(paymentsRes.data??[]); setRules(rulesRes.data??[]); setDailySummary(dailyRes.data??[])
     } catch { toast.error('Помилка завантаження даних') } finally { setLoading(false) }
   },[period])
@@ -105,11 +102,11 @@ export default function StaffPage() {
   }
 
   async function handleResetPassword(e:React.FormEvent){e.preventDefault();if(!selectedUser||newPass.length<6){toast.error('Мінімум 6 символів');return}setSaving(true);try{await adminApi.resetPassword(selectedUser.id,newPass);toast.success('Пароль успішно змінено');setNewPass('')}catch(err){toast.error(err instanceof Error?err.message:'Помилка')}finally{setSaving(false)}}
-  async function handleSetPin(){if(pinInput.length!==4){toast.error('PIN-код має складатися з 4 цифр');return}if(!selectedUser)return;try{await api.post('/api/v1/auth/set-pin',{user_id:selectedUser.id,pin:pinInput});toast.success('PIN-код збережено');setPinInput('')}catch(err){toast.error(err instanceof Error?err.message:'Помилка PIN')}}
+  async function handleSetPin(){if(pinInput.length!==4){toast.error('PIN-код має складатися з 4 цифр');return}if(!selectedUser)return;try{await staffApi.setPin(selectedUser.id,pinInput);toast.success('PIN-код збережено');setPinInput('')}catch(err){toast.error(err instanceof Error?err.message:'Помилка PIN')}}
   async function handleDeleteUser(){if(!deleteConfirmUser)return;setSaving(true);try{await adminApi.deleteUser(deleteConfirmUser.id);toast.success('Співробітника видалено');setDeleteConfirmUser(null);if(selectedUser?.id===deleteConfirmUser.id)setSelectedUser(null);loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка при видаленні')}finally{setSaving(false)}}
-  async function handleAddTransaction(){if(!selectedUser)return;const amount=Math.round(parseFloat(actionForm.amount||'0')*100);if(amount<=0){toast.error('Вкажіть коректну суму');return}setSaving(true);try{const shift=actionForm.type==='advance'&&actionForm.method==='cash'?await shiftApi.current():null;const shiftId=(shift as any)?.data?.id??null;if(actionForm.type==='advance'&&actionForm.method==='cash'&&!shiftId)throw new Error('Спочатку відкрийте касову зміну');await api.post('/api/v1/salary',{employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,amount,type:actionForm.type,method:actionForm.method,period:actionForm.period||period,note:actionForm.note||null,shift_id:shiftId,work_date:localDate()});toast.success('Операцію збережено');setActionForm({...actionForm,amount:'',note:''});loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка')}finally{setSaving(false)}}
-  async function handleDailyPayout(){if(!selectedUser)return;setSaving(true);try{const shift=await shiftApi.current();const shiftId=(shift as any)?.data?.id??null;if(!shiftId)throw new Error('Спочатку відкрийте касову зміну');const result=await api.post<{data:{amount:number}}>('/api/v1/salary/daily-payout',{employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',shift_id:shiftId,work_date:localDate()});toast.success(`Видано з каси ${formatMoney(result.data.amount)}`);await loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка виплати')}finally{setSaving(false)}}
-  async function handleDeleteTransaction(id:string){try{await api.delete(`/api/v1/salary/${id}`);toast.success('Операцію видалено');loadData()}catch{toast.error('Помилка видалення')}}
+  async function handleAddTransaction(){if(!selectedUser)return;const amount=Math.round(parseFloat(actionForm.amount||'0')*100);if(amount<=0){toast.error('Вкажіть коректну суму');return}setSaving(true);try{const shift=actionForm.type==='advance'&&actionForm.method==='cash'?await shiftApi.current():null;const shiftId=(shift as any)?.data?.id??null;if(actionForm.type==='advance'&&actionForm.method==='cash'&&!shiftId)throw new Error('Спочатку відкрийте касову зміну');await staffApi.createSalary({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,amount,type:actionForm.type,method:actionForm.method,period:actionForm.period||period,note:actionForm.note||null,shift_id:shiftId,work_date:localDate()});toast.success('Операцію збережено');setActionForm({...actionForm,amount:'',note:''});loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка')}finally{setSaving(false)}}
+  async function handleDailyPayout(){if(!selectedUser)return;setSaving(true);try{const shift=await shiftApi.current();const shiftId=(shift as any)?.data?.id??null;if(!shiftId)throw new Error('Спочатку відкрийте касову зміну');const result=await staffApi.dailyPayout({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',shift_id:shiftId,work_date:localDate()});toast.success(`Видано з каси ${formatMoney(result.data.amount)}`);await loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка виплати')}finally{setSaving(false)}}
+  async function handleDeleteTransaction(id:string){try{await staffApi.deleteSalary(id);toast.success('Операцію видалено');loadData()}catch{toast.error('Помилка видалення')}}
 
   const columns = [
     { key:'full_name' as const, header:'Співробітник', render:(u:AdminUser)=>(

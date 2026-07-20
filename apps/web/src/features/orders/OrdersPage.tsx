@@ -6,6 +6,7 @@ import {
   Trash2, X, Check, Pencil, Copy, ArrowRight, Clock, Camera,
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
@@ -1327,7 +1328,7 @@ export default function OrdersPage() {
   const [chats, setChats] = useState<Chat[]>([])
   const [orders, setOrders] = useState<CustomerOrder[]>([])
   const [messages, setMessages] = useState<Message[]>([])
-  const [loadingChats, setLoadingChats] = useState(true)
+  const [loadingChats, setLoadingChats] = useState(!isDesktopRuntime())
   const [loadingOrders, setLoadingOrders] = useState(true)
 
   // ui
@@ -1381,6 +1382,7 @@ export default function OrdersPage() {
 
   // ── завантаження чатів ──
   const loadChats = useCallback(() => {
+    if (isDesktopRuntime()) { setChats([]); setLoadingChats(false); return }
     api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
       .then((r) => { setChats((r.data ?? []).filter((chat) => chat.channel.platform === 'telegram')); setLoadingChats(false) })
       .catch(() => setLoadingChats(false))
@@ -1445,7 +1447,7 @@ export default function OrdersPage() {
   // ── повідомлення для активного чату ──
   const activeChatId = selection?.kind === 'chat' ? selection.id : null
   useEffect(() => {
-    if (!activeChatId) { setMessages([]); return }
+    if (isDesktopRuntime() || !activeChatId) { setMessages([]); return }
     function load() {
       api.get<{ data: Message[] }>(`/api/v1/chats/${activeChatId}/messages`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
         .then((r) => setMessages(r.data ?? []))

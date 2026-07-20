@@ -1,4 +1,4 @@
-export const LOCAL_SCHEMA_VERSION = 4
+export const LOCAL_SCHEMA_VERSION = 8
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -739,6 +739,138 @@ const MIGRATION_006_BONUS_TRANSACTIONS_SQL = `
     ON bonus_transactions(tenant_id, customer_id, created_at DESC)
     WHERE deleted_at IS NULL;
 `
+const MIGRATION_007_WAREHOUSE_OPERATIONS_SQL = `
+  CREATE TABLE IF NOT EXISTS warehouse_movements (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    from_bin TEXT,
+    to_bin TEXT NOT NULL,
+    qty NUMERIC NOT NULL,
+    note TEXT,
+    created_by TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_warehouse_movements_tenant
+    ON warehouse_movements(tenant_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS stock_reserves (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    order_id TEXT REFERENCES customer_orders(id) ON DELETE SET NULL,
+    customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
+    qty NUMERIC NOT NULL,
+    reserved_by TEXT,
+    expires_at TEXT,
+    released_at TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_stock_reserves_active
+    ON stock_reserves(tenant_id, product_id, released_at)
+    WHERE deleted_at IS NULL;
+
+  CREATE TABLE IF NOT EXISTS writeoffs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    notes TEXT,
+    created_by TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_writeoffs_tenant
+    ON writeoffs(tenant_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS writeoff_items (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    writeoff_id TEXT NOT NULL REFERENCES writeoffs(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    qty NUMERIC NOT NULL,
+    cost_kopecks INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_writeoff_items_writeoff
+    ON writeoff_items(writeoff_id);
+`
+const MIGRATION_008_LOCAL_STAFF_SQL = `
+  ALTER TABLE staff_users ADD COLUMN base_rate INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE staff_users ADD COLUMN rate_period TEXT NOT NULL DEFAULT 'day';
+  ALTER TABLE staff_users ADD COLUMN pin_hash TEXT;
+  ALTER TABLE staff_users ADD COLUMN password_hash TEXT;
+
+  CREATE TABLE IF NOT EXISTS commission_rules (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT REFERENCES staff_users(id) ON DELETE CASCADE,
+    brand_id TEXT REFERENCES brands(id) ON DELETE CASCADE,
+    category_id TEXT REFERENCES categories(id) ON DELETE CASCADE,
+    pct_from_revenue NUMERIC NOT NULL DEFAULT 0,
+    pct_from_profit NUMERIC NOT NULL DEFAULT 0,
+    rule_type TEXT NOT NULL DEFAULT 'personal_sales',
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_commission_rules_tenant
+    ON commission_rules(tenant_id, user_id, rule_type)
+    WHERE deleted_at IS NULL;
+
+  CREATE TABLE IF NOT EXISTS salary_payments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    employee_id TEXT NOT NULL REFERENCES staff_users(id) ON DELETE RESTRICT,
+    employee_name TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('salary', 'bonus', 'advance', 'penalty')),
+    method TEXT NOT NULL CHECK (method IN ('cash', 'card', 'transfer')),
+    period TEXT NOT NULL,
+    work_date TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    note TEXT,
+    shift_id TEXT REFERENCES shifts(id) ON DELETE SET NULL,
+    cash_operation_id TEXT REFERENCES cash_operations(id) ON DELETE SET NULL,
+    commission_source_sale_id TEXT REFERENCES sales(id) ON DELETE SET NULL,
+    commission_source_order_id TEXT REFERENCES customer_orders(id) ON DELETE SET NULL,
+    created_by TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_salary_payments_period
+    ON salary_payments(tenant_id, period, employee_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_salary_payments_date
+    ON salary_payments(tenant_id, work_date, employee_id)
+    WHERE deleted_at IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_salary_daily_rate_once
+    ON salary_payments(tenant_id, employee_id, work_date, source)
+    WHERE source = 'daily_rate' AND deleted_at IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_salary_sale_commission_once
+    ON salary_payments(tenant_id, employee_id, commission_source_sale_id)
+    WHERE commission_source_sale_id IS NOT NULL AND source = 'commission' AND deleted_at IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_salary_order_commission_once
+    ON salary_payments(tenant_id, employee_id, commission_source_order_id)
+    WHERE commission_source_order_id IS NOT NULL AND source = 'commission' AND deleted_at IS NULL;
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -751,4 +883,6 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 4, sql: MIGRATION_004_CUSTOMER_DEPOSITS_SQL },
   { version: 5, sql: MIGRATION_005_RETURNS_SQL },
   { version: 6, sql: MIGRATION_006_BONUS_TRANSACTIONS_SQL },
+  { version: 7, sql: MIGRATION_007_WAREHOUSE_OPERATIONS_SQL },
+  { version: 8, sql: MIGRATION_008_LOCAL_STAFF_SQL },
 ]

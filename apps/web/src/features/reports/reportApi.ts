@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { productApi } from '@/features/products/productApi'
 import { customerApi } from '@/features/customers/customerApi'
+import { warehouseApi } from '@/features/inventory/warehouseApi'
 import { useAuthStore } from '@/stores/authStore'
 import type { Sale } from '@/types/sale'
 import type { SalesSummary, SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
@@ -123,7 +124,28 @@ export const reportApi = {
   },
 
   writeoffsSummary: async () => {
-    if (desktopBridge()) return { data: { count: 0, total_cost: 0, writeoffs: [] } }
+    if (desktopBridge()) {
+      const all: any[] = []
+      for (let page = 1; page <= 100; page += 1) {
+        const batch = await warehouseApi.listWriteoffs({ page, per_page: 200 })
+        all.push(...(batch.data ?? []))
+        if (page >= Number(batch.pagination?.total_pages ?? 1)) break
+      }
+      const month = today().slice(0, 7)
+      const writeoffs = await Promise.all(all
+        .filter((item) => localDate(item.created_at).startsWith(month))
+        .map((item) => warehouseApi.getWriteoff(item.id).then((result) => result.data)))
+      return { data: {
+        count: writeoffs.length,
+        total_cost: writeoffs.reduce((sum, item) => sum + (item.items ?? []).reduce((lineSum: number, line: any) => lineSum + Number(line.cost_kopecks ?? 0), 0), 0),
+        writeoffs: writeoffs.map((item) => ({
+          id: item.id,
+          reason: item.reason,
+          created_at: item.created_at,
+          items: (item.items ?? []).map((line) => ({ cost_kopecks: Number(line.cost_kopecks ?? 0) })),
+        })),
+      } }
+    }
     return api.get<{ data: { count: number; total_cost: number; writeoffs: Array<{ id: string; reason: string; created_at: string; items: Array<{ cost_kopecks: number }> }> } }>('/api/v1/reports/writeoffs/summary')
   },
 
