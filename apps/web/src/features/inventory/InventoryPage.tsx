@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, ClipboardList, Play, Trash2 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { adminApi } from '@/features/admin/adminApi'
 import { inventoryApi } from '@/features/inventory/inventoryApi'
 import { useAuthStore } from '@/stores/authStore'
 import { Layout } from '@/components/Layout'
@@ -47,10 +47,7 @@ export default function InventoryPage() {
     try {
       const [sessRes, usersRes] = await Promise.all([
         inventoryApi.listSessions({ silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS }),
-        api.get<{ data: any[] }>('/api/v1/admin/staff-options', {
-          silent: true,
-          timeoutMs: INVENTORY_LIST_TIMEOUT_MS,
-        }).catch(() => ({ data: [] })),
+        adminApi.listUsers().catch(() => ({ data: [] })),
       ])
       setSessions(sessRes.data)
       setUsers(usersRes.data ?? [])

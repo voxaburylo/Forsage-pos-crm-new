@@ -47,6 +47,7 @@ export interface LocalCatalogCategory {
 export interface LocalCatalogBrand {
   id: string
   name: string
+  country: string | null
 }
 function productSearchNeedles(raw: string): string[] {
   const values = new Set<string>()
@@ -378,11 +379,191 @@ export class LocalCatalogRepository {
 
   listBrands(tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand[] {
     return this.db.prepare(`
-      SELECT id, name
+      SELECT id, name, country
       FROM brands
       WHERE tenant_id = ? AND deleted_at IS NULL
       ORDER BY name COLLATE NOCASE ASC, id ASC
     `).all(tenantId) as unknown as LocalCatalogBrand[]
+  }
+  createCategory(name: string, sortOrder = 0, tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory {
+    const cleanName = name.trim()
+    if (!cleanName) throw new Error('Вкажіть назву папки')
+    const existing = this.db.prepare(`
+      SELECT id FROM categories
+      WHERE tenant_id = ? AND deleted_at IS NULL AND lower(name) = lower(?)
+      LIMIT 1
+    `).get(tenantId, cleanName) as { id: string } | undefined
+    if (existing) throw new Error('Така папка вже існує')
+    const id = randomUUID()
+    const timestamp = nowIso()
+    this.db.prepare(`
+      INSERT INTO categories (id, tenant_id, name, sort_order, dirty_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, tenantId, cleanName, sortOrder, timestamp, timestamp, timestamp)
+    this.addCatalogOutbox('category', id, 'category.upsert', { id, name: cleanName, sort_order: sortOrder }, tenantId, timestamp)
+    return { id, name: cleanName, sort_order: sortOrder }
+  }
+
+  updateCategory(id: string, name: string, tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory {
+    const cleanName = name.trim()
+    if (!cleanName) throw new Error('Вкажіть назву папки')
+    const timestamp = nowIso()
+    const result = this.db.prepare(`
+      UPDATE categories SET name = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+    `).run(cleanName, timestamp, timestamp, id, tenantId)
+    if (Number(result.changes) === 0) throw new Error('Папку не знайдено')
+    const row = this.db.prepare('SELECT id, name, sort_order FROM categories WHERE id = ? AND tenant_id = ?')
+      .get(id, tenantId) as unknown as LocalCatalogCategory
+    this.addCatalogOutbox('category', id, 'category.upsert', row, tenantId, timestamp)
+    return row
+  }
+
+  deleteCategory(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE products SET category_id = NULL, dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND category_id = ? AND deleted_at IS NULL
+      `).run(timestamp, timestamp, tenantId, id)
+      this.db.prepare(`
+        UPDATE categories SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(timestamp, timestamp, timestamp, id, tenantId)
+      this.addCatalogOutbox('category', id, 'category.deleted', { id }, tenantId, timestamp)
+    })
+    return { ok: true }
+  }
+
+  createBrand(name: string, country: string | null = null, tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand {
+    const cleanName = name.trim()
+    if (!cleanName) throw new Error('Вкажіть назву бренду')
+    const existing = this.db.prepare(`
+      SELECT id FROM brands
+      WHERE tenant_id = ? AND deleted_at IS NULL AND lower(name) = lower(?)
+      LIMIT 1
+    `).get(tenantId, cleanName) as { id: string } | undefined
+    if (existing) throw new Error('Такий бренд вже існує')
+    const id = randomUUID()
+    const timestamp = nowIso()
+    this.db.prepare(`
+      INSERT INTO brands (id, tenant_id, name, country, dirty_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, tenantId, cleanName, country, timestamp, timestamp, timestamp)
+    const row = { id, name: cleanName, country }
+    this.addCatalogOutbox('brand', id, 'brand.upsert', row, tenantId, timestamp)
+    return row
+  }
+
+  updateBrand(id: string, input: { name?: string; country?: string | null }, tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand {
+    const current = this.db.prepare(`
+      SELECT id, name, country FROM brands
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+    `).get(id, tenantId) as unknown as LocalCatalogBrand | undefined
+    if (!current) throw new Error('Бренд не знайдено')
+    const next = { id, name: input.name?.trim() || current.name, country: input.country !== undefined ? input.country : current.country }
+    const timestamp = nowIso()
+    this.db.prepare(`
+      UPDATE brands SET name = ?, country = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(next.name, next.country, timestamp, timestamp, id, tenantId)
+    this.addCatalogOutbox('brand', id, 'brand.upsert', next, tenantId, timestamp)
+    return next
+  }
+
+  deleteBrand(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE products SET brand_id = NULL, dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND brand_id = ? AND deleted_at IS NULL
+      `).run(timestamp, timestamp, tenantId, id)
+      this.db.prepare(`
+        UPDATE brands SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(timestamp, timestamp, timestamp, id, tenantId)
+      this.addCatalogOutbox('brand', id, 'brand.deleted', { id }, tenantId, timestamp)
+    })
+    return { ok: true }
+  }
+
+  generateBarcodeOnly(tenantId = DEFAULT_TENANT_ID): string {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const body = `200${String(Math.floor(Math.random() * 1_000_000_000)).padStart(9, '0')}`
+      const digits = body.split('').map(Number)
+      const sum = digits.reduce((total, digit, index) => total + digit * (index % 2 === 0 ? 1 : 3), 0)
+      const barcode = `${body}${(10 - (sum % 10)) % 10}`
+      if (!this.findByBarcode(barcode, tenantId)) return barcode
+    }
+    throw new Error('Не вдалося згенерувати унікальний штрихкод')
+  }
+  listStaff(tenantId = DEFAULT_TENANT_ID): any[] {
+    return (this.db.prepare(`
+      SELECT id, full_name, role, phone, is_active, created_at
+      FROM staff_users
+      WHERE tenant_id = ? AND deleted_at IS NULL
+      ORDER BY is_active DESC, full_name COLLATE NOCASE ASC
+    `).all(tenantId) as any[]).map((row) => ({
+      ...row,
+      email: '',
+      is_active: row.is_active === 1,
+      base_rate: 0,
+      rate_period: 'day',
+    }))
+  }
+
+  getSettings(): any {
+    const defaults = {
+      id: 'local-shop',
+      shop_name: 'Forsage',
+      shop_address: null,
+      phone: null,
+      max_discount_pct: 100,
+      allow_negative_qty: true,
+      return_days: 14,
+      currency: 'UAH',
+      default_debt_limit_kopecks: 0,
+      quick_percents: [20, 30, 50],
+      markup_rules: [],
+      price_rounding_enabled: false,
+      price_rounding_step: 100,
+      price_rounding_dir: 'nearest',
+      employee_discount_pct: 0,
+      vin_decoder_url: null,
+      vin_decoder_api_key: null,
+      auto_print_receipt: false,
+      receipt_width_mm: 58,
+      owner_telegram_chat_id: null,
+      prro_enabled: false,
+      prro_provider: 'kashalot',
+      kashalot_license_key: null,
+      kashalot_pin: null,
+      bank_terminal_enabled: false,
+      terminal_provider: 'mock',
+      privatbank_terminal_ip: null,
+      privatbank_terminal_port: null,
+      privatbank_merchant_id: null,
+    }
+    const row = this.db.prepare("SELECT value_json FROM app_meta WHERE key = 'shop_settings'")
+      .get() as { value_json: string } | undefined
+    if (!row) return defaults
+    try {
+      return { ...defaults, ...JSON.parse(row.value_json) }
+    } catch {
+      return defaults
+    }
+  }
+
+  updateSettings(input: any, tenantId = DEFAULT_TENANT_ID): any {
+    const timestamp = nowIso()
+    const settings = { ...this.getSettings(), ...input, id: 'local-shop' }
+    this.db.prepare(`
+      INSERT INTO app_meta(key, value_json, updated_at)
+      VALUES ('shop_settings', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    `).run(JSON.stringify(settings), timestamp)
+    this.addCatalogOutbox('settings', 'shop', 'settings.updated', settings, tenantId, timestamp)
+    return settings
   }
   // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі
   // до вводу назви, коли поле пошуку порожнє.
@@ -439,6 +620,21 @@ export class LocalCatalogRepository {
         name ASC
       LIMIT ?
     `).all(...params, raw, compact, raw, compact, limit) as unknown as LocalProduct[]
+  }
+  private addCatalogOutbox(
+    aggregateType: 'category' | 'brand' | 'settings',
+    aggregateId: string,
+    operationType: string,
+    payload: unknown,
+    tenantId: string,
+    timestamp: string,
+  ): void {
+    this.db.prepare(`
+      INSERT INTO sync_outbox (
+        operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
+        operation_type, payload_json, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(randomUUID(), tenantId, this.db.deviceId, aggregateType, aggregateId, operationType, JSON.stringify(payload), timestamp)
   }
   private ensureReferencePlaceholders(input: LocalProductUpsert, tenantId: string, timestamp: string): void {
     const brandId = input.brand_id?.trim()

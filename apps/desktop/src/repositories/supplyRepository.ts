@@ -69,9 +69,15 @@ export class LocalSupplyRepository {
     if (filters.is_active === 'false') where.push('is_active = 0')
     const search = text(filters.search)
     if (search) {
-      where.push('(lower(name) LIKE ? OR lower(COALESCE(contact_name, \'\')) LIKE ? OR phone LIKE ?)')
-      const like = `%${search.toLowerCase()}%`
-      params.push(like, like, `%${search}%`)
+      where.push(`(
+        name LIKE ? OR name LIKE ? OR name LIKE ?
+        OR COALESCE(contact_name, '') LIKE ? OR COALESCE(contact_name, '') LIKE ? OR COALESCE(contact_name, '') LIKE ?
+        OR phone LIKE ?
+      )`)
+      const raw = `%${search}%`
+      const title = `%${search.charAt(0).toUpperCase()}${search.slice(1).toLowerCase()}%`
+      const upper = `%${search.toUpperCase()}%`
+      params.push(raw, title, upper, raw, title, upper, raw)
     }
     const whereSql = where.join(' AND ')
     const totalRow = this.db.prepare(`SELECT count(*) AS count FROM suppliers WHERE ${whereSql}`).get(...params) as { count: number }
@@ -102,6 +108,102 @@ export class LocalSupplyRepository {
     `).get(id, tenantId) as any | undefined
     if (!row) throw new Error('Постачальника не знайдено')
     return { ...row, is_active: Boolean(row.is_active) }
+  }
+
+  saveSupplier(input: any, supplierId?: string): any {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const timestamp = nowIso()
+    const id = supplierId ?? randomUUID()
+    const name = String(input.name ?? '').trim()
+    if (!supplierId && !name) throw new Error('Вкажіть назву постачальника')
+    const existing = supplierId ? this.getSupplier(supplierId, tenantId) : null
+    const next = {
+      id,
+      name: name || existing?.name,
+      phone: input.phone !== undefined ? text(input.phone) : existing?.phone ?? null,
+      email: input.email !== undefined ? text(input.email) : existing?.email ?? null,
+      contact_name: input.contact_name !== undefined ? text(input.contact_name) : existing?.contact_name ?? null,
+      notes: input.notes !== undefined ? text(input.notes) : existing?.notes ?? null,
+      is_active: input.is_active !== undefined ? Boolean(input.is_active) : existing?.is_active ?? true,
+    }
+    this.db.prepare(`
+      INSERT INTO suppliers (
+        id, tenant_id, name, phone, email, contact_name, notes, is_active,
+        dirty_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name, phone = excluded.phone, email = excluded.email,
+        contact_name = excluded.contact_name, notes = excluded.notes,
+        is_active = excluded.is_active, dirty_at = excluded.dirty_at,
+        updated_at = excluded.updated_at, deleted_at = NULL
+    `).run(
+      id, tenantId, next.name, next.phone, next.email, next.contact_name, next.notes,
+      next.is_active ? 1 : 0, timestamp, existing?.created_at ?? timestamp, timestamp,
+    )
+    this.addOutbox(tenantId, 'supplier', id, supplierId ? 'supplier.updated' : 'supplier.created', next, timestamp)
+    return this.getSupplier(id, tenantId)
+  }
+
+  deleteSupplier(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    this.getSupplier(id, tenantId)
+    const timestamp = nowIso()
+    this.db.prepare(`
+      UPDATE suppliers SET deleted_at = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(timestamp, timestamp, timestamp, id, tenantId)
+    this.addOutbox(tenantId, 'supplier', id, 'supplier.deleted', { id }, timestamp)
+    return { ok: true }
+  }
+
+  mergeSuppliers(primaryId: string, duplicateId: string, tenantId = DEFAULT_TENANT_ID): any {
+    const primary = this.getSupplier(primaryId, tenantId)
+    this.getSupplier(duplicateId, tenantId)
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE supply_invoices SET supplier_id = ?, dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND supplier_id = ? AND deleted_at IS NULL
+      `).run(primaryId, timestamp, timestamp, tenantId, duplicateId)
+      this.db.prepare(`
+        UPDATE supplier_payments SET supplier_id = ?, dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND supplier_id = ? AND deleted_at IS NULL
+      `).run(primaryId, timestamp, timestamp, tenantId, duplicateId)
+      this.db.prepare(`
+        UPDATE suppliers SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(timestamp, timestamp, timestamp, duplicateId, tenantId)
+      this.addOutbox(tenantId, 'supplier', primaryId, 'supplier.merged', {
+        primary_supplier_id: primaryId, duplicate_supplier_id: duplicateId,
+      }, timestamp)
+    })
+    return primary
+  }
+
+  getSupplierDebts(tenantId = DEFAULT_TENANT_ID): any {
+    const rows = this.db.prepare(`
+      SELECT s.id AS supplier_id, s.name AS supplier_name, s.phone AS supplier_phone,
+             COALESCE(SUM(CASE WHEN i.status = 'posted' THEN i.total ELSE 0 END), 0) AS total,
+             COALESCE(SUM(CASE WHEN i.status = 'posted' THEN i.paid_amount ELSE 0 END), 0) AS paid,
+             COUNT(CASE WHEN i.status = 'posted' THEN 1 END) AS invoices
+      FROM suppliers s
+      LEFT JOIN supply_invoices i ON i.supplier_id = s.id AND i.tenant_id = s.tenant_id AND i.deleted_at IS NULL
+      WHERE s.tenant_id = ? AND s.deleted_at IS NULL
+      GROUP BY s.id, s.name, s.phone
+      HAVING total <> paid
+      ORDER BY (total - paid) DESC
+    `).all(tenantId) as any[]
+    const suppliers = rows.map((row) => ({
+      ...row,
+      total: Number(row.total),
+      paid: Number(row.paid),
+      balance: Number(row.total) - Number(row.paid),
+      invoices: Number(row.invoices),
+    }))
+    return {
+      suppliers,
+      total_debt: suppliers.reduce((sum, row) => sum + Math.max(0, row.balance), 0),
+      total_credit: suppliers.reduce((sum, row) => sum + Math.max(0, -row.balance), 0),
+    }
   }
   listInvoices(filters: {
     tenant_id?: string

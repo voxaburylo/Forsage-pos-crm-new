@@ -185,15 +185,50 @@ function desktopUpdatePayload(id: string, existing: DesktopProduct, form: Partia
   } as DesktopProductSavePayload
 }
 export const productApi = {
-  list: (filters: ProductFilters = {}) =>
-    api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`),
+  list: async (filters: ProductFilters = {}) => {
+    const local = desktopBridge()?.catalog.listProducts
+    if (local) {
+      const page = Math.max(1, filters.page ?? 1)
+      const perPage = Math.max(1, Math.min(500, filters.per_page ?? 50))
+      const result = await local({
+        query: filters.search,
+        categoryId: filters.category_id,
+        brandId: filters.brand_id,
+        lowStock: filters.low_stock === 'true',
+        stockFilter: filters.stock_filter ?? '',
+        limit: perPage,
+        offset: (page - 1) * perPage,
+        sortField: filters.sort_field === 'created_at' ? undefined : filters.sort_field,
+        sortDir: filters.sort_dir,
+      })
+      return {
+        data: result.data.map(desktopProductToProduct),
+        pagination: {
+          page,
+          per_page: perPage,
+          total: result.total,
+          total_pages: Math.max(1, Math.ceil(result.total / perPage)),
+        },
+      }
+    }
+    return api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`)
+  },
 
-  get: (id: string) =>
-    api.get<{ data: Product }>(`/api/v1/products/${id}`),
+  get: async (id: string) => {
+    const local = desktopBridge()?.catalog.findById
+    if (local) {
+      const product = await local(id)
+      if (!product) throw new Error('Товар не знайдено')
+      return { data: desktopProductToProduct(product) }
+    }
+    return api.get<{ data: Product }>(`/api/v1/products/${id}`)
+  },
 
-  search: (q: string, limit = 10, opts?: ProductRequestOptions) =>
-    api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts),
-
+  search: async (q: string, limit = 10, opts?: ProductRequestOptions) => {
+    const local = desktopBridge()?.catalog.searchProducts
+    if (local) return { data: (await local(q, limit)).map(desktopProductToProduct) }
+    return api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts)
+  },
   create: async (form: ProductFormData, opts?: ProductRequestOptions) => {
     const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog?.saveProduct) {
@@ -239,6 +274,16 @@ export const productApi = {
     api.get<{ data: unknown[] }>(`/api/v1/products/${id}/price-history`),
 
   generateBarcode: async (id: string) => {
+    const desktopCatalog = desktopBridge()?.catalog
+    if (desktopCatalog?.generateBarcode && desktopCatalog.saveProduct && desktopCatalog.findById) {
+      const existing = await desktopCatalog.findById(id)
+      if (!existing) throw new Error('Товар не знайдено')
+      if (existing.barcode) return { data: desktopProductToProduct(existing) }
+      const barcode = await desktopCatalog.generateBarcode()
+      const saved = await desktopCatalog.saveProduct(desktopUpdatePayload(id, existing, { barcode }))
+      requestDesktopSync()
+      return { data: desktopProductToProduct(saved) }
+    }
     const response = await api.post<{ data: Product }>(`/api/v1/products/${id}/generate-barcode`, {})
     await mirrorProductToDesktop(response.data)
     return response
@@ -298,6 +343,9 @@ export const productApi = {
   getCobuy: (id: string) =>
     api.get<any[]>(`/api/v1/products/${id}/cobuy`),
 
-  generateBarcodeOnly: () =>
-    api.get<{ data: { barcode: string } }>('/api/v1/products/generate-barcode-only'),
+  generateBarcodeOnly: async () => {
+    const local = desktopBridge()?.catalog.generateBarcode
+    if (local) return { data: { barcode: await local() } }
+    return api.get<{ data: { barcode: string } }>('/api/v1/products/generate-barcode-only')
+  },
 }

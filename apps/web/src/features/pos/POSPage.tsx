@@ -293,19 +293,20 @@ export default function POSPage() {
 
   // Завантажуємо список співробітників для селектора менеджера + знижку працівника
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/staff-options', {
-      silent: true,
-      timeoutMs: POS_READ_TIMEOUT_MS,
-    })
-      .then((res) => {
-        setStaffUsers(res.data)
-      })
+    const localStaff = desktopBridge()?.catalog.listStaff
+    const staffRequest = localStaff
+      ? localStaff().then((data) => ({ data }))
+      : api.get<{ data: Array<{ id: string; full_name: string; role: string }> }>('/api/v1/admin/staff-options', {
+          silent: true,
+          timeoutMs: POS_READ_TIMEOUT_MS,
+        })
+    staffRequest
+      .then((res) => setStaffUsers(res.data))
       .catch(() => {
         if (session?.user?.id) {
           getCachedStaff(session.user.id).then(setStaffUsers).catch(() => {})
         }
-      })
-    // Лічильник відкладених чеків
+      })    // Лічильник відкладених чеків
     refreshSuspendedCount()
     // Знижка працівника та конфігурація швидких товарів
     adminApi.getSettings()
@@ -318,6 +319,11 @@ export default function POSPage() {
 
     // Кількість активних замовлень для мобільного таба
     const loadReadyCount = () => {
+      const localReady = desktopBridge()?.orders?.listReady
+      if (localReady) {
+        localReady({ limit: 80 }).then((data) => setReadyOrdersCount(data.length)).catch(() => {})
+        return
+      }
       api.get(`/api/v1/customer-orders?status=${POS_ACTIVE_ORDER_STATUSES}&per_page=80`, { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
         .then((res: any) => {
           const data = res.data

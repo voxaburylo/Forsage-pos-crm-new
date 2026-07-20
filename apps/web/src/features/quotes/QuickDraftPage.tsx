@@ -5,7 +5,6 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Input } from '@/components/ui'
 import { customerApi } from '@/features/customers/customerApi'
 import { orderApi } from '@/features/orders/orderApi'
-import { api } from '@/lib/api'
 import { toast } from '@/components/ui/Toast'
 
 function digits(value: string) {
@@ -89,7 +88,7 @@ export default function QuickDraftPage() {
       }
 
       if (id) {
-        await api.put(`/api/v1/customer-orders/${id}/draft`, payload)
+        await orderApi.update(id, payload)
         toast.success('Чернетку оновлено')
       } else {
         await orderApi.create({

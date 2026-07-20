@@ -240,7 +240,17 @@ interface ForsageDesktopBridge {
     findById?: (id: string) => Promise<DesktopProduct | null>
     listProducts?: (options?: DesktopCatalogListOptions) => Promise<DesktopCatalogListResult>
     listCategories?: () => Promise<Array<{ id: string; name: string; sort_order: number }>>
-    listBrands?: () => Promise<Array<{ id: string; name: string }>>
+    listBrands?: () => Promise<Array<{ id: string; name: string; country: string | null }>>
+    createCategory?: (name: string, sortOrder?: number) => Promise<{ id: string; name: string; sort_order: number }>
+    updateCategory?: (id: string, name: string) => Promise<{ id: string; name: string; sort_order: number }>
+    deleteCategory?: (id: string) => Promise<{ ok: true }>
+    createBrand?: (name: string, country?: string | null) => Promise<{ id: string; name: string; country: string | null }>
+    updateBrand?: (id: string, input: { name?: string; country?: string | null }) => Promise<{ id: string; name: string; country: string | null }>
+    deleteBrand?: (id: string) => Promise<{ ok: true }>
+    generateBarcode?: () => Promise<string>
+    listStaff?: () => Promise<any[]>
+    getSettings?: () => Promise<any>
+    updateSettings?: (input: any) => Promise<any>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
     upsertProduct: (product: {
       id: string
@@ -303,6 +313,14 @@ interface ForsageDesktopBridge {
   }
   orders?: {
     listReady: (input?: { tenant_id?: string; search?: string; limit?: number }) => Promise<any[]>
+    list?: (input?: any) => Promise<any[]>
+    save?: (input: any, id?: string) => Promise<any>
+    delete?: (id: string, tenantId?: string) => Promise<{ success: true }>
+    updateStatus?: (id: string, status: string, tenantId?: string) => Promise<any>
+    updateItemStatus?: (orderId: string, itemId: string, status: string, tenantId?: string) => Promise<any>
+    cancel?: (id: string, input?: any) => Promise<any>
+    pendingItems?: (supplierId: string, tenantId?: string) => Promise<any[]>
+    bulkArrival?: (itemIds: string[], tenantId?: string) => Promise<{ updated: number }>
     get: (id: string, tenantId?: string) => Promise<any | null>
     listPayments: (orderId: string, tenantId?: string) => Promise<any[]>
     addPayment: (orderId: string, input: any) => Promise<any>
@@ -311,6 +329,10 @@ interface ForsageDesktopBridge {
   supply?: {
     listSuppliers?: (input?: any) => Promise<any>
     getSupplier?: (id: string, tenantId?: string) => Promise<any>
+    saveSupplier?: (input: any, id?: string) => Promise<any>
+    deleteSupplier?: (id: string, tenantId?: string) => Promise<{ ok: true }>
+    mergeSuppliers?: (primaryId: string, duplicateId: string, tenantId?: string) => Promise<any>
+    getDebts?: (tenantId?: string) => Promise<any>
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
@@ -324,8 +346,29 @@ interface ForsageDesktopBridge {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
     getOpenShift: (cashierId: string) => Promise<Shift | null>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
+    listSales?: (input?: any) => Promise<any>
+    listReturns?: (input?: any) => Promise<any>
+    getReturn?: (id: string, tenantId?: string) => Promise<any>
+    getSaleForReturn?: (saleId: string, tenantId?: string) => Promise<any>
+    createReturn?: (input: any) => Promise<any>
+    getSale?: (id: string, tenantId?: string) => Promise<any>
+    calculatePrices?: (items: Array<{ product_id: string; qty: number }>, tenantId?: string) => Promise<any[]>
+    suspendSale?: (input: any) => Promise<any>
+    listSuspended?: (tenantId?: string) => Promise<any[]>
+    resumeSale?: (id: string, tenantId?: string) => Promise<any>
+    confirmResumeSale?: (id: string, tenantId?: string) => Promise<any>
+    discardSuspendedSale?: (id: string, tenantId?: string) => Promise<any>
+    checkSaleAfterPayment?: (shiftId: string, after: string, tenantId?: string) => Promise<any | null>
     listDebtors: (limit?: number) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
     searchCustomers?: (input?: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number }) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
+    listCustomers?: (input?: any) => Promise<any>
+    getCustomer?: (id: string, tenantId?: string) => Promise<any>
+    getCustomerSales?: (id: string, tenantId?: string) => Promise<any[]>
+    saveCustomer?: (input: any, id?: string) => Promise<any>
+    deleteCustomer?: (id: string, tenantId?: string) => Promise<{ ok: true }>
+    listCustomerVehicles?: (customerId: string, tenantId?: string) => Promise<any[]>
+    saveCustomerVehicle?: (customerId: string, input: any, vehicleId?: string) => Promise<any>
+    deleteCustomerVehicle?: (customerId: string, vehicleId: string, tenantId?: string) => Promise<{ ok: true }>
     getCustomerDeposit?: (customerId: string, tenantId?: string) => Promise<{ balance: number; transactions: unknown[] }>
     payDebt?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
     addCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>

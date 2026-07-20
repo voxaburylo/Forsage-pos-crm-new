@@ -121,17 +121,6 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
   async function addToReceipt(sku: string, label: string, price: number) {
     initAudio()
     try {
-      if (sku === 'PACKET') {
-        const { data: product } = await api.post<{ data: FoodItem }>('/api/v1/sales/quick-item', { kind: 'bag' })
-        usePOSStore.getState().addItem({
-          productId: product.id, sku: product.sku, name: product.name, unit: product.unit,
-          qty: 1, unitPrice: price > 0 ? price : product.retail_price, discount: 0,
-          qtyOnHand: 999999, requiresCoreReturn: false, coreDepositAmount: 0,
-        })
-        playSuccessBeep()
-        setPopupItem(null)
-        return
-      }
       const result = await productApi.search(sku, 10)
       const product = result.data?.find((item) => item.sku.toLowerCase() === sku.toLowerCase())
         ?? result.data?.[0]

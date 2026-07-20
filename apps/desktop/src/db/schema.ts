@@ -667,6 +667,56 @@ const MIGRATION_004_CUSTOMER_DEPOSITS_SQL = `
   CREATE INDEX IF NOT EXISTS idx_customer_deposit_transactions_customer
     ON customer_deposit_transactions(tenant_id, customer_id, created_at DESC);
 `
+
+const MIGRATION_005_RETURNS_SQL = `
+  CREATE TABLE IF NOT EXISTS customer_returns (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+    customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
+    return_type TEXT NOT NULL DEFAULT 'customer_return',
+    reason TEXT NOT NULL,
+    reason_note TEXT,
+    refund_method TEXT NOT NULL,
+    refund_kopecks INTEGER NOT NULL DEFAULT 0,
+    stock_action TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    approved_by TEXT,
+    fiscal_number TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_returns_tenant_created
+    ON customer_returns(tenant_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_customer_returns_sale
+    ON customer_returns(sale_id)
+    WHERE deleted_at IS NULL;
+
+  CREATE TABLE IF NOT EXISTS customer_return_items (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    return_id TEXT NOT NULL REFERENCES customer_returns(id) ON DELETE CASCADE,
+    sale_item_id TEXT NOT NULL REFERENCES sale_items(id) ON DELETE RESTRICT,
+    product_id TEXT REFERENCES products(id) ON DELETE RESTRICT,
+    quantity NUMERIC NOT NULL,
+    unit_price_kopecks INTEGER NOT NULL,
+    total_kopecks INTEGER NOT NULL,
+    condition TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_return_items_return
+    ON customer_return_items(return_id);
+  CREATE INDEX IF NOT EXISTS idx_customer_return_items_sale_item
+    ON customer_return_items(sale_item_id);
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -677,4 +727,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 2, sql: MIGRATION_002_BUSINESS_SQL },
   { version: 3, sql: MIGRATION_003_SUPPLY_INVOICES_SQL },
   { version: 4, sql: MIGRATION_004_CUSTOMER_DEPOSITS_SQL },
+  { version: 5, sql: MIGRATION_005_RETURNS_SQL },
 ]

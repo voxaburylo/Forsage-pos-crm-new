@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Phone, MessageSquare, FilePen, ChevronDown, Pencil, Copy } from 'lucide-react'
-import { api } from '@/lib/api'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
 import { formatOrderNo, startRepeatOrder } from './orderActions'
 import { printOrderReceipt } from './OrderReceiptPrint'
@@ -16,6 +15,7 @@ import { productApi } from '@/features/products/productApi'
 import { DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
 import { customerApi } from '@/features/customers/customerApi'
+import { supplierApi } from '@/features/suppliers/supplierApi'
 import type { Customer } from '@/types/customer'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodeSvg } from '@/lib/barcodeSvg'
@@ -247,7 +247,7 @@ export default function OrderDetailPage() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true, timeoutMs: ORDER_DETAIL_READ_TIMEOUT_MS })
+    supplierApi.list({ per_page: 200 })
       .then((result) => {
         const seen = new Set<string>()
         setSuppliers((result.data ?? []).filter((supplier) => {
@@ -273,8 +273,8 @@ export default function OrderDetailPage() {
 
   useEffect(() => {
     if (!id) return
-    api.get<{ data: Payment[] }>(`/api/v1/customer-orders/${id}/payments`, { silent: true, timeoutMs: ORDER_DETAIL_READ_TIMEOUT_MS })
-      .then((r) => setPayments(r.data ?? []))
+    orderApi.listPayments(id, { silent: true, timeoutMs: ORDER_DETAIL_READ_TIMEOUT_MS })
+      .then((r) => setPayments((r.data ?? []) as Payment[]))
       .catch(() => {})
   }, [id])
 

@@ -51,25 +51,55 @@ export const supplierApi = {
     return api.get<{ data: Supplier }>(`/api/v1/suppliers/${id}`)
   },
 
-  create: (body: { name: string; phone?: string | null; email?: string | null; contact_name?: string | null; notes?: string | null }) =>
-    api.post<{ data: Supplier }>('/api/v1/suppliers', body),
+  create: async (body: { name: string; phone?: string | null; email?: string | null; contact_name?: string | null; notes?: string | null }) => {
+    const local = localSupply()
+    if (local?.saveSupplier) {
+      const data = await local.saveSupplier(body)
+      requestDesktopSync()
+      return { data } as { data: Supplier }
+    }
+    return api.post<{ data: Supplier }>('/api/v1/suppliers', body)
+  },
 
-  update: (id: string, body: Partial<{ name: string; phone: string | null; email: string | null; contact_name: string | null; notes: string | null }>) =>
-    api.put<{ data: Supplier }>(`/api/v1/suppliers/${id}`, body),
+  update: async (id: string, body: Partial<{ name: string; phone: string | null; email: string | null; contact_name: string | null; notes: string | null }>) => {
+    const local = localSupply()
+    if (local?.saveSupplier) {
+      const data = await local.saveSupplier(body, id)
+      requestDesktopSync()
+      return { data } as { data: Supplier }
+    }
+    return api.put<{ data: Supplier }>(`/api/v1/suppliers/${id}`, body)
+  },
 
-  delete: (id: string) =>
-    api.delete<void>(`/api/v1/suppliers/${id}`),
+  delete: async (id: string) => {
+    const local = localSupply()
+    if (local?.deleteSupplier) {
+      await local.deleteSupplier(id)
+      requestDesktopSync()
+      return undefined as void
+    }
+    return api.delete<void>(`/api/v1/suppliers/${id}`)
+  },
 
-  merge: (primaryId: string, duplicateId: string) =>
-    api.post<{ data: Supplier }>('/api/v1/suppliers/merge', {
+  merge: async (primaryId: string, duplicateId: string) => {
+    const local = localSupply()
+    if (local?.mergeSuppliers) {
+      const data = await local.mergeSuppliers(primaryId, duplicateId)
+      requestDesktopSync()
+      return { data } as { data: Supplier }
+    }
+    return api.post<{ data: Supplier }>('/api/v1/suppliers/merge', {
       primary_supplier_id: primaryId,
       duplicate_supplier_id: duplicateId,
-    }),
+    })
+  },
 
   // Борги перед постачальниками
-  getDebts: () =>
-    api.get<{ data: SupplierDebtsResult }>('/api/v1/suppliers/debts'),
-
+  getDebts: async () => {
+    const local = localSupply()
+    if (local?.getDebts) return { data: await local.getDebts() } as { data: SupplierDebtsResult }
+    return api.get<{ data: SupplierDebtsResult }>('/api/v1/suppliers/debts')
+  },
   // Приходні накладні
   listInvoices: async (filters: InvoiceFilters = {}) => {
     const local = localSupply()

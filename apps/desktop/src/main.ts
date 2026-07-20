@@ -270,6 +270,36 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:list-brands', () =>
     requireLocalCatalog().listBrands(),
   )
+  ipcMain.handle('desktop:catalog:create-category', (_event, name: string, sortOrder?: number) =>
+    requireLocalCatalog().createCategory(name, sortOrder),
+  )
+  ipcMain.handle('desktop:catalog:update-category', (_event, id: string, name: string) =>
+    requireLocalCatalog().updateCategory(id, name),
+  )
+  ipcMain.handle('desktop:catalog:delete-category', (_event, id: string) =>
+    requireLocalCatalog().deleteCategory(id),
+  )
+  ipcMain.handle('desktop:catalog:create-brand', (_event, name: string, country?: string | null) =>
+    requireLocalCatalog().createBrand(name, country),
+  )
+  ipcMain.handle('desktop:catalog:update-brand', (_event, id: string, input) =>
+    requireLocalCatalog().updateBrand(id, input),
+  )
+  ipcMain.handle('desktop:catalog:delete-brand', (_event, id: string) =>
+    requireLocalCatalog().deleteBrand(id),
+  )
+  ipcMain.handle('desktop:catalog:generate-barcode', () =>
+    requireLocalCatalog().generateBarcodeOnly(),
+  )
+  ipcMain.handle('desktop:catalog:list-staff', () =>
+    requireLocalCatalog().listStaff(),
+  )
+  ipcMain.handle('desktop:catalog:get-settings', () =>
+    requireLocalCatalog().getSettings(),
+  )
+  ipcMain.handle('desktop:catalog:update-settings', (_event, input) =>
+    requireLocalCatalog().updateSettings(input),
+  )
   ipcMain.handle('desktop:catalog:search-products', (_event, query: string, limit?: number) =>
     requireLocalCatalog().searchProducts(query, undefined, limit),
   )
@@ -324,6 +354,30 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:orders:list-ready', (_event, input?: { tenant_id?: string; search?: string; limit?: number }) =>
     requireLocalOrders().listReadyOrders(input),
   )
+  ipcMain.handle('desktop:orders:list', (_event, input) =>
+    requireLocalOrders().listOrders(input),
+  )
+  ipcMain.handle('desktop:orders:save', (_event, input, id?: string) =>
+    requireLocalOrders().saveOrder(input, id),
+  )
+  ipcMain.handle('desktop:orders:delete', (_event, id: string, tenantId?: string) =>
+    requireLocalOrders().deleteOrder(id, tenantId),
+  )
+  ipcMain.handle('desktop:orders:update-status', (_event, id: string, status: string, tenantId?: string) =>
+    requireLocalOrders().updateOrderStatus(id, status, tenantId),
+  )
+  ipcMain.handle('desktop:orders:update-item-status', (_event, orderId: string, itemId: string, status: string, tenantId?: string) =>
+    requireLocalOrders().updateOrderItemStatus(orderId, itemId, status, tenantId),
+  )
+  ipcMain.handle('desktop:orders:cancel', (_event, id: string, input) =>
+    requireLocalOrders().cancelOrder(id, input),
+  )
+  ipcMain.handle('desktop:orders:pending-items', (_event, supplierId: string, tenantId?: string) =>
+    requireLocalOrders().listPendingItems(supplierId, tenantId),
+  )
+  ipcMain.handle('desktop:orders:bulk-arrival', (_event, itemIds: string[], tenantId?: string) =>
+    requireLocalOrders().bulkArrival(itemIds, tenantId),
+  )
   ipcMain.handle('desktop:orders:get', (_event, id: string, tenantId?: string) =>
     requireLocalOrders().getOrder(id, tenantId),
   )
@@ -341,6 +395,18 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:supply:get-supplier', (_event, id: string, tenantId?: string) =>
     requireLocalSupply().getSupplier(id, tenantId),
+  )
+  ipcMain.handle('desktop:supply:save-supplier', (_event, input, id?: string) =>
+    requireLocalSupply().saveSupplier(input, id),
+  )
+  ipcMain.handle('desktop:supply:delete-supplier', (_event, id: string, tenantId?: string) =>
+    requireLocalSupply().deleteSupplier(id, tenantId),
+  )
+  ipcMain.handle('desktop:supply:merge-suppliers', (_event, primaryId: string, duplicateId: string, tenantId?: string) =>
+    requireLocalSupply().mergeSuppliers(primaryId, duplicateId, tenantId),
+  )
+  ipcMain.handle('desktop:supply:get-debts', (_event, tenantId?: string) =>
+    requireLocalSupply().getSupplierDebts(tenantId),
   )
   ipcMain.handle('desktop:supply:list-invoices', (_event, input?: any) =>
     requireLocalSupply().listInvoices(input),
@@ -371,6 +437,30 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:pos:search-customers', (_event, input?: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number }) =>
     requireLocalPos().searchCustomers(input),
+  )
+  ipcMain.handle('desktop:pos:list-customers', (_event, input) =>
+    requireLocalPos().listCustomers(input),
+  )
+  ipcMain.handle('desktop:pos:get-customer', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().getCustomer(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:get-customer-sales', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().getCustomerSales(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:save-customer', (_event, input, id?: string) =>
+    requireLocalPos().saveCustomer(input, id),
+  )
+  ipcMain.handle('desktop:pos:delete-customer', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().deleteCustomer(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:list-customer-vehicles', (_event, customerId: string, tenantId?: string) =>
+    requireLocalPos().listCustomerVehicles(customerId, tenantId),
+  )
+  ipcMain.handle('desktop:pos:save-customer-vehicle', (_event, customerId: string, input, vehicleId?: string) =>
+    requireLocalPos().saveCustomerVehicle(customerId, input, vehicleId),
+  )
+  ipcMain.handle('desktop:pos:delete-customer-vehicle', (_event, customerId: string, vehicleId: string, tenantId?: string) =>
+    requireLocalPos().deleteCustomerVehicle(customerId, vehicleId, tenantId),
   )
   ipcMain.handle('desktop:pos:get-customer-deposit', (_event, customerId: string, tenantId?: string) =>
     requireLocalPos().getCustomerDeposit(customerId, tenantId),
@@ -403,6 +493,45 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:pos:checkout', (_event, input: LocalSaleCheckoutInput) =>
     requireLocalPos().checkout(input),
+  )
+  ipcMain.handle('desktop:pos:list-sales', (_event, input) =>
+    requireLocalPos().listSales(input),
+  )
+  ipcMain.handle('desktop:pos:list-returns', (_event, input) =>
+    requireLocalPos().listReturns(input),
+  )
+  ipcMain.handle('desktop:pos:get-return', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().getReturn(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:get-sale-for-return', (_event, saleId: string, tenantId?: string) =>
+    requireLocalPos().getSaleForReturn(saleId, tenantId),
+  )
+  ipcMain.handle('desktop:pos:create-return', (_event, input) =>
+    requireLocalPos().createReturn(input),
+  )
+  ipcMain.handle('desktop:pos:get-sale', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().getSale(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:calculate-prices', (_event, items, tenantId?: string) =>
+    requireLocalPos().calculatePrices(items, tenantId),
+  )
+  ipcMain.handle('desktop:pos:suspend-sale', (_event, input) =>
+    requireLocalPos().suspendSale(input),
+  )
+  ipcMain.handle('desktop:pos:list-suspended', (_event, tenantId?: string) =>
+    requireLocalPos().listSuspendedSales(tenantId),
+  )
+  ipcMain.handle('desktop:pos:resume-sale', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().resumeSale(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:confirm-resume-sale', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().confirmResumeSale(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:discard-suspended-sale', (_event, id: string, tenantId?: string) =>
+    requireLocalPos().discardSuspendedSale(id, tenantId),
+  )
+  ipcMain.handle('desktop:pos:check-sale-after-payment', (_event, shiftId: string, after: string, tenantId?: string) =>
+    requireLocalPos().checkSaleAfterPayment(shiftId, after, tenantId),
   )
   ipcMain.handle('desktop:sync:list-pending', (_event, limit?: number) =>
     requireLocalSync().listPending(limit),

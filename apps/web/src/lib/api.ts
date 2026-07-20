@@ -1,3 +1,5 @@
+import { isDesktopRuntime } from './desktopBridge'
+
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
 
 export interface RequestOptions extends Omit<RequestInit, 'headers'> {
@@ -65,7 +67,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
     const msg = aborted
       ? 'Сервер не відповів вчасно. Перевірте результат операції перед повторенням.'
       : 'Сервер недоступний. Перевірте підключення до мережі.'
-    if (!silent) {
+    if (!silent && !isDesktopRuntime()) {
       import('@/components/ui/Toast').then(({ toast }) => toast.error(msg))
     }
     throw new Error(msg)
@@ -100,7 +102,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
       errorMessage = humanizeApiError(errorMessage, errorCode)
     } catch { /* response не JSON */ }
 
-    if (!silent) {
+    if (!silent && !isDesktopRuntime()) {
       import('@/components/ui/Toast').then(({ toast }) => toast.error(errorMessage))
     }
     const err = new Error(errorMessage)

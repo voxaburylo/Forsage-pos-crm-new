@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import { productApi } from '@/features/products/productApi'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import type { Product } from '@/types/product'
 import { formatMoney } from '@/lib/utils'
@@ -53,36 +55,43 @@ export function ProductAutocomplete({
     return () => document.removeEventListener('mousedown', onClickOutside)
   }, [])
 
-  // Debounced пошук
+  // У desktop підказки беруться безпосередньо з SQLite і не чекають мережу.
   useEffect(() => {
     if (justSelected.current) { justSelected.current = false; return }
     const q = value.trim()
-    if (q.length < 2) { 
+    if (q.length < 2) {
       setResults([])
       setSupplierResults([])
-      setOpen(false) 
-      return 
+      setOpen(false)
+      return
     }
     setLoading(true)
-    const t = setTimeout(() => {
-      api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(`/api/v1/search/hybrid?q=${encodeURIComponent(q)}&limit=8`)
-        .then((res) => {
-          const warehouse = res.data?.warehouse || []
-          const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
-          setResults(warehouse)
-          setSupplierResults(catalog)
-          setOpen(warehouse.length > 0 || catalog.length > 0)
-          setHighlight(0)
-        })
-        .catch(() => {
-          setResults([])
+    const t = setTimeout(async () => {
+      try {
+        if (isDesktopRuntime()) {
+          const res = await productApi.search(q, 12)
+          setResults(res.data ?? [])
           setSupplierResults([])
-        })
-        .finally(() => setLoading(false))
-    }, 250)
+          setOpen((res.data?.length ?? 0) > 0)
+          setHighlight(0)
+          return
+        }
+        const res = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(`/api/v1/search/hybrid?q=${encodeURIComponent(q)}&limit=8`)
+        const warehouse = res.data?.warehouse || []
+        const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
+        setResults(warehouse)
+        setSupplierResults(catalog)
+        setOpen(warehouse.length > 0 || catalog.length > 0)
+        setHighlight(0)
+      } catch {
+        setResults([])
+        setSupplierResults([])
+      } finally {
+        setLoading(false)
+      }
+    }, 180)
     return () => clearTimeout(t)
-  }, [value])
-
+  }, [value, warehouseOnly])
   function pick(p: Product) {
     justSelected.current = true
     onSelect(p)

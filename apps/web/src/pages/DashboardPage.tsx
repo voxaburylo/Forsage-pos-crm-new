@@ -8,6 +8,7 @@ import { Layout } from '@/components/Layout'
 import { Card, Button } from '@/components/ui'
 import { formatMoney, localDateKey } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface DailyData {
   date: string
@@ -64,6 +65,76 @@ export default function DashboardPage() {
     async function load() {
       setLoading(true)
       try {
+        const desktop = desktopBridge()
+        if (desktop?.catalog.listProducts && desktop.pos.listCustomers && desktop.pos.listSales && desktop.orders?.list) {
+          const [productResult, customerResult, supplierResult, orders] = await Promise.all([
+            desktop.catalog.listProducts({ limit: 1, offset: 0 }),
+            desktop.pos.listCustomers({ page: 1, per_page: 1 }),
+            desktop.supply?.listSuppliers?.({ page: 1, per_page: 1 }) ?? Promise.resolve({ data: [], pagination: { total: 0 } }),
+            desktop.orders.list({ offset: 0, limit: 500 }),
+          ])
+          const lowResult = await desktop.catalog.listProducts({ lowStock: true, limit: 1, offset: 0 })
+          const debtResult = await desktop.pos.listCustomers({ has_debt: 'true', sort: 'debt', page: 1, per_page: 200 })
+
+          const allSales: any[] = []
+          let salesPage = 1
+          let salesPages = 1
+          do {
+            const response = await desktop.pos.listSales({ page: salesPage, per_page: 200 })
+            allSales.push(...(response.data ?? []))
+            salesPages = response.pagination?.total_pages ?? 1
+            salesPage++
+          } while (salesPage <= salesPages)
+
+          const rangeSales = allSales.filter((sale) => {
+            const key = String(sale.completed_at ?? '').slice(0, 10)
+            return sale.status === 'completed' && key >= range.startDate && key <= range.endDate
+          })
+          const totalRevenue = rangeSales.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0)
+          const cogs = rangeSales.reduce((sum, sale) => sum + (sale.sale_items ?? []).reduce(
+            (itemSum: number, item: any) => itemSum + Number(item.purchase_price ?? 0) * Number(item.qty ?? 0),
+            0,
+          ), 0)
+          const dailyMap = new Map<string, DailyData>()
+          for (const sale of rangeSales) {
+            const date = String(sale.completed_at ?? '').slice(0, 10)
+            const current = dailyMap.get(date) ?? { date, revenue: 0, profit: 0 }
+            const saleCogs = (sale.sale_items ?? []).reduce(
+              (sum: number, item: any) => sum + Number(item.purchase_price ?? 0) * Number(item.qty ?? 0),
+              0,
+            )
+            current.revenue += Number(sale.total ?? 0)
+            current.profit += Number(sale.total ?? 0) - saleCogs
+            dailyMap.set(date, current)
+          }
+          setAnalytics({
+            total_revenue: totalRevenue,
+            cogs,
+            gross_profit: totalRevenue - cogs,
+            total_receipts: rangeSales.length,
+            average_receipt: rangeSales.length ? Math.round(totalRevenue / rangeSales.length) : 0,
+            daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
+          })
+          const activeOrders = (orders ?? []).filter((order: any) => !['completed', 'canceled'].includes(order.status))
+          setLowStock(Number(lowResult.total ?? 0))
+          setTotals({
+            products: Number(productResult.total ?? 0),
+            customers: Number(customerResult.pagination?.total ?? 0),
+            suppliers: Number(supplierResult.pagination?.total ?? supplierResult.data?.length ?? 0),
+            openOrders: activeOrders.length,
+          })
+          const nowTs = Date.now()
+          setOverdueCount(activeOrders.filter((order: any) =>
+            order.pickup_deadline_at && new Date(order.pickup_deadline_at).getTime() < nowTs).length)
+          const debtList = debtResult.data ?? []
+          setDebt({
+            count: Number(debtResult.pagination?.total ?? debtList.length),
+            total: debtList.reduce((sum: number, customer: any) => sum + Number(customer.debt_balance ?? 0), 0),
+          })
+          setForecast(null)
+          setAnomalies([])
+          return
+        }
         const [a, p, c, s, l, o] = await Promise.all([
           api.get<{ data: Analytics }>(`/api/v1/analytics/dashboard?startDate=${range.startDate}&endDate=${range.endDate}`),
           api.get<any>('/api/v1/products?per_page=1'),

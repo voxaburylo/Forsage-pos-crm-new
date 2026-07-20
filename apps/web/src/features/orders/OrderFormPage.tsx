@@ -7,6 +7,7 @@ import { productApi } from '@/features/products/productApi'
 import { kopecksToHryvnia } from '@/types/product'
 import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
+import { supplierApi } from '@/features/suppliers/supplierApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -352,7 +353,7 @@ export default function OrderFormPage() {
   useEffect(() => {
     const qCustomerId = searchParams.get('customer_id')
     if (qCustomerId) {
-      api.get<{ data: Customer }>('/api/v1/customers/' + qCustomerId)
+      customerApi.get(qCustomerId)
         .then((r) => {
           if (r.data) {
             handleCustomerSelect(r.data)
@@ -369,7 +370,7 @@ export default function OrderFormPage() {
       .catch(() => {})
       .finally(() => setDefaultCustomersLoading(false))
 
-    api.get<{ data: Supplier[] }>('/api/v1/suppliers?per_page=200&is_active=true')
+    supplierApi.list({ per_page: 200, is_active: 'true' })
       .then((r) => setSuppliers(uniqueSuppliers((r as any).data ?? [])))
       .catch(() => {})
   }, [])
@@ -644,11 +645,9 @@ export default function OrderFormPage() {
     // ORD-27: попередження про можливий дубль (той самий клієнт+сума за короткий проміжок)
     if (!asDraft && !id && customerId && totalKop > 0) {
       try {
-        const recent = await api.get<{ data: Array<{ order_number: number | null; total_amount: number; status: string; created_at: string }> }>(
-          `/api/v1/customer-orders?customer_id=${customerId}&per_page=10`,
-        )
+        const recent = await orderApi.list()
         const cutoff = Date.now() - 30 * 60 * 1000
-        const dup = ((recent as any).data ?? []).find((o: any) =>
+        const dup = ((recent as any).data ?? []).filter((o: any) => o.customer_id === customerId).find((o: any) =>
           o.status !== 'canceled' &&
           o.total_amount === totalKop &&
           new Date(o.created_at).getTime() > cutoff,
@@ -727,7 +726,7 @@ export default function OrderFormPage() {
             return
           }
           if (sourceDraftId) {
-            await api.delete(`/api/v1/customer-orders/${sourceDraftId}`).catch(() => {})
+            await orderApi.delete(sourceDraftId).catch(() => {})
           }
           toast.success('Замовлення оформлено!')
           navigate('/orders/' + newOrder.id)

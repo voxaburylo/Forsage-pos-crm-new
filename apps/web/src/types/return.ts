@@ -1,4 +1,4 @@
-﻿export type ReturnReason =
+export type ReturnReason =
   | 'defective'
   | 'wrong_part'
   | 'changed_mind'
@@ -24,32 +24,32 @@ export type ItemCondition =
   | 'defective'
 
 export const RETURN_REASON_LABELS: Record<ReturnReason, string> = {
-  defective: 'Brakovana detal',
-  wrong_part: 'Ne ta detal',
-  changed_mind: 'Kliient peredumav',
-  warranty: 'Garanriia',
-  duplicate: 'Dublikat',
-  other: 'Inshe',
+  defective: 'Бракований товар',
+  wrong_part: 'Не той товар',
+  changed_mind: 'Клієнт передумав',
+  warranty: 'Гарантійне повернення',
+  duplicate: 'Дублікат покупки',
+  other: 'Інше',
 }
 
 export const REFUND_METHOD_LABELS: Record<RefundMethod, string> = {
-  cash: 'Povernennia gotivkoiu',
-  terminal: 'Povernennia na terminal',
-  debt_reduction: 'Zmenshennia borhu',
-  credit: 'Kredyt',
+  cash: 'Повернення готівкою',
+  terminal: 'Повернення на термінал',
+  debt_reduction: 'Зменшення боргу',
+  credit: 'Зарахувати на рахунок клієнта',
 }
 
 export const STOCK_ACTION_LABELS: Record<StockAction, string> = {
-  return_to_stock: 'Povernuty na sklad',
-  write_off: 'Spysaty',
-  send_to_supplier: 'Vidpravyty postachalnyku',
+  return_to_stock: 'Повернути на склад',
+  write_off: 'Списати',
+  send_to_supplier: 'Повернути постачальнику',
 }
 
 export const ITEM_CONDITION_LABELS: Record<ItemCondition, string> = {
-  good: 'Spravnyi',
-  damaged: 'Poshkodzhenyi',
-  opened_packaging: 'Rozkryta upakovka',
-  defective: 'Shliub',
+  good: 'Справний',
+  damaged: 'Пошкоджений',
+  opened_packaging: 'Розкрита упаковка',
+  defective: 'Брак',
 }
 
 // Який stock_action дозволений для кожного condition
@@ -70,10 +70,10 @@ export const DEFAULT_STOCK_ACTION_FOR_CONDITION: Record<ItemCondition, StockActi
 
 // Опис умови для підказки
 export const CONDITION_DESCRIPTIONS: Record<ItemCondition, string> = {
-  good: 'Tovar u tovarnomu vygliadi, mozhna prodavaty',
-  damaged: 'Tovar poshkodzheno, ale mozhna prodaty zi znyshkoiu',
-  opened_packaging: 'Upakovku rozkryto, ale tovar spravnyi',
-  defective: 'Brak, ne pidliahaie prodazhu',
+  good: 'Товар у товарному вигляді, можна продавати',
+  damaged: 'Товар пошкоджений, але його можна продати зі знижкою',
+  opened_packaging: 'Упаковку розкрито, але товар справний',
+  defective: 'Брак, не підлягає продажу',
 }
 
 /** Позиція чека з інформацією для повернення */

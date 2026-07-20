@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Edit, Trash2, CreditCard, ShoppingBag, Car, Plus, Copy, ClipboardList } from 'lucide-react'
-import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
 import { customerApi } from './customerApi'
+import { orderApi } from '@/features/orders/orderApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
 import type { CustomerVehicle } from '@/types/customer'
 import CustomerNotes from './CustomerNotes'
@@ -50,9 +51,12 @@ export default function CustomerDetailPage() {
 
   const loadDeposit = useCallback(() => {
     if (!id) return
-    api.get<{ data: { balance: number; transactions: any[] } }>(`/api/v1/customers/${id}/deposit`, { silent: true })
-      .then((r) => setDeposit(r.data))
-      .catch(() => {})
+    const local = desktopBridge()?.pos.getCustomerDeposit
+    if (local) {
+      local(id).then((data) => setDeposit(data as { balance: number; transactions: any[] })).catch(() => {})
+      return
+    }
+    setDeposit(null)
   }, [id])
   useEffect(() => { loadDeposit() }, [loadDeposit])
 
@@ -60,7 +64,7 @@ export default function CustomerDetailPage() {
     if (!customer || (customer as any).loyalty_mode === mode) return
     setSavingLoyaltyMode(true)
     try {
-      await api.put(`/api/v1/customers/${customer.id}`, { loyalty_mode: mode })
+      await customerApi.update(customer.id, { loyalty_mode: mode } as any)
       setCustomer((prev) => prev ? ({ ...prev, loyalty_mode: mode } as any) : prev)
       toast.success(mode === 'cashback'
         ? 'Тепер відсоток клієнта накопичується грошима на рахунку'
@@ -78,9 +82,9 @@ export default function CustomerDetailPage() {
       const [{ data }, { data: s }, tiersRes, { data: carsData }, ordersRes] = await Promise.all([
         customerApi.get(id),
         customerApi.getSales(id),
-        pricingApi.listTiers(),
+        pricingApi.listTiers().catch(() => ({ data: [] as PriceTier[] })),
         customerVehiclesApi.list(id),
-        api.get<{ data: any[] }>(`/api/v1/customer-orders?customer_id=${id}&per_page=20`).catch(() => ({ data: [] })),
+        orderApi.list().then((result) => ({ data: result.data.filter((order) => order.customer_id === id).slice(0, 20) })).catch(() => ({ data: [] })),
       ])
       setCustomer(data)
       setSales(s)

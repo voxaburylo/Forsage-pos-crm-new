@@ -159,8 +159,13 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     return () => window.removeEventListener('forsage:offline-stock-updated', refresh)
   }, [])
 
-  // Load categories dynamically
+  // Desktop завжди читає папки з локальної SQLite; сервер лише синхронізує їх у фоні.
   useEffect(() => {
+    const local = desktopBridge()?.catalog.listCategories
+    if (local) {
+      local().then(setCategories).catch(() => setCategories([]))
+      return
+    }
     if (serverOnline) {
       api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories', { silent: true, timeoutMs: 10000 })
         .then((res) => setCategories(res.data ?? []))
@@ -169,7 +174,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       getCachedCategories(scopeKey).then(setCategories).catch(() => setCategories([]))
     }
   }, [serverOnline, scopeKey])
-
   // Debounced search
   useEffect(() => {
     clearTimeout(timer.current)
@@ -184,26 +188,35 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         // списку) — інакше холодний старт без інтернету висів на мережевих
         // таймаутах і стирав уже показані товари.
         const desktopCatalog = desktopBridge()?.catalog
-        if (desktopCatalog && !categoryFilter) {
-          const localProducts = query.trim()
-            ? await desktopCatalog.searchProducts(query.trim(), 20)
-            : await desktopCatalog.listPopular(50)
+        if (desktopCatalog) {
+          const selectedCategoryId = categoryFilter
+            ? categories.find((category) => category.name === categoryFilter)?.id
+            : undefined
+          let localProducts
+          if (desktopCatalog.listProducts) {
+            const localResult = await desktopCatalog.listProducts({
+              query: query.trim() || undefined,
+              categoryId: selectedCategoryId,
+              limit: query.trim() ? 30 : 50,
+              offset: 0,
+              sortField: query.trim() ? undefined : 'name',
+              sortDir: 'asc',
+            })
+            localProducts = localResult.data
+          } else {
+            localProducts = query.trim()
+              ? await desktopCatalog.searchProducts(query.trim(), 30)
+              : await desktopCatalog.listPopular(50)
+            if (selectedCategoryId) {
+              localProducts = localProducts.filter((product) => product.category_id === selectedCategoryId)
+            }
+          }
           if (epoch !== searchEpoch.current) return
           setResults(localProducts.map(desktopProductToProduct))
           setSupplierResults([])
           setLoading(false)
-          if (serverOnline && query.trim()) {
-            api.get<{ data: { supplier_catalog: any[] } }>(
-              `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`,
-              { silent: true, timeoutMs: 6000 },
-            ).then(({ data }) => {
-              if (epoch !== searchEpoch.current) return
-              setSupplierResults(data?.supplier_catalog || [])
-            }).catch(() => {})
-          }
           return
         }
-
         // Офлайн-режим (браузер/PWA): шукаємо в IndexedDB
         if (!serverOnline) {
           const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
@@ -251,7 +264,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       }
     }, 200)
     return () => clearTimeout(timer.current)
-  }, [query, categoryFilter, serverOnline, scopeKey, offlineStockVersion])
+  }, [query, categoryFilter, categories, serverOnline, scopeKey, offlineStockVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {

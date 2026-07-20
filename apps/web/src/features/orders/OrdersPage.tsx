@@ -11,6 +11,7 @@ import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
 import { startRepeatOrder, formatOrderNo } from './orderActions'
 import { customerApi } from '@/features/customers/customerApi'
+import { supplierApi } from '@/features/suppliers/supplierApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { Menu } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
@@ -322,15 +323,13 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   const loadData = useCallback(() => {
     setLoading(true)
     const promises: Promise<unknown>[] = [
-      api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?chat_id=${chat.id}&per_page=10`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
-        .then((r) => setChatOrders(r.data ?? []))
+      orderApi.list().then((r) => setChatOrders((r.data ?? []).filter((order) => order.chat_id === chat.id).slice(0, 10)))
         .catch(() => { setChatOrders([]) }),
     ]
     if (customer?.id) {
       promises.push(
         customerVehiclesApi.list(customer.id).then((r) => setVehicles(r.data ?? [])),
-        api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?customer_id=${customer.id}&per_page=5`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
-          .then((r) => setOrders(r.data ?? []))
+        orderApi.list().then((r) => setOrders((r.data ?? []).filter((order) => order.customer_id === customer.id).slice(0, 5)))
           .catch(() => {}),
       )
     } else {
@@ -776,7 +775,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
   async function handleDelete(orderId: string, clientName: string) {
     if (!confirm(`Видалити чернетку для "${clientName}"?`)) return
     try {
-      await api.delete(`/api/v1/customer-orders/${orderId}`, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS })
+      await orderApi.delete(orderId, { silent: true, timeoutMs: ORDERS_WRITE_TIMEOUT_MS })
       toast.success('Чернетку видалено')
       onLoad()
     } catch (error) {
@@ -1393,21 +1392,12 @@ export default function OrdersPage() {
   }, [loadChats])
 
   // ── завантаження замовлень за вкладкою ──
-  function tabParams(t: Tab, currentOffset: number): string {
-    const p = new URLSearchParams({ per_page: '50', offset: currentOffset.toString() })
-    if (t === 'active')    p.set('status', 'new,ordered,arrived,called,no_answer')
-    if (t === 'ready')     p.set('status', 'ready')
-    if (t === 'completed') p.set('status', 'completed')
-    if (t === 'canceled')  p.set('status', 'canceled')
-    if (t === 'leads' || t === 'drafts') p.set('status', 'lead')
-    return p.toString()
-  }
   const loadOrders = useCallback((showLoading = true) => {
     const cacheKey = `${tab}:${offset}`
     const cached = orderCacheRef.current.get(cacheKey)
     if (cached) setOrders(cached)
     setLoadingOrders(showLoading || !cached)
-    api.get<{ data: CustomerOrder[] }>(`/api/v1/customer-orders?${tabParams(tab, offset)}`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
+    orderApi.list(offset, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }, 50)
       .then((r) => {
         const next = r.data ?? []
         orderCacheRef.current.set(cacheKey, next)
@@ -1433,7 +1423,7 @@ export default function OrdersPage() {
 
   // ── постачальники (для масового приймання) ──
   useEffect(() => {
-    api.get<{ data: Array<{ id: string; name: string }> }>('/api/v1/suppliers?per_page=200', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
+    supplierApi.list({ per_page: 200 })
       .then((r) => setSuppliers(uniqueNamed(r.data ?? [])))
       .catch(() => {})
   }, [])

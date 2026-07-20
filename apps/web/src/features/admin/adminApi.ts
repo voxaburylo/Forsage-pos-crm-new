@@ -1,4 +1,5 @@
 import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
 // Єдиний канонічний тип етикетки — з LabelDesigner (повний). import type
 // стирається при збірці, тож рантайм-циклу з adminApi не виникає.
 import type { LabelSettings } from '@/features/labels/LabelDesigner'
@@ -91,7 +92,11 @@ export interface ShopSettings {
 
 export const adminApi = {
   // Users
-  listUsers: () => api.get<{ data: AdminUser[] }>('/api/v1/admin/users'),
+  listUsers: async () => {
+    const local = desktopBridge()?.catalog.listStaff
+    if (local) return { data: await local() as AdminUser[] }
+    return api.get<{ data: AdminUser[] }>('/api/v1/admin/users')
+  },
   createUser: (body: { phone: string; password: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) =>
     api.post<{ data: AdminUser }>('/api/v1/admin/users', body),
   updateUser: (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number; rate_period?: 'day' | 'month'; phone?: string }) =>
@@ -102,23 +107,48 @@ export const adminApi = {
     api.put<{ data: { success: boolean } }>(`/api/v1/admin/users/${id}/password`, { password }),
 
   // Categories
-  listCategories: () => api.get<{ data: Array<{ id: string; name: string; sort_order: number }> }>('/api/v1/admin/categories'),
-  createCategory: (name: string, sort_order?: number) =>
-    api.post('/api/v1/admin/categories', { name, sort_order: sort_order ?? 0 }),
-  updateCategory: (id: string, name: string) =>
-    api.put(`/api/v1/admin/categories/${id}`, { name }),
-  deleteCategory: (id: string) =>
-    api.delete(`/api/v1/admin/categories/${id}`),
+  listCategories: async () => {
+    const local = desktopBridge()?.catalog.listCategories
+    if (local) return { data: await local() }
+    return api.get<{ data: Array<{ id: string; name: string; sort_order: number }> }>('/api/v1/admin/categories')
+  },
+  createCategory: async (name: string, sort_order?: number) => {
+    const local = desktopBridge()?.catalog.createCategory
+    if (local) return { data: await local(name, sort_order) }
+    return api.post('/api/v1/admin/categories', { name, sort_order: sort_order ?? 0 })
+  },
+  updateCategory: async (id: string, name: string) => {
+    const local = desktopBridge()?.catalog.updateCategory
+    if (local) return { data: await local(id, name) }
+    return api.put(`/api/v1/admin/categories/${id}`, { name })
+  },
+  deleteCategory: async (id: string) => {
+    const local = desktopBridge()?.catalog.deleteCategory
+    if (local) return local(id)
+    return api.delete(`/api/v1/admin/categories/${id}`)
+  },
 
   // Brands
-  listBrands: () => api.get<{ data: Array<{ id: string; name: string; country: string | null }> }>('/api/v1/admin/brands'),
-  createBrand: (name: string, country?: string) =>
-    api.post('/api/v1/admin/brands', { name, country: country || null }),
-  updateBrand: (id: string, body: { name?: string; country?: string | null }) =>
-    api.put(`/api/v1/admin/brands/${id}`, body),
-  deleteBrand: (id: string) =>
-    api.delete(`/api/v1/admin/brands/${id}`),
-
+  listBrands: async () => {
+    const local = desktopBridge()?.catalog.listBrands
+    if (local) return { data: await local() }
+    return api.get<{ data: Array<{ id: string; name: string; country: string | null }> }>('/api/v1/admin/brands')
+  },
+  createBrand: async (name: string, country?: string) => {
+    const local = desktopBridge()?.catalog.createBrand
+    if (local) return { data: await local(name, country || null) }
+    return api.post('/api/v1/admin/brands', { name, country: country || null })
+  },
+  updateBrand: async (id: string, body: { name?: string; country?: string | null }) => {
+    const local = desktopBridge()?.catalog.updateBrand
+    if (local) return { data: await local(id, body) }
+    return api.put(`/api/v1/admin/brands/${id}`, body)
+  },
+  deleteBrand: async (id: string) => {
+    const local = desktopBridge()?.catalog.deleteBrand
+    if (local) return local(id)
+    return api.delete(`/api/v1/admin/brands/${id}`)
+  },
   // Повне очищення каталогу
   resetCatalog: () =>
     api.post<{ data: { products_deleted: number; categories_deleted: number } }>(
@@ -134,7 +164,18 @@ export const adminApi = {
     ),
 
   // Settings
-  getSettings: () => api.get<{ data: ShopSettings }>('/api/v1/settings'),
-  updateSettings: (body: Partial<ShopSettings>, opts?: { silent?: boolean }) =>
-    api.put<{ data: ShopSettings }>('/api/v1/settings', body, opts),
+  getSettings: async () => {
+    const local = desktopBridge()?.catalog.getSettings
+    if (local) return { data: await local() as ShopSettings }
+    return api.get<{ data: ShopSettings }>('/api/v1/settings')
+  },
+  updateSettings: async (body: Partial<ShopSettings>, opts?: { silent?: boolean }) => {
+    const local = desktopBridge()?.catalog.updateSettings
+    if (local) {
+      const data = await local(body)
+      window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      return { data: data as ShopSettings }
+    }
+    return api.put<{ data: ShopSettings }>('/api/v1/settings', body, opts)
+  },
 }

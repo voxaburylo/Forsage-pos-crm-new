@@ -1,4 +1,5 @@
 import { api, type RequestOptions } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 // ---------- Типи ----------
 
@@ -86,40 +87,118 @@ const ORDER_READ_TIMEOUT_MS = 10_000
 const ORDER_WRITE_TIMEOUT_MS = 15_000
 const ORDER_FINALIZE_TIMEOUT_MS = 30_000
 
+function requestOrderSync() {
+  window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+}
+
 export const orderApi = {
-  list: (offset = 0, opts: OrderRequestOptions = {}) =>
-    api.get<{ data: CustomerOrder[] }>(
-      `/api/v1/customer-orders?per_page=200&offset=${offset}`,
+  list: async (offset = 0, opts: OrderRequestOptions = {}, limit = 200) => {
+    const local = desktopBridge()?.orders?.list
+    if (local) return { data: await local({ offset, limit }) as CustomerOrder[] }
+    return api.get<{ data: CustomerOrder[] }>(
+      `/api/v1/customer-orders?per_page=${limit}&offset=${offset}`,
       { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts },
-    ),
+    )
+  },
 
-  get: (id: string, opts: OrderRequestOptions = {}) =>
-    api.get<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts }),
+  get: async (id: string, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.get
+    if (local) {
+      const data = await local(id)
+      if (!data) throw new Error('Замовлення не знайдено')
+      return { data: data as CustomerOrder }
+    }
+    return api.get<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts })
+  },
 
-  create: (body: CreateOrderPayload, opts: OrderRequestOptions = {}) =>
-    api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
+  create: async (body: CreateOrderPayload, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.save
+    if (local) {
+      const data = await local(body)
+      requestOrderSync()
+      return { data: data as CustomerOrder }
+    }
+    return api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
 
-  update: (id: string, body: CreateOrderPayload, opts: OrderRequestOptions = {}) =>
-    api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
+  update: async (id: string, body: CreateOrderPayload, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.save
+    if (local) {
+      const data = await local(body, id)
+      requestOrderSync()
+      return { data: data as CustomerOrder }
+    }
+    return api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
 
-  delete: (id: string, opts: OrderRequestOptions = {}) =>
-    api.delete<{ data: { success: boolean } }>('/api/v1/customer-orders/' + id, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
+  delete: async (id: string, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.delete
+    if (local) {
+      const data = await local(id)
+      requestOrderSync()
+      return { data }
+    }
+    return api.delete<{ data: { success: boolean } }>('/api/v1/customer-orders/' + id, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
 
-  updateStatus: (id: string, status: CustomerOrderStatus, callback_at?: string | null, opts: OrderRequestOptions = {}) =>
-    api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status, callback_at }, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
+  updateStatus: async (id: string, status: CustomerOrderStatus, callback_at?: string | null, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.updateStatus
+    if (local) {
+      const data = await local(id, status)
+      requestOrderSync()
+      return { data: data as CustomerOrder }
+    }
+    return api.patch<{ data: CustomerOrder }>(`/api/v1/customer-orders/${id}/status`, { status, callback_at }, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
 
-  updateItemStatus: (orderId: string, itemId: string, item_status: ItemStatus, opts: OrderRequestOptions = {}) =>
-    api.patch(`/api/v1/customer-orders/${orderId}/items/${itemId}/status`, { item_status }, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
+  updateItemStatus: async (orderId: string, itemId: string, item_status: ItemStatus, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.updateItemStatus
+    if (local) {
+      const data = await local(orderId, itemId, item_status)
+      requestOrderSync()
+      return { data }
+    }
+    return api.patch(`/api/v1/customer-orders/${orderId}/items/${itemId}/status`, { item_status }, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
 
-  complete: (id: string, payload: { payment_method: string; is_fiscal: boolean; shift_id: string | null }, opts: OrderRequestOptions = {}) =>
-    api.post(`/api/v1/customer-orders/${id}/complete`, payload, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts }),
+  listPayments: async (id: string, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.listPayments
+    if (local) return { data: await local(id) }
+    return api.get<{ data: any[] }>(`/api/v1/customer-orders/${id}/payments`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts })
+  },
+  complete: async (id: string, payload: { payment_method: string; is_fiscal: boolean; shift_id: string | null }, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.complete
+    if (local) {
+      const data = await local(id, payload)
+      requestOrderSync()
+      return data
+    }
+    return api.post(`/api/v1/customer-orders/${id}/complete`, payload, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts })
+  },
 
-  cancel: (id: string, refund_prepayment: boolean, reason?: string | null, keep_as_credit?: boolean, opts: OrderRequestOptions = {}) =>
-    api.post(`/api/v1/customer-orders/${id}/cancel`, { refund_prepayment, keep_as_credit: keep_as_credit ?? false, reason: reason ?? null }, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts }),
+  cancel: async (id: string, refund_prepayment: boolean, reason?: string | null, keep_as_credit?: boolean, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.cancel
+    if (local) {
+      const data = await local(id, { refund_prepayment, keep_as_credit: keep_as_credit ?? false, reason: reason ?? null })
+      requestOrderSync()
+      return { data }
+    }
+    return api.post(`/api/v1/customer-orders/${id}/cancel`, { refund_prepayment, keep_as_credit: keep_as_credit ?? false, reason: reason ?? null }, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts })
+  },
 
-  pendingItems: (supplierId: string, opts: OrderRequestOptions = {}) =>
-    api.get<{ data: any[] }>(`/api/v1/customer-orders/pending-items?supplier_id=${supplierId}`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts }),
+  pendingItems: async (supplierId: string, opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.pendingItems
+    if (local) return { data: await local(supplierId) }
+    return api.get<{ data: any[] }>(`/api/v1/customer-orders/pending-items?supplier_id=${supplierId}`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts })
+  },
 
-  bulkArrival: (item_ids: string[], opts: OrderRequestOptions = {}) =>
-    api.post('/api/v1/customer-orders/bulk-arrival', { item_ids }, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts }),
+  bulkArrival: async (item_ids: string[], opts: OrderRequestOptions = {}) => {
+    const local = desktopBridge()?.orders?.bulkArrival
+    if (local) {
+      const data = await local(item_ids)
+      requestOrderSync()
+      return { data }
+    }
+    return api.post('/api/v1/customer-orders/bulk-arrival', { item_ids }, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
 }
