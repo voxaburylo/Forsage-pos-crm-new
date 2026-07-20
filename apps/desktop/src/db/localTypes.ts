@@ -68,6 +68,7 @@ export interface LocalSaleCheckoutInput {
   items: LocalSaleItemInput[]
   payments: LocalSalePaymentInput[]
   discount?: number
+  bonuses_spent?: number
   notes?: string | null
   is_fiscal?: boolean
   fiscal_number?: string | null

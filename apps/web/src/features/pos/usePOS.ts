@@ -88,10 +88,6 @@ export function usePOS() {
 
     const desktop = desktopBridge()
     if (desktop) {
-      if (bonusRedeemed > 0) {
-        toast.error('Списання бонусів поки потребує серверної синхронізації')
-        return null
-      }
       if (options?.isFiscal && (method === 'debt' || (method === 'mixed' && !options?.split))) {
         toast.error('Продаж у борг не фіскалізується — вимкніть фіскальний чек')
         return null
@@ -185,7 +181,8 @@ export function usePOS() {
           })),
           payments,
           notes: notes || null,
-          discount: totalDiscount,
+          discount: totalDiscount + bonusRedeemed,
+          bonuses_spent: bonusRedeemed,
           is_fiscal: !!fiscalNumber,
           fiscal_number: fiscalNumber,
           fiscal_qr_url: fiscalQrUrl,

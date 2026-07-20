@@ -14,7 +14,7 @@ import {
   ArrowRight
 } from 'lucide-react'
 import Papa from 'papaparse'
-import { api } from '@/lib/api'
+import { importApi } from '@/features/suppliers/importApi'
 import { productApi, requestDesktopSync } from './productApi'
 import { toast } from '@/components/ui/Toast'
 
@@ -320,7 +320,7 @@ export function ImportModal({ onClose, onImported }: Props) {
     setStep('preview')
 
     try {
-      const res = await api.post('/api/v1/import/preview', {
+      const res = await importApi.preview({
         text: rawText,
         mapping,
         supplier_id: null,
@@ -364,7 +364,7 @@ export function ImportModal({ onClose, onImported }: Props) {
 
     setImporting(true)
     try {
-      const res = await api.post('/api/v1/import/confirm', {
+      const res = await importApi.confirm({
         supplier_id: null,
         items: validItems.map(item => ({
           row: item.row,

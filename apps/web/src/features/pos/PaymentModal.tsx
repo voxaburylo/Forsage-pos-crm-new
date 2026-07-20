@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { Banknote, CreditCard, BookOpen, Star, SplitSquareHorizontal, Smartphone, Receipt, Loader2 } from 'lucide-react'
 import { usePOSStore } from '@/stores/posStore'
 import { api } from '@/lib/api'
+import { adminApi } from '@/features/admin/adminApi'
+import { customerApi } from '@/features/customers/customerApi'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
 
@@ -69,11 +71,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setBonusInput('')
   }, [open, offline, method])
 
-  // Чи активний інтегрований термінал — тоді сервер проводить оплату сам,
-  // і касир НЕ вводить код вручну (інакше можливе подвійне списання).
+  // Налаштування термінала й бонусний баланс у desktop читаємо з SQLite.
   useEffect(() => {
     if (!open) return
-    api.get<{ data: { bank_terminal_enabled?: boolean; terminal_provider?: string } }>('/api/v1/settings')
+    adminApi.getSettings()
       .then((res) => {
         const d = res.data
         setTerminalIntegrated(!!d.bank_terminal_enabled && (d.terminal_provider ?? 'manual') !== 'manual')
@@ -86,6 +87,18 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       setBonusBalance(0); setMaxBonus(0); setBonusInput(''); setLoyaltyEnabled(false)
       return
     }
+    if (desktopBridge()) {
+      customerApi.get(store.customer.id).then((res) => {
+        const balance = Number(res.data.bonus_balance ?? 0)
+        const maxRedeem = Math.min(balance, Math.floor(store.total * 0.30))
+        setBonusBalance(balance)
+        setMaxBonus(maxRedeem)
+        setLoyaltyEnabled(balance > 0)
+      }).catch(() => {
+        setBonusBalance(0); setMaxBonus(0); setLoyaltyEnabled(false)
+      })
+      return
+    }
     api.get<{ data: { balance: number; max_redeem: number } }>(
       '/api/v1/loyalty/customer/' + store.customer.id + '/max-redeem?total=' + store.total
     ).then((res) => {
@@ -94,7 +107,6 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       setLoyaltyEnabled(res.data.max_redeem > 0 || res.data.balance > 0)
     }).catch(() => {})
   }, [open, store.customer, store.total])
-
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
   const _bonusRedeemed = Math.min(
     Math.round(parseFloat(bonusInput || '0') * 100),

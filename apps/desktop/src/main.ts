@@ -471,6 +471,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:pos:add-customer-deposit', (_event, input: any) =>
     requireLocalPos().addCustomerDeposit(input),
   )
+  ipcMain.handle('desktop:pos:create-cash-operation', (_event, input) =>
+    requireLocalPos().createCashOperation(input),
+  )
+  ipcMain.handle('desktop:pos:list-cash-operations', (_event, shiftId: string, tenantId?: string) =>
+    requireLocalPos().listCashOperations(shiftId, tenantId),
+  )
+  ipcMain.handle('desktop:pos:cash-operation-summary', (_event, shiftId: string, tenantId?: string) =>
+    requireLocalPos().getCashOperationSummary(shiftId, tenantId),
+  )
   ipcMain.handle('desktop:pos:expected-cash', (_event, cashierId: string) =>
     requireLocalPos().getExpectedCash(cashierId),
   )

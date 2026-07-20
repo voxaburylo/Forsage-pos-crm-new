@@ -52,17 +52,27 @@ export function QuickChargeModal({
       let data: { id: string; sku: string; name: string; unit: string; retail_price: number } | null = null
       const cached = await searchProductsOffline(sku, 10, scopeKey).catch(() => [])
       data = cached.find((product) => product.sku === sku) ?? null
-      if (!data && !offline) {
-        const response = await api.post<{ data: NonNullable<typeof data> }>(
-          '/api/v1/sales/quick-item',
-          { kind },
-          undefined,
-          { timeoutMs: 8_000, silent: true },
-        )
-        data = response.data
-      }
       if (!data) {
-        throw new Error('Службова позиція ще не кешована. Відкрийте касу один раз з інтернетом')
+        const desktop = desktopBridge()
+        if (desktop) {
+          data = {
+            id: 'local-' + sku.toLowerCase(),
+            sku,
+            name: isTire ? 'Шиномонтажні послуги' : 'Вільний продаж',
+            unit: 'посл.',
+            retail_price: price,
+          }
+        } else if (!offline) {
+          const response = await api.post<{ data: NonNullable<typeof data> }>(
+            '/api/v1/sales/quick-item',
+            { kind },
+            undefined,
+            { timeoutMs: 8_000, silent: true },
+          )
+          data = response.data
+        }
+      }      if (!data) {
+        throw new Error('Не вдалося створити службову позицію')
       }
 
       // Desktop: гарантуємо, що службовий товар (POS-FREE-SALE / POS-TIRE-SERVICE)

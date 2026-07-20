@@ -56,6 +56,7 @@ export interface DesktopCheckoutInput {
   manager_id?: string | null
   notes?: string | null
   discount?: number
+  bonuses_spent?: number
   is_fiscal?: boolean
   fiscal_number?: string | null
   fiscal_qr_url?: string | null
@@ -372,6 +373,9 @@ interface ForsageDesktopBridge {
     getCustomerDeposit?: (customerId: string, tenantId?: string) => Promise<{ balance: number; transactions: unknown[] }>
     payDebt?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
     addCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>
+    createCashOperation?: (input: any) => Promise<any>
+    listCashOperations?: (shiftId: string, tenantId?: string) => Promise<any[]>
+    cashOperationSummary?: (shiftId: string, tenantId?: string) => Promise<any>
     expectedCash: (cashierId: string) => Promise<{ opening_cash: number; cash_sales: number; cash_returns: number; cash_in: number; cash_out: number; expected_amount: number } | null>
     shiftReport: (cashierId: string) => Promise<import('@/types/shift').ShiftReport | null>
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true }>

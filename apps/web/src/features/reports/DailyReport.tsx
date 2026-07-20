@@ -84,7 +84,7 @@ export default function DailyReport() {
 
   useEffect(() => {
     if (tab !== 'today') return
-    api.get<{ data: SoldItem[] }>(`/api/v1/reports/sold-items?date=${soldDate}`, { silent: true })
+    reportApi.soldItems(soldDate)
       .then((r) => setSoldItems(r.data ?? []))
       .catch(() => setSoldItems([]))
   }, [tab, soldDate])
@@ -118,7 +118,7 @@ export default function DailyReport() {
         reportApi.salesPeriod(),
       ])
       setReport({ ...summary, sales: period.sales })
-      api.get<{ data: DailyControl }>('/api/v1/reports/daily-control')
+      reportApi.dailyControl()
         .then((r) => setControl(r.data)).catch(() => {})
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [])
@@ -145,7 +145,7 @@ export default function DailyReport() {
       const now = new Date()
       const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
       const to   = now.toISOString()
-      const { data } = await api.get<{ data: ProfitReport }>(`/api/v1/reports/profit?from=${from}&to=${to}`)
+      const { data } = await reportApi.profit(from, to)
       setProfit(data)
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [])

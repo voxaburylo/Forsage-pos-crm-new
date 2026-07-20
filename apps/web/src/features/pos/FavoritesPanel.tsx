@@ -6,7 +6,6 @@ import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { playSuccessBeep, initAudio } from '@/lib/audioService'
 import { toast } from '@/components/ui/Toast'
-import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { useNavigate } from 'react-router-dom'
 
@@ -91,7 +90,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
     if (!foodItem) return
     setFoodLoading(true)
     const cats = foodItem.category_filter ?? []
-    api.get<{ data: FoodItem[] }>('/api/v1/products?per_page=200&is_active=true')
+    productApi.list({ per_page: 200, is_active: 'true' })
       .then((r) => {
         const filtered = (r.data ?? []).filter((p) =>
           cats.length === 0 || cats.includes(p.category?.name ?? '')

@@ -9,12 +9,14 @@ import {
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface NavItem {
   to: string
   icon: React.ReactNode
   label: string
   roles?: string[]
+  desktopHidden?: boolean
 }
 
 interface NavGroup {
@@ -63,7 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Адміністрування',
     roles: ['owner', 'admin'],
     items: [
-      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда та ЗП',        roles: ['owner','admin'] },
+      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда та ЗП',        roles: ['owner','admin'], desktopHidden: true },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
     ],
   },
@@ -135,7 +137,7 @@ function NavSection({
   const location = useLocation()
 
   const visibleItems = group.items.filter(
-    (item) => !item.roles || item.roles.includes(role),
+    (item) => (!item.desktopHidden || !desktopBridge()) && (!item.roles || item.roles.includes(role)),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))
@@ -202,6 +204,13 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
 
 
     function fetchPicking() {
+      const local = desktopBridge()?.orders?.list
+      if (local) {
+        local({ limit: 500, offset: 0 })
+          .then((rows) => setPickingCount((rows ?? []).filter((order: any) => !['completed', 'canceled'].includes(order.status)).length))
+          .catch(() => {})
+        return
+      }
       api.get<{ data: any[] }>('/api/v1/picking/orders', { silent: true } as any)
         .then((r) => setPickingCount((r.data ?? []).length))
         .catch(() => {})

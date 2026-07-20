@@ -126,6 +126,9 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getCustomerDeposit: (customerId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer-deposit', customerId, tenantId),
     payDebt: (input: unknown) => ipcRenderer.invoke('desktop:pos:pay-debt', input),
     addCustomerDeposit: (input: unknown) => ipcRenderer.invoke('desktop:pos:add-customer-deposit', input),
+    createCashOperation: (input: unknown) => ipcRenderer.invoke('desktop:pos:create-cash-operation', input),
+    listCashOperations: (shiftId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:list-cash-operations', shiftId, tenantId),
+    cashOperationSummary: (shiftId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:cash-operation-summary', shiftId, tenantId),
     expectedCash: (cashierId: string) => ipcRenderer.invoke('desktop:pos:expected-cash', cashierId),
     shiftReport: (cashierId: string) => ipcRenderer.invoke('desktop:pos:shift-report', cashierId),
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) =>

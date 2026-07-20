@@ -723,6 +723,81 @@ export class LocalPosRepository {
     `).get(tenantId, shiftId, after) as { id: string } | undefined
     return row ? this.getSale(row.id, tenantId) : null
   }
+  createCashOperation(input: {
+    tenant_id?: string
+    shift_id: string
+    user_id?: string | null
+    type: 'in' | 'out'
+    amount: number
+    note?: string | null
+    source?: string
+  }): any {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Вкажіть суму більше нуля')
+    const shift = this.db.prepare(`
+      SELECT id FROM shifts
+      WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL
+    `).get(input.shift_id, tenantId) as { id: string } | undefined
+    if (!shift) throw new Error('Касову зміну не знайдено або вже закрито')
+    const timestamp = nowIso()
+    const id = randomUUID()
+    const dbType = input.type === 'in' ? 'cash_in' : 'cash_out'
+    this.db.prepare(`
+      INSERT INTO cash_operations (
+        id, tenant_id, shift_id, user_id, type, source, amount, notes,
+        dirty_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, tenantId, input.shift_id, input.user_id ?? null, dbType,
+      input.source ?? 'cashbox', amount, input.note ?? null,
+      timestamp, timestamp, timestamp,
+    )
+    this.addOutbox(tenantId, 'cash_operation', id, 'cash_operation.created', {
+      id, shift_id: input.shift_id, type: input.type, amount,
+      note: input.note ?? null, source: input.source ?? 'cashbox',
+      user_id: input.user_id ?? null,
+    }, timestamp)
+    return {
+      id, shift_id: input.shift_id, type: input.type, amount,
+      note: input.note ?? null, created_by: input.user_id ?? 'local', created_at: timestamp,
+    }
+  }
+
+  listCashOperations(shiftId: string, tenantId = DEFAULT_TENANT_ID): any[] {
+    const rows = this.db.prepare(`
+      SELECT id, shift_id, user_id, type, amount, notes, created_at
+      FROM cash_operations
+      WHERE shift_id = ? AND tenant_id = ? AND type IN ('cash_in', 'cash_out')
+      ORDER BY created_at DESC
+    `).all(shiftId, tenantId) as any[]
+    return rows.map((row) => ({
+      id: row.id,
+      shift_id: row.shift_id,
+      type: row.type === 'cash_in' ? 'in' : 'out',
+      amount: Number(row.amount),
+      note: row.notes ?? null,
+      created_by: row.user_id ?? 'local',
+      created_at: row.created_at,
+    }))
+  }
+
+  getCashOperationSummary(shiftId: string, tenantId = DEFAULT_TENANT_ID): {
+    total_in: number
+    total_out: number
+    net: number
+  } {
+    const row = this.db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'cash_in' THEN amount ELSE 0 END), 0) AS total_in,
+        COALESCE(SUM(CASE WHEN type = 'cash_out' THEN amount ELSE 0 END), 0) AS total_out
+      FROM cash_operations
+      WHERE shift_id = ? AND tenant_id = ?
+    `).get(shiftId, tenantId) as { total_in: number; total_out: number }
+    const totalIn = Number(row?.total_in ?? 0)
+    const totalOut = Number(row?.total_out ?? 0)
+    return { total_in: totalIn, total_out: totalOut, net: totalIn - totalOut }
+  }
   // Очікувана готівка у відкритій зміні (звірка каси) — з локальних даних.
   getExpectedCash(cashierId: string, tenantId = DEFAULT_TENANT_ID): {
     opening_cash: number
@@ -914,6 +989,14 @@ export class LocalPosRepository {
         }
       })
 
+      const bonusesSpent = money(input.bonuses_spent ?? 0)
+      if (bonusesSpent > 0 && !input.customer_id) throw new Error('Для списання бонусів виберіть клієнта')
+      let bonusCustomer: ReturnType<LocalPosRepository['getCustomerForMoney']> | null = null
+      if (bonusesSpent > 0 && input.customer_id) {
+        bonusCustomer = this.getCustomerForMoney(input.customer_id, tenantId)
+        const bonusBalance = Number((bonusCustomer as any).bonus_balance ?? 0)
+        if (bonusesSpent > bonusBalance) throw new Error('Недостатньо бонусів у клієнта')
+      }
       const discount = money(input.discount ?? 0)
       const total = Math.max(0, subtotal - discount)
       const paidTotal = payments.cash + payments.card + payments.transfer + payments.debt
@@ -1031,6 +1114,23 @@ export class LocalPosRepository {
         )
       }
 
+      if (bonusesSpent > 0 && input.customer_id && bonusCustomer) {
+        const balanceAfter = Number((bonusCustomer as any).bonus_balance ?? 0) - bonusesSpent
+        this.db.prepare(`
+          UPDATE customers SET bonus_balance = ?, dirty_at = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(balanceAfter, timestamp, timestamp, input.customer_id, tenantId)
+        this.db.prepare(`
+          INSERT INTO bonus_transactions (
+            id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
+            description, created_by, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'spend', ?, ?, ?, ?, ?, ?)
+        `).run(
+          randomUUID(), tenantId, input.customer_id, -bonusesSpent, saleId,
+          `Списання бонусів за чеком ${saleNumber}`, input.cashier_id,
+          timestamp, timestamp, timestamp,
+        )
+      }
       if (payments.debt > 0 && input.customer_id) {
         const customer = this.getCustomerForMoney(input.customer_id, tenantId)
         this.db.prepare(`
@@ -1074,6 +1174,7 @@ export class LocalPosRepository {
           manager_id: input.manager_id ?? null,
           subtotal,
           discount,
+          bonuses_spent: bonusesSpent,
           total,
           payment_method: method,
           is_fiscal: input.is_fiscal === true,
@@ -1522,11 +1623,11 @@ export class LocalPosRepository {
     deposit_balance: number
   } {
     const row = this.db.prepare(`
-      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance
+      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance, COALESCE(bonus_balance, 0) AS bonus_balance
       FROM customers
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
       LIMIT 1
-    `).get(customerId, tenantId) as { id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number } | undefined
+    `).get(customerId, tenantId) as { id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number; bonus_balance: number } | undefined
     if (!row) throw new Error('Клієнта не знайдено')
     return row
   }

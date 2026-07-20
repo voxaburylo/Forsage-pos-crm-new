@@ -327,6 +327,7 @@ export default function SettingsPage() {
               <h3 className="text-sm font-semibold text-gray-800">Основна інформація</h3>
             </div>
 
+            {!isDesktopRuntime() && (
             <div className="pt-2 pb-2 border-b border-gray-100 flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold text-gray-700">Чернова номенклатура</p>
@@ -336,6 +337,7 @@ export default function SettingsPage() {
                 Керувати
               </Button>
             </div>
+            )}
             <Input label="Назва магазину *" value={form.shop_name ?? ''}
               onChange={(e) => set('shop_name', e.target.value)}
               placeholder="Форсаж Авто" required />

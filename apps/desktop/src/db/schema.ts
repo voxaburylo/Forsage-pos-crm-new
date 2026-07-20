@@ -717,6 +717,28 @@ const MIGRATION_005_RETURNS_SQL = `
   CREATE INDEX IF NOT EXISTS idx_customer_return_items_sale_item
     ON customer_return_items(sale_item_id);
 `
+
+const MIGRATION_006_BONUS_TRANSACTIONS_SQL = `
+  CREATE TABLE IF NOT EXISTS bonus_transactions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    amount INTEGER NOT NULL,
+    transaction_type TEXT NOT NULL,
+    source_sale_id TEXT REFERENCES sales(id) ON DELETE SET NULL,
+    description TEXT,
+    created_by TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_bonus_transactions_customer
+    ON bonus_transactions(tenant_id, customer_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -728,4 +750,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 3, sql: MIGRATION_003_SUPPLY_INVOICES_SQL },
   { version: 4, sql: MIGRATION_004_CUSTOMER_DEPOSITS_SQL },
   { version: 5, sql: MIGRATION_005_RETURNS_SQL },
+  { version: 6, sql: MIGRATION_006_BONUS_TRANSACTIONS_SQL },
 ]
