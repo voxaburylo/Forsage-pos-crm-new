@@ -55,7 +55,7 @@ function cleanSpecs(raw: Record<string, string> | undefined | null): Record<stri
   return Object.keys(specs).length > 0 ? specs : null
 }
 
-async function mirrorProductToDesktop(product: Product): Promise<void> {
+export async function mirrorProductToDesktop(product: Product): Promise<void> {
   const desktopCatalog = desktopBridge()?.catalog
   if (!desktopCatalog?.upsertProduct) return
   try {

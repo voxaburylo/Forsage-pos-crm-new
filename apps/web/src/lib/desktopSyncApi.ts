@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import {
   desktopBridge,
   isDesktopRuntime,
+  type DesktopBootstrapSnapshot,
   type DesktopSyncPullChanges,
   type DesktopSyncPullResult,
   type DesktopSyncPushResult,
@@ -66,8 +67,21 @@ export async function pullDesktopChanges(): Promise<DesktopSyncPullResult | null
   pullInProgress = true
   try {
     const state = await desktop.sync.getPullState()
+    if (!state.cursor) {
+      const snapshotResponse = await api.get<{ data: DesktopBootstrapSnapshot }>('/api/v1/sync/bootstrap', {
+        silent: true,
+        timeoutMs: 180_000,
+      })
+      const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
+      return {
+        applied_at: imported.imported_at,
+        cursor: snapshotResponse.data.exported_at,
+        counts: imported.counts,
+      }
+    }
+
     const params = new URLSearchParams()
-    if (state.cursor) params.set('since', state.cursor)
+    params.set('since', state.cursor)
     const shouldIncludeReferences = !state.cursor
       || !state.last_reference_sync_at
       || Date.now() - new Date(state.last_reference_sync_at).getTime() >= REFERENCE_REFRESH_INTERVAL_MS

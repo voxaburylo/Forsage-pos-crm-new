@@ -131,6 +131,7 @@ export class LocalBootstrapRepository {
 
   importSnapshot(snapshot: LocalBootstrapSnapshot): LocalBootstrapImportResult {
     const importedAt = nowIso()
+    const cursor = snapshot.exported_at || importedAt
     const tenantId = snapshot.tenant_id
     const counts = {
       staff: 0,
@@ -206,6 +207,25 @@ export class LocalBootstrapRepository {
           value_json = excluded.value_json,
           updated_at = excluded.updated_at
       `).run(json({ exported_at: snapshot.exported_at, counts }, {}), importedAt)
+
+      this.db.prepare(`
+        INSERT INTO sync_state(scope, pull_cursor, last_attempt_at, last_success_at, last_error, updated_at)
+        VALUES ('desktop_server_pull', ?, ?, ?, NULL, ?)
+        ON CONFLICT(scope) DO UPDATE SET
+          pull_cursor = excluded.pull_cursor,
+          last_attempt_at = excluded.last_attempt_at,
+          last_success_at = excluded.last_success_at,
+          last_error = NULL,
+          updated_at = excluded.updated_at
+      `).run(cursor, importedAt, importedAt, importedAt)
+
+      this.db.prepare(`
+        INSERT INTO app_meta(key, value_json, updated_at)
+        VALUES ('desktop_last_reference_sync_at', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at = excluded.updated_at
+      `).run(JSON.stringify(importedAt), importedAt)
     })
 
     return { imported_at: importedAt, tenant_id: tenantId, counts }

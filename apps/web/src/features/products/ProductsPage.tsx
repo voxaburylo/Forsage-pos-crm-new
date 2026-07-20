@@ -9,7 +9,7 @@ import { MergeModal } from './MergeModal'
 import { CategorySidebar } from './CategorySidebar'
 import { ImportModal } from './ImportModal'
 import { BulkEditModal } from './BulkEditModal'
-import { productApi } from './productApi'
+import { mirrorProductToDesktop, productApi } from './productApi'
 import type { ProductFilters } from './productApi'
 import { adminApi } from '@/features/admin/adminApi'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
@@ -216,9 +216,23 @@ export default function ProductsPage() {
         // пошук, що й каса. Він одразу знаходить точний штрихкод, артикул або
         // слова назви незалежно від активної папки та інших фільтрів.
         if (debouncedSearch.trim()) {
-          const desktopProducts = (
+          let desktopProducts = (
             await desktopCatalog.searchProducts(debouncedSearch.trim(), 500)
           ).map(desktopProductToProduct)
+
+          if (desktopProducts.length === 0) {
+            const serverResult = await productApi.search(debouncedSearch.trim(), 500, {
+              silent: true,
+              timeoutMs: 10_000,
+            }).catch(() => null)
+            if (!isCurrentRequest()) return
+            const serverProducts = serverResult?.data ?? []
+            if (serverProducts.length > 0) {
+              desktopProducts = serverProducts
+              void Promise.allSettled(serverProducts.map((product) => mirrorProductToDesktop(product)))
+            }
+          }
+
           if (!isCurrentRequest()) return
           setResult({
             data: desktopProducts,
