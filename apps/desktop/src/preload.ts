@@ -25,6 +25,20 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listPopular: (limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
   },
+  inventory: {
+    listSessions: (input?: unknown) => ipcRenderer.invoke('desktop:inventory:list-sessions', input),
+    createSession: (input: unknown) => ipcRenderer.invoke('desktop:inventory:create-session', input),
+    startSession: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:start-session', sessionId, input),
+    deleteSession: (sessionId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:delete-session', sessionId, tenantId),
+    getSession: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:get-session', sessionId, input),
+    findProduct: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:find-product', sessionId, input),
+    count: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:count', sessionId, input),
+    scan: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:scan', sessionId, input),
+    setItemQty: (sessionId: string, itemId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:set-item-qty', sessionId, itemId, input),
+    labels: (sessionId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:labels', sessionId, tenantId),
+    applyPrice: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:apply-price', sessionId, input),
+    complete: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:complete', sessionId, input),
+  },
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) =>
       ipcRenderer.invoke('desktop:pos:open-shift', input),

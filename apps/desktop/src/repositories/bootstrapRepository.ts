@@ -399,6 +399,7 @@ export class LocalBootstrapRepository {
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at
+      WHERE products.dirty_at IS NULL
     `).run(
       product.id,
       tenantId,
@@ -592,12 +593,13 @@ export class LocalBootstrapRepository {
   }
 
   private markDeleted(table: 'products' | 'customers' | 'suppliers', tenantId: string, id: string, deletedAt: string): void {
+    const dirtyGuard = table === 'products' ? ' AND dirty_at IS NULL' : ''
     this.db.prepare(`
       UPDATE ${table}
       SET deleted_at = ?,
           updated_at = ?
       WHERE id = ?
-        AND tenant_id = ?
+        AND tenant_id = ?${dirtyGuard}
     `).run(deletedAt, deletedAt, id, tenantId)
   }
 

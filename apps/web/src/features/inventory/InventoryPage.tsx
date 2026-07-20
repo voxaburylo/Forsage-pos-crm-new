@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, ClipboardList, Play, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { inventoryApi } from '@/features/inventory/inventoryApi'
 import { useAuthStore } from '@/stores/authStore'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Table, Badge, Modal, Input } from '@/components/ui'
@@ -45,10 +46,7 @@ export default function InventoryPage() {
     setLoading(true)
     try {
       const [sessRes, usersRes] = await Promise.all([
-        api.get<{ data: Session[] }>('/api/v1/inventory', {
-          silent: true,
-          timeoutMs: INVENTORY_LIST_TIMEOUT_MS,
-        }),
+        inventoryApi.listSessions({ silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS }),
         api.get<{ data: any[] }>('/api/v1/admin/staff-options', {
           silent: true,
           timeoutMs: INVENTORY_LIST_TIMEOUT_MS,
@@ -85,22 +83,15 @@ export default function InventoryPage() {
     if (!name.trim()) return
     setCreating(true)
     try {
-      const { data } = await api.post<{ data: Session }>(
-        '/api/v1/inventory',
+      const { data } = await inventoryApi.createSession(
         {
           name: name.trim(),
           created_by: managerId || undefined,
           created_at: date ? new Date(date).toISOString() : undefined,
         },
-        undefined,
         { silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS },
       )
-      const started = await api.post<{ data: { total_products?: number } }>(
-        `/api/v1/inventory/${data.id}/start`,
-        {},
-        undefined,
-        { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS },
-      )
+      const started = await inventoryApi.startSession(data.id, { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS })
       toast.success(`Ревізію розпочато: ${started.data.total_products ?? 0} товарів у знімку`)
       setModalOpen(false)
       setName('')
@@ -115,12 +106,7 @@ export default function InventoryPage() {
 
   async function startSession(session: Session) {
     try {
-      const response = await api.post<{ data: { total_products?: number } }>(
-        `/api/v1/inventory/${session.id}/start`,
-        {},
-        undefined,
-        { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS },
-      )
+      const response = await inventoryApi.startSession(session.id, { silent: true, timeoutMs: INVENTORY_START_TIMEOUT_MS })
       toast.success(`Ревізію розпочато: ${response.data.total_products ?? 0} товарів`)
       navigate(`/inventory/${session.id}`)
     } catch (error) {
@@ -133,7 +119,7 @@ export default function InventoryPage() {
     if (!window.confirm(`Видалити порожню ревізію "${session.name}"?`)) return
     setDeletingId(session.id)
     try {
-      await api.delete<void>(`/api/v1/inventory/${session.id}`)
+      await inventoryApi.deleteSession(session.id)
       setSessions((prev) => prev.filter((item) => item.id !== session.id))
       toast.success('Порожню ревізію видалено')
     } catch (error) {

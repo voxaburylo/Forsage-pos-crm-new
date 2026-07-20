@@ -4,6 +4,7 @@ import { LocalDatabase } from './db/localDatabase'
 import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
 import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
+import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
 import {
@@ -21,6 +22,7 @@ let mainWindow: BrowserWindow | null = null
 let localDatabase: LocalDatabase | null = null
 let localBootstrap: LocalBootstrapRepository | null = null
 let localCatalog: LocalCatalogRepository | null = null
+let localInventory: LocalInventoryRepository | null = null
 let localPos: LocalPosRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let cashalot: CashalotService | null = null
@@ -50,6 +52,11 @@ function requireLocalDatabase(): LocalDatabase {
 function requireLocalCatalog(): LocalCatalogRepository {
   if (!localCatalog) throw new Error('LOCAL_CATALOG_NOT_READY')
   return localCatalog
+}
+
+function requireLocalInventory(): LocalInventoryRepository {
+  if (!localInventory) throw new Error('LOCAL_INVENTORY_NOT_READY')
+  return localInventory
 }
 
 function requireLocalBootstrap(): LocalBootstrapRepository {
@@ -222,6 +229,7 @@ app.whenReady().then(async () => {
   localDatabase = new LocalDatabase(dataRoot)
   localBootstrap = new LocalBootstrapRepository(localDatabase)
   localCatalog = new LocalCatalogRepository(localDatabase)
+  localInventory = new LocalInventoryRepository(localDatabase)
   localPos = new LocalPosRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
@@ -254,6 +262,42 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
+  )
+  ipcMain.handle('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string }) =>
+    requireLocalInventory().listSessions(input?.tenant_id),
+  )
+  ipcMain.handle('desktop:inventory:create-session', (_event, input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) =>
+    requireLocalInventory().createSession(input),
+  )
+  ipcMain.handle('desktop:inventory:start-session', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
+    requireLocalInventory().startSession(sessionId, input),
+  )
+  ipcMain.handle('desktop:inventory:delete-session', (_event, sessionId: string, tenantId?: string) =>
+    requireLocalInventory().deleteEmptySession(sessionId, tenantId),
+  )
+  ipcMain.handle('desktop:inventory:get-session', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string }) =>
+    requireLocalInventory().getSessionData(sessionId, input?.tenant_id, input?.user_id),
+  )
+  ipcMain.handle('desktop:inventory:find-product', (_event, sessionId: string, input: { tenant_id?: string; code?: string; product_id?: string }) =>
+    requireLocalInventory().findProduct(sessionId, input),
+  )
+  ipcMain.handle('desktop:inventory:count', (_event, sessionId: string, input: any) =>
+    requireLocalInventory().countProduct(sessionId, input),
+  )
+  ipcMain.handle('desktop:inventory:scan', (_event, sessionId: string, input: any) =>
+    requireLocalInventory().scan(sessionId, input),
+  )
+  ipcMain.handle('desktop:inventory:set-item-qty', (_event, sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) =>
+    requireLocalInventory().setItemQty(sessionId, itemId, input),
+  )
+  ipcMain.handle('desktop:inventory:labels', (_event, sessionId: string, tenantId?: string) =>
+    requireLocalInventory().getLabels(sessionId, tenantId),
+  )
+  ipcMain.handle('desktop:inventory:apply-price', (_event, sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }) =>
+    requireLocalInventory().applyPrice(sessionId, input),
+  )
+  ipcMain.handle('desktop:inventory:complete', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
+    requireLocalInventory().complete(sessionId, input),
   )
   ipcMain.handle('desktop:pos:list-debtors', (_event, limit?: number) =>
     requireLocalPos().listDebtors(undefined, limit),

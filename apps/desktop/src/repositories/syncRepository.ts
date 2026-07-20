@@ -152,6 +152,19 @@ export class LocalSyncRepository {
     this.db.transaction(() => {
       for (const result of results) {
         if (result.status === 'synced') {
+          const operation = this.db.prepare(`
+            SELECT aggregate_type, aggregate_id, operation_type, payload_json, created_at
+            FROM sync_outbox
+            WHERE sequence = ? AND operation_id = ?
+            LIMIT 1
+          `).get(result.sequence, result.operation_id) as {
+            aggregate_type: string
+            aggregate_id: string
+            operation_type: string
+            payload_json: string | null
+            created_at: string
+          } | undefined
+
           this.db.prepare(`
             UPDATE sync_outbox
             SET status = 'synced',
@@ -161,6 +174,7 @@ export class LocalSyncRepository {
             WHERE sequence = ?
               AND operation_id = ?
           `).run(timestamp, result.sequence, result.operation_id)
+          if (operation) this.clearDirtyAfterPush(operation)
           continue
         }
 
@@ -194,6 +208,46 @@ export class LocalSyncRepository {
         `).run(error, timestamp, sequence)
       }
     })
+  }
+
+  private clearDirtyAfterPush(operation: {
+    aggregate_type: string
+    aggregate_id: string
+    operation_type: string
+    payload_json: string | null
+    created_at: string
+  }): void {
+    if (operation.operation_type === 'product.upsert' || operation.operation_type === 'product.deleted') {
+      this.db.prepare(`
+        UPDATE products
+        SET dirty_at = NULL
+        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      return
+    }
+
+    if (operation.operation_type === 'inventory.completed') {
+      this.db.prepare(`
+        UPDATE inventory_sessions
+        SET dirty_at = NULL
+        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(operation.aggregate_id, operation.created_at)
+      try {
+        const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+        const ids: string[] = Array.isArray(payload?.items)
+          ? [...new Set<string>(payload.items.map((item: any) => item?.product_id).filter((id: any): id is string => typeof id === 'string' && id.length > 0))]
+          : []
+        for (const productId of ids) {
+          this.db.prepare(`
+            UPDATE products
+            SET dirty_at = NULL
+            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+          `).run(productId, operation.created_at)
+        }
+      } catch {
+        // Якщо payload пошкоджений, pull пізніше вирівняє серверний стан.
+      }
+    }
   }
 
   private retryDelayMs(sequence: number): number {

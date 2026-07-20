@@ -409,6 +409,11 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'inventory.completed') {
+    await applyInventoryCompleted(tenantId, userId, operation)
+    return
+  }
+
   throw new AppError('SYNC_UNSUPPORTED_OPERATION', `Непідтримувана операція: ${operation.operation_type}`, 400)
 }
 
@@ -680,6 +685,80 @@ async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperat
     )
   })
 }
+async function applyInventoryCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const sessionId = String(payload.id ?? operation.aggregate_id)
+  const items = Array.isArray(payload.items) ? payload.items : []
+  const createdBy = payload.created_by ?? userId
+  const createdAt = payload.created_at ?? operation.created_at
+  const completedAt = payload.completed_at ?? operation.created_at
+  const name = String(payload.name ?? `Локальна ревізія ${sessionId.slice(0, 8)}`).trim() || 'Локальна ревізія'
+
+  await runTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO inventory_sessions (
+        id, tenant_id, name, status, created_by, started_by, started_at, completed_at, created_at
+      ) VALUES (
+        $1, $2, $3, 'completed', $4, $4, $5, $6, $5
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        status = 'completed',
+        completed_at = EXCLUDED.completed_at`,
+      [sessionId, tenantId, name, createdBy, createdAt, completedAt],
+    )
+
+    for (const item of items) {
+      const productId = String(item?.product_id ?? '')
+      if (!productId) continue
+      const countedStock = Number(item?.counted_stock ?? 0)
+      if (!Number.isFinite(countedStock) || countedStock < 0) continue
+
+      const product = await client.query(
+        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+        [productId, tenantId],
+      )
+      if (!product.rowCount) {
+        throw new AppError('SYNC_PRODUCT_NOT_FOUND', `Товар ревізії не знайдено: ${productId}`, 404)
+      }
+
+      const itemResult = await client.query(
+        `INSERT INTO inventory_items (
+          session_id, product_id, expected_stock, counted_stock, was_counted,
+          price_checked, last_counted_by, created_at, updated_at
+        ) VALUES (
+          $1, $2, $3, $4, true, true, $5, $6, $6
+        )
+        ON CONFLICT (session_id, product_id) DO UPDATE SET
+          counted_stock = EXCLUDED.counted_stock,
+          was_counted = true,
+          price_checked = true,
+          last_counted_by = EXCLUDED.last_counted_by,
+          updated_at = EXCLUDED.updated_at
+        RETURNING id`,
+        [sessionId, productId, Number(product.rows[0].qty_on_hand ?? 0), countedStock, createdBy, completedAt],
+      )
+
+      const inventoryItemId = itemResult.rows[0]?.id
+      if (inventoryItemId) {
+        await client.query(
+          `INSERT INTO inventory_count_entries (
+            id, tenant_id, session_id, inventory_item_id, product_id, counted_by,
+            qty, price_checked, observed_retail_price, created_at
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, true, NULL, $8
+          )`,
+          [randomUUID(), tenantId, sessionId, inventoryItemId, productId, createdBy, countedStock, completedAt],
+        )
+      }
+
+      await client.query(
+        'UPDATE products SET qty_on_hand = $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
+        [countedStock, completedAt, productId, tenantId],
+      )
+    }
+  })
+}
+
 function normalizePaymentMethod(value: unknown): 'cash' | 'card' | 'debt' | 'mixed' | 'transfer' {
   return value === 'cash' || value === 'card' || value === 'debt' || value === 'mixed' || value === 'transfer'
     ? value

@@ -269,6 +269,20 @@ interface ForsageDesktopBridge {
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
+  inventory?: {
+    listSessions: (input?: { tenant_id?: string }) => Promise<any[]>
+    createSession: (input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) => Promise<any>
+    startSession: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
+    deleteSession: (sessionId: string, tenantId?: string) => Promise<any>
+    getSession: (sessionId: string, input?: { tenant_id?: string; user_id?: string }) => Promise<any>
+    findProduct: (sessionId: string, input: { tenant_id?: string; code?: string; product_id?: string }) => Promise<any>
+    count: (sessionId: string, input: any) => Promise<any>
+    scan: (sessionId: string, input: any) => Promise<any>
+    setItemQty: (sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) => Promise<any>
+    labels: (sessionId: string, tenantId?: string) => Promise<any[]>
+    applyPrice: (sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }) => Promise<any>
+    complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
+  }
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
     getOpenShift: (cashierId: string) => Promise<Shift | null>
