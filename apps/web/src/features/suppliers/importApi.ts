@@ -154,9 +154,16 @@ async function allLocalProducts(): Promise<DesktopProduct[]> {
 async function localPreview(body: PreviewBody): Promise<ParseResult> {
   const parsed = parseLines(body)
   const products = await allLocalProducts()
+  const productById = new Map(products.map((p) => [p.id, p]))
   const bySku = new Map(products.filter((p) => p.sku).map((p) => [normalizeArticle(p.sku), p]))
   const byBarcode = new Map(products.filter((p) => p.barcode)
     .map((p) => [normalizeBarcode(p.barcode), p] as const))
+  const aliases = await desktopBridge()?.catalog.listProductBarcodes?.() ?? []
+  for (const alias of aliases) {
+    const normalized = normalizeBarcode(alias.barcode)
+    const product = productById.get(alias.product_id)
+    if (normalized && product && !byBarcode.has(normalized)) byBarcode.set(normalized, product)
+  }
   const byName = new Map(products.filter((p) => p.name)
     .map((p) => [p.name.trim().toLocaleLowerCase('uk-UA'), p]))
   const items = parsed.items.map((item): ImportItem => {
@@ -308,9 +315,16 @@ Promise<{ data: SupplyInvoice | { created: number; updated: number; errors: numb
       }))
       products.set(product.id, product)
       updated += 1
-    } else if (categoryId && categoryId !== product.category_id) {
-      product = await save(existingPayload(product, { category_id: categoryId }))
-      products.set(product.id, product)
+    } else if (body.supplier_id) {
+      const changes: Record<string, unknown> = {}
+      if (item.name && item.name !== product.name) changes.name = item.name
+      if (item.barcode && item.barcode !== product.barcode) changes.barcode = item.barcode
+      if (categoryId && categoryId !== product.category_id) changes.category_id = categoryId
+      if (item.storage_bin && item.storage_bin !== product.storage_bin) changes.storage_bin = item.storage_bin
+      if (Object.keys(changes).length > 0) {
+        product = await save(existingPayload(product, changes))
+        products.set(product.id, product)
+      }
     }
     if (body.supplier_id) {
       invoiceItems.push({

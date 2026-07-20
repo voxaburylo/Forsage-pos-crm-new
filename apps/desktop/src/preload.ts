@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:find-by-id', id),
     listProducts: (options?: unknown) =>
       ipcRenderer.invoke('desktop:catalog:list-products', options),
+    listProductBarcodes: () =>
+      ipcRenderer.invoke('desktop:catalog:list-product-barcodes'),
     listCategories: () =>
       ipcRenderer.invoke('desktop:catalog:list-categories'),
     listBrands: () =>

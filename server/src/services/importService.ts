@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
@@ -689,6 +690,59 @@ async function resolveImportCategories(items: ParsedItem[], tenantId: string): P
   return categoryMap
 }
 
+async function syncImportedBarcodeIndex(tenantId: string, items: Array<{ product_id?: string | null; sku?: string | null; barcode?: string | null }>): Promise<void> {
+  const barcodeItems = items
+    .map((item) => ({
+      product_id: item.product_id ?? null,
+      sku: item.sku ? normalizeArticle(String(item.sku)) : null,
+      barcode: normalizeImportBarcode(item.barcode ?? '') ?? null,
+    }))
+    .filter((item) => item.barcode)
+  if (barcodeItems.length === 0) return
+
+  const productIds = [...new Set(barcodeItems.map((item) => item.product_id).filter((id): id is string => Boolean(id)))]
+  const skus = [...new Set(barcodeItems.map((item) => item.sku).filter((sku): sku is string => Boolean(sku)))]
+  const barcodes = [...new Set(barcodeItems.map((item) => item.barcode).filter((barcode): barcode is string => Boolean(barcode)))]
+  const productRows = new Map<string, any>()
+  const collect = (rows: any[] | null) => { for (const row of rows ?? []) productRows.set(row.id, row) }
+
+  if (productIds.length > 0) {
+    const { data, error } = await db.from('products').select('id,sku,barcode').eq('tenant_id', tenantId).in('id', productIds)
+    if (error) throw error
+    collect(data)
+  }
+  if (skus.length > 0) {
+    const { data, error } = await db.from('products').select('id,sku,barcode').eq('tenant_id', tenantId).in('sku', skus)
+    if (error) throw error
+    collect(data)
+  }
+  if (barcodes.length > 0) {
+    const { data, error } = await db.from('products').select('id,sku,barcode').eq('tenant_id', tenantId).in('barcode', barcodes)
+    if (error) throw error
+    collect(data)
+  }
+
+  const now = new Date().toISOString()
+  const indexRows = [...productRows.values()]
+    .map((product) => ({ product, barcode: normalizeImportBarcode(product.barcode ?? '') }))
+    .filter((row) => row.barcode)
+    .map((row) => ({
+      id: randomUUID(),
+      tenant_id: tenantId,
+      product_id: row.product.id,
+      barcode: row.barcode,
+      barcode_type: 'ean13',
+      is_primary: true,
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    }))
+  if (indexRows.length === 0) return
+
+  const { error } = await db.from('product_barcodes').upsert(indexRows, { onConflict: 'tenant_id,barcode' })
+  if (error) throw error
+}
+
 export async function confirmImport(input: ConfirmImportInput, userId: string, tenantId: string) {
   const categoryMap = await resolveImportCategories(input.items, tenantId)
   const categoryIdFor = (item: ParsedItem) =>
@@ -701,6 +755,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
     for (const item of input.items) {
       let productId = item.product_id
 
+      let createdProduct = false
       if (!productId && input.create_missing) {
         const calculatedRetailPrice = await getCalculatedRetailPrice(item.price, tenantId)
         const newSku = item.sku ? normalizeArticle(item.sku) : 'IMP-' + Date.now() + '-' + item.row
@@ -726,6 +781,7 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
           throw new AppError('DB_ERROR', 'Помилка створення товару "' + item.name + '": ' + createError?.message, 500)
         }
         productId = newProduct.id
+        createdProduct = true
       }
 
       if (!productId) {
@@ -737,14 +793,29 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
       }
 
       const categoryId = categoryIdFor(item)
-      if (categoryId && item.product_id) {
-        const { error: categoryError } = await db
-          .from('products')
-          .update({ category_id: categoryId })
-          .eq('id', productId)
-          .eq('tenant_id', tenantId)
-        if (categoryError) {
-          throw new AppError('DB_ERROR', 'Не вдалося призначити категорію товару "' + item.name + '"', 500)
+      if (!createdProduct) {
+        const productPatch: Record<string, unknown> = {}
+        if (item.name) productPatch.name = item.name
+        if (item.barcode) productPatch.barcode = item.barcode
+        if (item.storage_bin) productPatch.storage_bin = item.storage_bin
+        if (categoryId) productPatch.category_id = categoryId
+        if (Object.keys(productPatch).length > 0) {
+          const { error: productPatchError } = await db
+            .from('products')
+            .update({ ...productPatch, updated_at: new Date().toISOString() })
+            .eq('id', productId)
+            .eq('tenant_id', tenantId)
+          if (productPatchError) {
+            throw new AppError('DB_ERROR', 'Не вдалося оновити товар з накладної "' + item.name + '": ' + productPatchError.message, 500)
+          }
+        }
+      }
+
+      if (item.barcode) {
+        try {
+          await syncImportedBarcodeIndex(tenantId, [{ product_id: productId, sku: item.sku, barcode: item.barcode }])
+        } catch (indexError: any) {
+          logger.warn({ err: indexError?.message, productId }, '[import] не вдалося оновити індекс штрихкоду для накладної')
         }
       }
 
@@ -813,6 +884,11 @@ export async function confirmImport(input: ConfirmImportInput, userId: string, t
       summary.created += r.created ?? 0
       summary.updated += (r.updated ?? 0) + (r.restored ?? 0) // відновлені = оновлені для користувача
       summary.errors  += (r.errors ?? 0) + (r.skipped ?? 0)
+      try {
+        await syncImportedBarcodeIndex(tenantId, chunk)
+      } catch (indexError: any) {
+        logger.warn({ err: indexError?.message, from: i }, '[import] не вдалося оновити індекс штрихкодів')
+      }
     }
   }
 

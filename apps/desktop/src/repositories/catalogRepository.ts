@@ -226,6 +226,16 @@ export class LocalCatalogRepository {
     return row ?? null
   }
 
+  listProductBarcodes(tenantId = DEFAULT_TENANT_ID): Array<{ product_id: string; barcode: string; is_primary: number }> {
+    return this.db.prepare(`
+      SELECT product_id, barcode, is_primary
+      FROM product_barcodes
+      WHERE tenant_id = ?
+        AND deleted_at IS NULL
+      ORDER BY is_primary DESC, updated_at DESC
+    `).all(tenantId) as Array<{ product_id: string; barcode: string; is_primary: number }>
+  }
+
   findByBarcode(barcode: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
     const normalized = barcode.trim()
     if (!normalized) return null

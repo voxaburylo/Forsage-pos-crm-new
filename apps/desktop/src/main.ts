@@ -283,6 +283,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:list-products', (_event, options) =>
     requireLocalCatalog().listProducts(options),
   )
+  ipcMain.handle('desktop:catalog:list-product-barcodes', () =>
+    requireLocalCatalog().listProductBarcodes(),
+  )
   ipcMain.handle('desktop:catalog:save-photo', async (_event, folder: string, rawBytes: ArrayBuffer | Uint8Array) => {
     if (!desktopDataRoot) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
     const safeFolder = String(folder || 'product').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100) || 'product'

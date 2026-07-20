@@ -107,6 +107,8 @@ export interface DesktopBootstrapSnapshot {
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: unknown[]
   supplier_payments?: unknown[]
+  inventory_sessions?: unknown[]
+  inventory_items?: unknown[]
   counts?: Record<string, number>
 }
 
@@ -243,6 +245,7 @@ interface ForsageDesktopBridge {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
     listProducts?: (options?: DesktopCatalogListOptions) => Promise<DesktopCatalogListResult>
+    listProductBarcodes?: () => Promise<Array<{ product_id: string; barcode: string; is_primary?: number }>>
     listCategories?: () => Promise<Array<{ id: string; name: string; sort_order: number }>>
     listBrands?: () => Promise<Array<{ id: string; name: string; country: string | null }>>
     createCategory?: (name: string, sortOrder?: number) => Promise<{ id: string; name: string; sort_order: number }>
