@@ -8,6 +8,7 @@ import type { Session } from '@supabase/supabase-js'
 // секрету ми не додаємо — лише незворотний хеш пароля.
 
 const STORE_KEY = 'forsage_offline_auth_v1'
+const LOCAL_DESKTOP_SESSION_KEY = 'forsage_local_desktop_session_v1'
 const PBKDF2_ITERATIONS = 150_000
 const MAX_CACHED_USERS = 8
 
@@ -95,7 +96,26 @@ export function hasAnyOfflineCredential(): boolean {
 
 /** Остання збережена сесія — для тихого відновлення на холодному старті,
  * коли Supabase не може відповісти (нема інтернету, протухлий токен). */
+export function loadLocalDesktopSession(): Session | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_DESKTOP_SESSION_KEY)
+    return raw ? JSON.parse(raw) as Session : null
+  } catch {
+    return null
+  }
+}
+
+export function saveLocalDesktopSession(session: Session): void {
+  try { localStorage.setItem(LOCAL_DESKTOP_SESSION_KEY, JSON.stringify(session)) } catch { /* ignore */ }
+}
+
+export function clearLocalDesktopSession(): void {
+  try { localStorage.removeItem(LOCAL_DESKTOP_SESSION_KEY) } catch { /* ignore */ }
+}
+
 export function loadLastCachedSession(): Session | null {
+  const local = loadLocalDesktopSession()
+  if (local) return local
   const record = readAll()[0]
   return record ? record.session : null
 }
@@ -110,3 +130,4 @@ export function refreshCachedSession(emailKey: string, session: Session): void {
   record.cachedAt = new Date().toISOString()
   writeAll(list)
 }
+

@@ -525,6 +525,8 @@ export class LocalCatalogRepository {
       default_debt_limit_kopecks: 0,
       quick_percents: [20, 30, 50],
       markup_rules: [],
+      category_markups: [],
+      price_tiers: [{ id: 'default', name: 'Звичайна ціна', discount_pct: 0, is_default: true, sort_order: 0, created_at: '' }],
       price_rounding_enabled: false,
       price_rounding_step: 100,
       price_rounding_dir: 'nearest',
@@ -681,3 +683,4 @@ export class LocalCatalogRepository {
     )
   }
 }
+

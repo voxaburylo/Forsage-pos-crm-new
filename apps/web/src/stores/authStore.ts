@@ -45,15 +45,8 @@ supabase.auth.onAuthStateChange((_event, session) => {
   useAuthStore.getState().setLoading(false)
 })
 
-// Холодний старт каси без інтернету: якщо токен протух, supabase-js спершу
-// намагається оновити його ПО МЕРЕЖІ, і початкова подія сесії може прийти
-// через хвилини мережевих таймаутів — увесь цей час екран крутив би
-// «Завантаження...». Каса не чекає: за 3с без відповіді відновлюємо останню
-// кешовану сесію (офлайн-режим) і працюємо з локальної бази. Коли Supabase
-// таки відповість, onAuthStateChange вище замінить її на справжню.
-// Явний вихід із системи це не ламає: після logout збереженої supabase-сесії
-// нема, початкова подія приходить миттєво і знімає loading ДО спрацювання
-// таймера.
+// Холодний старт desktop: локальну сесію піднімаємо майже одразу, без очікування сервера.
+// Якщо Supabase пізніше поверне справжню сесію, onAuthStateChange вище її підставить.
 if (isDesktopRuntime()) {
   setTimeout(() => {
     const state = useAuthStore.getState()
@@ -61,5 +54,6 @@ if (isDesktopRuntime()) {
     const cached = loadLastCachedSession()
     if (cached) state.setOfflineSession(cached)
     else state.setLoading(false)
-  }, 3000)
+  }, 250)
 }
+

@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
-import { isDesktopRuntime } from './desktopBridge'
-import { cacheCredential, verifyOfflineCredential, hasAnyOfflineCredential } from './offlineAuth'
+import type { Session } from '@supabase/supabase-js'
+import { desktopBridge, isDesktopRuntime } from './desktopBridge'
+import { cacheCredential, verifyOfflineCredential, hasAnyOfflineCredential, saveLocalDesktopSession, clearLocalDesktopSession } from './offlineAuth'
 import { useAuthStore } from '@/stores/authStore'
 
 function phoneToEmail(phone: string): string {
@@ -53,11 +54,69 @@ async function tryOfflineLogin(email: string, password: string): Promise<import(
 
 const ONLINE_LOGIN_TIMEOUT_MS = 8_000
 
+function createDesktopSession(user: { id: string; email: string; phone?: string | null; full_name?: string | null; role?: string | null; tenant_id?: string | null }): Session {
+  const now = Math.floor(Date.now() / 1000)
+  return {
+    access_token: `local-desktop-${user.id}-${now}`,
+    refresh_token: `local-desktop-refresh-${user.id}`,
+    token_type: 'bearer',
+    expires_in: 60 * 60 * 24 * 365,
+    expires_at: now + 60 * 60 * 24 * 365,
+    user: {
+      id: user.id,
+      app_metadata: { provider: 'desktop-local', providers: ['desktop-local'], tenant_id: user.tenant_id ?? undefined },
+      user_metadata: {
+        role: user.role ?? 'cashier',
+        full_name: user.full_name ?? '',
+        phone: user.phone ?? '',
+        tenant_id: user.tenant_id ?? undefined,
+      },
+      aud: 'authenticated',
+      confirmation_sent_at: undefined,
+      recovery_sent_at: undefined,
+      email_change_sent_at: undefined,
+      new_email: undefined,
+      new_phone: undefined,
+      invited_at: undefined,
+      action_link: undefined,
+      email: user.email,
+      phone: user.phone ?? '',
+      created_at: new Date().toISOString(),
+      confirmed_at: new Date().toISOString(),
+      email_confirmed_at: new Date().toISOString(),
+      phone_confirmed_at: undefined,
+      last_sign_in_at: new Date().toISOString(),
+      role: 'authenticated',
+      updated_at: new Date().toISOString(),
+      identities: [],
+      factors: null,
+    },
+  } as unknown as Session
+}
 // Вхід: онлайн через Supabase, а якщо мережі нема — офлайн за збереженим кешем (desktop).
 export async function signIn(phone: string, password: string) {
   const normalized = normalizePhone(phone)
   const email = phoneToEmail(normalized)
 
+  if (isDesktopRuntime()) {
+    const localLogin = desktopBridge()?.auth?.login
+    if (localLogin) {
+      try {
+        const localUser = await localLogin(normalized, password)
+        const session = createDesktopSession(localUser)
+        saveLocalDesktopSession(session)
+        useAuthStore.getState().setOfflineSession(session)
+        return session
+      } catch (localError) {
+        const cached = await verifyOfflineCredential(email, password)
+        if (cached) {
+          useAuthStore.getState().setOfflineSession(cached)
+          return cached
+        }
+        if (typeof navigator === 'undefined' || navigator.onLine === false) throw localError
+      }
+    }
+  }
   // Мережі явно нема (немає інтерфейсу) → одразу офлайн-вхід, без очікування таймауту.
   if (isDesktopRuntime() && typeof navigator !== 'undefined' && navigator.onLine === false) {
     return tryOfflineLogin(email, password)
@@ -104,6 +163,7 @@ export async function signIn(phone: string, password: string) {
 }
 
 export async function signOut() {
+  clearLocalDesktopSession()
   await supabase.auth.signOut()
 }
 
@@ -111,3 +171,6 @@ export async function getSession() {
   const { data } = await supabase.auth.getSession()
   return data.session
 }
+
+
+

@@ -357,6 +357,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
   )
+
+  ipcMain.handle('desktop:auth:login', (_event, phone: string, password: string) =>
+    requireLocalStaff().loginWithPassword(phone, password),
+  )
   ipcMain.handle('desktop:staff:list-users', () => requireLocalStaff().listUsers())
   ipcMain.handle('desktop:staff:create-user', (_event, input: any) => requireLocalStaff().createUser(input))
   ipcMain.handle('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
@@ -712,3 +716,4 @@ app.on('before-quit', () => {
   localPos = null
   localSync = null
 })
+

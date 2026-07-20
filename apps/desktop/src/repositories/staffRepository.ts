@@ -16,6 +16,18 @@ function hashSecret(secret: string, userId: string): string {
   return pbkdf2Sync(secret, userId, 10_000, 64, 'sha512').toString('hex')
 }
 
+function normalizePhone(value: string): string {
+  const digits = String(value ?? '').replace(/\D/g, '')
+  if (digits.startsWith('380')) return digits
+  if (digits.startsWith('80')) return `3${digits}`
+  if (digits.startsWith('0')) return `38${digits}`
+  return digits
+}
+
+function phoneToEmail(phone: string): string {
+  const digits = normalizePhone(phone)
+  return `${digits || 'local'}@forsage.local`
+}
 export class LocalStaffRepository {
   constructor(private readonly db: LocalDatabase) {}
 
@@ -126,6 +138,31 @@ export class LocalStaffRepository {
       WHERE id = ? AND tenant_id = ?
     `).run(hashSecret(password, id), timestamp, timestamp, id, tenantId)
     return { success: true }
+  }
+
+  loginWithPassword(phone: string, password: string, tenantId = DEFAULT_TENANT_ID): any {
+    const normalizedPhone = normalizePhone(phone)
+    const row = (this.db.prepare(`
+      SELECT id, tenant_id, full_name, role, phone, password_hash, is_active, created_at, updated_at
+      FROM staff_users
+      WHERE tenant_id = ? AND deleted_at IS NULL
+      ORDER BY is_active DESC, updated_at DESC
+    `).all(tenantId) as any[]).find((candidate) => normalizePhone(candidate.phone) === normalizedPhone)
+
+    if (!row || Number(row.is_active) !== 1) throw new Error('Невірний номер телефону або пароль')
+    if (!row.password_hash) throw new Error('Для цього співробітника локальний пароль ще не налаштовано')
+    if (row.password_hash !== hashSecret(password, row.id)) throw new Error('Невірний номер телефону або пароль')
+
+    return {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      full_name: row.full_name,
+      role: row.role,
+      phone: row.phone ?? '',
+      email: phoneToEmail(row.phone ?? phone),
+      is_active: true,
+      created_at: row.created_at,
+    }
   }
 
   setPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
@@ -547,3 +584,5 @@ export class LocalStaffRepository {
     )
   }
 }
+
+

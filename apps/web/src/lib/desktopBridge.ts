@@ -231,6 +231,9 @@ export interface DesktopFiscalCheckPay {
 }
 
 interface ForsageDesktopBridge {
+  auth?: {
+    login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
+  }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   backupNow: () => Promise<string>
   bootstrap: {
@@ -555,3 +558,4 @@ export function desktopCheckoutToSale(
     sale_items: receiptItems,
   }
 }
+

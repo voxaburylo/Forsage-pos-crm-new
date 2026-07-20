@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { signIn } from '@/lib/auth'
 import { homePathForRole } from '@/components/ProtectedRoute'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 
 const PHONE_REGEX = /^\+?380\d{9}$/
 
@@ -37,13 +38,15 @@ export default function LoginPage() {
     }
   }, [])
 
-  // Ping the server as soon as the login page loads so Render wakes up early
+  // У desktop вхід іде через локальну базу; сервер будити не потрібно.
   useEffect(() => {
+    if (isDesktopRuntime()) return
     fetch(`${API_URL}/api/v1/health`, { signal: AbortSignal.timeout(30000) }).catch(() => {})
   }, [])
 
   useEffect(() => {
     if (!loading) { setLoadingMsg('Входимо...'); return }
+    if (isDesktopRuntime()) { setLoadingMsg('Перевіряємо локальну базу...'); return }
     const t1 = setTimeout(() => setLoadingMsg('Підключаємося до сервера...'), 4000)
     const t2 = setTimeout(() => setLoadingMsg('Сервер прогрівається, зачекайте...'), 10000)
     return () => { clearTimeout(t1); clearTimeout(t2) }
@@ -160,3 +163,6 @@ export default function LoginPage() {
     </div>
   )
 }
+
+
+

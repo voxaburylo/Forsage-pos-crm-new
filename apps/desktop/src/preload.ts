@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('forsageDesktop', {
+  auth: {
+    login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
+  },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
   bootstrap: {
@@ -205,3 +208,4 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:fiscal:register-return', items, pay, originalFiscalNumber),
   },
 })
+

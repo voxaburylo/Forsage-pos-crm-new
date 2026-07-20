@@ -145,7 +145,12 @@ async function main() {
   const foundByBarcode = catalog.findByBarcode('2000000000011');
   const foundByExtraBarcode = catalog.findByBarcode('2999999999999');
   const importedByBarcode = catalog.findByBarcode('2111111111111');
-  const updatedCashier = staff.updateUser('smoke-cashier', { base_rate: 5000, rate_period: 'day' });
+  const updatedCashier = staff.updateUser('smoke-cashier', { phone: '+380000000111', base_rate: 5000, rate_period: 'day' });
+  staff.resetPassword('smoke-cashier', 'smoke-pass');
+  const localLogin = staff.loginWithPassword('+380000000111', 'smoke-pass');
+  let localLoginRejected = false;
+  try { staff.loginWithPassword('+380000000111', 'bad-pass'); } catch { localLoginRejected = true; }
+  if (localLogin.id !== 'smoke-cashier' || !localLoginRejected) throw new Error('Local password login failed');
   staff.setPin('smoke-cashier', '2468');
   const pinValid = staff.verifyPin('smoke-cashier', '2468');
   const pinInvalid = staff.verifyPin('smoke-cashier', '1111');
@@ -273,6 +278,8 @@ async function main() {
     closeResult,
     closeQueued,
     updatedCashier,
+    localLogin,
+    localLoginRejected,
     pinValid,
     pinInvalid,
     commissionRule,
@@ -302,3 +309,4 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
