@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -398,6 +399,16 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'product.upsert') {
+    await applyProductUpsert(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'product.deleted') {
+    await applyProductDeleted(tenantId, operation)
+    return
+  }
+
   throw new AppError('SYNC_UNSUPPORTED_OPERATION', `Непідтримувана операція: ${operation.operation_type}`, 400)
 }
 
@@ -565,6 +576,110 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
   })
 }
 
+async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const productId = String(payload.id ?? operation.aggregate_id)
+  const sku = String(payload.sku ?? '').trim()
+  const name = String(payload.name ?? '').trim()
+  if (!productId || !sku || !name) {
+    throw new AppError('SYNC_PRODUCT_INVALID', 'Товар має містити id, артикул і назву', 400)
+  }
+  const updatedAt = operation.created_at
+  const barcodes = [...new Set([
+    payload.barcode ?? null,
+    ...(Array.isArray(payload.additional_barcodes) ? payload.additional_barcodes : []),
+  ].filter((barcode): barcode is string => typeof barcode === 'string' && barcode.trim().length > 0))]
+
+  await runTransaction(async (client) => {
+    const existing = await client.query(
+      'SELECT id FROM products WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [productId, tenantId],
+    )
+
+    const values = [
+      productId,
+      tenantId,
+      sku,
+      name,
+      payload.barcode ?? null,
+      payload.brand_id ?? null,
+      payload.category_id ?? null,
+      payload.unit ?? 'шт',
+      Number(payload.purchase_price ?? 0),
+      Number(payload.retail_price ?? 0),
+      Number(payload.qty_on_hand ?? 0),
+      Number(payload.reorder_point ?? 0),
+      payload.notes ?? null,
+      payload.is_active === false ? false : true,
+      payload.is_service === true,
+      payload.storage_bin ?? null,
+      payload.is_favorite === true,
+      payload.photo_url ?? null,
+      payload.specs ?? {},
+      updatedAt,
+    ]
+
+    if (existing.rowCount && existing.rowCount > 0) {
+      await client.query(
+        `UPDATE products SET
+          sku = $3, name = $4, barcode = $5, brand_id = $6, category_id = $7,
+          unit = $8, purchase_price = $9, retail_price = $10, qty_on_hand = $11,
+          reorder_point = $12, notes = $13, is_active = $14, is_service = $15,
+          storage_bin = $16, is_favorite = $17, photo_url = $18, specs = $19,
+          deleted_at = NULL, updated_at = $20
+        WHERE id = $1 AND tenant_id = $2`,
+        values,
+      )
+    } else {
+      await client.query(
+        `INSERT INTO products (
+          id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
+          purchase_price, retail_price, qty_on_hand, reorder_point, notes,
+          is_active, is_service, storage_bin, is_favorite, photo_url, specs,
+          created_at, updated_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13,
+          $14, $15, $16, $17, $18, $19,
+          $20, $20
+        )`,
+        values,
+      )
+    }
+
+    for (const barcode of barcodes) {
+      await client.query(
+        `INSERT INTO product_barcodes (
+          id, tenant_id, product_id, barcode, barcode_type, is_primary, created_at, updated_at, deleted_at
+        ) VALUES ($1, $2, $3, $4, 'ean13', $5, $6, $6, NULL)
+        ON CONFLICT (tenant_id, barcode) DO UPDATE SET
+          product_id = excluded.product_id,
+          is_primary = excluded.is_primary,
+          updated_at = excluded.updated_at,
+          deleted_at = NULL`,
+        [randomUUID(), tenantId, productId, barcode, barcode === payload.barcode, updatedAt],
+      )
+    }
+  })
+}
+
+async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const deletedAt = operation.created_at
+  await runTransaction(async (client) => {
+    await client.query(
+      `UPDATE products
+       SET deleted_at = $3, is_active = false, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2`,
+      [operation.aggregate_id, tenantId, deletedAt],
+    )
+    await client.query(
+      `UPDATE product_barcodes
+       SET deleted_at = $3, updated_at = $3
+       WHERE product_id = $1 AND tenant_id = $2`,
+      [operation.aggregate_id, tenantId, deletedAt],
+    )
+  })
+}
 function normalizePaymentMethod(value: unknown): 'cash' | 'card' | 'debt' | 'mixed' | 'transfer' {
   return value === 'cash' || value === 'card' || value === 'debt' || value === 'mixed' || value === 'transfer'
     ? value

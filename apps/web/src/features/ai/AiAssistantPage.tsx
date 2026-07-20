@@ -12,6 +12,7 @@ import { OrderConfirmModal } from './OrderConfirmModal'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { parseProductsWorkbook, type ExcelImportProduct } from './excelProductImport'
+import { requestDesktopSync } from '@/features/products/productApi'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
 function ChangesTable({ changes }: { changes: AiActionChange[] }) {
@@ -447,6 +448,9 @@ export default function AiAssistantPage() {
     try {
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload })
       const r = data.result
+      if (['create_products_bulk', 'update_products_bulk', 'merge_products_bulk'].includes(action.tool)) {
+        requestDesktopSync()
+      }
 
       if (action.tool === 'create_order') {
         const num = r?.order_number != null ? `#${r.order_number}` : ''

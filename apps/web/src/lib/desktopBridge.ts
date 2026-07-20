@@ -24,10 +24,13 @@ export interface DesktopProduct {
   retail_price: number
   qty_on_hand: number
   reorder_point?: number
+  notes?: string | null
   is_active: number
   is_service: number
   storage_bin: string | null
+  is_favorite?: number
   photo_url?: string | null
+  specs_json?: string | null
 }
 
 export interface DesktopCatalogListOptions {
@@ -218,6 +221,7 @@ interface ForsageDesktopBridge {
   }
   catalog: {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
+    findById?: (id: string) => Promise<DesktopProduct | null>
     listProducts?: (options?: DesktopCatalogListOptions) => Promise<DesktopCatalogListResult>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
     upsertProduct: (product: {
@@ -241,6 +245,28 @@ interface ForsageDesktopBridge {
       photo_url?: string | null
       specs?: Record<string, string>
     }) => Promise<DesktopProduct>
+    saveProduct?: (product: {
+      id: string
+      sku: string
+      name: string
+      unit?: string
+      retail_price?: number
+      purchase_price?: number
+      qty_on_hand?: number
+      reorder_point?: number
+      notes?: string | null
+      brand_id?: string | null
+      category_id?: string | null
+      is_service?: boolean
+      is_active?: boolean
+      is_favorite?: boolean
+      barcode?: string | null
+      additional_barcodes?: string[]
+      storage_bin?: string | null
+      photo_url?: string | null
+      specs?: Record<string, string>
+    }) => Promise<DesktopProduct>
+    deleteProduct?: (id: string) => Promise<{ ok: true }>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   pos: {
@@ -317,6 +343,15 @@ export function desktopBridge(): ForsageDesktopBridge | null {
   return typeof window !== 'undefined' ? window.forsageDesktop ?? null : null
 }
 
+function parseDesktopSpecs(product: DesktopProduct): Record<string, string> | null {
+  if (!product.specs_json) return null
+  try {
+    const parsed = JSON.parse(product.specs_json)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
 export function desktopProductToProduct(product: DesktopProduct): Product {
   const brandId = product.brand_id ?? null
   const brandName = product.brand_name ?? null
@@ -337,13 +372,13 @@ export function desktopProductToProduct(product: DesktopProduct): Product {
     qty_on_hand: Number(product.qty_on_hand),
     qty_available: Number(product.qty_on_hand),
     reorder_point: Number(product.reorder_point ?? 0),
-    notes: null,
+    notes: product.notes ?? null,
     is_active: product.is_active === 1,
     is_service: product.is_service === 1,
     storage_bin: product.storage_bin,
-    is_favorite: false,
+    is_favorite: product.is_favorite === 1,
     photo_url: product.photo_url ?? null,
-    specs: null,
+    specs: parseDesktopSpecs(product),
     created_at: '',
     updated_at: '',
     brand: brandId || brandName ? { id: brandId ?? '', name: brandName ?? '' } : null,

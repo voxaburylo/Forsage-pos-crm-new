@@ -87,6 +87,25 @@ function productSearchText(product: LocalProductUpsert): string {
 export class LocalCatalogRepository {
   constructor(private readonly db: LocalDatabase) {}
 
+  saveProduct(input: LocalProductUpsert): LocalProduct {
+    const product = this.upsertProduct(input)
+    this.addProductOutbox('product.upsert', product.id, input)
+    return product
+  }
+
+  deleteProduct(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE products
+        SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(timestamp, timestamp, timestamp, id, tenantId)
+      this.addProductOutbox('product.deleted', id, { id, tenant_id: tenantId } as LocalProductUpsert)
+    })
+    return { ok: true }
+  }
+
   upsertProduct(input: LocalProductUpsert): LocalProduct {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = nowIso()
@@ -184,8 +203,9 @@ export class LocalCatalogRepository {
 
   findById(id: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
     const row = this.db.prepare(`
-      SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
-             qty_on_hand, is_active, is_service, storage_bin
+      SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
+             purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
+             is_service, storage_bin, is_favorite, photo_url, specs_json
       FROM products
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).get(id, tenantId) as LocalProduct | undefined
@@ -322,7 +342,7 @@ export class LocalCatalogRepository {
       SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode,
              p.brand_id, br.name AS brand_name, p.category_id, c.name AS category_name,
              p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
-             p.is_active, p.is_service, p.storage_bin, p.photo_url
+             p.notes, p.is_active, p.is_service, p.storage_bin, p.is_favorite, p.photo_url, p.specs_json
       FROM products p
       LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
       LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL
@@ -338,7 +358,7 @@ export class LocalCatalogRepository {
   listPopular(tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
     return this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
-             qty_on_hand, is_active, is_service, storage_bin
+             qty_on_hand, reorder_point, notes, is_active, is_service, storage_bin, is_favorite, photo_url, specs_json
       FROM products
       WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1
       ORDER BY is_favorite DESC, name ASC
@@ -376,7 +396,7 @@ export class LocalCatalogRepository {
 
     return this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
-             qty_on_hand, is_active, is_service, storage_bin
+             qty_on_hand, reorder_point, notes, is_active, is_service, storage_bin, is_favorite, photo_url, specs_json
       FROM products
       WHERE tenant_id = ?
         AND deleted_at IS NULL
@@ -388,5 +408,24 @@ export class LocalCatalogRepository {
         name ASC
       LIMIT ?
     `).all(...params, raw, compact, raw, compact, limit) as unknown as LocalProduct[]
+  }
+  private addProductOutbox(operationType: 'product.upsert' | 'product.deleted', productId: string, payload: LocalProductUpsert): void {
+    const timestamp = nowIso()
+    const tenantId = payload.tenant_id ?? DEFAULT_TENANT_ID
+    this.db.prepare(`
+      INSERT INTO sync_outbox (
+        operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
+        operation_type, payload_json, status, created_at
+      )
+      VALUES (?, ?, ?, 'product', ?, ?, ?, 'pending', ?)
+    `).run(
+      randomUUID(),
+      tenantId,
+      this.db.deviceId,
+      productId,
+      operationType,
+      JSON.stringify(payload),
+      timestamp,
+    )
   }
 }

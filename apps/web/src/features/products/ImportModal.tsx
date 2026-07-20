@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import Papa from 'papaparse'
 import { api } from '@/lib/api'
-import { productApi } from './productApi'
+import { productApi, requestDesktopSync } from './productApi'
 import { toast } from '@/components/ui/Toast'
 
 interface Props { onClose: () => void; onImported: () => void }
@@ -390,6 +390,7 @@ export function ImportModal({ onClose, onImported }: Props) {
       setImportResult(result)
       setStep('success')
       toast.success('Імпорт успішно завершено!')
+      requestDesktopSync()
       onImported()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка підтвердження імпорту')

@@ -10,12 +10,18 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   catalog: {
     findByBarcode: (barcode: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
+    findById: (id: string) =>
+      ipcRenderer.invoke('desktop:catalog:find-by-id', id),
     listProducts: (options?: unknown) =>
       ipcRenderer.invoke('desktop:catalog:list-products', options),
     searchProducts: (query: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
     upsertProduct: (product: unknown) =>
       ipcRenderer.invoke('desktop:catalog:upsert-product', product),
+    saveProduct: (product: unknown) =>
+      ipcRenderer.invoke('desktop:catalog:save-product', product),
+    deleteProduct: (id: string) =>
+      ipcRenderer.invoke('desktop:catalog:delete-product', id),
     listPopular: (limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
   },

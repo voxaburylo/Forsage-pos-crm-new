@@ -1,7 +1,7 @@
 import { api } from '@/lib/api'
 import type { Product, PaginatedProducts, ProductFormData } from '@/types/product'
 import { hryvniaToKopecks } from '@/types/product'
-import { desktopBridge } from '@/lib/desktopBridge'
+import { desktopBridge, desktopProductToProduct, type DesktopProduct } from '@/lib/desktopBridge'
 
 export interface StockBreakdown {
   on_hand: number
@@ -137,6 +137,53 @@ function formToUpdatePayload(partial: Partial<ProductFormData>): Record<string, 
   return out
 }
 
+export function requestDesktopSync(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+  }
+}
+
+type DesktopProductSavePayload = NonNullable<NonNullable<ReturnType<typeof desktopBridge>>['catalog']['saveProduct']> extends (product: infer Product) => Promise<DesktopProduct>
+  ? Product
+  : never
+
+function desktopCreatePayload(id: string, form: ProductFormData): DesktopProductSavePayload {
+  const payload = formToCreatePayload(form)
+  return { id, ...payload } as DesktopProductSavePayload
+}
+
+function desktopExistingSpecs(product: DesktopProduct): Record<string, string> {
+  const raw = product.specs_json
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+function desktopUpdatePayload(id: string, existing: DesktopProduct, form: Partial<ProductFormData>): DesktopProductSavePayload {
+  return {
+    id,
+    sku: form.sku ?? existing.sku,
+    name: form.name ?? existing.name,
+    barcode: form.barcode !== undefined ? (form.barcode || null) : existing.barcode,
+    brand_id: form.brand_id !== undefined ? (form.brand_id || null) : (existing.brand_id ?? null),
+    category_id: form.category_id !== undefined ? (form.category_id || null) : (existing.category_id ?? null),
+    unit: form.unit ?? existing.unit,
+    purchase_price: form.purchase_price !== undefined ? hryvniaToKopecks(form.purchase_price) : existing.purchase_price,
+    retail_price: form.retail_price !== undefined ? hryvniaToKopecks(form.retail_price) : existing.retail_price,
+    qty_on_hand: form.qty_on_hand !== undefined ? parseFloat(form.qty_on_hand || '0') : Number(existing.qty_on_hand ?? 0),
+    reorder_point: form.reorder_point !== undefined ? parseFloat(form.reorder_point || '0') : Number(existing.reorder_point ?? 0),
+    notes: form.notes !== undefined ? (form.notes || null) : (existing.notes ?? null),
+    is_active: form.is_active !== undefined ? form.is_active : existing.is_active === 1,
+    is_service: form.is_service !== undefined ? form.is_service : existing.is_service === 1,
+    storage_bin: form.storage_bin !== undefined ? (form.storage_bin || null) : existing.storage_bin,
+    is_favorite: form.is_favorite !== undefined ? form.is_favorite : existing.is_favorite === 1,
+    photo_url: form.photo_url !== undefined ? (form.photo_url || null) : (existing.photo_url ?? null),
+    specs: form.specs ?? desktopExistingSpecs(existing),
+  } as DesktopProductSavePayload
+}
 export const productApi = {
   list: (filters: ProductFilters = {}) =>
     api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`),
@@ -148,19 +195,42 @@ export const productApi = {
     api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts),
 
   create: async (form: ProductFormData, opts?: ProductRequestOptions) => {
+    const desktopCatalog = desktopBridge()?.catalog
+    if (desktopCatalog?.saveProduct) {
+      const saved = await desktopCatalog.saveProduct(desktopCreatePayload(crypto.randomUUID(), form))
+      requestDesktopSync()
+      return { data: desktopProductToProduct(saved) }
+    }
+
     const response = await api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form), undefined, opts)
     await mirrorProductToDesktop(response.data)
     return response
   },
 
   update: async (id: string, form: Partial<ProductFormData>, opts?: ProductRequestOptions) => {
+    const desktopCatalog = desktopBridge()?.catalog
+    if (desktopCatalog?.saveProduct && desktopCatalog.findById) {
+      const existing = await desktopCatalog.findById(id)
+      if (!existing) throw new Error('Товар не знайдено в локальній базі')
+      const saved = await desktopCatalog.saveProduct(desktopUpdatePayload(id, existing, form))
+      requestDesktopSync()
+      return { data: desktopProductToProduct(saved) }
+    }
+
     const response = await api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts)
     await mirrorProductToDesktop(response.data)
     return response
   },
 
-  delete: (id: string) =>
-    api.delete<void>(`/api/v1/products/${id}`),
+  delete: async (id: string) => {
+    const desktopCatalog = desktopBridge()?.catalog
+    if (desktopCatalog?.deleteProduct) {
+      await desktopCatalog.deleteProduct(id)
+      requestDesktopSync()
+      return undefined as void
+    }
+    return api.delete<void>(`/api/v1/products/${id}`)
+  },
 
   getStock: (id: string) =>
     api.get<{ data: StockBreakdown }>(`/api/v1/products/${id}/stock`),

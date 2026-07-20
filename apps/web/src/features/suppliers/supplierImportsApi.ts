@@ -1,4 +1,6 @@
 import { request } from '@/lib/api'
+import { mirrorProductToDesktop, requestDesktopSync } from '@/features/products/productApi'
+import type { Product } from '@/types/product'
 
 export interface SupplierPriceImport {
   id:             string
@@ -89,13 +91,18 @@ export const supplierImportsApi = {
     )
   },
 
-  importOnDemand: (input: { sku: string; brand: string; name: string; supplier_id: string | null; purchase_price: number; retail_price?: number }) => {
-    return request<{ data: any }>('/api/v1/search/import-on-demand', {
+  importOnDemand: async (input: { sku: string; brand: string; name: string; supplier_id: string | null; purchase_price: number; retail_price?: number }) => {
+    const response = await request<{ data: Product }>('/api/v1/search/import-on-demand', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(input),
     })
+    if (response.data) {
+      await mirrorProductToDesktop(response.data)
+      requestDesktopSync()
+    }
+    return response
   }
 }
