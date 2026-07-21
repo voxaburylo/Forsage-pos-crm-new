@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode } from 'lucide-react'
 import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
@@ -30,6 +30,28 @@ interface LineItem {
   is_new?: boolean
   client_key: string
 }
+type InvoiceImportField = 'sku' | 'name' | 'barcode' | 'qty' | 'purchase' | 'retail' | 'storage_bin'
+type InvoiceImportMapping = Record<InvoiceImportField, number | null>
+
+const EMPTY_INVOICE_IMPORT_MAPPING: InvoiceImportMapping = {
+  sku: null,
+  name: null,
+  barcode: null,
+  qty: null,
+  purchase: null,
+  retail: null,
+  storage_bin: null,
+}
+
+const INVOICE_IMPORT_FIELDS: Array<{ field: InvoiceImportField; label: string; required?: boolean }> = [
+  { field: 'sku', label: 'Артикул' },
+  { field: 'name', label: 'Назва товару', required: true },
+  { field: 'barcode', label: 'Штрихкод' },
+  { field: 'qty', label: 'Кількість' },
+  { field: 'purchase', label: 'Закупка', required: true },
+  { field: 'retail', label: 'Продаж' },
+  { field: 'storage_bin', label: 'Комірка' },
+]
 
 function normalizeSkuValue(raw: string): string {
   return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
@@ -54,6 +76,88 @@ function parseQty(raw: unknown, fallback = 1): number {
   return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
+function cleanImportCell(value: unknown): string {
+  return String(value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function isLikelyImportJunkRow(row: unknown[]): boolean {
+  const cells = row.map(cleanImportCell).filter(Boolean)
+  if (cells.length === 0) return true
+  const text = cells.join(' ').toLocaleLowerCase('uk-UA')
+  if (/^(итого|разом|всього|підсумок|total|сумма|сума)\b/.test(text)) return true
+  if (/\b(страница|сторінка|лист|прайс-лист|дата друку)\b/.test(text) && cells.length <= 3) return true
+  return false
+}
+
+function guessInvoiceImport(rawRows: unknown[][]): { mapping: InvoiceImportMapping; startRow: number; headerRow: number | null } {
+ let bestMapping: InvoiceImportMapping | null = null
+ let bestRow = -1
+ let bestScore = -1
+  const rowsToCheck = rawRows.slice(0, Math.min(rawRows.length, 25))
+  rowsToCheck.forEach((row, rowIndex) => {
+    const mapping: InvoiceImportMapping = { ...EMPTY_INVOICE_IMPORT_MAPPING }
+    let score = 0
+    row.forEach((cell, index) => {
+      const h = cleanImportCell(cell).toLocaleLowerCase('uk-UA')
+      if (!h) return
+      if (mapping.barcode == null && /штрих.?код|barcode|ean|шк\b/.test(h)) { mapping.barcode = index; score += 3 }
+      else if (mapping.sku == null && /артикул|sku|article|код товар|код$|^код\b|номенклатура.*код/.test(h)) { mapping.sku = index; score += 2 }
+      else if (mapping.name == null && /назв|наймен|наимен|товар|product|description|номенклатур|модель/.test(h) && !/код|родител|батьк/.test(h)) { mapping.name = index; score += 3 }
+      else if (mapping.qty == null && /кільк|к-сть|кол-во|количество|qty|quantity|остаток|залиш/.test(h)) { mapping.qty = index; score += 2 }
+      else if (mapping.purchase == null && /закуп|вхідн|собіварт|цена закуп|закупоч|purchase|buy|cost/.test(h)) { mapping.purchase = index; score += 3 }
+      else if (mapping.retail == null && /роздріб|розница|продаж|ціна продаж|цена продаж|retail|sale/.test(h)) { mapping.retail = index; score += 2 }
+      else if (mapping.storage_bin == null && /комір|ячей|ящик|місце|склад|bin|cell|storage/.test(h)) { mapping.storage_bin = index; score += 1 }
+    })
+ if (score > bestScore) {
+ bestMapping = mapping
+ bestRow = rowIndex
+ bestScore = score
+ }
+  })
+
+ if (bestMapping && bestScore >= 4) return { mapping: bestMapping, startRow: bestRow + 1, headerRow: bestRow }
+  return {
+    mapping: { sku: 0, name: 1, barcode: null, qty: 2, purchase: 3, retail: 4, storage_bin: null },
+    startRow: 0,
+    headerRow: null,
+  }
+}
+
+function buildInvoiceImportItems(rawRows: unknown[][], mapping: InvoiceImportMapping, startRow: number): { items: LineItem[]; skipped: number } {
+  const items: LineItem[] = []
+  let skipped = 0
+  const safeStart = Math.max(0, Math.min(startRow || 0, rawRows.length))
+  for (let r = safeStart; r < rawRows.length; r++) {
+    const row = rawRows[r] ?? []
+    if (isLikelyImportJunkRow(row)) { skipped += 1; continue }
+    const read = (field: InvoiceImportField) => mapping[field] == null ? '' : cleanImportCell(row[mapping[field] as number])
+    const sku = read('sku')
+    const name = read('name')
+    const barcode = read('barcode')
+    const qty = mapping.qty == null ? 1 : parseQty(read('qty'), 1)
+    const purchase = mapping.purchase == null ? 0 : parseMoneyToKopecks(read('purchase'))
+    const retail = mapping.retail == null ? 0 : parseMoneyToKopecks(read('retail'))
+    const bin = read('storage_bin') || null
+    if (!sku && !name && !barcode) { skipped += 1; continue }
+    if (!sku && !barcode && purchase <= 0 && retail <= 0) { skipped += 1; continue }
+    const lowerName = name.toLocaleLowerCase('uk-UA')
+    if (/^(назв|наймен|наимен|товар|номенклатур|итого|разом|всього|total)/.test(lowerName)) { skipped += 1; continue }
+    items.push({
+      client_key: makeLineKey(),
+      product_name: name || `Товар (${sku || barcode})`,
+      sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
+      barcode: barcode || '',
+      qty,
+      purchase_price: purchase,
+      retail_price: retail,
+      category_id: null,
+      total: Math.round(qty * purchase),
+      storage_bin: bin,
+      is_new: true,
+    })
+  }
+  return { items, skipped }
+}
 function kopecksForForm(kopecks: number): string {
   return (Math.max(0, Number(kopecks) || 0) / 100).toFixed(2)
 }
@@ -275,12 +379,28 @@ export default function InvoiceFormPage() {
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
   const [importTab, setImportTab] = useState<'manual' | 'file' | 'clipboard'>('manual')
   const [clipboardText, setClipboardText] = useState('')
+  const [invoiceImportModal, setInvoiceImportModal] = useState(false)
+  const [invoiceImportRows, setInvoiceImportRows] = useState<unknown[][]>([])
+  const [invoiceImportFileName, setInvoiceImportFileName] = useState('')
+  const [invoiceImportMapping, setInvoiceImportMapping] = useState<InvoiceImportMapping>({ ...EMPTY_INVOICE_IMPORT_MAPPING })
+  const [invoiceImportStartRow, setInvoiceImportStartRow] = useState(1)
+  const [invoiceImportHeaderRow, setInvoiceImportHeaderRow] = useState<number | null>(null)
+  const [bulkMarkupSelection, setBulkMarkupSelection] = useState('')
   // Оплата постачальнику
   const [paidAmount, setPaidAmount] = useState('')          // гривні (рядок форми)
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
+
+  const invoiceImportPreview = useMemo(
+    () => buildInvoiceImportItems(invoiceImportRows, invoiceImportMapping, invoiceImportStartRow),
+    [invoiceImportRows, invoiceImportMapping, invoiceImportStartRow],
+  )
+  const invoiceImportColumnCount = useMemo(
+    () => Math.max(0, ...invoiceImportRows.slice(0, 20).map((row) => row.length)),
+    [invoiceImportRows],
+  )
 
   function moneyKey(index: number, field: 'purchase_price' | 'retail_price') {
     return `${index}:${field}`
@@ -655,91 +775,71 @@ export default function InvoiceFormPage() {
     })
   }
 
+  function openInvoiceImportPreview(rawRows: unknown[][], fileName = '') {
+    const rows = (rawRows ?? [])
+      .map((row) => Array.isArray(row) ? row : [])
+      .filter((row) => row.some((cell) => cleanImportCell(cell)))
+    if (rows.length === 0) {
+      toast.warning('У файлі не знайдено рядків для імпорту')
+      return
+    }
+    const detected = guessInvoiceImport(rows)
+    setInvoiceImportRows(rows)
+    setInvoiceImportFileName(fileName)
+    setInvoiceImportMapping(detected.mapping)
+    setInvoiceImportStartRow(detected.startRow)
+    setInvoiceImportHeaderRow(detected.headerRow)
+    setInvoiceImportModal(true)
+  }
+
   function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    
-    if (file.name.endsWith('.csv')) {
+
+    if (file.name.toLowerCase().endsWith('.csv')) {
       Papa.parse(file, {
         header: false,
-        skipEmptyLines: true,
-        complete: (results: any) => {
-          processRawRows(results.data)
-        }
+        skipEmptyLines: false,
+        complete: (results: any) => openInvoiceImportPreview(results.data, file.name),
+        error: () => toast.error('Помилка читання CSV файлу'),
       })
     } else {
       const reader = new FileReader()
       reader.onload = (evt) => {
         try {
           const data = new Uint8Array(evt.target?.result as ArrayBuffer)
-          const workbook = read(data, { type: 'array' })
+          const workbook = read(data, { type: 'array', cellText: true, cellNF: true })
           const sheet = workbook.Sheets[workbook.SheetNames[0]]
-          const json = utils.sheet_to_json(sheet, { header: 1 }) as any[][]
-          processRawRows(json)
+          const json = utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false }) as unknown[][]
+          openInvoiceImportPreview(json, file.name)
         } catch {
           toast.error('Помилка читання Excel файлу')
         }
       }
       reader.readAsArrayBuffer(file)
     }
-    e.target.value = '' // Reset
+    e.target.value = ''
   }
 
-  function processRawRows(rawRows: any[][]) {
-    if (!rawRows || rawRows.length === 0) return
-    const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase())
-    const hasHeader = headers.some(h => /(sku|артикул|код|арт|name|назва|наименование|товар|модель|qty|кол|кільк|количество|purchase|закуп|ціна|цена|вхідна|retail|роздріб|розница|продаж|bin|комірка|ячейка|ящик)/.test(h))
-    
-    let nameIdx = headers.findIndex(h => /(name|назва|наименование|товар|модель)/.test(h))
-    let skuIdx = headers.findIndex(h => /(sku|артикул|код|арт)/.test(h))
-    let qtyIdx = headers.findIndex(h => /(qty|кол|кільк|количество)/.test(h))
-    let purchaseIdx = headers.findIndex(h => /(purchase|закуп|ціна|цена|вхідна)/.test(h))
-    let retailIdx = headers.findIndex(h => /(retail|роздріб|розница|продаж)/.test(h))
-    const binIdx = headers.findIndex(h => /(bin|комірка|ячейка|ящик)/.test(h))
-
-    if (nameIdx === -1) nameIdx = 1
-    if (skuIdx === -1) skuIdx = 0
-    if (qtyIdx === -1) qtyIdx = 2
-    if (purchaseIdx === -1) purchaseIdx = 3
-    if (retailIdx === -1) retailIdx = 4
-
-    const newItems: LineItem[] = []
-    const startRow = hasHeader ? 1 : 0
-    
-    for (let r = startRow; r < rawRows.length; r++) {
-      const row = rawRows[r]
-      if (!row || row.length === 0) continue
-      const sku = String(row[skuIdx] || '').trim()
-      const name = String(row[nameIdx] || '').trim()
-      if (!sku && !name) continue
-
-      const qty = parseQty(row[qtyIdx], 1)
-      const purchase = parseMoneyToKopecks(row[purchaseIdx])
-      const retail = parseMoneyToKopecks(row[retailIdx])
-      const bin = binIdx !== -1 ? String(row[binIdx] || '').trim() : null
-
-      newItems.push({
-        client_key: makeLineKey(),
-        product_name: name || `Товар (${sku})`,
-        sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
-        qty,
-        purchase_price: purchase,
-        retail_price: retail,
-        category_id: null,
-        total: Math.round(qty * purchase),
-        storage_bin: bin || null,
-        is_new: true,
-      })
+  function confirmInvoiceImport() {
+    if (invoiceImportMapping.name == null && invoiceImportMapping.sku == null && invoiceImportMapping.barcode == null) {
+      toast.error('Вкажіть хоча б колонку назви, артикула або штрихкоду')
+      return
     }
-    
-    if (newItems.length > 0) {
-      setItems(prev => [...prev, ...newItems])
-      toast.success(`Імпортовано ${newItems.length} товарів`)
-    } else {
-      toast.warning('Не знайдено товарів для імпорту')
+    if (invoiceImportMapping.purchase == null) {
+      toast.error('Вкажіть колонку закупочної ціни — без неї накладна може затягнути зайві рядки')
+      return
     }
+    if (invoiceImportPreview.items.length === 0) {
+      toast.warning('Після фільтрації не залишилось товарних рядків. Перевірте рядок початку і колонки.')
+      return
+    }
+    setItems((prev) => [...prev, ...invoiceImportPreview.items])
+    toast.success(`Імпортовано ${invoiceImportPreview.items.length} товарів${invoiceImportPreview.skipped ? `, пропущено ${invoiceImportPreview.skipped} зайвих рядків` : ''}`)
+    setInvoiceImportModal(false)
+    setInvoiceImportRows([])
+    setInvoiceImportFileName('')
   }
-
   function handleClipboardPaste() {
     if (!clipboardText.trim()) return
     const lines = clipboardText.split('\n').filter(line => line.trim())
@@ -1131,8 +1231,10 @@ export default function InvoiceFormPage() {
                   <div className="flex items-center gap-2 mr-auto flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5">
                     <span className="text-xs text-gray-500 font-medium">Групова націнка:</span>
                     <select
+                      value={bulkMarkupSelection}
                       onChange={(e) => {
                         const val = e.target.value
+                        setBulkMarkupSelection(val)
                         if (val === 'grid') {
                           recalcRetail(undefined, true)
                         } else if (val.startsWith('pct:')) {
@@ -1147,7 +1249,6 @@ export default function InvoiceFormPage() {
                             }
                           }
                         }
-                        e.target.value = '' // reset select
                       }}
                       className="border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white"
                     >
@@ -1600,6 +1701,115 @@ export default function InvoiceFormPage() {
         </div>
       </form>
 
+      {/* Попередній перегляд Excel перед додаванням у накладну */}
+      <Modal open={invoiceImportModal} onClose={() => setInvoiceImportModal(false)} title="Перевірка Excel перед імпортом" size="xl">
+        <div className="space-y-4 max-h-[78vh] overflow-y-auto pr-1">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Спочатку перевірте, з якого рядка починаються товари і які колонки за що відповідають. Зайві шапки, підсумки і порожні групи не будуть додані.
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Файл</label>
+              <div className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 truncate">{invoiceImportFileName || 'Excel / CSV'}</div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Почати імпорт з рядка</label>
+              <input
+                type="number"
+                min={1}
+                max={Math.max(1, invoiceImportRows.length)}
+                value={invoiceImportStartRow + 1}
+                onChange={(e) => setInvoiceImportStartRow(Math.max(0, (parseInt(e.target.value) || 1) - 1))}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+              />
+              {invoiceImportHeaderRow != null && <p className="text-[11px] text-gray-400 mt-1">Заголовки схожі на рядок {invoiceImportHeaderRow + 1}</p>}
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1">Результат</label>
+              <div className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50">
+                Додасться: <b>{invoiceImportPreview.items.length}</b>, пропущено: <b>{invoiceImportPreview.skipped}</b>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {INVOICE_IMPORT_FIELDS.map(({ field, label, required }) => (
+              <div key={field}>
+                <label className="block text-xs font-semibold text-gray-500 mb-1">{label}{required ? ' *' : ''}</label>
+                <select
+                  value={invoiceImportMapping[field] ?? ''}
+                  onChange={(e) => setInvoiceImportMapping((prev) => ({ ...prev, [field]: e.target.value === '' ? null : Number(e.target.value) }))}
+                  className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white"
+                >
+                  <option value="">Не використовувати</option>
+                  {Array.from({ length: invoiceImportColumnCount }).map((_, index) => {
+                    const sample = invoiceImportRows[invoiceImportHeaderRow ?? 0]?.[index] ?? invoiceImportRows[0]?.[index] ?? ''
+                    return <option key={index} value={index}>Колонка {index + 1}{sample ? ` — ${cleanImportCell(sample).slice(0, 28)}` : ''}</option>
+                  })}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-gray-700">Перші рядки файлу</span>
+              <span className="text-xs text-gray-400">Сірі рядки вище номера старту не імпортуються</span>
+            </div>
+            <div className="overflow-auto max-h-72">
+              <table className="min-w-full text-xs">
+                <tbody>
+                  {invoiceImportRows.slice(0, 30).map((row, rowIndex) => (
+                    <tr key={rowIndex} className={rowIndex < invoiceImportStartRow ? 'bg-gray-50 text-gray-400' : 'bg-white'}>
+                      <td className="sticky left-0 bg-inherit border-r border-gray-100 px-2 py-1 font-mono text-gray-400">{rowIndex + 1}</td>
+                      {Array.from({ length: invoiceImportColumnCount }).map((_, cellIndex) => {
+                        const selected = Object.values(invoiceImportMapping).includes(cellIndex)
+                        return (
+                          <td key={cellIndex} className={`border-b border-gray-50 px-2 py-1 min-w-[120px] max-w-[260px] truncate ${selected ? 'bg-yellow-50 text-gray-900' : ''}`} title={cleanImportCell(row[cellIndex])}>
+                            {cleanImportCell(row[cellIndex])}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {invoiceImportPreview.items.length > 0 && (
+            <div className="border border-gray-200 rounded-xl overflow-hidden">
+              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-700">Що буде додано у накладну</div>
+              <div className="overflow-auto max-h-56">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-gray-50 text-gray-500">
+                    <tr><th className="text-left px-2 py-1">Назва</th><th className="text-left px-2 py-1">Артикул</th><th className="text-left px-2 py-1">ШК</th><th className="text-right px-2 py-1">К-сть</th><th className="text-right px-2 py-1">Закупка</th></tr>
+                  </thead>
+                  <tbody>
+                    {invoiceImportPreview.items.slice(0, 20).map((item) => (
+                      <tr key={item.client_key} className="border-t border-gray-50">
+                        <td className="px-2 py-1 max-w-[360px] truncate">{item.product_name}</td>
+                        <td className="px-2 py-1 font-mono">{item.sku}</td>
+                        <td className="px-2 py-1 font-mono">{item.barcode}</td>
+                        <td className="px-2 py-1 text-right">{item.qty}</td>
+                        <td className="px-2 py-1 text-right">{formatMoney(item.purchase_price)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-gray-100">
+            <Button type="button" variant="secondary" onClick={() => setInvoiceImportModal(false)}>Скасувати</Button>
+            <Button type="button" onClick={confirmInvoiceImport} disabled={invoiceImportPreview.items.length === 0}>
+              Додати {invoiceImportPreview.items.length} позицій у накладну
+            </Button>
+          </div>
+        </div>
+      </Modal>
       {/* Швидке створення постачальника */}
       <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
         <div className="space-y-4">
