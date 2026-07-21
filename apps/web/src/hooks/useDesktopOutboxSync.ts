@@ -3,7 +3,7 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { syncDesktopNow } from '@/lib/desktopSyncApi'
 import { useAuthStore } from '@/stores/authStore'
 
-const IDLE_INTERVAL_MS = 30_000
+const IDLE_INTERVAL_MS = 10_000
 const PENDING_INTERVAL_MS = 5_000
 const RETRY_MIN_MS = 15_000
 const RETRY_MAX_MS = 5 * 60_000
@@ -22,6 +22,7 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
       const result = await syncDesktopNow()
       retryAttemptRef.current = result.failed > 0 ? retryAttemptRef.current + 1 : 0
       setLastError(result.failed > 0 ? `Не синхронізовано desktop-операцій: ${result.failed}` : null)
+      window.dispatchEvent(new CustomEvent('forsage:desktop-sync-completed', { detail: result }))
       return result
     } catch (error) {
       retryAttemptRef.current += 1

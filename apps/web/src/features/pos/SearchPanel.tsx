@@ -201,8 +201,8 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
               categoryId: selectedCategoryId,
               limit: query.trim() ? 30 : 50,
               offset: 0,
-              sortField: query.trim() ? undefined : 'name',
-              sortDir: 'asc',
+              sortField: query.trim() ? undefined : 'qty_on_hand',
+              sortDir: query.trim() ? 'asc' : 'desc',
             })
             localProducts = localResult.data
           } else {

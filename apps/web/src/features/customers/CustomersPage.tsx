@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2, ArrowUp, Barcode } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { customerGroupsApi, type CustomerGroup } from './customerGroupsApi'
-import { CustomerDrawer } from './CustomerDrawer'
 import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 import type { Customer } from '@/types/customer'
 import { Layout } from '@/components/Layout'
@@ -35,7 +34,6 @@ export default function CustomersPage() {
   const [search, setSearch]       = useState('')
   const [hasDebt, setHasDebt]     = useState(sp.get('has_debt') === 'true')
   const [groups, setGroups]       = useState<CustomerGroup[]>([])
-  const [drawerId, setDrawerId]   = useState<string | null>(null)
   const [quickEditCustomer, setQuickEditCustomer] = useState<Customer | null>(null)
   const [activeGroup, setActiveGroup] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -350,7 +348,7 @@ export default function CustomersPage() {
                       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                         <span
                           className="font-semibold text-gray-900 text-sm break-words sm:truncate cursor-pointer hover:text-yellow-700"
-                          onClick={() => navigate(`/customers/${c.id}`)}
+                          onClick={() => setQuickEditCustomer(c)}
                         >
                           {c.full_name ?? <span className="text-gray-400 italic">Без імені</span>}
                         </span>
@@ -482,11 +480,6 @@ export default function CustomersPage() {
                           <Car size={14} />
                         </button>
                       )}
-                      <button onClick={() => setDrawerId(c.id)}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition-colors"
-                        title="Швидкий перегляд">
-                        <Users size={14} />
-                      </button>
                       {canManageCustomers && (
                         <button onClick={() => setQuickEditCustomer(c)}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
@@ -556,14 +549,6 @@ export default function CustomersPage() {
         </div>
       )}
 
-      <CustomerDrawer
-        customerId={drawerId}
-        canEdit={canManageCustomers}
-        onClose={() => setDrawerId(null)}
-        onCustomerUpdated={(updated) => {
-          setCustomers((current) => current.map((customer) => customer.id === updated.id ? updated : customer))
-        }}
-      />
       <QuickCustomerEditModal
         customer={quickEditCustomer}
         open={!!quickEditCustomer}

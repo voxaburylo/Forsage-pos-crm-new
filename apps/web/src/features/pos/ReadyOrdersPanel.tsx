@@ -146,8 +146,12 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 30_000)
-    return () => clearInterval(id)
+    const id = setInterval(load, 10_000)
+    window.addEventListener('forsage:desktop-sync-completed', load)
+    return () => {
+      clearInterval(id)
+      window.removeEventListener('forsage:desktop-sync-completed', load)
+    }
   }, [load])
 
   function payableTotal(order: ReadyOrder) {

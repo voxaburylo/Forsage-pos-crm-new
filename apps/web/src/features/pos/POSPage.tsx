@@ -368,7 +368,7 @@ export default function POSPage() {
         .catch(() => {})
     }
     loadReadyCount()
-    const id = setInterval(loadReadyCount, 30000)
+    const id = setInterval(loadReadyCount, 10000)
     return () => clearInterval(id)
   }, [refreshSuspendedCount])
 
@@ -921,6 +921,14 @@ export default function POSPage() {
             <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
               <SearchPanel ref={searchRef} />
               <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-800 bg-[#111] px-2 py-2">
+                <label className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-yellow-700/50 bg-yellow-950/30 px-3 text-xs font-semibold text-yellow-200">
+                  <span>Продавець чека</span>
+                  <select value={store.managerId ?? ''} onChange={(e) => store.setManagerId(e.target.value || session?.user?.id || null)}
+                    className="max-w-[180px] rounded-lg border border-yellow-800/60 bg-[#242424] px-2 py-1.5 text-xs text-white outline-none focus:border-yellow-400">
+                    <option value={session?.user?.id ?? ''}>Поточний касир</option>
+                    {staffUsers.filter((person) => person.id !== session?.user?.id).map((person) => <option key={person.id} value={person.id}>{person.full_name}</option>)}
+                  </select>
+                </label>
                 <button onClick={() => setQuickCharge('tire_service')}
                   className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-emerald-700/50 bg-emerald-900/30 px-4 text-sm font-bold text-emerald-300 hover:bg-emerald-900/50"
                   title="Прийняти оплату за шиномонтаж і зарахувати роботу працівнику">

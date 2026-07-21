@@ -383,7 +383,7 @@ export class LocalStaffRepository {
     if (!employee) return []
     const rules = this.listCommissionRules(tenantId).filter((rule) =>
       (rule.user_id === order.manager_id || rule.user_id === null) &&
-      (!rule.rule_type || rule.rule_type === 'personal_sales'),
+      (!rule.rule_type || rule.rule_type === 'personal_sales' || rule.rule_type === 'order_sales'),
     )
     if (rules.length === 0) return []
     const items = this.db.prepare(`
@@ -401,7 +401,8 @@ export class LocalStaffRepository {
       for (const rule of rules) {
         if (rule.brand_id && rule.brand_id !== item.brand_id) continue
         if (rule.category_id && rule.category_id !== item.category_id) continue
-        const nextScore = (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
+        const typeScore = rule.rule_type === 'order_sales' ? 1000 : 0
+        const nextScore = typeScore + (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
         if (nextScore > score) { score = nextScore; best = rule }
       }
       if (!best) continue
@@ -438,12 +439,12 @@ export class LocalStaffRepository {
     if (!employee) return []
     const rules = this.listCommissionRules(tenantId).filter((rule) =>
       (rule.user_id === sale.manager_id || rule.user_id === null) &&
-      (!rule.rule_type || rule.rule_type === 'personal_sales'),
+      (!rule.rule_type || ['personal_sales', 'pos_sales', 'tire_service'].includes(rule.rule_type)),
     )
     if (rules.length === 0) return []
     const items = this.db.prepare(`
       SELECT i.product_id, i.qty, i.unit_price, i.purchase_price,
-             p.brand_id, p.category_id
+             p.brand_id, p.category_id, p.sku, p.is_service
       FROM sale_items i
       LEFT JOIN products p ON p.id = i.product_id
       WHERE i.sale_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
@@ -453,9 +454,13 @@ export class LocalStaffRepository {
       let best: any = null
       let score = -1
       for (const rule of rules) {
+        const isTireService = String(item.sku ?? '') === 'POS-TIRE-SERVICE'
+        const type = String(rule.rule_type ?? 'personal_sales')
+        if (isTireService ? !['tire_service', 'pos_sales', 'personal_sales'].includes(type) : !['pos_sales', 'personal_sales'].includes(type)) continue
         if (rule.brand_id && rule.brand_id !== item.brand_id) continue
         if (rule.category_id && rule.category_id !== item.category_id) continue
-        const nextScore = (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
+        const typeScore = isTireService ? (type === 'tire_service' ? 1000 : type === 'pos_sales' ? 500 : 0) : (type === 'pos_sales' ? 1000 : 0)
+        const nextScore = typeScore + (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
         if (nextScore > score) { score = nextScore; best = rule }
       }
       if (!best) continue

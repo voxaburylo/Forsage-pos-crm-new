@@ -450,7 +450,7 @@ export class LocalCatalogRepository {
     if (sortField) {
       orderParts.push(`${sortColumns[sortField]} ${sortDir}`)
     } else {
-      orderParts.push('p.is_favorite DESC', 'p.name COLLATE NOCASE ASC')
+      orderParts.push('CASE WHEN p.qty_on_hand > 0 OR p.is_service = 1 THEN 0 ELSE 1 END', 'p.is_favorite DESC', 'p.name COLLATE NOCASE ASC')
     }
     if (sortField !== 'name') orderParts.push('p.name COLLATE NOCASE ASC')
     orderParts.push('p.id ASC')

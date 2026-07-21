@@ -54,7 +54,7 @@ export default function StaffPage() {
   const [selectedUser, setSelectedUser] = useState<AdminUser|null>(null)
   const [modalTab, setModalTab] = useState<'settings'|'payouts'>('settings')
   const [addForm, setAddForm] = useState({phone:'',password:'',full_name:'',role:'cashier' as UserRole,base_rate:'',rate_period:'day' as 'day'|'month'})
-  const [editForm, setEditForm] = useState({role:'cashier' as UserRole,is_active:true,full_name:'',phone:'',base_rate:'',rate_period:'day' as 'day'|'month',salaryMode:'only_rate' as SalaryMode,pct_from_revenue:'',pct_from_profit:''})
+  const [editForm, setEditForm] = useState({role:'cashier' as UserRole,is_active:true,full_name:'',phone:'',base_rate:'',rate_period:'day' as 'day'|'month',salaryMode:'only_rate' as SalaryMode,pos_revenue:'',pos_profit:'',order_revenue:'',order_profit:'',tire_revenue:'',tire_profit:''})
   const [newPass, setNewPass] = useState('')
   const [pinInput, setPinInput] = useState('')
   const [actionForm, setActionForm] = useState({type:'salary' as 'salary'|'bonus'|'advance'|'penalty',method:'cash' as 'cash'|'card'|'transfer',amount:'',note:'',period:currentPeriod()})
@@ -81,8 +81,9 @@ export default function StaffPage() {
     setSelectedUser(u)
     const ur=rules.filter(r=>r.user_id===u.id); const hasRate=(u.base_rate||0)>0; const hasPct=ur.some(r=>(r.pct_from_revenue>0||r.pct_from_profit>0))
     let sm:SalaryMode='only_rate'; if(hasRate&&hasPct)sm='rate_and_pct'; else if(hasPct&&!hasRate)sm='only_pct'
-    const mr=ur.find(r=>r.rule_type==='personal_sales'&&!r.brand_id&&!r.category_id)
-    setEditForm({role:u.role as UserRole,is_active:u.is_active,full_name:u.full_name,phone:u.phone||'',base_rate:u.base_rate?(u.base_rate/100).toString():'',rate_period:u.rate_period??'month',salaryMode:sm,pct_from_revenue:mr?mr.pct_from_revenue.toString():'',pct_from_profit:mr?mr.pct_from_profit.toString():''})
+    const findRule=(type:string)=>ur.find(r=>r.rule_type===type&&!r.brand_id&&!r.category_id)
+    const legacy=findRule('personal_sales'); const pos=findRule('pos_sales')??legacy; const order=findRule('order_sales')??legacy; const tire=findRule('tire_service')
+    setEditForm({role:u.role as UserRole,is_active:u.is_active,full_name:u.full_name,phone:u.phone||'',base_rate:u.base_rate?(u.base_rate/100).toString():'',rate_period:u.rate_period??'month',salaryMode:sm,pos_revenue:pos?.pct_from_revenue?.toString()??'',pos_profit:pos?.pct_from_profit?.toString()??'',order_revenue:order?.pct_from_revenue?.toString()??'',order_profit:order?.pct_from_profit?.toString()??'',tire_revenue:tire?.pct_from_revenue?.toString()??'',tire_profit:tire?.pct_from_profit?.toString()??''})
     setNewPass('');setPinInput('');setModalTab('settings')
     setActionForm({type:'salary',method:'cash',amount:u.base_rate?(u.base_rate/100).toString():'',note:'',period})
   }
@@ -92,9 +93,13 @@ export default function StaffPage() {
     try {
       const rate=editForm.salaryMode!=='only_pct'&&editForm.base_rate?Math.round(parseFloat(editForm.base_rate)*100):0
       await adminApi.updateUser(selectedUser.id,{role:editForm.role,is_active:editForm.is_active,full_name:editForm.full_name,base_rate:rate,rate_period:editForm.rate_period,phone:editForm.phone||undefined})
-      const oldR=rules.filter(r=>r.user_id===selectedUser.id&&r.rule_type==='personal_sales'&&!r.brand_id&&!r.category_id)
+      const managedTypes=['personal_sales','pos_sales','order_sales','tire_service']
+      const oldR=rules.filter(r=>r.user_id===selectedUser.id&&managedTypes.includes(r.rule_type)&&!r.brand_id&&!r.category_id)
       for(const r of oldR) await commissionApi.deleteRule(r.id)
-      if(editForm.salaryMode!=='only_rate'){const pR=Number(editForm.pct_from_revenue)||0;const pP=Number(editForm.pct_from_profit)||0;if(pR>0||pP>0) await commissionApi.createRule({user_id:selectedUser.id,brand_id:null,category_id:null,pct_from_revenue:pR,pct_from_profit:pP,rule_type:'personal_sales'})}
+      if(editForm.salaryMode!=='only_rate'){
+        const configs=[['pos_sales',editForm.pos_revenue,editForm.pos_profit],['order_sales',editForm.order_revenue,editForm.order_profit],['tire_service',editForm.tire_revenue,editForm.tire_profit]] as const
+        for(const [rule_type,revenueValue,profitValue] of configs){const pR=Number(revenueValue)||0;const pP=Number(profitValue)||0;if(pR>0||pP>0) await commissionApi.createRule({user_id:selectedUser.id,brand_id:null,category_id:null,pct_from_revenue:pR,pct_from_profit:pP,rule_type})}
+      }
       toast.success('Всі налаштування збережено')
       setSelectedUser({...selectedUser,role:editForm.role,is_active:editForm.is_active,full_name:editForm.full_name,phone:editForm.phone||selectedUser.phone,base_rate:rate,rate_period:editForm.rate_period})
       loadData()
@@ -195,20 +200,21 @@ export default function StaffPage() {
                       )}
                       {editForm.salaryMode!=='only_rate'&&(
                         <div className="space-y-3 bg-white/60 rounded-lg p-3 border border-amber-100/50">
-                          <p className="text-xs font-semibold text-amber-700">Відсоток від виконаних робіт / особистих продажів</p>
-                          <div className="grid grid-cols-2 gap-3">
-                            <Input label="% від суми роботи / виручки" type="number" min="0" max="100" step="0.1" value={editForm.pct_from_revenue} onChange={(e)=>setEditForm({...editForm,pct_from_revenue:e.target.value})} placeholder="0"/>
-                            <Input label="% від прибутку" type="number" min="0" max="100" step="0.1" value={editForm.pct_from_profit} onChange={(e)=>setEditForm({...editForm,pct_from_profit:e.target.value})} placeholder="0"/>
+                          <p className="text-xs font-semibold text-amber-700">Окремі правила за видом роботи</p>
+                          <div className="grid grid-cols-[minmax(0,1fr)_90px_90px] items-end gap-2 text-xs">
+                            <span className="pb-2 font-medium text-gray-600">Джерело</span><span className="pb-2 text-center text-gray-400">% виручки</span><span className="pb-2 text-center text-gray-400">% прибутку</span>
+                            <span className="font-medium text-gray-700">Продажі в касі<br/><small className="font-normal text-gray-400">товари, кава, вільний продаж</small></span><input type="number" min="0" max="100" step="0.1" value={editForm.pos_revenue} onChange={(e)=>setEditForm({...editForm,pos_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={editForm.pos_profit} onChange={(e)=>setEditForm({...editForm,pos_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
+                            <span className="font-medium text-gray-700">Замовлення<br/><small className="font-normal text-gray-400">після видачі клієнту</small></span><input type="number" min="0" max="100" step="0.1" value={editForm.order_revenue} onChange={(e)=>setEditForm({...editForm,order_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={editForm.order_profit} onChange={(e)=>setEditForm({...editForm,order_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
+                            <span className="font-medium text-gray-700">Шиномонтаж<br/><small className="font-normal text-gray-400">виконавець з каси</small></span><input type="number" min="0" max="100" step="0.1" value={editForm.tire_revenue} onChange={(e)=>setEditForm({...editForm,tire_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={editForm.tire_profit} onChange={(e)=>setEditForm({...editForm,tire_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
                           </div>
-                          <p className="text-[10px] text-gray-500">Для шиномонтажника виберіть роль «Шиномонтажник», задайте % від суми роботи і вибирайте його в касі в кнопці «Шиномонтаж». Відсоток нарахується автоматично.</p>
-                        </div>
-                      )}
+                          <p className="text-[10px] text-gray-500">У касі процент отримує вибраний продавець або виконавець. У замовленні — призначений менеджер. Якщо нікого не вибрано, використовується поточний касир.</p>
+                        </div>                      )}
                       {employeeRules.length>0&&(
                         <div className="bg-white/60 rounded-lg p-3 border border-amber-100/50">
                           <p className="text-xs font-semibold text-gray-600 mb-2">Активні правила комісії</p>
                           {employeeRules.map(r=>(
                             <div key={r.id} className="flex items-center justify-between py-1.5 text-xs">
-                              <span className="text-gray-600">{r.rule_type==='total_cashbox'?'Каса':'Особисті продажі'}{r.brand_id&&' (бренд)'}{r.category_id&&' (категорія)'}</span>
+                              <span className="text-gray-600">{{pos_sales:'Каса',order_sales:'Замовлення',tire_service:'Шиномонтаж',personal_sales:'Старе загальне правило'}[r.rule_type]??r.rule_type}{r.brand_id&&' (бренд)'}{r.category_id&&' (категорія)'}</span>
                               <div className="flex gap-2 text-gray-500">{r.pct_from_revenue>0&&<span>Виручка: <strong className="text-amber-700">{r.pct_from_revenue}%</strong></span>}{r.pct_from_profit>0&&<span>Прибуток: <strong className="text-amber-700">{r.pct_from_profit}%</strong></span>}</div>
                             </div>
                           ))}
