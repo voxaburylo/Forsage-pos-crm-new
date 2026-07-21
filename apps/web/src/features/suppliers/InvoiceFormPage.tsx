@@ -1733,51 +1733,84 @@ export default function InvoiceFormPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {INVOICE_IMPORT_FIELDS.map(({ field, label, required }) => (
-              <div key={field}>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">{label}{required ? ' *' : ''}</label>
-                <select
-                  value={invoiceImportMapping[field] ?? ''}
-                  onChange={(e) => setInvoiceImportMapping((prev) => ({ ...prev, [field]: e.target.value === '' ? null : Number(e.target.value) }))}
-                  className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white"
-                >
-                  <option value="">Не використовувати</option>
-                  {Array.from({ length: invoiceImportColumnCount }).map((_, index) => {
-                    const sample = invoiceImportRows[invoiceImportHeaderRow ?? 0]?.[index] ?? invoiceImportRows[0]?.[index] ?? ''
-                    return <option key={index} value={index}>Колонка {index + 1}{sample ? ` — ${cleanImportCell(sample).slice(0, 28)}` : ''}</option>
-                  })}
-                </select>
-              </div>
-            ))}
-          </div>
-
           <div className="border border-gray-200 rounded-xl overflow-hidden">
-            <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between gap-2">
-              <span className="text-sm font-semibold text-gray-700">Перші рядки файлу</span>
-              <span className="text-xs text-gray-400">Сірі рядки вище номера старту не імпортуються</span>
+            <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+              <div>
+                <span className="text-sm font-semibold text-gray-700">Сопоставлення колонок</span>
+                <p className="text-xs text-gray-400 mt-0.5">Виберіть тип прямо над потрібним стовпчиком. Натисніть номер рядка зліва, щоб почати імпорт з нього.</p>
+              </div>
+              <span className="text-xs text-gray-400">Сірі рядки вище старту не імпортуються</span>
             </div>
-            <div className="overflow-auto max-h-72">
+            <div className="overflow-auto max-h-[420px]">
               <table className="min-w-full text-xs">
+                <thead className="sticky top-0 z-10 bg-white shadow-sm">
+                  <tr>
+                    <th className="sticky left-0 z-20 bg-white border-r border-gray-200 px-2 py-2 min-w-[74px] text-left">
+                      <div className="text-[10px] font-bold text-gray-400 uppercase">Рядок</div>
+                      <div className="text-[11px] text-gray-500 mt-1">Старт</div>
+                    </th>
+                    {Array.from({ length: invoiceImportColumnCount }).map((_, cellIndex) => {
+                      const selectedField = INVOICE_IMPORT_FIELDS.find(({ field }) => invoiceImportMapping[field] === cellIndex)?.field ?? ''
+                      const selected = Boolean(selectedField)
+                      return (
+                        <th key={cellIndex} className={'border-r border-gray-100 px-2 py-2 min-w-[150px] max-w-[240px] text-left align-top ' + (selected ? 'bg-yellow-100/80' : 'bg-white')}>
+                          <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">Колонка {cellIndex + 1}</div>
+                          <select
+                            value={selectedField}
+                            onChange={(e) => {
+                              const nextField = e.target.value as InvoiceImportField | ''
+                              setInvoiceImportMapping((prev) => {
+                                const next = { ...prev }
+                                ;(Object.keys(next) as InvoiceImportField[]).forEach((field) => {
+                                  if (next[field] === cellIndex) next[field] = null
+                                })
+                                if (nextField) next[nextField] = cellIndex
+                                return next
+                              })
+                            }}
+                            className={'w-full border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-yellow-400 ' + (selected ? 'border-yellow-300 bg-yellow-50 font-semibold text-gray-900' : 'border-gray-200 bg-white text-gray-600')}
+                          >
+                            <option value="">Не імпорт.</option>
+                            {INVOICE_IMPORT_FIELDS.map(({ field, label, required }) => (
+                              <option key={field} value={field}>{label}{required ? ' *' : ''}</option>
+                            ))}
+                          </select>
+                        </th>
+                      )
+                    })}
+                  </tr>
+                </thead>
                 <tbody>
-                  {invoiceImportRows.slice(0, 30).map((row, rowIndex) => (
-                    <tr key={rowIndex} className={rowIndex < invoiceImportStartRow ? 'bg-gray-50 text-gray-400' : 'bg-white'}>
-                      <td className="sticky left-0 bg-inherit border-r border-gray-100 px-2 py-1 font-mono text-gray-400">{rowIndex + 1}</td>
-                      {Array.from({ length: invoiceImportColumnCount }).map((_, cellIndex) => {
-                        const selected = Object.values(invoiceImportMapping).includes(cellIndex)
-                        return (
-                          <td key={cellIndex} className={`border-b border-gray-50 px-2 py-1 min-w-[120px] max-w-[260px] truncate ${selected ? 'bg-yellow-50 text-gray-900' : ''}`} title={cleanImportCell(row[cellIndex])}>
-                            {cleanImportCell(row[cellIndex])}
-                          </td>
-                        )
-                      })}
-                    </tr>
-                  ))}
+                  {invoiceImportRows.slice(0, 30).map((row, rowIndex) => {
+                    const isBeforeStart = rowIndex < invoiceImportStartRow
+                    const isStart = rowIndex === invoiceImportStartRow
+                    return (
+                      <tr key={rowIndex} className={isBeforeStart ? 'bg-gray-50 text-gray-400' : 'bg-white'}>
+                        <td className="sticky left-0 z-[5] bg-inherit border-r border-gray-200 px-2 py-1 font-mono text-gray-500">
+                          <button
+                            type="button"
+                            onClick={() => setInvoiceImportStartRow(rowIndex)}
+                            title="Почати імпорт з цього рядка"
+                            className={'w-full rounded-md px-2 py-1 text-left text-xs font-semibold hover:bg-yellow-100 ' + (isStart ? 'bg-yellow-400 text-black' : '')}
+                          >
+                            {rowIndex + 1}{isStart ? ' старт' : ''}
+                          </button>
+                        </td>
+                        {Array.from({ length: invoiceImportColumnCount }).map((_, cellIndex) => {
+                          const selectedField = INVOICE_IMPORT_FIELDS.find(({ field }) => invoiceImportMapping[field] === cellIndex)
+                          return (
+                            <td key={cellIndex} className={'border-b border-gray-50 px-2 py-1 min-w-[150px] max-w-[240px] truncate ' + (selectedField ? 'bg-yellow-50 text-gray-900 font-medium' : '')} title={cleanImportCell(row[cellIndex])}>
+                              {cleanImportCell(row[cellIndex])}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
-
           {invoiceImportPreview.items.length > 0 && (
             <div className="border border-gray-200 rounded-xl overflow-hidden">
               <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-700">Що буде додано у накладну</div>
