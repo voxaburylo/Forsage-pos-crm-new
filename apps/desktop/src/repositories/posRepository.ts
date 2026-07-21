@@ -306,6 +306,8 @@ export class LocalPosRepository {
         vip_level: input.vip_level,
         risk_profile: input.risk_profile,
         discount_pct: input.discount_pct,
+        bonus_balance: input.bonus_balance !== undefined ? money(input.bonus_balance) : undefined,
+        loyalty_mode: input.loyalty_mode === 'cashback' ? 'cashback' : input.loyalty_mode === 'discount' ? 'discount' : undefined,
         client_status: input.client_status,
         card_barcode: input.card_barcode,
       }
@@ -1161,6 +1163,34 @@ export class LocalPosRepository {
           WHERE id = ? AND tenant_id = ?
         `).run(Number(customer.debt_balance ?? 0) + payments.debt, timestamp, timestamp, input.customer_id, tenantId)
       }
+      if (input.customer_id && payments.debt === 0) {
+        const customer = this.getCustomerForMoney(input.customer_id, tenantId)
+        const cashbackPct = customer.loyalty_mode === 'cashback' ? Number(customer.discount_pct ?? 0) : 0
+        const cashback = cashbackPct > 0 ? Math.round(total * cashbackPct / 100) : 0
+        if (cashback > 0) {
+          const balanceAfter = Number(customer.deposit_balance ?? 0) + cashback
+          const transactionId = randomUUID()
+          const notes = 'Накопичення ' + cashbackPct + '% з чека ' + saleNumber
+          this.db.prepare(`
+            UPDATE customers
+            SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+            WHERE id = ? AND tenant_id = ?
+          `).run(balanceAfter, timestamp, timestamp, input.customer_id, tenantId)
+          this.db.prepare(`
+            INSERT INTO customer_deposit_transactions (
+              id, tenant_id, customer_id, amount, balance_after, method, sale_id, shift_id,
+              notes, created_by, dirty_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'cashback', ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            transactionId, tenantId, input.customer_id, cashback, balanceAfter, saleId, shiftId,
+            notes, input.cashier_id, timestamp, timestamp, timestamp,
+          )
+          this.addOutbox(tenantId, 'customer', input.customer_id, 'customer.deposit_changed', {
+            customer_id: input.customer_id, transaction_id: transactionId, amount: cashback, method: 'cashback',
+            sale_id: saleId, shift_id: shiftId, notes, created_by: input.cashier_id, created_at: timestamp,
+          }, timestamp)
+        }
+      }
       if (payments.cash > 0) {
         this.db.prepare(`
           INSERT INTO cash_operations (
@@ -1643,13 +1673,18 @@ export class LocalPosRepository {
     phone: string | null
     debt_balance: number
     deposit_balance: number
+    bonus_balance: number
+    loyalty_mode: 'discount' | 'cashback'
+    discount_pct: number
   } {
     const row = this.db.prepare(`
-      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance, COALESCE(bonus_balance, 0) AS bonus_balance
+      SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance,
+             COALESCE(bonus_balance, 0) AS bonus_balance, COALESCE(loyalty_mode, 'discount') AS loyalty_mode,
+             COALESCE(discount_pct, 0) AS discount_pct
       FROM customers
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
       LIMIT 1
-    `).get(customerId, tenantId) as { id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number; bonus_balance: number } | undefined
+    `).get(customerId, tenantId) as { id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number; bonus_balance: number; loyalty_mode: 'discount' | 'cashback'; discount_pct: number } | undefined
     if (!row) throw new Error('Клієнта не знайдено')
     return row
   }

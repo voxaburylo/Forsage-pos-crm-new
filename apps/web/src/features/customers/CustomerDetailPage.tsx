@@ -45,6 +45,9 @@ export default function CustomerDetailPage() {
   const [discountVal, setDiscountVal] = useState('0')
   const [statusVal, setStatusVal] = useState('client')
   const [savingDiscount, setSavingDiscount] = useState(false)
+  const [bonusModal, setBonusModal] = useState(false)
+  const [bonusVal, setBonusVal] = useState('0')
+  const [savingBonus, setSavingBonus] = useState(false)
   // Рахунок клієнта (передплата): баланс + останні операції
   const [deposit, setDeposit] = useState<{ balance: number; transactions: any[] } | null>(null)
   const [savingLoyaltyMode, setSavingLoyaltyMode] = useState(false)
@@ -104,6 +107,7 @@ export default function CustomerDetailPage() {
     if (customer) {
       setDiscountVal(String((customer as any).discount_pct ?? 0))
       setStatusVal((customer as any).client_status ?? 'client')
+      setBonusVal(((customer.bonus_balance ?? 0) / 100).toFixed(2))
     }
   }, [customer])
 
@@ -126,6 +130,26 @@ export default function CustomerDetailPage() {
       toast.error('Помилка збереження')
     } finally {
       setSavingDiscount(false)
+    }
+  }
+
+  async function handleSaveBonusBalance() {
+    if (!customer) return
+    const amount = Math.round(Number(String(bonusVal).replace(',', '.')) * 100)
+    if (!Number.isFinite(amount) || amount < 0) {
+      toast.error('Вкажіть коректну суму бонусів')
+      return
+    }
+    setSavingBonus(true)
+    try {
+      await customerApi.update(customer.id, { bonus_balance: amount } as any)
+      setCustomer((prev) => prev ? ({ ...prev, bonus_balance: amount } as Customer) : prev)
+      setBonusModal(false)
+      toast.success('Бонусний баланс оновлено')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не вдалося зберегти бонуси')
+    } finally {
+      setSavingBonus(false)
     }
   }
 
@@ -186,6 +210,9 @@ export default function CustomerDetailPage() {
           </Button>
           <Button variant="secondary" size="sm" onClick={() => setDiscountModal(true)}>
             🏷️ Знижка/Статус
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setBonusModal(true)}>
+            🎁 Бонуси
           </Button>
           <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/customers/${customer.id}/edit`)}>
             Редагувати
@@ -309,6 +336,20 @@ export default function CustomerDetailPage() {
                 Погасити борг
               </Button>
             )}
+          </div>
+        </Card>
+
+        {/* Бонуси */}
+        <Card className={(customer.bonus_balance ?? 0) > 0 ? 'border-yellow-200 bg-yellow-50' : ''}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-gray-400 mb-0.5">Бонуси клієнта</p>
+              <p className={(customer.bonus_balance ?? 0) > 0 ? 'text-2xl font-bold text-yellow-600' : 'text-2xl font-bold text-gray-500'}>
+                {formatMoney(customer.bonus_balance ?? 0)}
+              </p>
+              <p className="mt-0.5 text-[11px] text-gray-400">Їх можна списати в касі при оплаті чека.</p>
+            </div>
+            <Button variant="secondary" onClick={() => setBonusModal(true)}>Змінити</Button>
           </div>
         </Card>
 
@@ -524,6 +565,29 @@ export default function CustomerDetailPage() {
       </div>
 
       {/* Модалка додавання авто */}
+      <Modal open={bonusModal} onClose={() => setBonusModal(false)} title="Бонуси клієнта" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Бонусний баланс (грн)</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={bonusVal}
+              onChange={(e) => setBonusVal(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+            />
+            <p className="mt-1 text-xs text-gray-400">Це ручне коригування: напиши потрібную суму бонусів клієнта.</p>
+          </div>
+          <div className="flex gap-3">
+            <Button loading={savingBonus} onClick={handleSaveBonusBalance} className="flex-1">
+              Зберегти
+            </Button>
+            <Button variant="secondary" onClick={() => setBonusModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Модалка налаштування знижки та статусу */}
       <Modal open={discountModal} onClose={() => setDiscountModal(false)} title="Налаштування знижки та статусу" size="sm">
         <div className="space-y-4">

@@ -10,6 +10,8 @@ export interface Customer {
   full_name: string | null
   email: string | null
   debt_balance: number   // копійки
+  deposit_balance?: number // копійки, рахунок/передплата
+  loyalty_mode?: 'discount' | 'cashback'
   notes: string | null
   tags: string[]
   price_tier_id: string | null
