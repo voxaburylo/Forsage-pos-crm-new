@@ -48,7 +48,7 @@ export default function CustomerDetailPage() {
   const [bonusModal, setBonusModal] = useState(false)
   const [bonusVal, setBonusVal] = useState('0')
   const [savingBonus, setSavingBonus] = useState(false)
-  // Рахунок клієнта (передплата): баланс + останні операції
+  // Накоплено на рахунку: баланс + останні операції
   const [deposit, setDeposit] = useState<{ balance: number; transactions: any[] } | null>(null)
   const [savingLoyaltyMode, setSavingLoyaltyMode] = useState(false)
 
@@ -70,8 +70,8 @@ export default function CustomerDetailPage() {
       await customerApi.update(customer.id, { loyalty_mode: mode } as any)
       setCustomer((prev) => prev ? ({ ...prev, loyalty_mode: mode } as any) : prev)
       toast.success(mode === 'cashback'
-        ? 'Тепер відсоток клієнта накопичується грошима на рахунку'
-        : 'Тепер відсоток клієнта працює як знижка на касі')
+        ? 'Тепер процент клієнта накопичується грошима на рахунку'
+        : 'Тепер процент клієнта працює як знижка на касі')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не вдалося змінити режим')
     } finally {
@@ -125,7 +125,7 @@ export default function CustomerDetailPage() {
         client_status: statusVal as any
       } : prev)
       setDiscountModal(false)
-      toast.success('Знижку та статус оновлено')
+      toast.success('Процент клієнта та статус оновлено')
     } catch {
       toast.error('Помилка збереження')
     } finally {
@@ -209,10 +209,10 @@ export default function CustomerDetailPage() {
             Замовлення
           </Button>
           <Button variant="secondary" size="sm" onClick={() => setDiscountModal(true)}>
-            🏷️ Знижка/Статус
+            🏷️ Процент/Статус
           </Button>
           <Button variant="secondary" size="sm" onClick={() => setBonusModal(true)}>
-            🎁 Бонуси
+            🎁 Змінити бонуси
           </Button>
           <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/customers/${customer.id}/edit`)}>
             Редагувати
@@ -248,8 +248,8 @@ export default function CustomerDetailPage() {
               </p>
             </div>
             <div>
-              <p className="text-xs text-gray-400 mb-0.5">Персональна знижка</p>
-              <p className="text-sm font-semibold text-gray-900">{(customer as any).discount_pct ?? 0}%</p>
+              <p className="text-xs text-gray-400 mb-0.5">Процент клієнта</p>
+              <div className="flex items-center gap-2"><p className="text-sm font-semibold text-gray-900">{(customer as any).discount_pct ?? 0}%</p><button type="button" onClick={() => setDiscountModal(true)} className="text-xs font-semibold text-yellow-700 hover:text-yellow-800">Змінити</button></div>
             </div>
           </div>
           {/* Ціновий рівень */}
@@ -347,24 +347,24 @@ export default function CustomerDetailPage() {
               <p className={(customer.bonus_balance ?? 0) > 0 ? 'text-2xl font-bold text-yellow-600' : 'text-2xl font-bold text-gray-500'}>
                 {formatMoney(customer.bonus_balance ?? 0)}
               </p>
-              <p className="mt-0.5 text-[11px] text-gray-400">Їх можна списати в касі при оплаті чека.</p>
+              <p className="mt-0.5 text-[11px] text-gray-400">Цей баланс можна вручну змінити тут і списати в касі при оплаті чека.</p>
             </div>
             <Button variant="secondary" onClick={() => setBonusModal(true)}>Змінити</Button>
           </div>
         </Card>
 
-        {/* Рахунок клієнта (передплата) + режим лояльності */}
+        {/* Накоплено на рахунку + режим лояльності */}
         <Card className={(deposit?.balance ?? 0) > 0 ? 'border-emerald-200 bg-emerald-50' : ''}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs text-gray-400 mb-0.5">Рахунок клієнта (передплата)</p>
+              <p className="text-xs text-gray-400 mb-0.5">Накоплено на рахунку</p>
               <p className={`text-2xl font-bold ${(deposit?.balance ?? 0) > 0 ? 'text-emerald-600' : 'text-gray-500'}`}>
                 {formatMoney(deposit?.balance ?? 0)}
               </p>
-              <p className="mt-0.5 text-[11px] text-gray-400">Поповнення — тільки на касі. Списується на оплату замовлень.</p>
+              <p className="mt-0.5 text-[11px] text-gray-400">Тут накопичуються гроші від режиму «Накопичення» та передплати з каси.</p>
             </div>
             <div>
-              <p className="mb-1 text-xs text-gray-400">Відсоток клієнта ({(customer as any).price_tier?.discount_pct ?? customer.discount_pct ?? 0}%) працює як:</p>
+              <p className="mb-1 text-xs text-gray-400">Процент клієнта ({(customer as any).price_tier?.discount_pct ?? customer.discount_pct ?? 0}%) працює як:</p>
               <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
                 <button
                   disabled={savingLoyaltyMode}
@@ -577,7 +577,7 @@ export default function CustomerDetailPage() {
               onChange={(e) => setBonusVal(e.target.value)}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             />
-            <p className="mt-1 text-xs text-gray-400">Це ручне коригування: напиши потрібную суму бонусів клієнта.</p>
+            <p className="mt-1 text-xs text-gray-400">Це ручне коригування: впиши потрібну суму бонусів клієнта.</p>
           </div>
           <div className="flex gap-3">
             <Button loading={savingBonus} onClick={handleSaveBonusBalance} className="flex-1">
@@ -589,10 +589,10 @@ export default function CustomerDetailPage() {
       </Modal>
 
       {/* Модалка налаштування знижки та статусу */}
-      <Modal open={discountModal} onClose={() => setDiscountModal(false)} title="Налаштування знижки та статусу" size="sm">
+      <Modal open={discountModal} onClose={() => setDiscountModal(false)} title="Процент клієнта та статус" size="sm">
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Процент клієнта (%)</label>
             <input
               type="number"
               min="0"
@@ -733,3 +733,4 @@ export default function CustomerDetailPage() {
     </Layout>
   )
 }
+

@@ -1004,7 +1004,7 @@ export default function POSPage() {
       <QuickChargeModal
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}
-        staff={staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer'].includes(u.role))}
+        staff={staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer','tire_worker'].includes(u.role))}
         offline={!effectiveOnline}
         onClose={() => setQuickCharge(null)}
       />
@@ -1121,4 +1121,5 @@ export default function POSPage() {
     </div>
   )
 }
+
 

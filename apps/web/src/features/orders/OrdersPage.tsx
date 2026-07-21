@@ -1024,11 +1024,6 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
             <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center">
               <p className="text-gray-500 text-sm font-medium">{search ? 'Нічого не знайдено' : 'Тут поки порожньо'}</p>
               <p className="text-gray-400 text-xs mt-1">{search ? 'Спробуйте інший запит — №, ім’я, телефон чи авто' : 'Створіть перше замовлення, щоб воно з’явилося тут'}</p>
-              {!search && (
-                <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/orders/new')}>
-                  Нове замовлення
-                </Button>
-              )}
             </div>
           ) : orders.map((o: CustomerOrder) => {
             const paid = o.total_paid ?? o.prepayment ?? 0
@@ -1143,11 +1138,6 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                     <td colSpan={6} className="px-5 py-14 text-center">
                       <p className="text-gray-500 text-sm font-medium">{search ? 'Нічого не знайдено' : 'Тут поки порожньо'}</p>
                       <p className="text-gray-400 text-xs mt-1">{search ? 'Спробуйте інший запит — №, ім’я, телефон чи авто' : 'Створіть перше замовлення, щоб воно з’явилося тут'}</p>
-                      {!search && (
-                        <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/orders/new')}>
-                          Нове замовлення
-                        </Button>
-                      )}
                     </td>
                   </tr>
                 )}
@@ -1667,7 +1657,7 @@ export default function OrdersPage() {
 
       <div className="flex-1 flex flex-col min-w-0">
         {/* шапка */}
-        <header className="bg-white border-b border-gray-100 px-3 md:px-6 py-2 md:py-3 flex items-center justify-between shrink-0 gap-2">
+        <header className="bg-white border-b border-gray-100 px-3 md:px-6 py-3 md:py-3.5 min-h-[58px] flex items-center justify-between shrink-0 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <button className="md:hidden shrink-0 p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
               onClick={() => setSidebarOpen(true)} aria-label="Меню">
@@ -1681,7 +1671,7 @@ export default function OrdersPage() {
                 ←
               </button>
             ) : null}
-            <h1 className="font-bold text-gray-900 text-sm md:text-lg truncate">{chatMode ? 'Чат-боти' : 'Замовлення'}</h1>
+            <h1 className="font-bold text-gray-900 text-base md:text-lg leading-tight truncate">{chatMode ? 'Чат-боти' : 'Замовлення'}</h1>
           </div>
           {!chatMode && (
           <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
@@ -1693,13 +1683,6 @@ export default function OrdersPage() {
             <Button variant="secondary" size="sm" icon={<Camera size={14} />}
               className="md:hidden !px-2" onClick={() => navigate('/ai-assistant')}
               title="Замовлення з фото (ШІ)" />
-            <Button variant="secondary" size="sm" icon={<FilePen size={14} />}
-              className="!hidden md:!inline-flex" onClick={() => navigate('/quotes/new')}>
-              Чернетка
-            </Button>
-            <Button variant="secondary" size="sm" icon={<FilePen size={14} />}
-              className="md:hidden !px-2" onClick={() => navigate('/quotes/new')}
-              title="Чернетка" />
             <Button variant="secondary" size="sm" icon={<Truck size={14} />}
               className="!hidden md:!inline-flex" onClick={() => setBulkOpen(true)}>
               Приймання
@@ -1707,9 +1690,14 @@ export default function OrdersPage() {
             <Button variant="secondary" size="sm" icon={<Truck size={14} />}
               className="md:hidden !px-2" onClick={() => setBulkOpen(true)}
               title="Приймання" />
-            <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')} title="Нове замовлення">
-              <span className="hidden sm:inline">Нове замовлення</span>
-            </Button>
+            <div className="flex items-center gap-1 rounded-xl bg-gray-50 p-0.5">
+              <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')} title="Нове замовлення">
+                <span className="hidden sm:inline">Нове замовлення</span><span className="sm:hidden">Нове</span>
+              </Button>
+              <Button variant="secondary" size="sm" icon={<FilePen size={14} />} onClick={() => navigate('/quotes/new')} title="Чернетка">
+                <span className="hidden sm:inline">Чернетка</span><span className="sm:hidden">Черн.</span>
+              </Button>
+            </div>
           </div>
           )}
         </header>

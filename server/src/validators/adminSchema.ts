@@ -18,13 +18,13 @@ export const createUserSchema = z.object({
   phone:    phoneSchema,
   password: z.string().min(6, 'Пароль мінімум 6 символів'),
   full_name: z.string().min(1).max(200),
-  role:     z.enum(['owner','admin','manager','cashier','storekeeper','sto_viewer']),
+  role:     z.enum(['owner','admin','manager','cashier','storekeeper','sto_viewer','tire_worker']),
   base_rate: z.number().int().min(0).optional(),
   rate_period: z.enum(['day', 'month']).optional(),
 })
 
 export const updateUserSchema = z.object({
-  role:      z.enum(['owner','admin','manager','cashier','storekeeper','sto_viewer']).optional(),
+  role:      z.enum(['owner','admin','manager','cashier','storekeeper','sto_viewer','tire_worker']).optional(),
   is_active: z.boolean().optional(),
   full_name: z.string().min(1).max(200).optional(),
   base_rate: z.number().int().min(0).optional(),
@@ -114,3 +114,4 @@ export type UpdateUserInput  = z.infer<typeof updateUserSchema>
 export type CategoryInput    = z.infer<typeof categorySchema>
 export type BrandInput       = z.infer<typeof brandSchema>
 export type SettingsInput    = z.infer<typeof settingsSchema>
+

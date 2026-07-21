@@ -18,7 +18,7 @@ import { formatMoney } from '@/lib/utils'
 import { shiftApi } from '@/features/pos/shiftApi'
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
-const ROLE_COLORS: Record<UserRole, BadgeColor> = { owner:'yellow', admin:'blue', manager:'green', cashier:'gray', storekeeper:'orange', sto_viewer:'gray' } as const
+const ROLE_COLORS: Record<UserRole, BadgeColor> = { owner:'yellow', admin:'blue', manager:'green', cashier:'gray', storekeeper:'orange', sto_viewer:'gray', tire_worker:'orange' } as const
 type SalaryMode = 'only_rate' | 'only_pct' | 'rate_and_pct'
 
 const TYPE_CONFIG = {
@@ -197,10 +197,10 @@ export default function StaffPage() {
                         <div className="space-y-3 bg-white/60 rounded-lg p-3 border border-amber-100/50">
                           <p className="text-xs font-semibold text-amber-700">Відсоток від виконаних робіт / особистих продажів</p>
                           <div className="grid grid-cols-2 gap-3">
-                            <Input label="% від виручки" type="number" min="0" max="100" step="0.1" value={editForm.pct_from_revenue} onChange={(e)=>setEditForm({...editForm,pct_from_revenue:e.target.value})} placeholder="0"/>
+                            <Input label="% від суми роботи / виручки" type="number" min="0" max="100" step="0.1" value={editForm.pct_from_revenue} onChange={(e)=>setEditForm({...editForm,pct_from_revenue:e.target.value})} placeholder="0"/>
                             <Input label="% від прибутку" type="number" min="0" max="100" step="0.1" value={editForm.pct_from_profit} onChange={(e)=>setEditForm({...editForm,pct_from_profit:e.target.value})} placeholder="0"/>
                           </div>
-                          <p className="text-[10px] text-gray-500">Для шиномонтажника виберіть його в касі під час приймання оплати. Відсоток нарахується автоматично від суми роботи.</p>
+                          <p className="text-[10px] text-gray-500">Для шиномонтажника виберіть роль «Шиномонтажник», задайте % від суми роботи і вибирайте його в касі в кнопці «Шиномонтаж». Відсоток нарахується автоматично.</p>
                         </div>
                       )}
                       {employeeRules.length>0&&(
@@ -296,3 +296,4 @@ export default function StaffPage() {
     </Layout>
   )
 }
+

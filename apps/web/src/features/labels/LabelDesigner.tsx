@@ -699,16 +699,10 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
       body += `<div style="position:absolute;left:${pBin.x}%;top:${pBin.y}%;width:${100 - pBin.x}%;font-size:${Math.min(settings.font_size_title, 30)}pt;font-weight:700;line-height:1;text-align:${settings.align_product_name || 'center'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(binLabel)}</div>`
       if (settings.show_barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
-        const alignBc = settings.align_barcode || 'center'
-        const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
-        const horizontalBc = alignBc === 'center'
-          ? 'left:0;right:0;'
-          : alignBc === 'right'
-            ? `left:0;right:${Math.max(0, pBc.x)}%;`
-            : `left:${pBc.x}%;right:0;`
+        const barcodeBlockWidth = Math.max(5, 80 * barcodeWidth)
         const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
-        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;align-items:${flexBc};overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
+        body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
@@ -717,16 +711,10 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
       }
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
-        const alignBc = settings.align_barcode || 'center'
-        const flexBc = alignBc === 'left' ? 'flex-start' : alignBc === 'right' ? 'flex-end' : 'center'
-        const horizontalBc = alignBc === 'center'
-          ? 'left:0;right:0;'
-          : alignBc === 'right'
-            ? `left:0;right:${Math.max(0, pBc.x)}%;`
-            : `left:${pBc.x}%;right:0;`
+        const barcodeBlockWidth = Math.max(5, 80 * barcodeWidth)
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
-        body += `<div class="barcode" style="position:absolute;${horizontalBc}top:${pBc.y}%;display:flex;align-items:${flexBc};overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
+        body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
         const pSku = settings.pos_sku || { x: 5, y: 75 }
@@ -785,17 +773,18 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     flex: 0 1 auto;
     flex-direction: column;
     align-items: center;
-    width: fit-content;
-    max-width: calc(100% - 2mm);
+    width: 100%;
+    max-width: 100%;
   }
   .barcode-inner span {
     display: block;
     width: 100%;
-    margin-top: .3mm;
+    margin-top: .4mm;
     color: #222;
     font-family: monospace;
     font-size: ${settings.font_size}pt;
     font-variant-numeric: tabular-nums;
+    letter-spacing: .2mm;
     line-height: 1;
     text-align: center;
     white-space: nowrap;
@@ -803,7 +792,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   .barcode svg,
   .barcode img {
     display: block;
-    width: auto;
+    width: 100%;
     max-width: 100%;
     height: ${barcodeHeight}px;
     flex: 0 1 auto;

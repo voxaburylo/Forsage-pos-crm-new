@@ -19,7 +19,7 @@ export interface AdminUser {
   created_at: string
 }
 
-export type UserRole = 'owner' | 'admin' | 'manager' | 'cashier' | 'storekeeper' | 'sto_viewer'
+export type UserRole = 'owner' | 'admin' | 'manager' | 'cashier' | 'storekeeper' | 'sto_viewer' | 'tire_worker'
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   owner:       'Власник',
@@ -28,6 +28,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   cashier:     'Касир',
   storekeeper: 'Кладовщик',
   sto_viewer:  'СТО (перегляд)',
+  tire_worker: '🛞 Шиномонтажник',
 }
 
 // Settings
@@ -190,3 +191,4 @@ export const adminApi = {
     return api.put<{ data: ShopSettings }>('/api/v1/settings', body, opts)
   },
 }
+
