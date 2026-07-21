@@ -11,14 +11,13 @@ import { Button, Badge, Card, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import {
   printLabels,
-  DEFAULT_LABEL,
+  loadProductLabelSettings,
   DEFAULT_BIN_LABEL,
   PRODUCT_LABEL_PRESET_OPTIONS,
   PRODUCT_LABEL_PRESET_STORAGE_KEY,
   resolveProductLabelSettings,
   type ProductLabelPresetKey,
 } from '@/features/labels/LabelDesigner'
-import { adminApi } from '@/features/admin/adminApi'
 import { warehouseApi } from '@/features/inventory/warehouseApi'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -235,8 +234,7 @@ export default function ProductDetailPage() {
   async function handlePrintBinLabel() {
     if (!product || !product.storage_bin) return
     try {
-      const settingsRes = await adminApi.getSettings()
-      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      const settings = await loadProductLabelSettings()
       const binSettings = settings.bin_settings || DEFAULT_BIN_LABEL
       printLabels(binSettings as any, [{ label: product.storage_bin }], true)
       toast.success('Етикетку комірки відправлено на друк')
@@ -828,8 +826,7 @@ export default function ProductDetailPage() {
             <Button
               onClick={async () => {
                 try {
-                  const settingsRes = await adminApi.getSettings()
-                  const savedSettings = settingsRes.data.label_settings || DEFAULT_LABEL
+                  const savedSettings = await loadProductLabelSettings()
                   const settings = resolveProductLabelSettings(savedSettings, printLabelPreset)
                   const items = Array(printCopies).fill(product)
                   printLabels(settings as any, items, false)
@@ -874,3 +871,4 @@ export default function ProductDetailPage() {
     </Layout>
   )
 }
+

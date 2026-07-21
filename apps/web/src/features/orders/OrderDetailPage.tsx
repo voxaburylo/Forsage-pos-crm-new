@@ -10,16 +10,14 @@ import { Button, Card, Badge } from '@/components/ui'
 import { Modal } from '@/components/ui/Modal'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
-import { adminApi } from '@/features/admin/adminApi'
 import { productApi } from '@/features/products/productApi'
-import { DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
 import type { Customer } from '@/types/customer'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodeSvg } from '@/lib/barcodeSvg'
-import { printLabelDocument } from '@/features/labels/LabelDesigner'
+import { loadProductLabelSettings, printLabelDocument } from '@/features/labels/LabelDesigner'
 
 interface Payment {
   id: string
@@ -340,8 +338,7 @@ export default function OrderDetailPage() {
         } catch { /* fallback: лишаємо barcodeValue = sku, друк не блокуємо */ }
       }
 
-      const settingsRes = await adminApi.getSettings()
-      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      const settings = await loadProductLabelSettings()
 
       const w = settings.width_mm
       const h = settings.height_mm
@@ -359,12 +356,16 @@ export default function OrderDetailPage() {
       const cellInfo = order.pickup_cell ? `Комірка: ${order.pickup_cell}` : ''
       const today = new Date().toLocaleDateString('uk-UA')
 
-      const barcodeSvg = barcodeValue
+      const barcodeSvg = settings.show_barcode && barcodeValue
         ? renderBarcodeSvg(barcodeValue, {
             width: Math.max(0.5, Number(settings.barcode_width_factor) || 1) * 1.2,
             height: settings.barcode_height,
           })
         : ''
+      const productNameHtml = settings.show_product_name
+        ? '<div style="font-size:' + String(fontSize + 1) + 'px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:0.5mm; width:100%;">' + esc(selectedOrderItem.name) + '</div>'
+        : ''
+      const skuHtml = settings.show_sku ? '<div>Арт: ' + esc(selectedOrderItem.sku || '—') + '</div>' : '<div></div>'
       const labelsHtml = Array(itemLabelCopies).fill(0).map(() => {
         return `
           <section class="label-page"><div class="label">
@@ -372,9 +373,7 @@ export default function OrderDetailPage() {
               <span>ЗАМОВЛЕННЯ №${esc(orderNum)}</span>
               ${cellInfo ? `<span style="color:#b45309; font-weight:bold; margin-left:auto;">${esc(cellInfo)}</span>` : ''}
             </div>
-            <div style="font-size:${fontSize + 1}px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:0.5mm; width:100%;">
-              ${esc(selectedOrderItem.name)}
-            </div>
+            ${productNameHtml}
             <div style="font-size:${fontSize}px; font-weight:bold; color:#1e3a8a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">
               Клієнт: ${esc(clientName)}
             </div>
@@ -383,7 +382,7 @@ export default function OrderDetailPage() {
             <div class="barcode" style="text-align:center; margin:0.5mm 0; width:100%;">${barcodeSvg}</div>
             
             <div style="display:flex; justify-content:space-between; align-items:baseline; font-size:${fontSize - 1}px; color:#6b7280; width:100%;">
-              <div>Арт: ${esc(selectedOrderItem.sku || '—')}</div>
+              ${skuHtml}
               <div>${esc(today)}</div>
             </div>
           </div></section>
@@ -1008,3 +1007,4 @@ export default function OrderDetailPage() {
     </Layout>
   )
 }
+

@@ -23,7 +23,7 @@ import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib
 import { desktopBridge, desktopProductToProduct, isDesktopRuntime } from '@/lib/desktopBridge'
 import {
   printLabels,
-  DEFAULT_LABEL,
+  loadProductLabelSettings,
   PRODUCT_LABEL_PRESET_OPTIONS,
   PRODUCT_LABEL_PRESET_STORAGE_KEY,
   resolveProductLabelSettings,
@@ -1028,8 +1028,7 @@ export default function ProductsPage() {
                 disabled={Object.values(bulkQtys).reduce((sum, q) => sum + q, 0) === 0}
                 onClick={async () => {
                   try {
-                    const settingsRes = await adminApi.getSettings()
-                    const savedSettings = settingsRes.data.label_settings || DEFAULT_LABEL
+                    const savedSettings = await loadProductLabelSettings()
                     const settings = resolveProductLabelSettings(savedSettings, printLabelPreset)
                     const items = selectedProducts.flatMap((p) => {
                       const qty = bulkQtys[p.id] ?? 0
@@ -1112,3 +1111,5 @@ function Info({ label, value, mono }: { label: string; value: string; mono?: boo
     </div>
   )
 }
+
+

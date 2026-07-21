@@ -385,9 +385,21 @@ export function resolveProductLabelSettings(
 
   const preset = LABEL_PRESETS[presetKey] ?? LABEL_PRESETS.compact_product_4025
   const { name: _name, ...presetSettings } = preset
+  const visibilitySettings = {
+    show_shop_name: saved.show_shop_name,
+    show_product_name: saved.show_product_name,
+    show_barcode: saved.show_barcode,
+    show_barcode_text: saved.show_barcode_text,
+    show_sku: saved.show_sku,
+    show_price: saved.show_price,
+    show_storage_bin: saved.show_storage_bin,
+  }
   return {
     ...saved,
     ...presetSettings,
+    // Розмір рулону може міняти геометрію, але не має вмикати назад
+    // елементи, які користувач вимкнув у дизайнері етикетки.
+    ...visibilitySettings,
     // Калібрування належить принтеру, тому зберігаємо його при зміні рулону.
     offset_x_mm: saved.offset_x_mm ?? 0,
     offset_y_mm: saved.offset_y_mm ?? 0,
