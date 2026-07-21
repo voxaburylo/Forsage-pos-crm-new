@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode } from 'lucide-react'
-import { ProductPhotoUpload, compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
+import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
 import { read, utils } from 'xlsx'
 import Papa from 'papaparse'
 import { supplierApi } from './supplierApi'
@@ -28,6 +28,7 @@ interface LineItem {
   storage_bin?: string | null
   photo_url?: string | null
   is_new?: boolean
+  client_key: string
 }
 
 function normalizeSkuValue(raw: string): string {
@@ -57,8 +58,13 @@ function kopecksForForm(kopecks: number): string {
   return (Math.max(0, Number(kopecks) || 0) / 100).toFixed(2)
 }
 
+function makeLineKey(): string {
+  return (globalThis.crypto?.randomUUID?.() ?? `line_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+}
+
 function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
   return {
+    client_key: makeLineKey(),
     product_name: '',
     sku: '',
     barcode: '',
@@ -72,6 +78,26 @@ function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
     is_new: true,
     ...overrides,
   }
+}
+
+function roundRetailBySettings(retail: number, settings: any): number {
+  if (settings?.price_rounding_enabled !== true) return retail
+  const step = Math.max(1, Number(settings.price_rounding_step) || 100)
+  const scaled = retail / step
+  if (settings.price_rounding_dir === 'up') return Math.ceil(scaled) * step
+  if (settings.price_rounding_dir === 'down') return Math.floor(scaled) * step
+  return Math.round(scaled) * step
+}
+
+function retailFromLocalGrid(purchaseKopecks: number, settings: any): number | null {
+  if (!Number.isFinite(purchaseKopecks) || purchaseKopecks <= 0) return null
+  const rules = Array.isArray(settings?.markup_rules) ? settings.markup_rules : []
+  const rule = rules.find((candidate: any) =>
+    purchaseKopecks >= Number(candidate.minPrice) && purchaseKopecks < Number(candidate.maxPrice)
+  )
+  if (!rule) return null
+  const retail = Math.round(purchaseKopecks * (1 + Number(rule.markupPct ?? 0) / 100))
+  return roundRetailBySettings(retail, settings)
 }
 
 function isDuplicateProductError(err: unknown): boolean {
@@ -247,16 +273,6 @@ export default function InvoiceFormPage() {
   const [newSupplierPhone, setNewSupplierPhone] = useState('')
   const [creatingSupplier, setCreatingSupplier] = useState(false)
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
-  const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([])
-  const [productModal, setProductModal] = useState(false)
-  const [newProductName, setNewProductName] = useState('')
-  const [newProductSku, setNewProductSku] = useState('')
-  const [newProductBarcode, setNewProductBarcode] = useState('')
-  const [newProductCategoryId, setNewProductCategoryId] = useState('')
-  const [newProductBrandId, setNewProductBrandId] = useState('')
-  const [newProductPurchase, setNewProductPurchase] = useState('')
-  const [newProductRetail, setNewProductRetail] = useState('')
-  const [creatingProduct, setCreatingProduct] = useState(false)
   const [importTab, setImportTab] = useState<'manual' | 'file' | 'clipboard'>('manual')
   const [clipboardText, setClipboardText] = useState('')
   // Оплата постачальнику
@@ -264,8 +280,6 @@ export default function InvoiceFormPage() {
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
   const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
-  const [newProductPhotoUrl, setNewProductPhotoUrl] = useState<string | null>(null)
-  const [generatingBarcode, setGeneratingBarcode] = useState(false)
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
 
   function moneyKey(index: number, field: 'purchase_price' | 'retail_price') {
@@ -312,7 +326,6 @@ export default function InvoiceFormPage() {
     supplierApi.list({ per_page: 200 }).then((r) => setSuppliers(r.data)).catch(() => {})
     adminApi.getSettings().then((res) => setQuickPercents(res.data.quick_percents || [])).catch(() => {})
     adminApi.listCategories().then((res) => setCategories(res.data)).catch(() => {})
-    adminApi.listBrands().then((res) => setBrands(res.data)).catch(() => {})
   }, [])
 
   // Якщо редагування — завантажуємо накладну
@@ -324,6 +337,7 @@ export default function InvoiceFormPage() {
         setInvoiceNumber(inv.invoice_number ?? '')
         setNotes(inv.notes ?? '')
         setItems((inv.items ?? []).map((i) => ({
+          client_key: makeLineKey(),
           product_id: i.product_id,
           product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
           qty: i.qty,
@@ -353,6 +367,7 @@ export default function InvoiceFormPage() {
       const inv = res.data
       setSupplierId(inv.supplier_id ?? '')
       setItems((inv.items ?? []).map((i) => ({
+        client_key: makeLineKey(),
         product_id: i.product_id,
         product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
         qty: i.qty,
@@ -517,6 +532,7 @@ export default function InvoiceFormPage() {
     }
     const nextIndex = items.length
     setItems((prev) => [...prev, {
+      client_key: makeLineKey(),
       product_id: product.id,
       product_name: product.name,
       qty: 1,
@@ -572,29 +588,47 @@ export default function InvoiceFormPage() {
   // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
   async function recalcRetail(onlyIndex?: number, forceUseGrid?: boolean, purchaseOverride?: number) {
     const targets = onlyIndex !== undefined ? [onlyIndex] : items.map((_, i) => i)
+    const localSettings = forceUseGrid
+      ? await adminApi.getSettings().then((res) => res.data as any).catch(() => null)
+      : null
+
     const updates = await Promise.all(targets.map(async (idx) => {
       const it = items[idx]
       const purchasePrice = purchaseOverride !== undefined && onlyIndex !== undefined ? purchaseOverride : it?.purchase_price
       if (!it || !purchasePrice || purchasePrice <= 0) return null
+
+      if (forceUseGrid && localSettings) {
+        const localRetail = retailFromLocalGrid(purchasePrice, localSettings)
+        if (localRetail != null) return { idx, retail: localRetail }
+        return null
+      }
+
       try {
         const categoryId = forceUseGrid ? undefined : (it.category_id ?? undefined)
         const r = await pricingApi.autoRetail(purchasePrice, categoryId)
         return r.data?.retail_price != null ? { idx, retail: r.data.retail_price } : null
       } catch { return null }
     }))
-    const map = new Map(updates.filter(Boolean).map((u) => [u!.idx, u!.retail]))
+
+    const validUpdates = updates.filter((u): u is { idx: number; retail: number } => u !== null)
+    const map = new Map(validUpdates.map((u) => [u.idx, u.retail]))
     if (map.size === 0) {
       if (onlyIndex === undefined) {
         toast.warning(forceUseGrid
-          ? 'Сітка націнок не налаштована або не повернула результат'
+          ? 'Не вдалося розрахувати за сіткою: перевірте правила націнки і закупівельні ціни'
           : 'Наценки категорій не задані — задайте їх у «Ціноутворення»'
         )
       }
       return
     }
     setItems((prev) => prev.map((it, i) => map.has(i) ? { ...it, retail_price: map.get(i)! } : it))
+    if (onlyIndex === undefined) {
+      toast.success(forceUseGrid
+        ? `За сіткою перераховано ${map.size} позицій`
+        : `Роздрібні ціни перераховано для ${map.size} позицій`
+      )
+    }
   }
-
   // Застосування фіксованої націнки на всю накладну
   function applyBulkQuickPercent(pct: number) {
     if (pct <= 0) return
@@ -619,60 +653,6 @@ export default function InvoiceFormPage() {
       next[index] = it
       return next
     })
-  }
-
-  // addMore=true — «Створити і додати ще»: товар летить у накладну, модалка лишається
-  // відкритою з очищеними полями (категорія/бренд зберігаються) — швидке поштучне
-  // набивання накладної, особливо з телефона.
-  async function handleCreateProduct(addMore = false) {
-    if (!newProductName.trim()) { toast.error('Назва обов’язкова'); return }
-    if (!newProductSku.trim()) { toast.error('Артикул (SKU) обов’язковий'); return }
-    setCreatingProduct(true)
-    try {
-      const form: ProductFormData = {
-        name: newProductName.trim(),
-        sku: newProductSku.trim(),
-        barcode: newProductBarcode.trim(),
-        unit: 'шт',
-        purchase_price: kopecksForForm(parseMoneyToKopecks(newProductPurchase)),
-        retail_price: kopecksForForm(parseMoneyToKopecks(newProductRetail)),
-        qty_on_hand: '0',
-        reorder_point: '0',
-        notes: '',
-        is_active: true,
-        storage_bin: '',
-        is_favorite: false,
-        brand_id: newProductBrandId || '',
-        category_id: newProductCategoryId || '',
-        photo_url: newProductPhotoUrl,
-        specs: {}
-      }
-      const res = await productApi.create(form, { silent: true })
-      toast.success(`Товар "${res.data.name}" додано в накладну`)
-      addItem(res.data)
-      setNewProductName('')
-      setNewProductSku(addMore ? `AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}` : '')
-      setNewProductBarcode('')
-      setNewProductPurchase('')
-      setNewProductRetail('')
-      setNewProductPhotoUrl(null)
-      if (!addMore) {
-        setProductModal(false)
-        setNewProductCategoryId('')
-        setNewProductBrandId('')
-      }
-    } catch (err) {
-      // api.ts вже показав toast з текстом сервера (напр. «Артикул вже існує»)
-      if (isDuplicateProductError(err)) {
-        toast.error(duplicateProductMessage(err, newProductName.trim()))
-        return
-      }
-      if (!(err as any).status) {
-        toast.error(err instanceof Error ? err.message : 'Помилка створення товару')
-      }
-    } finally {
-      setCreatingProduct(false)
-    }
   }
 
   function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
@@ -739,6 +719,7 @@ export default function InvoiceFormPage() {
       const bin = binIdx !== -1 ? String(row[binIdx] || '').trim() : null
 
       newItems.push({
+        client_key: makeLineKey(),
         product_name: name || `Товар (${sku})`,
         sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
         qty,
@@ -778,6 +759,7 @@ export default function InvoiceFormPage() {
       const bin = cols[5]?.trim() || null
 
       newItems.push({
+        client_key: makeLineKey(),
         product_name: name || `Товар (${sku})`,
         sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
         qty,
@@ -1100,15 +1082,7 @@ export default function InvoiceFormPage() {
 
             {importTab === 'manual' && (
               <div className="space-y-2">
-                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" autoFocus />
-                <div className="grid grid-cols-1 gap-2">
-                  <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => {
-                    setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
-                    setProductModal(true)
-                  }}>
-                    Картка товару
-                  </Button>
-                </div>
+                <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" />
                 <p className="text-xs text-gray-400">У локальній програмі: Enter у пошуку додає перший знайдений товар; Enter у рядку переходить до наступного поля.</p>
               </div>
             )}
@@ -1219,7 +1193,7 @@ export default function InvoiceFormPage() {
                 <th className="text-left px-2 py-2 w-44">Папка</th>
                 <th className="text-left px-2 py-2 w-40">Штрихкод</th>
                 <th className="text-left px-2 py-2 w-28">Комірка</th>
-                <th className="text-right px-2 py-2 w-16">К-сть</th>
+                <th className="text-right px-2 py-2 w-20">К-сть</th>
                 <th className="text-right px-2 py-2 w-24">Закупка, грн</th>
                 <th className="text-right px-2 py-2 w-24 text-right">Націнка</th>
                 <th className="text-right px-2 py-2 w-28">Розн. ціна, грн</th>
@@ -1233,7 +1207,7 @@ export default function InvoiceFormPage() {
                 const best = prices[0]
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
                 return (
-                <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/50">
+                <tr key={item.client_key} className="border-b border-gray-50 hover:bg-gray-50/50">
                   <td className="px-2 py-2 w-12 text-center">
                     <RowPhotoCell
                       photoUrl={item.photo_url ?? null}
@@ -1309,7 +1283,7 @@ export default function InvoiceFormPage() {
                       onChange={(e) => updateItem(i, 'qty', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'qty')}
                       disabled={isEdit}
-                      className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                      className="w-full min-w-[72px] text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
                     <input ref={(el) => { purchaseRefs.current[i] = el }} type="text" inputMode="decimal"
@@ -1397,7 +1371,7 @@ export default function InvoiceFormPage() {
           {/* Мобільний вигляд позицій — картки замість широкої таблиці */}
           <div className="md:hidden divide-y divide-gray-100">
             {items.map((item, i) => (
-              <div key={i} className="p-3 space-y-3">
+              <div key={item.client_key} className="p-3 space-y-3">
                 <div className="flex items-start gap-2">
                   <RowPhotoCell
                     photoUrl={item.photo_url ?? null}
@@ -1469,7 +1443,7 @@ export default function InvoiceFormPage() {
                       <input type="number" step="1" min="0" value={item.qty}
                         onChange={(e) => updateItem(i, 'qty', e.target.value)}
                         disabled={isEdit}
-                        className="w-full min-w-0 text-center border border-gray-200 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
+                        className="w-full min-w-[64px] text-center border border-gray-200 rounded-lg px-2 py-2 text-base focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                       <button type="button" disabled={isEdit}
                         onClick={() => updateItem(i, 'qty', item.qty + 1)}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
@@ -1625,92 +1599,6 @@ export default function InvoiceFormPage() {
           )}
         </div>
       </form>
-
-      {/* Швидке створення товару */}
-      <Modal open={productModal} onClose={() => setProductModal(false)} title="Швидке створення товару" size="md">
-        <div className="flex flex-col md:flex-row gap-6 max-h-[80vh] overflow-y-auto pr-1">
-          {/* Фото зліва */}
-          <div className="w-full md:w-1/3 flex flex-col items-center gap-2 shrink-0">
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider self-start">Зображення товару</label>
-            <div className="w-full bg-gray-50 border border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center min-h-[160px]">
-              <ProductPhotoUpload
-                currentPhotoUrl={newProductPhotoUrl}
-                onPhotoUrl={(url) => setNewProductPhotoUrl(url)}
-              />
-            </div>
-          </div>
-
-          {/* Поля форми справа */}
-          <div className="flex-1 space-y-4">
-            <div>
-              <Input label="Назва товару *" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} placeholder="Амортизатор передній..." required />
-            </div>
-            
-            <div className="grid grid-cols-2 gap-3">
-              <Input label="Артикул (SKU) *" value={newProductSku} onChange={(e) => setNewProductSku(e.target.value)} required />
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Штрих-код</label>
-                <div className="flex gap-1.5">
-                  <input type="text" value={newProductBarcode} onChange={(e) => setNewProductBarcode(e.target.value)} placeholder="Сканувати..."
-                    className="flex-1 min-w-0 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white" />
-                  <button type="button" disabled={generatingBarcode}
-                    onClick={async () => {
-                      setGeneratingBarcode(true)
-                      try {
-                        const res = await productApi.generateBarcodeOnly()
-                        if (res.data?.barcode) {
-                          setNewProductBarcode(res.data.barcode)
-                        }
-                      } catch {
-                        toast.error('Помилка генерації штрих-коду')
-                      } finally {
-                        setGeneratingBarcode(false)
-                      }
-                    }}
-                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 border border-gray-200 text-sm rounded-lg transition-colors font-medium shrink-0"
-                    title="Згенерувати штрих-код">
-                    {generatingBarcode ? '...' : '🧬'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Категорія</label>
-                <select value={newProductCategoryId} onChange={(e) => setNewProductCategoryId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white">
-                  <option value="">— Оберіть категорію —</option>
-                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Бренд</label>
-                <select value={newProductBrandId} onChange={(e) => setNewProductBrandId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white">
-                  <option value="">— Оберіть бренд —</option>
-                  {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Input label="Закупка, грн" type="text" inputMode="decimal" value={newProductPurchase} onChange={(e) => setNewProductPurchase(e.target.value)} placeholder="0.00" />
-              <Input label="Роздріб, грн" type="text" inputMode="decimal" value={newProductRetail} onChange={(e) => setNewProductRetail(e.target.value)} placeholder="0.00" />
-            </div>
-
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button loading={creatingProduct} onClick={() => handleCreateProduct(true)} className="flex-1 min-w-[45%]">
-                ➕ Створити і додати ще
-              </Button>
-              <Button variant="outline" loading={creatingProduct} onClick={() => handleCreateProduct(false)} className="flex-1 min-w-[45%]">
-                Створити і закрити
-              </Button>
-              <Button variant="secondary" onClick={() => setProductModal(false)} className="w-full sm:w-auto">Скасувати</Button>
-            </div>
-          </div>
-        </div>
-      </Modal>
 
       {/* Швидке створення постачальника */}
       <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
