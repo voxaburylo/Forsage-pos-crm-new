@@ -188,9 +188,9 @@ export function printReceipt() {
         + `<style>@page{margin:0}html,body{margin:0;padding:0;background:#fff}`
         + `.receipt-print{display:block !important}</style></head><body>`
         + `${el.outerHTML}</body></html>`
-      // Чек друкуємо ТИХО на принтер за замовчуванням (чековий POS-58) —
-      // без діалогу й без кривого Chromium-передперегляду.
-      desktopPrint.html(html, { title: 'Чек', silent: true, useDriverPaper: true })
+      // Показуємо вікно предпросмотру перед системним друком — касир бачить чек,
+      // може вибрати принтер і скасувати без блокування всієї програми.
+      desktopPrint.html(html, { title: 'Чек', silent: false, showPreviewWindow: true, useDriverPaper: true })
         .catch((error: unknown) => {
           console.error('Native receipt print failed, falling back to window.print', error)
           PrintService.printCurrentPage()

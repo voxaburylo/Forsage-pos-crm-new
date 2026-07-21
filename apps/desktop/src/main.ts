@@ -223,7 +223,18 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
 
     const printOnce = (opts: Electron.WebContentsPrintOptions) =>
       new Promise<void>((resolve, reject) => {
+        let done = false
+        const timeout = opts.silent === true
+          ? setTimeout(() => {
+              if (done) return
+              done = true
+              reject(new Error('PRINT_TIMEOUT'))
+            }, 15000)
+          : null
         printWindow.webContents.print(opts, (success, failureReason) => {
+          if (done) return
+          done = true
+          if (timeout) clearTimeout(timeout)
           if (success || failureReason === 'cancelled') resolve()
           else reject(new Error(failureReason || 'PRINT_FAILED'))
         })
@@ -236,6 +247,7 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
         return { success: true }
       } catch (error) {
         lastError = error
+        if (error instanceof Error && error.message === 'PRINT_TIMEOUT') break
         // «Invalid printer settings» / подібне — пробуємо наступний, простіший варіант
       }
     }

@@ -16,9 +16,9 @@ export interface TsplLabelPrintSettings {
 const STORAGE_KEY = 'forsage_label_tspl_v1'
 
 export const DEFAULT_TSPL_SETTINGS: TsplLabelPrintSettings = {
-  // Увімкнено за замовчуванням: якщо в системі є принтер етикеток, друкуємо
-  // одразу якісно (прямий TSPL), нічого вмикати не треба.
-  enabled: true,
+  // Вимкнено за замовчуванням: звичайний друк має показувати предпросмотр.
+  // Прямий TSPL можна увімкнути/протестувати у вкладці налаштувань етикеток.
+  enabled: false,
   printerName: '',
   gapMm: 2,
   density: 8,
@@ -37,7 +37,7 @@ export function loadTsplSettings(): TsplLabelPrintSettings {
     if (!raw) return { ...DEFAULT_TSPL_SETTINGS }
     const parsed = JSON.parse(raw) as Partial<TsplLabelPrintSettings>
     return {
-      enabled: parsed.enabled !== false,
+      enabled: parsed.enabled === true,
       printerName: typeof parsed.printerName === 'string' ? parsed.printerName : '',
       gapMm: Number.isFinite(Number(parsed.gapMm)) ? Math.max(0, Math.min(10, Number(parsed.gapMm))) : 2,
       density: Number.isFinite(Number(parsed.density)) ? Math.max(0, Math.min(15, Math.round(Number(parsed.density)))) : 8,

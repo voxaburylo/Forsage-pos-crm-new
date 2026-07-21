@@ -774,10 +774,9 @@ function printLabelDocumentViaDriver(document: LabelPrintDocument) {
     title: document.title,
     pageSizeMm: { width: document.widthMm, height: document.heightMm },
     preferDesktopNative: true,
-    showDesktopPreview: false,
-    // Предпросмотр показываем прямо в интерфейсе программы. В Electron/Windows
-    // системный print preview часто недоступен, поэтому в драйвер отправляем
-    // только саму печать, без отдельного окна предпросмотра.
+    showDesktopPreview: true,
+    // Показуємо HTML-вікно перед системним друком: так видно, що саме піде
+    // на етикетку, і можна скасувати друк без зависання всієї каси.
     useDriverPaper: true,
     cleanupDelayMs: 30000,
     readyDelayMs: 50,
@@ -805,38 +804,9 @@ export async function resolveTsplPrinter(): Promise<string | null> {
 }
 
 export function printLabelDocument(document: LabelPrintDocument) {
-  // Прямий TSPL-друк (desktop): рендер точно під 203 dpi термоголовку і RAW
-  // у спулер повз растеризацію драйвера — без артефактів і «мила». Якщо
-  // принтера етикеток нема або сталася помилка — тихо йдемо через драйвер.
-  const desktop = desktopBridge()
-  if (desktop?.print?.labelsTspl) {
-    const tspl = loadTsplSettings()
-    resolveTsplPrinter().then((printerName) => {
-      if (!printerName) {
-        printLabelDocumentViaDriver(document)
-        return
-      }
-      desktop.print.labelsTspl(document.html, {
-        printerName,
-        widthMm: document.widthMm,
-        heightMm: document.heightMm,
-        gapMm: tspl.gapMm,
-        density: tspl.density,
-        rotate180: tspl.rotate180,
-      }).then(({ labels }) => {
-        import('@/components/ui/Toast').then(({ toast }) =>
-          toast.success(`Надруковано ${labels} етикеток`))
-      }).catch((error: unknown) => {
-        console.error('TSPL label print failed, falling back to driver', error)
-        import('@/components/ui/Toast').then(({ toast }) =>
-          toast.error('Прямий друк не вдався ('
-            + (error instanceof Error ? error.message : 'помилка')
-            + ') — друкую через драйвер'))
-        printLabelDocumentViaDriver(document)
-      })
-    })
-    return
-  }
+  // Звичайний друк етикеток відкриваємо через драйвер з вікном предпросмотру.
+  // Прямий TSPL лишається у вкладці налаштувань як тест/тонке налаштування,
+  // але для щоденної роботи важливіше бачити макет і не зависати після чека.
   printLabelDocumentViaDriver(document)
 }
 

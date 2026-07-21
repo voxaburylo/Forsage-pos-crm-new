@@ -1101,10 +1101,7 @@ export default function InvoiceFormPage() {
             {importTab === 'manual' && (
               <div className="space-y-2">
                 <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" autoFocus />
-                <div className="grid grid-cols-2 gap-2">
-                  <Button type="button" onClick={() => addDraftItem()} className="min-h-[44px]">
-                    Додати рядок
-                  </Button>
+                <div className="grid grid-cols-1 gap-2">
                   <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => {
                     setNewProductSku(`AUTO-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 10)}`)
                     setProductModal(true)
@@ -1536,7 +1533,7 @@ export default function InvoiceFormPage() {
               </div>
             ))}
             {items.length === 0 && (
-              <div className="text-center text-gray-400 text-sm py-6">Позицій немає. Натисніть «Додати рядок».</div>
+              <div className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте перший рядок кнопкою нижче.</div>
             )}
             {items.length > 0 && (
               <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 font-semibold text-sm">
@@ -1545,6 +1542,14 @@ export default function InvoiceFormPage() {
               </div>
             )}
           </div>
+
+          {!isEdit && (
+            <div className="p-3 border-t border-gray-100 bg-white">
+              <Button type="button" onClick={() => addDraftItem()} className="w-full min-h-[48px]">
+                + Новий рядок
+              </Button>
+            </div>
+          )}
         </Card>
 
         {/* Оплата постачальнику (тільки при створенні) */}

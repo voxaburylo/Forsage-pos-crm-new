@@ -16,6 +16,8 @@ export interface PrintOptions {
 export class PrintService {
   private static printInProgress = false;
   private static safetyTimer: number | null = null;
+  private static printStartedAt = 0;
+  private static readonly PRINT_LOCK_TIMEOUT_MS = 30000;
 
   /**
    * Escape HTML special characters to prevent XSS
@@ -35,15 +37,23 @@ export class PrintService {
    */
   private static beginPrint(): void {
     if (PrintService.printInProgress) {
-      throw new Error("Попереднє вікно друку ще відкрите. Закрийте його перед повторним друком.");
+      const age = Date.now() - PrintService.printStartedAt;
+      if (age < PrintService.PRINT_LOCK_TIMEOUT_MS) {
+        throw new Error("Попереднє вікно друку ще відкрите. Закрийте його перед повторним друком.");
+      }
+      // Деякі драйвери/діалоги Windows не повертають afterprint. Не тримаємо
+      // всю касу заблокованою назавжди: стару блокировку скидаємо.
+      PrintService.endPrint();
     }
     PrintService.printInProgress = true;
+    PrintService.printStartedAt = Date.now();
     if (PrintService.safetyTimer !== null) window.clearTimeout(PrintService.safetyTimer);
-    PrintService.safetyTimer = window.setTimeout(() => PrintService.endPrint(), 120000);
+    PrintService.safetyTimer = window.setTimeout(() => PrintService.endPrint(), PrintService.PRINT_LOCK_TIMEOUT_MS);
   }
 
   private static endPrint(): void {
     PrintService.printInProgress = false;
+    PrintService.printStartedAt = 0;
     if (PrintService.safetyTimer !== null) {
       window.clearTimeout(PrintService.safetyTimer);
       PrintService.safetyTimer = null;
