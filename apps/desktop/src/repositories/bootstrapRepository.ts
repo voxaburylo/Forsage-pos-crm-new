@@ -390,6 +390,7 @@ export class LocalBootstrapRepository {
   }
   private upsertBrand(tenantId: string, brand: any, importedAt: string): void {
     const updatedAt = timestamp(brand, importedAt)
+    if (this.shouldKeepLocalCatalogDelete('brands', 'brand', tenantId, brand.id, importedAt, brand.deleted_at ?? null)) return
     this.db.prepare(`
       INSERT INTO brands (id, tenant_id, name, country, remote_updated_at, created_at, updated_at, deleted_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -413,6 +414,32 @@ export class LocalBootstrapRepository {
 
   private upsertCategoryShell(tenantId: string, category: any, importedAt: string): void {
     const updatedAt = timestamp(category, importedAt)
+    if (this.shouldKeepLocalCatalogDelete('categories', 'category', tenantId, category.id, importedAt, category.deleted_at ?? null)) return
+    const pendingDelete = this.db.prepare(`
+      SELECT 1 FROM sync_outbox
+      WHERE tenant_id = ?
+        AND aggregate_type = 'category'
+        AND aggregate_id = ?
+        AND operation_type = 'category.deleted'
+        AND status <> 'synced'
+      LIMIT 1
+    `).get(tenantId, category.id) as { 1: number } | undefined
+    if (pendingDelete && !category.deleted_at) {
+      this.db.prepare(`
+        UPDATE categories
+        SET deleted_at = COALESCE(deleted_at, dirty_at, updated_at, ?), updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(importedAt, importedAt, category.id, tenantId)
+      return
+    }
+    const existing = this.db.prepare(`
+      SELECT deleted_at FROM categories WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).get(category.id, tenantId) as { deleted_at: string | null } | undefined
+    if (existing?.deleted_at && !category.deleted_at) {
+      // Локальне видалення має пріоритет над старим серверним snapshot,
+      // інакше категорії «воскресають» після перезапуску/перезбірки.
+      return
+    }
     this.db.prepare(`
       INSERT INTO categories (id, tenant_id, parent_id, name, sort_order, remote_updated_at, created_at, updated_at, deleted_at)
       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
@@ -434,6 +461,40 @@ export class LocalBootstrapRepository {
     )
   }
 
+  private shouldKeepLocalCatalogDelete(
+    table: 'products' | 'brands' | 'categories',
+    aggregateType: 'product' | 'brand' | 'category',
+    tenantId: string,
+    id: string,
+    importedAt: string,
+    incomingDeletedAt: string | null | undefined,
+  ): boolean {
+    if (!id || incomingDeletedAt) return false
+
+    const pendingDelete = this.db.prepare(`
+      SELECT 1 FROM sync_outbox
+      WHERE tenant_id = ?
+        AND aggregate_type = ?
+        AND aggregate_id = ?
+        AND operation_type = ?
+        AND status <> 'synced'
+      LIMIT 1
+    `).get(tenantId, aggregateType, id, `${aggregateType}.deleted`) as Record<string, unknown> | undefined
+
+    const existing = this.db.prepare(`
+      SELECT deleted_at FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).get(id, tenantId) as { deleted_at: string | null } | undefined
+
+    if (pendingDelete && !existing?.deleted_at) {
+      this.db.prepare(`
+        UPDATE ${table}
+        SET deleted_at = COALESCE(deleted_at, dirty_at, updated_at, ?), updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(importedAt, importedAt, id, tenantId)
+    }
+
+    return Boolean(existing?.deleted_at || pendingDelete)
+  }
   private updateCategoryParent(tenantId: string, category: any, importedAt: string): void {
     this.db.prepare(`
       UPDATE categories
@@ -478,6 +539,7 @@ export class LocalBootstrapRepository {
 
   private upsertProduct(tenantId: string, product: any, importedAt: string): void {
     const updatedAt = timestamp(product, importedAt)
+    if (this.shouldKeepLocalCatalogDelete('products', 'product', tenantId, product.id, importedAt, product.deleted_at ?? null)) return
     const incomingBrandId = product.brand_id ?? product.brand?.id
     const incomingCategoryId = product.category_id ?? product.category?.id
     const brandId = incomingBrandId && this.refExists('brands', tenantId, incomingBrandId)

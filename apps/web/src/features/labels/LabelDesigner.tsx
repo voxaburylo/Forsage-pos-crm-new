@@ -745,7 +745,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   @page { margin: 0; size: ${w}mm ${h}mm; }
   html, body { margin: 0 !important; padding: 0 !important; width: ${w}mm; min-width: ${w}mm; background: #fff; }
   *, *::before, *::after { box-sizing: border-box; }
-  body { font-family: Arial, sans-serif; color: #000; }
+  body { font-family: 'Courier New', monospace; color: #000; }
   .label-page {
     position: relative;
     width: ${w}mm;
@@ -780,7 +780,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     display: block;
     width: 100%;
     margin-top: .4mm;
-    color: #222;
+    color: #333;
     font-family: monospace;
     font-size: ${settings.font_size}pt;
     font-variant-numeric: tabular-nums;
@@ -1944,3 +1944,4 @@ export default function LabelDesigner() {
     </Layout>
   )
 }
+

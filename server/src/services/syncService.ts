@@ -579,6 +579,26 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'category.upsert') {
+    await applyCategoryUpsert(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'category.deleted') {
+    await applyCategoryDeleted(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'brand.upsert') {
+    await applyBrandUpsert(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'brand.deleted') {
+    await applyBrandDeleted(tenantId, operation)
+    return
+  }
+
   if (operation.operation_type === 'inventory.completed') {
     await applyInventoryCompleted(tenantId, userId, operation)
     return
@@ -948,6 +968,93 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
         [Number(payload.total ?? 0), completedAt, payload.customer_id, tenantId],
       )
     }
+  })
+}
+
+async function applyCategoryUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const categoryId = String(payload.id ?? operation.aggregate_id)
+  const name = String(payload.name ?? '').trim()
+  if (!categoryId || !name) {
+    throw new AppError('SYNC_CATEGORY_INVALID', 'Категорія має містити id і назву', 400)
+  }
+  const updatedAt = operation.created_at
+  const sortOrder = Number(payload.sort_order ?? 0)
+  const parentId = payload.parent_id ?? null
+
+  await runTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO categories (id, tenant_id, parent_id, name, sort_order, created_at, updated_at, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, NULL)
+       ON CONFLICT (id) DO UPDATE SET
+         parent_id = excluded.parent_id,
+         name = excluded.name,
+         sort_order = excluded.sort_order,
+         updated_at = excluded.updated_at,
+         deleted_at = NULL
+       WHERE categories.tenant_id = excluded.tenant_id`,
+      [categoryId, tenantId, parentId, name, sortOrder, updatedAt],
+    )
+  })
+}
+
+async function applyCategoryDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const deletedAt = operation.created_at
+  await runTransaction(async (client) => {
+    await client.query(
+      `UPDATE products
+       SET category_id = NULL, updated_at = $3
+       WHERE tenant_id = $1 AND category_id = $2 AND deleted_at IS NULL`,
+      [tenantId, operation.aggregate_id, deletedAt],
+    )
+    await client.query(
+      `UPDATE categories
+       SET deleted_at = $3, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2`,
+      [operation.aggregate_id, tenantId, deletedAt],
+    )
+  })
+}
+
+async function applyBrandUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const brandId = String(payload.id ?? operation.aggregate_id)
+  const name = String(payload.name ?? '').trim()
+  if (!brandId || !name) {
+    throw new AppError('SYNC_BRAND_INVALID', 'Бренд має містити id і назву', 400)
+  }
+  const updatedAt = operation.created_at
+
+  await runTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO brands (id, tenant_id, name, country, created_at, updated_at, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $5, NULL)
+       ON CONFLICT (id) DO UPDATE SET
+         name = excluded.name,
+         country = excluded.country,
+         updated_at = excluded.updated_at,
+         deleted_at = NULL
+       WHERE brands.tenant_id = excluded.tenant_id`,
+      [brandId, tenantId, name, payload.country ?? null, updatedAt],
+    )
+  })
+}
+
+async function applyBrandDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const deletedAt = operation.created_at
+  await runTransaction(async (client) => {
+    await client.query(
+      `UPDATE products
+       SET brand_id = NULL, updated_at = $3
+       WHERE tenant_id = $1 AND brand_id = $2 AND deleted_at IS NULL`,
+      [tenantId, operation.aggregate_id, deletedAt],
+    )
+    await client.query(
+      `UPDATE brands
+       SET deleted_at = $3, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2`,
+      [operation.aggregate_id, tenantId, deletedAt],
+    )
   })
 }
 

@@ -157,6 +157,7 @@ export async function listCategories(tenantId: string) {
     .from('categories')
     .select('*')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .order('sort_order', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   const result = data ?? []
@@ -190,16 +191,21 @@ export async function updateCategory(id: string, input: Partial<CategoryInput>, 
 
 export async function deleteCategory(id: string, tenantId: string) {
   categoriesCache.delete(tenantId);
-  const { count } = await db
+  const deletedAt = new Date().toISOString()
+
+  const { error: productError } = await db
     .from('products')
-    .select('*', { count: 'exact', head: true })
+    .update({ category_id: null, updated_at: deletedAt })
+    .eq('tenant_id', tenantId)
     .eq('category_id', id)
     .is('deleted_at', null)
+  if (productError) throw new AppError('DB_ERROR', productError.message, 500)
 
-  if ((count ?? 0) > 0) {
-    throw new AppError('CATEGORY_IN_USE', 'Категорія використовується в товарах', 409)
-  }
-  const { error } = await db.from('categories').delete().eq('id', id).eq('tenant_id', tenantId)
+  const { error } = await db
+    .from('categories')
+    .update({ deleted_at: deletedAt, updated_at: deletedAt })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
@@ -245,6 +251,7 @@ export async function listBrands(tenantId: string) {
     .from('brands')
     .select('*')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .order('name', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   const result = data ?? []
@@ -278,16 +285,21 @@ export async function updateBrand(id: string, input: Partial<BrandInput>, tenant
 
 export async function deleteBrand(id: string, tenantId: string) {
   brandsCache.delete(tenantId);
-  const { count } = await db
+  const deletedAt = new Date().toISOString()
+
+  const { error: productError } = await db
     .from('products')
-    .select('*', { count: 'exact', head: true })
+    .update({ brand_id: null, updated_at: deletedAt })
+    .eq('tenant_id', tenantId)
     .eq('brand_id', id)
     .is('deleted_at', null)
+  if (productError) throw new AppError('DB_ERROR', productError.message, 500)
 
-  if ((count ?? 0) > 0) {
-    throw new AppError('BRAND_IN_USE', 'Бренд використовується в товарах', 409)
-  }
-  const { error } = await db.from('brands').delete().eq('id', id).eq('tenant_id', tenantId)
+  const { error } = await db
+    .from('brands')
+    .update({ deleted_at: deletedAt, updated_at: deletedAt })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 

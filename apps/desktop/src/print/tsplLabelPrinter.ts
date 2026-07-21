@@ -9,8 +9,8 @@ import { app, BrowserWindow, screen } from 'electron'
 // на 203 dpi термоголовку — драйвер дизерить антиаліасинг у «зерно», штрихи
 // коду розпливаються. Тут ми рендеримо етикетку офскрін РІВНО у 8 крапок/мм
 // (203.2 dpi), самі бінаризуємо без дизерингу і шлемо принтеру готовий бітмап
-// RAW-потоком повз рендер драйвера. Штрихкод друкує сам принтер рідною
-// командою BARCODE — штрихи виходять крапка-в-крапку і читаються сканером.
+// RAW-потоком повз рендер драйвера. Важливо: друкуємо саме готовий
+// HTML-макет цілком, щоб фактична етикетка збігалася з дизайнером.
 
 export interface TsplPrintOptions {
   printerName: string
@@ -164,23 +164,10 @@ const COLLECT_PAGES_SCRIPT = `
 (() => {
   const pages = Array.from(document.querySelectorAll('.label-page')).map((page) => {
     const pageRect = page.getBoundingClientRect()
-    const barcodes = Array.from(page.querySelectorAll('img.barcode-raster')).flatMap((img) => {
-      const code = img.dataset.code || ''
-      const modules = Number(img.dataset.modules) || 0
-      // Без коду/кількості модулів рідний BARCODE не побудувати —
-      // лишаємо картинку видимою, вона потрапить у бітмап як є.
-      if (!code || modules <= 0 || /[^\\x20-\\x7e]/.test(code)) return []
-      const r = img.getBoundingClientRect()
-      img.style.visibility = 'hidden'
-      return [{
-        code, modules,
-        x: r.left - pageRect.left,
-        y: r.top - pageRect.top,
-        w: r.width,
-        h: r.height,
-      }]
-    })
-    return { topCss: pageRect.top + window.scrollY, barcodes }
+    // Нічого не ховаємо і не замінюємо командами принтера: друкуємо той самий
+    // bitmap, який намалював HTML-макет. Так дизайнер і фактична етикетка
+    // збігаються за розміром, положенням тексту і штрихкодом.
+    return { topCss: pageRect.top + window.scrollY, barcodes: [] }
   })
   return pages
 })()
