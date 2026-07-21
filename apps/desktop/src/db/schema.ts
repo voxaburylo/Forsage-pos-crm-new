@@ -1,4 +1,4 @@
-export const LOCAL_SCHEMA_VERSION = 8
+export const LOCAL_SCHEMA_VERSION = 9
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -871,6 +871,98 @@ const MIGRATION_008_LOCAL_STAFF_SQL = `
     ON salary_payments(tenant_id, employee_id, commission_source_order_id)
     WHERE commission_source_order_id IS NOT NULL AND source = 'commission' AND deleted_at IS NULL;
 `
+const MIGRATION_009_REPAIR_CUSTOMER_ORDERS_SQL = `
+  -- Repair older/test local databases where order tables are missing while
+  -- previous migrations may already be marked as applied. Safe: creates only
+  -- missing order tables and indexes; does not delete or overwrite data.
+  CREATE TABLE IF NOT EXISTS customer_orders (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    order_number INTEGER,
+    kp_number TEXT,
+    customer_id TEXT REFERENCES customers(id),
+    chat_id TEXT,
+    manager_id TEXT,
+    vehicle_info_json TEXT,
+    status TEXT NOT NULL DEFAULT 'lead',
+    prepayment INTEGER NOT NULL DEFAULT 0,
+    prepayment_method TEXT,
+    prepayment_is_fiscal INTEGER NOT NULL DEFAULT 0,
+    total_amount INTEGER NOT NULL DEFAULT 0,
+    total_paid INTEGER NOT NULL DEFAULT 0,
+    discount_amount INTEGER NOT NULL DEFAULT 0,
+    pickup_deadline_at TEXT,
+    pickup_cell TEXT,
+    comment TEXT,
+    source TEXT NOT NULL DEFAULT 'walk_in',
+    sent_to_telegram_at TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_status
+    ON customer_orders(tenant_id, status, updated_at DESC)
+    WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_number
+    ON customer_orders(tenant_id, order_number)
+    WHERE deleted_at IS NULL AND order_number IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_customer
+    ON customer_orders(tenant_id, customer_id, updated_at DESC)
+    WHERE deleted_at IS NULL;
+
+  CREATE TABLE IF NOT EXISTS customer_order_items (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    order_id TEXT NOT NULL REFERENCES customer_orders(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    sku TEXT,
+    product_id TEXT REFERENCES products(id),
+    supplier_id TEXT REFERENCES suppliers(id),
+    source_type TEXT NOT NULL DEFAULT 'warehouse',
+    item_type TEXT NOT NULL DEFAULT 'product',
+    item_status TEXT NOT NULL DEFAULT 'pending',
+    buy_price INTEGER NOT NULL DEFAULT 0,
+    sell_price INTEGER NOT NULL DEFAULT 0,
+    qty NUMERIC NOT NULL DEFAULT 1,
+    expected_date TEXT,
+    core_deposit_amount INTEGER NOT NULL DEFAULT 0,
+    core_return_status TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_customer_order_items_order
+    ON customer_order_items(order_id);
+  CREATE INDEX IF NOT EXISTS idx_customer_order_items_product
+    ON customer_order_items(product_id);
+
+  CREATE TABLE IF NOT EXISTS order_payments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    order_id TEXT NOT NULL REFERENCES customer_orders(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    method TEXT NOT NULL,
+    is_fiscal INTEGER NOT NULL DEFAULT 0,
+    shift_id TEXT,
+    created_by TEXT,
+    notes TEXT,
+    remote_updated_at TEXT,
+    dirty_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_order_payments_order
+    ON order_payments(order_id, created_at);
+`
+
 export interface LocalMigration {
   version: number
   sql: string
@@ -885,4 +977,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 6, sql: MIGRATION_006_BONUS_TRANSACTIONS_SQL },
   { version: 7, sql: MIGRATION_007_WAREHOUSE_OPERATIONS_SQL },
   { version: 8, sql: MIGRATION_008_LOCAL_STAFF_SQL },
+  { version: 9, sql: MIGRATION_009_REPAIR_CUSTOMER_ORDERS_SQL },
 ]
