@@ -1,11 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
-import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
-import { adminApi } from '@/features/admin/adminApi'
+import { DEFAULT_LABEL, LabelPreview, loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 
 interface Props {
   open:     boolean
@@ -22,7 +21,16 @@ interface LabelQty {
 export function LabelPrintModal({ open, onClose, invoice }: Props) {
   const navigate = useNavigate()
   const items = invoice.items?.filter((i) => i.product) ?? []
-  const today = new Date().toLocaleDateString('uk-UA')
+  const [labelSettings, setLabelSettings] = useState(DEFAULT_LABEL)
+
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    loadProductLabelSettings()
+      .then((settings) => { if (alive) setLabelSettings(settings) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [open])
 
   function handleSendToQueue() {
     const queueItems = items.flatMap((item) => {
@@ -78,8 +86,8 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
   async function handleThermalPrint() {
     setPrintingThermal(true)
     try {
-      const settingsRes = await adminApi.getSettings()
-      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      const settings = await loadProductLabelSettings()
+      setLabelSettings(settings)
       const printItems = items.flatMap((item) => {
         const count = getQty(item.id)
         if (count <= 0) return []
@@ -140,22 +148,15 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
         {/* Preview */}
         <div className="bg-gray-50 rounded-xl p-3 text-sm text-gray-600 flex items-center justify-between">
           <span>Всього етикеток: <strong className="text-gray-900">{totalLabels}</strong></span>
-          <span className="text-xs text-gray-400">Формат: 58мм × 40мм</span>
+          <span className="text-xs text-gray-400">Формат: {labelSettings.width_mm}мм × {labelSettings.height_mm}мм</span>
         </div>
 
         {/* Preview label */}
         <div className="border border-dashed border-gray-300 rounded-xl p-3 flex flex-col items-center">
           <p className="text-xs text-gray-400 mb-2 self-start">Зразок етикетки:</p>
           {items[0]?.product && (
-            <div className="inline-block border border-gray-400 rounded p-2 text-xs font-mono bg-white" style={{ width: 190 }}>
-              <div className="text-gray-400 text-[9px] border-b border-gray-200 mb-1 pb-1">ФОРСАЖ</div>
-              <div className="font-bold text-[10px] leading-tight mb-0.5 truncate">{items[0].product!.name}</div>
-              <div className="text-gray-500 text-[9px]">Арт: {items[0].product!.sku}</div>
-              {items[0].product!.barcode && (
-                <div className="text-[7.5px] text-gray-400 font-mono tracking-tighter my-0.5 truncate">{items[0].product!.barcode}</div>
-              )}
-              <div className="font-bold text-sm mt-1">{formatMoney(items[0].product!.retail_price)}</div>
-              <div className="text-[8px] text-gray-400">{today}</div>
+            <div className="max-w-full overflow-x-auto">
+              <LabelPreview settings={labelSettings} product={items[0].product as any} />
             </div>
           )}
         </div>

@@ -125,6 +125,54 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   pos_bin: { x: 0, y: 86 },
 }
 
+const LABEL_SETTINGS_CACHE_KEY = 'forsage_label_settings_v1'
+
+export function normalizeProductLabelSettings(savedSettings: Partial<LabelSettings> | null | undefined): LabelSettings {
+  const savedBin = savedSettings?.bin_settings
+  return {
+    ...DEFAULT_LABEL,
+    ...(savedSettings ?? {}),
+    bin_settings: savedBin ? { ...DEFAULT_BIN_LABEL, ...savedBin } : undefined,
+  } as LabelSettings
+}
+
+function readCachedRawLabelSettings(): Partial<LabelSettings> | null {
+  try {
+    const raw = localStorage.getItem(LABEL_SETTINGS_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed as Partial<LabelSettings> : null
+  } catch {
+    return null
+  }
+}
+
+export function readCachedProductLabelSettings(): LabelSettings | null {
+  const cached = readCachedRawLabelSettings()
+  return cached ? normalizeProductLabelSettings(cached) : null
+}
+
+export function cacheProductLabelSettings(settings: Partial<LabelSettings>): void {
+  try {
+    localStorage.setItem(LABEL_SETTINGS_CACHE_KEY, JSON.stringify(settings))
+  } catch {
+    // localStorage може бути недоступний у приватному режимі — сервер/локальна БД лишаються основним джерелом.
+  }
+}
+
+export async function loadProductLabelSettings(): Promise<LabelSettings> {
+  try {
+    const res = await adminApi.getSettings()
+    if (res.data.label_settings) {
+      cacheProductLabelSettings(res.data.label_settings)
+      return normalizeProductLabelSettings(res.data.label_settings)
+    }
+  } catch {
+    // Якщо локальна БД/сервер тимчасово не відповіли, беремо останній збережений шаблон на цьому робочому місці.
+  }
+  return readCachedProductLabelSettings() ?? DEFAULT_LABEL
+}
+
 type PosKey = 'pos_shop_name' | 'pos_product_name' | 'pos_barcode' | 'pos_sku' | 'pos_price' | 'pos_bin'
 
 // ─── Числове поле з вільним редагуванням, дробами (крок 0.5), комою/крапкою та ± ───
@@ -372,7 +420,7 @@ export const DEMO_PRODUCT: Product = {
 // ================================================================
 // Preview-компонент етикетки (рендериться в реальному часі)
 // ================================================================
-function LabelPreview({ settings, product, binLabel, onPosChange }:
+export function LabelPreview({ settings, product, binLabel, onPosChange }:
   { settings: LabelSettings; product?: Product | null; binLabel?: string; onPosChange?: (key: PosKey, pos: { x: number; y: number }) => void }) {
   const shopName = 'Форсаж'
   const previewScale = 5
@@ -612,6 +660,7 @@ export interface LabelPrintDocument {
 }
 
 export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean): LabelPrintDocument {
+  settings = { ...(isBins ? DEFAULT_BIN_LABEL : DEFAULT_LABEL), ...(settings ?? {}) } as LabelSettings
   const shopName = 'Форсаж'
   const esc = PrintService.escapeHtml
   const w = Math.max(20, Math.min(120, Number(settings.width_mm) || 40))
@@ -998,12 +1047,19 @@ export default function LabelDesigner() {
     adminApi.getSettings()
       .then((res) => {
         if (res.data.label_settings) {
-          const loaded = res.data.label_settings
-          setProductSettings({ ...DEFAULT_LABEL, ...loaded })
+          const loaded = normalizeProductLabelSettings(res.data.label_settings)
+          cacheProductLabelSettings(res.data.label_settings)
+          setProductSettings(loaded)
           if (loaded.bin_settings) {
             setBinSettings({ ...DEFAULT_BIN_LABEL, ...loaded.bin_settings })
           } else {
             setBinSettings(DEFAULT_BIN_LABEL)
+          }
+        } else {
+          const cached = readCachedProductLabelSettings()
+          if (cached) {
+            setProductSettings(cached)
+            setBinSettings(cached.bin_settings ? { ...DEFAULT_BIN_LABEL, ...cached.bin_settings } : DEFAULT_BIN_LABEL)
           }
         }
       })
@@ -1082,7 +1138,8 @@ export default function LabelDesigner() {
         bin_settings: sanitizedBin
       }
       await adminApi.updateSettings({ label_settings: payload as any }, { silent: true })
-      setProductSettings(sanitizedProduct)
+      cacheProductLabelSettings(payload as LabelSettings)
+      setProductSettings(normalizeProductLabelSettings(sanitizedProduct))
       setBinSettings(sanitizedBin)
       toast.success('Налаштування етикеток збережено')
     } catch {

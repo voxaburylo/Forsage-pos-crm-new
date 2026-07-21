@@ -7,8 +7,7 @@ import {
 import { pricingApi } from '@/features/admin/pricingApi'
 import { productApi } from '@/features/products/productApi'
 import { inventoryApi } from '@/features/inventory/inventoryApi'
-import { adminApi } from '@/features/admin/adminApi'
-import { DEFAULT_LABEL, printLabels } from '@/features/labels/LabelDesigner'
+import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 import { Layout } from '@/components/Layout'
 import { Badge, Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -236,8 +235,7 @@ export default function ActiveSession() {
     }
     setPrintingLabels('confirm')
     try {
-      const settingsRes = await adminApi.getSettings()
-      const settings = settingsRes.data.label_settings || DEFAULT_LABEL
+      const settings = await loadProductLabelSettings()
       printLabels(settings as any, items as any, false)
       toast.success(`Відправлено етикеток: ${items.length}`)
       closeInventoryLabelModal()
