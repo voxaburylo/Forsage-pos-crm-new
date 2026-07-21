@@ -155,7 +155,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [load])
 
   function payableTotal(order: ReadyOrder) {
-    return Math.max(0, order.total_amount - (order.discount_amount ?? 0))
+    return Math.max(0, order.total_amount)
   }
 
   function remainingDue(order: ReadyOrder) {

@@ -26,16 +26,16 @@ export function QuickChargeModal({
   const [workerId, setWorkerId] = useState('')
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
+  const isTire = kind === 'tire_service'
 
   useEffect(() => {
     if (!open) return
     setAmount('')
     setDescription('')
-    setWorkerId(store.managerId ?? '')
-  }, [open, kind])
+    setWorkerId(isTire ? (store.managerId ?? scopeKey) : '')
+  }, [open, kind, isTire, scopeKey, store.managerId])
 
   if (!open) return null
-  const isTire = kind === 'tire_service'
 
   async function add() {
     if (savingRef.current) return
@@ -111,7 +111,7 @@ export function QuickChargeModal({
         requiresCoreReturn: false,
         coreDepositAmount: 0,
       })
-      if (workerId) store.setManagerId(workerId)
+      if (isTire && workerId) store.setManagerId(workerId)
       if (description.trim()) {
         const prefix = isTire ? 'Шиномонтаж' : 'Вільний продаж'
         store.setNotes([store.notes, `${prefix}: ${description.trim()}`].filter(Boolean).join('\n'))
@@ -148,19 +148,18 @@ export function QuickChargeModal({
               onKeyDown={(e) => { if (e.key === 'Enter') add() }}
               className="w-full rounded-xl border border-gray-700 bg-[#2C2C2C] px-4 py-3 text-center text-2xl font-bold outline-none focus:border-yellow-400" />
           </div>
-
-          <div>
-            <label className="mb-1 block text-xs text-gray-400">
-              {isTire ? 'Хто виконав роботу' : 'Хто здійснив продаж'}
-            </label>
-            <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}
-              className="w-full rounded-xl border border-gray-700 bg-[#2C2C2C] px-3 py-3 text-sm outline-none focus:border-yellow-400">
-              <option value="">Поточний касир</option>
-              {staff.map((person) => (
-                <option key={person.id} value={person.id}>{person.full_name || person.id.slice(0, 6)}</option>
-              ))}
-            </select>
-          </div>
+          {isTire && (
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Хто виконав роботу</label>
+              <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}
+                className="w-full rounded-xl border border-gray-700 bg-[#2C2C2C] px-3 py-3 text-sm outline-none focus:border-yellow-400">
+                <option value={scopeKey}>Поточний касир</option>
+                {staff.map((person) => (
+                  <option key={person.id} value={person.id}>{person.full_name || person.id.slice(0, 6)}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="mb-1 block text-xs text-gray-400">Що зробили / що продали (необов’язково)</label>

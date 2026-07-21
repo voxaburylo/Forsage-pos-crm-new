@@ -7,6 +7,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatDate } from '@/lib/utils'
 import { pickingApi, type EnrichedCustomerOrder, type EnrichedOrderItem } from './pickingApi'
 import { printPickingList } from '@/features/orders/PickingListPrint'
+import { DEFAULT_BIN_LABEL, loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 import { playSuccessBeep, playWarning, playErrorTone } from '@/lib/audioService'
 
 function PickingSteps({ active }: { active: 1 | 2 | 3 }) {
@@ -221,7 +222,19 @@ export default function WarehousePicking() {
   }
 
   // Зберегти ячейку видачі
-  async function handleSaveCell(e: React.FormEvent) {
+  async function printPickupCellLabel(cell: string) {
+    const cleanCell = cell.trim()
+    if (!cleanCell) return
+    try {
+      const settings = await loadProductLabelSettings()
+      const binSettings = settings.bin_settings || DEFAULT_BIN_LABEL
+      printLabels(binSettings as any, [{ label: cleanCell }], true)
+      toast.success('Етикетку комірки відправлено на друк')
+    } catch {
+      toast.error('Помилка друку комірки')
+    }
+  }
+  async function handleSaveCell(e: React.FormEvent, printAfterSave = false) {
     e.preventDefault()
     if (!currentOrder || !pickupCell.trim()) {
       toast.error('Вкажіть комірку видачі')
@@ -236,7 +249,9 @@ export default function WarehousePicking() {
     }
     setSavingCell(true)
     try {
-      await pickingApi.updatePickupCell(currentOrder.id, pickupCell.trim())
+      const cell = pickupCell.trim()
+      await pickingApi.updatePickupCell(currentOrder.id, cell)
+      if (printAfterSave) await printPickupCellLabel(cell)
       toast.success('Комірку видачі збережено, замовлення готове до видачі!')
       setCellModalOpen(false)
       // Повертаємось до списку збірки
@@ -300,6 +315,11 @@ export default function WarehousePicking() {
             <Button variant="secondary" icon={<Printer size={15} />} onClick={handlePrintSlip}>
               Друк листа
             </Button>
+            {currentOrder.pickup_cell && (
+              <Button variant="secondary" icon={<Printer size={15} />} onClick={() => printPickupCellLabel(currentOrder.pickup_cell!)}>
+                Друк комірки
+              </Button>
+            )}
             {isFinished && (
               <Button onClick={() => setCellModalOpen(true)} className="bg-green-600 hover:bg-green-700 text-white font-medium">
                 Вказати комірку
@@ -505,9 +525,12 @@ export default function WarehousePicking() {
               required 
               autoFocus 
             />
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Button type="submit" loading={savingCell} className="flex-1 bg-green-600 hover:bg-green-700">
-                Завершити збірку
+                Зберегти
+              </Button>
+              <Button type="button" loading={savingCell} variant="secondary" onClick={(event) => handleSaveCell(event, true)} icon={<Printer size={15} />}>
+                Зберегти і друк
               </Button>
               <Button type="button" variant="secondary" onClick={() => setCellModalOpen(false)}>
                 Закрити

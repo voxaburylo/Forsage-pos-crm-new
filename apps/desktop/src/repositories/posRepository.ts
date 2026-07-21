@@ -300,6 +300,7 @@ export class LocalPosRepository {
         phone: input.phone,
         full_name: input.full_name,
         email: input.email,
+        birth_date: input.birth_date,
         notes: input.notes,
         tags_json: input.tags !== undefined ? JSON.stringify(input.tags ?? []) : undefined,
         price_tier_id: input.price_tier_id,
@@ -328,19 +329,19 @@ export class LocalPosRepository {
     this.db.transaction(() => {
       this.db.prepare(`
         INSERT INTO customers (
-          id, tenant_id, phone, full_name, email, debt_balance, notes, tags_json,
+          id, tenant_id, phone, full_name, email, birth_date, debt_balance, notes, tags_json,
           price_tier_id, bonus_balance, vip_level, risk_profile, discount_pct,
           client_status, card_barcode, dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0, 'standard', 'low', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, 'standard', 'low', ?, ?, ?, ?, ?, ?)
       `).run(
-        id, tenantId, phone, input.full_name ?? null, input.email ?? null,
+        id, tenantId, phone, input.full_name ?? null, input.email ?? null, input.birth_date ?? null,
         input.notes ?? null, JSON.stringify(input.tags ?? []), input.price_tier_id ?? null,
         Number(input.discount_pct ?? 0), input.client_status ?? 'client',
         input.card_barcode ?? null, timestamp, timestamp, timestamp,
       )
       this.addCustomerVehicle(id, tenantId, input.vehicle, timestamp)
       this.addOutbox(tenantId, 'customer', id, 'customer.created', {
-        id, phone, full_name: input.full_name ?? null, email: input.email ?? null,
+        id, phone, full_name: input.full_name ?? null, email: input.email ?? null, birth_date: input.birth_date ?? null,
         notes: input.notes ?? null, tags: input.tags ?? [], price_tier_id: input.price_tier_id ?? null,
         discount_pct: Number(input.discount_pct ?? 0), client_status: input.client_status ?? 'client',
         card_barcode: input.card_barcode ?? null, vehicle: input.vehicle ?? null,
@@ -1585,6 +1586,7 @@ export class LocalPosRepository {
       phone: row.phone ?? '',
       full_name: row.full_name ?? null,
       email: row.email ?? null,
+      birth_date: row.birth_date ?? null,
       debt_balance: Number(row.debt_balance ?? 0),
       deposit_balance: Number(row.deposit_balance ?? 0),
       notes: row.notes ?? null,

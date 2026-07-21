@@ -26,6 +26,16 @@ interface ProductAutocompleteProps {
  * За замовчуванням показує і прайси постачальників (замовний імпорт);
  * з warehouseOnly — лише склад.
  */
+function sortSuggestions(list: Product[]): Product[] {
+  return [...list].sort((a, b) => {
+    const aStock = Number(a.qty_available ?? a.qty_on_hand ?? 0)
+    const bStock = Number(b.qty_available ?? b.qty_on_hand ?? 0)
+    const aReady = aStock > 0 || a.is_service
+    const bReady = bStock > 0 || b.is_service
+    if (aReady !== bReady) return aReady ? -1 : 1
+    return (a.name || '').localeCompare(b.name || '', 'uk', { numeric: true, sensitivity: 'base' })
+  })
+}
 export function ProductAutocomplete({
   value,
   onChange,
@@ -70,7 +80,7 @@ export function ProductAutocomplete({
       try {
         if (isDesktopRuntime()) {
           const res = await productApi.search(q, 12)
-          setResults(res.data ?? [])
+          setResults(sortSuggestions(res.data ?? []))
           setSupplierResults([])
           setOpen((res.data?.length ?? 0) > 0)
           setHighlight(0)
@@ -79,7 +89,7 @@ export function ProductAutocomplete({
         const res = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(`/api/v1/search/hybrid?q=${encodeURIComponent(q)}&limit=8`)
         const warehouse = res.data?.warehouse || []
         const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
-        setResults(warehouse)
+        setResults(sortSuggestions(warehouse))
         setSupplierResults(catalog)
         setOpen(warehouse.length > 0 || catalog.length > 0)
         setHighlight(0)
@@ -171,7 +181,7 @@ export function ProductAutocomplete({
           {results.length > 0 && (
             <div className="py-1">
               <div className="px-3 py-1 text-[9px] font-bold text-gray-400 uppercase bg-gray-50 tracking-wider">
-                📦 На складі
+                📦 Товари в базі / аналоги
               </div>
               {results.map((p, idx) => {
                 const stock = p.qty_available ?? p.qty_on_hand ?? 0

@@ -76,6 +76,10 @@ export function usePOS() {
     options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean; terminalAuthCode?: string }
   ) => {
     const { currentShift, items, customer, notes, total, totalDiscount, managerId, customerOrderId } = store
+    const hasTireService = items.some((item) => item.sku === 'POS-TIRE-SERVICE')
+    const saleManagerId = currentShift
+      ? (hasTireService ? (managerId ?? currentShift.cashier_id ?? null) : currentShift.cashier_id)
+      : null
     const bonusRedeemed = options?.bonusRedeemed ?? 0
     const toPay = Math.max(0, total - bonusRedeemed)
 
@@ -171,7 +175,7 @@ export function usePOS() {
         const checkoutInput = {
           shift_id: currentShift.id,
           customer_id: customer?.id ?? null,
-          manager_id: managerId,
+          manager_id: saleManagerId,
           cashier_id: currentShift.cashier_id,
           items: items.map((item) => ({
             product_id: item.productId,
@@ -222,7 +226,7 @@ export function usePOS() {
         shift_id:            currentShift.id,
         customer_id:         customer?.id ?? null,
         customer_order_id:   customerOrderId || null,
-        manager_id:          managerId,
+        manager_id:          saleManagerId,
         items:          items.map((i) => ({
           product_id: i.productId,
           qty:        i.qty,

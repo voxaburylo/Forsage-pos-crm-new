@@ -99,7 +99,7 @@ export class LocalOrderRepository {
         status, num(input.prepayment ?? prepayment),
         input.prepayment_method !== undefined ? input.prepayment_method : existing?.prepayment_method ?? null,
         input.prepayment_is_fiscal === true ? 1 : existing?.prepayment_is_fiscal ? 1 : 0,
-        totalAmount, num(input.prepayment ?? totalPaid), num(input.discount_amount ?? existing?.discount_amount),
+        totalAmount, num(input.prepayment ?? totalPaid), 0,
         input.pickup_deadline_at ?? existing?.pickup_deadline_at ?? null,
         input.pickup_cell ?? existing?.pickup_cell ?? null,
         input.comment !== undefined ? input.comment : existing?.comment ?? null,
@@ -510,7 +510,7 @@ export class LocalOrderRepository {
       prepayment_is_fiscal: row.prepayment_is_fiscal === 1,
       total_amount: num(row.total_amount),
       total_paid: num(row.total_paid),
-      discount_amount: num(row.discount_amount),
+      discount_amount: 0,
       pickup_deadline_at: row.pickup_deadline_at,
       pickup_cell: row.pickup_cell,
       comment: row.comment,
@@ -545,7 +545,7 @@ export class LocalOrderRepository {
   }
 
   private remainingDue(order: any): number {
-    return Math.max(0, num(order.total_amount) - num(order.discount_amount) - num(order.total_paid ?? order.prepayment))
+    return Math.max(0, num(order.total_amount) - num(order.total_paid ?? order.prepayment))
   }
 
   private addOutbox(tenantId: string, aggregateType: string, aggregateId: string, operationType: string, payload: unknown, timestamp: string): number | bigint {

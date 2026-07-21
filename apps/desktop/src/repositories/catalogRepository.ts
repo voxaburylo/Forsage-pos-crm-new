@@ -416,6 +416,20 @@ export class LocalCatalogRepository {
             AND b.deleted_at IS NULL
             AND (b.barcode = ? OR b.barcode = ? OR b.barcode LIKE ?)
         )`,
+        `EXISTS (
+          SELECT 1 FROM product_aliases a
+          WHERE a.tenant_id = p.tenant_id
+            AND a.product_id = p.id
+            AND a.deleted_at IS NULL
+            AND (a.alias LIKE ? OR a.alias LIKE ?)
+        )`,
+        `EXISTS (
+          SELECT 1 FROM product_cross_numbers x
+          WHERE x.tenant_id = p.tenant_id
+            AND x.product_id = p.id
+            AND x.deleted_at IS NULL
+            AND (x.cross_number = ? OR x.cross_number = ? OR x.cross_number LIKE ?)
+        )`,
       ]
       const searchParams: Array<string | number> = [
         raw,
@@ -424,6 +438,11 @@ export class LocalCatalogRepository {
         compact,
         `%${raw}%`,
         `%${raw}%`,
+        raw,
+        compact,
+        `%${raw}%`,
+        `%${raw}%`,
+        `%${compact}%`,
         raw,
         compact,
         `%${raw}%`,
@@ -729,8 +748,22 @@ export class LocalCatalogRepository {
           AND b.deleted_at IS NULL
           AND (b.barcode = ? OR b.barcode = ? OR b.barcode LIKE ?)
       )`,
+      `EXISTS (
+        SELECT 1 FROM product_aliases a
+        WHERE a.tenant_id = products.tenant_id
+          AND a.product_id = products.id
+          AND a.deleted_at IS NULL
+          AND (a.alias LIKE ? OR a.alias LIKE ?)
+      )`,
+      `EXISTS (
+        SELECT 1 FROM product_cross_numbers x
+        WHERE x.tenant_id = products.tenant_id
+          AND x.product_id = products.id
+          AND x.deleted_at IS NULL
+          AND (x.cross_number = ? OR x.cross_number = ? OR x.cross_number LIKE ?)
+      )`,
     ]
-    const params: Array<string | number> = [tenantId, raw, compact, raw, compact, `%${raw}%`, `%${raw}%`, raw, compact, `%${raw}%`]
+    const params: Array<string | number> = [tenantId, raw, compact, raw, compact, `%${raw}%`, `%${raw}%`, raw, compact, `%${raw}%`, `%${raw}%`, `%${compact}%`, raw, compact, `%${raw}%`]
     for (const needle of needles) {
       clauses.push('search_text LIKE ?')
       params.push(`%${needle}%`)
@@ -750,6 +783,7 @@ export class LocalCatalogRepository {
         AND (${clauses.join(' OR ')})
       ORDER BY
         CASE WHEN sku = ? OR sku = ? OR barcode = ? OR barcode = ? THEN 0 ELSE 1 END,
+        CASE WHEN qty_on_hand > 0 OR is_service = 1 THEN 0 ELSE 1 END,
         is_favorite DESC,
         name ASC
       LIMIT ?

@@ -4,6 +4,8 @@ import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, Clipbo
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
 import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { productApi } from '@/features/products/productApi'
+import { adminApi } from '@/features/admin/adminApi'
+import { pricingApi } from '@/features/admin/pricingApi'
 import { kopecksToHryvnia } from '@/types/product'
 import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
@@ -174,9 +176,6 @@ export default function OrderFormPage() {
         if (payload.items && payload.items.length > 0) {
           setItems(payload.items)
         }
-        if (payload.discount_amount) {
-          setDiscount((payload.discount_amount / 100).toString())
-        }
       } catch (e) {
         console.error('Duplication payload error', e)
       }
@@ -286,8 +285,6 @@ export default function OrderFormPage() {
         
         // Оплати замовлень більше не редагуються тут: гроші приймає касир у касі.
         
-        // Discount
-        setDiscount(o.discount_amount ? (o.discount_amount / 100).toString() : '0')
         // Items
         if (o.items && o.items.length > 0) {
           setItems(o.items.map(item => ({
@@ -313,6 +310,7 @@ export default function OrderFormPage() {
   // Step 3: Items
   const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [quickMarkupPercents, setQuickMarkupPercents] = useState<number[]>([20, 30, 40])
 
   // ORD-36: шаблони частих позицій (localStorage)
   const TEMPLATES_KEY = 'order_item_templates'
@@ -345,8 +343,6 @@ export default function OrderFormPage() {
   // Step 4: Summary & Checkout
   const [comment, setComment] = useState('')
   const [isUrgent, setIsUrgent] = useState(false)
-  const [discount, setDiscount] = useState('0')
-  const [discountMode, setDiscountMode] = useState<'uah' | 'pct'>('uah')
   const [saving, setSaving] = useState(false)
 
   // Query parameter support
@@ -372,6 +368,14 @@ export default function OrderFormPage() {
 
     supplierApi.list({ per_page: 200, is_active: 'true' })
       .then((r) => setSuppliers(uniqueSuppliers((r as any).data ?? [])))
+      .catch(() => {})
+    adminApi.getSettings()
+      .then((res) => {
+        const values = (res.data.quick_percents ?? [])
+          .map((pct) => Number(pct))
+          .filter((pct) => Number.isFinite(pct) && pct > 0)
+        if (values.length > 0) setQuickMarkupPercents(values.slice(0, 6))
+      })
       .catch(() => {})
   }, [])
 
@@ -598,6 +602,37 @@ export default function OrderFormPage() {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
+  function moneyInputToKop(value: string | undefined): number {
+    const parsed = Number(String(value ?? '').replace(',', '.'))
+    return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0
+  }
+
+  function kopToInput(value: number): string {
+    const hryvnia = Math.max(0, Math.round(value)) / 100
+    return Number.isInteger(hryvnia) ? String(hryvnia) : hryvnia.toFixed(2)
+  }
+
+  function applyMarkupToItem(i: number, pct: number) {
+    const purchase = moneyInputToKop(items[i]?.buy_price)
+    if (purchase <= 0) { toast.error('Спочатку вкажіть закупку'); return }
+    const retail = Math.round(purchase * (1 + pct / 100))
+    updateItem(i, 'sell_price', kopToInput(retail))
+  }
+
+  async function applyGridToItem(i: number) {
+    const purchase = moneyInputToKop(items[i]?.buy_price)
+    if (purchase <= 0) { toast.error('Спочатку вкажіть закупку'); return }
+    try {
+      const result = await pricingApi.autoRetail(purchase)
+      const retail = result.data.retail_price ?? 0
+      if (retail <= 0) throw new Error('empty')
+      updateItem(i, 'sell_price', kopToInput(retail))
+      toast.success('Ціну розраховано по сітці')
+    } catch {
+      toast.error('Не вдалося розрахувати по сітці')
+    }
+  }
+
   // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок + тип (ORD-24)
   function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number; is_service?: boolean; purchase_price?: number }) {
     setItems((rows) => rows.map((row, idx) => idx === i ? {
@@ -620,11 +655,8 @@ export default function OrderFormPage() {
     }, 0)
   }, [items])
 
-  // Сума до сплати та решта (ORD-5, ORD-6, ORD-21)
-  const discountKopMemo = discountMode === 'pct'
-    ? Math.round(totalKop * (Math.min(parseFloat(discount || '0'), 100) / 100))
-    : Math.round(parseFloat(discount || '0') * 100)
-  const toPayKop = Math.max(0, totalKop - discountKopMemo)
+  // Сума до сплати: знижка береться з картки клієнта у касі, у замовленні її не дублюємо.
+  const toPayKop = Math.max(0, totalKop)
   // Submit Order / Save Draft
   async function handleSave(asDraft: boolean) {
     const validItems = items.filter((row) => row.name.trim())
@@ -675,7 +707,6 @@ export default function OrderFormPage() {
       comment.trim(),
     ].filter(Boolean).join(' ')
 
-    const discountKop = discountKopMemo
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
       source: 'walk_in',
@@ -686,14 +717,14 @@ export default function OrderFormPage() {
       prepayment: 0,
       prepayment_method: null,
       prepayment_is_fiscal: false,
-      discount_amount: discountKop,
+      discount_amount: 0,
       items: validItems.map((row) => ({
         name:        row.name.trim(),
         sku:         row.sku.trim() || null,
         product_id:  row.product_id || null,
         qty:         parseFloat(row.qty) || 1,
         sell_price:  Math.round(parseFloat(row.sell_price || '0') * 100),
-        buy_price:   row.supplier_id ? Math.round(parseFloat(row.buy_price || '0') * 100) : 0,
+        buy_price:   Math.round(parseFloat(row.buy_price || '0') * 100),
         supplier_id: row.supplier_id || null,
         source_type: row.supplier_id ? 'supplier' : 'warehouse',
         item_type:   row.item_type ?? 'product',
@@ -1227,12 +1258,16 @@ export default function OrderFormPage() {
                       <input value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна"
                         className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
                     </div>
-                    {row.supplier_id && (
-                      <div className="mt-1">
-                        <input value={row.buy_price || ''} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна закупівлі (грн)"
-                          className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
+                    <div className="mt-1 space-y-1.5">
+                      <input value={row.buy_price || ''} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} type="number" min="0" step="any" placeholder="Закупка (грн)"
+                        className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
+                      <div className="flex flex-wrap gap-1">
+                        <button type="button" onClick={() => applyGridToItem(idx)} className="rounded bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100">Сітка</button>
+                        {quickMarkupPercents.map((pct) => (
+                          <button key={pct} type="button" onClick={() => applyMarkupToItem(idx, pct)} className="rounded bg-yellow-50 px-2 py-1 text-[10px] font-bold text-yellow-700 hover:bg-yellow-100">+{pct}%</button>
+                        ))}
                       </div>
-                    )}
+                    </div>
                     <select value={row.supplier_id} onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
                       className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400">
                       <option value="">Наявність на складі</option>
@@ -1299,19 +1334,21 @@ export default function OrderFormPage() {
                           />
                         </td>
                         <td className="px-3 py-3">
-                          {row.supplier_id ? (
-                            <input
-                              value={row.buy_price || ''}
-                              onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
-                              type="number"
-                              min="0"
-                              step="any"
-                              placeholder="Закупка"
-                              className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right"
-                            />
-                          ) : (
-                            <span className="text-gray-400 text-xs block text-center">-</span>
-                          )}
+                          <input
+                            value={row.buy_price || ''}
+                            onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
+                            type="number"
+                            min="0"
+                            step="any"
+                            placeholder="Закупка"
+                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right"
+                          />
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            <button type="button" onClick={() => applyGridToItem(idx)} className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 hover:bg-blue-100">Сітка</button>
+                            {quickMarkupPercents.map((pct) => (
+                              <button key={pct} type="button" onClick={() => applyMarkupToItem(idx, pct)} className="rounded bg-yellow-50 px-1.5 py-0.5 text-[10px] font-bold text-yellow-700 hover:bg-yellow-100">+{pct}%</button>
+                            ))}
+                          </div>
                         </td>
                         <td className="px-3 py-3">
                           <input
@@ -1442,12 +1479,6 @@ export default function OrderFormPage() {
                     <span className="text-gray-500">Загальна сума товарів:</span>
                     <span className="font-semibold text-gray-800">{formatMoney(totalKop)}</span>
                   </div>
-                  {discountKopMemo > 0 && (
-                    <div className="flex justify-between text-red-600 font-semibold">
-                      <span>Знижка{discountMode === 'pct' ? ` (${discount}%)` : ''}:</span>
-                      <span>-{formatMoney(discountKopMemo)}</span>
-                    </div>
-                  )}
                   <div className="flex justify-between items-center border-t border-gray-100 pt-2">
                     <span className="text-gray-500 font-semibold">До сплати:</span>
                     <span className="text-xl font-extrabold text-yellow-600">
@@ -1459,39 +1490,10 @@ export default function OrderFormPage() {
 
               {/* Checkout Actions */}
               <Card className="space-y-4">
-                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Знижка та коментар</h4>
+                <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Коментар</h4>
                 
                 <div className="space-y-3">
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-semibold text-gray-500">Знижка</label>
-                      <div className="flex rounded-md overflow-hidden border border-gray-200">
-                        {(['uah', 'pct'] as const).map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => setDiscountMode(m)}
-                            className={`px-2 py-0.5 text-xs font-bold transition-colors ${
-                              discountMode === m ? 'bg-yellow-400 text-black' : 'bg-white text-gray-400 hover:bg-gray-50'
-                            }`}
-                          >
-                            {m === 'uah' ? '₴' : '%'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <input
-                      value={discount}
-                      onChange={(e) => setDiscount(e.target.value)}
-                      type="number"
-                      min="0"
-                      max={discountMode === 'pct' ? '100' : undefined}
-                      step="any"
-                      className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                    />
-                  </div>
-
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+<div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     Передоплата та повна оплата приймаються тільки в касі. Менеджер оформлює замовлення,
                     а касир знаходить його за номером, телефоном або штрихкодом картки клієнта.
                   </div>

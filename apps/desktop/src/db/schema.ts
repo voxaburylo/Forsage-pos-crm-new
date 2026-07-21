@@ -1,4 +1,4 @@
-export const LOCAL_SCHEMA_VERSION = 9
+export const LOCAL_SCHEMA_VERSION = 10
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -963,6 +963,9 @@ const MIGRATION_009_REPAIR_CUSTOMER_ORDERS_SQL = `
     ON order_payments(order_id, created_at);
 `
 
+const MIGRATION_010_CUSTOMER_BIRTH_DATE_SQL = `
+  ALTER TABLE customers ADD COLUMN birth_date TEXT;
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -978,4 +981,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 7, sql: MIGRATION_007_WAREHOUSE_OPERATIONS_SQL },
   { version: 8, sql: MIGRATION_008_LOCAL_STAFF_SQL },
   { version: 9, sql: MIGRATION_009_REPAIR_CUSTOMER_ORDERS_SQL },
+  { version: 10, sql: MIGRATION_010_CUSTOMER_BIRTH_DATE_SQL },
 ]

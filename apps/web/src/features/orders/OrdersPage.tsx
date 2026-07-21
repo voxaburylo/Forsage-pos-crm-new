@@ -2095,8 +2095,7 @@ function OrderInlineView({
   const draft = isDraft(order)
   const totalPaid = order.total_paid ?? order.prepayment
   // Скасоване замовлення не має «залишку до сплати» — обов'язань немає
-  const discount = order.discount_amount ?? 0
-  const remaining = order.status === 'canceled' ? 0 : order.total_amount - discount - totalPaid
+  const remaining = order.status === 'canceled' ? 0 : order.total_amount - totalPaid
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled'].includes(i.item_status))
   const allHanded = order.items.every((i) => ['handed', 'canceled'].includes(i.item_status))
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)

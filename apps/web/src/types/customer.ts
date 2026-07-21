@@ -9,6 +9,7 @@ export interface Customer {
   phone: string
   full_name: string | null
   email: string | null
+  birth_date?: string | null
   debt_balance: number   // копійки
   deposit_balance?: number // копійки, рахунок/передплата
   loyalty_mode?: 'discount' | 'cashback'

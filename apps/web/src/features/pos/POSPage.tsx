@@ -320,14 +320,7 @@ export default function POSPage() {
   const [quickCharge, setQuickCharge] = useState<'tire_service' | 'free_sale' | null>(null)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
 
-  // Менеджер за замовчуванням має бути доступний навіть після офлайн-перезапуску,
-  // тому не прив'язуємо його встановлення до успішного запиту списку працівників.
-  useEffect(() => {
-    const currentId = session?.user?.id
-    if (currentId && !store.managerId) store.setManagerId(currentId)
-  }, [session?.user?.id, store.managerId])
-
-  // Завантажуємо список співробітників для селектора менеджера + знижку працівника
+  // Завантажуємо список співробітників для шиномонтажу + знижку працівника
   useEffect(() => {
     const localStaff = desktopBridge()?.catalog.listStaff
     const staffRequest = localStaff
@@ -569,6 +562,8 @@ export default function POSPage() {
         total, totalDiscount, getActiveTab,
       } = store
       if (!currentShift || !items.length) return null
+      const hasTireService = items.some((item) => item.sku === 'POS-TIRE-SERVICE')
+      const saleManagerId = hasTireService ? (managerId ?? currentShift.cashier_id ?? null) : (currentShift.cashier_id ?? session?.user?.id ?? null)
 
       const offlineId = crypto.randomUUID()
       const createdAt = new Date().toISOString()
@@ -579,7 +574,7 @@ export default function POSPage() {
         shift_id:        currentShift.id,
         customer_id:     customer?.id ?? null,
         customer_order_id: customerOrderId || null,
-        manager_id:      managerId,
+        manager_id:      saleManagerId,
         items:           items.map((i) => ({
           product_id: i.productId,
           qty: i.qty,
@@ -624,7 +619,7 @@ export default function POSPage() {
         sale_number: `OFF-${offlineId.slice(0, 8).toUpperCase()}`,
         customer_id: customer?.id ?? null,
         cashier_id: session?.user?.id ?? '',
-        manager_id: managerId,
+        manager_id: saleManagerId,
         shift_id: currentShift.id,
         status: 'completed',
         subtotal: items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0),
@@ -920,16 +915,7 @@ export default function POSPage() {
           <>
             <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
               <SearchPanel ref={searchRef} />
-              <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-800 bg-[#111] px-2 py-2">
-                <label className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-yellow-700/50 bg-yellow-950/30 px-3 text-xs font-semibold text-yellow-200">
-                  <span>Продавець чека</span>
-                  <select value={store.managerId ?? ''} onChange={(e) => store.setManagerId(e.target.value || session?.user?.id || null)}
-                    className="max-w-[180px] rounded-lg border border-yellow-800/60 bg-[#242424] px-2 py-1.5 text-xs text-white outline-none focus:border-yellow-400">
-                    <option value={session?.user?.id ?? ''}>Поточний касир</option>
-                    {staffUsers.filter((person) => person.id !== session?.user?.id).map((person) => <option key={person.id} value={person.id}>{person.full_name}</option>)}
-                  </select>
-                </label>
-                <button onClick={() => setQuickCharge('tire_service')}
+              <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-800 bg-[#111] px-2 py-2">`r`n                <button onClick={() => setQuickCharge('tire_service')}
                   className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-emerald-700/50 bg-emerald-900/30 px-4 text-sm font-bold text-emerald-300 hover:bg-emerald-900/50"
                   title="Прийняти оплату за шиномонтаж і зарахувати роботу працівнику">
                   <Wrench size={16} /> Шиномонтаж

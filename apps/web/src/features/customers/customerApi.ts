@@ -44,7 +44,7 @@ export const customerApi = {
     return api.get<{ data: CustomerSale[] }>(`/api/v1/customers/${id}/sales`)
   },
 
-  create: async (body: { phone: string; full_name?: string; email?: string; notes?: string; tags?: string[]; price_tier_id?: string | null; discount_pct?: number; client_status?: string; card_barcode?: string | null; vehicle?: { brand?: string; model?: string; year?: number | null; vin?: string | null; notes?: string | null } }) => {
+  create: async (body: { phone: string; full_name?: string; email?: string; birth_date?: string | null; notes?: string; tags?: string[]; price_tier_id?: string | null; discount_pct?: number; client_status?: string; card_barcode?: string | null; vehicle?: { brand?: string; model?: string; year?: number | null; vin?: string | null; notes?: string | null } }) => {
     const local = desktopBridge()?.pos.saveCustomer
     if (local) {
       const result = await local(body)
@@ -64,7 +64,7 @@ export const customerApi = {
     return api.post<CustomerCreateResponse>('/api/v1/customers/quick', { phone, full_name })
   },
 
-  update: async (id: string, body: Partial<{ phone: string; full_name: string; email: string; notes: string; tags: string[]; price_tier_id: string | null; vip_level: string; risk_profile: string; discount_pct: number; bonus_balance: number; loyalty_mode: 'discount' | 'cashback'; client_status: string; card_barcode: string | null }>) => {
+  update: async (id: string, body: Partial<{ phone: string; full_name: string; email: string; notes: string; tags: string[]; price_tier_id: string | null; vip_level: string; risk_profile: string; birth_date: string | null; discount_pct: number; bonus_balance: number; loyalty_mode: 'discount' | 'cashback'; client_status: string; card_barcode: string | null }>) => {
     const local = desktopBridge()?.pos.saveCustomer
     if (local) {
       const result = await local(body, id)

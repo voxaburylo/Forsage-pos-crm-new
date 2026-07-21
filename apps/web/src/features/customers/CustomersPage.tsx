@@ -374,10 +374,10 @@ export default function CustomersPage() {
                           {c.phone && (
                             <button
                               onClick={() => copyToClipboard(c.phone, 'телефон')}
-                              className="font-mono text-xs text-gray-500 hover:text-yellow-700 flex items-center gap-1 transition-colors"
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1 font-mono text-sm font-extrabold text-blue-700 hover:bg-yellow-50 hover:text-yellow-700 transition-colors"
                               title="Клік — копіювати"
                             >
-                              <Phone size={11} className="opacity-50" />
+                              <Phone size={14} className="opacity-60" />
                               {c.phone}
                             </button>
                           )}

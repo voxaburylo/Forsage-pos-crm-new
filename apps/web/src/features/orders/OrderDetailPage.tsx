@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
 import { productApi } from '@/features/products/productApi'
 import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
+import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
 import type { Customer } from '@/types/customer'
@@ -441,10 +442,9 @@ export default function OrderDetailPage() {
   if (!order) return null
 
   const conf = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'gray' as const }
-  const discount = order.discount_amount ?? 0
   const totalPaid = order.total_paid ?? order.prepayment
   // Скасоване замовлення не має «залишку до сплати» — обов'язань немає
-  const remaining = order.status === 'canceled' ? 0 : order.total_amount - discount - totalPaid
+  const remaining = order.status === 'canceled' ? 0 : order.total_amount - totalPaid
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled', 'returned'].includes(i.item_status))
   const allHanded  = order.items.every((i) => ['handed', 'canceled', 'returned'].includes(i.item_status))
   const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
@@ -720,8 +720,20 @@ export default function OrderDetailPage() {
                 {draftItems.map((it, idx) => (
                   <div key={it.id ?? `new-${idx}`} className="grid grid-cols-[36px_minmax(240px,2fr)_minmax(150px,1fr)_80px_minmax(110px,1fr)_minmax(110px,1fr)_minmax(180px,1.2fr)_minmax(140px,1fr)_36px] items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-2">
                     <span className="text-center text-sm font-bold text-gray-400">{idx + 1}</span>
-                    <input value={it.name} onChange={(e) => updateDraftItem(idx, { name: e.target.value })} placeholder="Назва запчастини"
-                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
+                    <ProductAutocomplete
+                      value={it.name}
+                      onChange={(value) => updateDraftItem(idx, { name: value, product_id: null })}
+                      onSelect={(product) => updateDraftItem(idx, {
+                        name: product.name,
+                        sku: product.sku ?? '',
+                        product_id: product.id,
+                        item_type: product.is_service ? 'service' : 'product',
+                        buy_price: ((product.purchase_price ?? 0) / 100).toFixed(2),
+                        sell_price: ((product.retail_price ?? 0) / 100).toFixed(2),
+                      })}
+                      placeholder="Назва, артикул, штрихкод або аналог..."
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400"
+                    />
                     <input value={it.sku} onChange={(e) => updateDraftItem(idx, { sku: e.target.value })} placeholder="Артикул"
                       className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
                     <input type="number" min="0.001" step="any" value={it.qty} onChange={(e) => updateDraftItem(idx, { qty: e.target.value })}
@@ -843,12 +855,6 @@ export default function OrderDetailPage() {
               <span>Загальна сума:</span>
               <span className="font-semibold">{formatMoney(order.total_amount)}</span>
             </div>
-            {discount > 0 && (
-              <div className="flex justify-between text-red-600 font-semibold">
-                <span>Знижка:</span>
-                <span>-{formatMoney(discount)}</span>
-              </div>
-            )}
             <div className="flex justify-between text-green-600">
               <span>Сплачено:</span>
               <span className="font-semibold">{formatMoney(totalPaid)}</span>

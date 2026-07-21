@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Car, Plus, Save, Trash2 } from 'lucide-react'
+import { Car, Copy, Plus, Save, Trash2 } from 'lucide-react'
 import { Button, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import type { Customer, CustomerVehicle } from '@/types/customer'
@@ -20,7 +20,7 @@ const EMPTY_CAR: VehicleDraft = { brand: '', model: '', year: '', vin: '', notes
 
 export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Props) {
   const [current, setCurrent] = useState<Customer | null>(null)
-  const [form, setForm] = useState({ phone:'', full_name:'', email:'', card_barcode:'', notes:'', discount_pct:'0', bonus_balance:'0', client_status:'client', loyalty_mode:'discount' as 'discount'|'cashback', price_tier_id:'' })
+  const [form, setForm] = useState({ phone:'', full_name:'', email:'', birth_date:'', card_barcode:'', notes:'', discount_pct:'0', bonus_balance:'0', client_status:'client', loyalty_mode:'discount' as 'discount'|'cashback', price_tier_id:'' })
   const [tiers, setTiers] = useState<PriceTier[]>([])
   const [cars, setCars] = useState<CustomerVehicle[]>([])
   const [car, setCar] = useState<VehicleDraft>(EMPTY_CAR)
@@ -33,7 +33,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     setCurrent(c)
     setForm({
       phone:c.phone ?? '', full_name:c.full_name ?? '', email:c.email ?? '',
-      card_barcode:c.card_barcode ?? '', notes:c.notes ?? '',
+      birth_date:(c.birth_date ?? '').slice(0, 10), card_barcode:c.card_barcode ?? '', notes:c.notes ?? '',
       discount_pct:String(c.discount_pct ?? 0),
       bonus_balance:((c.bonus_balance ?? 0) / 100).toFixed(2),
       client_status:c.client_status ?? 'client',
@@ -67,6 +67,17 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     setForm((old) => ({ ...old, [key]: value }))
   }
 
+  async function copyText(value: string, label: string) {
+    const clean = value.trim()
+    if (!clean) return
+    try {
+      await navigator.clipboard.writeText(clean)
+      toast.success(`${label} скопійовано`)
+    } catch {
+      toast.error('Не вдалося скопіювати')
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!current || !form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
@@ -77,7 +88,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     setSaving(true)
     try {
       const { data } = await customerApi.update(current.id, {
-        phone:form.phone.trim(), full_name:form.full_name.trim(), email:form.email.trim(),
+        phone:form.phone.trim(), full_name:form.full_name.trim(), email:form.email.trim(), birth_date:form.birth_date || null,
         card_barcode:form.card_barcode.replace(/\s/g, '') || null, notes:form.notes.trim(),
         discount_pct:discount, bonus_balance:bonus, client_status:form.client_status,
         loyalty_mode:form.loyalty_mode, price_tier_id:form.price_tier_id || null,
@@ -118,13 +129,20 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     {!current ? <p className="py-12 text-center text-sm text-gray-400">Завантаження...</p> :
     <form onSubmit={submit} className="space-y-5">
       {loading && <p className="text-xs text-gray-400">Оновлюємо дані з локальної бази...</p>}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
         <section className="space-y-3 rounded-xl border border-gray-100 bg-gray-50/60 p-4">
           <h3 className="font-semibold text-gray-900">Контакти та картка</h3>
+          <div className="rounded-xl border border-blue-100 bg-white p-3 shadow-sm">
+            <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-gray-400">Телефон *</label>
+            <div className="flex gap-2">
+              <input value={form.phone} onChange={(e)=>set('phone',e.target.value)} required className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2.5 font-mono text-xl font-extrabold text-gray-900 outline-none focus:ring-2 focus:ring-yellow-300" />
+              <button type="button" onClick={() => copyText(form.phone, 'Телефон')} className="rounded-lg border border-gray-200 px-3 text-gray-500 hover:bg-yellow-50 hover:text-yellow-700" title="Копіювати телефон"><Copy size={18}/></button>
+            </div>
+          </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Input label="Телефон *" value={form.phone} onChange={(e)=>set('phone',e.target.value)} required />
             <Input label="Ім'я" value={form.full_name} onChange={(e)=>set('full_name',e.target.value)} />
             <Input label="Email" type="email" value={form.email} onChange={(e)=>set('email',e.target.value)} />
+            <Input label="Дата народження" type="date" value={form.birth_date} onChange={(e)=>set('birth_date',e.target.value)} />
             <Input label="Штрихкод картки" value={form.card_barcode} onChange={(e)=>set('card_barcode',e.target.value.replace(/\s/g,''))} placeholder="Скануйте або введіть" />
           </div>
           <div><label className="mb-1 block text-sm font-medium text-gray-700">Примітки</label><textarea value={form.notes} onChange={(e)=>set('notes',e.target.value)} rows={3} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-300" /></div>
