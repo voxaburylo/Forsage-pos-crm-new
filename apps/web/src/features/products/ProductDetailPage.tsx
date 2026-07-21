@@ -66,7 +66,7 @@ export default function ProductDetailPage() {
     const saved = localStorage.getItem(PRODUCT_LABEL_PRESET_STORAGE_KEY)
     return PRODUCT_LABEL_PRESET_OPTIONS.some((option) => option.value === saved)
       ? saved as ProductLabelPresetKey
-      : 'compact_product_4025'
+      : 'saved'
   })
 
   

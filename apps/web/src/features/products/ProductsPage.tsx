@@ -103,7 +103,7 @@ export default function ProductsPage() {
     const saved = localStorage.getItem(PRODUCT_LABEL_PRESET_STORAGE_KEY)
     return PRODUCT_LABEL_PRESET_OPTIONS.some((option) => option.value === saved)
       ? saved as ProductLabelPresetKey
-      : 'compact_product_4025'
+      : 'saved'
   })
   const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
   // Інлайн-редагування ціни прямо у списку (без переходу в картку)

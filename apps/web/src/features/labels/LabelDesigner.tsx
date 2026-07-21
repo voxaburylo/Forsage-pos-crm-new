@@ -104,8 +104,8 @@ export const DEFAULT_LABEL: LabelSettings = {
   align_barcode: 'center',
 }
 
-// Фізичний рулон користувача. Швидкий друк із картки товару завжди використовує
-// цей компактний макет, незалежно від старого збереженого шаблону 40×30.
+// Компактний пресет лишається ручним варіантом. За замовчуванням друк
+// має брати саме шаблон, який користувач зберіг у дизайнері.
 export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   ...DEFAULT_LABEL,
   width_mm: 40,
@@ -367,14 +367,14 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
 }
 
 export const PRODUCT_LABEL_PRESET_OPTIONS = [
-  { value: 'compact_product_4025', label: '40×25 мм — поточний рулон' },
-  { value: 'standard_product_4030', label: '40×30 мм' },
-  { value: 'large_product_5840', label: '58×40 мм' },
-  { value: 'saved', label: 'Мій розмір із дизайнера' },
+  { value: 'saved', label: 'Мій шаблон із дизайнера' },
+  { value: 'compact_product_4025', label: '40×25 мм — пресет' },
+  { value: 'standard_product_4030', label: '40×30 мм — пресет' },
+  { value: 'large_product_5840', label: '58×40 мм — пресет' },
 ] as const
 
 export type ProductLabelPresetKey = typeof PRODUCT_LABEL_PRESET_OPTIONS[number]['value']
-export const PRODUCT_LABEL_PRESET_STORAGE_KEY = 'forsage_product_label_preset'
+export const PRODUCT_LABEL_PRESET_STORAGE_KEY = 'forsage_product_label_preset_v2'
 
 export function resolveProductLabelSettings(
   savedSettings: Partial<LabelSettings> | null | undefined,
@@ -383,7 +383,8 @@ export function resolveProductLabelSettings(
   const saved = { ...DEFAULT_LABEL, ...(savedSettings ?? {}) }
   if (presetKey === 'saved') return saved
 
-  const preset = LABEL_PRESETS[presetKey] ?? LABEL_PRESETS.compact_product_4025
+  const preset = LABEL_PRESETS[presetKey]
+  if (!preset) return saved
   const { name: _name, ...presetSettings } = preset
   const visibilitySettings = {
     show_shop_name: saved.show_shop_name,

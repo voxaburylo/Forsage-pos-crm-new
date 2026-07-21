@@ -53,9 +53,15 @@ export class LocalBootstrapRepository {
       brands: 0,
       inventory_sessions: 0,
       inventory_items: 0,
+      settings: 0,
     }
 
     this.db.transaction(() => {
+      if (changes.shop_settings) {
+        this.upsertSettings(changes.shop_settings, appliedAt)
+        counts.settings++
+      }
+
       if (changes.references_included) {
         this.replaceTenantTable('product_barcodes', tenantId)
         this.replaceTenantTable('product_aliases', tenantId)
@@ -220,9 +226,15 @@ export class LocalBootstrapRepository {
       supplier_payments: 0,
       inventory_sessions: 0,
       inventory_items: 0,
+      settings: 0,
     }
 
     this.db.transaction(() => {
+      if (snapshot.shop_settings) {
+        this.upsertSettings(snapshot.shop_settings, importedAt)
+        counts.settings++
+      }
+
       for (const user of snapshot.staff ?? []) {
         this.upsertStaff(tenantId, user, importedAt)
         counts.staff++
@@ -351,6 +363,26 @@ export class LocalBootstrapRepository {
     })
 
     return { imported_at: importedAt, tenant_id: tenantId, counts }
+  }
+
+  private upsertSettings(settings: any, importedAt: string): void {
+    const pendingLocalSettings = this.db.prepare(`
+      SELECT 1 FROM sync_outbox
+      WHERE aggregate_type = 'settings'
+        AND aggregate_id = 'shop'
+        AND operation_type = 'settings.updated'
+        AND status <> 'synced'
+      LIMIT 1
+    `).get() as Record<string, unknown> | undefined
+
+    if (pendingLocalSettings) return
+
+    const { ai_api_key_encrypted: _omit, ...safeSettings } = settings ?? {}
+    this.db.prepare(`
+      INSERT INTO app_meta(key, value_json, updated_at)
+      VALUES ('shop_settings', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    `).run(JSON.stringify({ ...safeSettings, id: 'local-shop' }), importedAt)
   }
 
   private upsertStaff(tenantId: string, user: any, importedAt: string): void {

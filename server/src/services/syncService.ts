@@ -26,6 +26,39 @@ function withChangedSince(query: any, since?: string): any {
   return query.or(`updated_at.gt.${since},deleted_at.gt.${since}`)
 }
 
+const SHOP_SETTINGS_SYNC_KEYS = [
+  'shop_name', 'shop_address', 'phone', 'max_discount_pct', 'allow_negative_qty',
+  'return_days', 'default_debt_limit_kopecks', 'label_settings', 'pos_quick_items',
+  'markup_rules', 'price_rounding_enabled', 'price_rounding_step', 'price_rounding_dir',
+  'quick_percents', 'employee_discount_pct', 'vin_decoder_url', 'vin_decoder_api_key',
+  'auto_print_receipt', 'receipt_width_mm', 'owner_telegram_chat_id',
+] as const
+
+function sanitizeShopSettings(row: Record<string, any> | null | undefined): Record<string, any> | null {
+  if (!row) return null
+  const { ai_api_key_encrypted: _omit, ...safe } = row
+  return safe
+}
+
+function pickShopSettingsPayload(payload: Record<string, any> | null | undefined): Record<string, any> {
+  const updates: Record<string, any> = {}
+  if (!payload || typeof payload !== 'object') return updates
+  for (const key of SHOP_SETTINGS_SYNC_KEYS) {
+    if (payload[key] !== undefined) updates[key] = payload[key]
+  }
+  return updates
+}
+
+async function fetchShopSettings(tenantId: string): Promise<Record<string, any> | null> {
+  const { data, error } = await db
+    .from('shop_settings')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return sanitizeShopSettings(data as Record<string, any> | null)
+}
+
 async function loadAvailability(productIds: string[]): Promise<Map<string, { qty_reserved: number; qty_available: number }>> {
   const result = new Map<string, { qty_reserved: number; qty_available: number }>()
   for (let start = 0; start < productIds.length; start += PAGE_SIZE) {
@@ -108,6 +141,7 @@ export async function getSyncChanges({
     supplierPayments,
     inventorySessions,
     inventoryItems,
+    shopSettings,
   ] = await Promise.all([
     fetchAll((from, to) => {
       let query = db
@@ -265,6 +299,7 @@ export async function getSyncChanges({
       if (since && !referencesIncluded) query = query.gt('updated_at', since)
       return query.range(from, to)
     }),
+    fetchShopSettings(tenantId),
   ])
 
   const deletedProductIds = productRows.filter((row) => row.deleted_at).map((row) => row.id)
@@ -332,6 +367,7 @@ export async function getSyncChanges({
     supplier_payments: activeSupplierPayments,
     inventory_sessions: inventorySessions,
     inventory_items: activeInventoryItems,
+    shop_settings: shopSettings,
     references_included: referencesIncluded,
   }
 }
@@ -356,6 +392,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     supplierPayments,
     inventorySessions,
     inventoryItems,
+    shopSettings,
   ] = await Promise.all([
     listUsers(tenantId),
     fetchAll((from, to) => db
@@ -462,6 +499,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
       .gt('counted_stock', 0)
       .order('updated_at', { ascending: true })
       .range(from, to)),
+    fetchShopSettings(tenantId),
   ])
 
   return {
@@ -485,6 +523,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     supplier_payments: supplierPayments.map((row) => ({ ...row, invoice: undefined })),
     inventory_sessions: inventorySessions,
     inventory_items: inventoryItems.map((row) => ({ ...row, product: undefined })),
+    shop_settings: shopSettings,
     counts: {
       staff: staff.length,
       categories: categories.length,
@@ -504,6 +543,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
       supplier_payments: supplierPayments.length,
       inventory_sessions: inventorySessions.length,
       inventory_items: inventoryItems.length,
+      settings: shopSettings ? 1 : 0,
     },
   }
 }
@@ -596,6 +636,11 @@ async function applyLocalOperation(params: {
 
   if (operation.operation_type === 'brand.deleted') {
     await applyBrandDeleted(tenantId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'settings.updated') {
+    await applySettingsUpdated(tenantId, operation)
     return
   }
 
@@ -969,6 +1014,16 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
       )
     }
   })
+}
+
+async function applySettingsUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const updates = pickShopSettingsPayload(operation.payload ?? {})
+  if (Object.keys(updates).length === 0) return
+  const { error } = await db
+    .from('shop_settings')
+    .update({ ...updates, updated_at: operation.created_at })
+    .eq('tenant_id', tenantId)
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
 
 async function applyCategoryUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {

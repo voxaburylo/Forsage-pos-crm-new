@@ -107,6 +107,7 @@ export interface LocalBootstrapSnapshot {
   supplier_payments?: any[]
   inventory_sessions?: any[]
   inventory_items?: any[]
+  shop_settings?: any
   counts?: Record<string, number>
 }
 
@@ -134,6 +135,7 @@ export interface LocalBootstrapImportResult {
     supplier_payments: number
     inventory_sessions: number
     inventory_items: number
+    settings: number
   }
 }
 
@@ -190,6 +192,7 @@ export interface LocalSyncPullChanges {
   supplier_payments?: any[]
   inventory_sessions?: any[]
   inventory_items?: any[]
+  shop_settings?: any
   references_included?: boolean
 }
 
@@ -219,5 +222,6 @@ export interface LocalSyncPullResult {
     brands: number
     inventory_sessions: number
     inventory_items: number
+    settings: number
   }
 }
