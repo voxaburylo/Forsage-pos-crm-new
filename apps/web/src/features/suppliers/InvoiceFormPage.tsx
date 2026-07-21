@@ -14,6 +14,7 @@ import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
+import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 
 interface LineItem {
   product_id?: string
@@ -60,6 +61,58 @@ function normalizeSkuValue(raw: string): string {
   return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
 }
 
+function normalizeBarcodeValue(raw: unknown): string {
+  return String(raw ?? '')
+    .trim()
+    .replace(/[\s\u00a0\u202f\-]/g, '')
+    .replace(/\.0+$/, '')
+}
+
+function normalizeInvoiceProductName(raw: unknown): string {
+  return String(raw ?? '')
+    .toLocaleLowerCase('uk-UA')
+    .replace(/ё/g, 'е')
+    .replace(/ґ/g, 'г')
+    .replace(/[їіы]/g, 'и')
+    .replace(/є/g, 'е')
+    .replace(/э/g, 'е')
+    .replace(/[ьъ]/g, '')
+    .replace(/\bnew\s+ton\b/g, 'newton')
+    .replace(/\bнью\s+тон\b/g, 'newton')
+    .replace(/\bчорн\w*\b|\bчерн\w*\b/g, 'черн')
+    .replace(/\bсір\w*\b|\bсер\w*\b/g, 'сер')
+    .replace(/\bбілий\b|\bбелый\b|\bбіла\b|\bбелая\b|\bбілі\b|\bбелые\b/g, 'бел')
+    .replace(/\bпрозор\w*\b|\bпрозрач\w*\b/g, 'прозрач')
+    .replace(/\bуніверс\w*\b|\bуниверс\w*\b/g, 'универс')
+    .replace(/\bаерозол\w*\b|\bаэрозол\w*\b/g, 'аерозол')
+    .replace(/\bфарба\b|\bкраска\b/g, 'фарба')
+    .replace(/\bгрунт\w*\b/g, 'грунт')
+    .replace(/\((?:\s*\d+\s*(?:шт|штук|уп|ящ|pcs?)?\s*)+\)/gi, ' ')
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function invoiceNameTokens(raw: unknown): string[] {
+  const stop = new Set(['для', 'при', 'под', 'над', 'без', 'все', 'шт', 'уп', 'ящ', 'мл', 'гр', 'кг', 'л'])
+  return normalizeInvoiceProductName(raw)
+    .split(' ')
+    .filter((token) => token.length >= 2 && !stop.has(token))
+}
+
+function invoiceNameMatchScore(query: string, candidate: string): number {
+  const q = normalizeInvoiceProductName(query)
+  const c = normalizeInvoiceProductName(candidate)
+  if (!q || !c) return 0
+  if (q === c) return 1
+  if (q.length >= 18 && (q.includes(c) || c.includes(q))) return 0.96
+  const qTokens = new Set(invoiceNameTokens(q))
+  const cTokens = new Set(invoiceNameTokens(c))
+  if (qTokens.size < 3 || cTokens.size < 3) return 0
+  let common = 0
+  for (const token of qTokens) if (cTokens.has(token)) common += 1
+  return common / Math.max(qTokens.size, cTokens.size)
+}
 function parseDecimalInput(raw: unknown, fallback = 0): number {
   const normalized = String(raw ?? '')
     .replace(/[\s\u00a0\u202f]/g, '')
@@ -201,14 +254,17 @@ function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
 }
 
 function roundRetailBySettings(retail: number, settings: any): number {
-  if (settings?.price_rounding_enabled !== true) return retail
-  const step = Math.max(1, Number(settings.price_rounding_step) || 100)
+  if (!Number.isFinite(retail) || retail <= 0) return 0
+  // Сітка націнки не повинна давати копійки. Якщо в налаштуваннях увімкнено
+  // округлення — беремо його крок: 0.5 / 1 / 5 / 10 грн. Якщо вимкнено або
+  // налаштування недоступні — округлюємо до 1 грн, щоб ціна була чистою.
+  const rawStep = settings?.price_rounding_enabled === true ? Number(settings.price_rounding_step) : 100
+  const step = Math.max(50, Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 100)
   const scaled = retail / step
-  if (settings.price_rounding_dir === 'up') return Math.ceil(scaled) * step
-  if (settings.price_rounding_dir === 'down') return Math.floor(scaled) * step
+  if (settings?.price_rounding_dir === 'up') return Math.ceil(scaled) * step
+  if (settings?.price_rounding_dir === 'down') return Math.floor(scaled) * step
   return Math.round(scaled) * step
 }
-
 function retailFromLocalGrid(purchaseKopecks: number, settings: any): number | null {
   if (!Number.isFinite(purchaseKopecks) || purchaseKopecks <= 0) return null
   const rules = Array.isArray(settings?.markup_rules) ? settings.markup_rules : []
@@ -1007,13 +1063,17 @@ export default function InvoiceFormPage() {
     const cache = new Map<string, Product>()
     const remember = (product: Product) => {
       const sku = (product.sku || '').trim()
-      const barcode = (product.barcode || '').trim()
+      const barcode = normalizeBarcodeValue(product.barcode)
       if (sku) cache.set(`sku:${normalizeSkuValue(sku)}`, product)
       if (barcode) cache.set(`barcode:${barcode}`, product)
+      for (const extra of product.additional_barcodes ?? []) {
+        const normalizedExtra = normalizeBarcodeValue(extra)
+        if (normalizedExtra) cache.set(`barcode:${normalizedExtra}`, product)
+      }
     }
     const fromCache = (item: LineItem) => {
       const sku = (item.sku || '').trim()
-      const barcode = (item.barcode || '').trim()
+      const barcode = normalizeBarcodeValue(item.barcode)
       return (sku ? cache.get(`sku:${normalizeSkuValue(sku)}`) : null) ?? (barcode ? cache.get(`barcode:${barcode}`) : null) ?? null
     }
     const result: LineItem[] = []
@@ -1034,29 +1094,57 @@ export default function InvoiceFormPage() {
 
   async function findExistingProductForItem(item: LineItem): Promise<Product | null> {
     const skuTrim = (item.sku || '').trim()
-    const barcodeTrim = (item.barcode || '').trim()
+    const barcodeTrim = normalizeBarcodeValue(item.barcode)
+    const nameTrim = (item.product_name || '').trim()
     const matches: Product[] = []
 
-    if (skuTrim) {
-      const existing = await productApi.list({ search: skuTrim, per_page: 20 })
-      const normalizedSku = normalizeSkuValue(skuTrim)
-      const match = existing.data.find((p) => normalizeSkuValue(p.sku || '') === normalizedSku)
-      if (match) matches.push(match)
+    const pushMatch = (product: Product | null | undefined) => {
+      if (product && !matches.some((candidate) => candidate.id === product.id)) matches.push(product)
     }
 
     if (barcodeTrim) {
-      const existing = await productApi.list({ search: barcodeTrim, per_page: 20 })
-      const match = existing.data.find((p) => (p.barcode || '').trim() === barcodeTrim)
-      if (match) matches.push(match)
+      const localByBarcode = await desktopBridge()?.catalog.findByBarcode?.(barcodeTrim)
+      if (localByBarcode) pushMatch(desktopProductToProduct(localByBarcode))
     }
 
-    const uniqueMatches = [...new Map(matches.map((p) => [p.id, p])).values()]
-    if (uniqueMatches.length > 1) {
+    if (skuTrim) {
+      const existing = await productApi.list({ search: skuTrim, per_page: 30 })
+      const normalizedSku = normalizeSkuValue(skuTrim)
+      const match = existing.data.find((p) => normalizeSkuValue(p.sku || '') === normalizedSku)
+      pushMatch(match)
+    }
+
+    if (barcodeTrim) {
+      const existing = await productApi.list({ search: barcodeTrim, per_page: 30 })
+      const match = existing.data.find((p) => {
+        const primary = normalizeBarcodeValue(p.barcode)
+        const additional = Array.isArray(p.additional_barcodes) ? p.additional_barcodes.map(normalizeBarcodeValue) : []
+        return primary === barcodeTrim || additional.includes(barcodeTrim)
+      })
+      pushMatch(match)
+    }
+
+    const uniqueExactMatches = [...new Map(matches.map((p) => [p.id, p])).values()]
+    if (uniqueExactMatches.length > 1) {
       throw new Error(`У рядку «${item.product_name || skuTrim || barcodeTrim}» артикул і штрихкод належать різним товарам. Перевірте цей рядок.`)
     }
-    return uniqueMatches[0] ?? null
-  }
+    if (uniqueExactMatches.length === 1) return uniqueExactMatches[0]
 
+    if (nameTrim.length >= 6) {
+      const existing = await productApi.list({ search: nameTrim, per_page: 50 })
+      const scored = existing.data
+        .map((product) => ({ product, score: invoiceNameMatchScore(nameTrim, product.name || '') }))
+        .filter((entry) => entry.score >= 0.92)
+        .sort((a, b) => b.score - a.score)
+      if (scored.length > 0) {
+        const best = scored[0]
+        const second = scored[1]
+        if (!second || best.score - second.score >= 0.04 || best.score === 1) return best.product
+      }
+    }
+
+    return null
+  }
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (items.length === 0) { toast.error('Додайте хоча б один товар'); return }
@@ -1070,19 +1158,22 @@ export default function InvoiceFormPage() {
 
       function rememberProduct(product: Product) {
         const sku = (product.sku || '').trim()
-        const barcode = (product.barcode || '').trim()
+        const barcode = normalizeBarcodeValue(product.barcode)
         if (sku) productCache.set(`sku:${normalizeSkuValue(sku)}`, product)
         if (barcode) productCache.set(`barcode:${barcode}`, product)
+        for (const extra of product.additional_barcodes ?? []) {
+          const normalizedExtra = normalizeBarcodeValue(extra)
+          if (normalizedExtra) productCache.set(`barcode:${normalizedExtra}`, product)
+        }
       }
 
       function cachedProductForItem(item: LineItem): Product | null {
         const sku = (item.sku || '').trim()
-        const barcode = (item.barcode || '').trim()
+        const barcode = normalizeBarcodeValue(item.barcode)
         return (sku ? productCache.get(`sku:${normalizeSkuValue(sku)}`) : null)
           ?? (barcode ? productCache.get(`barcode:${barcode}`) : null)
           ?? null
       }
-
       function bindProductToItem(item: LineItem, product: Product): LineItem {
         return bindExistingProductToItem(item, product)
       }
