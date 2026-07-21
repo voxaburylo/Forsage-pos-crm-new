@@ -15,6 +15,79 @@ const DB_NAME    = 'forsage_offline'
 const DB_VERSION = 6
 let dbPromise: Promise<IDBDatabase> | null = null
 
+function normalizeOfflineProductSearchText(value: unknown): string {
+  return String(value ?? '')
+    .toLocaleLowerCase('uk-UA')
+    .replace(/ё/g, 'е')
+    .replace(/ґ/g, 'г')
+    .replace(/ї/g, 'и')
+    .replace(/і/g, 'и')
+    .replace(/є/g, 'е')
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .trim()
+}
+
+function offlineProductSearchNeedles(raw: string): string[] {
+  const values = new Set<string>()
+  const normalized = normalizeOfflineProductSearchText(raw)
+  if (normalized) values.add(normalized)
+  const replacements: Array<[RegExp, string]> = [
+    [/\bbooster\b/gi, 'бустер'],
+    [/\bboost\b/gi, 'бустер'],
+    [/\bwires?\b/gi, 'провода'],
+    [/бустер/gi, 'booster'],
+    [/провод/gi, 'wire'],
+  ]
+  for (const [pattern, replacement] of replacements) {
+    const variant = normalizeOfflineProductSearchText(raw.replace(pattern, replacement))
+    if (variant) values.add(variant)
+  }
+  return [...values]
+}
+
+function offlineProductSearchTokens(raw: string): string[] {
+  const tokens = new Set<string>()
+  for (const needle of offlineProductSearchNeedles(raw)) {
+    for (const token of needle.split(/\s+/)) {
+      if (token.length >= 2) tokens.add(token)
+    }
+  }
+  return [...tokens]
+}
+
+function compactOfflineLookupCode(raw: string): string {
+  return raw.replace(/[\s\-._/]+/g, '').trim().toLocaleLowerCase('uk-UA')
+}
+
+function offlineProductMatchesQuery(product: any, rawQuery: string): boolean {
+  const query = String(rawQuery ?? '').trim()
+  if (!query) return true
+  const queryLower = query.toLocaleLowerCase('uk-UA')
+  const compactQuery = compactOfflineLookupCode(query)
+  const barcodes = [product.barcode, ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : [])]
+    .filter(Boolean)
+    .map((value) => String(value))
+  const sku = String(product.sku ?? '')
+  const compactSku = compactOfflineLookupCode(sku)
+  if (compactSku && compactSku.includes(compactQuery)) return true
+  if (barcodes.some((barcode) => {
+    const value = String(barcode).toLocaleLowerCase('uk-UA')
+    return value === queryLower || compactOfflineLookupCode(value).includes(compactQuery)
+  })) return true
+  const searchText = normalizeOfflineProductSearchText([
+    product.name,
+    product.sku,
+    product.barcode,
+    product.storage_bin,
+    ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+  ].filter(Boolean).join(' '))
+  if (!searchText) return false
+  const needles = offlineProductSearchNeedles(query)
+  if (needles.some((needle) => searchText.includes(needle))) return true
+  const tokens = offlineProductSearchTokens(query)
+  return tokens.length > 0 && tokens.every((token) => searchText.includes(token))
+}
+
 export async function ensurePersistentStorage(): Promise<boolean> {
   if (!navigator.storage?.persist) return false
   if (await navigator.storage.persisted()) return true
@@ -148,23 +221,16 @@ export async function searchProductsOffline(
         resolve([])
         return
       }
-      const q = query.toLocaleLowerCase('uk-UA').trim()
-      const normalized = q.replace(/[\s\-./_]/g, '')
+      const rawQuery = query.trim()
+      const normalized = compactOfflineLookupCode(rawQuery)
       const results = (req.result as any[])
         .filter((p) => {
           if (p.is_active === false || (categoryName && p.category?.name !== categoryName)) return false
-          const name = String(p.name ?? '').toLocaleLowerCase('uk-UA')
-          const sku = String(p.sku ?? '').toLocaleLowerCase('uk-UA')
-          const normalizedSku = sku.replace(/[\s\-./_]/g, '')
-          const barcodes = [
-            p.barcode,
-            ...(Array.isArray(p.additional_barcodes) ? p.additional_barcodes : []),
-          ].filter(Boolean).map(String)
-          return name.includes(q) || sku.includes(q) || normalizedSku.includes(normalized) || barcodes.includes(query)
+          return offlineProductMatchesQuery(p, rawQuery)
         })
         .sort((a, b) => {
-          const exactA = String(a.barcode ?? '') === query || String(a.sku ?? '').replace(/[\s\-./_]/g, '').toLowerCase() === normalized
-          const exactB = String(b.barcode ?? '') === query || String(b.sku ?? '').replace(/[\s\-./_]/g, '').toLowerCase() === normalized
+          const exactA = String(a.barcode ?? '') === query || compactOfflineLookupCode(String(a.sku ?? '')) === normalized
+          const exactB = String(b.barcode ?? '') === query || compactOfflineLookupCode(String(b.sku ?? '')) === normalized
           return Number(exactB) - Number(exactA)
         })
         .slice(0, limit)
@@ -625,8 +691,7 @@ export async function listProductsOffline(options: {
     req.onerror = () => reject(req.error)
   })
 
-  const search = String(options.search ?? '').toLocaleLowerCase('uk-UA').trim()
-  const normalized = search.replace(/[\s\-./_]/g, '')
+  const search = String(options.search ?? '').trim()
   const filtered = all.filter((product) => {
     if (product.is_active === false) return false
     if (options.categoryId && product.category_id !== options.categoryId) return false
@@ -634,16 +699,7 @@ export async function listProductsOffline(options: {
     if (options.lowStock && Number(product.qty_on_hand ?? 0) > Number(product.reorder_point ?? 0)) return false
     if (options.stockFilter === 'negative' && Number(product.qty_on_hand ?? 0) >= 0) return false
     if (options.stockFilter === 'no_price' && Number(product.retail_price ?? 0) !== 0) return false
-    if (!search) return true
-    const name = String(product.name ?? '').toLocaleLowerCase('uk-UA')
-    const sku = String(product.sku ?? '').toLocaleLowerCase('uk-UA')
-    const skuNormalized = sku.replace(/[\s\-./_]/g, '')
-    const barcodes = [product.barcode, ...(product.additional_barcodes ?? [])]
-      .filter(Boolean).map((value) => String(value).toLocaleLowerCase('uk-UA'))
-    return name.includes(search)
-      || sku.includes(search)
-      || skuNormalized.includes(normalized)
-      || barcodes.some((barcode) => barcode.includes(search))
+    return offlineProductMatchesQuery(product, search)
   })
 
   const field = options.sortField ?? 'name'
@@ -972,3 +1028,6 @@ export async function countPendingSales(): Promise<number> {
     req.onerror   = () => reject(req.error)
   })
 }
+
+
+

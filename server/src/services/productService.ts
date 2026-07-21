@@ -16,6 +16,44 @@ const TABLE = 'products'
 
 // Кеш пошукових запитів (30 сек TTL) — для POS касира
 const searchCache = new SimpleCache<string, any>(30_000)
+function cleanProductSearchTerm(value: string): string {
+  return value.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function productListSearchTerms(search: string): string[] {
+  const values = new Set<string>()
+  const clean = cleanProductSearchTerm(search)
+  if (clean) values.add(clean)
+  for (const token of clean.split(/\s+/)) {
+    if (token.length >= 2) values.add(token)
+  }
+  for (const [pattern, replacement] of [
+    [/\bbooster\b/gi, 'бустер'],
+    [/\bboost\b/gi, 'бустер'],
+    [/\bwires?\b/gi, 'провода'],
+    [/бустер/gi, 'booster'],
+    [/провод/gi, 'wire'],
+  ] as Array<[RegExp, string]>) {
+    const variant = cleanProductSearchTerm(search.replace(pattern, replacement))
+    if (variant) values.add(variant)
+    for (const token of variant.split(/\s+/)) {
+      if (token.length >= 2) values.add(token)
+    }
+  }
+  return [...values].filter(Boolean).slice(0, 16)
+}
+
+function productListSearchOr(search: string, crossIdFilter = ''): string {
+  const conditions: string[] = []
+  for (const term of productListSearchTerms(search)) {
+    const normalized = normalizeArticle(term)
+    conditions.push(`sku.ilike.%${normalized}%`)
+    conditions.push(`name.ilike.%${term}%`)
+    conditions.push(`barcode.ilike.%${term}%`)
+  }
+  const unique = [...new Set(conditions)]
+  return unique.join(',') + crossIdFilter
+}
 
 async function enrichWithAvailability(products: any[]): Promise<any[]> {
   if (!products || products.length === 0) return products
@@ -89,8 +127,7 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
         const normalized = normalizeOemValue(oem)
         allQ = allQ.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%${crossIdFilter}`)
       } else {
-        const normalized = normalizeArticle(search)
-        allQ = allQ.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%${crossIdFilter}`)
+        allQ = allQ.or(productListSearchOr(search, crossIdFilter))
       }
     }
     if (category_id) allQ = allQ.eq('category_id', category_id)
@@ -144,8 +181,7 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
       const normalized = normalizeOemValue(oem)
       q = q.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%${crossIdFilter}`)
     } else {
-      const normalized = normalizeArticle(search)
-      q = q.or(`sku.ilike.%${normalized}%,name.ilike.%${search}%,barcode.ilike.%${search}%${crossIdFilter}`)
+      q = q.or(productListSearchOr(search, crossIdFilter))
     }
   }
   if (category_id) q = q.eq('category_id', category_id)
@@ -1082,3 +1118,7 @@ export async function importFromCatalog(
 
   return newProd
 }
+
+
+
+

@@ -97,7 +97,52 @@ function productSearchText(product: LocalProductUpsert): string {
 }
 
 export class LocalCatalogRepository {
-  constructor(private readonly db: LocalDatabase) {}
+  constructor(private readonly db: LocalDatabase) {
+    this.repairProductSearchIndex()
+  }
+
+  private repairProductSearchIndex(): void {
+    try {
+      const rows = this.db.prepare(`
+        SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.storage_bin, p.search_text,
+               GROUP_CONCAT(b.barcode, ' ') AS extra_barcodes
+        FROM products p
+        LEFT JOIN product_barcodes b
+          ON b.tenant_id = p.tenant_id
+         AND b.product_id = p.id
+         AND b.deleted_at IS NULL
+        WHERE p.deleted_at IS NULL
+        GROUP BY p.id, p.tenant_id
+      `).all() as Array<{
+        id: string
+        tenant_id: string
+        sku: string
+        name: string
+        barcode?: string | null
+        storage_bin?: string | null
+        search_text?: string | null
+        extra_barcodes?: string | null
+      }>
+      if (rows.length === 0) return
+
+      const update = this.db.prepare('UPDATE products SET search_text = ? WHERE id = ? AND tenant_id = ?')
+      this.db.transaction(() => {
+        for (const row of rows) {
+          const next = normalizeSearchText([
+            row.sku,
+            row.name,
+            row.barcode,
+            row.storage_bin,
+            row.extra_barcodes,
+          ].filter(Boolean).join(' '))
+          if (next && next !== (row.search_text ?? '')) update.run(next, row.id, row.tenant_id)
+        }
+      })
+    } catch {
+      // Пошук не повинен блокувати запуск програми. Нові/оновлені товари все одно
+      // отримують search_text при збереженні, а ремонт повториться при наступному старті.
+    }
+  }
 
   saveProduct(input: LocalProductUpsert): LocalProduct {
     const product = this.upsertProduct(input)
@@ -770,5 +815,6 @@ export class LocalCatalogRepository {
     )
   }
 }
+
 
 

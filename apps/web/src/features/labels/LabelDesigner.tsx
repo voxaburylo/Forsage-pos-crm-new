@@ -16,6 +16,40 @@ import { loadTsplSettings, saveTsplSettings, pickLabelPrinter, type TsplLabelPri
 
 type Tab = 'design' | 'print'
 
+function normalizeLabelSearch(value: unknown): string {
+  return String(value ?? '')
+    .toLocaleLowerCase('uk-UA')
+    .replace(/ё/g, 'е')
+    .replace(/ґ/g, 'г')
+    .replace(/ї/g, 'и')
+    .replace(/і/g, 'и')
+    .replace(/є/g, 'е')
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .trim()
+}
+
+function labelSearchTokens(query: string): string[] {
+  const variants = new Set<string>()
+  const normalized = normalizeLabelSearch(query)
+  if (normalized) variants.add(normalized)
+  for (const [pattern, replacement] of [
+    [/\bbooster\b/gi, 'бустер'],
+    [/\bboost\b/gi, 'бустер'],
+    [/\bwires?\b/gi, 'провода'],
+    [/бустер/gi, 'booster'],
+    [/провод/gi, 'wire'],
+  ] as Array<[RegExp, string]>) {
+    const variant = normalizeLabelSearch(query.replace(pattern, replacement))
+    if (variant) variants.add(variant)
+  }
+  return [...new Set([...variants].flatMap((variant) => variant.split(/\s+/)).filter((token) => token.length >= 2))]
+}
+
+function labelProductMatchesQuery(item: Pick<Product, 'name' | 'sku' | 'barcode'>, query: string): boolean {
+  const text = normalizeLabelSearch([item.name, item.sku, item.barcode].filter(Boolean).join(' '))
+  const tokens = labelSearchTokens(query)
+  return tokens.length === 0 || tokens.every((token) => text.includes(token))
+}
 export interface LabelSettings {
   width_mm: number
   height_mm: number
@@ -1678,15 +1712,7 @@ export default function LabelDesigner() {
                     <p className="text-gray-400 text-sm text-center py-8">Додайте товари через пошук або накладну</p>
                   ) : (
                     (() => {
-                      const filtered = printItems.filter(item => {
-                        if (!printQueueFilter.trim()) return true
-                        const q = printQueueFilter.toLowerCase()
-                        return (
-                          item.name.toLowerCase().includes(q) ||
-                          item.sku.toLowerCase().includes(q) ||
-                          (item.barcode && item.barcode.includes(q))
-                        )
-                      })
+                      const filtered = printItems.filter(item => labelProductMatchesQuery(item, printQueueFilter))
                       if (filtered.length === 0) {
                         return <p className="text-gray-400 text-sm text-center py-8">Товарів не знайдено</p>
                       }
@@ -1904,4 +1930,6 @@ export default function LabelDesigner() {
     </Layout>
   )
 }
+
+
 
