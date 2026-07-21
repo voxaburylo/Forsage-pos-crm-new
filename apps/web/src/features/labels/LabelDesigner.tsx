@@ -366,47 +366,6 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
   }
 }
 
-export const PRODUCT_LABEL_PRESET_OPTIONS = [
-  { value: 'saved', label: 'Мій шаблон із дизайнера' },
-  { value: 'compact_product_4025', label: '40×25 мм — пресет' },
-  { value: 'standard_product_4030', label: '40×30 мм — пресет' },
-  { value: 'large_product_5840', label: '58×40 мм — пресет' },
-] as const
-
-export type ProductLabelPresetKey = typeof PRODUCT_LABEL_PRESET_OPTIONS[number]['value']
-export const PRODUCT_LABEL_PRESET_STORAGE_KEY = 'forsage_product_label_preset_v2'
-
-export function resolveProductLabelSettings(
-  savedSettings: Partial<LabelSettings> | null | undefined,
-  presetKey: ProductLabelPresetKey,
-): LabelSettings {
-  const saved = { ...DEFAULT_LABEL, ...(savedSettings ?? {}) }
-  if (presetKey === 'saved') return saved
-
-  const preset = LABEL_PRESETS[presetKey]
-  if (!preset) return saved
-  const { name: _name, ...presetSettings } = preset
-  const visibilitySettings = {
-    show_shop_name: saved.show_shop_name,
-    show_product_name: saved.show_product_name,
-    show_barcode: saved.show_barcode,
-    show_barcode_text: saved.show_barcode_text,
-    show_sku: saved.show_sku,
-    show_price: saved.show_price,
-    show_storage_bin: saved.show_storage_bin,
-  }
-  return {
-    ...saved,
-    ...presetSettings,
-    // Розмір рулону може міняти геометрію, але не має вмикати назад
-    // елементи, які користувач вимкнув у дизайнері етикетки.
-    ...visibilitySettings,
-    // Калібрування належить принтеру, тому зберігаємо його при зміні рулону.
-    offset_x_mm: saved.offset_x_mm ?? 0,
-    offset_y_mm: saved.offset_y_mm ?? 0,
-  } as LabelSettings
-}
-
 export const DEMO_PRODUCT: Product = {
   id: 'demo',
   name: 'Ремінь ГРМ Ланос 1.5 Gates (Тестовий товар для перевірки переносу)',

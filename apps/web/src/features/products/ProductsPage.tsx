@@ -24,10 +24,6 @@ import { desktopBridge, desktopProductToProduct, isDesktopRuntime } from '@/lib/
 import {
   printLabels,
   loadProductLabelSettings,
-  PRODUCT_LABEL_PRESET_OPTIONS,
-  PRODUCT_LABEL_PRESET_STORAGE_KEY,
-  resolveProductLabelSettings,
-  type ProductLabelPresetKey,
 } from '@/features/labels/LabelDesigner'
 
 // ─── Типи ────────────────────────────────────────────────────────────────────
@@ -99,12 +95,6 @@ export default function ProductsPage() {
   const [quickView, setQuickView] = useState<Product | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [bulkPrintOpen, setBulkPrintOpen] = useState(false)
-  const [printLabelPreset, setPrintLabelPreset] = useState<ProductLabelPresetKey>(() => {
-    const saved = localStorage.getItem(PRODUCT_LABEL_PRESET_STORAGE_KEY)
-    return PRODUCT_LABEL_PRESET_OPTIONS.some((option) => option.value === saved)
-      ? saved as ProductLabelPresetKey
-      : 'saved'
-  })
   const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
   // Інлайн-редагування ціни прямо у списку (без переходу в картку)
   const [editPriceId, setEditPriceId] = useState<string | null>(null)
@@ -966,23 +956,6 @@ export default function ProductsPage() {
             <p className="text-sm text-gray-500">
               Вкажіть кількість копій етикеток для кожного обраного товару. Якщо вказати 0, етикетка для цього товару не друкуватиметься.
             </p>
-            <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">Розмір етикетки</label>
-              <select
-                value={printLabelPreset}
-                onChange={(e) => {
-                  const value = e.target.value as ProductLabelPresetKey
-                  setPrintLabelPreset(value)
-                  localStorage.setItem(PRODUCT_LABEL_PRESET_STORAGE_KEY, value)
-                }}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-              >
-                {PRODUCT_LABEL_PRESET_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </div>
-
             <div className="border border-gray-200 rounded-xl overflow-x-auto max-h-96 overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
@@ -1028,8 +1001,7 @@ export default function ProductsPage() {
                 disabled={Object.values(bulkQtys).reduce((sum, q) => sum + q, 0) === 0}
                 onClick={async () => {
                   try {
-                    const savedSettings = await loadProductLabelSettings()
-                    const settings = resolveProductLabelSettings(savedSettings, printLabelPreset)
+                    const settings = await loadProductLabelSettings()
                     const items = selectedProducts.flatMap((p) => {
                       const qty = bulkQtys[p.id] ?? 0
                       return Array(qty).fill(p)
