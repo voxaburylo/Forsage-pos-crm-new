@@ -20,6 +20,7 @@ interface LineItem {
   product_name: string
   sku: string
   barcode?: string | null
+  unit?: ProductFormData['unit'] | string
   qty: number
   purchase_price: number
   retail_price: number
@@ -30,13 +31,14 @@ interface LineItem {
   is_new?: boolean
   client_key: string
 }
-type InvoiceImportField = 'sku' | 'name' | 'barcode' | 'qty' | 'purchase' | 'retail' | 'storage_bin'
+type InvoiceImportField = 'sku' | 'name' | 'barcode' | 'unit' | 'qty' | 'purchase' | 'retail' | 'storage_bin'
 type InvoiceImportMapping = Record<InvoiceImportField, number | null>
 
 const EMPTY_INVOICE_IMPORT_MAPPING: InvoiceImportMapping = {
   sku: null,
   name: null,
   barcode: null,
+  unit: null,
   qty: null,
   purchase: null,
   retail: null,
@@ -47,6 +49,7 @@ const INVOICE_IMPORT_FIELDS: Array<{ field: InvoiceImportField; label: string; r
   { field: 'sku', label: 'Артикул' },
   { field: 'name', label: 'Назва товару', required: true },
   { field: 'barcode', label: 'Штрихкод' },
+  { field: 'unit', label: 'Од. виміру' },
   { field: 'qty', label: 'Кількість' },
   { field: 'purchase', label: 'Закупка', required: true },
   { field: 'retail', label: 'Продаж' },
@@ -76,6 +79,15 @@ function parseQty(raw: unknown, fallback = 1): number {
   return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
+function normalizeInvoiceUnit(raw: unknown): ProductFormData['unit'] {
+  const text = String(raw ?? '').trim().toLocaleLowerCase('uk-UA')
+  if (/^(кг|kg|кілограм|килограмм)/.test(text)) return 'кг'
+  if (/^(компл|комплект|комплекты|комплекти|set)/.test(text)) return 'компл'
+  if (/^(л|літр|литр|liter)/.test(text)) return 'л'
+  if (/^(м|метр|meter)/.test(text)) return 'м'
+  return 'шт'
+}
+
 function cleanImportCell(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
@@ -103,6 +115,7 @@ function guessInvoiceImport(rawRows: unknown[][]): { mapping: InvoiceImportMappi
       if (mapping.barcode == null && /штрих.?код|barcode|ean|шк\b/.test(h)) { mapping.barcode = index; score += 3 }
       else if (mapping.sku == null && /артикул|sku|article|код товар|код$|^код\b|номенклатура.*код/.test(h)) { mapping.sku = index; score += 2 }
       else if (mapping.name == null && /назв|наймен|наимен|товар|product|description|номенклатур|модель/.test(h) && !/код|родител|батьк/.test(h)) { mapping.name = index; score += 3 }
+      else if (mapping.unit == null && /од.?\s*вим|ед.?\s*изм|единиц|одиниц|unit|шт|штук|кг|компл/.test(h)) { mapping.unit = index; score += 2 }
       else if (mapping.qty == null && /кільк|к-сть|кол-во|количество|qty|quantity|остаток|залиш/.test(h)) { mapping.qty = index; score += 2 }
       else if (mapping.purchase == null && /закуп|вхідн|собіварт|цена закуп|закупоч|purchase|buy|cost/.test(h)) { mapping.purchase = index; score += 3 }
       else if (mapping.retail == null && /роздріб|розница|продаж|ціна продаж|цена продаж|retail|sale/.test(h)) { mapping.retail = index; score += 2 }
@@ -117,7 +130,7 @@ function guessInvoiceImport(rawRows: unknown[][]): { mapping: InvoiceImportMappi
 
  if (bestMapping && bestScore >= 4) return { mapping: bestMapping, startRow: bestRow + 1, headerRow: bestRow }
   return {
-    mapping: { sku: 0, name: 1, barcode: null, qty: 2, purchase: 3, retail: 4, storage_bin: null },
+    mapping: { sku: 0, name: 1, barcode: null, unit: null, qty: 2, purchase: 3, retail: 4, storage_bin: null },
     startRow: 0,
     headerRow: null,
   }
@@ -134,6 +147,7 @@ function buildInvoiceImportItems(rawRows: unknown[][], mapping: InvoiceImportMap
     const sku = read('sku')
     const name = read('name')
     const barcode = read('barcode')
+    const unit = normalizeInvoiceUnit(read('unit'))
     const qty = mapping.qty == null ? 1 : parseQty(read('qty'), 1)
     const purchase = mapping.purchase == null ? 0 : parseMoneyToKopecks(read('purchase'))
     const retail = mapping.retail == null ? 0 : parseMoneyToKopecks(read('retail'))
@@ -147,6 +161,7 @@ function buildInvoiceImportItems(rawRows: unknown[][], mapping: InvoiceImportMap
       product_name: name || `Товар (${sku || barcode})`,
       sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
       barcode: barcode || '',
+      unit,
       qty,
       purchase_price: purchase,
       retail_price: retail,
@@ -172,6 +187,7 @@ function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
     product_name: '',
     sku: '',
     barcode: '',
+    unit: 'шт',
     qty: 1,
     purchase_price: 0,
     retail_price: 0,
@@ -386,6 +402,8 @@ export default function InvoiceFormPage() {
   const [invoiceImportStartRow, setInvoiceImportStartRow] = useState(1)
   const [invoiceImportHeaderRow, setInvoiceImportHeaderRow] = useState<number | null>(null)
   const [bulkMarkupSelection, setBulkMarkupSelection] = useState('')
+  const [selectedLineKeys, setSelectedLineKeys] = useState<string[]>([])
+  const [bulkCategoryId, setBulkCategoryId] = useState('')
   // Оплата постачальнику
   const [paidAmount, setPaidAmount] = useState('')          // гривні (рядок форми)
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
@@ -468,6 +486,7 @@ export default function InvoiceFormPage() {
           storage_bin: i.product?.storage_bin ?? null,
           sku: i.product?.sku ?? '',
           barcode: (i.product as any)?.barcode ?? '',
+          unit: normalizeInvoiceUnit((i.product as any)?.unit),
           photo_url: (i.product as any)?.photo_url ?? null,
         })))
       }).catch(() => {
@@ -498,6 +517,7 @@ export default function InvoiceFormPage() {
         storage_bin: i.product?.storage_bin ?? null,
         sku: i.product?.sku ?? '',
         barcode: (i.product as any)?.barcode ?? '',
+        unit: normalizeInvoiceUnit((i.product as any)?.unit),
         photo_url: (i.product as any)?.photo_url ?? null,
       })))
       toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
@@ -664,6 +684,7 @@ export default function InvoiceFormPage() {
       photo_url: product.photo_url ?? null,
       sku: product.sku,
       barcode: product.barcode ?? '',
+      unit: normalizeInvoiceUnit(product.unit),
     }])
     focusRowField(nextIndex, focusField)
     setProductSearch('')
@@ -821,7 +842,7 @@ export default function InvoiceFormPage() {
     e.target.value = ''
   }
 
-  function confirmInvoiceImport() {
+  async function confirmInvoiceImport() {
     if (invoiceImportMapping.name == null && invoiceImportMapping.sku == null && invoiceImportMapping.barcode == null) {
       toast.error('Вкажіть хоча б колонку назви, артикула або штрихкоду')
       return
@@ -834,13 +855,14 @@ export default function InvoiceFormPage() {
       toast.warning('Після фільтрації не залишилось товарних рядків. Перевірте рядок початку і колонки.')
       return
     }
-    setItems((prev) => [...prev, ...invoiceImportPreview.items])
-    toast.success(`Імпортовано ${invoiceImportPreview.items.length} товарів${invoiceImportPreview.skipped ? `, пропущено ${invoiceImportPreview.skipped} зайвих рядків` : ''}`)
+    const resolved = await resolveExistingProductsForItems(invoiceImportPreview.items)
+    appendLineItems(resolved.items)
+    toast.success(`Імпортовано ${resolved.items.length} товарів${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}${invoiceImportPreview.skipped ? `, пропущено ${invoiceImportPreview.skipped} зайвих рядків` : ''}`)
     setInvoiceImportModal(false)
     setInvoiceImportRows([])
     setInvoiceImportFileName('')
   }
-  function handleClipboardPaste() {
+  async function handleClipboardPaste() {
     if (!clipboardText.trim()) return
     const lines = clipboardText.split('\n').filter(line => line.trim())
     const newItems: LineItem[] = []
@@ -866,6 +888,7 @@ export default function InvoiceFormPage() {
         purchase_price: purchase,
         retail_price: retail,
         category_id: null,
+        unit: 'шт',
         total: Math.round(qty * purchase),
         storage_bin: bin || null,
         is_new: true,
@@ -873,8 +896,9 @@ export default function InvoiceFormPage() {
     })
     
     if (newItems.length > 0) {
-      setItems(prev => [...prev, ...newItems])
-      toast.success(`Імпортовано ${newItems.length} товарів з буфера`)
+      const resolved = await resolveExistingProductsForItems(newItems)
+      appendLineItems(resolved.items)
+      toast.success(`Імпортовано ${resolved.items.length} товарів з буфера${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}`)
       setClipboardText('')
     } else {
       toast.error('Не вдалося розпарсити буфер. Скопіюйте таблицю з Excel.')
@@ -908,10 +932,105 @@ export default function InvoiceFormPage() {
 
   function removeItem(index: number) {
     setMoneyDrafts({})
+    const key = items[index]?.client_key
+    if (key) setSelectedLineKeys((prev) => prev.filter((k) => k !== key))
     setItems((prev) => prev.filter((_, i) => i !== index))
   }
 
+  function toggleLineSelection(key: string, checked: boolean) {
+    setSelectedLineKeys((prev) => checked ? Array.from(new Set([...prev, key])) : prev.filter((k) => k !== key))
+  }
+
+  function toggleAllLineSelection(checked: boolean) {
+    setSelectedLineKeys(checked ? items.map((item) => item.client_key) : [])
+  }
+
+  function applyBulkCategory() {
+    if (selectedLineKeys.length === 0) { toast.warning('Виберіть товари галочками'); return }
+    if (!bulkCategoryId) { toast.warning('Виберіть категорію'); return }
+    const selected = new Set(selectedLineKeys)
+    setItems((prev) => prev.map((item) => selected.has(item.client_key) ? { ...item, category_id: bulkCategoryId } : item))
+    toast.success(`Категорію встановлено для ${selected.size} товарів`)
+  }
+
+  function appendLineItems(newItems: LineItem[]) {
+    setItems((prev) => {
+      const next = [...prev]
+      for (const incoming of newItems) {
+        const existingIndex = incoming.product_id
+          ? next.findIndex((item) => item.product_id === incoming.product_id)
+          : -1
+        if (existingIndex >= 0) {
+          const current = next[existingIndex]
+          const qty = current.qty + incoming.qty
+          const purchase = incoming.purchase_price > 0 ? incoming.purchase_price : current.purchase_price
+          next[existingIndex] = {
+            ...current,
+            ...incoming,
+            client_key: current.client_key,
+            qty,
+            purchase_price: purchase,
+            retail_price: incoming.retail_price > 0 ? incoming.retail_price : current.retail_price,
+            total: Math.round(qty * purchase),
+          }
+        } else {
+          next.push(incoming)
+        }
+      }
+      return next
+    })
+  }
+
   const total = items.reduce((sum, i) => sum + i.total, 0)
+
+  function bindExistingProductToItem(item: LineItem, product: Product): LineItem {
+    const purchase = item.purchase_price > 0 ? item.purchase_price : product.purchase_price
+    const retail = item.retail_price > 0 ? item.retail_price : product.retail_price
+    return {
+      ...item,
+      product_id: product.id,
+      is_new: false,
+      sku: product.sku,
+      barcode: product.barcode || item.barcode || '',
+      product_name: product.name || item.product_name,
+      category_id: item.category_id ?? product.category_id ?? null,
+      storage_bin: item.storage_bin ?? product.storage_bin ?? null,
+      photo_url: item.photo_url ?? product.photo_url ?? null,
+      unit: normalizeInvoiceUnit(product.unit || item.unit),
+      purchase_price: purchase,
+      retail_price: retail,
+      total: Math.round(item.qty * purchase),
+    }
+  }
+
+  async function resolveExistingProductsForItems(rawItems: LineItem[]): Promise<{ items: LineItem[]; matched: number }> {
+    const cache = new Map<string, Product>()
+    const remember = (product: Product) => {
+      const sku = (product.sku || '').trim()
+      const barcode = (product.barcode || '').trim()
+      if (sku) cache.set(`sku:${normalizeSkuValue(sku)}`, product)
+      if (barcode) cache.set(`barcode:${barcode}`, product)
+    }
+    const fromCache = (item: LineItem) => {
+      const sku = (item.sku || '').trim()
+      const barcode = (item.barcode || '').trim()
+      return (sku ? cache.get(`sku:${normalizeSkuValue(sku)}`) : null) ?? (barcode ? cache.get(`barcode:${barcode}`) : null) ?? null
+    }
+    const result: LineItem[] = []
+    let matched = 0
+    for (const item of rawItems) {
+      const cached = fromCache(item)
+      const product = cached ?? await findExistingProductForItem(item)
+      if (product) {
+        remember(product)
+        matched += 1
+        result.push(bindExistingProductToItem(item, product))
+      } else {
+        result.push(item)
+      }
+    }
+    return { items: result, matched }
+  }
 
   async function findExistingProductForItem(item: LineItem): Promise<Product | null> {
     const skuTrim = (item.sku || '').trim()
@@ -965,17 +1084,7 @@ export default function InvoiceFormPage() {
       }
 
       function bindProductToItem(item: LineItem, product: Product): LineItem {
-        return {
-          ...item,
-          product_id: product.id,
-          is_new: false,
-          sku: product.sku,
-          barcode: item.barcode || product.barcode || '',
-          product_name: item.product_name || product.name,
-          category_id: item.category_id ?? product.category_id ?? null,
-          storage_bin: item.storage_bin ?? product.storage_bin ?? null,
-          photo_url: item.photo_url ?? product.photo_url ?? null,
-        }
+        return bindExistingProductToItem(item, product)
       }
 
       const resolvedItems: LineItem[] = []
@@ -1010,7 +1119,7 @@ export default function InvoiceFormPage() {
           name: genName,
           sku: genSku,
           barcode: item.barcode || '',
-          unit: 'шт',
+          unit: normalizeInvoiceUnit(item.unit),
           purchase_price: kopecksForForm(item.purchase_price),
           retail_price: kopecksForForm(item.retail_price),
           qty_on_hand: '0',
@@ -1263,6 +1372,31 @@ export default function InvoiceFormPage() {
                     </select>
                   </div>
                 )}
+                {items.length > 0 && (
+                  <div className="flex items-center gap-2 flex-wrap bg-blue-50 border border-blue-100 rounded-xl px-2.5 py-1.5">
+                    <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={items.length > 0 && selectedLineKeys.length === items.length}
+                        onChange={(e) => toggleAllLineSelection(e.target.checked)}
+                        className="w-4 h-4 accent-yellow-400"
+                      />
+                      Всі
+                    </label>
+                    <span className="text-xs text-blue-700 font-medium">Категорія для вибраних ({selectedLineKeys.length}):</span>
+                    <select
+                      value={bulkCategoryId}
+                      onChange={(e) => setBulkCategoryId(e.target.value)}
+                      className="border border-blue-100 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white min-w-[160px]"
+                    >
+                      <option value="">Вибрати категорію</option>
+                      {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                    <button type="button" onClick={applyBulkCategory} className="px-2.5 py-1 rounded bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700">
+                      Застосувати
+                    </button>
+                  </div>
+                )}
                 
               </div>
             )}
@@ -1289,12 +1423,14 @@ export default function InvoiceFormPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
+                <th className="w-10 px-2 py-2 text-center">✓</th>
                 <th className="w-12 px-2 py-2">Фото</th>
                 <th className="text-left px-4 py-2">Товар</th>
                 <th className="text-left px-2 py-2 w-44">Папка</th>
                 <th className="text-left px-2 py-2 w-40">Штрихкод</th>
                 <th className="text-left px-2 py-2 w-28">Комірка</th>
                 <th className="text-right px-2 py-2 w-20">К-сть</th>
+                <th className="text-left px-2 py-2 w-24">Од.</th>
                 <th className="text-right px-2 py-2 w-24">Закупка, грн</th>
                 <th className="text-right px-2 py-2 w-24 text-right">Націнка</th>
                 <th className="text-right px-2 py-2 w-28">Розн. ціна, грн</th>
@@ -1309,6 +1445,15 @@ export default function InvoiceFormPage() {
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
                 return (
                 <tr key={item.client_key} className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="px-2 py-2 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedLineKeys.includes(item.client_key)}
+                      onChange={(e) => toggleLineSelection(item.client_key, e.target.checked)}
+                      disabled={isEdit}
+                      className="w-4 h-4 accent-yellow-400"
+                    />
+                  </td>
                   <td className="px-2 py-2 w-12 text-center">
                     <RowPhotoCell
                       photoUrl={item.photo_url ?? null}
@@ -1387,6 +1532,20 @@ export default function InvoiceFormPage() {
                       className="w-full min-w-[72px] text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
+                    <select
+                      value={normalizeInvoiceUnit(item.unit)}
+                      onChange={(e) => updateItem(i, 'unit', e.target.value)}
+                      disabled={isEdit}
+                      className="w-20 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
+                    >
+                      <option value="шт">шт</option>
+                      <option value="кг">кг</option>
+                      <option value="компл">компл</option>
+                      <option value="л">л</option>
+                      <option value="м">м</option>
+                    </select>
+                  </td>
+                  <td className="px-2 py-2">
                     <input ref={(el) => { purchaseRefs.current[i] = el }} type="text" inputMode="decimal"
                       value={moneyValue(i, 'purchase_price', item.purchase_price)}
                       onFocus={(e) => beginMoneyEdit(i, 'purchase_price', item.purchase_price, e.currentTarget)}
@@ -1456,12 +1615,12 @@ export default function InvoiceFormPage() {
                 )
               })}
               {items.length === 0 && (
-                <tr><td colSpan={11} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
+                <tr><td colSpan={13} className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте товари.</td></tr>
               )}
             </tbody>
             <tfoot>
               <tr className="font-semibold bg-gray-50">
-                <td colSpan={9} className="px-4 py-2 text-right">Всього:</td>
+                <td colSpan={11} className="px-4 py-2 text-right">Всього:</td>
                 <td className="px-4 py-2 text-right font-mono">{formatMoney(total)}</td>
                 <td></td>
               </tr>
@@ -1474,6 +1633,13 @@ export default function InvoiceFormPage() {
             {items.map((item, i) => (
               <div key={item.client_key} className="p-3 space-y-3">
                 <div className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedLineKeys.includes(item.client_key)}
+                    onChange={(e) => toggleLineSelection(item.client_key, e.target.checked)}
+                    disabled={isEdit}
+                    className="mt-3 w-4 h-4 accent-yellow-400"
+                  />
                   <RowPhotoCell
                     photoUrl={item.photo_url ?? null}
                     productId={item.product_id || 'new_' + i}
@@ -1514,6 +1680,21 @@ export default function InvoiceFormPage() {
                     >
                       <option value="">Без папки</option>
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Од. виміру</label>
+                    <select
+                      value={normalizeInvoiceUnit(item.unit)}
+                      onChange={(e) => updateItem(i, 'unit', e.target.value)}
+                      disabled={isEdit}
+                      className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
+                    >
+                      <option value="шт">шт</option>
+                      <option value="кг">кг</option>
+                      <option value="компл">компл</option>
+                      <option value="л">л</option>
+                      <option value="м">м</option>
                     </select>
                   </div>
                   <div>
@@ -1811,29 +1992,6 @@ export default function InvoiceFormPage() {
               </table>
             </div>
           </div>
-          {invoiceImportPreview.items.length > 0 && (
-            <div className="border border-gray-200 rounded-xl overflow-hidden">
-              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-700">Що буде додано у накладну</div>
-              <div className="overflow-auto max-h-56">
-                <table className="min-w-full text-xs">
-                  <thead className="bg-gray-50 text-gray-500">
-                    <tr><th className="text-left px-2 py-1">Назва</th><th className="text-left px-2 py-1">Артикул</th><th className="text-left px-2 py-1">ШК</th><th className="text-right px-2 py-1">К-сть</th><th className="text-right px-2 py-1">Закупка</th></tr>
-                  </thead>
-                  <tbody>
-                    {invoiceImportPreview.items.slice(0, 20).map((item) => (
-                      <tr key={item.client_key} className="border-t border-gray-50">
-                        <td className="px-2 py-1 max-w-[360px] truncate">{item.product_name}</td>
-                        <td className="px-2 py-1 font-mono">{item.sku}</td>
-                        <td className="px-2 py-1 font-mono">{item.barcode}</td>
-                        <td className="px-2 py-1 text-right">{item.qty}</td>
-                        <td className="px-2 py-1 text-right">{formatMoney(item.purchase_price)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
           <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-gray-100">
             <Button type="button" variant="secondary" onClick={() => setInvoiceImportModal(false)}>Скасувати</Button>
