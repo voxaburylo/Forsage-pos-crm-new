@@ -603,7 +603,6 @@ export default function InvoiceFormPage() {
     }
     if (e.key !== 'Enter') return
     e.preventDefault()
-
     const query = productSearch.trim()
     if (!query) {
       addDraftItem()
@@ -631,6 +630,7 @@ export default function InvoiceFormPage() {
   }
   // Швидке сканування штрихкодів: реф на кожен інпут ШК + режим-гід «по черзі»
   const barcodeRefs = useRef<(HTMLInputElement | null)[]>([])
+  const barcodeLookupTimers = useRef<Record<string, number>>({})
   const [scanGuide, setScanGuide] = useState(false)
 
   type RowField = 'name' | 'sku' | 'barcode' | 'qty' | 'purchase' | 'retail'
@@ -686,6 +686,45 @@ export default function InvoiceFormPage() {
     focusBarcodeRow(firstEmpty)
   }
 
+  function handleBarcodeInputChange(index: number, rawBarcode: string) {
+    updateItem(index, 'barcode', rawBarcode)
+    const code = normalizeBarcodeValue(rawBarcode)
+    const item = items[index]
+    if (!item || code.length < 6) return
+    const key = item.client_key
+    const existingTimer = barcodeLookupTimers.current[key]
+    if (existingTimer) window.clearTimeout(existingTimer)
+    barcodeLookupTimers.current[key] = window.setTimeout(() => {
+      void bindRowToExistingProductByBarcode(key, code, false)
+    }, 250)
+  }
+
+  async function bindRowToExistingProductByBarcode(rowKey: string, rawBarcode?: string, showMiss = false) {
+    const current = items.find((candidate) => candidate.client_key === rowKey)
+    if (!current) return
+    const code = normalizeBarcodeValue(rawBarcode ?? current.barcode)
+    if (code.length < 6) return
+    const pendingTimer = barcodeLookupTimers.current[rowKey]
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer)
+      delete barcodeLookupTimers.current[rowKey]
+    }
+    try {
+      const match = await findExistingProductForItem({ ...current, barcode: code })
+      if (!match) {
+        if (showMiss) toast.warning('Товар з таким штрихкодом не знайдено в базі')
+        return
+      }
+      if (current.product_id === match.id && !current.is_new && normalizeBarcodeValue(current.barcode) === code) return
+      setItems((prev) => prev.map((item) => {
+        if (item.client_key !== rowKey) return item
+        return bindExistingProductToItem({ ...item, barcode: code }, match)
+      }))
+      toast.success(`Підтягнуто з бази: ${match.name}`)
+    } catch (err) {
+      toast.error((err as any)?.message || 'Не вдалося підтягнути товар з бази')
+    }
+  }
   // Сканер = клавіатура: вводить код + Enter. На Enter — перехід на наступний рядок.
   // Наступний порожній шукаємо за фактичним value інпутів (а не за стейтом — уникаємо stale).
   function onBarcodeKeyDown(e: React.KeyboardEvent<HTMLInputElement>, i: number) {
@@ -694,6 +733,7 @@ export default function InvoiceFormPage() {
     }
     if (e.key !== 'Enter') return
     e.preventDefault()
+    void bindRowToExistingProductByBarcode(items[i]?.client_key ?? '', e.currentTarget.value, false)
     let next = -1
     for (let k = i + 1; k < barcodeRefs.current.length; k++) {
       if (!barcodeRefs.current[k]?.value) { next = k; break }
@@ -1595,7 +1635,8 @@ export default function InvoiceFormPage() {
                       <input
                         ref={(el) => { barcodeRefs.current[i] = el }}
                         type="text" value={item.barcode ?? ''}
-                        onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+                        onChange={(e) => handleBarcodeInputChange(i, e.target.value)}
+                        onBlur={(e) => { void bindRowToExistingProductByBarcode(item.client_key, e.currentTarget.value, false) }}
                         onKeyDown={(e) => scanGuide ? onBarcodeKeyDown(e, i) : handleRowFieldKeyDown(e, i, 'barcode')}
                         disabled={isEdit}
                         placeholder="скан / ввід"
@@ -1792,7 +1833,8 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Штрихкод</label>
                     <div className="flex gap-1">
                       <input type="text" value={item.barcode ?? ''}
-                        onChange={(e) => updateItem(i, 'barcode', e.target.value)}
+                        onChange={(e) => handleBarcodeInputChange(i, e.target.value)}
+                        onBlur={(e) => { void bindRowToExistingProductByBarcode(item.client_key, e.currentTarget.value, false) }}
                         disabled={isEdit}
                         placeholder="Сканувати або вписати"
                         autoComplete="off"
