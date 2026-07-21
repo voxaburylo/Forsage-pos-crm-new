@@ -311,6 +311,7 @@ export default function OrderFormPage() {
   const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [quickMarkupPercents, setQuickMarkupPercents] = useState<number[]>([20, 30, 40])
+  const [pricingMenuIndex, setPricingMenuIndex] = useState<number | null>(null)
 
   // ORD-36: шаблони частих позицій (localStorage)
   const TEMPLATES_KEY = 'order_item_templates'
@@ -627,12 +628,50 @@ export default function OrderFormPage() {
       const retail = result.data.retail_price ?? 0
       if (retail <= 0) throw new Error('empty')
       updateItem(i, 'sell_price', kopToInput(retail))
+      setPricingMenuIndex(null)
       toast.success('Ціну розраховано по сітці')
     } catch {
       toast.error('Не вдалося розрахувати по сітці')
     }
   }
 
+
+  async function createSupplierForItem(i: number) {
+    const name = prompt('Назва нового постачальника')?.trim()
+    if (!name) return
+    try {
+      const { data } = await supplierApi.create({ name })
+      setSuppliers((current) => uniqueSuppliers([data, ...current]))
+      updateItem(i, 'supplier_id', data.id)
+      toast.success(`Постачальника «${data.name}» додано`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося додати постачальника')
+    }
+  }
+
+  function applyMarkupAndClose(i: number, pct: number) {
+    applyMarkupToItem(i, pct)
+    setPricingMenuIndex(null)
+  }
+
+  function renderPricingMenu(i: number) {
+    if (pricingMenuIndex !== i) return null
+    return (
+      <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-xl border border-gray-200 bg-white p-2 shadow-2xl">
+        <button type="button" onClick={() => applyGridToItem(i)} className="flex w-full items-center justify-between rounded-lg bg-blue-50 px-3 py-2 text-left text-xs font-bold text-blue-700 hover:bg-blue-100">
+          <span>Розрахувати по сітці</span>
+          <span>→</span>
+        </button>
+        <div className="mt-2 grid grid-cols-3 gap-1.5">
+          {quickMarkupPercents.map((pct) => (
+            <button key={pct} type="button" onClick={() => applyMarkupAndClose(i, pct)} className="rounded-lg bg-yellow-50 px-2 py-2 text-xs font-extrabold text-yellow-700 hover:bg-yellow-100">
+              +{pct}%
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
   // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок + тип (ORD-24)
   function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number; is_service?: boolean; purchase_price?: number }) {
     setItems((rows) => rows.map((row, idx) => idx === i ? {
@@ -770,6 +809,27 @@ export default function OrderFormPage() {
     }
   }
 
+
+  function addDraftHintItemToOrder(item: CustomerOrder['items'][number]) {
+    const nextRow: ItemRow = {
+      ...EMPTY_ITEM,
+      name: item.name,
+      sku: item.sku ?? '',
+      qty: String(item.qty || 1),
+      sell_price: item.sell_price ? kopecksToHryvnia(item.sell_price) : '0',
+      buy_price: item.buy_price ? kopecksToHryvnia(item.buy_price) : '0',
+      product_id: item.product_id ?? null,
+      supplier_id: item.supplier_id ?? '',
+      item_type: item.item_type ?? 'product',
+    }
+    setItems((current) => {
+      const emptyIndex = current.findIndex((row) => !row.name.trim())
+      if (emptyIndex >= 0) return current.map((row, index) => index === emptyIndex ? nextRow : row)
+      return [...current, nextRow]
+    })
+    setStep(3)
+    toast.success(`Додано з чернетки: ${item.name}`)
+  }
   // ORD-35: гаряча клавіша Ctrl+S — зберегти (на кроці 4 оформити, інакше чернетка)
   const saveRef = useRef(handleSave)
   saveRef.current = handleSave
@@ -1258,21 +1318,22 @@ export default function OrderFormPage() {
                       <input value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна"
                         className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
                     </div>
-                    <div className="mt-1 space-y-1.5">
-                      <input value={row.buy_price || ''} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} type="number" min="0" step="any" placeholder="Закупка (грн)"
-                        className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
-                      <div className="flex flex-wrap gap-1">
-                        <button type="button" onClick={() => applyGridToItem(idx)} className="rounded bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100">Сітка</button>
-                        {quickMarkupPercents.map((pct) => (
-                          <button key={pct} type="button" onClick={() => applyMarkupToItem(idx, pct)} className="rounded bg-yellow-50 px-2 py-1 text-[10px] font-bold text-yellow-700 hover:bg-yellow-100">+{pct}%</button>
-                        ))}
+                    <div className="relative mt-1">
+                      <div className="flex rounded-lg border border-gray-200 bg-white focus-within:ring-1 focus-within:ring-yellow-400">
+                        <input value={row.buy_price || ''} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} type="number" min="0" step="any" placeholder="Закупка (грн)"
+                          className="min-w-0 flex-1 rounded-l-lg px-2.5 py-2 text-right text-xs font-semibold outline-none" />
+                        <button type="button" onClick={() => setPricingMenuIndex(pricingMenuIndex === idx ? null : idx)} className="w-10 rounded-r-lg border-l border-gray-200 bg-gray-50 text-sm font-bold text-gray-500 hover:bg-yellow-50 hover:text-yellow-700" title="Сітка / швидка націнка">⌄</button>
                       </div>
+                      {renderPricingMenu(idx)}
                     </div>
-                    <select value={row.supplier_id} onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
-                      className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400">
-                      <option value="">Наявність на складі</option>
-                      {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
+                    <div className="flex gap-1.5">
+                      <select value={row.supplier_id} onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
+                        className="min-w-0 flex-1 bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400">
+                        <option value="">Наявність на складі</option>
+                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                      <button type="button" onClick={() => createSupplierForItem(idx)} className="rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-500 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700" title="Додати постачальника">+</button>
+                    </div>
                     {row.supplier_id && (
                       <input type="date" value={row.expected_date || ''} onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
                         className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
@@ -1334,20 +1395,20 @@ export default function OrderFormPage() {
                           />
                         </td>
                         <td className="px-3 py-3">
-                          <input
-                            value={row.buy_price || ''}
-                            onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
-                            type="number"
-                            min="0"
-                            step="any"
-                            placeholder="Закупка"
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right"
-                          />
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            <button type="button" onClick={() => applyGridToItem(idx)} className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 hover:bg-blue-100">Сітка</button>
-                            {quickMarkupPercents.map((pct) => (
-                              <button key={pct} type="button" onClick={() => applyMarkupToItem(idx, pct)} className="rounded bg-yellow-50 px-1.5 py-0.5 text-[10px] font-bold text-yellow-700 hover:bg-yellow-100">+{pct}%</button>
-                            ))}
+                          <div className="relative">
+                            <div className="flex rounded-lg border border-gray-200 bg-white focus-within:ring-1 focus-within:ring-yellow-400">
+                              <input
+                                value={row.buy_price || ''}
+                                onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
+                                type="number"
+                                min="0"
+                                step="any"
+                                placeholder="Закупка"
+                                className="min-w-0 flex-1 rounded-l-lg px-2.5 py-1.5 text-right text-xs font-semibold outline-none"
+                              />
+                              <button type="button" onClick={() => setPricingMenuIndex(pricingMenuIndex === idx ? null : idx)} className="w-8 rounded-r-lg border-l border-gray-200 bg-gray-50 text-sm font-bold text-gray-500 hover:bg-yellow-50 hover:text-yellow-700" title="Сітка / швидка націнка">⌄</button>
+                            </div>
+                            {renderPricingMenu(idx)}
                           </div>
                         </td>
                         <td className="px-3 py-3">
@@ -1362,17 +1423,20 @@ export default function OrderFormPage() {
                           />
                         </td>
                         <td className="px-3 py-3">
-                          <select
-                            value={row.supplier_id}
-                            onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                          >
-                            <option value="">Наявність на складі</option>
-                            {suppliers.map((s) => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
-                            ))}
-                          </select>
-                          {row.supplier_id && (
+                          <div className="flex gap-1.5">
+                            <select
+                              value={row.supplier_id}
+                              onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
+                              className="min-w-0 flex-1 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                            >
+                              <option value="">Наявність на складі</option>
+                              {suppliers.map((s) => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                            </select>
+                            <button type="button" onClick={() => createSupplierForItem(idx)} className="rounded-lg border border-gray-200 bg-white px-2 text-sm font-bold text-gray-500 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700" title="Додати постачальника">+</button>
+                          </div>
+                    {row.supplier_id && (
                             <div className="mt-1.5">
                               <input
                                 type="date"
@@ -1573,6 +1637,15 @@ export default function OrderFormPage() {
 
       </div>
 
+      {draftHint && !draftHintOpen && (
+        <button
+          type="button"
+          onClick={() => setDraftHintOpen(true)}
+          className="fixed bottom-4 right-4 z-30 rounded-full border border-yellow-300 bg-yellow-400 px-4 py-2 text-sm font-extrabold text-black shadow-xl hover:bg-yellow-300"
+        >
+          Чернетка-підказка · {draftHint.items.length}
+        </button>
+      )}
       {draftHint && draftHintOpen && (
         <aside className="fixed bottom-4 right-4 top-20 z-30 flex w-[24rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-yellow-300 bg-white shadow-2xl">
           <div className="flex items-start justify-between gap-3 border-b border-yellow-200 bg-yellow-50 px-4 py-3">
@@ -1601,9 +1674,12 @@ export default function OrderFormPage() {
               <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-400">Що потрібно знайти</p>
               <ol className="space-y-2">
                 {draftHint.items.map((item, index) => (
-                  <li key={item.id} className="flex gap-2 rounded-xl border border-gray-100 bg-gray-50 p-3 text-sm font-medium text-gray-800">
+                  <li key={item.id} className="flex items-start gap-2 rounded-xl border border-gray-100 bg-gray-50 p-3 text-sm font-medium text-gray-800">
                     <span className="text-gray-400">{index + 1}.</span>
-                    <span>{item.name}</span>
+                    <span className="min-w-0 flex-1">{item.name}</span>
+                    <button type="button" onClick={() => addDraftHintItemToOrder(item)} className="shrink-0 rounded-lg bg-white px-2 py-1 text-xs font-bold text-yellow-700 shadow-sm hover:bg-yellow-100">
+                      + в заказ
+                    </button>
                   </li>
                 ))}
               </ol>

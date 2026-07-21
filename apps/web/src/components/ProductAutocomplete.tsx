@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '@/lib/api'
 import { productApi } from '@/features/products/productApi'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
@@ -54,16 +55,42 @@ export function ProductAutocomplete({
   const [pricingRetailPrice, setPricingRetailPrice] = useState<string>('')
   const [highlight, setHighlight] = useState(0)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({})
   const justSelected = useRef(false)
 
-  // Закриття при кліку поза полем
+  function updateDropdownPosition() {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const viewportWidth = window.innerWidth
+    const bottomSpace = window.innerHeight - rect.bottom - 8
+    const maxHeight = Math.max(220, Math.min(420, bottomSpace))
+    const preferredWidth = Math.min(Math.max(rect.width, 380), viewportWidth - 16)
+    const left = Math.min(Math.max(8, rect.left), viewportWidth - preferredWidth - 8)
+    setDropdownStyle({ top: rect.bottom + 4, left, width: preferredWidth, maxHeight })
+  }
+
+  // Закриття при кліку поза полем. Панель підказок винесена поверх таблиці, тому перевіряємо і input, і портал.
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (wrapRef.current?.contains(target) || panelRef.current?.contains(target)) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', onClickOutside)
     return () => document.removeEventListener('mousedown', onClickOutside)
   }, [])
+
+  useEffect(() => {
+    if (!open) return
+    updateDropdownPosition()
+    window.addEventListener('resize', updateDropdownPosition)
+    window.addEventListener('scroll', updateDropdownPosition, true)
+    return () => {
+      window.removeEventListener('resize', updateDropdownPosition)
+      window.removeEventListener('scroll', updateDropdownPosition, true)
+    }
+  }, [open, results.length, supplierResults.length])
 
   // У desktop підказки беруться безпосередньо з SQLite і не чекають мережу.
   useEffect(() => {
@@ -82,6 +109,7 @@ export function ProductAutocomplete({
           const res = await productApi.search(q, 12)
           setResults(sortSuggestions(res.data ?? []))
           setSupplierResults([])
+          updateDropdownPosition()
           setOpen((res.data?.length ?? 0) > 0)
           setHighlight(0)
           return
@@ -91,6 +119,7 @@ export function ProductAutocomplete({
         const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
         setResults(sortSuggestions(warehouse))
         setSupplierResults(catalog)
+        updateDropdownPosition()
         setOpen(warehouse.length > 0 || catalog.length > 0)
         setHighlight(0)
       } catch {
@@ -168,14 +197,15 @@ export function ProductAutocomplete({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
-        onFocus={() => { if (results.length > 0 || supplierResults.length > 0) setOpen(true) }}
+        onFocus={() => { if (results.length > 0 || supplierResults.length > 0) { updateDropdownPosition(); setOpen(true) } }}
         placeholder={placeholder}
         required={required}
         autoComplete="off"
         className={className || 'w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400'}
       />
-      {open && (loading || results.length > 0 || supplierResults.length > 0) && (
-        <div className="absolute z-30 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-80 overflow-y-auto divide-y divide-gray-100">
+      {open && (loading || results.length > 0 || supplierResults.length > 0) && typeof document !== 'undefined' && createPortal(
+        <div ref={panelRef} style={dropdownStyle} className="fixed z-[180] bg-white border border-gray-200 rounded-xl shadow-2xl overflow-y-auto divide-y divide-gray-100" onMouseDown={(e) => e.stopPropagation()}>
+
           
           {/* Складські товари */}
           {results.length > 0 && (
@@ -256,8 +286,8 @@ export function ProductAutocomplete({
               })}
             </div>
           )}
-
-        </div>
+        </div>,
+        document.body,
       )}
       {/* Модальне вікно встановлення ціни для замовного товару */}
       {pricingModalItem && (
