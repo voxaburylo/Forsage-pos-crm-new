@@ -24,11 +24,21 @@ import { Button, Card, Input, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
 const METHODS = Object.entries(REFUND_METHOD_LABELS) as [RefundMethod, string][]
 const STOCK_ACTIONS_LIST = Object.entries(STOCK_ACTION_LABELS) as [StockAction, string][]
 const CONDITIONS = Object.entries(ITEM_CONDITION_LABELS) as [ItemCondition, string][]
+
+function normalizeBarcode(value: string) {
+  return value.replace(/\s/g, '').trim()
+}
+
+function looksLikeProductBarcode(value: string) {
+  const code = normalizeBarcode(value)
+  return /^\d{5,}$/.test(code) || (code.length >= 6 && /^[A-Za-z0-9._/-]+$/.test(code) && /\d/.test(code))
+}
 
 interface FoundSale {
   id: string
@@ -58,6 +68,7 @@ export default function ReturnForm() {
   const [saleNumber, setSaleNumber] = useState('')
   const [found, setFound] = useState<FoundSale | null>(null)
   const [candidates, setCandidates] = useState<FoundSale[]>([])
+  const [candidateHint, setCandidateHint] = useState('')
   const [saleItems, setSaleItems] = useState<SaleItemForReturn[]>([])
   const [selected, setSelected] = useState<SelectedItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
@@ -108,7 +119,7 @@ export default function ReturnForm() {
     searchSale(saleNumber)
   }
 
-  async function searchSale(num: string) {
+  async function searchSale(num: string, options: { preferProductBarcode?: boolean } = {}) {
     const q = num.trim()
     if (!q) return
 
@@ -117,18 +128,39 @@ export default function ReturnForm() {
     setSaleItems([])
     setSelected([])
     setCandidates([])
+    setCandidateHint('')
     setSaleFiscalNumber(null)
     setStep(1)
 
     try {
-      // Широкий пошук: за номером чека, телефоном або ім'ям клієнта
-      const result = await saleApi.list({ search: q, per_page: 12 })
-      const sales = (result as unknown as { data: FoundSale[] }).data ?? []
+      const barcode = normalizeBarcode(q)
+      const barcodeFirst = options.preferProductBarcode || looksLikeProductBarcode(q)
+      const requests: Array<{ params: Record<string, string | number>; hint: string }> = barcodeFirst
+        ? [
+            { params: { product_barcode: barcode, status: 'completed', per_page: 12 }, hint: 'Знайдено останні чеки з цим товаром — оберіть потрібний:' },
+            { params: { search: q, per_page: 12 }, hint: 'Знайдено чеків — оберіть потрібний:' },
+          ]
+        : [
+            { params: { search: q, per_page: 12 }, hint: 'Знайдено чеків — оберіть потрібний:' },
+            { params: { product_barcode: barcode, status: 'completed', per_page: 12 }, hint: 'Знайдено останні чеки з цим товаром — оберіть потрібний:' },
+          ]
+
+      let sales: FoundSale[] = []
+      let hint = ''
+      for (const req of requests) {
+        if (!req.params.product_barcode && !req.params.search) continue
+        const result = await saleApi.list(req.params, { silent: true })
+        sales = (result as unknown as { data: FoundSale[] }).data ?? []
+        hint = req.hint
+        if (sales.length > 0) break
+      }
+
       if (sales.length === 0) {
-        toast.error('Нічого не знайдено (чек / телефон / ім\'я)')
+        toast.error('Нічого не знайдено (чек / телефон / ім\'я / штрихкод товару)')
         return
       }
       if (sales.length > 1) {
+        setCandidateHint(hint)
         setCandidates(sales)   // кілька чеків — даємо обрати
         return
       }
@@ -139,6 +171,13 @@ export default function ReturnForm() {
       setSearching(false)
     }
   }
+
+  usePOSBarcodeScanner({
+    onScan: (code) => {
+      setSaleNumber(code)
+      searchSale(code, { preferProductBarcode: true })
+    },
+  })
 
   async function selectSale(sale: FoundSale) {
     setFound(sale)
@@ -326,7 +365,7 @@ export default function ReturnForm() {
             <Input
               value={saleNumber}
               onChange={(e) => setSaleNumber(e.target.value)}
-              placeholder="Номер чека, телефон або ім'я клієнта"
+              placeholder="Номер чека, телефон, ім'я або штрихкод товару"
               className="flex-1"
               autoFocus
             />
@@ -338,7 +377,7 @@ export default function ReturnForm() {
 
           {candidates.length > 0 && (
             <div className="mt-3 border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
-              <p className="px-4 py-2 text-xs text-gray-500 bg-gray-50">Знайдено {candidates.length} чеків — оберіть потрібний:</p>
+              <p className="px-4 py-2 text-xs text-gray-500 bg-gray-50">{candidateHint || ('Знайдено ' + candidates.length + ' чеків — оберіть потрібний:')}</p>
               {candidates.map((c) => (
                 <button key={c.id} type="button" onClick={() => selectSale(c)}
                   className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-yellow-50 text-sm">

@@ -11,6 +11,7 @@ import { toast } from '@/components/ui/Toast'
 interface Props {
   onPay: () => void
   onSelectCustomer: () => void
+  onEditCustomer?: () => void
   onClear: () => void
 }
 
@@ -202,7 +203,7 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
   )
 })
 
-export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
+export function ReceiptPanel({ onPay, onSelectCustomer, onEditCustomer, onClear }: Props) {
   const store = usePOSStore()
   const userCanDiscount = canUserDiscount()
   const tabBarRef = useRef<HTMLDivElement>(null)
@@ -311,30 +312,43 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear }: Props) {
       <div className="receipt-header shrink-0 px-4 py-3 border-b border-gray-800 flex items-center justify-between">
         <span className="text-gray-400 text-sm font-medium">ЧЕК</span>
         {store.customer ? (
-          <button onClick={onSelectCustomer} className="flex flex-col items-end text-xs hover:text-yellow-300 active-press touch-target">
-            <div className="flex items-center gap-1.5">
-              <User size={14} className="text-yellow-400" />
-              <span className="text-yellow-400">{store.customer.name ?? store.customer.phone}</span>
-              {store.customer.vipLevel !== 'standard' && (
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                  store.customer.vipLevel === 'gold' ? 'bg-yellow-500 text-black' :
-                  store.customer.vipLevel === 'silver' ? 'bg-gray-300 text-gray-800' :
-                  'bg-orange-400 text-white'
-                }`}>
-                  {store.customer.vipLevel === 'gold' ? '🥇' : store.customer.vipLevel === 'silver' ? '🥈' : '🥉'}
-                  {store.customer.vipLevel.charAt(0).toUpperCase() + store.customer.vipLevel.slice(1)}
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              onClick={onEditCustomer ?? onSelectCustomer}
+              className="flex flex-col items-end hover:text-yellow-300 active-press touch-target"
+              title="Швидко редагувати клієнта"
+            >
+              <div className="flex items-center gap-1.5">
+                <User size={14} className="text-yellow-400" />
+                <span className="text-yellow-400">{store.customer.name ?? store.customer.phone}</span>
+                {store.customer.vipLevel !== 'standard' && (
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    store.customer.vipLevel === 'gold' ? 'bg-yellow-500 text-black' :
+                    store.customer.vipLevel === 'silver' ? 'bg-gray-300 text-gray-800' :
+                    'bg-orange-400 text-white'
+                  }`}>
+                    {store.customer.vipLevel === 'gold' ? '🥇' : store.customer.vipLevel === 'silver' ? '🥈' : '🥉'}
+                    {store.customer.vipLevel.charAt(0).toUpperCase() + store.customer.vipLevel.slice(1)}
+                  </span>
+                )}
+              </div>
+              {store.customer.riskProfile === 'high' && (
+                <span className="text-red-400 text-[10px] mt-0.5">⚠️ Проблемний клієнт</span>
+              )}
+              {store.customer.tierName && (
+                <span className="text-yellow-600 text-[10px]">
+                  {store.customer.tierName} -{store.customer.tierDiscountPct}%
                 </span>
               )}
-            </div>
-            {store.customer.riskProfile === 'high' && (
-              <span className="text-red-400 text-[10px] mt-0.5">⚠️ Проблемний клієнт</span>
-            )}
-            {store.customer.tierName && (
-              <span className="text-yellow-600 text-[10px]">
-                {store.customer.tierName} -{store.customer.tierDiscountPct}%
-              </span>
-            )}
-          </button>
+            </button>
+            <button
+              onClick={onSelectCustomer}
+              className="rounded-lg border border-gray-700 px-2 py-1 text-[10px] text-gray-500 hover:border-yellow-500 hover:text-yellow-300"
+              title="Обрати іншого клієнта"
+            >
+              змінити
+            </button>
+          </div>
         ) : (
           <button onClick={onSelectCustomer} className="text-gray-600 text-xs hover:text-gray-400 touch-target ripple px-3 py-1.5 rounded-lg">
             + Клієнт

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Modal, Button } from '@/components/ui'
@@ -6,7 +6,6 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { printLabels, DEFAULT_LABEL } from '@/features/labels/LabelDesigner'
 import { adminApi } from '@/features/admin/adminApi'
-import { PrintService } from '@/lib/printService'
 
 interface Props {
   open:     boolean
@@ -22,7 +21,6 @@ interface LabelQty {
 
 export function LabelPrintModal({ open, onClose, invoice }: Props) {
   const navigate = useNavigate()
-  const printAreaRef = useRef<HTMLDivElement>(null)
   const items = invoice.items?.filter((i) => i.product) ?? []
   const today = new Date().toLocaleDateString('uk-UA')
 
@@ -92,89 +90,6 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
       toast.error('Помилка друку')
     } finally {
       setPrintingThermal(false)
-    }
-  }
-
-  function handlePrint() {
-    const style = document.createElement('style')
-    style.id = 'label-print-style'
-    style.innerHTML = `
-      @page { size: A4 portrait; margin: 8mm; }
-      @media print {
-        body > *:not(#label-print-portal) { display: none !important; }
-        #label-print-portal {
-          display: grid !important;
-          grid-template-columns: repeat(3, 58mm);
-          grid-auto-rows: 40mm;
-          gap: 3mm;
-          width: 190mm;
-          margin: 0;
-          padding: 0;
-        }
-        .label-item {
-          width: 58mm; height: 40mm; border: 0.3mm solid #000;
-          padding: 2mm 3mm; margin: 0; page-break-inside: avoid;
-          font-family: Arial, sans-serif; box-sizing: border-box;
-          overflow: hidden;
-        }
-        .label-shop  { font-size: 7pt; font-weight: bold; color: #555; border-bottom: 0.3mm solid #ccc; margin-bottom: 1mm; padding-bottom: 1mm; }
-        .label-name  { font-size: 8pt; font-weight: bold; line-height: 1.2; margin-bottom: 1mm; }
-        .label-sku   { font-size: 7pt; color: #333; }
-        .label-barcode { font-size: 6pt; letter-spacing: 1px; font-family: monospace; margin: 1mm 0; color: #555; }
-        .label-price { font-size: 12pt; font-weight: bold; margin-top: 1mm; }
-        .label-date  { font-size: 6pt; color: #777; }
-      }
-    `
-
-    const portal = document.createElement('div')
-    portal.id = 'label-print-portal'
-
-    // Назви/артикули приходять з імпортованих прайсів — обов'язково екрануємо,
-    // інакше HTML у назві товару виконається прямо в основному вікні застосунку
-    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-
-    items.forEach((item) => {
-      const count = getQty(item.id)
-      const p = item.product
-      if (!p) return
-      for (let i = 0; i < count; i++) {
-        const div = document.createElement('div')
-        div.className = 'label-item'
-        div.innerHTML = `
-          <div class="label-shop">ФОРСАЖ</div>
-          <div class="label-name">${esc(p.name)}</div>
-          <div class="label-sku">Арт: ${esc(p.sku)}</div>
-          ${p.barcode ? '<div class="label-barcode">' + esc(p.barcode) + '</div>' : ''}
-          <div class="label-price">${formatMoney(p.retail_price)}</div>
-          <div class="label-date">${today}</div>
-        `
-        portal.appendChild(div)
-      }
-    })
-
-    document.head.appendChild(style)
-    document.body.appendChild(portal)
-
-    let cleanupTimer: number | null = null
-    const cleanup = () => {
-      if (cleanupTimer !== null) window.clearTimeout(cleanupTimer)
-      if (document.head.contains(style)) document.head.removeChild(style)
-      if (document.body.contains(portal)) document.body.removeChild(portal)
-    }
-    window.addEventListener('afterprint', cleanup, { once: true })
-    try {
-      const started = PrintService.printCurrentPage()
-      if (!started) {
-        window.removeEventListener('afterprint', cleanup)
-        cleanup()
-        toast.error('Попереднє вікно друку ще відкрите')
-      } else {
-        cleanupTimer = window.setTimeout(cleanup, 120000)
-      }
-    } catch (error) {
-      window.removeEventListener('afterprint', cleanup)
-      cleanup()
-      toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити друк')
     }
   }
 
@@ -253,14 +168,8 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
           <Button variant="outline" onClick={handleThermalPrint} disabled={totalLabels === 0} loading={printingThermal} className="w-full sm:w-auto">
             Друк на термопринтері
           </Button>
-          <Button onClick={handlePrint} disabled={totalLabels === 0} className="w-full sm:w-auto">
-            Друк на А4 ({totalLabels} шт.)
-          </Button>
         </div>
       </div>
-
-      {/* Hidden print area (fallback, not used — we use DOM injection) */}
-      <div ref={printAreaRef} className="hidden" />
     </Modal>
   )
 }

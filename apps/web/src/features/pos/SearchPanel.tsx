@@ -306,6 +306,34 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     }
   }
 
+  function attachCustomerToReceipt(customer: any, scannedCode: string) {
+    if (!customer?.id) return false
+    if (!window.dispatchEvent(new CustomEvent('forsage:pos-customer-scanned', { detail: customer, cancelable: true }))) {
+      playSuccessBeep()
+      saveRecentItem('recent_scans', scannedCode)
+      reportScannerStage('added', scannedCode, customer.full_name ?? customer.phone)
+      return true
+    }
+    const store = usePOSStore.getState()
+    const effectivePct = customer.loyalty_mode === 'cashback'
+      ? 0 : (customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+    store.setCustomer({
+      id: customer.id,
+      phone: customer.phone,
+      name: customer.full_name ?? null,
+      debtBalance: customer.debt_balance ?? 0,
+      tierDiscountPct: effectivePct,
+      tierName: customer.price_tier?.name ?? null,
+      vipLevel: customer.vip_level ?? 'standard',
+      riskProfile: customer.risk_profile ?? 'low',
+    })
+    store.setAutomaticDiscountPct(effectivePct)
+    toast.success('Клієнт ' + (customer.full_name ?? customer.phone) + " прив'язаний до чека")
+    saveRecentItem('recent_scans', scannedCode)
+    playSuccessBeep()
+    reportScannerStage('added', scannedCode, customer.full_name ?? customer.phone)
+    return true
+  }
   async function handleBarcodeScan(code: string) {
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
@@ -322,6 +350,17 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     // Сканер і видимий пошук — незалежні канали. Тут навмисно не змінюємо
     // query/loading/results і не скасовуємо ручний текстовий пошук.
 
+    // У desktop-касі картка клієнта живе в локальній SQLite. Перевіряємо її
+    // до товарів і до серверного barcode-search, інакше локальний клієнт не
+    // підтягнеться, коли інтернет/сервер не встиг синхронізувати card_barcode.
+    const localCustomerList = desktopBridge()?.pos?.listCustomers
+    if (localCustomerList) {
+      const localCustomers = await localCustomerList({ search: normalizedCode, per_page: 5 }).catch(() => null) as any
+      const exactCustomer = (localCustomers?.data ?? []).find((customer: any) =>
+        normalizeScanCode(String(customer.card_barcode ?? '')) === normalizedCode
+      )
+      if (exactCustomer && attachCustomerToReceipt(exactCustomer, normalizedCode)) return
+    }
     // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
     // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
     const memoryProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)

@@ -553,7 +553,7 @@ export class LocalPosRepository {
     return this.decorateSale(row, tenantId)
   }
 
-  listSales(input: { tenant_id?: string; search?: string; status?: string; page?: number; per_page?: number } = {}): {
+  listSales(input: { tenant_id?: string; search?: string; status?: string; product_barcode?: string; date_from?: string; date_to?: string; page?: number; per_page?: number } = {}): {
     data: any[]
     pagination: { page: number; per_page: number; total: number; total_pages: number }
   } {
@@ -565,6 +565,28 @@ export class LocalPosRepository {
     if (input.status) {
       where.push('s.status = ?')
       params.push(input.status)
+    }
+    const productBarcode = String(input.product_barcode ?? '').trim()
+    if (productBarcode) {
+      where.push(`EXISTS (
+        SELECT 1
+        FROM sale_items si
+        LEFT JOIN products p ON p.id = si.product_id AND p.tenant_id = si.tenant_id
+        LEFT JOIN product_barcodes pb ON pb.product_id = si.product_id AND pb.tenant_id = si.tenant_id AND pb.deleted_at IS NULL
+        WHERE si.sale_id = s.id
+          AND si.tenant_id = s.tenant_id
+          AND si.deleted_at IS NULL
+          AND (COALESCE(p.barcode, '') = ? OR COALESCE(p.sku, '') = ? OR COALESCE(pb.barcode, '') = ?)
+      )`)
+      params.push(productBarcode, productBarcode, productBarcode)
+    }
+    if (input.date_from) {
+      where.push('COALESCE(s.completed_at, s.created_at) >= ?')
+      params.push(input.date_from)
+    }
+    if (input.date_to) {
+      where.push('COALESCE(s.completed_at, s.created_at) <= ?')
+      params.push(input.date_to)
     }
     const raw = String(input.search ?? '').trim()
     if (raw) {

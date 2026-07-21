@@ -50,6 +50,8 @@ export const saleListSchema = z.object({
   customer_id: z.string().uuid().optional(),
   sale_number: z.string().optional(),
   search:      z.string().optional(),
+  status:      z.string().optional(),
+  product_barcode: z.string().optional(),
   date_from:   z.string().optional(),
   date_to:     z.string().optional(),
   page:        z.coerce.number().int().min(1).default(1),

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench } from 'lucide-react'
+import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
@@ -10,6 +10,8 @@ import { ReceiptPrint, printReceipt } from './ReceiptPrint'
 import { ReceiptFinderModal } from './ReceiptFinderModal'
 import { saleApi } from './saleApi'
 import { QuickCustomerModal } from '@/features/customers/QuickCustomerModal'
+import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
+import { customerApi } from '@/features/customers/customerApi'
 import { CashOperationModal } from './CashOperationModal'
 import { DebtPaymentModal } from './DebtPaymentModal'
 import { CashReconciliationModal } from './CashReconciliationModal'
@@ -115,6 +117,19 @@ function clearSavedCart() {
   try { localStorage.removeItem(CART_KEY) } catch { /* storage may be unavailable */ }
 }
 
+function posCustomerFromCustomer(c: Customer): POSCustomer {
+  const tierDiscountPct = (c as any).loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? c.discount_pct ?? 0)
+  return {
+    id: c.id,
+    phone: c.phone,
+    name: c.full_name,
+    debtBalance: c.debt_balance,
+    tierDiscountPct,
+    tierName: c.price_tier?.name ?? null,
+    vipLevel: c.vip_level ?? 'standard',
+    riskProfile: c.risk_profile ?? 'low',
+  }
+}
 function savedCartTotal(cart: SavedCart): number {
   return cart.tabs.reduce(
     (sum, tab) => sum + tab.items.reduce((itemSum, item) => itemSum + (Number(item.total) || 0), 0),
@@ -208,6 +223,8 @@ export default function POSPage() {
   const { store, completeSale, checkShift } = usePOS()
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
+  const [customerEditOpen, setCustomerEditOpen] = useState(false)
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
   const [closeOpen, setCloseOpen]       = useState(false)
   const [cashOpen, setCashOpen]         = useState(false)
   const [reconcileOpen, setReconcileOpen] = useState(false)
@@ -250,6 +267,10 @@ export default function POSPage() {
   const searchRef = useRef<SearchPanelHandle>(null)
   const earlyBarcodeScans = useRef<string[]>([])
   const routeBarcodeScan = useCallback((code: string) => {
+    if (findReceiptOpen) {
+      window.dispatchEvent(new CustomEvent('forsage:receipt-finder-scan', { detail: { code } }))
+      return
+    }
     const panel = searchRef.current
     if (panel) {
       panel.scanBarcode(code)
@@ -258,7 +279,7 @@ export default function POSPage() {
     // Перший скан може прийти між підключенням глобального HID-обробника
     // та монтуванням SearchPanel. Не втрачаємо його.
     earlyBarcodeScans.current.push(code)
-  }, [])
+  }, [findReceiptOpen])
   usePOSBarcodeScanner({
     onScan: routeBarcodeScan,
   })
@@ -274,6 +295,19 @@ export default function POSPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [store.isInitializing])
 
+  async function handleEditCurrentCustomer() {
+    if (!store.customer?.id) {
+      setCustomerOpen(true)
+      return
+    }
+    try {
+      const { data } = await customerApi.get(store.customer.id)
+      setEditingCustomer(data)
+      setCustomerEditOpen(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити клієнта')
+    }
+  }
 
   const refreshSuspendedCount = useCallback(() => {
     saleApi.listSuspended({ silent: true }).then((res) => setSuspendedCount(res.data.length)).catch(() => {})
@@ -415,11 +449,12 @@ export default function POSPage() {
       // Не перехоплюємо якщо фокус на input (крім F-клавіш та Esc)
       const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA'
       // Escape закриває відкриті модалки
-      const anyModalOpen = payOpen || customerOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen
+      const anyModalOpen = payOpen || customerOpen || customerEditOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen
       if (e.key === 'Escape' && anyModalOpen) {
         e.preventDefault()
         setPayOpen(false)
         setCustomerOpen(false)
+        setCustomerEditOpen(false)
         setCloseOpen(false)
         setCashOpen(false)
         setReconcileOpen(false)
@@ -462,7 +497,7 @@ export default function POSPage() {
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen])
+  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, customerEditOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen])
 
   if (store.isInitializing) {
     return (
@@ -814,6 +849,11 @@ export default function POSPage() {
             title="Повернення товару за чеком">
             <RotateCcw size={15} /><span className="hidden xl:inline">Повернення</span>
           </button>
+          <button onClick={() => setFindReceiptOpen(true)}
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-blue-300 hover:text-blue-200 hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Останні чеки за 14 днів, пошук і повторний друк">
+            <ReceiptText size={15} /><span className="hidden xl:inline">Чеки</span>
+          </button>
           <div className="w-px h-7 bg-gray-800 mx-1" />
           <div className="flex items-center gap-2 mr-1">
             <span className="text-yellow-400 font-bold text-lg tabular-nums tracking-tight">{formatMoney(store.total)}</span>
@@ -850,6 +890,7 @@ export default function POSPage() {
                 { icon: '💰', label: 'Вільна сума', action: () => { setQuickCharge('free_sale'); setMobileMenuOpen(false) } },
                 { icon: '↔️', label: 'Каса', action: () => { setCashOpen(true); setMobileMenuOpen(false) } },
                 { icon: '↩️', label: 'Повернення', action: () => { setMobileMenuOpen(false); navigate('/returns') } },
+                { icon: '🧾', label: 'Чеки', action: () => { setFindReceiptOpen(true); setMobileMenuOpen(false) } },
               ].map(({ icon, label, action }) => (
                 <button key={label} onClick={action}
                   className="relative flex flex-col items-center gap-1.5 p-3 bg-[#2C2C2C] rounded-xl active:bg-gray-600 disabled:opacity-30 transition-colors">
@@ -903,6 +944,7 @@ export default function POSPage() {
               <ReceiptPanel
                 onPay={() => { setPayOpen(true) }}
                 onSelectCustomer={() => setCustomerOpen(true)}
+                onEditCustomer={handleEditCurrentCustomer}
                 onClear={originalClear}
               />
             </div>
@@ -1003,19 +1045,21 @@ export default function POSPage() {
         offline={!effectiveOnline}
         onClose={() => setCustomerOpen(false)}
         onCreated={(c: Customer) => {
-          // Режим «накопичення»: % не знижує чек, а нараховується на рахунок
-          const tierDiscountPct = (c as any).loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
-          store.setCustomer({
-            id:              c.id,
-            phone:           c.phone,
-            name:            c.full_name,
-            debtBalance:     c.debt_balance,
-            tierDiscountPct,
-            tierName:        c.price_tier?.name ?? null,
-            vipLevel:        c.vip_level ?? 'standard',
-            riskProfile:     c.risk_profile ?? 'low',
-          })
-          if (!isEmployeeSale) store.setAutomaticDiscountPct(tierDiscountPct)
+          const posCustomer = posCustomerFromCustomer(c)
+          store.setCustomer(posCustomer)
+          if (!isEmployeeSale) store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
+        }}
+      />
+
+      <QuickCustomerEditModal
+        customer={editingCustomer}
+        open={customerEditOpen}
+        onClose={() => setCustomerEditOpen(false)}
+        onSaved={(c) => {
+          const posCustomer = posCustomerFromCustomer(c)
+          store.setCustomer(posCustomer)
+          if (!isEmployeeSale) store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
+          setEditingCustomer(c)
         }}
       />
 

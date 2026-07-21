@@ -30,8 +30,59 @@ export async function allocateSaleNumber(
 
 
 export async function listSales(query: SaleListQuery, tenantId: string) {
-  const { shift_id, customer_id, sale_number, search, date_from, date_to, page, per_page } = query
+  const { shift_id, customer_id, sale_number, search, status, product_barcode, date_from, date_to, page, per_page } = query
   const offset = (page - 1) * per_page
+
+  let productSaleIds: string[] | null = null
+  const barcode = product_barcode?.trim()
+  if (barcode) {
+    const productIds = new Set<string>()
+
+    const { data: byBarcode, error: byBarcodeError } = await db
+      .from('products')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('barcode', barcode)
+      .is('deleted_at', null)
+    if (byBarcodeError) throw new AppError('DB_ERROR', byBarcodeError.message, 500)
+    byBarcode?.forEach((p: any) => productIds.add(p.id))
+
+    const { data: bySku, error: bySkuError } = await db
+      .from('products')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('sku', barcode)
+      .is('deleted_at', null)
+    if (bySkuError) throw new AppError('DB_ERROR', bySkuError.message, 500)
+    bySku?.forEach((p: any) => productIds.add(p.id))
+
+    const { data: extraBarcodes, error: extraBarcodeError } = await db
+      .from('product_barcodes')
+      .select('product_id')
+      .eq('tenant_id', tenantId)
+      .eq('barcode', barcode)
+      .is('deleted_at', null)
+    if (extraBarcodeError) throw new AppError('DB_ERROR', extraBarcodeError.message, 500)
+    extraBarcodes?.forEach((p: any) => productIds.add(p.product_id))
+
+    const ids = Array.from(productIds).filter(Boolean)
+    if (ids.length === 0) {
+      return { data: [], pagination: { page, per_page, total: 0, total_pages: 0 } }
+    }
+
+    const { data: saleItems, error: saleItemsError } = await db
+      .from('sale_items')
+      .select('sale_id')
+      .eq('tenant_id', tenantId)
+      .in('product_id', ids)
+      .is('deleted_at', null)
+      .limit(1000)
+    if (saleItemsError) throw new AppError('DB_ERROR', saleItemsError.message, 500)
+    productSaleIds = Array.from(new Set((saleItems ?? []).map((item: any) => item.sale_id).filter(Boolean)))
+    if (productSaleIds.length === 0) {
+      return { data: [], pagination: { page, per_page, total: 0, total_pages: 0 } }
+    }
+  }
 
   let q = db
     .from(TABLE)
@@ -43,6 +94,8 @@ export async function listSales(query: SaleListQuery, tenantId: string) {
   if (shift_id) q = q.eq('shift_id', shift_id)
   if (customer_id) q = q.eq('customer_id', customer_id)
   if (sale_number) q = q.eq('sale_number', sale_number)
+  if (status) q = q.eq('status', status)
+  if (productSaleIds) q = q.in('id', productSaleIds)
 
   if (search) {
     // 1. Пошук клієнтів за телефоном або ім'ям

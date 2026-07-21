@@ -622,7 +622,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   const barcodeHeight = Math.max(10, Math.min(80, Number(settings.barcode_height) || 28))
   const barcodeWidth = Math.max(0.5, Math.min(2.5, Number(settings.barcode_width_factor) || 1))
 
-  const labelsHtml = items.map((item) => {
+  const labelsHtml = items.map((item, index) => {
     const product = isBins ? null : item as Product
     const binLabel = isBins ? String((item as { label: string }).label || '') : null
 
@@ -681,7 +681,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     }
 
     return `
-      <section class="label-page">
+      <section class="label-page${index < items.length - 1 ? ' has-next' : ''}">
         <div class="label-content">${body}</div>
       </section>
     `
@@ -705,11 +705,12 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     padding: ${padding}mm;
     overflow: hidden;
     break-inside: avoid;
-    break-after: page;
     page-break-inside: avoid;
+  }
+  .label-page.has-next {
+    break-after: page;
     page-break-after: always;
   }
-  .label-page:last-child { break-after: auto; page-break-after: auto; }
   .label-content {
     position: relative;
     width: ${Math.max(1, w - padding * 2)}mm;

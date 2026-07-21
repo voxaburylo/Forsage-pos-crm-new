@@ -19,9 +19,24 @@ const PAY_LABEL: Record<string, string> = {
 
 const RECEIPT_SEARCH_TIMEOUT_MS = 10_000
 
+function recentReceiptsFrom() {
+  const date = new Date()
+  date.setDate(date.getDate() - 14)
+  return date.toISOString()
+}
+
+function normalizeBarcode(value: string) {
+  return value.replace(/\s/g, '').trim()
+}
+
+function looksLikeProductBarcode(value: string) {
+  const code = normalizeBarcode(value)
+  return /^\d{5,}$/.test(code) || (code.length >= 6 && /^[A-Za-z0-9._/-]+$/.test(code) && /\d/.test(code))
+}
+
 /**
- * Пошук і повторний друк будь-якого чека прямо з каси (як у великих мережах).
- * Бекенд уже вміє шукати за номером чека / телефоном / ім'ям / VIN — реюз saleApi.list.
+ * Пошук і повторний друк чеків прямо з каси.
+ * За замовчуванням показує останні 14 днів; скан товару знаходить чеки з цим товаром.
  */
 export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
   const [query, setQuery]     = useState('')
@@ -38,6 +53,18 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
     }
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: Event) => {
+      const code = normalizeBarcode(String((event as CustomEvent<{ code?: string }>).detail?.code ?? ''))
+      if (!code) return
+      setQuery(code)
+      setTimeout(() => inputRef.current?.select(), 20)
+    }
+    window.addEventListener('forsage:receipt-finder-scan', handler as EventListener)
+    return () => window.removeEventListener('forsage:receipt-finder-scan', handler as EventListener)
+  }, [open])
+
   // Пошук із debounce
   useEffect(() => {
     if (!open) return
@@ -45,17 +72,30 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
     const handle = setTimeout(async () => {
       setLoading(true)
       try {
-        const res = await saleApi.list(
-          term ? { search: term, per_page: 20 } : { per_page: 20 },
-          { silent: true, timeoutMs: RECEIPT_SEARCH_TIMEOUT_MS },
-        )
-        setResults((res as any).data ?? [])
+        const base = { status: 'completed', date_from: recentReceiptsFrom() }
+        const barcode = normalizeBarcode(term)
+        const requests = term
+          ? (looksLikeProductBarcode(term)
+              ? [
+                  { ...base, product_barcode: barcode, per_page: 30 },
+                  { ...base, search: term, per_page: 30 },
+                ]
+              : [{ ...base, search: term, per_page: 30 }])
+          : [{ ...base, per_page: 50 }]
+
+        let found: Sale[] = []
+        for (const params of requests) {
+          const res = await saleApi.list(params, { silent: true, timeoutMs: RECEIPT_SEARCH_TIMEOUT_MS })
+          found = (res as any).data ?? []
+          if (found.length > 0 || !term) break
+        }
+        setResults(found)
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чеки')
       } finally {
         setLoading(false)
       }
-    }, 300)
+    }, 250)
     return () => clearTimeout(handle)
   }, [query, open])
 
@@ -68,7 +108,7 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Номер чека, телефон, ім'я клієнта або VIN…"
+            placeholder="Номер чека, телефон, ім'я, VIN або штрихкод товару…"
             className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
           />
         </div>
@@ -80,7 +120,7 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
             </div>
           ) : results.length === 0 ? (
             <div className="py-10 text-center text-sm text-gray-400">
-              {query.trim() ? 'Нічого не знайдено' : 'Почніть вводити, щоб знайти чек'}
+              {query.trim() ? 'Нічого не знайдено за останні 14 днів' : 'Останні чеки за 14 днів'}
             </div>
           ) : (
             <ul className="divide-y divide-gray-100">
@@ -133,7 +173,7 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
         </div>
 
         <p className="text-xs text-gray-400">
-          Натисніть на чек, щоб роздрукувати його повторно.
+          Показані чеки за останні 14 днів. Натисніть на чек, щоб роздрукувати його повторно.
         </p>
       </div>
     </Modal>
