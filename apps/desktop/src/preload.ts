@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
     findById: (id: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-id', id),
+    findBySku: (sku: string) =>
+      ipcRenderer.invoke('desktop:catalog:find-by-sku', sku),
     listProducts: (options?: unknown) =>
       ipcRenderer.invoke('desktop:catalog:list-products', options),
     listProductBarcodes: () =>
@@ -47,8 +49,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
     upsertProduct: (product: unknown) =>
       ipcRenderer.invoke('desktop:catalog:upsert-product', product),
-    saveProduct: (product: unknown) =>
-      ipcRenderer.invoke('desktop:catalog:save-product', product),
+    saveProduct: (product: unknown, options?: { reuseExistingSku?: boolean }) =>
+      ipcRenderer.invoke('desktop:catalog:save-product', product, options),
     savePhoto: (folder: string, bytes: ArrayBuffer) =>
       ipcRenderer.invoke('desktop:catalog:save-photo', folder, bytes),
     deletePhoto: (photoUrl: string) =>

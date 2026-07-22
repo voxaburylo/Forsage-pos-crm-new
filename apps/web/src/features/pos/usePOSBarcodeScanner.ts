@@ -175,7 +175,7 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
         !buffer && !fieldBuf
         && Date.now() <= terminatorGuardUntil
         && (event.key === 'Enter' || event.key === 'Tab'
-          || (event.key.length > 1 && event.key !== 'Escape' && event.key !== 'Shift'))
+          || (event.key.length > 1 && event.key !== 'Shift'))
       ) {
         event.preventDefault()
         event.stopPropagation()

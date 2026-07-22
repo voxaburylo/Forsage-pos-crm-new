@@ -756,7 +756,6 @@ export default function OrderFormPage() {
       prepayment: 0,
       prepayment_method: null,
       prepayment_is_fiscal: false,
-      discount_amount: 0,
       items: validItems.map((row) => ({
         name:        row.name.trim(),
         sku:         row.sku.trim() || null,

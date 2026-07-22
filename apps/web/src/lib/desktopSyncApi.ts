@@ -8,7 +8,12 @@ import {
   type DesktopSyncPushResult,
 } from '@/lib/desktopBridge'
 
-const REFERENCE_REFRESH_INTERVAL_MS = 15 * 60 * 1000
+const REFERENCE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000
+const DESKTOP_PUSH_BATCH_SIZE = 10
+
+interface DesktopSyncOptions {
+  includeReferences?: boolean
+}
 
 interface PushResponse {
   data: {
@@ -59,7 +64,7 @@ export async function pushDesktopOutbox(limit = 50): Promise<{
   }
 }
 
-export async function pullDesktopChanges(): Promise<DesktopSyncPullResult | null> {
+export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Promise<DesktopSyncPullResult | null> {
   if (!isDesktopRuntime() || pullInProgress) return null
   const desktop = desktopBridge()
   if (!desktop) return null
@@ -82,9 +87,9 @@ export async function pullDesktopChanges(): Promise<DesktopSyncPullResult | null
 
     const params = new URLSearchParams()
     params.set('since', state.cursor)
-    const shouldIncludeReferences = !state.cursor
-      || !state.last_reference_sync_at
+    const referencesAreDue = !state.last_reference_sync_at
       || Date.now() - new Date(state.last_reference_sync_at).getTime() >= REFERENCE_REFRESH_INTERVAL_MS
+    const shouldIncludeReferences = options.includeReferences === true && referencesAreDue
     if (shouldIncludeReferences) params.set('include_references', 'true')
 
     const query = params.size > 0 ? `?${params.toString()}` : ''
@@ -103,13 +108,16 @@ export async function pullDesktopChanges(): Promise<DesktopSyncPullResult | null
   }
 }
 
-export async function syncDesktopNow(): Promise<{
+export async function syncDesktopNow(options: DesktopSyncOptions = {}): Promise<{
   pushed: number
   failed: number
   pending: number
   pulled: DesktopSyncPullResult | null
 }> {
-  const pushed = await pushDesktopOutbox()
-  const pulled = await pullDesktopChanges()
+  // Спочатку швидко підтягуємо нові замовлення та інші серверні зміни.
+  // Відправляємо локальну чергу невеликими порціями, щоб один великий пакет
+  // не блокував IPC та елементи форми на кілька секунд.
+  const pulled = await pullDesktopChanges(options)
+  const pushed = await pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE)
   return { ...pushed, pulled }
 }

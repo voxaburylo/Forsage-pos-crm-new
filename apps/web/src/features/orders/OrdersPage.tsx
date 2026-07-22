@@ -139,7 +139,6 @@ interface CustomerOrder {
   prepayment: number
   prepayment_method: string | null
   total_amount: number
-  discount_amount?: number
   total_paid: number
   chat_id: string | null
   comment: string | null

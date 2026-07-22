@@ -75,7 +75,6 @@ export interface CreateOrderPayload {
   prepayment_method?: 'cash' | 'card' | 'transfer' | null
   prepayment_is_fiscal?: boolean
   parent_draft_id?: string | null
-  discount_amount?: number
   items: CreateOrderItemPayload[]
 }
 

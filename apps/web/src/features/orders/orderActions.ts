@@ -21,14 +21,13 @@ interface RepeatableItem {
 interface RepeatableOrder {
   customer_id?: string | null
   vehicle_info?: unknown
-  discount_amount?: number
   items?: RepeatableItem[]
 }
 
 /**
  * Готує payload для повторення замовлення (ORD-2) і кладе його в sessionStorage.
  * OrderFormPage при відкритті /orders/new зчитує його й заповнює форму
- * (клієнт, авто, позиції, знижка) — менеджеру лишається тільки підтвердити.
+ * (клієнт, авто, позиції) — менеджеру лишається тільки підтвердити.
  */
 export function startRepeatOrder(
   order: RepeatableOrder,
@@ -37,7 +36,6 @@ export function startRepeatOrder(
   const payload = {
     customer_id: order.customer_id ?? null,
     vehicle_info: order.vehicle_info ?? null,
-    discount_amount: order.discount_amount ?? 0,
     items: (order.items ?? []).map((it) => ({
       name: it.name,
       sku: it.sku ?? '',

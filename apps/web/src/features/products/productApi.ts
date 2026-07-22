@@ -36,6 +36,7 @@ export interface ProductFilters {
 type ProductRequestOptions = {
   silent?: boolean
   timeoutMs?: number
+  reuseExistingSku?: boolean
 }
 
 function buildQuery(filters: ProductFilters): string {
@@ -232,7 +233,10 @@ export const productApi = {
   create: async (form: ProductFormData, opts?: ProductRequestOptions) => {
     const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog?.saveProduct) {
-      const saved = await desktopCatalog.saveProduct(desktopCreatePayload(crypto.randomUUID(), form))
+      const saved = await desktopCatalog.saveProduct(
+        desktopCreatePayload(crypto.randomUUID(), form),
+        { reuseExistingSku: opts?.reuseExistingSku === true },
+      )
       requestDesktopSync()
       return { data: desktopProductToProduct(saved) }
     }

@@ -1196,7 +1196,6 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
          JOIN products p ON p.id = b.product_id AND p.tenant_id = b.tenant_id
          WHERE b.tenant_id = $1
            AND b.barcode = $2
-           AND b.deleted_at IS NULL
            AND b.product_id <> $3
            AND p.deleted_at IS NULL
          LIMIT 1`,
@@ -1222,25 +1221,21 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
     }
 
     await client.query(
-      `UPDATE product_barcodes
-       SET deleted_at = $3, updated_at = $3, is_primary = false
+      `DELETE FROM product_barcodes
        WHERE product_id = $1
          AND tenant_id = $2
-         AND deleted_at IS NULL
-         AND NOT (barcode = ANY($4::text[]))`,
-      [productId, tenantId, updatedAt, barcodes],
+         AND NOT (barcode = ANY($3::text[]))`,
+      [productId, tenantId, barcodes],
     )
 
     for (const barcode of barcodes) {
       await client.query(
         `INSERT INTO product_barcodes (
-          id, tenant_id, product_id, barcode, barcode_type, is_primary, created_at, updated_at, deleted_at
-        ) VALUES ($1, $2, $3, $4, 'ean13', $5, $6, $6, NULL)
+          id, tenant_id, product_id, barcode, barcode_type, is_primary, created_at
+        ) VALUES ($1, $2, $3, $4, 'ean13', $5, $6)
         ON CONFLICT (tenant_id, barcode) DO UPDATE SET
           product_id = excluded.product_id,
-          is_primary = excluded.is_primary,
-          updated_at = excluded.updated_at,
-          deleted_at = NULL
+          is_primary = excluded.is_primary
         WHERE product_barcodes.product_id = excluded.product_id`,
         [randomUUID(), tenantId, productId, barcode, barcode === payload.barcode, updatedAt],
       )
@@ -1258,10 +1253,9 @@ async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperat
       [operation.aggregate_id, tenantId, deletedAt],
     )
     await client.query(
-      `UPDATE product_barcodes
-       SET deleted_at = $3, updated_at = $3
+      `DELETE FROM product_barcodes
        WHERE product_id = $1 AND tenant_id = $2`,
-      [operation.aggregate_id, tenantId, deletedAt],
+      [operation.aggregate_id, tenantId],
     )
   })
 }

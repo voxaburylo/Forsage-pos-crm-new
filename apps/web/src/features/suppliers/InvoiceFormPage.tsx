@@ -32,6 +32,61 @@ interface LineItem {
   is_new?: boolean
   client_key: string
 }
+interface SupplyInvoiceLocalDraft {
+  supplierId: string
+  invoiceNumber: string
+  notes: string
+  items: LineItem[]
+  paidAmount: string
+  paymentMethod: 'cash' | 'card' | 'transfer'
+  fundSource: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
+  postImmediately: boolean
+  savedAt: string
+}
+
+function supplyInvoiceDraftKey(scope: string) {
+  return 'forsage:supply-invoice:' + scope + ':draft:v2'
+}
+
+function loadSupplyInvoiceDraft(key: string): SupplyInvoiceLocalDraft | null {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const draft = JSON.parse(raw) as Partial<SupplyInvoiceLocalDraft>
+    if (!Array.isArray(draft.items)) return null
+    return {
+      supplierId: String(draft.supplierId ?? ''),
+      invoiceNumber: String(draft.invoiceNumber ?? ''),
+      notes: String(draft.notes ?? ''),
+      items: draft.items.map((item) => ({
+        ...item,
+        client_key: item.client_key || makeLineKey(),
+        qty: Number(item.qty) || 0,
+        purchase_price: Number(item.purchase_price) || 0,
+        retail_price: Number(item.retail_price) || 0,
+        total: Number(item.total) || 0,
+        category_id: item.category_id ?? null,
+      })) as LineItem[],
+      paidAmount: String(draft.paidAmount ?? ''),
+      paymentMethod: draft.paymentMethod === 'card' || draft.paymentMethod === 'transfer' ? draft.paymentMethod : 'cash',
+      fundSource: draft.fundSource === 'owner_funds' || draft.fundSource === 'bank_account' || draft.fundSource === 'business_card'
+        ? draft.fundSource
+        : 'cashbox',
+      postImmediately: draft.postImmediately !== false,
+      savedAt: String(draft.savedAt ?? new Date().toISOString()),
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveSupplyInvoiceDraft(key: string, draft: Omit<SupplyInvoiceLocalDraft, 'savedAt'>) {
+  localStorage.setItem(key, JSON.stringify({ ...draft, savedAt: new Date().toISOString() }))
+}
+
+function clearSupplyInvoiceDraft(key: string) {
+  localStorage.removeItem(key)
+}
 type InvoiceImportField = 'sku' | 'name' | 'barcode' | 'unit' | 'qty' | 'purchase' | 'retail' | 'storage_bin'
 type InvoiceImportMapping = Record<InvoiceImportField, number | null>
 
@@ -58,7 +113,7 @@ const INVOICE_IMPORT_FIELDS: Array<{ field: InvoiceImportField; label: string; r
 ]
 
 function normalizeSkuValue(raw: string): string {
-  return raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
+  return raw.trim().toLocaleUpperCase('uk-UA')
 }
 
 function normalizeBarcodeValue(raw: unknown): string {
@@ -68,50 +123,34 @@ function normalizeBarcodeValue(raw: unknown): string {
     .replace(/\.0+$/, '')
 }
 
-function normalizeInvoiceProductName(raw: unknown): string {
+function normalizeExactInvoiceProductName(raw: unknown): string {
   return String(raw ?? '')
     .toLocaleLowerCase('uk-UA')
-    .replace(/ё/g, 'е')
-    .replace(/ґ/g, 'г')
-    .replace(/[їіы]/g, 'и')
-    .replace(/є/g, 'е')
-    .replace(/э/g, 'е')
-    .replace(/[ьъ]/g, '')
-    .replace(/\bnew\s+ton\b/g, 'newton')
-    .replace(/\bнью\s+тон\b/g, 'newton')
-    .replace(/\bчорн\w*\b|\bчерн\w*\b/g, 'черн')
-    .replace(/\bсір\w*\b|\bсер\w*\b/g, 'сер')
-    .replace(/\bбілий\b|\bбелый\b|\bбіла\b|\bбелая\b|\bбілі\b|\bбелые\b/g, 'бел')
-    .replace(/\bпрозор\w*\b|\bпрозрач\w*\b/g, 'прозрач')
-    .replace(/\bуніверс\w*\b|\bуниверс\w*\b/g, 'универс')
-    .replace(/\bаерозол\w*\b|\bаэрозол\w*\b/g, 'аерозол')
-    .replace(/\bфарба\b|\bкраска\b/g, 'фарба')
-    .replace(/\bгрунт\w*\b/g, 'грунт')
-    .replace(/\((?:\s*\d+\s*(?:шт|штук|уп|ящ|pcs?)?\s*)+\)/gi, ' ')
-    .replace(/[^a-zа-я0-9]+/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
-function invoiceNameTokens(raw: unknown): string[] {
-  const stop = new Set(['для', 'при', 'под', 'над', 'без', 'все', 'шт', 'уп', 'ящ', 'мл', 'гр', 'кг', 'л'])
-  return normalizeInvoiceProductName(raw)
-    .split(' ')
-    .filter((token) => token.length >= 2 && !stop.has(token))
-}
+function findExactProductForQuery(query: string, products: Product[]): Product | null {
+  const trimmedQuery = query.trim()
+  if (!trimmedQuery) return null
 
-function invoiceNameMatchScore(query: string, candidate: string): number {
-  const q = normalizeInvoiceProductName(query)
-  const c = normalizeInvoiceProductName(candidate)
-  if (!q || !c) return 0
-  if (q === c) return 1
-  if (q.length >= 18 && (q.includes(c) || c.includes(q))) return 0.96
-  const qTokens = new Set(invoiceNameTokens(q))
-  const cTokens = new Set(invoiceNameTokens(c))
-  if (qTokens.size < 3 || cTokens.size < 3) return 0
-  let common = 0
-  for (const token of qTokens) if (cTokens.has(token)) common += 1
-  return common / Math.max(qTokens.size, cTokens.size)
+  const normalizedSku = normalizeSkuValue(trimmedQuery)
+  const normalizedBarcode = normalizeBarcodeValue(trimmedQuery)
+  const identifierMatches = products.filter((product) => {
+    const skuMatches = Boolean(product.sku?.trim()) && normalizeSkuValue(product.sku) === normalizedSku
+    const barcodes = [product.barcode, ...(product.additional_barcodes ?? [])]
+      .map(normalizeBarcodeValue)
+      .filter(Boolean)
+    return skuMatches || Boolean(normalizedBarcode && barcodes.includes(normalizedBarcode))
+  })
+  const uniqueIdentifierMatches = [...new Map(identifierMatches.map((product) => [product.id, product])).values()]
+  if (uniqueIdentifierMatches.length === 1) return uniqueIdentifierMatches[0]
+  if (uniqueIdentifierMatches.length > 1) return null
+
+  const normalizedName = normalizeExactInvoiceProductName(trimmedQuery)
+  const nameMatches = products.filter((product) => normalizeExactInvoiceProductName(product.name) === normalizedName)
+  const uniqueNameMatches = [...new Map(nameMatches.map((product) => [product.id, product])).values()]
+  return uniqueNameMatches.length === 1 ? uniqueNameMatches[0] : null
 }
 function parseDecimalInput(raw: unknown, fallback = 0): number {
   const normalized = String(raw ?? '')
@@ -430,6 +469,13 @@ export default function InvoiceFormPage() {
   const [searchParams] = useSearchParams()
   const isEdit = Boolean(id)
   const preSelectedSupplier = searchParams.get('supplier_id') ?? ''
+  const cloneId = searchParams.get('clone')
+  const invoiceDraftKey = useMemo(() => {
+    if (isEdit && id) return supplyInvoiceDraftKey('edit-' + id)
+    if (cloneId) return supplyInvoiceDraftKey('clone-' + cloneId)
+    return supplyInvoiceDraftKey('new')
+  }, [cloneId, id, isEdit])
+  const invoiceDraftReadyRef = useRef(false)
 
   const [supplierId, setSupplierId] = useState(preSelectedSupplier)
   const [invoiceNumber, setInvoiceNumber] = useState('')
@@ -444,6 +490,7 @@ export default function InvoiceFormPage() {
   const [replaceSearch, setReplaceSearch] = useState('')
   const [replaceResults, setReplaceResults] = useState<Product[]>([])
   const [replaceSearching, setReplaceSearching] = useState(false)
+  const [problemLineKey, setProblemLineKey] = useState<string | null>(null)
 
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
@@ -470,6 +517,51 @@ export default function InvoiceFormPage() {
   const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
+
+  function applySupplyInvoiceDraft(draft: SupplyInvoiceLocalDraft, fallbackSupplier = preSelectedSupplier) {
+    setSupplierId(draft.supplierId || fallbackSupplier)
+    setInvoiceNumber(draft.invoiceNumber)
+    setNotes(draft.notes)
+    setItems(draft.items)
+    setPaidAmount(draft.paidAmount)
+    setPaymentMethod(draft.paymentMethod)
+    setFundSource(draft.fundSource)
+    setPostImmediately(draft.postImmediately)
+  }
+
+  useEffect(() => {
+    if (isEdit || cloneId) return
+    invoiceDraftReadyRef.current = false
+    const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
+    if (draft) {
+      applySupplyInvoiceDraft(draft, preSelectedSupplier)
+      toast.success('Чернетку накладної відновлено')
+    }
+    const timer = window.setTimeout(() => { invoiceDraftReadyRef.current = true }, 0)
+    return () => window.clearTimeout(timer)
+  }, [cloneId, invoiceDraftKey, isEdit, preSelectedSupplier])
+
+  useEffect(() => {
+    if (!invoiceDraftReadyRef.current) return
+    const timer = window.setTimeout(() => {
+      const hasDraft = Boolean(supplierId || invoiceNumber.trim() || notes.trim() || paidAmount.trim() || items.length > 0)
+      if (!hasDraft) {
+        clearSupplyInvoiceDraft(invoiceDraftKey)
+        return
+      }
+      saveSupplyInvoiceDraft(invoiceDraftKey, {
+        supplierId,
+        invoiceNumber,
+        notes,
+        items,
+        paidAmount,
+        paymentMethod,
+        fundSource,
+        postImmediately,
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately])
 
   const invoiceImportPreview = useMemo(
     () => buildInvoiceImportItems(invoiceImportRows, invoiceImportMapping, invoiceImportStartRow),
@@ -529,12 +621,10 @@ export default function InvoiceFormPage() {
   // Якщо редагування — завантажуємо накладну
   useEffect(() => {
     if (id) {
+      invoiceDraftReadyRef.current = false
       supplierApi.getInvoice(id).then((res) => {
         const inv = res.data
-        setSupplierId(inv.supplier_id ?? '')
-        setInvoiceNumber(inv.invoice_number ?? '')
-        setNotes(inv.notes ?? '')
-        setItems((inv.items ?? []).map((i) => ({
+        const loadedItems = (inv.items ?? []).map((i) => ({
           client_key: makeLineKey(),
           product_id: i.product_id,
           product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
@@ -548,24 +638,36 @@ export default function InvoiceFormPage() {
           barcode: (i.product as any)?.barcode ?? '',
           unit: normalizeInvoiceUnit((i.product as any)?.unit),
           photo_url: (i.product as any)?.photo_url ?? null,
-        })))
+        }))
+        const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
+        if (draft) {
+          applySupplyInvoiceDraft(draft, inv.supplier_id ?? '')
+          toast.success('Чернетку накладної відновлено')
+        } else {
+          setSupplierId(inv.supplier_id ?? '')
+          setInvoiceNumber(inv.invoice_number ?? '')
+          setNotes(inv.notes ?? '')
+          setItems(loadedItems)
+        }
       }).catch(() => {
         toast.error('Не вдалось завантажити накладну')
         navigate('/suppliers')
-      }).finally(() => setLoading(false))
+      }).finally(() => {
+        setLoading(false)
+        invoiceDraftReadyRef.current = true
+      })
     }
-  }, [id])
+  }, [id, invoiceDraftKey])
 
   // Дублювання: /suppliers/invoices/new?clone=<id> — копіюємо постачальника й позиції,
   // номер лишаємо порожнім (новий), статус — чернетка.
-  const cloneId = searchParams.get('clone')
   useEffect(() => {
     if (id || !cloneId) return
     setLoading(true)
+    invoiceDraftReadyRef.current = false
     supplierApi.getInvoice(cloneId).then((res) => {
       const inv = res.data
-      setSupplierId(inv.supplier_id ?? '')
-      setItems((inv.items ?? []).map((i) => ({
+      const loadedItems = (inv.items ?? []).map((i) => ({
         client_key: makeLineKey(),
         product_id: i.product_id,
         product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
@@ -579,11 +681,22 @@ export default function InvoiceFormPage() {
         barcode: (i.product as any)?.barcode ?? '',
         unit: normalizeInvoiceUnit((i.product as any)?.unit),
         photo_url: (i.product as any)?.photo_url ?? null,
-      })))
-      toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
+      }))
+      const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
+      if (draft) {
+        applySupplyInvoiceDraft(draft, inv.supplier_id ?? '')
+        toast.success('Чернетку накладної відновлено')
+      } else {
+        setSupplierId(inv.supplier_id ?? '')
+        setItems(loadedItems)
+        toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
+      }
     }).catch(() => toast.error('Не вдалось завантажити накладну для копіювання'))
-      .finally(() => setLoading(false))
-  }, [cloneId, id])
+      .finally(() => {
+        setLoading(false)
+        invoiceDraftReadyRef.current = true
+      })
+  }, [cloneId, id, invoiceDraftKey])
 
   // Пошук товарів
   const searchProducts = useCallback(async (q: string) => {
@@ -631,7 +744,7 @@ export default function InvoiceFormPage() {
       return
     }
 
-    const existingResult = productResults[0]
+    const existingResult = findExactProductForQuery(query, productResults)
     if (existingResult) {
       addItem(existingResult)
       return
@@ -639,8 +752,9 @@ export default function InvoiceFormPage() {
 
     try {
       const res = await productApi.list({ search: query, per_page: 10 })
-      if (res.data[0]) {
-        addItem(res.data[0])
+      const exactResult = findExactProductForQuery(query, res.data)
+      if (exactResult) {
+        addItem(exactResult)
         return
       }
     } catch {
@@ -676,6 +790,31 @@ export default function InvoiceFormPage() {
       const el = refsForField(field).current[index]
       if (el) { el.focus(); el.select() }
     }, 0)
+  }
+
+  function raiseInvoiceLineProblem(rowKey: string, message: string) {
+    const index = items.findIndex((candidate) => candidate.client_key === rowKey)
+    const item = index >= 0 ? items[index] : null
+    setProblemLineKey(rowKey)
+    if (item) {
+      setReplaceLineKey(rowKey)
+      setReplaceSearch(item.product_name || item.sku || item.barcode || '')
+      setReplaceResults([])
+    }
+    toast.error(message)
+    window.setTimeout(() => {
+      if (index >= 0) {
+        const el = skuRefs.current[index] ?? rowNameRefs.current[index]
+        el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        focusRowField(index, 'sku')
+      }
+    }, 0)
+  }
+
+  function makeInvoiceLineProblemError() {
+    const err = new Error('INVOICE_LINE_PROBLEM')
+    err.name = 'InvoiceLineProblem'
+    return err
   }
 
   function handleRowFieldKeyDown(e: React.KeyboardEvent<HTMLInputElement>, index: number, field: RowField) {
@@ -827,6 +966,7 @@ export default function InvoiceFormPage() {
     setItems((prev) => {
       const next = [...prev]
       const item = { ...next[index] }
+      if (problemLineKey === item.client_key) setProblemLineKey(null)
       if (field === 'qty') {
         const qty = parseDecimalInput(value, 0)
         item.qty = qty > 0 ? qty : 0
@@ -1164,6 +1304,7 @@ export default function InvoiceFormPage() {
       return prev.map((item) => item.client_key === rowKey ? bindExistingProductToItem(item, product) : item)
     })
     setSelectedLineKeys((prev) => prev.filter((key) => key !== rowKey))
+    setProblemLineKey((key) => key === rowKey ? null : key)
     closeReplaceProductSearch()
     productApi.getSupplierPrices(product.id)
       .then((r) => setSupplierPrices((prev) => ({ ...prev, [product.id]: r.data ?? [] })))
@@ -1271,6 +1412,9 @@ export default function InvoiceFormPage() {
     }
 
     if (skuTrim) {
+      const localBySku = await desktopBridge()?.catalog.findBySku?.(skuTrim)
+      if (localBySku) pushMatch(desktopProductToProduct(localBySku))
+
       const existing = await productApi.list({ search: skuTrim, per_page: 30 })
       const normalizedSku = normalizeSkuValue(skuTrim)
       const match = existing.data.find((p) => normalizeSkuValue(p.sku || '') === normalizedSku)
@@ -1293,17 +1437,14 @@ export default function InvoiceFormPage() {
     }
     if (uniqueExactMatches.length === 1) return uniqueExactMatches[0]
 
-    if (nameTrim.length >= 6) {
+    if (nameTrim.length >= 2) {
       const existing = await productApi.list({ search: nameTrim, per_page: 50 })
-      const scored = existing.data
-        .map((product) => ({ product, score: invoiceNameMatchScore(nameTrim, product.name || '') }))
-        .filter((entry) => entry.score >= 0.92)
-        .sort((a, b) => b.score - a.score)
-      if (scored.length > 0) {
-        const best = scored[0]
-        const second = scored[1]
-        if (!second || best.score - second.score >= 0.04 || best.score === 1) return best.product
-      }
+      const exactName = normalizeExactInvoiceProductName(nameTrim)
+      const exactMatches = existing.data.filter(
+        (product) => normalizeExactInvoiceProductName(product.name) === exactName,
+      )
+      const uniqueExactMatches = [...new Map(exactMatches.map((product) => [product.id, product])).values()]
+      if (uniqueExactMatches.length === 1) return uniqueExactMatches[0]
     }
 
     return null
@@ -1343,6 +1484,23 @@ export default function InvoiceFormPage() {
 
       const resolvedItems: LineItem[] = []
       for (const item of items) {
+        // Перед проведенням ще раз шукаємо точний збіг у базі за артикулом/ШК.
+        // Якщо постачальник прислав рядок з уже існуючим артикулом — приймаємо товар
+        // на існуючу картку, а не створюємо дубль і не блокуємо накладну.
+        let exactMatch: Product | null = null
+        try {
+          exactMatch = await findExistingProductForItem(item)
+        } catch (lineErr) {
+          const message = lineErr instanceof Error ? lineErr.message : 'У цьому рядку конфлікт артикула або штрихкоду'
+          raiseInvoiceLineProblem(item.client_key, message)
+          throw makeInvoiceLineProblemError()
+        }
+        if (exactMatch) {
+          rememberProduct(exactMatch)
+          resolvedItems.push(bindProductToItem(item, exactMatch))
+          continue
+        }
+
         if (item.product_id && !item.is_new) {
           resolvedItems.push(item)
           continue
@@ -1351,15 +1509,6 @@ export default function InvoiceFormPage() {
         const cached = cachedProductForItem(item)
         if (cached) {
           resolvedItems.push(bindProductToItem(item, cached))
-          continue
-        }
-
-        // Якщо рядок з телефона повторює вже наявний товар за артикулом або ШК —
-        // прив'язуємо його до існуючого товару, а не змушуємо відкривати модалку.
-        const match = await findExistingProductForItem(item)
-        if (match) {
-          rememberProduct(match)
-          resolvedItems.push(bindProductToItem(item, match))
           continue
         }
 
@@ -1387,9 +1536,20 @@ export default function InvoiceFormPage() {
           photo_url: item.photo_url || null,
           specs: {}
         }
-        const res = await productApi.create(form, { silent: true })
-        rememberProduct(res.data)
-        resolvedItems.push({ ...item, product_id: res.data.id, is_new: false, sku: genSku, product_name: genName })
+        try {
+          const res = await productApi.create(form, { silent: true, reuseExistingSku: true })
+          rememberProduct(res.data)
+          resolvedItems.push(bindProductToItem(item, res.data))
+        } catch (createErr) {
+          if (!isDuplicateProductError(createErr)) throw createErr
+          const duplicateMatch = await findExistingProductForItem({ ...item, sku: genSku, product_name: genName })
+          if (!duplicateMatch) {
+            raiseInvoiceLineProblem(item.client_key, duplicateProductMessage(createErr, item.product_name || genSku))
+            throw makeInvoiceLineProblemError()
+          }
+          rememberProduct(duplicateMatch)
+          resolvedItems.push(bindProductToItem(item, duplicateMatch))
+        }
       }
 
       const body = {
@@ -1429,13 +1589,18 @@ export default function InvoiceFormPage() {
           resolvedItems.map(async (item) => {
             const patch: Partial<ProductFormData> = {
               name: item.product_name,
-              sku: item.sku,
               category_id: item.category_id ?? '',
               storage_bin: item.storage_bin ?? '',
+              is_active: true,
             }
             if (item.retail_price > 0) patch.retail_price = kopecksForForm(item.retail_price)
             if (item.photo_url) patch.photo_url = item.photo_url   // фото з накладної → у товар при проведенні
-            await productApi.update(item.product_id!, patch)
+            try {
+              await productApi.update(item.product_id!, patch, { silent: true })
+            } catch {
+              // Накладна вже створена. Оновлення назви/комірки/ціни не повинно
+              // ламати проведення через конфлікт у карточці товару.
+            }
           })
         )
 
@@ -1471,8 +1636,12 @@ export default function InvoiceFormPage() {
           toast.success('Накладну створено')
         }
       }
+      clearSupplyInvoiceDraft(invoiceDraftKey)
       navigate(`/suppliers/invoices`)
     } catch (err) {
+      if ((err as Error)?.name === 'InvoiceLineProblem') {
+        return
+      }
       if (isDuplicateProductError(err)) {
         toast.error(duplicateProductMessage(err))
       } else {
@@ -1483,12 +1652,17 @@ export default function InvoiceFormPage() {
     }
   }
 
+  function closeInvoiceForm() {
+    clearSupplyInvoiceDraft(invoiceDraftKey)
+    navigate('/suppliers/invoices')
+  }
+
   if (loading) return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>
 
   return (
     <Layout
       title={isEdit ? 'Редагувати накладну' : 'Нова приходна накладна'}
-      onBack={() => navigate('/suppliers/invoices')}
+      onBack={closeInvoiceForm}
     >
       <form onSubmit={handleSubmit}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -1546,7 +1720,7 @@ export default function InvoiceFormPage() {
             {importTab === 'manual' && (
               <div className="space-y-2">
                 <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" />
-                <p className="text-xs text-gray-400">У локальній програмі: Enter у пошуку додає перший знайдений товар; Enter у рядку переходить до наступного поля.</p>
+                <p className="text-xs text-gray-400">Enter додає існуючий товар лише за точним штрихкодом, артикулом або точною назвою. Якщо точного збігу немає — створюється новий рядок.</p>
               </div>
             )}
 
@@ -1697,8 +1871,9 @@ export default function InvoiceFormPage() {
                 const prices = item.product_id ? (supplierPrices[item.product_id] ?? []) : []
                 const best = prices[0]
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
+                const hasProblem = problemLineKey === item.client_key
                 return (
-                <tr key={item.client_key} className="border-b border-gray-50 hover:bg-gray-50/50">
+                <tr key={item.client_key} className={hasProblem ? 'border-b border-red-200 bg-red-50/80 ring-2 ring-red-200' : 'border-b border-gray-50 hover:bg-gray-50/50'}>
                   <td className="px-2 py-2 text-center">
                     <input
                       type="checkbox"
@@ -1733,6 +1908,11 @@ export default function InvoiceFormPage() {
                       )}
                     </div>
                     {renderReplaceProductSearch(item.client_key)}
+                    {problemLineKey === item.client_key && (
+                      <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
+                        Проблемний рядок: змініть артикул або виберіть товар через стрілку ⌄.
+                      </div>
+                    )}
                     <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
                       <span className="text-gray-400 font-semibold uppercase text-[10px]">SKU:</span>
                       <input ref={(el) => { skuRefs.current[i] = el }} type="text" value={item.sku}
@@ -1894,8 +2074,10 @@ export default function InvoiceFormPage() {
 
           {/* Мобільний вигляд позицій — картки замість широкої таблиці */}
           <div className="md:hidden divide-y divide-gray-100">
-            {items.map((item, i) => (
-              <div key={item.client_key} className="p-3 space-y-3">
+            {items.map((item, i) => {
+              const hasProblem = problemLineKey === item.client_key
+              return (
+              <div key={item.client_key} className={hasProblem ? 'p-3 space-y-3 bg-red-50 ring-2 ring-red-200' : 'p-3 space-y-3'}>
                 <div className="flex items-start gap-2">
                   <input
                     type="checkbox"
@@ -1927,6 +2109,11 @@ export default function InvoiceFormPage() {
                       )}
                     </div>
                     {renderReplaceProductSearch(item.client_key)}
+                    {problemLineKey === item.client_key && (
+                      <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
+                        Проблемний рядок: змініть артикул або виберіть товар через стрілку ⌄.
+                      </div>
+                    )}
                   </div>
                   {!isEdit && (
                     <button type="button" onClick={() => removeItem(i)}
@@ -2061,7 +2248,8 @@ export default function InvoiceFormPage() {
                   <span className="text-sm font-semibold font-mono">Сума: {formatMoney(item.total)}</span>
                 </div>
               </div>
-            ))}
+              )
+            })}
             {items.length === 0 && (
               <div className="text-center text-gray-400 text-sm py-6">Позицій немає. Додайте перший рядок кнопкою нижче.</div>
             )}
@@ -2145,7 +2333,7 @@ export default function InvoiceFormPage() {
           <Button type="submit" disabled={saving}>
             {saving ? 'Збереження...' : isEdit ? 'Оновити' : postImmediately ? 'Створити і провести' : 'Створити чернетку'}
           </Button>
-          <Button type="button" variant="outline" onClick={() => navigate('/suppliers/invoices')}>Скасувати</Button>
+          <Button type="button" variant="outline" onClick={closeInvoiceForm}>Скасувати</Button>
           {!isEdit && (
             <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-1">
               <input type="checkbox" checked={postImmediately} onChange={(e) => setPostImmediately(e.target.checked)}

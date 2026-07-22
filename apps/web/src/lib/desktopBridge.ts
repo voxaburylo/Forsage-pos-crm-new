@@ -244,6 +244,7 @@ interface ForsageDesktopBridge {
   catalog: {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
+    findBySku?: (sku: string) => Promise<DesktopProduct | null>
     listProducts?: (options?: DesktopCatalogListOptions) => Promise<DesktopCatalogListResult>
     listProductBarcodes?: () => Promise<Array<{ product_id: string; barcode: string; is_primary?: number }>>
     listCategories?: () => Promise<Array<{ id: string; name: string; sort_order: number }>>
@@ -300,7 +301,7 @@ interface ForsageDesktopBridge {
       storage_bin?: string | null
       photo_url?: string | null
       specs?: Record<string, string>
-    }) => Promise<DesktopProduct>
+    }, options?: { reuseExistingSku?: boolean }) => Promise<DesktopProduct>
     savePhoto?: (folder: string, bytes: ArrayBuffer) => Promise<string>
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>

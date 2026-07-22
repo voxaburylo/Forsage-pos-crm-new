@@ -114,6 +114,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   )
   const _toPay = Math.max(0, store.total - _bonusRedeemed)
 
+  if (!open) return null
+
   // Діалог: проведіть оплату на терміналі і введіть код авторизації
   if (terminalStep === 'waiting_auth') {
     return (
@@ -149,12 +151,14 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
           <div className="flex gap-3">
             <button
+              type="button"
               onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false); setLoading(false) }}
               className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700"
             >
               Скасувати
             </button>
             <button
+              type="button"
               onClick={confirmTerminalPayment}
               disabled={loading}
               className="flex-1 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold disabled:opacity-40"
@@ -168,8 +172,6 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       </div>
     )
   }
-
-  if (!open) return null
 
   const bonusRedeemed = Math.min(
     Math.round(parseFloat(bonusInput || '0') * 100), maxBonus, bonusBalance,
@@ -243,7 +245,14 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-black/70"
+        onPointerDown={(event) => {
+          // Закриваємо лише за реальним натисканням на фон. Звичайний click
+          // може «долетіти» сюди від кнопки, яка щойно відкрила модалку.
+          if (event.button === 0 && !loading) onClose()
+        }}
+      />
       <div className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
 
         <div className="shrink-0 border-b border-gray-800 px-6 py-4">
@@ -292,6 +301,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           <div className="grid grid-cols-3 gap-2">
             {METHODS.slice(0, 3).map((m) => (
               <button key={m.id}
+                type="button"
                 disabled={offline && !['cash', 'transfer'].includes(m.id)}
                 onClick={() => { if ((!offline || ['cash', 'transfer'].includes(m.id)) && (!m.requireCustomer || store.customer)) setMethod(m.id) }}
                 style={{ minHeight: 52 }}
@@ -305,6 +315,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           <div className="grid grid-cols-2 gap-2">
             {METHODS.slice(3).map((m) => (
               <button key={m.id}
+                type="button"
                 disabled={offline}
                 onClick={() => { if (!offline && (!m.requireCustomer || store.customer)) setMethod(m.id) }}
                 style={{ minHeight: 44 }}
@@ -412,6 +423,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
           {/* Кнопки */}
           <button
+            type="button"
             onClick={() => handleConfirm(true)}
             disabled={loading || !cashValid || !debtOk || !splitValid}
             className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-yellow-400/50 bg-yellow-400/10 px-4 py-3 font-bold text-yellow-300 transition-colors hover:bg-yellow-400/20 disabled:cursor-not-allowed disabled:opacity-40"
@@ -420,9 +432,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             ОПЛАТИТИ Й НАДРУКУВАТИ ЧЕК
           </button>
           <div className="flex gap-3">
-            <button onClick={onClose}
+            <button type="button" onClick={onClose}
               className="flex-1 py-4 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">Скасувати</button>
-            <button onClick={() => handleConfirm(false)}
+            <button type="button" onClick={() => handleConfirm(false)}
               disabled={loading || !cashValid || !debtOk || !splitValid}
               style={{ minHeight: 56 }}
               className="flex-1 py-4 rounded-xl bg-yellow-400 text-black font-bold hover:bg-yellow-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">

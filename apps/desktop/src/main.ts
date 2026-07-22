@@ -292,6 +292,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:find-by-id', (_event, id: string) =>
     requireLocalCatalog().findById(id),
   )
+  ipcMain.handle('desktop:catalog:find-by-sku', (_event, sku: string) =>
+    requireLocalCatalog().findBySku(sku),
+  )
   ipcMain.handle('desktop:catalog:list-products', (_event, options) =>
     requireLocalCatalog().listProducts(options),
   )
@@ -363,8 +366,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:upsert-product', (_event, product: LocalProductUpsert) =>
     requireLocalCatalog().upsertProduct(product),
   )
-  ipcMain.handle('desktop:catalog:save-product', (_event, product: LocalProductUpsert) =>
-    requireLocalCatalog().saveProduct(product),
+  ipcMain.handle('desktop:catalog:save-product', (_event, product: LocalProductUpsert, options) =>
+    requireLocalCatalog().saveProduct(product, options),
   )
   ipcMain.handle('desktop:catalog:delete-product', (_event, id: string) =>
     requireLocalCatalog().deleteProduct(id),

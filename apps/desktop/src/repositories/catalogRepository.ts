@@ -38,6 +38,10 @@ export interface LocalProductListResult {
   total: number
 }
 
+export interface LocalProductSaveOptions {
+  reuseExistingSku?: boolean
+}
+
 export interface LocalCatalogCategory {
   id: string
   name: string
@@ -84,6 +88,10 @@ function productSearchTokens(raw: string): string[] {
 
 function compactLookupCode(raw: string): string {
   return raw.replace(/[\s\-._/]+/g, '').trim()
+}
+
+function normalizedSkuLookup(raw: string): string {
+  return raw.normalize('NFKC').trim().toLocaleUpperCase('uk-UA')
 }
 
 function productSearchText(product: LocalProductUpsert): string {
@@ -144,7 +152,29 @@ export class LocalCatalogRepository {
     }
   }
 
-  saveProduct(input: LocalProductUpsert): LocalProduct {
+  saveProduct(input: LocalProductUpsert, options: LocalProductSaveOptions = {}): LocalProduct {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const storedById = this.findStoredProductById(input.id, tenantId)
+
+    // Для накладної повторний код постачальника повинен прив'язатися до вже
+    // відомої активної картки. Звичайне створення товару й надалі показує
+    // зрозумілу помилку про дублікат активного артикула.
+    if (!storedById) {
+      const storedBySku = this.findStoredProductBySku(input.sku, tenantId, true)
+      if (storedBySku) {
+        if (storedBySku.deleted_at) {
+          if (options.reuseExistingSku) {
+            const activeReplacement = this.findActiveReplacement(input, storedBySku, tenantId)
+            if (activeReplacement) return activeReplacement
+          }
+          return this.restoreStoredProduct(storedBySku, tenantId)
+        }
+        const existing = this.findById(storedBySku.id, tenantId)
+        if (existing && options.reuseExistingSku) return existing
+        throw new Error(`Товар з артикулом "${input.sku}" вже існує`)
+      }
+    }
+
     const product = this.upsertProduct(input)
     this.addProductOutbox('product.upsert', product.id, input)
     return product
@@ -323,6 +353,145 @@ export class LocalCatalogRepository {
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).get(id, tenantId) as LocalProduct | undefined
     return row ?? null
+  }
+
+  findBySku(sku: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
+    const active = this.findStoredProductBySku(sku, tenantId, false)
+    if (active) return active as LocalProduct
+
+    // Старі імпорти використовували код постачальника як SKU, а після
+    // очищення дублів така картка лишилась tombstone. Використовуємо її як
+    // місток до єдиної активної картки з тим самим штрихкодом або назвою.
+    const deleted = this.findStoredProductBySku(sku, tenantId, true)
+    if (!deleted?.deleted_at) return null
+    return this.findActiveReplacement({
+      id: deleted.id,
+      sku: deleted.sku,
+      name: deleted.name,
+      barcode: deleted.barcode,
+    }, deleted, tenantId)
+  }
+
+  private findStoredProductById(id: string, tenantId: string): (LocalProduct & { deleted_at: string | null }) | null {
+    const row = this.db.prepare(`
+      SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
+             purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
+             is_service, storage_bin, is_favorite, photo_url, specs_json, deleted_at
+      FROM products
+      WHERE id = ? AND tenant_id = ?
+      LIMIT 1
+    `).get(id, tenantId) as (LocalProduct & { deleted_at: string | null }) | undefined
+    return row ?? null
+  }
+
+  private findStoredProductBySku(
+    sku: string,
+    tenantId: string,
+    includeDeleted: boolean,
+  ): (LocalProduct & { deleted_at: string | null }) | null {
+    const raw = sku.normalize('NFKC').trim()
+    if (!raw) return null
+
+    const deletedClause = includeDeleted ? '' : 'AND deleted_at IS NULL'
+    const exact = this.db.prepare(`
+      SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
+             purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
+             is_service, storage_bin, is_favorite, photo_url, specs_json, deleted_at
+      FROM products
+      WHERE tenant_id = ?
+        ${deletedClause}
+        AND trim(sku) = ? COLLATE NOCASE
+      ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC
+      LIMIT 1
+    `).get(tenantId, raw) as (LocalProduct & { deleted_at: string | null }) | undefined
+    if (exact) return exact
+
+    const lookup = normalizedSkuLookup(raw)
+    if (!lookup) return null
+    const candidates = this.db.prepare(`
+      SELECT id, sku, deleted_at
+      FROM products
+      WHERE tenant_id = ?
+        ${deletedClause}
+      ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC
+    `).all(tenantId) as unknown as Array<{ id: string; sku: string; deleted_at: string | null }>
+    const candidate = candidates.find((row) => normalizedSkuLookup(row.sku) === lookup)
+    return candidate ? this.findStoredProductById(candidate.id, tenantId) : null
+  }
+
+  private restoreStoredProduct(
+    stored: LocalProduct & { deleted_at: string | null },
+    tenantId: string,
+  ): LocalProduct {
+    const timestamp = nowIso()
+    const searchText = normalizeSearchText([
+      stored.sku,
+      stored.name,
+      stored.barcode,
+      stored.storage_bin,
+    ].filter(Boolean).join(' '))
+    this.db.prepare(`
+      UPDATE products
+      SET deleted_at = NULL, is_active = 1, search_text = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(searchText, timestamp, timestamp, stored.id, tenantId)
+
+    const restored = this.findById(stored.id, tenantId)
+    if (!restored) throw new Error('LOCAL_PRODUCT_RESTORE_FAILED')
+    this.addProductOutbox('product.upsert', restored.id, {
+      id: restored.id,
+      tenant_id: tenantId,
+      sku: restored.sku,
+      name: restored.name,
+      barcode: restored.barcode,
+      brand_id: restored.brand_id,
+      category_id: restored.category_id,
+      unit: restored.unit,
+      purchase_price: restored.purchase_price,
+      retail_price: restored.retail_price,
+      qty_on_hand: restored.qty_on_hand,
+      reorder_point: (restored as any).reorder_point ?? 0,
+      notes: (restored as any).notes ?? null,
+      is_active: true,
+      is_service: restored.is_service === 1,
+      storage_bin: restored.storage_bin,
+      is_favorite: (restored as any).is_favorite === 1,
+      photo_url: (restored as any).photo_url ?? null,
+    })
+    return restored
+  }
+
+  private findActiveReplacement(
+    input: LocalProductUpsert,
+    deletedProduct: LocalProduct & { deleted_at: string | null },
+    tenantId: string,
+  ): LocalProduct | null {
+    for (const barcode of [input.barcode, deletedProduct.barcode]) {
+      const normalized = String(barcode ?? '').trim()
+      if (!normalized) continue
+      const byBarcode = this.findByBarcode(normalized, tenantId)
+      if (byBarcode && byBarcode.id !== deletedProduct.id) return byBarcode
+    }
+
+    const wantedNames = new Set(
+      [input.name, deletedProduct.name]
+        .map((name) => normalizeSearchText(name))
+        .filter((name) => name.length >= 6),
+    )
+    if (wantedNames.size === 0) return null
+
+    const candidates = this.db.prepare(`
+      SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
+             purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
+             is_service, storage_bin, is_favorite, photo_url, specs_json
+      FROM products
+      WHERE tenant_id = ?
+        AND deleted_at IS NULL
+        AND is_active = 1
+        AND id <> ?
+    `).all(tenantId, deletedProduct.id) as unknown as LocalProduct[]
+    const exactNameMatches = candidates.filter((candidate) => wantedNames.has(normalizeSearchText(candidate.name)))
+    return exactNameMatches.length === 1 ? exactNameMatches[0] : null
   }
 
   listProductBarcodes(tenantId = DEFAULT_TENANT_ID): Array<{ product_id: string; barcode: string; is_primary: number }> {

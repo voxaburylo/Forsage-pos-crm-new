@@ -99,6 +99,53 @@ const emptyQuickProduct = {
   storage_bin: '',
 }
 
+type InventoryQuickProductDraft = typeof emptyQuickProduct
+
+interface InventoryLocalDraft {
+  query: string
+  selected: ProductInfo | null
+  qty: string
+  quickCreateOpen: boolean
+  quickProduct: InventoryQuickProductDraft
+  priceStatus: 'unchecked' | 'match' | 'mismatch'
+  observedPrice: string
+  applyNewPrice: boolean
+  savedAt: string
+}
+
+function inventoryDraftKey(sessionId: string) {
+  return `forsage:inventory:${sessionId}:active-draft:v1`
+}
+
+function loadInventoryLocalDraft(sessionId: string): InventoryLocalDraft | null {
+  try {
+    const raw = localStorage.getItem(inventoryDraftKey(sessionId))
+    if (!raw) return null
+    const draft = JSON.parse(raw) as Partial<InventoryLocalDraft>
+    return {
+      query: String(draft.query ?? ''),
+      selected: draft.selected ?? null,
+      qty: String(draft.qty ?? '1'),
+      quickCreateOpen: draft.quickCreateOpen === true,
+      quickProduct: { ...emptyQuickProduct, ...(draft.quickProduct ?? {}) },
+      priceStatus: draft.priceStatus === 'match' || draft.priceStatus === 'mismatch' ? draft.priceStatus : 'unchecked',
+      observedPrice: String(draft.observedPrice ?? ''),
+      applyNewPrice: draft.applyNewPrice !== false,
+      savedAt: String(draft.savedAt ?? new Date().toISOString()),
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveInventoryLocalDraft(sessionId: string, draft: Omit<InventoryLocalDraft, 'savedAt'>) {
+  localStorage.setItem(inventoryDraftKey(sessionId), JSON.stringify({ ...draft, savedAt: new Date().toISOString() }))
+}
+
+function clearInventoryLocalDraft(sessionId: string) {
+  localStorage.removeItem(inventoryDraftKey(sessionId))
+}
+
 function normalizeScanCode(value: string): string {
   return Array.from(value)
     .filter((character) => {
@@ -156,7 +203,55 @@ export default function ActiveSession() {
   const [labelQtys, setLabelQtys] = useState<Record<string, number>>({})
   const scanQueue = useRef<string[]>([])
   const scanQueueRunning = useRef(false)
+  const inventoryDraftReadyRef = useRef(false)
 
+  useEffect(() => {
+    inventoryDraftReadyRef.current = false
+    if (!id) return
+    const draft = loadInventoryLocalDraft(id)
+    if (draft) {
+      setQuery(draft.query)
+      setSelected(draft.selected)
+      setQty(draft.qty)
+      setQuickCreateOpen(draft.quickCreateOpen)
+      setQuickProduct(draft.quickProduct)
+      setPriceStatus(draft.priceStatus)
+      setObservedPrice(draft.observedPrice)
+      setApplyNewPrice(draft.applyNewPrice)
+    }
+    const timer = window.setTimeout(() => { inventoryDraftReadyRef.current = true }, 0)
+    return () => window.clearTimeout(timer)
+  }, [id])
+
+  useEffect(() => {
+    if (!id || !inventoryDraftReadyRef.current) return
+    if (session?.status === 'completed') {
+      clearInventoryLocalDraft(id)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const quickChanged = JSON.stringify(quickProduct) !== JSON.stringify(emptyQuickProduct)
+      const hasDraft = Boolean(
+        query.trim() || selected || qty !== '1' || quickCreateOpen || quickChanged ||
+        priceStatus !== 'unchecked' || observedPrice.trim() || applyNewPrice !== true,
+      )
+      if (!hasDraft) {
+        clearInventoryLocalDraft(id)
+        return
+      }
+      saveInventoryLocalDraft(id, {
+        query,
+        selected,
+        qty,
+        quickCreateOpen,
+        quickProduct,
+        priceStatus,
+        observedPrice,
+        applyNewPrice,
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [id, session?.status, query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice])
   function money2(kopecks: number | undefined | null): string {
     return ((Number(kopecks) || 0) / 100).toFixed(2)
   }
@@ -696,6 +791,7 @@ export default function ActiveSession() {
       setQty('1')
       setPriceStatus('unchecked')
       setObservedPrice('')
+      if (id) clearInventoryLocalDraft(id)
       inputRef.current?.focus()
     } catch (error) {
       playErrorTone()
@@ -744,6 +840,7 @@ export default function ActiveSession() {
       setQuery('')
       toast.success(`Створено і додано: ${name} × ${countedQty}`)
       playSuccessBeep()
+      if (id) clearInventoryLocalDraft(id)
       inputRef.current?.focus()
     } catch (error) {
       playErrorTone()
@@ -776,6 +873,7 @@ export default function ActiveSession() {
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       const updated = Number((response.data as any)?.items_updated ?? 0)
       toast.success(`Ревізію завершено. Оновлено ${Number.isFinite(updated) ? updated : 0} товарів.`)
+      clearInventoryLocalDraft(id)
       navigate('/inventory')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завершити ревізію')

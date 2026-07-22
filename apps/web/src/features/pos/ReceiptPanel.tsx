@@ -428,6 +428,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear, onClearCustomer
           </button>
           <button
             id="pos-pay-btn"
+            type="button"
             onClick={onPay}
             disabled={store.items.length === 0}
             className="receipt-action w-full py-5 rounded-xl bg-yellow-400 text-black text-xl font-bold hover:bg-yellow-300 disabled:opacity-30 transition-all shadow-lg shadow-yellow-400/20 ripple active-press"
