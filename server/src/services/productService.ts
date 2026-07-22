@@ -130,7 +130,8 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
         allQ = allQ.or(productListSearchOr(search, crossIdFilter))
       }
     }
-    if (category_id) allQ = allQ.eq('category_id', category_id)
+    if (category_id === '__uncategorized') allQ = allQ.is('category_id', null)
+    else if (category_id) allQ = allQ.eq('category_id', category_id)
     if (brand_id) allQ = allQ.eq('brand_id', brand_id)
     if (is_active !== undefined) allQ = allQ.eq('is_active', is_active === 'true')
 
@@ -184,7 +185,8 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
       q = q.or(productListSearchOr(search, crossIdFilter))
     }
   }
-  if (category_id) q = q.eq('category_id', category_id)
+  if (category_id === '__uncategorized') q = q.is('category_id', null)
+  else if (category_id) q = q.eq('category_id', category_id)
   if (brand_id) q = q.eq('brand_id', brand_id)
   if (is_active !== undefined) q = q.eq('is_active', is_active === 'true')
   if (stock_filter === 'negative') q = q.lt('qty_on_hand', 0)

@@ -694,7 +694,8 @@ export async function listProductsOffline(options: {
   const search = String(options.search ?? '').trim()
   const filtered = all.filter((product) => {
     if (product.is_active === false) return false
-    if (options.categoryId && product.category_id !== options.categoryId) return false
+    if (options.categoryId === '__uncategorized' && product.category_id) return false
+    else if (options.categoryId && product.category_id !== options.categoryId) return false
     if (options.brandId && product.brand_id !== options.brandId) return false
     if (options.lowStock && Number(product.qty_on_hand ?? 0) > Number(product.reorder_point ?? 0)) return false
     if (options.stockFilter === 'negative' && Number(product.qty_on_hand ?? 0) >= 0) return false

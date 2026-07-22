@@ -6,6 +6,8 @@ import { toast } from '@/components/ui/Toast'
 export interface Category { id: string; name: string; sort_order: number }
 export interface Brand    { id: string; name: string }
 
+export const UNCATEGORIZED_CATEGORY_ID = '__uncategorized'
+
 interface CategorySidebarProps {
   categories: Category[]
   activeCategory: string
@@ -62,7 +64,7 @@ export function CategorySidebar({
 
 
   return (
-    <div className="w-52 max-h-[calc(100vh-5rem)] shrink-0 flex flex-col gap-4 overflow-y-auto pr-1">
+    <div className="w-52 max-h-[calc(100dvh-6rem)] shrink-0 flex flex-col gap-4 overflow-y-auto overscroll-contain pr-1 pb-16">
 
       {/* Категорії */}
       <div>
@@ -101,6 +103,14 @@ export function CategorySidebar({
           }`}>
           <FolderOpen size={14} className="shrink-0" />
           <span className="truncate">Всі товари</span>
+        </button>
+
+        <button onClick={() => onCategory(UNCATEGORIZED_CATEGORY_ID)}
+          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 mb-0.5 ${
+            activeCategory === UNCATEGORIZED_CATEGORY_ID ? 'bg-yellow-50 text-yellow-700 font-semibold border border-yellow-200' : 'text-gray-600 hover:bg-gray-100'
+          }`}>
+          <span className="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0 mt-px" />
+          <span className="truncate">Без категорії</span>
         </button>
 
         {/* Список категорій */}

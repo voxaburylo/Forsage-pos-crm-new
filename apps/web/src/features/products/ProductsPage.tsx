@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
   ChevronUp, ChevronDown, ChevronsUpDown, Search,
-  Trash2, Eye, GitMerge, ExternalLink, Copy, FileText,
+  Trash2, GitMerge, Copy, FileText,
 } from 'lucide-react'
 import { MergeModal } from './MergeModal'
-import { CategorySidebar } from './CategorySidebar'
+import { CategorySidebar, UNCATEGORIZED_CATEGORY_ID } from './CategorySidebar'
 import { ImportModal } from './ImportModal'
 import { BulkEditModal } from './BulkEditModal'
 import { productApi } from './productApi'
@@ -16,7 +16,7 @@ import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import type { Product, PaginatedProducts } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { Layout } from '@/components/Layout'
-import { Button, Badge, Modal, ConfirmDialog, Drawer, SplitButton } from '@/components/ui'
+import { Button, Badge, Modal, ConfirmDialog, SplitButton } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
@@ -90,9 +90,10 @@ export default function ProductsPage() {
   const [brandFilter, setBrandFilter] = useState('')
   const [brands, setBrands]         = useState<Brand[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkMoveCategoryId, setBulkMoveCategoryId] = useState('')
+  const [bulkMoving, setBulkMoving] = useState(false)
   const [bulkOpen, setBulkOpen]     = useState(false)
   const [mergeProduct, setMergeProduct] = useState<Product | null>(null)
-  const [quickView, setQuickView] = useState<Product | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [bulkPrintOpen, setBulkPrintOpen] = useState(false)
   const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
@@ -452,21 +453,47 @@ export default function ProductsPage() {
     }
   }, [bulkPrintOpen, selectedProducts])
 
-  async function handleExport() {
+  async function collectExportProducts(): Promise<Product[]> {
+    const rows: Product[] = []
+    for (let pageNo = 1; pageNo <= 1000; pageNo += 1) {
+      const result = await productApi.list({ page: pageNo, per_page: 500 })
+      rows.push(...result.data)
+      if (pageNo >= result.pagination.total_pages) break
+    }
+    return rows
+  }
+
+  function exportFile(blob: Blob, fileName: string) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function productExportRows(rows: Product[]) {
+    return rows.map((product) => ({
+      Артикул: product.sku,
+      Назва: product.name,
+      Штрихкод: product.barcode ?? '',
+      Категорія: product.category?.name ?? '',
+      Бренд: product.brand?.name ?? '',
+      'Закупка, грн': product.purchase_price / 100,
+      'Продаж, грн': product.retail_price / 100,
+      Залишок: product.qty_on_hand,
+      Комірка: product.storage_bin ?? '',
+    }))
+  }
+
+  async function handleExportCsv() {
     try {
       let blob: Blob
       if (isDesktopRuntime()) {
-        const rows: Product[] = []
-        for (let page = 1; page <= 1000; page += 1) {
-          const result = await productApi.list({ page, per_page: 500 })
-          rows.push(...result.data)
-          if (page >= result.pagination.total_pages) break
-        }
+        const rows = await collectExportProducts()
         const csvCell = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
-        const lines = [
-          ['Артикул', 'Назва', 'Штрихкод', 'Категорія', 'Бренд', 'Закупка, грн', 'Продаж, грн', 'Залишок'],
-          ...rows.map((product) => [product.sku, product.name, product.barcode ?? '', product.category?.name ?? '', product.brand?.name ?? '', product.purchase_price / 100, product.retail_price / 100, product.qty_on_hand]),
-        ]
+        const header = ['Артикул', 'Назва', 'Штрихкод', 'Категорія', 'Бренд', 'Закупка, грн', 'Продаж, грн', 'Залишок', 'Комірка']
+        const lines = [header, ...rows.map((product) => [product.sku, product.name, product.barcode ?? '', product.category?.name ?? '', product.brand?.name ?? '', product.purchase_price / 100, product.retail_price / 100, product.qty_on_hand, product.storage_bin ?? ''])]
         blob = new Blob(['\uFEFF' + lines.map((line) => line.map(csvCell).join(';')).join('\r\n')], { type: 'text/csv;charset=utf-8' })
       } else {
         const { supabase } = await import('@/lib/supabase')
@@ -475,22 +502,34 @@ export default function ProductsPage() {
         if (!res.ok) throw new Error('Не вдалося експортувати товари')
         blob = await res.blob()
       }
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a'); a.href = url; a.download = 'products.csv'; a.click()
-      URL.revokeObjectURL(url)
-      toast.success('Товари експортовано')
+      exportFile(blob, 'products.csv')
+      toast.success('Товари експортовано в CSV')
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Помилка експорту') }
   }
 
+  async function handleExportExcel() {
+    try {
+      const rows = await collectExportProducts()
+      const XLSX = await import('xlsx')
+      const sheet = XLSX.utils.json_to_sheet(productExportRows(rows))
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, sheet, 'Товари')
+      const bytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+      exportFile(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'products.xlsx')
+      toast.success('Товари експортовано в Excel')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Помилка експорту Excel') }
+  }
   // Підтвердження видалення (одиничного або масового)
   const [confirmState, setConfirmState] = useState<
     | null
-    | { title: string; message: React.ReactNode; onConfirm: () => Promise<void> }
+    | { title: string; message: React.ReactNode; onConfirm: () => Promise<void>; confirmLabel?: string; danger?: boolean }
   >(null)
 
   function askDelete(product: Product) {
     setConfirmState({
       title: 'Видалити товар',
+      confirmLabel: 'Видалити',
+      danger: true,
       message: <>Видалити товар <strong>{product.name}</strong>?</>,
       onConfirm: async () => {
         try { await productApi.delete(product.id); toast.success('Видалено'); load() }
@@ -503,6 +542,8 @@ export default function ProductsPage() {
     const n = selectedIds.size
     setConfirmState({
       title: `Видалити ${n} товарів`,
+      confirmLabel: 'Видалити',
+      danger: true,
       message: 'Цю дію не можна скасувати.',
       onConfirm: async () => {
         let done = 0; let failed = 0
@@ -518,6 +559,44 @@ export default function ProductsPage() {
     })
   }
 
+  function askBulkMoveCategory() {
+    if (!bulkMoveCategoryId) {
+      toast.warning('Виберіть категорію для переміщення')
+      return
+    }
+    const ids = Array.from(selectedIds)
+    const targetName = bulkMoveCategoryId === UNCATEGORIZED_CATEGORY_ID
+      ? 'Без категорії'
+      : categories.find((category) => category.id === bulkMoveCategoryId)?.name ?? 'вибрану категорію'
+    const targetCategoryId = bulkMoveCategoryId === UNCATEGORIZED_CATEGORY_ID ? null : bulkMoveCategoryId
+    setConfirmState({
+      title: 'Перемістити товари',
+      confirmLabel: 'Перемістити',
+      danger: false,
+      message: <>Перемістити <strong>{ids.length}</strong> товарів у категорію <strong>{targetName}</strong>?</>,
+      onConfirm: async () => {
+        setBulkMoving(true)
+        let done = 0
+        let failed = 0
+        for (const id of ids) {
+          try {
+            await productApi.update(id, { category_id: targetCategoryId ?? '' }, { silent: true })
+            done += 1
+          } catch {
+            failed += 1
+          }
+        }
+        setBulkMoving(false)
+        if (done > 0) toast.success(`Переміщено ${done} товарів${failed > 0 ? `, помилок: ${failed}` : ''}`)
+        else toast.error('Не вдалося перемістити товари')
+        setSelectedIds(new Set())
+        setBulkMoveCategoryId('')
+        setPages({})
+        setPage(1)
+        load()
+      },
+    })
+  }
   const allSelected = !!result?.data.length && selectedIds.size === result.data.length
   const total       = result?.pagination.total ?? 0
 
@@ -527,8 +606,9 @@ export default function ProductsPage() {
       actions={
         <div className="flex gap-1.5">
           <span className="hidden md:flex gap-1.5">
-            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт каталогу</Button>
-            <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExport}>Експорт</Button>
+            <Button variant="secondary" size="sm" icon={<Upload size={13} />} onClick={() => setImportOpen(true)}>Імпорт</Button>
+            <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExportExcel}>Експорт Excel</Button>
+            <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExportCsv}>Експорт CSV</Button>
           </span>
           {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
             <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/suppliers/invoices/new')} title="Створити прихідну накладну">
@@ -551,6 +631,14 @@ export default function ProductsPage() {
             }`}
           >
             Всі
+          </button>
+          <button
+            onClick={() => { setCategoryFilter(UNCATEGORIZED_CATEGORY_ID); setPage(1) }}
+            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+              categoryFilter === UNCATEGORIZED_CATEGORY_ID ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-600'
+            }`}
+          >
+            Без категорії
           </button>
           {categories.map((cat) => (
             <button key={cat.id}
@@ -628,9 +716,31 @@ export default function ProductsPage() {
 
           {/* Bulk toolbar */}
           {selectedIds.size > 0 && (
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-2 bg-yellow-50 border border-yellow-200 rounded-xl">
-              <span className="text-sm text-yellow-800 font-medium">Вибрано {selectedIds.size} товарів</span>
-              <div className="flex gap-2">
+            <div className="flex flex-col gap-2 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-2 lg:flex-row lg:items-center lg:justify-between">
+              <span className="text-sm font-medium text-yellow-800">Вибрано {selectedIds.size} товарів</span>
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+                <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-yellow-200 bg-white px-2 py-1">
+                  <span className="shrink-0 text-xs font-semibold text-gray-500">Перемістити:</span>
+                  <select
+                    value={bulkMoveCategoryId}
+                    onChange={(e) => setBulkMoveCategoryId(e.target.value)}
+                    className="min-w-[180px] flex-1 rounded border border-gray-200 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-yellow-400"
+                  >
+                    <option value="">Вибрати категорію</option>
+                    <option value={UNCATEGORIZED_CATEGORY_ID}>Без категорії</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>{category.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!bulkMoveCategoryId || bulkMoving}
+                    onClick={askBulkMoveCategory}
+                    className="rounded bg-yellow-400 px-2.5 py-1 text-xs font-bold text-black hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {bulkMoving ? '...' : 'OK'}
+                  </button>
+                </div>
                 <Button size="sm" onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
                 <Button size="sm" variant="secondary" className="hidden sm:inline-flex" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
                 {isAdmin && (
@@ -640,7 +750,7 @@ export default function ProductsPage() {
                     🗑 Видалити
                   </Button>
                 )}
-                <Button size="sm" variant="secondary" onClick={() => setSelectedIds(new Set())}>✕</Button>
+                <Button size="sm" variant="secondary" onClick={() => { setSelectedIds(new Set()); setBulkMoveCategoryId('') }}>✕</Button>
               </div>
             </div>
           )}
@@ -682,7 +792,7 @@ export default function ProductsPage() {
                         </div>
                       )}
                       <div className="min-w-0 flex-1">
-                        <button onClick={() => navigate(`/products/${p.id}`)}
+                        <button onClick={() => navigate(`/products/${p.id}/edit`)}
                           className="block w-full text-left text-[15px] font-semibold leading-snug text-gray-900 break-words hover:text-yellow-700">
                           {p.name}
                         </button>
@@ -724,7 +834,7 @@ export default function ProductsPage() {
 
                     <div className="mt-3 flex gap-2">
                       <Button size="sm" className="flex-1" onClick={() => navigate(`/products/${p.id}/edit`)}>Редагувати</Button>
-                      <Button size="sm" variant="secondary" className="flex-1" onClick={() => setQuickView(p)}>Перегляд</Button>
+
                       {isAdmin && (
                         <Button size="sm" variant="danger-outline" onClick={() => askDelete(p)} aria-label={`Видалити ${p.name}`}>
                           <Trash2 size={13} />
@@ -824,7 +934,7 @@ export default function ProductsPage() {
                               </div>
                             )}
                             <div>
-                              <button onClick={() => navigate(`/products/${p.id}`)}
+                              <button onClick={() => navigate(`/products/${p.id}/edit`)}
                                 className="font-medium text-gray-900 hover:text-yellow-700 text-left transition-colors text-sm leading-snug">
                                 {p.name}
                               </button>
@@ -900,7 +1010,7 @@ export default function ProductsPage() {
                                 primaryLabel="Ред."
                                 onPrimary={() => navigate(`/products/${p.id}/edit`)}
                                 actions={[
-                                  { label: 'Швидкий перегляд', icon: <Eye size={14} />, onClick: () => setQuickView(p) },
+
                                   { label: 'Дублювати', icon: <Copy size={14} />, onClick: () => navigate(`/products/new?clone=${p.id}`) },
                                   { label: 'Злити дублі', icon: <GitMerge size={14} />, onClick: () => setMergeProduct(p) },
                                   { label: 'Видалити', icon: <Trash2 size={14} />, danger: true, onClick: () => askDelete(p) },
@@ -1027,61 +1137,11 @@ export default function ProductsPage() {
         onConfirm={() => confirmState?.onConfirm() ?? Promise.resolve()}
         title={confirmState?.title ?? ''}
         message={confirmState?.message}
-        confirmLabel="Видалити"
-        danger
+        confirmLabel={confirmState?.confirmLabel ?? 'Підтвердити'}
+        danger={confirmState?.danger === true}
       />
 
-      {/* Швидкий перегляд товару — бічна панель, список лишається видимим */}
-      <Drawer
-        open={quickView !== null}
-        onClose={() => setQuickView(null)}
-        title={quickView?.name}
-        footer={quickView && (
-          <div className="flex gap-2">
-            <Button className="flex-1" icon={<ExternalLink size={15} />}
-              onClick={() => navigate(`/products/${quickView.id}`)}>Відкрити повністю</Button>
-            <Button variant="outline" onClick={() => navigate(`/products/${quickView.id}/edit`)}>Редагувати</Button>
-          </div>
-        )}
-      >
-        {quickView && (
-          <div className="space-y-4">
-            {quickView.photo_url && (
-              <img src={quickView.photo_url} alt={quickView.name} className="w-full h-44 object-contain rounded-xl bg-gray-50 border border-gray-100" />
-            )}
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <Info label="Артикул" value={quickView.sku} mono />
-              <Info label="Штрихкод" value={quickView.barcode || '—'} mono />
-              <Info label="Бренд" value={quickView.brand?.name || '—'} />
-              <Info label="Категорія" value={quickView.category?.name || '—'} />
-              <Info label="Комірка" value={quickView.storage_bin || '—'} mono />
-              <Info label="Од." value={quickView.unit} />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-gray-50 rounded-xl p-3">
-                <p className="text-xs text-gray-400 mb-0.5">Роздрібна ціна</p>
-                <p className="text-xl font-bold text-gray-900 nums-tabular">{kopecksToHryvnia(quickView.retail_price)} ₴</p>
-              </div>
-              <div className="bg-gray-50 rounded-xl p-3">
-                <p className="text-xs text-gray-400 mb-0.5">Залишок</p>
-                <p className="text-xl font-bold text-gray-900 nums-tabular">{quickView.qty_available ?? quickView.qty_on_hand} {quickView.unit}</p>
-              </div>
-            </div>
-            {quickView.notes && <p className="text-sm text-gray-500 border-t border-gray-100 pt-3">{quickView.notes}</p>}
-          </div>
-        )}
-      </Drawer>
     </Layout>
   )
 }
-
-function Info({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div>
-      <p className="text-xs text-gray-400 mb-0.5">{label}</p>
-      <p className={`text-gray-800 ${mono ? 'font-mono' : ''}`}>{value}</p>
-    </div>
-  )
-}
-
 

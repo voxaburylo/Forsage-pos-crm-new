@@ -384,7 +384,9 @@ export class LocalCatalogRepository {
 
     const where = ['p.tenant_id = ?', 'p.deleted_at IS NULL', 'p.is_active = 1']
     const params: Array<string | number> = [tenantId]
-    if (options.categoryId) {
+    if (options.categoryId === '__uncategorized') {
+      where.push("(p.category_id IS NULL OR p.category_id = '')")
+    } else if (options.categoryId) {
       where.push('p.category_id = ?')
       params.push(options.categoryId)
     }

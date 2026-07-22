@@ -47,7 +47,7 @@ export const updateProductSchema = createProductSchema.partial()
 
 export const productListSchema = z.object({
   search: z.string().optional(),
-  category_id: z.string().uuid().optional(),
+  category_id: z.union([z.string().uuid(), z.literal('__uncategorized')]).optional(),
   brand_id: z.string().uuid().optional(),
   is_active: z.enum(['true', 'false']).optional(),
   low_stock: z.enum(['true', 'false']).optional(),
