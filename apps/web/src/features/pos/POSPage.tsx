@@ -24,7 +24,7 @@ import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
 import { LockScreenOverlay, isLocked } from './LockScreenOverlay'
 import { shiftApi } from './shiftApi'
-import type { POSItem, POSCustomer } from '@/stores/posStore'
+import { usePOSStore, type POSItem, type POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
 import type { Sale } from '@/types/sale'
 import type { Shift } from '@/types/shift'
@@ -221,6 +221,7 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 export default function POSPage() {
   const navigate = useNavigate()
   const { store, completeSale, checkShift } = usePOS()
+  const setPriceRounding = usePOSStore((state) => state.setPriceRounding)
   const [payOpen, setPayOpen]           = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
   const [customerEditOpen, setCustomerEditOpen] = useState(false)
@@ -340,6 +341,11 @@ export default function POSPage() {
         const data = res.data
         autoPrintRef.current = data.auto_print_receipt ?? false
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
+        setPriceRounding({
+          enabled: data.price_rounding_enabled === true,
+          step: Number(data.price_rounding_step) || 100,
+          dir: data.price_rounding_dir === 'up' || data.price_rounding_dir === 'down' ? data.price_rounding_dir : 'nearest',
+        })
       })
       .catch(() => {})
 
@@ -360,7 +366,7 @@ export default function POSPage() {
     loadReadyCount()
     const id = setInterval(loadReadyCount, 10000)
     return () => clearInterval(id)
-  }, [refreshSuspendedCount])
+  }, [refreshSuspendedCount, setPriceRounding])
 
   // Авто-друк чека після продажу (вмикається в Налаштуваннях).
   // Чекаємо рендер прихованого <ReceiptPrint> перед window.print().

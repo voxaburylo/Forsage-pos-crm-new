@@ -53,7 +53,7 @@ export function CrossSellPanel() {
     const discount = tierPct > 0 ? Math.round(p.retail_price * tierPct / 100) : 0
     store.addItem({
       productId: p.id, sku: p.sku, name: p.name, unit: p.unit,
-      qty: 1, unitPrice: p.retail_price, discount, qtyOnHand: p.qty_on_hand,
+      qty: 1, unitPrice: p.retail_price, discount, discountPct: tierPct > 0 ? tierPct : undefined, qtyOnHand: p.qty_on_hand,
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
     })

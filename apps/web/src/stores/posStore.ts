@@ -28,6 +28,14 @@ export interface POSCustomer {
   riskProfile:     'low' | 'medium' | 'high'
 }
 
+export type POSPriceRoundingDir = 'up' | 'down' | 'nearest'
+
+export interface POSPriceRounding {
+  enabled: boolean
+  step: number
+  dir: POSPriceRoundingDir
+}
+
 export interface ReceiptTab {
   id: string
   idempotencyKey: string
@@ -63,6 +71,43 @@ function createEmptyTab(): ReceiptTab {
     customerOrderId: null,
     automaticDiscountPct: 0,
   }
+}
+
+const DEFAULT_PRICE_ROUNDING: POSPriceRounding = { enabled: false, step: 100, dir: 'nearest' }
+
+function normalizePriceRounding(input?: Partial<POSPriceRounding> | null): POSPriceRounding {
+  const step = Math.max(1, Math.round(Number(input?.step) || DEFAULT_PRICE_ROUNDING.step))
+  const dir: POSPriceRoundingDir = input?.dir === 'up' || input?.dir === 'down' ? input.dir : 'nearest'
+  return {
+    enabled: input?.enabled === true,
+    step,
+    dir,
+  }
+}
+
+function roundPOSUnitPrice(price: number, rounding: POSPriceRounding) {
+  const value = Math.max(0, Math.round(Number(price) || 0))
+  if (!rounding.enabled) return value
+  const scaled = value / rounding.step
+  if (rounding.dir === 'up') return Math.ceil(scaled) * rounding.step
+  if (rounding.dir === 'down') return Math.floor(scaled) * rounding.step
+  return Math.round(scaled) * rounding.step
+}
+
+function recalcItem(item: Omit<POSItem, 'total'> | POSItem, rounding: POSPriceRounding): POSItem {
+  const unitPrice = roundPOSUnitPrice(item.unitPrice, rounding)
+  const qty = Math.max(0, Number(item.qty) || 0)
+  const discount = item.discountPct !== undefined
+    ? automaticDiscount(unitPrice, qty, item.discountPct)
+    : Math.max(0, Math.min(Number(item.discount) || 0, unitPrice * qty))
+  return { ...item, qty, unitPrice, discount, total: unitPrice * qty - discount }
+}
+
+function recalcTabs(tabs: ReceiptTab[], rounding: POSPriceRounding) {
+  return tabs.map((tab) => {
+    const items = tab.items.map((item) => recalcItem(item, rounding))
+    return { ...tab, items, ...calcTotals(items) }
+  })
 }
 
 function calcTotals(items: POSItem[]) {
@@ -101,6 +146,9 @@ interface POSState {
   bonusToRedeem: number
   customerOrderId: string | null
   automaticDiscountPct: number
+  priceRounding: POSPriceRounding
+  setPriceRounding: (rounding: Partial<POSPriceRounding>) => void
+  roundUnitPrice: (price: number) => number
 
   // Менеджер для комісійних (глобальний на всю зміну)
   managerId: string | null
@@ -174,6 +222,17 @@ export const usePOSStore = create<POSState>((set, get) => {
     tabs: [initialTab],
     activeTabId: initialTab.id,
     managerId: null,
+    priceRounding: DEFAULT_PRICE_ROUNDING,
+    setPriceRounding: (rounding) => {
+      const next = normalizePriceRounding(rounding)
+      const tabs = recalcTabs(get().tabs, next)
+      set({
+        priceRounding: next,
+        tabs,
+        ...getActiveTabGetters(tabs, get().activeTabId),
+      })
+    },
+    roundUnitPrice: (price) => roundPOSUnitPrice(price, get().priceRounding),
     setManagerId: (id) => set({ managerId: id }),
 
     // Гетери — підтягуються з активної вкладки
@@ -236,7 +295,8 @@ export const usePOSStore = create<POSState>((set, get) => {
     },
 
     // Дії на активній вкладці
-    addItem: (item) => {
+    addItem: (rawItem) => {
+      const item = recalcItem(rawItem, get().priceRounding)
       const { tabs, activeTabId } = get()
       const tab = tabs.find((t) => t.id === activeTabId)
       if (!tab) return
@@ -250,12 +310,7 @@ export const usePOSStore = create<POSState>((set, get) => {
               : Math.min(i.discount, i.unitPrice * qty)
             return { ...i, qty, discount, total: qty * i.unitPrice - discount }
           })
-        : (() => {
-            const discount = item.discountPct !== undefined
-              ? automaticDiscount(item.unitPrice, item.qty, item.discountPct)
-              : Math.min(item.discount, item.qty * item.unitPrice)
-            return [...tab.items, { ...item, discount, total: item.qty * item.unitPrice - discount }]
-          })()
+        : [...tab.items, item]
       const totals = calcTotals(updatedItems)
       updateTabInStore(set, get, activeTabId!, { items: updatedItems, ...totals })
     },
