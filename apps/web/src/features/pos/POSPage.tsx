@@ -295,14 +295,11 @@ export default function POSPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [store.isInitializing])
 
-  async function handleEditCurrentCustomer() {
-    if (!store.customer?.id) {
-      setCustomerOpen(true)
-      return
-    }
+  async function handleEditCustomerFromSearch(customer: Customer) {
     try {
-      const { data } = await customerApi.get(store.customer.id)
+      const { data } = await customerApi.get(customer.id)
       setEditingCustomer(data)
+      setCustomerOpen(false)
       setCustomerEditOpen(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити клієнта')
@@ -938,8 +935,8 @@ export default function POSPage() {
               <ReceiptPanel
                 onPay={() => { setPayOpen(true) }}
                 onSelectCustomer={() => setCustomerOpen(true)}
-                onEditCustomer={handleEditCurrentCustomer}
                 onClear={originalClear}
+                onClearCustomer={() => { store.setCustomer(null); store.setAutomaticDiscountPct(0) }}
               />
             </div>
           </>
@@ -1038,6 +1035,7 @@ export default function POSPage() {
         open={customerOpen}
         offline={!effectiveOnline}
         onClose={() => setCustomerOpen(false)}
+        onEdit={handleEditCustomerFromSearch}
         onCreated={(c: Customer) => {
           const posCustomer = posCustomerFromCustomer(c)
           store.setCustomer(posCustomer)
@@ -1051,9 +1049,12 @@ export default function POSPage() {
         onClose={() => setCustomerEditOpen(false)}
         onSaved={(c) => {
           const posCustomer = posCustomerFromCustomer(c)
-          store.setCustomer(posCustomer)
-          if (!isEmployeeSale) store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
+          if (store.customer?.id === c.id) {
+            store.setCustomer(posCustomer)
+            if (!isEmployeeSale) store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
+          }
           setEditingCustomer(c)
+          setCustomerEditOpen(false)
         }}
       />
 

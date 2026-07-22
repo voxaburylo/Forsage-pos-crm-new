@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode } from 'lucide-react'
+import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode, Search } from 'lucide-react'
 import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
 import { read, utils } from 'xlsx'
 import Papa from 'papaparse'
@@ -440,6 +440,10 @@ export default function InvoiceFormPage() {
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
   const [productSearch, setProductSearch] = useState('')
   const [productResults, setProductResults] = useState<Product[]>([])
+  const [replaceLineKey, setReplaceLineKey] = useState<string | null>(null)
+  const [replaceSearch, setReplaceSearch] = useState('')
+  const [replaceResults, setReplaceResults] = useState<Product[]>([])
+  const [replaceSearching, setReplaceSearching] = useState(false)
 
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
@@ -595,6 +599,24 @@ export default function InvoiceFormPage() {
     return () => clearTimeout(timer)
   }, [productSearch, searchProducts])
 
+  useEffect(() => {
+    if (!replaceLineKey) return
+    const query = replaceSearch.trim()
+    if (query.length < 2) {
+      setReplaceResults([])
+      setReplaceSearching(false)
+      return
+    }
+    let cancelled = false
+    setReplaceSearching(true)
+    const timer = window.setTimeout(() => {
+      productApi.list({ search: query, per_page: 12 })
+        .then((res) => { if (!cancelled) setReplaceResults(res.data ?? []) })
+        .catch(() => { if (!cancelled) setReplaceResults([]) })
+        .finally(() => { if (!cancelled) setReplaceSearching(false) })
+    }, 180)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [replaceLineKey, replaceSearch])
   async function handleProductSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
       setProductSearch('')
@@ -1099,6 +1121,107 @@ export default function InvoiceFormPage() {
     }
   }
 
+  function openReplaceProductSearch(index: number) {
+    const item = items[index]
+    if (!item || isEdit) return
+    if (replaceLineKey === item.client_key) {
+      closeReplaceProductSearch()
+      return
+    }
+    setReplaceLineKey(item.client_key)
+    setReplaceSearch(item.product_name || item.sku || item.barcode || '')
+    setReplaceResults([])
+  }
+
+  function closeReplaceProductSearch() {
+    setReplaceLineKey(null)
+    setReplaceSearch('')
+    setReplaceResults([])
+    setReplaceSearching(false)
+  }
+
+  function replaceLineWithExistingProduct(rowKey: string, product: Product) {
+    setMoneyDrafts({})
+    setItems((prev) => {
+      const source = prev.find((item) => item.client_key === rowKey)
+      if (!source) return prev
+      const targetIndex = prev.findIndex((item) => item.client_key !== rowKey && item.product_id === product.id)
+      if (targetIndex >= 0) {
+        return prev
+          .map((item, index) => {
+            if (index !== targetIndex) return item
+            const qty = item.qty + source.qty
+            const purchase = source.purchase_price > 0 ? source.purchase_price : item.purchase_price
+            const retail = source.retail_price > 0 ? source.retail_price : item.retail_price
+            return {
+              ...bindExistingProductToItem({ ...item, qty, purchase_price: purchase, retail_price: retail }, product),
+              client_key: item.client_key,
+              total: Math.round(qty * purchase),
+            }
+          })
+          .filter((item) => item.client_key !== rowKey)
+      }
+      return prev.map((item) => item.client_key === rowKey ? bindExistingProductToItem(item, product) : item)
+    })
+    setSelectedLineKeys((prev) => prev.filter((key) => key !== rowKey))
+    closeReplaceProductSearch()
+    productApi.getSupplierPrices(product.id)
+      .then((r) => setSupplierPrices((prev) => ({ ...prev, [product.id]: r.data ?? [] })))
+      .catch(() => {})
+    toast.success(`Рядок прив’язано до товару: ${product.name}`)
+  }
+  function renderReplaceProductSearch(rowKey: string) {
+    if (replaceLineKey !== rowKey || isEdit) return null
+    return (
+      <div className="mt-2 rounded-xl border border-yellow-200 bg-yellow-50/70 p-2 shadow-sm">
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            value={replaceSearch}
+            onChange={(e) => setReplaceSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') closeReplaceProductSearch()
+              if (e.key === 'Enter' && replaceResults[0]) {
+                e.preventDefault()
+                replaceLineWithExistingProduct(rowKey, replaceResults[0])
+              }
+            }}
+            placeholder="Знайти товар у базі: назва, артикул або штрихкод"
+            autoFocus
+            className="w-full rounded-lg border border-yellow-200 bg-white py-2 pl-8 pr-2 text-xs outline-none focus:border-yellow-400 focus:ring-2 focus:ring-yellow-100"
+          />
+        </div>
+        <div className="mt-1 max-h-52 overflow-y-auto rounded-lg bg-white">
+          {replaceSearching && <div className="px-3 py-2 text-xs text-gray-400">Шукаю…</div>}
+          {!replaceSearching && replaceSearch.trim().length >= 2 && replaceResults.length === 0 && (
+            <div className="px-3 py-2 text-xs text-gray-400">Не знайдено. Спробуйте інше слово або артикул.</div>
+          )}
+          {replaceResults.map((product) => {
+            const stock = product.qty_available ?? product.qty_on_hand ?? 0
+            return (
+              <button
+                key={product.id}
+                type="button"
+                onClick={() => replaceLineWithExistingProduct(rowKey, product)}
+                className="flex w-full items-start justify-between gap-2 border-b border-gray-50 px-3 py-2 text-left last:border-b-0 hover:bg-yellow-50"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-bold text-gray-900">{product.name}</span>
+                  <span className="block truncate font-mono text-[11px] text-gray-500">{product.sku || 'без артикула'} {product.barcode ? `· ${product.barcode}` : ''}</span>
+                </span>
+                <span className={`shrink-0 text-[11px] font-semibold ${stock > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                  {stock > 0 ? `${stock} ${product.unit}` : '0'}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <button type="button" onClick={closeReplaceProductSearch} className="mt-1 text-[11px] font-semibold text-gray-500 hover:text-gray-700">
+          Закрити
+        </button>
+      </div>
+    )
+  }
   async function resolveExistingProductsForItems(rawItems: LineItem[]): Promise<{ items: LineItem[]; matched: number }> {
     const cache = new Map<string, Product>()
     const remember = (product: Product) => {
@@ -1595,12 +1718,21 @@ export default function InvoiceFormPage() {
                     />
                   </td>
                   <td className="px-4 py-2 font-medium min-w-[200px]">
-                    <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
-                      onChange={(e) => updateItem(i, 'product_name', e.target.value)}
-                      onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
-                      disabled={isEdit}
-                      placeholder="Назва товару"
-                      className="w-full border border-transparent hover:border-gray-200 focus:border-yellow-400 rounded px-2 py-1 text-sm bg-transparent focus:bg-white font-medium" />
+                    <div className="flex rounded-lg border border-transparent hover:border-gray-200 focus-within:border-yellow-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-yellow-100">
+                      <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
+                        onChange={(e) => updateItem(i, 'product_name', e.target.value)}
+                        onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
+                        disabled={isEdit}
+                        placeholder="Назва товару"
+                        className="min-w-0 flex-1 rounded-l-lg bg-transparent px-2 py-1 text-sm font-medium outline-none disabled:bg-gray-50 disabled:text-gray-400" />
+                      {!isEdit && (
+                        <button type="button" onClick={() => openReplaceProductSearch(i)} title="Знайти в базі та замінити цей рядок"
+                          className={`w-8 shrink-0 rounded-r-lg border-l px-1 text-sm font-bold transition-colors ${replaceLineKey === item.client_key ? 'border-yellow-200 bg-yellow-100 text-yellow-700' : 'border-gray-100 bg-gray-50 text-gray-500 hover:bg-yellow-50 hover:text-yellow-700'}`}>
+                          ⌄
+                        </button>
+                      )}
+                    </div>
+                    {renderReplaceProductSearch(item.client_key)}
                     <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
                       <span className="text-gray-400 font-semibold uppercase text-[10px]">SKU:</span>
                       <input ref={(el) => { skuRefs.current[i] = el }} type="text" value={item.sku}
@@ -1781,11 +1913,20 @@ export default function InvoiceFormPage() {
                   />
                   <div className="min-w-0 flex-1">
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Назва</label>
-                    <input type="text" value={item.product_name}
-                      onChange={(e) => updateItem(i, 'product_name', e.target.value)}
-                      disabled={isEdit}
-                      placeholder="Назва товару"
-                      className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
+                    <div className="flex rounded-lg border border-gray-200 bg-white focus-within:ring-2 focus-within:ring-yellow-400">
+                      <input type="text" value={item.product_name}
+                        onChange={(e) => updateItem(i, 'product_name', e.target.value)}
+                        disabled={isEdit}
+                        placeholder="Назва товару"
+                        className="min-w-0 flex-1 rounded-l-lg px-2.5 py-2 text-sm font-medium outline-none disabled:bg-gray-50 disabled:text-gray-400" />
+                      {!isEdit && (
+                        <button type="button" onClick={() => openReplaceProductSearch(i)} title="Знайти в базі та замінити цей рядок"
+                          className={`w-10 shrink-0 rounded-r-lg border-l text-base font-bold transition-colors ${replaceLineKey === item.client_key ? 'border-yellow-200 bg-yellow-100 text-yellow-700' : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-yellow-50 hover:text-yellow-700'}`}>
+                          ⌄
+                        </button>
+                      )}
+                    </div>
+                    {renderReplaceProductSearch(item.client_key)}
                   </div>
                   {!isEdit && (
                     <button type="button" onClick={() => removeItem(i)}

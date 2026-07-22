@@ -14,6 +14,7 @@ interface Props {
   offline?: boolean
   onClose: () => void
   onCreated: (customer: Customer) => void
+  onEdit?: (customer: Customer) => void
 }
 
 type Mode = 'search' | 'create'
@@ -39,7 +40,7 @@ function getRecentItems(key: string): string[] {
   }
 }
 
-export function QuickCustomerModal({ open, offline = false, onClose, onCreated }: Props) {
+export function QuickCustomerModal({ open, offline = false, onClose, onCreated, onEdit }: Props) {
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
@@ -121,6 +122,10 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated }
     saveRecentItem('recent_phones', c.phone)
     onCreated(c)
     onClose()
+  }
+
+  function editCustomer(c: Customer) {
+    onEdit?.(c)
   }
 
   async function handleCreate(e: React.FormEvent) {
@@ -238,38 +243,49 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated }
           )}
 
           {results.length > 0 && (
-            <div className="divide-y divide-gray-100 border border-gray-200 rounded-xl overflow-hidden">
+            <div className="divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200">
               {results.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => selectCustomer(c)}
-                  className="w-full text-left px-4 py-3 hover:bg-yellow-50 transition-colors"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">
-                        {c.full_name ?? '—'}
-                      </p>
-                      <p className="text-xs text-gray-500">{c.phone}</p>
-                    </div>
-                    <div className="text-right">
-                      {c.price_tier && (
-                        <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
-                          {c.price_tier.name} -{c.price_tier.discount_pct}%
-                        </span>
-                      )}
-                      {c.debt_balance > 0 && (
-                        <p className="text-xs text-red-500 mt-0.5">
-                          Борг: {(c.debt_balance / 100).toFixed(2)} грн
+                <div key={c.id} className="flex items-stretch transition-colors hover:bg-yellow-50">
+                  <button
+                    type="button"
+                    onClick={() => selectCustomer(c)}
+                    className="min-w-0 flex-1 px-4 py-3 text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-gray-900">
+                          {c.full_name ?? '—'}
                         </p>
-                      )}
+                        <p className="font-mono text-xs text-gray-500">{c.phone}</p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {c.price_tier && (
+                          <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
+                            {c.price_tier.name} -{c.price_tier.discount_pct}%
+                          </span>
+                        )}
+                        {c.debt_balance > 0 && (
+                          <p className="text-xs text-red-500 mt-0.5">
+                            Борг: {(c.debt_balance / 100).toFixed(2)} грн
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </button>
+                  </button>
+                  {onEdit && !offline && (
+                    <button
+                      type="button"
+                      onClick={() => editCustomer(c)}
+                      className="shrink-0 border-l border-gray-100 px-3 text-xs font-bold text-blue-600 hover:bg-blue-50"
+                      title="Редагувати картку клієнта"
+                    >
+                      Ред.
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           )}
-
           {!offline && (
             <p className="text-xs text-gray-400 text-center">
               Або{' '}
