@@ -41,9 +41,45 @@ function sanitizeMm(value: unknown, fallback: number, min: number, max: number):
 
 // ────────────────────────── RAW у спулер Windows ──────────────────────────
 
+/** Назва документа у спулері — за нею впізнаємо власні завдання в черзі. */
+const RAW_DOC_NAME = 'Forsage labels (TSPL)'
+
+// Статуси спулера, за яких завдання нікуди не поїде: принтер відвалився по USB,
+// скінчились етикетки, відкрита кришка. Windows не прибирає такі завдання сам —
+// вони лишаються Retained і мовчки блокують ВСІ наступні друки.
+const STUCK_JOB_PATTERN = 'Error|Blocked|Offline|PaperOut|UserIntervention'
+const NOT_READY_PATTERN = 'Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
+
 const RAW_PRINT_SCRIPT = String.raw`
 param([string]$PrinterName)
 $ErrorActionPreference = 'Stop'
+
+$docName = '${RAW_DOC_NAME}'
+$stuckPattern = '${STUCK_JOB_PATTERN}'
+
+function Get-StuckJobs {
+  @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
+    Where-Object { $_.JobStatus -match $stuckPattern })
+}
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+# Спершу прибираємо чужий мотлох із черги, і лише потім дивимось на статус
+# принтера: залипле завдання саме по собі виставляє принтеру стан Error.
+try {
+  $stuck = Get-StuckJobs
+  if ($stuck.Count -gt 0) {
+    $stuck | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 1500
+    if ((Get-StuckJobs).Count -gt 0) { throw 'TSPL_QUEUE_STUCK' }
+  }
+  $printer = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
+  if ($printer -and ($printer.PrinterStatus -match '${NOT_READY_PATTERN}')) {
+    throw "TSPL_PRINTER_NOT_READY: $($printer.PrinterStatus)"
+  }
+} catch [System.Management.Automation.CommandNotFoundException] {
+  # Немає модуля PrintManagement — друкуємо без перевірки, як раніше.
+}
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -74,7 +110,7 @@ if (-not [ForsageRawPrint]::OpenPrinter($PrinterName, [ref]$h, [IntPtr]::Zero)) 
 }
 try {
   $di = New-Object ForsageRawPrint+DOCINFO
-  $di.pDocName = 'Forsage labels (TSPL)'
+  $di.pDocName = $docName
   $di.pDataType = 'RAW'
   if (-not [ForsageRawPrint]::StartDocPrinter($h, 1, $di)) { throw 'RAW_PRINT_STARTDOC_FAILED' }
   [void][ForsageRawPrint]::StartPagePrinter($h)
@@ -86,6 +122,31 @@ try {
 } finally {
   [void][ForsageRawPrint]::ClosePrinter($h)
 }
+
+# ── Postflight ───────────────────────────────────────────────────────────────
+# WritePrinter вважається успішним, щойно байти лягли у спулер — навіть якщо
+# принтера фізично немає. Тому чекаємо, поки завдання реально піде з черги.
+# Черга спорожніла = надруковано; статус помилки = ні. Якщо ж воно й далі
+# спокійно друкується (велика партія), мовчки виходимо з успіхом.
+try {
+  $deadline = (Get-Date).AddSeconds(15)
+  $failure = $null
+  while ((Get-Date) -lt $deadline) {
+    $mine = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
+      Where-Object { $_.DocumentName -eq $docName })
+    if ($mine.Count -eq 0) { break }
+    $bad = @($mine | Where-Object { $_.JobStatus -match $stuckPattern })
+    if ($bad.Count -gt 0) { $failure = $bad[0].JobStatus; break }
+    Start-Sleep -Milliseconds 400
+  }
+  if ($failure) {
+    Get-StuckJobs | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
+    throw "TSPL_PRINT_NOT_CONFIRMED: $failure"
+  }
+} catch [System.Management.Automation.CommandNotFoundException] {
+  # Немає модуля PrintManagement — покладаємось на результат WritePrinter.
+}
+
 [Console]::Out.Write('RAW_PRINT_OK')
 `
 
@@ -107,10 +168,11 @@ function sendRawToPrinter(printerName: string, data: Buffer): Promise<void> {
     ps.stderr.on('data', (chunk) => { stderr += String(chunk) })
     ps.on('error', reject)
 
+    // Із запасом на preflight (~1.5с) і очікування підтвердження друку (до 15с).
     const timeout = setTimeout(() => {
       ps.kill()
       reject(new Error('RAW_PRINT_TIMEOUT'))
-    }, 30000)
+    }, 60000)
 
     ps.on('close', (exitCode) => {
       clearTimeout(timeout)

@@ -876,10 +876,18 @@ export async function resolveTsplPrinter(): Promise<string | null> {
 function labelPrintErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? '')
   if (raw.includes('TSPL_PRINTER_NOT_SET')) return 'Принтер етикеток не вибрано.'
-  if (raw.includes('RAW_PRINT_TIMEOUT')) return 'Принтер не відповів протягом 30 секунд.'
+  if (raw.includes('RAW_PRINT_TIMEOUT')) return 'Принтер не відповів протягом 60 секунд.'
   if (raw.includes('RAW_PRINT_OPEN_FAILED')) return 'Не вдалося відкрити вибраний принтер етикеток.'
   if (raw.includes('RAW_PRINT_WRITE_FAILED') || raw.includes('RAW_PRINT_INCOMPLETE')) return 'Принтер прийняв етикетки не повністю.'
   if (raw.includes('TSPL_NO_LABELS')) return 'У документі немає етикеток для друку.'
+  if (raw.includes('TSPL_QUEUE_STUCK')) {
+    return 'У черзі друку залипло старе завдання, і Windows не дає його прибрати. '
+      + 'Перезапустіть службу «Диспетчер друку» (Спулер) або комп’ютер, потім спробуйте ще раз.'
+  }
+  if (raw.includes('TSPL_PRINTER_NOT_READY') || raw.includes('TSPL_PRINT_NOT_CONFIRMED')) {
+    return 'Принтер етикеток не готовий: перевірте живлення й USB-кабель, наявність стрічки та закриту кришку. '
+      + 'Етикетки НЕ надруковано.'
+  }
   return raw
     .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*Error:\s*/i, '')
     .trim() || 'Невідома помилка принтера.'
