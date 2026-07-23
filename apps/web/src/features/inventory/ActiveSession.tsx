@@ -7,7 +7,7 @@ import {
 import { api } from '@/lib/api'
 import { productApi } from '@/features/products/productApi'
 import { Layout } from '@/components/Layout'
-import { Badge, Button, Card } from '@/components/ui'
+import { Badge, Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { playErrorTone, playSuccessBeep, initAudio } from '@/lib/audioService'
 import { CameraScanner } from '@/features/pos/CameraScanner'
@@ -102,6 +102,12 @@ export default function ActiveSession() {
   const [priceStatus, setPriceStatus] = useState<'unchecked' | 'match' | 'mismatch'>('unchecked')
   const [observedPrice, setObservedPrice] = useState('')
   const [applyNewPrice, setApplyNewPrice] = useState(true)
+  // Завершення ревізії та масова націнка — власні модалки замість prompt/confirm
+  const [completeOpen, setCompleteOpen] = useState(false)
+  const [completeTyped, setCompleteTyped] = useState('')
+  const [completing, setCompleting] = useState(false)
+  const [pctOpen, setPctOpen] = useState(false)
+  const [pctValue, setPctValue] = useState('10')
   const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
@@ -453,19 +459,32 @@ export default function ActiveSession() {
     }
   }
 
+  function applyPctFromModal() {
+    const n = Number(String(pctValue).replace(',', '.'))
+    if (!Number.isFinite(n)) {
+      toast.error('Вкажіть відсоток числом')
+      return
+    }
+    setPctOpen(false)
+    applyMassPrice({ type: 'percent', value: n })
+  }
+
+  // Нативні prompt()/confirm() тут використовувати НЕ можна: Electron
+  // (десктоп-каса) prompt() не реалізує — кнопка «Завершити» просто мовчала.
+  function openCompleteConfirm() {
+    if (!session || !canComplete) return
+    setCompleteTyped('')
+    setCompleteOpen(true)
+  }
+
   async function completeSession() {
     if (!id || !session || !canComplete) return
     const missing = Math.max(0, session.summary.total_products - session.summary.counted_products)
     const priceIssues = session.summary.price_mismatch_products ?? 0
     if (missing > 0 || priceIssues > 0) {
-      const typed = prompt(
-        `УВАГА!\nНе пораховано: ${missing} товарів.\nРозбіжностей цін: ${priceIssues}.\n`
-        + 'Непораховані залишки стануть нульовими. Для підтвердження введіть ЗАВЕРШИТИ',
-      )
-      if (typed?.trim().toUpperCase() !== 'ЗАВЕРШИТИ') return
-    } else if (!confirm('Завершити ревізію та застосувати всі фактичні залишки?')) {
-      return
+      if (completeTyped.trim().toUpperCase() !== 'ЗАВЕРШИТИ') return
     }
+    setCompleting(true)
     try {
       const response = await api.post<{ data: { items_updated: number } }>(
         `/api/v1/inventory/${id}/complete`,
@@ -476,10 +495,13 @@ export default function ActiveSession() {
         undefined,
         { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS },
       )
+      setCompleteOpen(false)
       toast.success(`Ревізію завершено. Оновлено ${response.data.items_updated} товарів.`)
       navigate('/inventory')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завершити ревізію')
+    } finally {
+      setCompleting(false)
     }
   }
 
@@ -759,7 +781,7 @@ export default function ActiveSession() {
                 onClick={() => applyMassPrice({ type: 'markup_table', value: 30 })}
                 className="rounded-lg border border-blue-300 bg-white px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50">По таблиці</button>
               <button type="button" disabled={massBusy}
-                onClick={() => { const v = prompt('Підняти ціну продажу на, %:', '10'); const n = Number(v); if (v != null && Number.isFinite(n)) applyMassPrice({ type: 'percent', value: n }) }}
+                onClick={() => { setPctValue('10'); setPctOpen(true) }}
                 className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-50">Ціна +%</button>
               <button type="button" onClick={() => setSelectedIds(new Set())}
                 className="ml-auto text-xs text-gray-500 hover:text-gray-800">Зняти вибір</button>
@@ -836,7 +858,7 @@ export default function ActiveSession() {
 
         {isActive && canComplete && (
           <div className="flex justify-end">
-            <Button onClick={completeSession} icon={<CheckCircle size={16} />}>
+            <Button onClick={openCompleteConfirm} icon={<CheckCircle size={16} />}>
               Завершити та застосувати залишки
             </Button>
           </div>
@@ -845,6 +867,64 @@ export default function ActiveSession() {
           <p className="text-center text-xs text-gray-500">Завершує ревізію власник або адміністратор.</p>
         )}
       </div>
+
+      <Modal open={completeOpen} onClose={() => setCompleteOpen(false)} title="Завершити ревізію" size="sm">
+        {(() => {
+          const missing = Math.max(0, (session.summary.total_products ?? 0) - (session.summary.counted_products ?? 0))
+          const priceIssues = session.summary.price_mismatch_products ?? 0
+          const needsTyping = missing > 0 || priceIssues > 0
+          return (
+            <div className="space-y-4">
+              {needsTyping ? (
+                <>
+                  <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-800 space-y-1">
+                    <p className="font-semibold flex items-center gap-1.5"><AlertTriangle size={15} /> Увага!</p>
+                    <p>Не пораховано: <strong>{missing}</strong> товарів.</p>
+                    <p>Розбіжностей цін: <strong>{priceIssues}</strong>.</p>
+                    <p className="pt-1">Непораховані залишки стануть <strong>нульовими</strong>.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      Для підтвердження введіть <strong>ЗАВЕРШИТИ</strong>
+                    </label>
+                    <Input value={completeTyped} autoFocus
+                      onChange={(e) => setCompleteTyped(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') completeSession() }}
+                      placeholder="ЗАВЕРШИТИ" />
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-gray-600">
+                  Завершити ревізію та застосувати всі фактичні залишки?
+                </p>
+              )}
+              <div className="flex gap-2 justify-end">
+                <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Скасувати</Button>
+                <Button onClick={completeSession} loading={completing}
+                  disabled={needsTyping && completeTyped.trim().toUpperCase() !== 'ЗАВЕРШИТИ'}
+                  icon={<CheckCircle size={16} />}>
+                  Завершити
+                </Button>
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
+
+      <Modal open={pctOpen} onClose={() => setPctOpen(false)} title="Підняти ціну продажу" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Підняти ціну продажу на, %</label>
+            <Input value={pctValue} autoFocus inputMode="decimal"
+              onChange={(e) => setPctValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') applyPctFromModal() }} />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="secondary" onClick={() => setPctOpen(false)}>Скасувати</Button>
+            <Button onClick={applyPctFromModal}>Застосувати</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }
