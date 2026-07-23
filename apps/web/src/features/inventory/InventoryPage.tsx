@@ -26,6 +26,21 @@ const STATUS_BADGE: Record<string, { color: 'yellow' | 'blue' | 'green'; label: 
 const INVENTORY_LIST_TIMEOUT_MS = 10_000
 const INVENTORY_START_TIMEOUT_MS = 30_000
 
+/**
+ * Обрана дата ревізії + поточний час.
+ *
+ * Раніше сюди йшла гола дата, тобто опівніч, і всі ревізії одного дня мали
+ * однаковий created_at — список не міг їх упорядкувати, тож щойно створена
+ * ревізія опинялась десь усередині й здавалась зниклою.
+ */
+function dateWithCurrentTime(day: string): string {
+  const now = new Date()
+  const stamp = new Date(`${day}T00:00:00`)
+  if (Number.isNaN(stamp.getTime())) return now.toISOString()
+  stamp.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds())
+  return stamp.toISOString()
+}
+
 export default function InventoryPage() {
   const navigate = useNavigate()
   const { session } = useAuthStore()
@@ -89,7 +104,7 @@ export default function InventoryPage() {
         {
           name: name.trim(),
           created_by: managerId || undefined,
-          created_at: date ? new Date(date).toISOString() : undefined,
+          created_at: date ? dateWithCurrentTime(date) : undefined,
         },
         undefined,
         { silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS },
