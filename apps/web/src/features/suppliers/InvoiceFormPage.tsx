@@ -14,6 +14,7 @@ import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
+import { parseLocaleNumber } from '@/lib/parseDecimal'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
 
@@ -172,10 +173,7 @@ function findExactProductForQuery(query: string, products: Product[]): Product |
   return uniqueNameMatches.length === 1 ? uniqueNameMatches[0] : null
 }
 function parseDecimalInput(raw: unknown, fallback = 0): number {
-  const normalized = String(raw ?? '')
-    .replace(/[\s\u00a0\u202f]/g, '')
-    .replace(',', '.')
-  const value = Number.parseFloat(normalized)
+  const value = parseLocaleNumber(raw)
   return Number.isFinite(value) ? value : fallback
 }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
+import { parseLocaleNumber } from '../lib/parseDecimal.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
@@ -94,10 +95,10 @@ function parseRows(text: string): RawRow[] {
     const rawQty   = colMap.qty   !== undefined ? parts[colMap.qty]   ?? '' : ''
     const rawPrice = colMap.price !== undefined ? parts[colMap.price] ?? '' : ''
 
-    const qty = parseFloat(rawQty.replace(/,/g, '.').replace(/[^\d.]/g, ''))
+    const qty = parseLocaleNumber(rawQty)
     if (isNaN(qty) || qty <= 0) continue
 
-    const priceHryvnia = parseFloat(rawPrice.replace(/,/g, '.').replace(/[^\d.]/g, ''))
+    const priceHryvnia = parseLocaleNumber(rawPrice)
     if (isNaN(priceHryvnia) || priceHryvnia < 0) continue
 
     const sku = (colMap.sku !== undefined ? parts[colMap.sku] ?? '' : '').trim()
@@ -275,11 +276,11 @@ function checkHasHeader(firstLine: string, sep: string, mapping: any): boolean {
   let looksLikeHeader = false
 
   if (mapping.qty !== null && mapping.qty !== undefined && parts[mapping.qty]) {
-    const val = parseFloat(parts[mapping.qty].replace(/,/g, ".").replace(/[^\d.]/g, ""))
+    const val = parseLocaleNumber(parts[mapping.qty])
     if (isNaN(val)) looksLikeHeader = true
   }
   if (mapping.price !== null && mapping.price !== undefined && parts[mapping.price]) {
-    const val = parseFloat(parts[mapping.price].replace(/,/g, ".").replace(/[^\d.]/g, ""))
+    const val = parseLocaleNumber(parts[mapping.price])
     if (isNaN(val)) looksLikeHeader = true
   }
   if (mapping.name !== null && mapping.name !== undefined && parts[mapping.name]) {
@@ -317,7 +318,7 @@ function parseImportLines(
     // Ціна закупівлі: якщо порожня/не число — НЕ пропускаємо рядок, а ставимо 0
     // і позначаємо товар «під питанням» (потрібно оновити ціну після імпорту).
     const rawPrice = mapping.price !== null && mapping.price !== undefined ? (parts[mapping.price] ?? "") : ""
-    const priceHryvnia = parseFloat(rawPrice.replace(/,/g, ".").replace(/[^\d.]/g, ""))
+    const priceHryvnia = parseLocaleNumber(rawPrice)
     let price = 0
     let priceReview = false
     if (isNaN(priceHryvnia) || priceHryvnia < 0) {
@@ -339,7 +340,7 @@ function parseImportLines(
       if (!rawQty) {
         qty = 0
       } else {
-        const parsedQty = parseFloat(rawQty.replace(/,/g, ".").replace(/[^\d.]/g, ""))
+        const parsedQty = parseLocaleNumber(rawQty)
         qty = (isNaN(parsedQty) || parsedQty < 0) ? 0 : parsedQty
       }
     }
@@ -349,7 +350,7 @@ function parseImportLines(
     if (mapping.retail_price !== null && mapping.retail_price !== undefined) {
       const rawRetail = parts[mapping.retail_price] ?? ""
       if (rawRetail) {
-        const parsedRetail = parseFloat(rawRetail.replace(/,/g, ".").replace(/[^\d.]/g, ""))
+        const parsedRetail = parseLocaleNumber(rawRetail)
         if (!isNaN(parsedRetail) && parsedRetail >= 0) {
           retail_price = Math.round(parsedRetail * 100)
         }

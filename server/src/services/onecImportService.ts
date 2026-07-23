@@ -19,6 +19,7 @@
 
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
+import { parseLocaleNumber } from '../lib/parseDecimal.js'
 
 export interface OnecColumnMapping {
   sku?:            number
@@ -118,8 +119,7 @@ function parseCsv(text: string): string[][] {
 
 function toKopecks(value: string): number {
   if (!value) return 0
-  const cleaned = value.replace(/\s/g, '').replace(',', '.')
-  const num = parseFloat(cleaned)
+  const num = parseLocaleNumber(value)
   if (isNaN(num)) return 0
   return Math.round(num * 100)
 }
@@ -161,7 +161,7 @@ export function previewOnecImport(
       barcode:        col.barcode        !== undefined ? cells[col.barcode]?.trim()        || undefined : undefined,
       retail_price:   col.retail_price   !== undefined ? toKopecks(cells[col.retail_price]  ?? '') : 0,
       purchase_price: col.purchase_price !== undefined ? toKopecks(cells[col.purchase_price] ?? '') : 0,
-      qty:            col.qty            !== undefined ? parseFloat(cells[col.qty]?.replace(',', '.') ?? '0') || 0 : 0,
+      qty:            col.qty            !== undefined ? parseLocaleNumber(cells[col.qty] ?? '0') || 0 : 0,
       unit:           col.unit           !== undefined ? cells[col.unit]?.trim() || 'шт' : 'шт',
     })
   }

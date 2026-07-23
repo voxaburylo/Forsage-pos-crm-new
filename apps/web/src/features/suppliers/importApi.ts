@@ -1,4 +1,5 @@
 import { api } from '@/lib/api'
+import { parseLocaleNumber } from '@/lib/parseDecimal'
 import { desktopBridge, type DesktopProduct } from '@/lib/desktopBridge'
 import type { SupplyInvoice } from '@/types/supplier'
 import type { ParsedItem } from '@crm-forsage/shared'
@@ -64,8 +65,7 @@ function detectDelimiter(line: string): string {
   return ['\t', ';', ','].reduce((best, candidate) =>
     line.split(candidate).length >= line.split(best).length ? candidate : best)
 }
-const parseNumber = (raw: string) =>
-  Number.parseFloat(raw.replace(/,/g, '.').replace(/[^\d.]/g, ''))
+const parseNumber = (raw: string) => parseLocaleNumber(raw)
 
 function hasHeader(line: string, separator: string, mapping: PreviewBody['mapping']): boolean {
   const cells = line.split(separator).map((cell) => cell.trim().replace(/^["']|["']$/g, ''))

@@ -1,4 +1,5 @@
 import type { DesktopProduct } from '@/lib/desktopBridge'
+import { parseLocaleNumber } from '@/lib/parseDecimal'
 
 export type SupplierImportField = 'sku' | 'barcode' | 'brand' | 'name' | 'qty' | 'price'
 export type SupplierImportMapping = Record<SupplierImportField, number | null>
@@ -89,11 +90,7 @@ export function cleanSupplierImportCell(raw: unknown): string {
 }
 
 function parseDecimal(raw: unknown): number | null {
-  const text = cleanSupplierImportCell(raw)
-    .replace(/\s/g, '')
-    .replace(',', '.')
-    .replace(/[^\d.+-]/g, '')
-  const value = Number.parseFloat(text)
+  const value = parseLocaleNumber(cleanSupplierImportCell(raw))
   return Number.isFinite(value) ? value : null
 }
 
