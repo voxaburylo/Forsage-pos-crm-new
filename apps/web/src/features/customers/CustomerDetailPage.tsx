@@ -44,6 +44,7 @@ export default function CustomerDetailPage() {
   const [deleting, setDeleting]       = useState(false)
   const [confirmingCarId, setConfirmingCarId] = useState<string | null>(null)
   const [customerOrders, setCustomerOrders] = useState<any[]>([])
+  const [ordersLoading, setOrdersLoading] = useState(true)
   const [discountModal, setDiscountModal] = useState(false)
   const [discountVal, setDiscountVal] = useState('0')
   const [statusVal, setStatusVal] = useState('client')
@@ -86,18 +87,16 @@ export default function CustomerDetailPage() {
   const load = useCallback(async () => {
     if (!id) return
     try {
-      const [{ data }, { data: s }, tiersRes, { data: carsData }, ordersRes] = await Promise.all([
+      const [{ data }, { data: s }, tiersRes, { data: carsData }] = await Promise.all([
         customerApi.get(id),
         customerApi.getSales(id),
         pricingApi.listTiers().catch(() => ({ data: [] as PriceTier[] })),
         customerVehiclesApi.list(id),
-        orderApi.list().then((result) => ({ data: result.data.filter((order) => order.customer_id === id).slice(0, 20) })).catch(() => ({ data: [] })),
       ])
       setCustomer(data)
       setSales(s)
       setTiers(tiersRes.data)
       setCars(carsData)
-      setCustomerOrders(ordersRes.data ?? [])
     } catch {
       navigate('/customers')
     } finally {
@@ -106,6 +105,24 @@ export default function CustomerDetailPage() {
   }, [id, navigate])
 
   useEffect(() => { load() }, [load])
+
+  // Список замовлень фільтрується з усього журналу на клієнті, тож він
+  // помітно повільніший за дані самого клієнта. Вантажимо його окремо, щоб
+  // картка (і перемикач накопичення/знижки) була доступна для редагування
+  // одразу, не чекаючи на замовлення.
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    setOrdersLoading(true)
+    orderApi.list()
+      .then((result) => {
+        if (cancelled) return
+        setCustomerOrders(result.data.filter((order) => order.customer_id === id).slice(0, 20))
+      })
+      .catch(() => { if (!cancelled) setCustomerOrders([]) })
+      .finally(() => { if (!cancelled) setOrdersLoading(false) })
+    return () => { cancelled = true }
+  }, [id])
 
   useEffect(() => {
     if (customer) {
@@ -503,7 +520,9 @@ export default function CustomerDetailPage() {
               <Plus size={12} /> Нове
             </button>
           </div>
-          {customerOrders.length === 0 ? (
+          {ordersLoading && customerOrders.length === 0 ? (
+            <p className="px-6 py-6 text-center text-gray-400 text-sm">Завантаження замовлень…</p>
+          ) : customerOrders.length === 0 ? (
             <p className="px-6 py-6 text-center text-gray-400 text-sm">Замовлень ще немає</p>
           ) : (
             <div className="divide-y divide-gray-50">
