@@ -97,9 +97,14 @@ async function loadSessionData(sessionId: string, tenantId: string, userId: stri
 // Усі учасники бачать список, але створення/керування доступне лише відповідальним.
 router.get('/', requireRole(...COUNTER_ROLES), async (req, res, next) => {
   try {
+    // Вторинні ключі потрібні через старі записи, де created_at — гола дата
+    // (опівніч): за одним лише created_at ревізії одного дня йшли в довільному
+    // порядку і свіжа губилась усередині списку.
     const { data, error } = await db.from('inventory_sessions').select('*')
       .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
+      .order('completed_at', { ascending: false, nullsFirst: true })
+      .order('started_at', { ascending: false, nullsFirst: true })
       .limit(50)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     res.json({ data: data ?? [] })
