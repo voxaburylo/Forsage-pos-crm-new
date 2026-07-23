@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodeSvg } from '@/lib/barcodeSvg'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { loadTsplSettings, saveTsplSettings, pickLabelPrinter, type TsplLabelPrintSettings } from './tsplPrintSettings'
 
 type Tab = 'design' | 'print'
@@ -953,6 +954,10 @@ export default function LabelDesigner() {
   const [invoiceCopiesStrategy, setInvoiceCopiesStrategy] = useState<'invoice_qty' | 'fixed'>('invoice_qty')
   const [invoiceFixedCopies, setInvoiceFixedCopies] = useState<number | ''>(1)
 
+  // Сканер штрих-кодів на вкладці друку
+  const [scanning, setScanning] = useState(false)
+  const scanSeq = useRef(0)
+
   // Фільтр для списку друку та автогенерація штрих-кодів
   const [printQueueFilter, setPrintQueueFilter] = useState('')
   const [generatingBarcodes, setGeneratingBarcodes] = useState(false)
@@ -1094,14 +1099,52 @@ export default function LabelDesigner() {
   }
 
   function addToPrint(product: Product) {
-    if (printItems.some((p) => p.id === product.id)) {
-      setPrintItems((prev) => prev.map((p) => p.id === product.id ? { ...p, copies: p.copies + 1 } : p))
-    } else {
-      setPrintItems((prev) => [...prev, { ...product, copies: 1 }])
-    }
+    // Функціонально від prev: сканер додає товар після await, коли замикання
+    // з printItems уже застаріле — інакше швидкі скани поспіль губились.
+    setPrintItems((prev) => prev.some((p) => p.id === product.id)
+      ? prev.map((p) => p.id === product.id ? { ...p, copies: p.copies + 1 } : p)
+      : [...prev, { ...product, copies: 1 }])
     setSearchQuery('')
     setSearchResults([])
   }
+
+  /**
+   * Скан HID-сканера: точний збіг за штрих-кодом/артикулом одразу летить
+   * у чергу друку, неоднозначний — у список під пошуком, щоб обрати вручну.
+   */
+  async function handleScan(code: string) {
+    if (binMode) return
+    setTab('print')
+    const seq = ++scanSeq.current
+    setScanning(true)
+    try {
+      const { data } = await productApi.search(code, 10)
+      if (seq !== scanSeq.current) return
+      const norm = (v: unknown) => String(v ?? '').trim().toLowerCase()
+      const wanted = norm(code)
+      const exact = data.find((p) => norm(p.barcode) === wanted || norm(p.sku) === wanted)
+        ?? (data.length === 1 ? data[0] : undefined)
+
+      if (exact) {
+        addToPrint(exact)
+        toast.success(`+1 етикетка: ${exact.name}`)
+      } else if (data.length > 0) {
+        setSearchQuery(code)
+        setSearchResults(data)
+        toast.error(`Знайдено ${data.length} товарів за «${code}» — оберіть потрібний`)
+      } else {
+        setSearchQuery(code)
+        setSearchResults([])
+        toast.error(`Товар зі штрих-кодом ${code} не знайдено`)
+      }
+    } catch {
+      if (seq === scanSeq.current) toast.error('Помилка пошуку за штрих-кодом')
+    } finally {
+      if (seq === scanSeq.current) setScanning(false)
+    }
+  }
+
+  usePOSBarcodeScanner({ onScan: handleScan })
 
   // Відкриття модалки накладних та завантаження списку
   async function openInvoiceModal() {
@@ -1520,14 +1563,21 @@ export default function LabelDesigner() {
                       Поштучне додавання
                     </label>
                     <Input value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)} placeholder="Назва товару, артикул..." />
+                      onChange={(e) => setSearchQuery(e.target.value)} placeholder="Назва, артикул або штрих-код..." />
+                    <p className="mt-1.5 text-[11px] text-gray-400 flex items-center gap-1.5">
+                      {scanning
+                        ? <><Loader2 size={11} className="animate-spin" /> Шукаю за штрих-кодом...</>
+                        : <>📷 Можна піпнути сканером — товар додасться сам, курсор ставити не треба</>}
+                    </p>
                     {searchResults.length > 0 && (
                       <div className="mt-2 max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y bg-white">
                         {searchResults.map((p) => (
                           <button key={p.id} onClick={() => addToPrint(p)}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-yellow-50 flex items-center justify-between transition-colors">
                             <span className="font-medium">{p.name}</span>
-                            <span className="text-xs text-gray-400">{p.sku} · {kopecksToHryvnia(p.retail_price)} ₴</span>
+                            <span className="text-xs text-gray-400 whitespace-nowrap ml-2">
+                              {p.sku}{p.barcode ? ` · ${p.barcode}` : ''} · {kopecksToHryvnia(p.retail_price)} ₴
+                            </span>
                           </button>
                         ))}
                       </div>
