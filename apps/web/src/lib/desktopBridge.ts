@@ -573,6 +573,8 @@ interface ForsageDesktopBridge {
       title?: string
       widthMm?: number
       heightMm?: number
+      /** Явний принтер Windows — чеки й етикетки не діляться одним пристроєм. */
+      deviceName?: string
       silent?: boolean
       showPreviewWindow?: boolean
       useDriverPaper?: boolean

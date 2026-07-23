@@ -14,6 +14,7 @@ import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
+import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 
 // ─── Emoji picker (compact) ─────────────────────────────────────
 const EMOJI_OPTIONS = ['📦','🛍','⚙️','🍕','☕','🔧','💡','🎁','🧴','🔑','🚗','🏷️','📱','💧','🧲','🪫']
@@ -33,6 +34,16 @@ export default function SettingsPage() {
   const [desktopRuntime, setDesktopRuntime] = useState<DesktopRuntimeInfo | null>(null)
   const [bootstrapLoading, setBootstrapLoading] = useState(false)
   const [bootstrapCounts, setBootstrapCounts] = useState<Record<string, number> | null>(null)
+
+  // Принтер чеків цієї станції (desktop): список системних принтерів + вибір.
+  const [desktopPrinters, setDesktopPrinters] = useState<Array<{ name: string; displayName: string }>>([])
+  const [receiptPrinter, setReceiptPrinter] = useState(() => loadReceiptPrinterSettings().printerName)
+
+  useEffect(() => {
+    const desktopPrint = desktopBridge()?.print
+    if (typeof desktopPrint?.listPrinters !== 'function') return
+    desktopPrint.listPrinters().then(setDesktopPrinters).catch(() => setDesktopPrinters([]))
+  }, [])
 
   // Local state for new markup rule
   const [newMin, setNewMin] = useState('')
@@ -486,6 +497,36 @@ export default function SettingsPage() {
                 Зберігається для цього магазину й автоматично застосовується в касі.
               </p>
             </div>
+
+            {/* Принтер чеків цієї станції (лише desktop-каса).
+                Прив'язаний до робочого місця, не до магазину, тому окремо від
+                решти форми — зберігається одразу в localStorage. */}
+            {desktopPrinters.length > 0 && (
+              <div className="pt-2 border-t border-gray-100">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <Printer size={14} className="inline mr-1" />
+                  Принтер чеків (цей комп'ютер)
+                </label>
+                <select
+                  value={receiptPrinter}
+                  onChange={(e) => {
+                    setReceiptPrinter(e.target.value)
+                    saveReceiptPrinterSettings({ printerName: e.target.value })
+                  }}
+                  className="w-full border border-gray-200 rounded-lg bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  <option value="">авто — визначити за назвою</option>
+                  {desktopPrinters.map((printer) => (
+                    <option key={printer.name} value={printer.name}>{printer.displayName}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-1">
+                  Чеки друкуються лише на цей принтер, етикетки — лише на свій (обирається
+                  в дизайнері етикеток). Так вони не перетинаються й не блокують чергу
+                  один одному.
+                </p>
+              </div>
+            )}
 
             {/* Вечірній звіт власнику */}
             <div className="pt-2 border-t border-gray-100">

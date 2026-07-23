@@ -838,11 +838,15 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
 }
 
 async function printLabelDocumentViaDriver(document: LabelPrintDocument): Promise<void> {
+  // Навіть у драйверному fallback етикетки мають їхати на СВІЙ принтер, а не на
+  // «за замовчуванням» — інакше вони вилазять із чекового POS-58.
+  const deviceName = (await resolveLabelPrinterName()) ?? undefined
   await PrintService.printHtmlAndWait(document.html, {
     mode: 'iframe',
     title: document.title,
     pageSizeMm: { width: document.widthMm, height: document.heightMm },
     preferDesktopNative: true,
+    deviceName,
     showDesktopPreview: false,
     // Етикетка повинна мати рівно фізичний розмір із дизайнера: без fallback
     // на папір/поля драйвера, який спричиняв зсув і порожню другу етикетку.
@@ -858,6 +862,22 @@ async function printLabelDocumentViaDriver(document: LabelPrintDocument): Promis
  * автоматично за назвою (HL80/HiLabel/…) і запам'ятовуємо — щоб працювало
  * «з коробки» без жодних налаштувань.
  */
+/**
+ * Ім'я етикеткового принтера незалежно від того, увімкнено прямий TSPL чи ні —
+ * драйверному шляху воно теж потрібне, щоб не друкувати на чековий.
+ */
+async function resolveLabelPrinterName(): Promise<string | null> {
+  const desktop = desktopBridge()
+  if (!desktop?.print?.listPrinters) return null
+  const saved = loadTsplSettings().printerName
+  if (saved) return saved
+  try {
+    return pickLabelPrinter(await desktop.print.listPrinters())
+  } catch {
+    return null
+  }
+}
+
 export async function resolveTsplPrinter(): Promise<string | null> {
   const desktop = desktopBridge()
   const tspl = loadTsplSettings()

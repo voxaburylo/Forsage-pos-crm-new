@@ -49,6 +49,11 @@ const RAW_DOC_NAME = 'Forsage labels (TSPL)'
 // вони лишаються Retained і мовчки блокують ВСІ наступні друки.
 const STUCK_JOB_PATTERN = 'Error|Blocked|Offline|PaperOut|UserIntervention'
 const NOT_READY_PATTERN = 'Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
+// Найпідступніше зависання не має статусу помилки взагалі: `Printing, Retained`
+// з PagesPrinted=0, яке висить годинами. Ловимо його за віком і відсутністю
+// прогресу — інакше воно блокує чергу непоміченим.
+const IN_FLIGHT_JOB_PATTERN = 'Printing|Retained|Deleting|Spooling'
+const STALE_JOB_SECONDS = 90
 
 const RAW_PRINT_SCRIPT = String.raw`
 param([string]$PrinterName)
@@ -56,21 +61,33 @@ $ErrorActionPreference = 'Stop'
 
 $docName = '${RAW_DOC_NAME}'
 $stuckPattern = '${STUCK_JOB_PATTERN}'
+$inFlightPattern = '${IN_FLIGHT_JOB_PATTERN}'
+$staleSeconds = ${STALE_JOB_SECONDS}
 
 function Get-StuckJobs {
-  @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
-    Where-Object { $_.JobStatus -match $stuckPattern })
+  $now = Get-Date
+  @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue | Where-Object {
+    $_.JobStatus -match $stuckPattern -or (
+      $_.JobStatus -match $inFlightPattern -and
+      $_.PagesPrinted -eq 0 -and
+      $_.SubmittedTime -and
+      ($now - $_.SubmittedTime).TotalSeconds -gt $staleSeconds
+    )
+  })
 }
 
 # ── Preflight ────────────────────────────────────────────────────────────────
 # Спершу прибираємо чужий мотлох із черги, і лише потім дивимось на статус
 # принтера: залипле завдання саме по собі виставляє принтеру стан Error.
 try {
-  $stuck = Get-StuckJobs
+  # @() обов'язкове: Windows PowerShell 5.1 розгортає одноелементний масив при
+  # поверненні з функції, і тоді .Count дає $null — саме випадок «залип рівно
+  # один job», тобто найчастіший. Без обгортки перевірка мовчки пропускала його.
+  $stuck = @(Get-StuckJobs)
   if ($stuck.Count -gt 0) {
     $stuck | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 1500
-    if ((Get-StuckJobs).Count -gt 0) { throw 'TSPL_QUEUE_STUCK' }
+    if (@(Get-StuckJobs).Count -gt 0) { throw 'TSPL_QUEUE_STUCK' }
   }
   $printer = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
   if ($printer -and ($printer.PrinterStatus -match '${NOT_READY_PATTERN}')) {

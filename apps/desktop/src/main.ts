@@ -31,6 +31,7 @@ import {
   type CashalotConfigUpdate,
 } from './fiscal/cashalotService'
 import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
+import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
@@ -54,6 +55,9 @@ interface DesktopPrintOptions {
   title?: string
   widthMm?: number
   heightMm?: number
+  /** Ім'я принтера у Windows. Задаємо ЗАВЖДИ, щоб чек не поїхав на етикетковий
+   * (і навпаки) через зміну «принтера за замовчуванням». */
+  deviceName?: string
   silent?: boolean
   showPreviewWindow?: boolean
   /** true — не задавати pageSize, друкувати на папері за налаштуванням драйвера
@@ -295,14 +299,20 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
     // pageSize+landscape з «Invalid printer settings». Тому пробуємо каскадом:
     // спершу ідеальні налаштування, а якщо драйвер їх не приймає — простіші,
     // щоб друк узагалі відбувся, а не падав.
+    const deviceName = String(options.deviceName ?? '').trim()
     const minimalBase = {
       silent: options.silent === true,
       printBackground: true,
+      ...(deviceName ? { deviceName } : {}),
     }
     const base = {
       ...minimalBase,
       margins: { marginType: 'none' as const },
     }
+    // Кожна спроба каскаду ОБОВ'ЯЗКОВО несе deviceName: спрощуємо папір і поля,
+    // але ніколи не принтер. Інакше остання спроба пішла б на «принтер за
+    // замовчуванням» — і чек вилазив би з етикеткового.
+    const bareAttempt = { silent: options.silent === true, ...(deviceName ? { deviceName } : {}) }
     const attempts: Electron.WebContentsPrintOptions[] = options.strictPageSize
       ? [{ ...base, pageSize, landscape }]
       : options.useDriverPaper
@@ -312,8 +322,7 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
             // margins: none як "Invalid printer settings". У такому випадку
             // віддаємо папір і поля повністю драйверу, щоб друк не падав.
             { ...minimalBase },
-            { silent: options.silent === true },
-            {},
+            bareAttempt,
           ]
         : [
             { ...base, pageSize, landscape },
@@ -324,7 +333,7 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
             { ...minimalBase, pageSize },
             { ...minimalBase, landscape },
             { ...minimalBase },
-            {},
+            bareAttempt,
           ]
 
     const printOnce = (opts: Electron.WebContentsPrintOptions) =>
@@ -346,14 +355,22 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
         })
       })
 
+    // Залипле завдання цього ж принтера з'їло б друк мовчки — чистимо до відправки.
+    if (deviceName) await preflightPrinter(deviceName)
+
     let lastError: unknown = null
     for (const opts of attempts) {
       try {
         await printOnce(opts)
+        // Спулер прийняв байти — це ще не друк. Переконуємось, що завдання пішло.
+        if (deviceName && options.silent === true) await postflightPrinter(deviceName)
         return { success: true }
       } catch (error) {
         lastError = error
         if (error instanceof Error && error.message === 'PRINT_TIMEOUT') break
+        // Принтер не готовий або завдання не поїхало — інші налаштування паперу
+        // цього не виправлять, тому каскад далі не має сенсу.
+        if (error instanceof Error && isSpoolerGuardError(error)) break
         // «Invalid printer settings» / подібне — пробуємо наступний, простіший варіант
       }
     }

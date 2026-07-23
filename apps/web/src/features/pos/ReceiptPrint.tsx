@@ -4,6 +4,8 @@ import type { Sale } from '@/types/sale'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatDateTime } from '@/lib/utils'
 import { PrintService } from '@/lib/printService'
+import { toast } from '@/components/ui/Toast'
+import { resolveReceiptPrinter } from './receiptPrinterSettings'
 
 // Синхронна генерація QR (SVG) — щоб був готовий одразу на момент друку
 function qrSvg(text: string): string {
@@ -176,6 +178,19 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
   )
 }
 
+/** Людське пояснення для кодів охорони черги друку (див. spoolerGuard). */
+function receiptPrintErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '')
+  if (raw.includes('PRINT_QUEUE_STUCK')) {
+    return 'У черзі чекового принтера залипло старе завдання, і Windows не дає його прибрати. '
+      + 'Перезапустіть службу «Диспетчер друку» (Спулер) або комп’ютер.'
+  }
+  if (raw.includes('PRINT_PRINTER_NOT_READY') || raw.includes('PRINT_NOT_CONFIRMED')) {
+    return 'Чековий принтер не готовий: перевірте живлення, USB-кабель і наявність паперу. Чек НЕ надруковано.'
+  }
+  return ''
+}
+
 export function printReceipt() {
   // Desktop (Electron): друкуємо чек через нативний друк — системний діалог
   // принтера без кривого Chromium-передперегляду («не підтримує передперегляд»).
@@ -188,13 +203,27 @@ export function printReceipt() {
         + `<style>@page{margin:0}html,body{margin:0;padding:0;background:#fff}`
         + `.receipt-print{display:block !important}</style></head><body>`
         + `${el.outerHTML}</body></html>`
-      // Чек друкуємо ТИХО на принтер за замовчуванням (чековий POS-58) —
-      // без діалогу й без кривого Chromium-передперегляду.
-      desktopPrint.html(html, { title: 'Чек', silent: true, useDriverPaper: true })
-        .catch((error: unknown) => {
-          console.error('Native receipt print failed, falling back to window.print', error)
-          PrintService.printCurrentPage()
-        })
+      // Чек друкуємо ТИХО і на ЯВНО названий чековий принтер: покладатись на
+      // «принтер за замовчуванням» не можна — варто йому стати етикетковим,
+      // і чек іде на HL80, зависає там і глушить чергу.
+      void resolveReceiptPrinter().then((deviceName) =>
+        desktopPrint.html(html, {
+          title: 'Чек',
+          silent: true,
+          useDriverPaper: true,
+          ...(deviceName ? { deviceName } : {}),
+        }),
+      ).catch((error: unknown) => {
+        console.error('Native receipt print failed', error)
+        const explained = receiptPrintErrorMessage(error)
+        if (explained) {
+          // Принтер недоступний — друкувати ще раз через браузер немає сенсу,
+          // це лише створило б другий висячий job.
+          toast.error(explained)
+          return
+        }
+        PrintService.printCurrentPage()
+      })
       return
     }
   }

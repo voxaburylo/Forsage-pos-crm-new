@@ -9,6 +9,8 @@ export interface PrintOptions {
   /** Друкувати на папері за налаштуванням драйвера (не задавати pageSize) —
    * для етикеткового HL80, який відхиляє власний pageSize («Invalid printer settings»). */
   useDriverPaper?: boolean;
+  /** Явний принтер Windows (desktop). Без нього друк іде на «за замовчуванням». */
+  deviceName?: string;
   /** Для етикеток: не скидати точний розмір сторінки у fallback-спробах драйвера. */
   strictPageSize?: boolean;
   cleanupDelayMs?: number;
@@ -149,6 +151,7 @@ export class PrintService {
           widthMm: pageSizeMm.width,
           heightMm: pageSizeMm.height,
           silent: false,
+          deviceName: options.deviceName,
           showPreviewWindow: options.showDesktopPreview ?? false,
           useDriverPaper: options.useDriverPaper ?? false,
           strictPageSize: options.strictPageSize ?? false,
