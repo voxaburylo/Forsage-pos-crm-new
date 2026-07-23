@@ -30,7 +30,7 @@ const INVENTORY_START_TIMEOUT_MS = 30_000
 export default function InventoryPage() {
   const navigate = useNavigate()
   const { session } = useAuthStore()
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const canManage = ['owner', 'admin', 'storekeeper'].includes(role)
   const [sessions, setSessions] = useState<Session[]>([])
   const [users, setUsers] = useState<any[]>([])
@@ -58,7 +58,10 @@ export default function InventoryPage() {
   }
 
   useEffect(() => {
-    load()
+    void load()
+    const refreshFromLocalPull = () => { void load() }
+    window.addEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
+    return () => window.removeEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
   }, [])
 
   useEffect(() => {

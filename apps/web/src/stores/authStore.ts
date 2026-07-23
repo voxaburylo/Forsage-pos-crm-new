@@ -23,6 +23,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   setLoading: (loading) => set({ loading }),
 }))
 
+let trustedClaimsRefreshAttempted = false
+
 supabase.auth.onAuthStateChange((_event, session) => {
   const state = useAuthStore.getState()
 
@@ -41,6 +43,14 @@ supabase.auth.onAuthStateChange((_event, session) => {
     useAuthStore.setState({ offlineMode: false })
     const emailKey = session.user?.email
     if (emailKey) refreshCachedSession(emailKey, session)
+
+    // Після перенесення ролі й tenant_id до захищених app_metadata стара JWT
+    // може не містити нові claims. Один фоновий refresh отримує актуальний токен.
+    if (!session.user.app_metadata?.tenant_id && !trustedClaimsRefreshAttempted
+        && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+      trustedClaimsRefreshAttempted = true
+      setTimeout(() => { void supabase.auth.refreshSession() }, 0)
+    }
   }
   useAuthStore.getState().setLoading(false)
 })

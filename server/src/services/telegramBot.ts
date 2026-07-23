@@ -324,9 +324,9 @@ async function getManagerId(tenantId: string): Promise<string> {
   try {
     const { supabaseAdmin } = await import('../db/supabaseAdmin.js')
     const { data: u } = await supabaseAdmin.auth.admin.listUsers()
-    const tenantUsers = u?.users?.filter((x: any) => x.user_metadata?.tenant_id === tenantId) ?? []
-    const m = tenantUsers.find((x: any) => x.user_metadata?.role === 'admin')
-           ?? tenantUsers.find((x: any) => x.user_metadata?.role === 'manager')
+    const tenantUsers = u?.users?.filter((x: any) => x.app_metadata?.tenant_id === tenantId) ?? []
+    const m = tenantUsers.find((x: any) => x.app_metadata?.role === 'admin')
+           ?? tenantUsers.find((x: any) => x.app_metadata?.role === 'manager')
            ?? tenantUsers[0]
     return m?.id ?? '00000000-0000-0000-0000-000000000000'
   } catch { return '00000000-0000-0000-0000-000000000000' }

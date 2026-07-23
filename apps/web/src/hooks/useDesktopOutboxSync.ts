@@ -9,21 +9,42 @@ const RETRY_MIN_MS = 15_000
 const RETRY_MAX_MS = 5 * 60_000
 const STARTUP_DELAY_MS = 1_500
 
+const PERIODIC_SNAPSHOT_COUNTS = new Set([
+  'staff',
+  'categories',
+  'brands',
+  'commission_rules',
+  'settings',
+])
+
+export function hasMeaningfulDesktopSyncChanges(result: {
+  pushed: number
+  pulled: { counts: Record<string, number> } | null
+}): boolean {
+  if (result.pushed > 0) return true
+  return Object.entries(result.pulled?.counts ?? {}).some(
+    ([key, count]) => !PERIODIC_SNAPSHOT_COUNTS.has(key) && Number(count) > 0,
+  )
+}
+
 export function useDesktopOutboxSync(serverOnline: boolean) {
   const userId = useAuthStore((state) => state.session?.user?.id ?? '')
+  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [syncing, setSyncing] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
   const retryAttemptRef = useRef(0)
 
   const syncNow = useCallback(async (includeReferences = false) => {
-    if (!serverOnline || !userId || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }
+    if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }
 
     setSyncing(true)
     try {
       const result = await syncDesktopNow({ includeReferences })
       retryAttemptRef.current = result.failed > 0 ? retryAttemptRef.current + 1 : 0
       setLastError(result.failed > 0 ? `Не синхронізовано desktop-операцій: ${result.failed}` : null)
-      window.dispatchEvent(new CustomEvent('forsage:desktop-sync-completed', { detail: result }))
+      if (hasMeaningfulDesktopSyncChanges(result)) {
+        window.dispatchEvent(new CustomEvent('forsage:desktop-sync-completed', { detail: result }))
+      }
       return result
     } catch (error) {
       retryAttemptRef.current += 1
@@ -32,10 +53,10 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
     } finally {
       setSyncing(false)
     }
-  }, [serverOnline, userId])
+  }, [serverOnline, userId, offlineMode])
 
   useEffect(() => {
-    if (!serverOnline || !userId || !isDesktopRuntime()) return
+    if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return
 
     let cancelled = false
     let timer: number | null = null
@@ -81,7 +102,7 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
       window.removeEventListener('online', requestImmediateSync)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [serverOnline, userId, syncNow])
+  }, [serverOnline, userId, offlineMode, syncNow])
 
   return { syncing, lastError, syncNow }
 }

@@ -228,6 +228,7 @@ BEGIN
   FROM inventory_items i
   WHERE i.session_id = p_session_id
     AND i.product_id = p.id
+    AND i.was_counted = true
     AND p.tenant_id = p_tenant_id
     AND p.qty_on_hand IS DISTINCT FROM i.counted_stock;
   GET DIAGNOSTICS v_updated = ROW_COUNT;

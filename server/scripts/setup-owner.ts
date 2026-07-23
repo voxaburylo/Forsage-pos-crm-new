@@ -5,7 +5,7 @@
  *
  * Що робить:
  * 1. Створює першого власника (owner) у Supabase Auth
- * 2. Встановлює роль owner в user_metadata
+ * 2. Встановлює захищені роль і магазин в app_metadata
  *
  * Потребує: server/.env з SUPABASE_URL і SUPABASE_SERVICE_KEY
  */
@@ -51,7 +51,7 @@ async function main() {
   // Перевіряємо чи вже є власник
   const { data: existingUsers } = await supabase.auth.admin.listUsers()
   const owners = existingUsers?.users?.filter(
-    (u) => u.user_metadata?.role === 'owner'
+    (u) => u.app_metadata?.role === 'owner'
   ) ?? []
 
   if (owners.length > 0) {
@@ -99,12 +99,13 @@ async function main() {
     email,
     password,
     email_confirm: true,
-    user_metadata: {
-      phone,
-      full_name: fullName,
-      role:      'owner',
+    user_metadata: { phone, full_name: fullName },
+    app_metadata: {
+      role: 'owner',
       is_active: true,
       tenant_id: '00000000-0000-0000-0000-000000000001',
+      base_rate: 0,
+      rate_period: 'month',
     },
   })
 
@@ -116,7 +117,7 @@ async function main() {
   console.log('\n✅ Власника створено успішно!')
   console.log(`   ID:       ${data.user?.id}`)
   console.log(`   Телефон:  ${phone}`)
-  console.log(`   Пароль:   ${password}`)
+  console.log('   Пароль не виводиться. Збережіть його у менеджері паролів.')
   console.log(`   Роль:     owner`)
   console.log('\n🚀 Тепер можна входити в систему.')
 }

@@ -2,8 +2,93 @@ import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { logger } from '../lib/logger.js'
 import type { OpenShiftInput, CloseShiftInput } from '../validators/shiftSchema.js'
+import { calculateExpectedCash, summarizePaymentReceipts } from './cashAccounting.js'
 
 const TABLE = 'shifts'
+
+const ORDER_SALE_ID_CHUNK_SIZE = 200
+
+async function loadOrderSaleIds(tenantId: string, saleIds: string[]): Promise<Set<string>> {
+  const result = new Set<string>()
+  for (let offset = 0; offset < saleIds.length; offset += ORDER_SALE_ID_CHUNK_SIZE) {
+    const chunk = saleIds.slice(offset, offset + ORDER_SALE_ID_CHUNK_SIZE)
+    const { data, error } = await db
+      .from('customer_orders')
+      .select('sale_id')
+      .eq('tenant_id', tenantId)
+      .in('sale_id', chunk)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    for (const row of data ?? []) {
+      if (row.sale_id) result.add(row.sale_id)
+    }
+  }
+  return result
+}
+
+export async function getShiftCashBreakdown(
+  shiftId: string,
+  tenantId: string,
+  openingCash: number,
+) {
+  const [{ data: sales, error: salesError }, { data: cashOps, error: cashOpsError }] = await Promise.all([
+    db
+      .from('sales')
+      .select('id,total,payment_method,cash_amount,card_amount,status')
+      .eq('shift_id', shiftId)
+      .eq('tenant_id', tenantId)
+      .eq('status', 'completed'),
+    db
+      .from('cash_operations')
+      .select('id,type,amount')
+      .eq('shift_id', shiftId)
+      .eq('tenant_id', tenantId),
+  ])
+  if (salesError) throw new AppError('DB_ERROR', salesError.message, 500)
+  if (cashOpsError) throw new AppError('DB_ERROR', cashOpsError.message, 500)
+
+  const completedSales = sales ?? []
+  const orderSaleIds = await loadOrderSaleIds(tenantId, completedSales.map((sale) => sale.id))
+  const regularSaleCash = summarizePaymentReceipts(completedSales, orderSaleIds, []).cash
+
+  const operations = cashOps ?? []
+  const outIds = operations.filter((operation) => operation.type === 'out').map((operation) => operation.id)
+  let returnOperationIds = new Set<string>()
+  if (outIds.length > 0) {
+    const { data: cashReturns, error: returnsError } = await db
+      .from('returns')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('refund_method', 'cash')
+      .in('id', outIds)
+    if (returnsError) throw new AppError('DB_ERROR', returnsError.message, 500)
+    returnOperationIds = new Set((cashReturns ?? []).map((item) => item.id))
+  }
+
+  const cashIn = operations
+    .filter((operation) => operation.type === 'in')
+    .reduce((sum, operation) => sum + Number(operation.amount ?? 0), 0)
+  const returnCash = operations
+    .filter((operation) => operation.type === 'out' && returnOperationIds.has(operation.id))
+    .reduce((sum, operation) => sum + Number(operation.amount ?? 0), 0)
+  const cashOut = operations
+    .filter((operation) => operation.type === 'out' && !returnOperationIds.has(operation.id))
+    .reduce((sum, operation) => sum + Number(operation.amount ?? 0), 0)
+
+  return {
+    opening_cash: Number(openingCash ?? 0),
+    cash_sales: regularSaleCash,
+    cash_returns: returnCash,
+    cash_in: cashIn,
+    cash_out: cashOut,
+    expected_amount: calculateExpectedCash({
+      openingCash,
+      regularSaleCash,
+      cashIn,
+      returnCash,
+      cashOut,
+    }),
+  }
+}
 
 export async function getCurrentShift(cashierId: string, tenantId: string) {
   const { data } = await db
@@ -91,38 +176,8 @@ export async function closeShift(
     throw new AppError('RECONCILIATION_REQUIRED', 'Спочатку виконайте звірку каси', 400)
   }
 
-  // 1. Продажі — використовуємо cash_amount (правильно для cash та mixed)
-  const { data: sales } = await db
-    .from('sales')
-    .select('cash_amount')
-    .eq('shift_id', shiftId)
-    .eq('tenant_id', tenantId)
-    .eq('status', 'completed')
-  const totalCashSales = (sales ?? []).reduce((s, x) => s + (x.cash_amount ?? 0), 0)
-
-  // 2. Повернення готівкою
-  const { data: shiftSales } = await db
-    .from('sales')
-    .select('id')
-    .eq('shift_id', shiftId)
-    .eq('tenant_id', tenantId)
-  const shiftSaleIds = (shiftSales ?? []).map((s) => s.id)
-  const { data: returns } = shiftSaleIds.length > 0
-    ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', shiftSaleIds).eq('tenant_id', tenantId)
-    : { data: [] }
-  const totalReturns = (returns ?? []).reduce((s, x) => s + (x.refund_kopecks ?? 0), 0)
-
-  // 3. Cash operations (внесення/вилучення)
-  const { data: cashOps } = await db
-    .from('cash_operations')
-    .select('type, amount')
-    .eq('shift_id', shiftId)
-    .eq('tenant_id', tenantId)
-  const cashIn  = (cashOps ?? []).filter((o) => o.type === 'in').reduce((s, x) => s + x.amount, 0)
-  const cashOut = (cashOps ?? []).filter((o) => o.type === 'out').reduce((s, x) => s + x.amount, 0)
-
-  // 4. Розрахунок expected
-  const expectedCash = shift.opening_cash + totalCashSales + cashIn - totalReturns - cashOut
+  const cash = await getShiftCashBreakdown(shiftId, tenantId, shift.opening_cash)
+  const expectedCash = cash.expected_amount
   const variance = input.closing_cash - expectedCash
 
   const { data, error } = await db
@@ -202,28 +257,40 @@ export async function closeStaleShifts(): Promise<number> {
 export async function getShiftReport(shiftId: string, tenantId: string) {
   const shift = await getShift(shiftId, tenantId)
 
-  const { data: sales } = await db
+  const { data: sales, error: salesError } = await db
     .from('sales')
     .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount')
     .eq('shift_id', shiftId)
     .eq('tenant_id', tenantId)
     .order('completed_at', { ascending: true })
 
+  if (salesError) throw new AppError('DB_ERROR', salesError.message, 500)
   const list = sales ?? []
-  const completed = list.filter((s) => s.status === 'completed')
+  const completed = list.filter((sale) => sale.status === 'completed')
 
-  const total_revenue = completed.reduce((s, x) => s + x.total, 0)
+  const total_revenue = completed.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0)
+  const orderSaleIds = await loadOrderSaleIds(tenantId, completed.map((sale) => sale.id))
+  const { data: orderPayments, error: paymentError } = await db
+    .from('order_payments')
+    .select('amount,method,is_fiscal')
+    .eq('tenant_id', tenantId)
+    .eq('shift_id', shiftId)
+  if (paymentError) throw new AppError('DB_ERROR', paymentError.message, 500)
+  const received = summarizePaymentReceipts(completed, orderSaleIds, orderPayments ?? [])
   const by_method = {
-    // cash_amount/card_amount зберігають фактичний розподіл оплати й тому
-    // правильно враховують також змішані чеки.
-    cash: completed.reduce((sum, sale) => sum + Number(
-      sale.payment_method === 'cash' ? sale.cash_amount || sale.total : sale.cash_amount ?? 0,
-    ), 0),
-    card: completed.reduce((sum, sale) => sum + Number(
-      sale.payment_method === 'card' ? sale.card_amount || sale.total : sale.card_amount ?? 0,
-    ), 0),
-    debt: completed.filter((s) => s.payment_method === 'debt').reduce((s, x) => s + x.total, 0),
+    cash: received.cash,
+    card: received.card,
+    transfer: received.transfer,
+    account: received.account,
+    debt: received.debt,
   }
 
-  return { shift, total_sales: completed.length, total_revenue, by_method, sales: list }
+  return {
+    shift,
+    total_sales: completed.length,
+    total_revenue,
+    payment_received_total: received.total,
+    by_method,
+    sales: list,
+  }
 }

@@ -25,6 +25,8 @@ import {
   printLabels,
   loadProductLabelSettings,
 } from '@/features/labels/LabelDesigner'
+import { areAllDisplayedProductsSelected, toggleDisplayedProductsSelection } from './productSelection'
+import { canDeleteCatalog } from './catalogDeletePermissions'
 
 // ─── Типи ────────────────────────────────────────────────────────────────────
 interface Category { id: string; name: string; sort_order: number }
@@ -67,9 +69,10 @@ const PRODUCTS_PER_PAGE = 100
 export default function ProductsPage() {
   const navigate = useNavigate()
   const session  = useAuthStore((s) => s.session)
-  const role     = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role     = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const scopeKey = session?.user?.id ?? ''
-  const isAdmin  = ['owner', 'admin'].includes(role)
+  const isAdmin  = canDeleteCatalog(role)
+  const canEditCatalog = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const loadRequestRef             = useRef(0)
@@ -218,7 +221,7 @@ export default function ProductsPage() {
         // пошук, що й каса. Він одразу знаходить точний штрихкод, артикул або
         // слова назви незалежно від активної папки та інших фільтрів.
         if (debouncedSearch.trim()) {
-          let desktopProducts = (
+          const desktopProducts = (
             await desktopCatalog.searchProducts(debouncedSearch.trim(), 500)
           ).map(desktopProductToProduct)
 
@@ -349,6 +352,15 @@ export default function ProductsPage() {
     }
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
 
+  useEffect(() => {
+    if (!isDesktopRuntime()) return
+    const refreshVisibleData = () => {
+      void loadMeta()
+      void load()
+    }
+    window.addEventListener('forsage:desktop-sync-completed', refreshVisibleData)
+    return () => window.removeEventListener('forsage:desktop-sync-completed', refreshVisibleData)
+  }, [load, loadMeta])
   const filterKey = useMemo(() => JSON.stringify({
     debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort,
   }), [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
@@ -433,8 +445,7 @@ export default function ProductsPage() {
   }
 
   function toggleSelectAll() {
-    const ids = result?.data ?? []
-    setSelectedIds(selectedIds.size === ids.length ? new Set() : new Set(ids.map((p) => p.id)))
+    setSelectedIds((previous) => toggleDisplayedProductsSelection(products, previous))
   }
 
   const selectedProducts = useMemo(() => {
@@ -597,7 +608,7 @@ export default function ProductsPage() {
       },
     })
   }
-  const allSelected = !!result?.data.length && selectedIds.size === result.data.length
+  const allSelected = areAllDisplayedProductsSelected(products, selectedIds)
   const total       = result?.pagination.total ?? 0
 
   return (
@@ -662,7 +673,8 @@ export default function ProductsPage() {
             activeCategory={categoryFilter}
             onCategory={(id) => { setCategoryFilter(id); setPage(1) }}
             onReload={loadMeta}
-            isAdmin={isAdmin}
+            canEdit={canEditCatalog}
+            canDelete={isAdmin}
           />
         </div>
 
@@ -1116,11 +1128,11 @@ export default function ProductsPage() {
                       const qty = bulkQtys[p.id] ?? 0
                       return Array(qty).fill(p)
                     })
-                    printLabels(settings as any, items, false)
+                    await printLabels(settings as any, items, false)
                     setBulkPrintOpen(false)
                     setSelectedIds(new Set())
-                  } catch {
-                    toast.error('Помилка друку')
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетки')
                   }
                 }}
               >

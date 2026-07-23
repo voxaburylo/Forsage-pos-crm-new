@@ -103,6 +103,7 @@ export class LocalInventoryRepository {
   getLabels(sessionId: string, tenantId = DEFAULT_TENANT_ID): any[] {
     this.requireSession(sessionId, tenantId)
     return this.listCountedItems(sessionId, tenantId, 10000)
+      .filter((item) => num(item.counted_stock) > 0)
   }
 
   findProduct(sessionId: string, input: { tenant_id?: string; code?: string; product_id?: string }): any {
@@ -150,7 +151,7 @@ export class LocalInventoryRepository {
         product.id,
         num(product.qty_on_hand),
         nextQty,
-        nextQty > 0 ? 1 : 0,
+        1,
         boolInt(input.price_checked),
         input.observed_retail_price ?? null,
         userId || null,
@@ -229,14 +230,31 @@ export class LocalInventoryRepository {
     const timestamp = nowIso()
     this.db.prepare(`
       UPDATE inventory_items
-      SET counted_stock = ?, was_counted = ?, price_checked = CASE WHEN ? = 1 THEN price_checked ELSE 0 END,
-          observed_retail_price = CASE WHEN ? = 1 THEN observed_retail_price ELSE NULL END,
-          last_counted_by = CASE WHEN ? = 1 THEN last_counted_by ELSE NULL END,
-          updated_at = ?
+      SET counted_stock = ?, was_counted = 1, updated_at = ?, deleted_at = NULL
       WHERE id = ? AND session_id = ? AND tenant_id = ?
-    `).run(qty, qty > 0 ? 1 : 0, qty > 0 ? 1 : 0, qty > 0 ? 1 : 0, qty > 0 ? 1 : 0, timestamp, itemId, sessionId, tenantId)
+    `).run(qty, timestamp, itemId, sessionId, tenantId)
     this.touchSession(sessionId, tenantId, timestamp)
     return this.findItemById(itemId, tenantId)
+  }
+
+  removeItem(sessionId: string, itemId: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    this.requireActiveSession(sessionId, tenantId)
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        DELETE FROM inventory_count_entries
+        WHERE inventory_item_id = ? AND session_id = ? AND tenant_id = ?
+      `).run(itemId, sessionId, tenantId)
+      this.db.prepare(`
+        UPDATE inventory_items
+        SET counted_stock = 0, was_counted = 0, price_checked = 0,
+            observed_retail_price = NULL, last_counted_by = NULL,
+            updated_at = ?, deleted_at = NULL
+        WHERE id = ? AND session_id = ? AND tenant_id = ?
+      `).run(timestamp, itemId, sessionId, tenantId)
+      this.touchSession(sessionId, tenantId, timestamp)
+    })
+    return { ok: true }
   }
 
   applyPrice(sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }): { data: any; session: any } {
@@ -258,7 +276,7 @@ export class LocalInventoryRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const session = this.requireActiveSession(sessionId, tenantId)
     const timestamp = nowIso()
-    const items = this.listCountedItems(sessionId, tenantId, 10000)
+    const items = this.listCountedItems(sessionId, tenantId, -1)
     let updated = 0
     this.db.transaction(() => {
       for (const item of items) {
@@ -424,7 +442,7 @@ export class LocalInventoryRepository {
       SELECT id, product_id, expected_stock, counted_stock, price_checked,
              observed_retail_price, updated_at, was_counted
       FROM inventory_items
-      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1 AND counted_stock > 0
+      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1
       ORDER BY updated_at DESC
       LIMIT ?
     `).all(sessionId, tenantId, limit) as any[]
@@ -474,7 +492,7 @@ export class LocalInventoryRepository {
         SUM(expected_stock) AS total_expected_units,
         SUM(counted_stock) AS total_counted_units
       FROM inventory_items
-      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1 AND counted_stock > 0
+      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1
     `).get(sessionId, tenantId) as any
     return {
       total_products: totalProducts,

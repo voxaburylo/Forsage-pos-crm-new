@@ -1,4 +1,16 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer as electronIpcRenderer } from 'electron'
+import { localizeDesktopIpcError } from './ipcError'
+
+const ipcRenderer = {
+  async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+    try {
+      return await electronIpcRenderer.invoke(channel, ...args)
+    } catch (error) {
+      throw localizeDesktopIpcError(error)
+    }
+  },
+}
+
 
 contextBridge.exposeInMainWorld('forsageDesktop', {
   auth: {
@@ -60,12 +72,28 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listPopular: (limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
   },
+  supplierCatalog: {
+    list: (options?: unknown) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:list', options),
+    listImports: (tenantId?: string, limit?: number) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:list-imports', tenantId, limit),
+    getImport: (id: string, tenantId?: string) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:get-import', id, tenantId),
+    create: (input: unknown) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:create', input),
+    update: (id: string, input: unknown, tenantId?: string) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:update', id, input, tenantId),
+    delete: (id: string, tenantId?: string) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:delete', id, tenantId),
+    importRows: (filename: string, rows: unknown[], options: unknown) =>
+      ipcRenderer.invoke('desktop:supplier-catalog:import-rows', filename, rows, options),
+  },
   staff: {
     listUsers: () => ipcRenderer.invoke('desktop:staff:list-users'),
-    createUser: (input: unknown) => ipcRenderer.invoke('desktop:staff:create-user', input),
+    saveServerUser: (input: unknown, password: string) => ipcRenderer.invoke('desktop:staff:save-server-user', input, password),
     updateUser: (id: string, input: unknown) => ipcRenderer.invoke('desktop:staff:update-user', id, input),
     deleteUser: (id: string) => ipcRenderer.invoke('desktop:staff:delete-user', id),
-    resetPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:reset-password', id, password),
+    saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),
     setPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:set-pin', userId, pin),
     verifyPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:verify-pin', userId, pin),
     listCommissionRules: () => ipcRenderer.invoke('desktop:staff:list-commission-rules'),
@@ -97,6 +125,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     count: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:count', sessionId, input),
     scan: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:scan', sessionId, input),
     setItemQty: (sessionId: string, itemId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:set-item-qty', sessionId, itemId, input),
+    removeItem: (sessionId: string, itemId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:remove-item', sessionId, itemId, tenantId),
     labels: (sessionId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:labels', sessionId, tenantId),
     applyPrice: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:apply-price', sessionId, input),
     complete: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:complete', sessionId, input),
@@ -113,6 +142,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     bulkArrival: (itemIds: string[], tenantId?: string) => ipcRenderer.invoke('desktop:orders:bulk-arrival', itemIds, tenantId),
     get: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:get', id, tenantId),
     listPayments: (orderId: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:list-payments', orderId, tenantId),
+    listPaymentsByPeriod: (input?: unknown) => ipcRenderer.invoke('desktop:orders:list-payments-period', input),
     addPayment: (orderId: string, input: unknown) => ipcRenderer.invoke('desktop:orders:add-payment', orderId, input),
     complete: (orderId: string, input?: unknown) => ipcRenderer.invoke('desktop:orders:complete', orderId, input),
   },
@@ -206,10 +236,22 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     xReport: () => ipcRenderer.invoke('desktop:fiscal:x-report'),
     serviceCash: (amount: number, direction: 'in' | 'out') =>
       ipcRenderer.invoke('desktop:fiscal:service-cash', amount, direction),
-    registerCheck: (items: unknown[], pay: unknown, comment?: string | null) =>
-      ipcRenderer.invoke('desktop:fiscal:register-check', items, pay, comment),
-    registerReturn: (items: unknown[], pay: unknown, originalFiscalNumber: string) =>
-      ipcRenderer.invoke('desktop:fiscal:register-return', items, pay, originalFiscalNumber),
+    fiscalizeSale: (request: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:fiscalize-sale', request),
+    getSaleIntent: (operationId: string) =>
+      ipcRenderer.invoke('desktop:fiscal:get-sale-intent', operationId),
+    resolveUnknownSale: (operationId: string, resolution: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:resolve-unknown-sale', operationId, resolution),
+    fiscalizeReturn: (request: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:fiscalize-return', request),
+    listUnresolvedReturns: (scope: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:list-unresolved-returns', scope),
+    resumeReturn: (operationId: string, scope: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:resume-return', operationId, scope),
+    resolveUnknownReturn: (operationId: string, resolution: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:resolve-unknown-return', operationId, resolution),
+    cancelPreparedReturn: (operationId: string, input: unknown) =>
+      ipcRenderer.invoke('desktop:fiscal:cancel-prepared-return', operationId, input),
   },
 })
 

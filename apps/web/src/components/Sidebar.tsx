@@ -16,7 +16,6 @@ interface NavItem {
   icon: React.ReactNode
   label: string
   roles?: string[]
-  desktopHidden?: boolean
 }
 
 interface NavGroup {
@@ -138,7 +137,7 @@ function NavSection({
   const location = useLocation()
 
   const visibleItems = group.items.filter(
-    (item) => (!item.desktopHidden || !desktopBridge()) && (!item.roles || item.roles.includes(role)),
+    (item) => !item.roles || item.roles.includes(role),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))
@@ -194,7 +193,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { session } = useAuthStore()
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
   const [pickingCount, setPickingCount] = useState(0)
 

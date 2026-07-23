@@ -1,6 +1,11 @@
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { PeriodQuery } from '../validators/reportSchema.js'
+import {
+  summarizePaymentReceipts,
+  type OrderPaymentReceipt,
+  type SaleReceipt,
+} from './cashAccounting.js'
 
 function todayRange(): { from: string; to: string } {
   const now = new Date()
@@ -8,32 +13,69 @@ function todayRange(): { from: string; to: string } {
   return { from: `${date}T00:00:00.000Z`, to: `${date}T23:59:59.999Z` }
 }
 
-type SummarySale = {
-  total: number
-  payment_method: string
-  cash_amount?: number | null
-  card_amount?: number | null
+type SummarySale = SaleReceipt & {
+  sale_number?: string
+  status?: string
+  completed_at?: string
+  is_fiscal?: boolean | null
 }
 
-function buildSummary(sales: SummarySale[]) {
-  const cash = sales.reduce((sum, sale) => {
-    if (sale.payment_method === 'cash') return sum + Number(sale.cash_amount || sale.total)
-    return sum + Number(sale.cash_amount ?? 0)
-  }, 0)
-  const card = sales.reduce((sum, sale) => {
-    if (sale.payment_method === 'card') return sum + Number(sale.card_amount || sale.total)
-    return sum + Number(sale.card_amount ?? 0)
-  }, 0)
+const ORDER_SALE_ID_CHUNK_SIZE = 200
 
+async function loadOrderSaleIds(tenantId: string, saleIds: string[]): Promise<Set<string>> {
+  const result = new Set<string>()
+  for (let offset = 0; offset < saleIds.length; offset += ORDER_SALE_ID_CHUNK_SIZE) {
+    const chunk = saleIds.slice(offset, offset + ORDER_SALE_ID_CHUNK_SIZE)
+    const { data, error } = await db
+      .from('customer_orders')
+      .select('sale_id')
+      .eq('tenant_id', tenantId)
+      .in('sale_id', chunk)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    for (const row of data ?? []) {
+      if (row.sale_id) result.add(row.sale_id)
+    }
+  }
+  return result
+}
+
+function buildSummary(
+  sales: SummarySale[],
+  orderSaleIds: ReadonlySet<string>,
+  orderPayments: OrderPaymentReceipt[],
+) {
+  const received = summarizePaymentReceipts(sales, orderSaleIds, orderPayments)
   return {
-    total_sales:   sales.length,
-    total_revenue: sales.reduce((s, x) => s + x.total, 0),
+    total_sales: sales.length,
+    total_revenue: sales.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0),
+    payment_received_total: received.total,
     by_method: {
-      cash,
-      card,
-      debt: sales.filter((s) => s.payment_method === 'debt').reduce((s, x) => s + x.total, 0),
+      cash: received.cash,
+      card: received.card,
+      transfer: received.transfer,
+      account: received.account,
+      debt: received.debt,
     },
   }
+}
+
+async function buildSummaryForRange(
+  sales: SummarySale[],
+  tenantId: string,
+  from: string,
+  to: string,
+) {
+  const [orderSaleIds, paymentsResult] = await Promise.all([
+    loadOrderSaleIds(tenantId, sales.map((sale) => sale.id)),
+    db
+      .from('order_payments')
+      .select('amount,method,is_fiscal')
+      .eq('tenant_id', tenantId)
+      .gte('created_at', from)
+      .lte('created_at', to),
+  ])
+  if (paymentsResult.error) throw new AppError('DB_ERROR', paymentsResult.error.message, 500)
+  return buildSummary(sales, orderSaleIds, paymentsResult.data ?? [])
 }
 
 export async function getSalesToday(tenantId: string) {
@@ -41,14 +83,14 @@ export async function getSalesToday(tenantId: string) {
 
   const { data, error } = await db
     .from('sales')
-    .select('total, payment_method, cash_amount, card_amount')
+    .select('id, total, payment_method, cash_amount, card_amount')
     .eq('tenant_id', tenantId)
     .gte('completed_at', from)
     .lte('completed_at', to)
     .eq('status', 'completed')
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return buildSummary(data ?? [])
+  return buildSummaryForRange(data ?? [], tenantId, from, to)
 }
 
 export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
@@ -90,7 +132,7 @@ export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
     }
   }
 
-  return { ...buildSummary(list), profit, sales: list }
+  return { ...await buildSummaryForRange(list, tenantId, dateFrom, dateTo), profit, sales: list }
 }
 
 export async function getLowStockProducts(tenantId: string) {
@@ -252,57 +294,66 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
 
   if (shiftError || !shift) throw new AppError('SHIFT_NOT_FOUND', 'Зміну не знайдено', 404)
 
-  const { data: sales } = await db
-    .from('sales')
-    .select('id, sale_number, total, payment_method, status, completed_at, is_fiscal, cash_amount, card_amount')
-    .eq('shift_id', shiftId)
-    .eq('tenant_id', tenantId)
-    .order('completed_at', { ascending: true })
+  const [
+    { data: sales, error: salesError },
+    { data: cashOps, error: cashOpsError },
+    { data: orderPayments, error: paymentError },
+  ] = await Promise.all([
+    db
+      .from('sales')
+      .select('id, sale_number, total, payment_method, status, completed_at, is_fiscal, cash_amount, card_amount')
+      .eq('shift_id', shiftId)
+      .eq('tenant_id', tenantId)
+      .order('completed_at', { ascending: true }),
+    db
+      .from('cash_operations')
+      .select('type, amount, created_by')
+      .eq('shift_id', shiftId)
+      .eq('tenant_id', tenantId),
+    db
+      .from('order_payments')
+      .select('amount, method, is_fiscal')
+      .eq('shift_id', shiftId)
+      .eq('tenant_id', tenantId),
+  ])
+  if (salesError) throw new AppError('DB_ERROR', salesError.message, 500)
+  if (cashOpsError) throw new AppError('DB_ERROR', cashOpsError.message, 500)
+  if (paymentError) throw new AppError('DB_ERROR', paymentError.message, 500)
 
   const list = sales ?? []
-  const completed = list.filter((s) => s.status === 'completed')
-
-  // Касові операції для розподілу по співробітниках
-  const { data: cashOps } = await db
-    .from('cash_operations')
-    .select('type, amount, created_by')
-    .eq('shift_id', shiftId)
-    .eq('tenant_id', tenantId)
-
-  // Розбивка: фіскальні / нефіскальні по кожному методу
-  function filterSales(method: string) { return completed.filter((s) => s.payment_method === method) }
-
-  // Готівка: cash_amount з усіх чеків (включаючи mixed)
-  const cashTotal = completed.reduce((s: number, x: any) => s + ((x as any).cash_amount ?? 0), 0)
-  const cashFiscal = completed
-    .filter((s: any) => (s as any).is_fiscal && ((s as any).cash_amount ?? 0) > 0)
-    .reduce((s: number, x: any) => s + ((x as any).cash_amount ?? 0), 0)
-
-  // Термінал: card_amount з усіх чеків (включаючи mixed)
-  const cardTotal = completed.reduce((s: number, x: any) => s + ((x as any).card_amount ?? 0), 0)
-  const cardFiscal = completed
-    .filter((s: any) => (s as any).is_fiscal && ((s as any).card_amount ?? 0) > 0)
-    .reduce((s: number, x: any) => s + ((x as any).card_amount ?? 0), 0)
-
-  const transferTotal = filterSales('transfer').reduce((s: number, x: any) => s + x.total, 0)
+  const completed = list.filter((sale) => sale.status === 'completed')
+  const orderSaleIds = await loadOrderSaleIds(tenantId, completed.map((sale) => sale.id))
+  const payments = orderPayments ?? []
+  const received = summarizePaymentReceipts(completed, orderSaleIds, payments)
+  const regularFiscalSales = completed.filter((sale) => !orderSaleIds.has(sale.id) && sale.is_fiscal)
+  const fiscalReceived = summarizePaymentReceipts(
+    regularFiscalSales,
+    new Set(),
+    payments.filter((payment) => payment.is_fiscal),
+  )
 
   return {
     shift,
-    total_sales:   completed.length,
-    total_revenue: completed.reduce((s: number, x: any) => s + x.total, 0),
+    total_sales: completed.length,
+    total_revenue: completed.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0),
+    payment_received_total: received.total,
     by_method: {
-      cash:     cashTotal,
-      card:     cardTotal,
-      transfer: transferTotal,
-      debt:     filterSales('debt').reduce((s: number, x: any) => s + x.total, 0),
+      cash: received.cash,
+      card: received.card,
+      transfer: received.transfer,
+      account: received.account,
+      debt: received.debt,
     },
     fiscal_breakdown: {
-      cash_fiscal:    cashFiscal,
-      cash_non_fiscal: cashTotal - cashFiscal,
-      card_fiscal:    cardFiscal,
-      card_non_fiscal: cardTotal - cardFiscal,
-      transfer_non_fiscal: transferTotal,
+      cash_fiscal: fiscalReceived.cash,
+      cash_non_fiscal: received.cash - fiscalReceived.cash,
+      card_fiscal: fiscalReceived.card,
+      card_non_fiscal: received.card - fiscalReceived.card,
+      transfer_fiscal: fiscalReceived.transfer,
+      transfer_non_fiscal: received.transfer - fiscalReceived.transfer,
+      account_non_fiscal: received.account,
     },
+    // Оборот показуємо за датою видачі, а способи оплати — за зміною прийняття грошей.
     // Розподіл операцій по співробітниках
     by_user: (() => {
       const ops = cashOps ?? []

@@ -27,7 +27,7 @@ export default function ProtectedRoute({ children, roles }: Props) {
     return <Navigate to="/login" replace />
   }
 
-  const role = (session.user.user_metadata?.role as string | undefined) ?? 'cashier'
+  const role = (session.user.app_metadata?.role as string | undefined) ?? 'cashier'
   if (roles && !roles.includes(role)) {
     return <Navigate to={homePathForRole(role)} replace />
   }

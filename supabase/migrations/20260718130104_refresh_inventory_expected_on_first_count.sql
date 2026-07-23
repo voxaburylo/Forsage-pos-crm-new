@@ -69,13 +69,3 @@ BEGIN
   );
 END;
 $$;
-
-UPDATE inventory_items i
-SET expected_stock = COALESCE(p.qty_on_hand, 0),
-    updated_at = now()
-FROM products p, inventory_sessions s
-WHERE i.product_id = p.id
-  AND s.id = i.session_id
-  AND s.status = 'in_progress'
-  AND i.was_counted = true
-  AND i.expected_stock IS DISTINCT FROM COALESCE(p.qty_on_hand, 0);

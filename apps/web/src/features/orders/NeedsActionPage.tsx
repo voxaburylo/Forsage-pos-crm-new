@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { customerApi } from '@/features/customers/customerApi'
 import { orderApi } from '@/features/orders/orderApi'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import { Layout } from '@/components/Layout'
 import { formatMoney } from '@/lib/utils'
 
@@ -32,6 +33,7 @@ interface ActionCard {
 
 export default function NeedsActionPage() {
   const navigate = useNavigate()
+  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [loading, setLoading] = useState(true)
   const [cards, setCards] = useState<ActionCard[]>([])
 
@@ -49,7 +51,7 @@ export default function NeedsActionPage() {
           ? Promise.resolve({ data: (localOrders?.data ?? []).filter((order) => order.status === 'ready') as OrderLite[] })
           : api.get<{ data: OrderLite[] }>('/api/v1/customer-orders?status=ready&per_page=200', { silent: true }).catch(() => ({ data: [] })),
         customerApi.list({ has_debt: 'true', sort: 'debt', per_page: 100 }).catch(() => null),
-        desktop
+        desktop && offlineMode
           ? Promise.resolve({ data: [] as Array<{ status: string }> })
           : api.get<{ data: Array<{ status: string }> }>('/api/v1/waitlist', { silent: true }).catch(() => ({ data: [] })),
       ])
@@ -75,7 +77,7 @@ export default function NeedsActionPage() {
     }
     load()
     return () => { alive = false }
-  }, [])
+  }, [offlineMode])
 
   const COLORS: Record<string, string> = {
     green: 'bg-green-50 text-green-600',

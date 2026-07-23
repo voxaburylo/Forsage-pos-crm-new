@@ -11,6 +11,7 @@ import { getSalesToday } from '../reportService.js'
 import { getBalance, getTransactions } from '../loyaltyService.js'
 import { db } from '../../db/supabase.js'
 import jwt from 'jsonwebtoken'
+import { supabaseAdmin } from '../../db/supabaseAdmin.js'
 
 vi.mock('../../db/pg.js', () => ({
   runTransaction: vi.fn(),
@@ -73,7 +74,7 @@ vi.mock('../../db/supabaseAdmin.js', () => {
             user: {
               id: 'user-id',
               email: 'test@example.com',
-              user_metadata: {
+              app_metadata: {
                 role: 'admin',
                 tenant_id: 'store-1-tenant-id'
               }
@@ -114,7 +115,7 @@ describe('Multi-Tenant Data Isolation Tests', () => {
         {
           sub: 'user-id-123',
           email: 'cashier@store2.com',
-          user_metadata: {
+          app_metadata: {
             role: 'cashier',
             tenant_id: tenantId,
             is_active: true
@@ -144,7 +145,7 @@ describe('Multi-Tenant Data Isolation Tests', () => {
         {
           sub: 'user-id-123',
           email: 'cashier@store2.com',
-          user_metadata: {
+          app_metadata: {
             role: 'cashier',
             is_active: true
             // tenant_id is missing
@@ -152,6 +153,17 @@ describe('Multi-Tenant Data Isolation Tests', () => {
         },
         'test-secret'
       )
+
+      vi.mocked(supabaseAdmin.auth.getUser).mockResolvedValueOnce({
+        data: {
+          user: {
+            id: 'user-id-123',
+            email: 'cashier@store2.com',
+            app_metadata: { role: 'cashier', is_active: true },
+          },
+        },
+        error: null,
+      } as any)
 
       const req = {
         headers: {
@@ -168,6 +180,40 @@ describe('Multi-Tenant Data Isolation Tests', () => {
       expect(errorArg).toBeDefined()
       expect(errorArg.status).toBe(403)
       expect(errorArg.message).toContain('Не вказано ідентифікатор магазину')
+    })
+
+    it('ignores role and tenant claims from editable user_metadata', async () => {
+      const token = jwt.sign(
+        {
+          sub: 'user-id-123',
+          email: 'cashier@store2.com',
+          user_metadata: {
+            role: 'owner',
+            tenant_id: 'forged-tenant-id',
+            is_active: true,
+          },
+          app_metadata: {
+            role: 'cashier',
+            tenant_id: 'trusted-tenant-id',
+            is_active: true,
+          },
+        },
+        'test-secret',
+      )
+
+      const req = {
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+      } as any
+      const next = vi.fn()
+
+      await requireAuth(req, {} as any, next)
+
+      expect(next).toHaveBeenCalledWith()
+      expect(req.user).toMatchObject({
+        role: 'cashier', tenant_id: 'trusted-tenant-id',
+      })
     })
   })
 

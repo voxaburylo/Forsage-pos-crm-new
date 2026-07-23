@@ -52,7 +52,7 @@ const STATIC: StaticCmd[] = [
 export function CommandPalette() {
   const navigate = useNavigate()
   const session = useAuthStore((s) => s.session)
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')

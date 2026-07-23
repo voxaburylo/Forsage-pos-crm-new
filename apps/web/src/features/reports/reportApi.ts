@@ -37,26 +37,56 @@ async function localProducts() {
   }
   return result
 }
-function salesInRange(sales: Sale[], from?: string, to?: string): Sale[] {
+export function salesInRange(sales: Sale[], from?: string, to?: string): Sale[] {
   const fromDay = from ? localDate(from) : null
   const toDay = to ? localDate(to) : null
   return sales.filter((sale) => {
-    if (!['completed', 'returned'].includes(sale.status)) return false
+    if (sale.status !== 'completed') return false
     const day = localDate(sale.completed_at)
     return (!fromDay || day >= fromDay) && (!toDay || day <= toDay)
   })
 }
 
-function summarize(sales: Sale[]): SalesPeriodReport {
-  const byMethod = { cash: 0, card: 0, debt: 0 }
+type LocalOrderPayment = {
+  amount: number
+  method: 'cash' | 'card' | 'transfer' | 'account'
+  created_at: string
+}
+
+function localDayBoundary(value: string, endOfDay: boolean): string {
+  const day = localDate(value)
+  return new Date(`${day}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`).toISOString()
+}
+
+async function localOrderPayments(from?: string, to?: string): Promise<LocalOrderPayment[]> {
+  const list = desktopBridge()?.orders?.listPaymentsByPeriod
+  if (!list) return []
+  return await list({
+    date_from: from ? localDayBoundary(from, false) : undefined,
+    date_to: to ? localDayBoundary(to, true) : undefined,
+  }) as LocalOrderPayment[]
+}
+
+function summarize(sales: Sale[], orderPayments: LocalOrderPayment[] = []): SalesPeriodReport {
+  const byMethod = { cash: 0, card: 0, transfer: 0, account: 0, debt: 0 }
   for (const sale of sales) {
-    byMethod.cash += Number(sale.cash_amount ?? (sale.payment_method === 'cash' ? sale.total : 0))
-    byMethod.card += Number(sale.card_amount ?? (sale.payment_method === 'card' ? sale.total : 0))
-    if (sale.payment_method === 'debt') byMethod.debt += Number(sale.total ?? 0)
+    if (sale.is_order_sale) continue
+    const cash = Number(sale.cash_amount ?? 0)
+    const card = Number(sale.card_amount ?? 0)
+    const transfer = Number(sale.transfer_amount ?? 0)
+    const debt = Number(sale.debt_amount ?? 0)
+    byMethod.cash += cash || (sale.payment_method === 'cash' ? Number(sale.total ?? 0) : 0)
+    byMethod.card += card || (sale.payment_method === 'card' ? Number(sale.total ?? 0) : 0)
+    byMethod.transfer += transfer || (sale.payment_method === 'transfer' ? Number(sale.total ?? 0) : 0)
+    byMethod.debt += debt || (sale.payment_method === 'debt' ? Number(sale.total ?? 0) : 0)
+  }
+  for (const payment of orderPayments) {
+    byMethod[payment.method] += Number(payment.amount ?? 0)
   }
   return {
     total_sales: sales.length,
     total_revenue: sales.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0),
+    payment_received_total: byMethod.cash + byMethod.card + byMethod.transfer + byMethod.account,
     by_method: byMethod,
     sales: sales.map((sale) => ({
       id: sale.id,
@@ -69,11 +99,11 @@ function summarize(sales: Sale[]): SalesPeriodReport {
     })),
   }
 }
-
 export const reportApi = {
   salesToday: async () => {
     if (desktopBridge()) {
-      const report = summarize(salesInRange(await localSales(), today(), today()))
+      const [allSales, payments] = await Promise.all([localSales(), localOrderPayments(today(), today())])
+      const report = summarize(salesInRange(allSales, today(), today()), payments)
       const { sales: _sales, ...summary } = report
       return { data: summary as SalesSummary }
     }
@@ -81,7 +111,10 @@ export const reportApi = {
   },
 
   salesPeriod: async (from?: string, to?: string) => {
-    if (desktopBridge()) return { data: summarize(salesInRange(await localSales(), from, to)) }
+if (desktopBridge()) {
+      const [allSales, payments] = await Promise.all([localSales(), localOrderPayments(from, to)])
+      return { data: summarize(salesInRange(allSales, from, to), payments) }
+    }
     const params = new URLSearchParams()
     if (from) params.set('from', from)
     if (to) params.set('to', to)
@@ -174,8 +207,9 @@ export const reportApi = {
 
   dailyControl: async () => {
     if (desktopBridge()) {
-      const sales = salesInRange(await localSales(), today(), today())
-      const summary = summarize(sales)
+      const [allSales, payments] = await Promise.all([localSales(), localOrderPayments(today(), today())])
+      const sales = salesInRange(allSales, today(), today())
+      const summary = summarize(sales, payments)
       const returnsResult = await desktopBridge()!.pos.listReturns?.({ page: 1, per_page: 200 })
       const dayReturns = (returnsResult?.data ?? []).filter((item: any) => localDate(item.created_at) === today())
       const reasonCounts = new Map<string, number>()

@@ -7,6 +7,7 @@ import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import type { Product } from '@/types/product'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
+import { loadDesktopAutocompleteSuggestions } from './productAutocompleteSearch'
 
 interface ProductAutocompleteProps {
   value: string
@@ -58,16 +59,23 @@ export function ProductAutocomplete({
   const panelRef = useRef<HTMLDivElement>(null)
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({})
   const justSelected = useRef(false)
+  const searchRequestRef = useRef(0)
 
   function updateDropdownPosition() {
     const rect = wrapRef.current?.getBoundingClientRect()
     if (!rect) return
     const viewportWidth = window.innerWidth
-    const bottomSpace = window.innerHeight - rect.bottom - 8
-    const maxHeight = Math.max(220, Math.min(420, bottomSpace))
+    const viewportHeight = window.innerHeight
+    const bottomSpace = viewportHeight - rect.bottom - 8
+    const topSpace = rect.top - 8
+    const openBelow = bottomSpace >= 220 || bottomSpace >= topSpace
+    const availableHeight = openBelow ? bottomSpace : topSpace
+    const maxHeight = Math.max(120, Math.min(420, availableHeight))
     const preferredWidth = Math.min(Math.max(rect.width, 380), viewportWidth - 16)
     const left = Math.min(Math.max(8, rect.left), viewportWidth - preferredWidth - 8)
-    setDropdownStyle({ top: rect.bottom + 4, left, width: preferredWidth, maxHeight })
+    setDropdownStyle(openBelow
+      ? { top: rect.bottom + 4, left, width: preferredWidth, maxHeight }
+      : { bottom: viewportHeight - rect.top + 4, left, width: preferredWidth, maxHeight })
   }
 
   // Закриття при кліку поза полем. Панель підказок винесена поверх таблиці, тому перевіряємо і input, і портал.
@@ -94,27 +102,44 @@ export function ProductAutocomplete({
 
   // У desktop підказки беруться безпосередньо з SQLite і не чекають мережу.
   useEffect(() => {
-    if (justSelected.current) { justSelected.current = false; return }
+    if (justSelected.current) {
+      justSelected.current = false
+      setLoading(false)
+      return
+    }
     const q = value.trim()
     if (q.length < 2) {
+      searchRequestRef.current += 1
       setResults([])
       setSupplierResults([])
       setOpen(false)
+      setLoading(false)
       return
     }
+
+    const requestId = ++searchRequestRef.current
+    let cancelled = false
     setLoading(true)
-    const t = setTimeout(async () => {
+    const t = window.setTimeout(async () => {
       try {
         if (isDesktopRuntime()) {
-          const res = await productApi.search(q, 12)
-          setResults(sortSuggestions(res.data ?? []))
-          setSupplierResults([])
+          const local = await loadDesktopAutocompleteSuggestions(
+            q,
+            warehouseOnly,
+            (query, limit) => productApi.search(query, limit).then((response) => response.data ?? []),
+            (query, limit) => supplierImportsApi.getCatalog({ q: query, page: 1, limit })
+              .then((response) => response.data ?? []),
+          )
+          if (cancelled || requestId !== searchRequestRef.current) return
+          setResults(sortSuggestions(local.warehouse))
+          setSupplierResults(local.supplierCatalog)
           updateDropdownPosition()
-          setOpen((res.data?.length ?? 0) > 0)
+          setOpen(local.warehouse.length > 0 || local.supplierCatalog.length > 0)
           setHighlight(0)
           return
         }
         const res = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(`/api/v1/search/hybrid?q=${encodeURIComponent(q)}&limit=8`)
+        if (cancelled || requestId !== searchRequestRef.current) return
         const warehouse = res.data?.warehouse || []
         const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
         setResults(sortSuggestions(warehouse))
@@ -123,23 +148,34 @@ export function ProductAutocomplete({
         setOpen(warehouse.length > 0 || catalog.length > 0)
         setHighlight(0)
       } catch {
-        setResults([])
-        setSupplierResults([])
+        if (!cancelled && requestId === searchRequestRef.current) {
+          setResults([])
+          setSupplierResults([])
+          setOpen(false)
+        }
       } finally {
-        setLoading(false)
+        if (!cancelled && requestId === searchRequestRef.current) setLoading(false)
       }
     }, 180)
-    return () => clearTimeout(t)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
   }, [value, warehouseOnly])
   function pick(p: Product) {
+    searchRequestRef.current += 1
     justSelected.current = true
     onSelect(p)
+    setLoading(false)
     setOpen(false)
     setResults([])
     setSupplierResults([])
   }
 
   function openPricingModal(sItem: any) {
+    searchRequestRef.current += 1
+    setLoading(false)
+    setOpen(false)
     const purchase = sItem.price_kopecks / 100
     const val = Math.round(purchase * 1.3)
     setPricingRetailPrice(String(val))
@@ -158,6 +194,7 @@ export function ProductAutocomplete({
     try {
       const res = await supplierImportsApi.importOnDemand({
         sku: pricingModalItem.sku,
+        barcode: pricingModalItem.barcode ?? null,
         brand: pricingModalItem.brand || '',
         name: pricingModalItem.name,
         supplier_id: pricingModalItem.supplier?.id || null,

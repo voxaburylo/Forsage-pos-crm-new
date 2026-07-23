@@ -44,17 +44,17 @@ import { desktopBridge } from '@/lib/desktopBridge'
 const CART_KEY = 'forsage_pos_cart'
 
 interface SavedCart {
-  tabs: Array<{ items: POSItem[]; customer: POSCustomer | null; notes: string }>
+  tabs: Array<{ idempotencyKey: string; items: POSItem[]; customer: POSCustomer | null; notes: string }>
   savedAt: string
   shiftId: string | null
 }
 
-function saveCart(store: { tabs: Array<{ items: POSItem[]; customer: POSCustomer | null; notes: string }>; currentShift: { id: string } | null }) {
+function saveCart(store: { tabs: Array<{ idempotencyKey: string; items: POSItem[]; customer: POSCustomer | null; notes: string }>; currentShift: { id: string } | null }) {
   try {
     const hasItems = store.tabs.some((t) => Array.isArray(t.items) && t.items.length > 0)
     if (!hasItems) { localStorage.removeItem(CART_KEY); return }
     const cart: SavedCart = {
-      tabs: store.tabs.map((t) => ({ items: t.items, customer: t.customer, notes: t.notes })),
+      tabs: store.tabs.map((t) => ({ idempotencyKey: t.idempotencyKey, items: t.items, customer: t.customer, notes: t.notes })),
       savedAt: new Date().toISOString(),
       shiftId: store.currentShift?.id ?? null,
     }
@@ -75,6 +75,10 @@ function loadCart(): SavedCart | null {
     }
     const tabs = parsed.tabs.slice(0, 5).flatMap((tab) => {
       if (!tab || !Array.isArray(tab.items)) return []
+      const savedOperationId = typeof tab.idempotencyKey === 'string'
+        && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{7,127}$/.test(tab.idempotencyKey.trim())
+        ? tab.idempotencyKey.trim()
+        : crypto.randomUUID()
       const items = tab.items.flatMap((rawItem) => {
         const item = rawItem as Partial<POSItem>
         const qty = Number(item.qty)
@@ -96,7 +100,12 @@ function loadCart(): SavedCart | null {
           coreDepositAmount: Number(item.coreDepositAmount) || 0,
         }]
       })
-      return items.length > 0 ? [{ items, customer: tab.customer ?? null, notes: String(tab.notes ?? '') }] : []
+      return items.length > 0 ? [{
+        idempotencyKey: savedOperationId,
+        items,
+        customer: tab.customer ?? null,
+        notes: String(tab.notes ?? ''),
+      }] : []
     })
     if (tabs.length === 0) {
       localStorage.removeItem(CART_KEY)
@@ -220,9 +229,11 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 
 export default function POSPage() {
   const navigate = useNavigate()
-  const { store, completeSale, checkShift } = usePOS()
+  const { store, completeSale, checkShift, fiscalRecovery, resolveFiscalRecovery } = usePOS()
   const setPriceRounding = usePOSStore((state) => state.setPriceRounding)
   const [payOpen, setPayOpen]           = useState(false)
+  const [fiscalRecoveryText, setFiscalRecoveryText] = useState('')
+  const [resolvingFiscal, setResolvingFiscal] = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
   const [customerEditOpen, setCustomerEditOpen] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
@@ -545,7 +556,7 @@ export default function POSPage() {
     isFiscal?: boolean,
     terminalAuthCode?: string,
     printAfterPayment?: boolean,
-  ) {
+  ): Promise<boolean> {
     async function saveOfflineSale() {
       if (method === 'card' || method === 'debt' || method === 'mixed') {
         toast.error('Офлайн доступні лише готівка та переказ')
@@ -663,8 +674,7 @@ export default function POSPage() {
     // Desktop/EXE має власну SQLite-касу, тому навіть без інтернету йде через
     // completeSale() і не дублює чек у браузерному кеші.
     if (!serverOnline && !desktopBridge()) {
-      await saveOfflineSale()
-      return
+      return Boolean(await saveOfflineSale())
     }
 
     try {
@@ -675,11 +685,13 @@ export default function POSPage() {
         clearSavedCart()
         setPayOpen(false)
         playCashRegister()
+        return true
       }
+      return false
     } catch {
       // Зв'язок міг зникнути після останньої health-перевірки. Той самий
       // idempotency key гарантує, що при синхронізації дубль не створиться.
-      await saveOfflineSale()
+      return Boolean(await saveOfflineSale())
     }
   }
 
@@ -693,6 +705,7 @@ export default function POSPage() {
       let restored = 0
       for (const savedTab of cart.tabs) {
         const ok = store.restoreReceipt({
+          idempotencyKey: savedTab.idempotencyKey,
           items: savedTab.items,
           customer: savedTab.customer,
           notes: savedTab.notes,
@@ -918,7 +931,8 @@ export default function POSPage() {
           <>
             <div className={`flex-1 border-r border-gray-800 min-h-0 min-w-0 ${mobileTab === 'cart' ? 'hidden md:flex md:flex-col' : 'flex flex-col'}`}>
               <SearchPanel ref={searchRef} />
-              <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-800 bg-[#111] px-2 py-2">`r`n                <button onClick={() => setQuickCharge('tire_service')}
+              <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-gray-800 bg-[#111] px-2 py-2">
+                <button onClick={() => setQuickCharge('tire_service')}
                   className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-emerald-700/50 bg-emerald-900/30 px-4 text-sm font-bold text-emerald-300 hover:bg-emerald-900/50"
                   title="Прийняти оплату за шиномонтаж і зарахувати роботу працівнику">
                   <Wrench size={16} /> Шиномонтаж
@@ -1036,6 +1050,59 @@ export default function POSPage() {
         onClose={() => setPayOpen(false)}
         onConfirm={handleConfirmPayment}
       />
+      {fiscalRecovery && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="fiscal-recovery-title"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-red-500/50 bg-[#181818] p-6 shadow-2xl">
+            <h2 id="fiscal-recovery-title" className="text-xl font-bold text-red-300">
+              Не повторюйте оплату
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-gray-200">
+              Програма не може підтвердити результат попередньої фіскалізації.
+              Спочатку відкрийте Cashalot і перевірте, чи з’явився там цей чек.
+            </p>
+            <p className="mt-3 rounded-lg bg-black/30 p-3 text-sm text-yellow-200">
+              {fiscalRecovery.message}
+            </p>
+            <p className="mt-2 break-all text-xs text-gray-500">
+              Операція: {fiscalRecovery.operationId}
+            </p>
+            <div className="mt-5 rounded-xl border border-gray-700 bg-[#101010] p-4">
+              <p className="text-sm font-semibold text-white">
+                Лише якщо чека в Cashalot немає
+              </p>
+              <p className="mt-1 text-xs leading-5 text-gray-400">
+                Введіть «ЧЕКА НЕМАЄ». Якщо чек є — не розблоковуйте операцію:
+                це захищає від подвійного списання з клієнта.
+              </p>
+              <input
+                autoFocus
+                value={fiscalRecoveryText}
+                onChange={(event) => setFiscalRecoveryText(event.target.value)}
+                placeholder="ЧЕКА НЕМАЄ"
+                className="mt-3 w-full rounded-xl border border-gray-600 bg-[#222] px-4 py-3 text-white outline-none focus:border-yellow-400"
+              />
+              <button
+                type="button"
+                disabled={resolvingFiscal || fiscalRecoveryText.trim().toUpperCase() !== 'ЧЕКА НЕМАЄ'}
+                onClick={async () => {
+                  setResolvingFiscal(true)
+                  const resolved = await resolveFiscalRecovery()
+                  if (resolved) setFiscalRecoveryText('')
+                  setResolvingFiscal(false)
+                }}
+                className="mt-3 w-full rounded-xl bg-yellow-400 px-4 py-3 font-bold text-black disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {resolvingFiscal ? 'Перевіряємо...' : 'Я перевірив: чека немає, розблокувати'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <QuickCustomerModal
         open={customerOpen}

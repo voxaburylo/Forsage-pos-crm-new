@@ -35,16 +35,17 @@ export const returnApi = {
     return api.get<{ data: SaleForReturn }>('/api/v1/returns/sale/' + saleId + '/items')
   },
 
-  create: async (body: CreateReturnBody) => {
+  create: async (body: CreateReturnBody, operationId?: string) => {
     const desktop = desktopBridge()
     const local = desktop?.pos.createReturn
     if (desktop && local) {
       const approvedBy = currentUserId()
       const shift = await desktop.pos.getOpenShift(approvedBy)
-      const data = await local({ ...body, approved_by: approvedBy, shift_id: shift?.id ?? null })
+      const data = await local({ ...body, client_operation_id: operationId, approved_by: approvedBy, shift_id: shift?.id ?? null })
       requestSync()
       return { data: data as CustomerReturn }
     }
-    return api.post<{ data: CustomerReturn }>('/api/v1/returns', body)
+    const headers = operationId ? { 'X-Idempotency-Key': operationId } : undefined
+    return api.post<{ data: CustomerReturn }>('/api/v1/returns', body, headers)
   },
 }

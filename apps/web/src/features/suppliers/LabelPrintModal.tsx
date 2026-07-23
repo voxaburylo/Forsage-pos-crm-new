@@ -84,6 +84,7 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
 
   const [printingThermal, setPrintingThermal] = useState(false)
   async function handleThermalPrint() {
+    if (printingThermal) return
     setPrintingThermal(true)
     try {
       const settings = await loadProductLabelSettings()
@@ -93,9 +94,9 @@ export function LabelPrintModal({ open, onClose, invoice }: Props) {
         if (count <= 0) return []
         return Array(count).fill(item.product)
       })
-      printLabels(settings as any, printItems, false)
-    } catch {
-      toast.error('Помилка друку')
+      await printLabels(settings as any, printItems, false)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося підготувати етикетки до друку')
     } finally {
       setPrintingThermal(false)
     }

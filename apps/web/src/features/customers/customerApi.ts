@@ -1,5 +1,6 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import type { Customer, CustomerSale, PaginatedCustomers } from '@/types/customer'
 
 export interface CustomerFilters {
@@ -27,6 +28,11 @@ function buildQuery(filters: CustomerFilters): string {
 
 export const customerApi = {
   list: async (filters: CustomerFilters = {}) => {
+    // Групи клієнтів поки зберігаються на сервері; з реальною онлайн-сесією
+    // desktop використовує той самий відфільтрований список, що й браузер.
+    if (filters.group_id && desktopBridge() && !useAuthStore.getState().offlineMode) {
+      return api.get<PaginatedCustomers>(`/api/v1/customers${buildQuery(filters)}`)
+    }
     const local = desktopBridge()?.pos.listCustomers
     if (local) return local(filters) as Promise<PaginatedCustomers>
     return api.get<PaginatedCustomers>(`/api/v1/customers${buildQuery(filters)}`)

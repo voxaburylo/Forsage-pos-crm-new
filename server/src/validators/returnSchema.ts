@@ -24,7 +24,7 @@ export const DEFAULT_STOCK_ACTION_FOR_CONDITION: Record<string, string> = {
 const returnItemSchema = z.object({
   sale_item_id: z.string().uuid(),
   product_id:   z.string().uuid(),
-  quantity:     z.number().positive(),
+  quantity:     z.number().finite().positive().max(999_999_999).multipleOf(0.001),
   condition:    z.enum(ITEM_CONDITIONS).default('good'),
 })
 
@@ -35,7 +35,19 @@ export const createReturnSchema = z.object({
   refund_method: z.enum(REFUND_METHODS),
   stock_action:  z.enum(STOCK_ACTIONS).default('return_to_stock'),
   fiscal_number: z.string().max(128).optional().nullable(),
-  items:         z.array(returnItemSchema).min(1),
+  items:         z.array(returnItemSchema).min(1).max(200).superRefine((items, ctx) => {
+    const seen = new Set<string>()
+    items.forEach((item, index) => {
+      if (seen.has(item.sale_item_id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, 'sale_item_id'],
+          message: 'Позицію чека не можна додавати до повернення двічі',
+        })
+      }
+      seen.add(item.sale_item_id)
+    })
+  }),
 })
 
 export const returnListSchema = z.object({

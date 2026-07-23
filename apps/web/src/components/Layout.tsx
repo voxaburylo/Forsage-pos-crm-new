@@ -28,7 +28,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
   const session = useAuthStore((s) => s.session)
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
   const allGroups = [
     PRODUCTS_TABS,

@@ -398,13 +398,8 @@ router.put('/:id/items/:itemId', requireRole(...MANAGER_ROLES), async (req, res,
     const countedStock = parsed.data.counted_stock
     const updatePayload: Record<string, unknown> = {
       counted_stock: countedStock,
-      was_counted: countedStock > 0,
+      was_counted: true,
       updated_at: new Date().toISOString(),
-    }
-    if (countedStock <= 0) {
-      updatePayload.price_checked = false
-      updatePayload.observed_retail_price = null
-      updatePayload.last_counted_by = null
     }
     const { data, error } = await db.from('inventory_items')
       .update(updatePayload)
@@ -415,6 +410,45 @@ router.put('/:id/items/:itemId', requireRole(...MANAGER_ROLES), async (req, res,
   } catch (error) { next(error) }
 })
 
+// Прибирання рядка — це не нульовий залишок: позиція стає непорахованою
+// і тому не впливає на склад під час завершення ревізії.
+router.delete('/:id/items/:itemId', requireRole(...COUNTER_ROLES), async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.id)
+    const itemId = String(req.params.itemId)
+    await requireInventorySession(sessionId, req.user!.tenant_id, true)
+
+    const item = await db.from('inventory_items')
+      .select('id')
+      .eq('id', itemId)
+      .eq('session_id', sessionId)
+      .maybeSingle()
+    if (item.error) throw new AppError('DB_ERROR', item.error.message, 500)
+    if (!item.data) throw new AppError('NOT_FOUND', 'Позицію ревізії не знайдено', 404)
+
+    const entries = await db.from('inventory_count_entries')
+      .delete()
+      .eq('inventory_item_id', itemId)
+      .eq('session_id', sessionId)
+      .eq('tenant_id', req.user!.tenant_id)
+    if (entries.error) throw new AppError('DB_ERROR', entries.error.message, 500)
+
+    const update = await db.from('inventory_items')
+      .update({
+        counted_stock: 0,
+        was_counted: false,
+        price_checked: false,
+        observed_retail_price: null,
+        last_counted_by: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', itemId)
+      .eq('session_id', sessionId)
+    if (update.error) throw new AppError('DB_ERROR', update.error.message, 500)
+
+    res.json({ data: { ok: true } })
+  } catch (error) { next(error) }
+})
 // Зміна ціни прямо з ревізії: оновлює роздрібну ціну товару (з історією цін)
 // і закриває розбіжність у сесії. Ролі — ті самі, що можуть редагувати товар.
 router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
@@ -464,36 +498,16 @@ router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, nex
     const sessionId = String(req.params.id)
     const session = await requireInventorySession(sessionId, req.user!.tenant_id, true)
 
-    const { data: countedItems, error: itemsError } = await db.from('inventory_items')
-      .select('product_id,counted_stock')
-      .eq('session_id', sessionId)
-      .eq('was_counted', true)
-      .gt('counted_stock', 0)
-    if (itemsError) throw new AppError('DB_ERROR', itemsError.message, 500)
-
-    let itemsApplied = 0
-    const now = new Date().toISOString()
-    for (const item of countedItems ?? []) {
-      const productId = (item as any).product_id
-      const countedStock = Number((item as any).counted_stock ?? 0)
-      if (!productId || !Number.isFinite(countedStock)) continue
-
-      const { error: updateError } = await db.from('products')
-        .update({ qty_on_hand: countedStock, updated_at: now })
-        .eq('id', productId)
-        .eq('tenant_id', req.user!.tenant_id)
-      if (updateError) throw new AppError('DB_ERROR', updateError.message, 500)
-      itemsApplied += 1
+    const { data, error } = await db.rpc('complete_inventory_session', {
+      p_session_id: sessionId,
+      p_tenant_id: req.user!.tenant_id,
+    })
+    if (error) {
+      const message = error.message.includes('SESSION_NOT_ACTIVE')
+        ? 'Ревізія вже завершена або неактивна'
+        : error.message
+      throw new AppError('INVENTORY_COMPLETE_FAILED', message, 409)
     }
-
-    const { error: sessionError } = await db.from('inventory_sessions')
-      .update({ status: 'completed', completed_at: now })
-      .eq('id', sessionId)
-      .eq('tenant_id', req.user!.tenant_id)
-      .eq('status', 'in_progress')
-    if (sessionError) throw new AppError('DB_ERROR', sessionError.message, 500)
-
-    const data = { items_updated: itemsApplied }
     await logAction({
       tenantId: req.user!.tenant_id,
       userId: req.user!.id,

@@ -1,7 +1,9 @@
-﻿import { db } from '../db/supabase.js'
+import { db } from '../db/supabase.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { logger } from '../lib/logger.js'
+import { computeCommissionMap, type CommissionItem, type ProductsMap } from './commissionCalculator.js'
+export { computeCommissionMap } from './commissionCalculator.js'
 
 export interface CreateCommissionRuleInput {
   user_id?: string | null
@@ -59,16 +61,13 @@ export async function deleteCommissionRule(id: string, tenantId: string) {
 }
 
 // ── Спільний рушій нарахування комісії ────────────────────────────────────────
-interface CommissionItem { product_id: string | null; item_status?: string | null; sell_price: number; buy_price: number; qty: number }
-type ProductsMap = Record<string, { brand_id: string | null; category_id: string | null }>
-
 async function fetchProductsMap(productIds: (string | null)[], tenantId: string): Promise<ProductsMap> {
   const ids = productIds.filter((id): id is string => !!id)
   if (ids.length === 0) return {}
-  const { data } = await db.from('products').select('id, brand_id, category_id')
+  const { data } = await db.from('products').select('id, brand_id, category_id, sku')
     .eq('tenant_id', tenantId).in('id', ids)
   const map: ProductsMap = {}
-  for (const p of data ?? []) map[p.id] = { brand_id: p.brand_id, category_id: p.category_id }
+  for (const p of data ?? []) map[p.id] = { brand_id: p.brand_id, category_id: p.category_id, sku: p.sku }
   return map
 }
 
@@ -92,61 +91,6 @@ async function resolveEmployeeName(userId: string, isManager: boolean): Promise<
 }
 
 /**
- * Рахує комісію по кожному отримувачу за позиціями.
- * Модель «кожен за свої категорії»: правило user+category дає тому користувачу
- * % з усіх продажів цієї категорії; правило менеджера (user=null) — за його продаж.
- */
-export function computeCommissionMap(
-  items: CommissionItem[],
-  productsMap: ProductsMap,
-  rules: any[],
-  activeManagerId: string | null,
-): Map<string, number> {
-  const candidates = new Set<string>()
-  if (activeManagerId) candidates.add(activeManagerId)
-  for (const rule of rules) if (rule.rule_type === 'total_cashbox' && rule.user_id) candidates.add(rule.user_id)
-
-  const result = new Map<string, number>()
-  for (const candidateId of candidates) {
-    const isActiveManager = candidateId === activeManagerId
-    let candidateCommission = 0
-    for (const item of items) {
-      if (item.item_status === 'canceled') continue
-      const prodInfo = item.product_id ? productsMap[item.product_id] : null
-      const brandId = prodInfo?.brand_id || null
-      const categoryId = prodInfo?.category_id || null
-      const revenue = item.sell_price * item.qty
-      const profit = (item.sell_price - item.buy_price) * item.qty
-
-      let bestRule: any = null
-      let maxScore = -1
-      for (const rule of rules) {
-        let matchesUser = false
-        if (rule.user_id === candidateId) {
-          if (rule.rule_type === 'total_cashbox' || isActiveManager) matchesUser = true
-        } else if (rule.user_id === null && isActiveManager) {
-          if (!rule.rule_type || rule.rule_type === 'personal_sales') matchesUser = true
-        }
-        if (!matchesUser) continue
-        if (rule.brand_id !== null && rule.brand_id !== brandId) continue
-        if (rule.category_id !== null && rule.category_id !== categoryId) continue
-        let score = 0
-        if (rule.user_id !== null) score += 100
-        if (rule.brand_id !== null) score += 10
-        if (rule.category_id !== null) score += 1
-        if (score > maxScore) { maxScore = score; bestRule = rule }
-      }
-      if (bestRule) {
-        candidateCommission += Math.round(revenue * (Number(bestRule.pct_from_revenue) || 0) / 100)
-          + Math.round(profit * (Number(bestRule.pct_from_profit) || 0) / 100)
-      }
-    }
-    if (candidateCommission > 0) result.set(candidateId, candidateCommission)
-  }
-  return result
-}
-
-/**
  * Комісія за прямий продаж на касі (модель «кожен за свої категорії»).
  * Викликати ЛИШЕ для продажів без замовлення — інакше комісія нарахується за замовленням.
  */
@@ -156,7 +100,7 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
   if (!sale) return
 
   const { data: items } = await db
-    .from('sale_items').select('product_id, qty, unit_price, cost_price').eq('sale_id', saleId)
+    .from('sale_items').select('product_id, qty, unit_price, cost_price').eq('sale_id', saleId).eq('tenant_id', tenantId)
   if (!items || items.length === 0) return
 
   const { data: rules } = await db.from(TABLE).select('*').eq('tenant_id', tenantId)
@@ -166,7 +110,7 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
   const commItems: CommissionItem[] = items.map((i) => ({
     product_id: i.product_id, sell_price: i.unit_price, buy_price: i.cost_price ?? 0, qty: Number(i.qty),
   }))
-  const commMap = computeCommissionMap(commItems, productsMap, rules, sale.manager_id)
+  const commMap = computeCommissionMap(commItems, productsMap, rules, sale.manager_id, 'pos')
   const period = currentPeriod()
   const workDate = currentWorkDate()
 
@@ -211,15 +155,15 @@ export async function reverseCommissionForReturn(
   if (!rules || rules.length === 0) return
 
   const { data: saleItems } = await db
-    .from('sale_items').select('id, product_id, unit_price, cost_price').in('id', returnedItems.map((i) => i.sale_item_id))
+    .from('sale_items').select('id, product_id, unit_price, cost_price').eq('tenant_id', tenantId).eq('sale_id', saleId).in('id', returnedItems.map((i) => i.sale_item_id))
   const priceMap = new Map((saleItems ?? []).map((si) => [si.id, si]))
 
   const commItems: CommissionItem[] = returnedItems.map((ri) => {
     const si = priceMap.get(ri.sale_item_id)
-    return { product_id: ri.product_id, sell_price: si?.unit_price ?? 0, buy_price: si?.cost_price ?? 0, qty: Number(ri.quantity) }
+    return { product_id: si?.product_id ?? ri.product_id, sell_price: si?.unit_price ?? 0, buy_price: si?.cost_price ?? 0, qty: Number(ri.quantity) }
   })
   const productsMap = await fetchProductsMap(commItems.map((i) => i.product_id), tenantId)
-  const commMap = computeCommissionMap(commItems, productsMap, rules, activeManagerId)
+  const commMap = computeCommissionMap(commItems, productsMap, rules, activeManagerId, order ? 'order' : 'pos')
   const period = currentPeriod()
   const workDate = currentWorkDate()
 
@@ -273,12 +217,12 @@ export async function calculateAndRecordCommission(
 
   // 3. Fetch product brand/category for all items that have product_id
   const productIds = items.map((i) => i.product_id).filter((id): id is string => !!id)
-  let productsMap: Record<string, { brand_id: string | null; category_id: string | null }> = {}
+  let productsMap: ProductsMap = {}
 
   if (productIds.length > 0) {
     const { data: products, error: productsErr } = await db
       .from('products')
-      .select('id, brand_id, category_id')
+      .select('id, brand_id, category_id, sku')
       .eq('tenant_id', tenantId)
       .in('id', productIds)
 
@@ -286,7 +230,7 @@ export async function calculateAndRecordCommission(
       logger.error({ orderId, error: productsErr.message }, 'Failed to fetch product details for commission')
     } else if (products) {
       productsMap = products.reduce((acc, p) => {
-        acc[p.id] = { brand_id: p.brand_id, category_id: p.category_id }
+        acc[p.id] = { brand_id: p.brand_id, category_id: p.category_id, sku: p.sku }
         return acc
       }, {} as typeof productsMap)
     }
@@ -304,7 +248,7 @@ export async function calculateAndRecordCommission(
   }
 
   // 5-6. Розрахунок комісії по кожному отримувачу (спільний рушій)
-  const commMap = computeCommissionMap(items as CommissionItem[], productsMap, rules, order.manager_id)
+  const commMap = computeCommissionMap(items as CommissionItem[], productsMap, rules, order.manager_id, 'order')
   const period = currentPeriod()
   const workDate = currentWorkDate()
 

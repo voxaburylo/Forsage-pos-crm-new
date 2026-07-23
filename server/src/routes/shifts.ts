@@ -43,51 +43,12 @@ router.get('/current/expected-cash', async (req, res, next) => {
     const shift = await shiftService.getCurrentShift(req.user!.id, req.user!.tenant_id)
     if (!shift) throw new AppError('NO_SHIFT', 'Зміну не відкрито', 400)
 
-    // Початковий залишок
-    const openingCash = shift.opening_cash
-
-    // Продажі готівкою (cash_amount з чеків)
-    const { data: cashSales } = await db
-      .from('sales')
-      .select('cash_amount')
-      .eq('shift_id', shift.id)
-      .eq('tenant_id', req.user!.tenant_id)
-      .eq('status', 'completed')
-    const totalCashSales = (cashSales ?? []).reduce((s, x) => s + (x.cash_amount ?? 0), 0)
-
-    // Повернення готівкою — спочатку отримуємо ID продажів зміни
-    const { data: shiftSales } = await db
-      .from('sales')
-      .select('id')
-      .eq('shift_id', shift.id)
-      .eq('tenant_id', req.user!.tenant_id)
-    const shiftSaleIds = (shiftSales ?? []).map((s) => s.id)
-    const { data: returns } = shiftSaleIds.length > 0
-      ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', shiftSaleIds).eq('tenant_id', req.user!.tenant_id)
-      : { data: [] }
-    const totalReturns = (returns ?? []).reduce((s, x) => s + (x.refund_kopecks ?? 0), 0)
-
-    // Cash operations (внесення/вилучення)
-    const { data: cashOps } = await db
-      .from('cash_operations')
-      .select('type, amount')
-      .eq('shift_id', shift.id)
-      .eq('tenant_id', req.user!.tenant_id)
-    const cashIn = (cashOps ?? []).filter((o) => o.type === 'in').reduce((s, x) => s + x.amount, 0)
-    const cashOut = (cashOps ?? []).filter((o) => o.type === 'out').reduce((s, x) => s + x.amount, 0)
-
-    const expected = openingCash + totalCashSales + cashIn - totalReturns - cashOut
-
-    res.json({
-      data: {
-        opening_cash: openingCash,
-        cash_sales: totalCashSales,
-        cash_returns: totalReturns,
-        cash_in: cashIn,
-        cash_out: cashOut,
-        expected_amount: Math.max(0, expected),
-      },
-    })
+    const breakdown = await shiftService.getShiftCashBreakdown(
+      shift.id,
+      req.user!.tenant_id,
+      shift.opening_cash,
+    )
+    res.json({ data: breakdown })
   } catch (err) { next(err) }
 })
 
@@ -104,34 +65,12 @@ router.post('/current/reconcile', async (req, res, next) => {
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна сума', 422)
 
-    // Перераховуємо expected
-    const { data: cashSales } = await db
-      .from('sales')
-      .select('cash_amount')
-      .eq('shift_id', shift.id)
-      .eq('tenant_id', req.user!.tenant_id)
-      .eq('status', 'completed')
-    const { data: reconcileSales } = await db
-      .from('sales')
-      .select('id')
-      .eq('shift_id', shift.id)
-      .eq('tenant_id', req.user!.tenant_id)
-    const reconcileSaleIds = (reconcileSales ?? []).map((s) => s.id)
-    const { data: returns } = reconcileSaleIds.length > 0
-      ? await db.from('returns').select('refund_kopecks').eq('refund_method', 'cash').in('sale_id', reconcileSaleIds).eq('tenant_id', req.user!.tenant_id)
-      : { data: [] }
-    const { data: cashOps } = await db
-      .from('cash_operations')
-      .select('type, amount')
-      .eq('shift_id', shift.id)
-      .eq('tenant_id', req.user!.tenant_id)
-
-    const totalCashSales = (cashSales ?? []).reduce((s, x) => s + (x.cash_amount ?? 0), 0)
-    const totalReturns = (returns ?? []).reduce((s, x) => s + (x.refund_kopecks ?? 0), 0)
-    const cashIn = (cashOps ?? []).filter((o) => o.type === 'in').reduce((s, x) => s + x.amount, 0)
-    const cashOut = (cashOps ?? []).filter((o) => o.type === 'out').reduce((s, x) => s + x.amount, 0)
-
-    const expected = Math.max(0, shift.opening_cash + totalCashSales + cashIn - totalReturns - cashOut)
+    const breakdown = await shiftService.getShiftCashBreakdown(
+      shift.id,
+      req.user!.tenant_id,
+      shift.opening_cash,
+    )
+    const expected = breakdown.expected_amount
     const difference = parsed.data.actual_amount - expected
 
     const { data, error } = await db.from('cash_reconciliations').insert({

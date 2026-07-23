@@ -228,10 +228,10 @@ export default function WarehousePicking() {
     try {
       const settings = await loadProductLabelSettings()
       const binSettings = settings.bin_settings || DEFAULT_BIN_LABEL
-      printLabels(binSettings as any, [{ label: cleanCell }], true)
+      await printLabels(binSettings as any, [{ label: cleanCell }], true)
       toast.success('Етикетку комірки відправлено на друк')
-    } catch {
-      toast.error('Помилка друку комірки')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетку комірки')
     }
   }
   async function handleSaveCell(e: React.FormEvent, printAfterSave = false) {

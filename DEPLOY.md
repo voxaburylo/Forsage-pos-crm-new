@@ -28,7 +28,7 @@ cp apps/web/.env.example apps/web/.env
 
 ## 2. Міграції бази даних
 
-Всі міграції (001–084) повинні бути застосовані через Supabase MCP або CLI.
+Перед запуском повинні бути застосовані всі міграції з `supabase/migrations` у порядку їхніх версій.
 
 Перевірити список застосованих міграцій:
 ```sql
@@ -39,12 +39,17 @@ SELECT version, name FROM supabase_migrations.schema_migrations ORDER BY version
 
 ## 3. Перший запуск (seed)
 
-Якщо база нова — запустити seed для створення власника:
+Seed призначений лише для нової тестової або порожньої бази. Він заблокований без явного підтвердження та не містить стандартних паролів:
 
 ```bash
 cd server
-SEED_OWNER_PHONE=+380XXXXXXXXX SEED_OWNER_PASSWORD=yourpassword npx ts-node src/seed.ts
+ALLOW_DESTRUCTIVE_SEED=YES \
+SEED_OWNER_PHONE=+380XXXXXXXXX \
+SEED_OWNER_PASSWORD='use-a-long-random-password' \
+pnpm exec tsx src/seed.ts
 ```
+
+Необов’язкового тестового касира можна створити лише з окремо заданими `SEED_CASHIER_PHONE`, `SEED_CASHIER_PASSWORD` та, за бажанням, `SEED_CASHIER_NAME`. Паролі seed не виводить у консоль.
 
 ---
 

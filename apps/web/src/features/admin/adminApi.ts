@@ -1,5 +1,7 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
+import { performCatalogDelete } from '@/features/products/catalogDeletePermissions'
 // Єдиний канонічний тип етикетки — з LabelDesigner (повний). import type
 // стирається при збірці, тож рантайм-циклу з adminApi не виникає.
 import type { LabelSettings } from '@/features/labels/LabelDesigner'
@@ -17,6 +19,7 @@ export interface AdminUser {
   base_rate: number
   rate_period: 'day' | 'month'
   created_at: string
+  updated_at?: string
 }
 
 export type UserRole = 'owner' | 'admin' | 'manager' | 'cashier' | 'storekeeper' | 'sto_viewer' | 'tire_worker'
@@ -99,9 +102,34 @@ export const adminApi = {
     return api.get<{ data: AdminUser[] }>('/api/v1/admin/users')
   },
   createUser: async (body: { phone: string; password: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) => {
-    const local = desktopBridge()?.staff?.createUser
-    if (local) return { data: await local(body) as AdminUser }
-    return api.post<{ data: AdminUser }>('/api/v1/admin/users', body)
+    const saveLocal = desktopBridge()?.staff?.saveServerUser
+    if (!saveLocal) return api.post<{ data: AdminUser }>('/api/v1/admin/users', body)
+    const requiredMessage = 'Для створення співробітника потрібне підключення до сервера. Перевірте інтернет і повторіть.'
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new Error(requiredMessage)
+    }
+    let response: { data: AdminUser }
+    try {
+      response = await api.post<{ data: AdminUser }>(
+        '/api/v1/admin/users',
+        body,
+        undefined,
+        { silent: true, timeoutMs: 15_000 },
+      )
+    } catch (error) {
+      const status = (error as { status?: number })?.status
+      const message = error instanceof Error ? error.message : ''
+      if (!status || status === 401 || message.includes('Сервер') || message.includes('сесія')) {
+        throw new Error(requiredMessage)
+      }
+      throw error
+    }
+    try {
+      await saveLocal(response.data, body.password)
+    } catch {
+      throw new Error('Співробітника створено на сервері, але локальну копію не оновлено. Оновіть список співробітників онлайн.')
+    }
+    return response
   },
   updateUser: async (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number; rate_period?: 'day' | 'month'; phone?: string }) => {
     const local = desktopBridge()?.staff?.updateUser
@@ -114,9 +142,33 @@ export const adminApi = {
     return api.delete<void>(`/api/v1/admin/users/${id}`)
   },
   resetPassword: async (id: string, password: string) => {
-    const local = desktopBridge()?.staff?.resetPassword
-    if (local) return { data: await local(id, password) }
-    return api.put<{ data: { success: boolean } }>(`/api/v1/admin/users/${id}/password`, { password })
+    const saveLocal = desktopBridge()?.staff?.saveServerPassword
+    if (!saveLocal) return api.put<{ data: { success: boolean } }>('/api/v1/admin/users/' + id + '/password', { password })
+    const requiredMessage = 'Для зміни пароля потрібне підключення до сервера. Перевірте інтернет і повторіть.'
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new Error(requiredMessage)
+    }
+    let response: { data: { success: boolean } }
+    try {
+      response = await api.put<{ data: { success: boolean } }>(
+        '/api/v1/admin/users/' + id + '/password',
+        { password },
+        { silent: true, timeoutMs: 15_000 },
+      )
+    } catch (error) {
+      const status = (error as { status?: number })?.status
+      const message = error instanceof Error ? error.message : ''
+      if (!status || status === 401 || message.includes('Сервер') || message.includes('сесія')) {
+        throw new Error(requiredMessage)
+      }
+      throw error
+    }
+    try {
+      await saveLocal(id, password)
+    } catch {
+      throw new Error('Пароль змінено на сервері, але локальний вхід не оновлено. Підключіться онлайн та повторіть зміну пароля.')
+    }
+    return response
   },
   // Categories
   listCategories: async () => {
@@ -135,9 +187,12 @@ export const adminApi = {
     return api.put(`/api/v1/admin/categories/${id}`, { name })
   },
   deleteCategory: async (id: string) => {
-    const local = desktopBridge()?.catalog.deleteCategory
-    if (local) return local(id)
-    return api.delete(`/api/v1/admin/categories/${id}`)
+    const role = useAuthStore.getState().session?.user?.app_metadata?.role as string | undefined
+    return performCatalogDelete(role, async () => {
+      const local = desktopBridge()?.catalog.deleteCategory
+      if (local) return local(id)
+      return api.delete(`/api/v1/admin/categories/${id}`)
+    })
   },
 
   // Brands
@@ -157,9 +212,12 @@ export const adminApi = {
     return api.put(`/api/v1/admin/brands/${id}`, body)
   },
   deleteBrand: async (id: string) => {
-    const local = desktopBridge()?.catalog.deleteBrand
-    if (local) return local(id)
-    return api.delete(`/api/v1/admin/brands/${id}`)
+    const role = useAuthStore.getState().session?.user?.app_metadata?.role as string | undefined
+    return performCatalogDelete(role, async () => {
+      const local = desktopBridge()?.catalog.deleteBrand
+      if (local) return local(id)
+      return api.delete(`/api/v1/admin/brands/${id}`)
+    })
   },
   // Повне очищення каталогу
   resetCatalog: () =>

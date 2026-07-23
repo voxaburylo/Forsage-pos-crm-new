@@ -1,6 +1,9 @@
 import type { LocalDatabase } from '../db/localDatabase'
 import type { LocalBootstrapImportResult, LocalBootstrapSnapshot, LocalSyncPullChanges, LocalSyncPullResult } from '../db/localTypes'
 import { normalizeSearchText } from './catalogRepository'
+import { LocalSecondarySyncImporter } from './secondarySyncImporter'
+import { LocalSupplierCatalogRepository } from './supplierCatalogRepository'
+import { mergePulledShopSettings, parseStoredSettings } from './settingsMerge'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -31,6 +34,7 @@ export class LocalBootstrapRepository {
   applySyncChanges(tenantId: string, changes: LocalSyncPullChanges): LocalSyncPullResult {
     const appliedAt = nowIso()
     const counts = {
+      staff: 0,
       products: 0,
       deleted_products: 0,
       customers: 0,
@@ -45,6 +49,9 @@ export class LocalBootstrapRepository {
       deleted_customer_orders: 0,
       customer_order_items: 0,
       order_payments: 0,
+      shifts: 0,
+      sales: 0,
+      sale_items: 0,
       supply_invoices: 0,
       deleted_supply_invoices: 0,
       supply_invoice_items: 0,
@@ -53,6 +60,25 @@ export class LocalBootstrapRepository {
       brands: 0,
       inventory_sessions: 0,
       inventory_items: 0,
+      supplier_price_items: 0,
+      supplier_price_imports: 0,
+      deleted_staff: 0,
+      deleted_categories: 0,
+      deleted_brands: 0,
+      commission_rules: 0,
+      deleted_commission_rules: 0,
+      salary_payments: 0,
+      deleted_salary_payments: 0,
+      cash_operations: 0,
+      customer_returns: 0,
+      customer_return_items: 0,
+      stock_reserves: 0,
+      deleted_stock_reserves: 0,
+      warehouse_movements: 0,
+      writeoffs: 0,
+      writeoff_items: 0,
+      bonus_transactions: 0,
+      customer_deposit_transactions: 0,
       settings: 0,
     }
 
@@ -60,6 +86,11 @@ export class LocalBootstrapRepository {
       if (changes.shop_settings) {
         this.upsertSettings(changes.shop_settings, appliedAt)
         counts.settings++
+      }
+
+      for (const user of changes.staff ?? []) {
+        this.upsertStaff(tenantId, user, appliedAt)
+        counts.staff++
       }
 
       if (changes.references_included) {
@@ -135,6 +166,21 @@ export class LocalBootstrapRepository {
         counts.deleted_suppliers++
       }
 
+      for (const shift of changes.shifts ?? []) {
+        this.upsertShift(tenantId, shift, appliedAt)
+        counts.shifts++
+      }
+
+      for (const sale of changes.sales ?? []) {
+        this.upsertSale(tenantId, sale, appliedAt)
+        counts.sales++
+      }
+
+      for (const item of changes.sale_items ?? []) {
+        this.upsertSaleItem(tenantId, item, appliedAt)
+        counts.sale_items++
+      }
+
       for (const order of changes.customer_orders ?? []) {
         this.upsertCustomerOrder(tenantId, order, appliedAt)
         counts.customer_orders++
@@ -143,6 +189,37 @@ export class LocalBootstrapRepository {
       for (const orderId of changes.deleted_customer_order_ids ?? []) {
         this.markDeleted('customer_orders', tenantId, orderId, appliedAt)
         counts.deleted_customer_orders++
+      }
+
+      // Сервер повертає повний актуальний список позицій для кожного зміненого
+      // замовлення. Видаляємо лише відсутні на сервері чисті рядки: так рядки,
+      // у яких касиру замасковано buy_price, зберігають вже відому собівартість.
+      const remoteItemIdsByOrder = new Map<string, string[]>()
+      for (const item of changes.customer_order_items ?? []) {
+        if (!item?.order_id || !item?.id) continue
+        const ids = remoteItemIdsByOrder.get(item.order_id) ?? []
+        ids.push(item.id)
+        remoteItemIdsByOrder.set(item.order_id, ids)
+      }
+      for (const order of changes.customer_orders ?? []) {
+        const localOrder = this.db.prepare(`
+          SELECT dirty_at FROM customer_orders WHERE id = ? AND tenant_id = ? LIMIT 1
+        `).get(order.id, tenantId) as { dirty_at: string | null } | undefined
+        if (localOrder?.dirty_at) continue
+        const remoteItemIds = remoteItemIdsByOrder.get(order.id) ?? []
+        if (remoteItemIds.length === 0) {
+          this.db.prepare(`
+            DELETE FROM customer_order_items
+            WHERE order_id = ? AND tenant_id = ? AND dirty_at IS NULL
+          `).run(order.id, tenantId)
+          continue
+        }
+        const placeholders = remoteItemIds.map(() => '?').join(', ')
+        this.db.prepare(`
+          DELETE FROM customer_order_items
+          WHERE order_id = ? AND tenant_id = ? AND dirty_at IS NULL
+            AND id NOT IN (${placeholders})
+        `).run(order.id, tenantId, ...remoteItemIds)
       }
 
       for (const item of changes.customer_order_items ?? []) {
@@ -196,6 +273,22 @@ export class LocalBootstrapRepository {
         this.upsertInventoryItem(tenantId, item, appliedAt)
         counts.inventory_items++
       }
+
+      const supplierCatalog = new LocalSupplierCatalogRepository(this.db)
+      for (const item of changes.supplier_price_items ?? []) {
+        if (supplierCatalog.upsertRemoteItem(item, tenantId, appliedAt)) counts.supplier_price_items++
+      }
+      for (const record of changes.supplier_price_imports ?? []) {
+        if (supplierCatalog.upsertRemoteImport(record, tenantId, appliedAt)) counts.supplier_price_imports++
+      }
+      const secondaryCounts = new LocalSecondarySyncImporter(this.db).apply(tenantId, changes, appliedAt, {
+        catalogStructure: changes.catalog_structure_snapshot_included === true,
+        staff: changes.staff_snapshot_included === true,
+        commissionRules: changes.commission_rules_snapshot_included === true,
+        salaryPayments: changes.salary_payments_snapshot_included === true,
+        stockReserves: changes.stock_reserves_snapshot_included === true,
+      })
+      Object.assign(counts, secondaryCounts)
     })
 
     return { applied_at: appliedAt, cursor: changes.cursor, counts }
@@ -220,12 +313,34 @@ export class LocalBootstrapRepository {
       deleted_customer_orders: 0,
       customer_order_items: 0,
       order_payments: 0,
+      shifts: 0,
+      sales: 0,
+      sale_items: 0,
       supply_invoices: 0,
       deleted_supply_invoices: 0,
       supply_invoice_items: 0,
       supplier_payments: 0,
       inventory_sessions: 0,
       inventory_items: 0,
+      supplier_price_items: 0,
+      supplier_price_imports: 0,
+      deleted_staff: 0,
+      deleted_categories: 0,
+      deleted_brands: 0,
+      commission_rules: 0,
+      deleted_commission_rules: 0,
+      salary_payments: 0,
+      deleted_salary_payments: 0,
+      cash_operations: 0,
+      customer_returns: 0,
+      customer_return_items: 0,
+      stock_reserves: 0,
+      deleted_stock_reserves: 0,
+      warehouse_movements: 0,
+      writeoffs: 0,
+      writeoff_items: 0,
+      bonus_transactions: 0,
+      customer_deposit_transactions: 0,
       settings: 0,
     }
 
@@ -288,6 +403,21 @@ export class LocalBootstrapRepository {
         counts.customer_vehicles++
       }
 
+      for (const shift of snapshot.shifts ?? []) {
+        this.upsertShift(tenantId, shift, importedAt)
+        counts.shifts++
+      }
+
+      for (const sale of snapshot.sales ?? []) {
+        this.upsertSale(tenantId, sale, importedAt)
+        counts.sales++
+      }
+
+      for (const item of snapshot.sale_items ?? []) {
+        this.upsertSaleItem(tenantId, item, importedAt)
+        counts.sale_items++
+      }
+
       for (const order of snapshot.customer_orders ?? []) {
         this.upsertCustomerOrder(tenantId, order, importedAt)
         counts.customer_orders++
@@ -334,6 +464,22 @@ export class LocalBootstrapRepository {
         counts.inventory_items++
       }
 
+      const supplierCatalog = new LocalSupplierCatalogRepository(this.db)
+      for (const item of snapshot.supplier_price_items ?? []) {
+        if (supplierCatalog.upsertRemoteItem(item, tenantId, importedAt)) counts.supplier_price_items++
+      }
+      for (const record of snapshot.supplier_price_imports ?? []) {
+        if (supplierCatalog.upsertRemoteImport(record, tenantId, importedAt)) counts.supplier_price_imports++
+      }
+      const secondaryCounts = new LocalSecondarySyncImporter(this.db).apply(tenantId, snapshot, importedAt, {
+        catalogStructure: true,
+        staff: true,
+        commissionRules: true,
+        salaryPayments: true,
+        stockReserves: true,
+      })
+      Object.assign(counts, secondaryCounts)
+
       this.db.prepare(`
         INSERT INTO app_meta(key, value_json, updated_at)
         VALUES ('last_bootstrap_snapshot', ?, ?)
@@ -377,12 +523,14 @@ export class LocalBootstrapRepository {
 
     if (pendingLocalSettings) return
 
-    const { ai_api_key_encrypted: _omit, ...safeSettings } = settings ?? {}
+    const stored = this.db.prepare("SELECT value_json FROM app_meta WHERE key = 'shop_settings'")
+      .get() as { value_json: string } | undefined
+    const safeSettings = mergePulledShopSettings(parseStoredSettings(stored?.value_json), settings)
     this.db.prepare(`
       INSERT INTO app_meta(key, value_json, updated_at)
       VALUES ('shop_settings', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
-    `).run(JSON.stringify({ ...safeSettings, id: 'local-shop' }), importedAt)
+    `).run(JSON.stringify(safeSettings), importedAt)
   }
 
   private upsertStaff(tenantId: string, user: any, importedAt: string): void {
@@ -432,6 +580,7 @@ export class LocalBootstrapRepository {
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at
+      WHERE brands.dirty_at IS NULL
     `).run(
       brand.id,
       tenantId,
@@ -481,6 +630,7 @@ export class LocalBootstrapRepository {
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at
+      WHERE categories.dirty_at IS NULL
     `).run(
       category.id,
       tenantId,
@@ -531,7 +681,7 @@ export class LocalBootstrapRepository {
     this.db.prepare(`
       UPDATE categories
       SET parent_id = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ? AND tenant_id = ? AND dirty_at IS NULL
     `).run(category.parent_id ?? null, timestamp(category, importedAt), category.id, tenantId)
   }
 
@@ -553,6 +703,7 @@ export class LocalBootstrapRepository {
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at
+      WHERE suppliers.dirty_at IS NULL
     `).run(
       supplier.id,
       tenantId,
@@ -571,6 +722,9 @@ export class LocalBootstrapRepository {
 
   private upsertProduct(tenantId: string, product: any, importedAt: string): void {
     const updatedAt = timestamp(product, importedAt)
+    const hasPurchasePrice = Object.prototype.hasOwnProperty.call(product, 'purchase_price')
+    const hasCoreReturn = Object.prototype.hasOwnProperty.call(product, 'requires_core_return')
+    const hasCoreDeposit = Object.prototype.hasOwnProperty.call(product, 'core_deposit_amount')
     if (this.shouldKeepLocalCatalogDelete('products', 'product', tenantId, product.id, importedAt, product.deleted_at ?? null)) return
     const incomingBrandId = product.brand_id ?? product.brand?.id
     const incomingCategoryId = product.category_id ?? product.category?.id
@@ -603,7 +757,7 @@ export class LocalBootstrapRepository {
         brand_id = excluded.brand_id,
         category_id = excluded.category_id,
         unit = excluded.unit,
-        purchase_price = excluded.purchase_price,
+        purchase_price = CASE WHEN ? THEN excluded.purchase_price ELSE products.purchase_price END,
         retail_price = excluded.retail_price,
         qty_on_hand = excluded.qty_on_hand,
         reorder_point = excluded.reorder_point,
@@ -614,8 +768,8 @@ export class LocalBootstrapRepository {
         is_favorite = excluded.is_favorite,
         photo_url = excluded.photo_url,
         specs_json = excluded.specs_json,
-        requires_core_return = excluded.requires_core_return,
-        core_deposit_amount = excluded.core_deposit_amount,
+        requires_core_return = CASE WHEN ? THEN excluded.requires_core_return ELSE products.requires_core_return END,
+        core_deposit_amount = CASE WHEN ? THEN excluded.core_deposit_amount ELSE products.core_deposit_amount END,
         search_text = excluded.search_text,
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
@@ -648,6 +802,9 @@ export class LocalBootstrapRepository {
       product.created_at ?? updatedAt,
       updatedAt,
       product.deleted_at ?? null,
+      hasPurchasePrice ? 1 : 0,
+      hasCoreReturn ? 1 : 0,
+      hasCoreDeposit ? 1 : 0,
     )
   }
 
@@ -759,6 +916,7 @@ export class LocalBootstrapRepository {
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at
+      WHERE customers.dirty_at IS NULL
     `).run(
       customer.id,
       tenantId,
@@ -803,6 +961,7 @@ export class LocalBootstrapRepository {
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at
+      WHERE customer_vehicles.dirty_at IS NULL
     `).run(
       vehicle.id,
       tenantId,
@@ -821,14 +980,17 @@ export class LocalBootstrapRepository {
 
   private upsertCustomerOrder(tenantId: string, order: any, importedAt: string): void {
     const updatedAt = timestamp(order, importedAt)
+    const saleId = order.sale_id && this.refExists('sales', tenantId, order.sale_id)
+      ? order.sale_id
+      : null
     this.db.prepare(`
       INSERT INTO customer_orders (
         id, tenant_id, order_number, kp_number, customer_id, chat_id, manager_id,
         vehicle_info_json, status, prepayment, prepayment_method, prepayment_is_fiscal,
         total_amount, total_paid, discount_amount, pickup_deadline_at, pickup_cell,
-        comment, source, sent_to_telegram_at, remote_updated_at, created_at, updated_at, deleted_at
+        comment, source, sale_id, sent_to_telegram_at, remote_updated_at, created_at, updated_at, deleted_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         order_number = excluded.order_number,
         kp_number = excluded.kp_number,
@@ -847,6 +1009,7 @@ export class LocalBootstrapRepository {
         pickup_cell = excluded.pickup_cell,
         comment = excluded.comment,
         source = excluded.source,
+        sale_id = excluded.sale_id,
         sent_to_telegram_at = excluded.sent_to_telegram_at,
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
@@ -872,6 +1035,7 @@ export class LocalBootstrapRepository {
       order.pickup_cell ?? null,
       order.comment ?? null,
       order.source ?? 'walk_in',
+      saleId,
       order.sent_to_telegram_at ?? null,
       updatedAt,
       order.created_at ?? updatedAt,
@@ -882,6 +1046,7 @@ export class LocalBootstrapRepository {
 
   private upsertCustomerOrderItem(tenantId: string, item: any, importedAt: string): void {
     const updatedAt = timestamp(item, importedAt)
+    const hasBuyPrice = Object.prototype.hasOwnProperty.call(item, 'buy_price')
     this.db.prepare(`
       INSERT INTO customer_order_items (
         id, tenant_id, order_id, name, sku, product_id, supplier_id, source_type,
@@ -897,7 +1062,7 @@ export class LocalBootstrapRepository {
         source_type = excluded.source_type,
         item_type = excluded.item_type,
         item_status = excluded.item_status,
-        buy_price = excluded.buy_price,
+        buy_price = CASE WHEN ? = 1 THEN excluded.buy_price ELSE customer_order_items.buy_price END,
         sell_price = excluded.sell_price,
         qty = excluded.qty,
         expected_date = excluded.expected_date,
@@ -928,6 +1093,7 @@ export class LocalBootstrapRepository {
       item.created_at ?? updatedAt,
       updatedAt,
       item.deleted_at ?? null,
+      hasBuyPrice ? 1 : 0,
     )
   }
 
@@ -964,6 +1130,186 @@ export class LocalBootstrapRepository {
       payment.created_at ?? updatedAt,
       updatedAt,
       payment.deleted_at ?? null,
+    )
+  }
+
+  private upsertShift(tenantId: string, shift: any, importedAt: string): void {
+    const updatedAt = shift.updated_at ?? shift.closed_at ?? shift.opened_at ?? shift.created_at ?? importedAt
+    this.db.prepare(`
+      INSERT INTO shifts (
+        id, tenant_id, cashier_id, status, opening_cash, closing_cash, expected_cash,
+        cash_variance, opened_at, closed_at, notes, remote_updated_at,
+        created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        cashier_id = excluded.cashier_id,
+        status = excluded.status,
+        opening_cash = excluded.opening_cash,
+        closing_cash = excluded.closing_cash,
+        expected_cash = excluded.expected_cash,
+        cash_variance = excluded.cash_variance,
+        opened_at = excluded.opened_at,
+        closed_at = excluded.closed_at,
+        notes = excluded.notes,
+        remote_updated_at = excluded.remote_updated_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE shifts.dirty_at IS NULL
+    `).run(
+      shift.id,
+      tenantId,
+      shift.cashier_id,
+      shift.status ?? (shift.closed_at ? 'closed' : 'open'),
+      shift.opening_cash ?? 0,
+      shift.closing_cash ?? null,
+      shift.expected_cash ?? null,
+      shift.cash_variance ?? null,
+      shift.opened_at ?? shift.created_at ?? updatedAt,
+      shift.closed_at ?? null,
+      shift.notes ?? null,
+      updatedAt,
+      shift.created_at ?? shift.opened_at ?? updatedAt,
+      updatedAt,
+      shift.deleted_at ?? null,
+    )
+  }
+
+  private upsertSale(tenantId: string, sale: any, importedAt: string): void {
+    if (!sale?.id || !sale.shift_id || !this.refExists('shifts', tenantId, sale.shift_id)) return
+    const updatedAt = timestamp(sale, sale.completed_at ?? importedAt)
+    const customerId = sale.customer_id && this.refExists('customers', tenantId, sale.customer_id)
+      ? sale.customer_id
+      : null
+    const paymentMethod = ['cash', 'card', 'debt', 'mixed', 'transfer'].includes(String(sale.payment_method))
+      ? String(sale.payment_method)
+      : 'cash'
+    const total = sale.total ?? 0
+    this.db.prepare(`
+      INSERT INTO sales (
+        id, tenant_id, sale_number, customer_id, cashier_id, manager_id, shift_id,
+        status, subtotal, discount, total, payment_method, is_debt, is_fiscal,
+        fiscal_number, fiscal_qr_url, bank_auth_code, terminal_rrn,
+        cash_amount, card_amount, transfer_amount, debt_amount, pickup_cell, notes,
+        remote_updated_at, completed_at, created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        sale_number = excluded.sale_number,
+        customer_id = excluded.customer_id,
+        cashier_id = excluded.cashier_id,
+        manager_id = excluded.manager_id,
+        shift_id = excluded.shift_id,
+        status = excluded.status,
+        subtotal = excluded.subtotal,
+        discount = excluded.discount,
+        total = excluded.total,
+        payment_method = excluded.payment_method,
+        is_debt = excluded.is_debt,
+        is_fiscal = excluded.is_fiscal,
+        fiscal_number = excluded.fiscal_number,
+        fiscal_qr_url = excluded.fiscal_qr_url,
+        bank_auth_code = excluded.bank_auth_code,
+        terminal_rrn = excluded.terminal_rrn,
+        cash_amount = excluded.cash_amount,
+        card_amount = excluded.card_amount,
+        transfer_amount = excluded.transfer_amount,
+        debt_amount = excluded.debt_amount,
+        pickup_cell = excluded.pickup_cell,
+        notes = excluded.notes,
+        remote_updated_at = excluded.remote_updated_at,
+        completed_at = excluded.completed_at,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE sales.dirty_at IS NULL
+    `).run(
+      sale.id,
+      tenantId,
+      sale.sale_number ?? String(sale.id).slice(0, 8),
+      customerId,
+      sale.cashier_id ?? 'remote',
+      sale.manager_id ?? null,
+      sale.shift_id,
+      sale.status ?? 'completed',
+      sale.subtotal ?? total,
+      sale.discount ?? 0,
+      total,
+      paymentMethod,
+      boolInt(sale.is_debt, paymentMethod === 'debt'),
+      boolInt(sale.is_fiscal, false),
+      text(sale.fiscal_number),
+      text(sale.fiscal_qr_url),
+      text(sale.bank_auth_code),
+      text(sale.terminal_rrn),
+      sale.cash_amount ?? 0,
+      sale.card_amount ?? 0,
+      sale.transfer_amount ?? (paymentMethod === 'transfer' ? total : 0),
+      sale.debt_amount ?? (paymentMethod === 'debt' ? total : 0),
+      text(sale.pickup_cell),
+      sale.notes ?? null,
+      updatedAt,
+      sale.completed_at ?? sale.created_at ?? updatedAt,
+      sale.created_at ?? sale.completed_at ?? updatedAt,
+      updatedAt,
+      sale.deleted_at ?? null,
+    )
+  }
+
+  private upsertSaleItem(tenantId: string, item: any, importedAt: string): void {
+    const sale = this.db.prepare(`
+      SELECT dirty_at FROM sales
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(item.sale_id, tenantId) as { dirty_at: string | null } | undefined
+    if (!sale || sale.dirty_at) return
+    const product = this.db.prepare(`
+      SELECT id, sku, name FROM products
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(item.product_id, tenantId) as { id: string; sku: string; name: string } | undefined
+    if (!product) return
+    const updatedAt = timestamp(item, importedAt)
+    const hasPurchasePrice = Object.prototype.hasOwnProperty.call(item, 'purchase_price')
+      || Object.prototype.hasOwnProperty.call(item, 'cost_price')
+    this.db.prepare(`
+      INSERT INTO sale_items (
+        id, tenant_id, sale_id, product_id, description, sku, qty, unit_price,
+        purchase_price, discount, total, core_deposit_amount, core_return_status,
+        created_at, updated_at, deleted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        sale_id = excluded.sale_id,
+        product_id = excluded.product_id,
+        description = excluded.description,
+        sku = excluded.sku,
+        qty = excluded.qty,
+        unit_price = excluded.unit_price,
+        purchase_price = CASE WHEN ? = 1 THEN excluded.purchase_price ELSE sale_items.purchase_price END,
+        discount = excluded.discount,
+        total = excluded.total,
+        core_deposit_amount = excluded.core_deposit_amount,
+        core_return_status = excluded.core_return_status,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+    `).run(
+      item.id,
+      tenantId,
+      item.sale_id,
+      product.id,
+      item.description ?? item.product?.name ?? product.name,
+      item.sku ?? item.product?.sku ?? product.sku,
+      item.qty ?? 0,
+      item.unit_price ?? 0,
+      item.purchase_price ?? item.cost_price ?? 0,
+      item.discount ?? 0,
+      item.total ?? Math.round(Number(item.qty ?? 0) * Number(item.unit_price ?? 0)),
+      item.core_deposit_amount ?? 0,
+      item.core_return_status ?? 'none',
+      item.created_at ?? updatedAt,
+      updatedAt,
+      item.deleted_at ?? null,
+      hasPurchasePrice ? 1 : 0,
     )
   }
 
@@ -1148,13 +1494,13 @@ export class LocalBootstrapRepository {
     )
   }
   private markDeleted(table: 'products' | 'customers' | 'suppliers' | 'customer_orders' | 'supply_invoices', tenantId: string, id: string, deletedAt: string): void {
-    const dirtyGuard = table === 'products' || table === 'customer_orders' || table === 'supply_invoices' ? ' AND dirty_at IS NULL' : ''
     this.db.prepare(`
       UPDATE ${table}
       SET deleted_at = ?,
           updated_at = ?
       WHERE id = ?
-        AND tenant_id = ?${dirtyGuard}
+        AND tenant_id = ?
+        AND dirty_at IS NULL
     `).run(deletedAt, deletedAt, id, tenantId)
   }
 
@@ -1162,10 +1508,23 @@ export class LocalBootstrapRepository {
     table: 'product_barcodes' | 'product_aliases' | 'product_cross_numbers' | 'customer_vehicles',
     tenantId: string,
   ): void {
-    this.db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId)
+    if (table === 'customer_vehicles') {
+      this.db.prepare('DELETE FROM customer_vehicles WHERE tenant_id = ? AND dirty_at IS NULL').run(tenantId)
+      return
+    }
+    this.db.prepare(`
+      DELETE FROM ${table}
+      WHERE tenant_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM products p
+          WHERE p.id = ${table}.product_id
+            AND p.tenant_id = ?
+            AND p.dirty_at IS NOT NULL
+        )
+    `).run(tenantId, tenantId)
   }
 
-  private refExists(table: 'brands' | 'categories' | 'products' | 'customers' | 'customer_orders' | 'supply_invoices' | 'inventory_sessions', tenantId: string, id: string): boolean {
+  private refExists(table: 'brands' | 'categories' | 'products' | 'customers' | 'customer_orders' | 'supply_invoices' | 'inventory_sessions' | 'sales' | 'shifts', tenantId: string, id: string): boolean {
     const row = this.db.prepare(`
       SELECT id
       FROM ${table}

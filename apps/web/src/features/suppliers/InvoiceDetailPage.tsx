@@ -32,7 +32,7 @@ export default function InvoiceDetailPage() {
   const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
   const [paymentNote, setPaymentNote] = useState('')
 
-  const userRole = useAuthStore((s) => s.session?.user?.user_metadata?.role as string | undefined)
+  const userRole = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
   const canDelete = userRole === 'owner' || userRole === 'admin'
 
   async function handleDelete() {

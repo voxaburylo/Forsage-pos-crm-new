@@ -140,11 +140,11 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
 
     const { data: authData } = await supabaseAdmin.auth.admin.getUserById(input.employee_id)
     const employee = authData.user
-    if (!employee || employee.user_metadata?.tenant_id !== req.user!.tenant_id) {
+    if (!employee || employee.app_metadata?.tenant_id !== req.user!.tenant_id) {
       throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
     }
-    const dailyRate = employee.user_metadata?.rate_period === 'day'
-      ? Number(employee.user_metadata?.base_rate ?? 0)
+    const dailyRate = employee.app_metadata?.rate_period === 'day'
+      ? Number(employee.app_metadata?.base_rate ?? 0)
       : 0
     const period = input.work_date.slice(0, 7)
 

@@ -30,6 +30,9 @@ export interface Sale {
   bank_auth_code: string | null
   cash_amount: number
   card_amount: number
+  transfer_amount?: number
+  debt_amount?: number
+  is_order_sale?: boolean | number
   pickup_cell: string | null
   sale_items?: SaleItem[]
   customer?: { id: string; phone: string; full_name: string | null } | null

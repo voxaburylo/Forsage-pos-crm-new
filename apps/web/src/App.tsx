@@ -61,7 +61,6 @@ const WarehousePicking     = lazyPage(() => import('@/features/inventory/Warehou
 const WarehouseMovementPage = lazyPage(() => import('@/features/inventory/WarehouseMovementPage'))
 const InboxPage             = lazyPage(() => import('@/features/notifications/InboxPage'))
 const AutoPurchasePage      = lazyPage(() => import('@/features/autoPurchase/AutoPurchasePage'))
-const CoreReturnsPage       = lazyPage(() => import('@/features/inventory/CoreReturnsPage'))
 const AuditLogPage          = lazyPage(() => import('@/features/admin/AuditLogPage'))
 const TemplateEditor        = lazyPage(() => import('@/features/notifications/TemplateEditor'))
 
@@ -107,17 +106,17 @@ function App() {
           <Route path="/pos"      element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
           <Route path="/returns"  element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
-          <Route path="/cashflow" element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute><CashflowPage /></ProtectedRoute>} />
+          <Route path="/cashflow" element={<ProtectedRoute><CashflowPage /></ProtectedRoute>} />
           {/* Звіти з прибутком/маржею — лише власник і адмін */}
           <Route path="/reports"  element={<ProtectedRoute roles={ADMIN_ROLES}><DailyReport /></ProtectedRoute>} />
-          <Route path="/abc"        element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
-          <Route path="/waitlist"   element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute>} />
+          <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
+          <Route path="/waitlist"   element={<ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute>} />
           <Route path="/needs-action" element={<ProtectedRoute roles={OFFICE_ROLES}><NeedsActionPage /></ProtectedRoute>} />
-          <Route path="/staff-analytics" element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />
+          <Route path="/staff-analytics" element={<ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<ProtectedRoute roles={ADMIN_ROLES}><AdminPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute roles={ADMIN_ROLES}><SettingsPage /></ProtectedRoute>} />
-          <Route path="/settings/draft-nomenclature" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierPricesPage /></ProtectedRoute>} />
-          <Route path="/settings/draft-nomenclature/import" element={<ProtectedRoute roles={OFFICE_ROLES}><BulkImportPage /></ProtectedRoute>} />
+          <Route path="/settings/draft-nomenclature" element={<ProtectedRoute roles={ADMIN_ROLES}><SupplierPricesPage /></ProtectedRoute>} />
+          <Route path="/settings/draft-nomenclature/import" element={<ProtectedRoute roles={ADMIN_ROLES}><BulkImportPage /></ProtectedRoute>} />
           
           <Route path="/suppliers" element={<ProtectedRoute roles={SUPPLIER_ROLES}><SuppliersPage /></ProtectedRoute>} />
           <Route path="/suppliers/new" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
@@ -125,7 +124,7 @@ function App() {
           <Route path="/suppliers/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/receiving" element={<ProtectedRoute roles={SUPPLIER_ROLES}><ReceivingPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices" element={<ProtectedRoute roles={SUPPLIER_ROLES}><InvoicesPage /></ProtectedRoute>} />
-          <Route path="/suppliers/pos" element={desktop ? <Navigate to="/suppliers" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute>} />
+          <Route path="/suppliers/pos" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/new" element={<ProtectedRoute roles={SUPPLIER_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id" element={<ProtectedRoute roles={SUPPLIER_ROLES}><InvoiceDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
@@ -133,15 +132,14 @@ function App() {
 
           <Route path="/staff"          element={<ProtectedRoute roles={ADMIN_ROLES}><StaffPage /></ProtectedRoute>} />
           
-          <Route path="/internal"       element={desktop ? <Navigate to="/inventory" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><InternalConsumptionsPage /></ProtectedRoute>} />
-          <Route path="/settings/channels" element={desktop ? <Navigate to="/settings" replace /> : <ProtectedRoute roles={ADMIN_ROLES}><SettingsChannels /></ProtectedRoute>} />
+          <Route path="/internal"       element={<ProtectedRoute roles={OFFICE_ROLES}><InternalConsumptionsPage /></ProtectedRoute>} />
+          <Route path="/settings/channels" element={<ProtectedRoute roles={ADMIN_ROLES}><SettingsChannels /></ProtectedRoute>} />
           <Route path="/labels"  element={<ProtectedRoute roles={ADMIN_ROLES}><LabelDesigner /></ProtectedRoute>} />
-          <Route path="/auto-purchase"   element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><AutoPurchasePage /></ProtectedRoute>} />
-          <Route path="/core-returns"    element={desktop ? <Navigate to="/inventory" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><CoreReturnsPage /></ProtectedRoute>} />
-          <Route path="/audit"           element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={ADMIN_ROLES}><AuditLogPage /></ProtectedRoute>} />
-          <Route path="/settings/templates" element={desktop ? <Navigate to="/settings" replace /> : <ProtectedRoute roles={ADMIN_ROLES}><TemplateEditor /></ProtectedRoute>} />
-          <Route path="/notifications"  element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute>} />
-          <Route path="/ai-assistant"   element={desktop ? <Navigate to="/dashboard" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><AiAssistantPage /></ProtectedRoute>} />
+          <Route path="/auto-purchase"   element={<ProtectedRoute roles={OFFICE_ROLES}><AutoPurchasePage /></ProtectedRoute>} />
+          <Route path="/audit"           element={<ProtectedRoute roles={ADMIN_ROLES}><AuditLogPage /></ProtectedRoute>} />
+          <Route path="/settings/templates" element={<ProtectedRoute roles={ADMIN_ROLES}><TemplateEditor /></ProtectedRoute>} />
+          <Route path="/notifications"  element={<ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute>} />
+          <Route path="/ai-assistant"   element={<ProtectedRoute roles={OFFICE_ROLES}><AiAssistantPage /></ProtectedRoute>} />
 
           <Route path="/inventory"               element={<ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><InventoryPage /></ProtectedRoute>} />
           <Route path="/inventory/picking"       element={<ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><WarehousePicking /></ProtectedRoute>} />
@@ -153,7 +151,7 @@ function App() {
           <Route path="/inventory/writeoffs/:id" element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffDetailPage /></ProtectedRoute>} />
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
-          <Route path="/chats" element={desktop ? <Navigate to="/orders" replace /> : <ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute>} />
+          <Route path="/chats" element={<ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute>} />
           <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute>} />
           <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute>} />
           <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><OrderDetailPage /></ProtectedRoute>} />

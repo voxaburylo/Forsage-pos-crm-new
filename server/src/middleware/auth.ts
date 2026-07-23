@@ -7,7 +7,7 @@ import { logger } from '../lib/logger.js'
 interface SupabaseJwtPayload {
   sub: string
   email?: string
-  user_metadata?: {
+  app_metadata?: {
     is_active?: boolean
     role?: string
     tenant_id?: string
@@ -34,12 +34,15 @@ export async function requireAuth(
   if (jwtSecret && usesSharedSecret) {
     try {
       const decoded = jwt.verify(token, jwtSecret) as SupabaseJwtPayload
-      userPayload = {
-        id: decoded.sub,
-        email: decoded.email ?? '',
-        role: decoded.user_metadata?.role ?? 'cashier',
-        tenant_id: decoded.user_metadata?.tenant_id,
-        is_active: decoded.user_metadata?.is_active,
+      const trustedMeta = decoded.app_metadata
+      if (trustedMeta?.tenant_id) {
+        userPayload = {
+          id: decoded.sub,
+          email: decoded.email ?? '',
+          role: trustedMeta.role ?? 'cashier',
+          tenant_id: trustedMeta.tenant_id,
+          is_active: trustedMeta.is_active,
+        }
       }
     } catch (err: any) {
       logger.debug({ err: err.message }, 'Local JWT verification failed, falling back to Supabase API')
@@ -52,7 +55,7 @@ export async function requireAuth(
     if (error || !data.user) {
       return next(new AppError('UNAUTHORIZED', 'Недійсний токен', 401))
     }
-    const meta = data.user.user_metadata ?? {}
+    const meta = data.user.app_metadata ?? {}
     userPayload = {
       id: data.user.id,
       email: data.user.email ?? '',

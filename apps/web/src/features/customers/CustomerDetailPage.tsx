@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Edit, Trash2, CreditCard, ShoppingBag, Car, Plus, Copy, ClipboardList } from 'lucide-react'
-import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import { customerApi } from './customerApi'
 import { orderApi } from '@/features/orders/orderApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
@@ -13,6 +14,7 @@ import { startRepeatOrder, formatOrderNo } from '@/features/orders/orderActions'
 import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import type { Customer, CustomerSale } from '@/types/customer'
+import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -25,6 +27,7 @@ const PAYMENT_LABELS: Record<string, string> = {
 export default function CustomerDetailPage() {
   const navigate    = useNavigate()
   const { id }      = useParams<{ id: string }>()
+  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [sales, setSales]       = useState<CustomerSale[]>([])
   const [loading, setLoading]   = useState(true)
@@ -51,6 +54,7 @@ export default function CustomerDetailPage() {
   // Накоплено на рахунку: баланс + останні операції
   const [deposit, setDeposit] = useState<{ balance: number; transactions: any[] } | null>(null)
   const [savingLoyaltyMode, setSavingLoyaltyMode] = useState(false)
+  const [editModal, setEditModal] = useState(false)
 
   const loadDeposit = useCallback(() => {
     if (!id) return
@@ -208,13 +212,7 @@ export default function CustomerDetailPage() {
             onClick={() => navigate(`/orders/new?customer_id=${customer.id}`)}>
             Замовлення
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => setDiscountModal(true)}>
-            🏷️ Процент/Статус
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => setBonusModal(true)}>
-            🎁 Змінити бонуси
-          </Button>
-          <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/customers/${customer.id}/edit`)}>
+          <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => setEditModal(true)}>
             Редагувати
           </Button>
           <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteModal(true)}>
@@ -223,20 +221,47 @@ export default function CustomerDetailPage() {
         </div>
       }
     >
-      <div className="max-w-3xl space-y-4">
+      <div className="w-full max-w-6xl space-y-4">
 
         {/* Основна інфо */}
         <Card>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="sm:col-span-2 lg:col-span-1">
               <p className="text-xs text-gray-400 mb-0.5">Телефон</p>
-              <div className="flex items-center gap-2 flex-wrap">
-                <a href={`tel:${customer.phone}`} className="font-mono font-semibold text-blue-600 hover:underline" title="Подзвонити">{customer.phone}</a>
+              <div className="flex flex-wrap items-center gap-2">
+                <a
+                  href={`tel:${customer.phone}`}
+                  className="font-mono text-lg font-extrabold text-blue-600 hover:underline sm:text-xl"
+                  title="Подзвонити"
+                >
+                  {customer.phone}
+                </a>
+                <button
+                  type="button"
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 text-xs font-semibold text-gray-600 hover:border-yellow-300 hover:bg-yellow-50"
+                  title="Копіювати телефон"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(customer.phone)
+                      toast.success('Телефон скопійовано')
+                    } catch {
+                      toast.error('Не вдалося скопіювати телефон')
+                    }
+                  }}
+                >
+                  <Copy size={14} /> Копіювати
+                </button>
               </div>
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Email</p>
               <p className="text-sm text-gray-800">{customer.email ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 mb-0.5">Дата народження</p>
+              <p className="text-sm font-medium text-gray-800">
+                {customer.birth_date ? customer.birth_date.slice(0, 10).split('-').reverse().join('.') : '—'}
+              </p>
             </div>
           </div>
 
@@ -456,7 +481,7 @@ export default function CustomerDetailPage() {
           )}
         </Card>
 
-        {!isDesktopRuntime() && (
+        {!offlineMode && (
           <>
             <Card><CustomerLoyalty customerId={customer.id} /></Card>
             <Card><CustomerNotes customerId={customer.id} /></Card>
@@ -564,7 +589,18 @@ export default function CustomerDetailPage() {
         </Card>
       </div>
 
-      {/* Модалка додавання авто */}
+      <QuickCustomerEditModal
+        customer={customer}
+        open={editModal}
+        onClose={() => setEditModal(false)}
+        onSaved={(updated) => {
+          setCustomer(updated)
+          void load()
+          loadDeposit()
+        }}
+      />
+
+      {/* Модалка бонусів */}
       <Modal open={bonusModal} onClose={() => setBonusModal(false)} title="Бонуси клієнта" size="sm">
         <div className="space-y-4">
           <div>
@@ -622,6 +658,17 @@ export default function CustomerDetailPage() {
           </div>
         </div>
       </Modal>
+      <QuickCustomerEditModal
+        customer={customer}
+        open={editModal}
+        onClose={() => setEditModal(false)}
+        onSaved={(saved) => {
+          setCustomer(saved)
+          setEditModal(false)
+          loadDeposit()
+        }}
+      />
+
 
       <Modal open={carModal} onClose={() => setCarModal(false)} title="Додати автомобіль" size="sm">
         <div className="space-y-4">

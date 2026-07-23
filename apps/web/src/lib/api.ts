@@ -81,6 +81,11 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
     if (newToken) {
       return request<T>(path, { ...options, _retry: true })
     }
+    // Серверна авторизація не повинна закривати робочу локальну касу.
+    // Після відновлення онлайн-сесії фоновий обмін повторить запит.
+    if (isDesktopRuntime()) {
+      throw new Error('Серверна сесія ще не відновлена. Локальна програма продовжує працювати.')
+    }
     // Refresh не вдався — виходимо на логін
     try {
       const { supabase } = await import('./supabase')

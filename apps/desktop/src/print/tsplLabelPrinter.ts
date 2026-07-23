@@ -24,18 +24,8 @@ export interface TsplPrintOptions {
   rotate180?: boolean
 }
 
-interface PageBarcode {
-  code: string
-  modules: number
-  x: number
-  y: number
-  w: number
-  h: number
-}
-
 interface PageMeta {
-  topCss: number
-  barcodes: PageBarcode[]
+  index: number
 }
 
 /** TSPL для 203 dpi: рівно 8 крапок на мм. */
@@ -161,21 +151,15 @@ async function waitMs(ms: number): Promise<void> {
 }
 
 const COLLECT_PAGES_SCRIPT = `
-(() => {
-  const pages = Array.from(document.querySelectorAll('.label-page')).map((page) => {
-    const pageRect = page.getBoundingClientRect()
-    // Нічого не ховаємо і не замінюємо командами принтера: друкуємо той самий
-    // bitmap, який намалював HTML-макет. Так дизайнер і фактична етикетка
-    // збігаються за розміром, положенням тексту і штрихкодом.
-    return { topCss: pageRect.top + window.scrollY, barcodes: [] }
-  })
-  return pages
-})()
+(() => Array.from(document.querySelectorAll('.label-page')).map((_page, index) => ({ index })))()
 `
 
 // ────────────────────────── Основний потік друку ──────────────────────────
 
-export async function printLabelsTspl(html: string, options: TsplPrintOptions): Promise<{ success: true; labels: number }> {
+type TsplPrintResult = { success: true; labels: number }
+let activePrintJob: Promise<TsplPrintResult> | null = null
+
+async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
   if (typeof html !== 'string' || html.trim().length === 0) throw new Error('PRINT_HTML_EMPTY')
   const printerName = String(options.printerName ?? '').trim()
   if (!printerName) throw new Error('TSPL_PRINTER_NOT_SET')
@@ -214,11 +198,9 @@ export async function printLabelsTspl(html: string, options: TsplPrintOptions): 
     renderWindow.webContents.startPainting()
     await renderWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
     renderWindow.webContents.setZoomFactor(zoom)
-    // Ховаємо скролбар (інакше він звужує макет) і додаємо хвіст-прокладку,
-    // щоб остання етикетка могла доскролитись рівно до верху кадру.
+    // Скролбар не повинен звужувати фізичний макет етикетки.
     await renderWindow.webContents.insertCSS(
-      'html::-webkit-scrollbar{display:none} html{scrollbar-width:none}' +
-      ' body::after{content:"";display:block;height:40mm}',
+      'html::-webkit-scrollbar{display:none} html{scrollbar-width:none} body{overflow:hidden}',
     )
     await renderWindow.webContents.executeJavaScript(
       'Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)',
@@ -234,7 +216,14 @@ export async function printLabelsTspl(html: string, options: TsplPrintOptions): 
 
     for (const page of pages) {
       await renderWindow.webContents.executeJavaScript(
-        `window.scrollTo(0, ${JSON.stringify(page.topCss)}); true`,
+        `(() => {
+          const labelPages = Array.from(document.querySelectorAll('.label-page'))
+          labelPages.forEach((candidate, index) => {
+            candidate.style.display = index === ${page.index} ? 'block' : 'none'
+          })
+          window.scrollTo(0, 0)
+          return true
+        })()`,
         true,
       )
       await waitMs(60)
@@ -261,20 +250,6 @@ export async function printLabelsTspl(html: string, options: TsplPrintOptions): 
       chunks.push(bitmap.subarray(0, bytesPerRow * heightDots))
       chunks.push(Buffer.from('\r\n', 'ascii'))
 
-      for (const barcode of page.barcodes) {
-        // Модуль штрихкоду — ЦІЛЕ число крапок (мінімум 2), інакше штрихи
-        // знову стануть нерівними. Центруємо в межах місця, яке займав <img>.
-        const narrow = Math.max(2, Math.floor((barcode.w * ZOOM) / barcode.modules))
-        const totalWidth = narrow * barcode.modules
-        const x = Math.max(0, Math.round((barcode.x + barcode.w / 2) * ZOOM - totalWidth / 2))
-        const y = Math.max(0, Math.round(barcode.y * ZOOM))
-        const barHeight = Math.max(8, Math.round(barcode.h * ZOOM))
-        const code = barcode.code.replace(/["\\]/g, '')
-        chunks.push(Buffer.from(
-          `BARCODE ${x},${y},"128",${barHeight},0,0,${narrow},${narrow},"${code}"\r\n`,
-          'ascii',
-        ))
-      }
 
       chunks.push(Buffer.from('PRINT 1,1\r\n', 'ascii'))
     }
@@ -291,4 +266,21 @@ export async function printLabelsTspl(html: string, options: TsplPrintOptions): 
   } finally {
     if (!renderWindow.isDestroyed()) renderWindow.destroy()
   }
+}
+
+/**
+ * Only one RAW label job may own the hidden renderer and Windows spooler at a
+ * time. Concurrent UI clicks share the active job instead of printing a
+ * duplicate batch after the first one finishes.
+ */
+export function printLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
+  if (activePrintJob) return activePrintJob
+
+  const job = executeLabelsTspl(html, options)
+  activePrintJob = job
+  const release = () => {
+    if (activePrintJob === job) activePrintJob = null
+  }
+  job.then(release, release)
+  return job
 }

@@ -21,13 +21,23 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_supplier_payments_invoice ON supplier_payments(invoice_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_supplier_payments_tenant ON supplier_payments(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_invoice
+  ON supplier_payments(tenant_id, invoice_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_tenant
+  ON supplier_payments(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier
+  ON supplier_payments(tenant_id, supplier_id, created_at DESC)
+  WHERE supplier_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_shift
+  ON supplier_payments(tenant_id, shift_id, created_at DESC)
+  WHERE shift_id IS NOT NULL;
 
 ALTER TABLE supplier_payments ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS supplier_payments_tenant_policy ON supplier_payments;
 CREATE POLICY supplier_payments_tenant_policy ON supplier_payments
-  FOR ALL USING (true)
-  WITH CHECK (true);
+  FOR ALL
+  TO authenticated
+  USING (tenant_id = app.user_tenant_id())
+  WITH CHECK (tenant_id = app.user_tenant_id());
 
 NOTIFY pgrst, 'reload schema';

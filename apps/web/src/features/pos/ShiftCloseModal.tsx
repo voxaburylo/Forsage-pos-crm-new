@@ -22,7 +22,7 @@ export function ShiftCloseModal({
   open, shiftId, offline = false, pendingOfflineSales = 0, onClose, onClosed,
 }: Props) {
   const session = useAuthStore((s) => s.session)
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const isOwnerOrAdmin = role === 'owner' || role === 'admin'
   const cashierId = session?.user?.id ?? ''
   const desktop = desktopBridge()

@@ -33,7 +33,7 @@ export async function dispatch(event: NotificationEvent): Promise<void> {
       try {
         const { supabaseAdmin } = await import('../../db/supabaseAdmin.js')
         const { data: userData } = await supabaseAdmin.auth.admin.getUserById(event.userId)
-        tenantId = userData?.user?.user_metadata?.tenant_id
+        tenantId = userData?.user?.app_metadata?.tenant_id
       } catch {}
     }
     if (!tenantId) {

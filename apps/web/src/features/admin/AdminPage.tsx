@@ -22,7 +22,7 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
   const [search, setSearch]       = useState('')
 
   // --- Reset catalog (тільки для вкладки категорій, тільки owner) ---
-  const userRole = useAuthStore((s) => s.session?.user?.user_metadata?.role as string | undefined)
+  const userRole = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
   const isOwner  = userRole === 'owner'
   const [resetOpen, setResetOpen]       = useState(false)
   const [resetText, setResetText]       = useState('')

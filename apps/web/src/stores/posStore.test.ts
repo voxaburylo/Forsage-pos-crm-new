@@ -18,7 +18,7 @@ describe('posStore discounts', () => {
   beforeEach(() => {
     usePOSStore.getState().clearReceipt()
     useAuthStore.setState({
-      session: { user: { user_metadata: { role: 'owner' } } } as any,
+      session: { user: { app_metadata: { role: 'owner' } } } as any,
     })
   })
 

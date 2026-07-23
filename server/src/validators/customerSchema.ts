@@ -18,6 +18,7 @@ export const createCustomerSchema = z.object({
   phone:         phoneSchema,
   full_name:     z.string().max(200).optional().nullable(),
   email:         z.string().email('Невірний email').max(255).optional().nullable(),
+  birth_date:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Дата народження має бути у форматі РРРР-ММ-ДД').optional().nullable(),
   notes:         z.string().max(2000).optional().nullable(),
   tags:          z.array(z.string()).default([]),
   price_tier_id: z.string().uuid().optional().nullable(),

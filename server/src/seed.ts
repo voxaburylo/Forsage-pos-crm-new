@@ -3,9 +3,33 @@ import { createClient } from '@supabase/supabase-js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY
+const OWNER_PHONE = process.env.SEED_OWNER_PHONE?.trim()
+const OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD
+const CASHIER_PHONE = process.env.SEED_CASHIER_PHONE?.trim()
+const CASHIER_PASSWORD = process.env.SEED_CASHIER_PASSWORD
 
+if (process.env.ALLOW_DESTRUCTIVE_SEED !== 'YES') {
+  console.error('Seed заблоковано. Для нової порожньої бази явно задайте ALLOW_DESTRUCTIVE_SEED=YES.')
+  process.exit(1)
+}
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env')
+  console.error('Відсутні SUPABASE_URL або SUPABASE_SERVICE_KEY у .env')
+  process.exit(1)
+}
+if (!OWNER_PHONE || !OWNER_PASSWORD) {
+  console.error('Обов’язково задайте SEED_OWNER_PHONE і SEED_OWNER_PASSWORD')
+  process.exit(1)
+}
+if (OWNER_PASSWORD.length < 8) {
+  console.error('SEED_OWNER_PASSWORD має містити щонайменше 8 символів')
+  process.exit(1)
+}
+if (Boolean(CASHIER_PHONE) !== Boolean(CASHIER_PASSWORD)) {
+  console.error('Для тестового касира задайте обидві змінні: SEED_CASHIER_PHONE і SEED_CASHIER_PASSWORD')
+  process.exit(1)
+}
+if (CASHIER_PASSWORD && CASHIER_PASSWORD.length < 8) {
+  console.error('SEED_CASHIER_PASSWORD має містити щонайменше 8 символів')
   process.exit(1)
 }
 
@@ -20,15 +44,16 @@ async function seed() {
   console.log('🌱 Seed: Початок...')
 
   // 1. Owner
-  const ownerPhone = process.env.SEED_OWNER_PHONE ?? '+380671234567'
-  const ownerPassword = process.env.SEED_OWNER_PASSWORD ?? 'admin123'
+  const ownerPhone = OWNER_PHONE!
+  const ownerPassword = OWNER_PASSWORD!
   const email = ownerPhone.replace(/\D/g, '') + '@forsage.internal'
 
   const { data: existingUsers } = await supabase.auth.admin.listUsers()
   if (!existingUsers?.users?.find((u) => u.email === email)) {
     const { error: e } = await supabase.auth.admin.createUser({
       email, password: ownerPassword, email_confirm: true,
-      user_metadata: { phone: ownerPhone, full_name: 'Власник', role: 'owner', tenant_id: TENANT_ID, is_active: true },
+      user_metadata: { phone: ownerPhone, full_name: 'Власник' },
+      app_metadata: { role: 'owner', tenant_id: TENANT_ID, is_active: true, base_rate: 0, rate_period: 'month' },
     })
     if (e) { console.error('  ❌ Owner:', e.message); process.exit(1) }
     console.log('  ✅ Owner створено')
@@ -37,24 +62,38 @@ async function seed() {
     console.log('  ✅ Owner вже існує (пароль збережено без змін)')
   }
 
-  // 2. Cashier
-  const cashierPhone = '+380501234567'
-  const cashierEmail = cashierPhone.replace(/\D/g, '') + '@forsage.internal'
-  if (!existingUsers?.users?.find((u) => u.email === cashierEmail)) {
-    const { error: e } = await supabase.auth.admin.createUser({
-      email: cashierEmail, password: 'cashier123', email_confirm: true,
-      user_metadata: { phone: cashierPhone, full_name: 'Касир Іван', role: 'cashier', tenant_id: TENANT_ID, is_active: true },
-    })
-    if (e) { console.error('  ❌ Касир:', e.message) }
-    else { console.log('  ✅ Касір створено') }
+  // 2. Необов’язковий тестовий касир — лише з явно переданими обліковими даними.
+  if (CASHIER_PHONE && CASHIER_PASSWORD) {
+    const cashierEmail = CASHIER_PHONE.replace(/\D/g, '') + '@forsage.internal'
+    if (!existingUsers?.users?.find((user) => user.email === cashierEmail)) {
+      const { error } = await supabase.auth.admin.createUser({
+        email: cashierEmail,
+        password: CASHIER_PASSWORD,
+        email_confirm: true,
+        user_metadata: {
+          phone: CASHIER_PHONE,
+          full_name: process.env.SEED_CASHIER_NAME?.trim() || 'Касир',
+        },
+        app_metadata: {
+          role: 'cashier', tenant_id: TENANT_ID, is_active: true,
+          base_rate: 0, rate_period: 'month',
+        },
+      })
+      if (error) console.error('  ❌ Касир:', error.message)
+      else console.log('  ✅ Касира створено')
+    } else {
+      console.log('  ✅ Касир вже існує')
+    }
   } else {
-    console.log('  ✅ Касір вже існує')
+    console.log('  ℹ️ Тестового касира пропущено')
   }
 
   // 3. Settings
-  const { data: settings } = await supabase.from('shop_settings').select('id').maybeSingle()
+  const { data: settings } = await supabase.from('shop_settings').select('id')
+    .eq('tenant_id', TENANT_ID).maybeSingle()
   if (!settings) {
     const { error } = await supabase.from('shop_settings').insert({
+      tenant_id: TENANT_ID,
       shop_name: 'Форсаж', shop_address: 'м. Київ', phone: '+380',
       max_discount_pct: 10, allow_negative_qty: false, return_days: 14,
     })
@@ -138,8 +177,9 @@ async function seed() {
   console.log('  ✅ Постачальники створені')
 
   console.log('\n✅ Seed завершено успішно!')
-  console.log('  Owner:  +380671234567 / admin123')
-  console.log('  Касір:  +380501234567 / cashier123')
+  console.log(`  Власник: ${ownerPhone}`)
+  if (CASHIER_PHONE) console.log(`  Касир: ${CASHIER_PHONE}`)
+  console.log('  Паролі не виводяться. Збережіть їх у менеджері паролів.')
 }
 
 seed().catch((err) => { console.error('Seed failed:', err); process.exit(1) })

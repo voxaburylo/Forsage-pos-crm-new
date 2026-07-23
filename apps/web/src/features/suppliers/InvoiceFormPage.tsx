@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode, Search } from 'lucide-react'
 import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
@@ -15,6 +15,7 @@ import { toast } from '@/components/ui/Toast'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
+import { resolveCachedInvoiceProduct } from './invoiceProductCache'
 
 interface LineItem {
   product_id?: string
@@ -87,6 +88,18 @@ function saveSupplyInvoiceDraft(key: string, draft: Omit<SupplyInvoiceLocalDraft
 function clearSupplyInvoiceDraft(key: string) {
   localStorage.removeItem(key)
 }
+
+type SupplyInvoiceDraftData = Omit<SupplyInvoiceLocalDraft, 'savedAt'>
+
+function persistSupplyInvoiceDraft(key: string, draft: SupplyInvoiceDraftData) {
+  const hasDraft = Boolean(draft.supplierId || draft.invoiceNumber.trim() || draft.notes.trim() || draft.paidAmount.trim() || draft.items.length > 0)
+  if (!hasDraft) {
+    clearSupplyInvoiceDraft(key)
+    return
+  }
+  saveSupplyInvoiceDraft(key, draft)
+}
+
 type InvoiceImportField = 'sku' | 'name' | 'barcode' | 'unit' | 'qty' | 'purchase' | 'retail' | 'storage_bin'
 type InvoiceImportMapping = Record<InvoiceImportField, number | null>
 
@@ -117,10 +130,16 @@ function normalizeSkuValue(raw: string): string {
 }
 
 function normalizeBarcodeValue(raw: unknown): string {
-  return String(raw ?? '')
+  const compact = String(raw ?? '')
+    .normalize('NFKC')
     .trim()
-    .replace(/[\s\u00a0\u202f\-]/g, '')
-    .replace(/\.0+$/, '')
+    .replace(/[\s\u00a0\u202f-]/g, '')
+    .replace(',', '.')
+  if (/^\d+(?:\.\d+)?e\+\d+$/i.test(compact)) {
+    const numeric = Number(compact)
+    if (Number.isSafeInteger(numeric)) return String(numeric)
+  }
+  return compact.replace(/\.0+$/, '')
 }
 
 function normalizeExactInvoiceProductName(raw: unknown): string {
@@ -248,10 +267,11 @@ function buildInvoiceImportItems(rawRows: unknown[][], mapping: InvoiceImportMap
     if (!sku && !barcode && purchase <= 0 && retail <= 0) { skipped += 1; continue }
     const lowerName = name.toLocaleLowerCase('uk-UA')
     if (/^(назв|наймен|наимен|товар|номенклатур|итого|разом|всього|total)/.test(lowerName)) { skipped += 1; continue }
+    const clientKey = makeLineKey()
     items.push({
-      client_key: makeLineKey(),
+      client_key: clientKey,
       product_name: name || `Товар (${sku || barcode})`,
-      sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
+      sku: sku || makeAutoSku(clientKey),
       barcode: barcode || '',
       unit,
       qty,
@@ -271,6 +291,33 @@ function kopecksForForm(kopecks: number): string {
 
 function makeLineKey(): string {
   return (globalThis.crypto?.randomUUID?.() ?? `line_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+}
+
+function makeAutoSku(clientKey: string): string {
+  // AUTO-артикул має походити тільки з унікального ключа рядка. Date.now() з
+  // коротким random давав однакові артикули кільком рядкам одного імпорту.
+  const suffix = clientKey.replace(/[^a-z0-9]/gi, '').toUpperCase()
+  return `AUTO-${suffix}`
+}
+
+function invoiceImportMatchMessage(error: unknown, item: LineItem): string {
+  const rawMessage = error instanceof Error ? error.message.trim() : ''
+  if (
+    /артикул і штрихкод належать різним товарам/i.test(rawMessage)
+    || /повна назва.+збігається з кількома товарами/i.test(rawMessage)
+  ) return rawMessage
+  const label = item.product_name || item.sku || item.barcode || 'без назви'
+  return `Не вдалося зіставити рядок «${label}» з базою. Рядок додано в накладну — перевірте його або виберіть заміну.`
+}
+
+class InvoiceImportMatchError extends Error {
+  readonly item: LineItem
+
+  constructor(item: LineItem, cause: unknown) {
+    super(invoiceImportMatchMessage(cause, item))
+    this.name = 'InvoiceImportMatchError'
+    this.item = item
+  }
 }
 
 function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
@@ -476,6 +523,8 @@ export default function InvoiceFormPage() {
     return supplyInvoiceDraftKey('new')
   }, [cloneId, id, isEdit])
   const invoiceDraftReadyRef = useRef(false)
+  const invoiceSubmitRef = useRef(false)
+  const invoiceDraftPersistenceDisabledRef = useRef(false)
 
   const [supplierId, setSupplierId] = useState(preSelectedSupplier)
   const [invoiceNumber, setInvoiceNumber] = useState('')
@@ -508,6 +557,7 @@ export default function InvoiceFormPage() {
   const [invoiceImportMapping, setInvoiceImportMapping] = useState<InvoiceImportMapping>({ ...EMPTY_INVOICE_IMPORT_MAPPING })
   const [invoiceImportStartRow, setInvoiceImportStartRow] = useState(1)
   const [invoiceImportHeaderRow, setInvoiceImportHeaderRow] = useState<number | null>(null)
+  const [resolvingImportedProducts, setResolvingImportedProducts] = useState(false)
   const [bulkMarkupSelection, setBulkMarkupSelection] = useState('')
   const [selectedLineKeys, setSelectedLineKeys] = useState<string[]>([])
   const [bulkCategoryId, setBulkCategoryId] = useState('')
@@ -517,6 +567,31 @@ export default function InvoiceFormPage() {
   const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
+  const itemsRef = useRef(items)
+  const invoiceDraftSnapshotRef = useRef<SupplyInvoiceDraftData>({
+    supplierId,
+    invoiceNumber,
+    notes,
+    items,
+    paidAmount,
+    paymentMethod,
+    fundSource,
+    postImmediately,
+  })
+
+  useEffect(() => {
+    itemsRef.current = items
+    invoiceDraftSnapshotRef.current = {
+      supplierId,
+      invoiceNumber,
+      notes,
+      items,
+      paidAmount,
+      paymentMethod,
+      fundSource,
+      postImmediately,
+    }
+  }, [supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately])
 
   function applySupplyInvoiceDraft(draft: SupplyInvoiceLocalDraft, fallbackSupplier = preSelectedSupplier) {
     setSupplierId(draft.supplierId || fallbackSupplier)
@@ -542,26 +617,30 @@ export default function InvoiceFormPage() {
   }, [cloneId, invoiceDraftKey, isEdit, preSelectedSupplier])
 
   useEffect(() => {
-    if (!invoiceDraftReadyRef.current) return
+    if (!invoiceDraftReadyRef.current || invoiceDraftPersistenceDisabledRef.current) return
     const timer = window.setTimeout(() => {
-      const hasDraft = Boolean(supplierId || invoiceNumber.trim() || notes.trim() || paidAmount.trim() || items.length > 0)
-      if (!hasDraft) {
-        clearSupplyInvoiceDraft(invoiceDraftKey)
-        return
-      }
-      saveSupplyInvoiceDraft(invoiceDraftKey, {
-        supplierId,
-        invoiceNumber,
-        notes,
-        items,
-        paidAmount,
-        paymentMethod,
-        fundSource,
-        postImmediately,
-      })
+      persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
     }, 250)
     return () => window.clearTimeout(timer)
   }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately])
+
+  useEffect(() => {
+    const flushDraft = () => {
+      if (!invoiceDraftReadyRef.current || invoiceDraftPersistenceDisabledRef.current) return
+      persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushDraft()
+    }
+
+    window.addEventListener('pagehide', flushDraft)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', flushDraft)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      flushDraft()
+    }
+  }, [invoiceDraftKey])
 
   const invoiceImportPreview = useMemo(
     () => buildInvoiceImportItems(invoiceImportRows, invoiceImportMapping, invoiceImportStartRow),
@@ -698,19 +777,28 @@ export default function InvoiceFormPage() {
       })
   }, [cloneId, id, invoiceDraftKey])
 
-  // Пошук товарів
-  const searchProducts = useCallback(async (q: string) => {
-    if (!q.trim()) { setProductResults([]); return }
-    try {
-      const res = await productApi.list({ search: q, per_page: 10 })
-      setProductResults(res.data)
-    } catch { setProductResults([]) }
-  }, [])
-
+  // Пошук товарів. Ігноруємо запізнілу відповідь попереднього запиту,
+  // щоб старі підказки не поверталися після зміни або очищення поля.
   useEffect(() => {
-    const timer = setTimeout(() => searchProducts(productSearch), 300)
-    return () => clearTimeout(timer)
-  }, [productSearch, searchProducts])
+    const query = productSearch.trim()
+    if (!query) {
+      setProductResults([])
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await productApi.list({ search: query, per_page: 10 })
+        if (!cancelled) setProductResults(res.data)
+      } catch {
+        if (!cancelled) setProductResults([])
+      }
+    }, 300)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [productSearch])
 
   useEffect(() => {
     if (!replaceLineKey) return
@@ -769,6 +857,11 @@ export default function InvoiceFormPage() {
   const barcodeLookupTimers = useRef<Record<string, number>>({})
   const [scanGuide, setScanGuide] = useState(false)
 
+  useEffect(() => () => {
+    for (const timer of Object.values(barcodeLookupTimers.current)) window.clearTimeout(timer)
+    barcodeLookupTimers.current = {}
+  }, [])
+
   type RowField = 'name' | 'sku' | 'barcode' | 'qty' | 'purchase' | 'retail'
   const rowNameRefs = useRef<(HTMLInputElement | null)[]>([])
   const skuRefs = useRef<(HTMLInputElement | null)[]>([])
@@ -792,9 +885,9 @@ export default function InvoiceFormPage() {
     }, 0)
   }
 
-  function raiseInvoiceLineProblem(rowKey: string, message: string) {
-    const index = items.findIndex((candidate) => candidate.client_key === rowKey)
-    const item = index >= 0 ? items[index] : null
+  function raiseInvoiceLineProblem(rowKey: string, message: string, fallbackItem?: LineItem, field: RowField = 'sku') {
+    const currentItems = itemsRef.current
+    const item = currentItems.find((candidate) => candidate.client_key === rowKey) ?? fallbackItem ?? null
     setProblemLineKey(rowKey)
     if (item) {
       setReplaceLineKey(rowKey)
@@ -803,10 +896,11 @@ export default function InvoiceFormPage() {
     }
     toast.error(message)
     window.setTimeout(() => {
+      const index = itemsRef.current.findIndex((candidate) => candidate.client_key === rowKey)
       if (index >= 0) {
-        const el = skuRefs.current[index] ?? rowNameRefs.current[index]
+        const el = refsForField(field).current[index] ?? rowNameRefs.current[index]
         el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-        focusRowField(index, 'sku')
+        focusRowField(index, field)
       }
     }, 0)
   }
@@ -879,6 +973,7 @@ export default function InvoiceFormPage() {
       if (current.product_id === match.id && !current.is_new && normalizeBarcodeValue(current.barcode) === code) return
       setItems((prev) => prev.map((item) => {
         if (item.client_key !== rowKey) return item
+        if (normalizeBarcodeValue(item.barcode) !== code) return item
         return bindExistingProductToItem({ ...item, barcode: code }, match)
       }))
       toast.success(`Підтягнуто з бази: ${match.name}`)
@@ -1101,6 +1196,7 @@ export default function InvoiceFormPage() {
   }
 
   async function confirmInvoiceImport() {
+    if (resolvingImportedProducts) return
     if (invoiceImportMapping.name == null && invoiceImportMapping.sku == null && invoiceImportMapping.barcode == null) {
       toast.error('Вкажіть хоча б колонку назви, артикула або штрихкоду')
       return
@@ -1113,15 +1209,27 @@ export default function InvoiceFormPage() {
       toast.warning('Після фільтрації не залишилось товарних рядків. Перевірте рядок початку і колонки.')
       return
     }
-    const resolved = await resolveExistingProductsForItems(invoiceImportPreview.items)
-    appendLineItems(resolved.items)
-    toast.success(`Імпортовано ${resolved.items.length} товарів${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}${invoiceImportPreview.skipped ? `, пропущено ${invoiceImportPreview.skipped} зайвих рядків` : ''}`)
-    setInvoiceImportModal(false)
-    setInvoiceImportRows([])
-    setInvoiceImportFileName('')
+    const importItems = invoiceImportPreview.items
+    setResolvingImportedProducts(true)
+    try {
+      const resolved = await resolveExistingProductsForItems(importItems)
+      appendLineItems(resolved.items)
+      toast.success(`Імпортовано ${resolved.items.length} товарів${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}${invoiceImportPreview.skipped ? `, пропущено ${invoiceImportPreview.skipped} зайвих рядків` : ''}`)
+    } catch (error) {
+      const matchError = error instanceof InvoiceImportMatchError
+        ? error
+        : new InvoiceImportMatchError(importItems[0], error)
+      appendLineItems(importItems)
+      raiseInvoiceLineProblem(matchError.item.client_key, matchError.message, matchError.item)
+    } finally {
+      setResolvingImportedProducts(false)
+      setInvoiceImportModal(false)
+      setInvoiceImportRows([])
+      setInvoiceImportFileName('')
+    }
   }
   async function handleClipboardPaste() {
-    if (!clipboardText.trim()) return
+    if (!clipboardText.trim() || resolvingImportedProducts) return
     const lines = clipboardText.split('\n').filter(line => line.trim())
     const newItems: LineItem[] = []
     
@@ -1138,10 +1246,11 @@ export default function InvoiceFormPage() {
       const retail = parseMoneyToKopecks(cols[4])
       const bin = cols[5]?.trim() || null
 
+      const clientKey = makeLineKey()
       newItems.push({
-        client_key: makeLineKey(),
+        client_key: clientKey,
         product_name: name || `Товар (${sku})`,
-        sku: sku || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10)}`,
+        sku: sku || makeAutoSku(clientKey),
         qty,
         purchase_price: purchase,
         retail_price: retail,
@@ -1154,10 +1263,21 @@ export default function InvoiceFormPage() {
     })
     
     if (newItems.length > 0) {
-      const resolved = await resolveExistingProductsForItems(newItems)
-      appendLineItems(resolved.items)
-      toast.success(`Імпортовано ${resolved.items.length} товарів з буфера${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}`)
-      setClipboardText('')
+      setResolvingImportedProducts(true)
+      try {
+        const resolved = await resolveExistingProductsForItems(newItems)
+        appendLineItems(resolved.items)
+        toast.success(`Імпортовано ${resolved.items.length} товарів з буфера${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}`)
+      } catch (error) {
+        const matchError = error instanceof InvoiceImportMatchError
+          ? error
+          : new InvoiceImportMatchError(newItems[0], error)
+        appendLineItems(newItems)
+        raiseInvoiceLineProblem(matchError.item.client_key, matchError.message, matchError.item)
+      } finally {
+        setResolvingImportedProducts(false)
+        setClipboardText('')
+      }
     } else {
       toast.error('Не вдалося розпарсити буфер. Скопіюйте таблицю з Excel.')
     }
@@ -1378,19 +1498,36 @@ export default function InvoiceFormPage() {
     const fromCache = (item: LineItem) => {
       const sku = (item.sku || '').trim()
       const barcode = normalizeBarcodeValue(item.barcode)
-      return (sku ? cache.get(`sku:${normalizeSkuValue(sku)}`) : null) ?? (barcode ? cache.get(`barcode:${barcode}`) : null) ?? null
+      return resolveCachedInvoiceProduct(
+        cache,
+        sku ? normalizeSkuValue(sku) : null,
+        barcode,
+        item.product_name,
+      )
     }
     const result: LineItem[] = []
     let matched = 0
-    for (const item of rawItems) {
-      const cached = fromCache(item)
-      const product = cached ?? await findExistingProductForItem(item)
-      if (product) {
-        remember(product)
-        matched += 1
-        result.push(bindExistingProductToItem(item, product))
-      } else {
-        result.push(item)
+    const batchSize = 8
+    for (let offset = 0; offset < rawItems.length; offset += batchSize) {
+      const batch = rawItems.slice(offset, offset + batchSize)
+      const products = await Promise.all(batch.map(async (item) => {
+        try {
+          const cached = fromCache(item)
+          return cached ?? await findExistingProductForItem(item)
+        } catch (error) {
+          throw new InvoiceImportMatchError(item, error)
+        }
+      }))
+      for (let index = 0; index < batch.length; index += 1) {
+        const item = batch[index]
+        const product = products[index]
+        if (product) {
+          remember(product)
+          matched += 1
+          result.push(bindExistingProductToItem(item, product))
+        } else {
+          result.push(item)
+        }
       }
     }
     return { items: result, matched }
@@ -1406,36 +1543,43 @@ export default function InvoiceFormPage() {
       if (product && !matches.some((candidate) => candidate.id === product.id)) matches.push(product)
     }
 
-    if (barcodeTrim) {
-      const localByBarcode = await desktopBridge()?.catalog.findByBarcode?.(barcodeTrim)
+    const resolveIdentifierMatch = (): Product | null => {
+      const unique = [...new Map(matches.map((product) => [product.id, product])).values()]
+      if (unique.length > 1) {
+        throw new Error(`У рядку «${item.product_name || skuTrim || barcodeTrim}» артикул і штрихкод належать різним товарам. Перевірте цей рядок.`)
+      }
+      return unique[0] ?? null
+    }
+
+    const localCatalog = desktopBridge()?.catalog
+    if (localCatalog) {
+      const [localByBarcode, localBySku] = await Promise.all([
+        barcodeTrim ? localCatalog.findByBarcode(barcodeTrim) : Promise.resolve(null),
+        skuTrim && localCatalog.findBySku ? localCatalog.findBySku(skuTrim) : Promise.resolve(null),
+      ])
       if (localByBarcode) pushMatch(desktopProductToProduct(localByBarcode))
-    }
-
-    if (skuTrim) {
-      const localBySku = await desktopBridge()?.catalog.findBySku?.(skuTrim)
       if (localBySku) pushMatch(desktopProductToProduct(localBySku))
-
-      const existing = await productApi.list({ search: skuTrim, per_page: 30 })
+      const identifierMatch = resolveIdentifierMatch()
+      if (identifierMatch) return identifierMatch
+    } else {
+      const [skuResult, barcodeResult] = await Promise.all([
+        skuTrim ? productApi.list({ search: skuTrim, per_page: 30 }) : Promise.resolve(null),
+        barcodeTrim ? productApi.list({ search: barcodeTrim, per_page: 30 }) : Promise.resolve(null),
+      ])
       const normalizedSku = normalizeSkuValue(skuTrim)
-      const match = existing.data.find((p) => normalizeSkuValue(p.sku || '') === normalizedSku)
-      pushMatch(match)
+      for (const product of skuResult?.data ?? []) {
+        if (normalizeSkuValue(product.sku || '') === normalizedSku) pushMatch(product)
+      }
+      for (const product of barcodeResult?.data ?? []) {
+        const primary = normalizeBarcodeValue(product.barcode)
+        const additional = Array.isArray(product.additional_barcodes)
+          ? product.additional_barcodes.map(normalizeBarcodeValue)
+          : []
+        if (primary === barcodeTrim || additional.includes(barcodeTrim)) pushMatch(product)
+      }
+      const identifierMatch = resolveIdentifierMatch()
+      if (identifierMatch) return identifierMatch
     }
-
-    if (barcodeTrim) {
-      const existing = await productApi.list({ search: barcodeTrim, per_page: 30 })
-      const match = existing.data.find((p) => {
-        const primary = normalizeBarcodeValue(p.barcode)
-        const additional = Array.isArray(p.additional_barcodes) ? p.additional_barcodes.map(normalizeBarcodeValue) : []
-        return primary === barcodeTrim || additional.includes(barcodeTrim)
-      })
-      pushMatch(match)
-    }
-
-    const uniqueExactMatches = [...new Map(matches.map((p) => [p.id, p])).values()]
-    if (uniqueExactMatches.length > 1) {
-      throw new Error(`У рядку «${item.product_name || skuTrim || barcodeTrim}» артикул і штрихкод належать різним товарам. Перевірте цей рядок.`)
-    }
-    if (uniqueExactMatches.length === 1) return uniqueExactMatches[0]
 
     if (nameTrim.length >= 2) {
       const existing = await productApi.list({ search: nameTrim, per_page: 50 })
@@ -1445,6 +1589,9 @@ export default function InvoiceFormPage() {
       )
       const uniqueExactMatches = [...new Map(exactMatches.map((product) => [product.id, product])).values()]
       if (uniqueExactMatches.length === 1) return uniqueExactMatches[0]
+      if (uniqueExactMatches.length > 1) {
+        throw new Error(`Повна назва «${nameTrim}» збігається з кількома товарами. Виберіть правильний товар вручну.`)
+      }
     }
 
     return null
@@ -1453,14 +1600,28 @@ export default function InvoiceFormPage() {
     e.preventDefault()
     if (items.length === 0) { toast.error('Додайте хоча б один товар'); return }
     if (!supplierId) { toast.error('Оберіть постачальника'); return }
+    if (invoiceSubmitRef.current) return
 
+    invoiceSubmitRef.current = true
     setSaving(true)
     try {
+      // Перевіряємо касову зміну до створення нових карток товарів. Інакше при
+      // відмові оплати накладна не створювалась, а її товари вже лишались у базі.
+      const paidKopecks = !isEdit ? parseMoneyToKopecks(paidAmount) : 0
+      const shift = !isEdit && paidKopecks > 0 && fundSource === 'cashbox'
+        ? await shiftApi.current().catch(() => null)
+        : null
+      const shiftId = (shift as any)?.data?.id ?? null
+      if (!isEdit && paidKopecks > 0 && fundSource === 'cashbox' && !shiftId) {
+        toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
+        return
+      }
+
       // 1. Create missing products first. Робимо послідовно, щоб два однакові
       // рядки з імпорту/телефона не створювали товар паралельно і не ловили duplicate.
       const productCache = new Map<string, Product>()
 
-      function rememberProduct(product: Product) {
+      const rememberProduct = (product: Product) => {
         const sku = (product.sku || '').trim()
         const barcode = normalizeBarcodeValue(product.barcode)
         if (sku) productCache.set(`sku:${normalizeSkuValue(sku)}`, product)
@@ -1471,14 +1632,17 @@ export default function InvoiceFormPage() {
         }
       }
 
-      function cachedProductForItem(item: LineItem): Product | null {
+      const cachedProductForItem = (item: LineItem): Product | null => {
         const sku = (item.sku || '').trim()
         const barcode = normalizeBarcodeValue(item.barcode)
-        return (sku ? productCache.get(`sku:${normalizeSkuValue(sku)}`) : null)
-          ?? (barcode ? productCache.get(`barcode:${barcode}`) : null)
-          ?? null
+        return resolveCachedInvoiceProduct(
+          productCache,
+          sku ? normalizeSkuValue(sku) : null,
+          barcode,
+          item.product_name,
+        )
       }
-      function bindProductToItem(item: LineItem, product: Product): LineItem {
+      const bindProductToItem = (item: LineItem, product: Product): LineItem => {
         return bindExistingProductToItem(item, product)
       }
 
@@ -1497,7 +1661,16 @@ export default function InvoiceFormPage() {
         }
         if (exactMatch) {
           rememberProduct(exactMatch)
-          resolvedItems.push(bindProductToItem(item, exactMatch))
+          const boundItem = bindProductToItem(item, exactMatch)
+          // Для вже прив'язаного рядка не стираємо дані, які користувач щойно
+          // відредагував у накладній. Для нового імпортованого рядка картка з
+          // бази, як і раніше, лишається авторитетною.
+          if (item.product_id === exactMatch.id && !item.is_new) {
+            boundItem.product_name = item.product_name.trim() || exactMatch.name
+            if (item.sku.trim()) boundItem.sku = item.sku.trim()
+            if (normalizeBarcodeValue(item.barcode)) boundItem.barcode = normalizeBarcodeValue(item.barcode)
+          }
+          resolvedItems.push(boundItem)
           continue
         }
 
@@ -1506,7 +1679,14 @@ export default function InvoiceFormPage() {
           continue
         }
 
-        const cached = cachedProductForItem(item)
+        let cached: Product | null = null
+        try {
+          cached = cachedProductForItem(item)
+        } catch (lineErr) {
+          const message = lineErr instanceof Error ? lineErr.message : 'У цьому рядку конфлікт артикула або штрихкоду'
+          raiseInvoiceLineProblem(item.client_key, message)
+          throw makeInvoiceLineProblemError()
+        }
         if (cached) {
           resolvedItems.push(bindProductToItem(item, cached))
           continue
@@ -1515,7 +1695,7 @@ export default function InvoiceFormPage() {
         // Бракує даних — не блокуємо збереження/проведення: підставляємо авто-артикул/назву
         // (товар створюється з плейсхолдером, який можна допиляти пізніше в картці).
         const skuTrim = (item.sku || '').trim()
-        const genSku  = skuTrim || `AUTO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 100)}`
+        const genSku = skuTrim || makeAutoSku(item.client_key)
         const genName = (item.product_name || '').trim() || `Товар ${genSku}`
 
         const form: ProductFormData = {
@@ -1552,6 +1732,45 @@ export default function InvoiceFormPage() {
         }
       }
 
+      // Зберігаємо відредаговані дані карток ДО створення накладної. Так помилка
+      // артикула/штрихкоду не губиться після створення документа і касир може
+      // одразу виправити або замінити саме проблемний рядок без дубля накладної.
+      if (!isEdit) {
+        const productUpdateResults = await Promise.allSettled(
+          resolvedItems.map(async (item) => {
+            const patch: Partial<ProductFormData> = {
+              name: item.product_name,
+              category_id: item.category_id ?? '',
+              storage_bin: item.storage_bin ?? '',
+              is_active: true,
+            }
+            const sku = item.sku.trim()
+            const barcode = normalizeBarcodeValue(item.barcode)
+            if (sku) patch.sku = sku
+            if (barcode) patch.barcode = barcode
+            if (item.retail_price > 0) patch.retail_price = kopecksForForm(item.retail_price)
+            if (item.photo_url) patch.photo_url = item.photo_url
+            await productApi.update(item.product_id!, patch, { silent: true })
+          }),
+        )
+        const failedIndex = productUpdateResults.findIndex((result) => result.status === 'rejected')
+        if (failedIndex >= 0) {
+          const failedItem = resolvedItems[failedIndex]
+          const failedResult = productUpdateResults[failedIndex] as PromiseRejectedResult
+          const rawMessage = failedResult.reason instanceof Error ? failedResult.reason.message : ''
+          const field: RowField = /штрихкод|barcode/i.test(rawMessage) ? 'barcode' : 'sku'
+          const message = isDuplicateProductError(failedResult.reason)
+            ? duplicateProductMessage(failedResult.reason, failedItem.product_name)
+            : /foreign key/i.test(rawMessage)
+              ? `«${failedItem.product_name}»: не вдалося зберегти картку через некоректну категорію. Виберіть категорію ще раз.`
+              : `«${failedItem.product_name}»: не вдалося зберегти артикул, штрихкод або інші дані товару. Перевірте рядок і повторіть.`
+          itemsRef.current = resolvedItems
+          setItems(resolvedItems)
+          raiseInvoiceLineProblem(failedItem.client_key, message, failedItem, field)
+          throw makeInvoiceLineProblemError()
+        }
+      }
+
       const body = {
         supplier_id: supplierId,
         invoice_number: invoiceNumber.trim() || null,
@@ -1567,15 +1786,6 @@ export default function InvoiceFormPage() {
         await supplierApi.updateInvoice(id!, { invoice_number: body.invoice_number, notes: body.notes })
         toast.success('Накладну оновлено')
       } else {
-        const paidKopecks = parseMoneyToKopecks(paidAmount)
-        const shift = paidKopecks > 0 && fundSource === 'cashbox'
-          ? await shiftApi.current().catch(() => null)
-          : null
-        const shiftId = (shift as any)?.data?.id ?? null
-        if (paidKopecks > 0 && fundSource === 'cashbox' && !shiftId) {
-          toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
-          return
-        }
         const created = await supplierApi.createInvoice({
           ...body,
           paid_amount: paidKopecks,
@@ -1583,44 +1793,6 @@ export default function InvoiceFormPage() {
           fund_source: paidKopecks > 0 ? fundSource : null,
           shift_id: shiftId,
         })
-
-        // Оновлюємо комірки, роздрібні ціни та назву/артикул (якщо міняли в таблиці)
-        const results = await Promise.allSettled(
-          resolvedItems.map(async (item) => {
-            const patch: Partial<ProductFormData> = {
-              name: item.product_name,
-              category_id: item.category_id ?? '',
-              storage_bin: item.storage_bin ?? '',
-              is_active: true,
-            }
-            if (item.retail_price > 0) patch.retail_price = kopecksForForm(item.retail_price)
-            if (item.photo_url) patch.photo_url = item.photo_url   // фото з накладної → у товар при проведенні
-            try {
-              await productApi.update(item.product_id!, patch, { silent: true })
-            } catch {
-              // Накладна вже створена. Оновлення назви/комірки/ціни не повинно
-              // ламати проведення через конфлікт у карточці товару.
-            }
-          })
-        )
-
-        // Запис штрихкодів у товари (окремим проходом — щоб конфлікт ШК не зривав
-        // оновлення назви/комірки/ціни; бекенд стереже унікальність ШК).
-        const barcodeConflicts: string[] = []
-        await Promise.all(resolvedItems.map(async (item) => {
-          const bc = (item.barcode ?? '').toString().trim()
-          if (!item.product_id || !bc) return
-          try {
-            await productApi.update(item.product_id, { barcode: bc } as Partial<ProductFormData>, { silent: true })
-          } catch (err: any) {
-            if (err?.status === 409 || /вже у товара/.test(String(err?.message || ''))) {
-              barcodeConflicts.push(item.product_name)
-            }
-          }
-        }))
-        if (barcodeConflicts.length > 0) {
-          toast.warning(`Штрихкод не збережено (вже зайнятий) для: ${barcodeConflicts.join(', ')}`)
-        }
 
         // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
         if (postImmediately && created?.data?.id) {
@@ -1630,12 +1802,11 @@ export default function InvoiceFormPage() {
           } catch {
             toast.warning('Накладну створено, але не вдалось провести — проведіть вручну зі списку')
           }
-        } else if (results.some((r) => r.status === 'rejected')) {
-          toast.warning('Накладну створено, але не всі комірки/ціни товарів оновились')
         } else {
           toast.success('Накладну створено')
         }
       }
+      invoiceDraftPersistenceDisabledRef.current = true
       clearSupplyInvoiceDraft(invoiceDraftKey)
       navigate(`/suppliers/invoices`)
     } catch (err) {
@@ -1648,11 +1819,13 @@ export default function InvoiceFormPage() {
         toast.error(err instanceof Error ? err.message : 'Помилка збереження накладної')
       }
     } finally {
+      invoiceSubmitRef.current = false
       setSaving(false)
     }
   }
 
   function closeInvoiceForm() {
+    invoiceDraftPersistenceDisabledRef.current = true
     clearSupplyInvoiceDraft(invoiceDraftKey)
     navigate('/suppliers/invoices')
   }
@@ -1740,7 +1913,9 @@ export default function InvoiceFormPage() {
                 <textarea value={clipboardText} onChange={(e) => setClipboardText(e.target.value)} rows={4}
                   placeholder="Вставте скопійовану таблицю з Excel/Google Sheets сюди. Колонка 1: Артикул, Колонка 2: Назва, Колонка 3: К-сть, Колонка 4: Закупка..."
                   className="w-full border border-gray-200 rounded-lg p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 resize-none" />
-                <Button type="button" onClick={handleClipboardPaste}>Імпортувати дані</Button>
+                <Button type="button" onClick={handleClipboardPaste} loading={resolvingImportedProducts} disabled={resolvingImportedProducts}>
+                  Імпортувати дані
+                </Button>
               </div>
             )}
 
@@ -2457,7 +2632,12 @@ export default function InvoiceFormPage() {
 
           <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-gray-100">
             <Button type="button" variant="secondary" onClick={() => setInvoiceImportModal(false)}>Скасувати</Button>
-            <Button type="button" onClick={confirmInvoiceImport} disabled={invoiceImportPreview.items.length === 0}>
+            <Button
+              type="button"
+              onClick={confirmInvoiceImport}
+              loading={resolvingImportedProducts}
+              disabled={invoiceImportPreview.items.length === 0 || resolvingImportedProducts}
+            >
               Додати {invoiceImportPreview.items.length} позицій у накладну
             </Button>
           </div>

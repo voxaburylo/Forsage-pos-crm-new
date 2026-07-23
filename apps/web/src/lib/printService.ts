@@ -9,6 +9,8 @@ export interface PrintOptions {
   /** Друкувати на папері за налаштуванням драйвера (не задавати pageSize) —
    * для етикеткового HL80, який відхиляє власний pageSize («Invalid printer settings»). */
   useDriverPaper?: boolean;
+  /** Для етикеток: не скидати точний розмір сторінки у fallback-спробах драйвера. */
+  strictPageSize?: boolean;
   cleanupDelayMs?: number;
   readyDelayMs?: number;
 }
@@ -130,6 +132,35 @@ export class PrintService {
     }
     return true;
   }
+  /**
+   * Awaitable desktop-native printing for dialogs that must stay open when
+   * Windows rejects a job. No automatic fallback is started, so one click can
+   * never create a second hidden print job.
+   */
+  static async printHtmlAndWait(htmlContent: string, options: PrintOptions = {}): Promise<void> {
+    const pageSizeMm = options.pageSizeMm;
+    const desktopPrint = typeof window !== "undefined" ? window.forsageDesktop?.print : undefined;
+
+    if (options.preferDesktopNative && pageSizeMm && desktopPrint) {
+      PrintService.beginPrint();
+      try {
+        await desktopPrint.html(htmlContent, {
+          title: options.title,
+          widthMm: pageSizeMm.width,
+          heightMm: pageSizeMm.height,
+          silent: false,
+          showPreviewWindow: options.showDesktopPreview ?? false,
+          useDriverPaper: options.useDriverPaper ?? false,
+          strictPageSize: options.strictPageSize ?? false,
+        });
+      } finally {
+        PrintService.endPrint();
+      }
+      return;
+    }
+
+    PrintService.printHtml(htmlContent, { ...options, preferDesktopNative: false });
+  }
 
   static printHtml(htmlContent: string, options: PrintOptions = {}): void {
     const {
@@ -140,6 +171,7 @@ export class PrintService {
       preferDesktopNative = false,
       showDesktopPreview = false,
       useDriverPaper = false,
+      strictPageSize = false,
       cleanupDelayMs = 30000,
       readyDelayMs = 100,
     } = options;
@@ -154,27 +186,13 @@ export class PrintService {
         silent: false,
         showPreviewWindow: showDesktopPreview,
         useDriverPaper,
+        strictPageSize,
       }).then(() => {
         PrintService.endPrint();
       }).catch((error: unknown) => {
         console.error("Failed to print document through desktop bridge", error);
         PrintService.endPrint();
-        import("@/components/ui/Toast").then(({ toast }) => {
-          toast.error(error instanceof Error ? error.message : "Помилка локального друку");
-        });
-        window.setTimeout(() => {
-          try {
-            PrintService.printHtml(htmlContent, {
-              ...options,
-              preferDesktopNative: false,
-            });
-          } catch (fallbackError) {
-            console.error("Failed to open browser print fallback", fallbackError);
-            import("@/components/ui/Toast").then(({ toast }) => {
-              toast.error(fallbackError instanceof Error ? fallbackError.message : "Помилка друку");
-            });
-          }
-        }, 50);
+        PrintService.notifyPrintError(error, "Помилка локального друку");
       });
       return;
     }

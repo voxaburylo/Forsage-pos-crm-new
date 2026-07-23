@@ -54,6 +54,44 @@ async function tryOfflineLogin(email: string, password: string): Promise<import(
 
 const ONLINE_LOGIN_TIMEOUT_MS = 8_000
 
+const DESKTOP_SERVER_RETRY_MS = [5_000, 15_000, 60_000]
+const DESKTOP_SERVER_RETRY_INTERVAL_MS = 5 * 60_000
+let desktopServerLoginGeneration = 0
+
+async function connectDesktopToServer(
+  email: string,
+  password: string,
+  attempt: number,
+  generation: number,
+): Promise<void> {
+  if (generation !== desktopServerLoginGeneration) return
+
+  const retry = () => {
+    const delay = DESKTOP_SERVER_RETRY_MS[attempt] ?? DESKTOP_SERVER_RETRY_INTERVAL_MS
+    window.setTimeout(() => {
+      void connectDesktopToServer(email, password, attempt + 1, generation)
+    }, delay)
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) { retry(); return }
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (generation !== desktopServerLoginGeneration) return
+    if (error) { if (isNetworkFailure(error)) retry(); return }
+    if (!data.session) { retry(); return }
+    await cacheCredential(email, password, data.session).catch(() => {})
+    saveLocalDesktopSession(data.session)
+  } catch {
+    // Локальний вхід уже успішний: повторюємо серверний вхід у фоні,
+    // не блокуючи касу через нестабільну мережу.
+    retry()
+  }
+}
+
+function startDesktopServerConnection(email: string, password: string): void {
+  const generation = ++desktopServerLoginGeneration
+  void connectDesktopToServer(email, password, 0, generation)
+}
+
 function createDesktopSession(user: { id: string; email: string; phone?: string | null; full_name?: string | null; role?: string | null; tenant_id?: string | null }): Session {
   const now = Math.floor(Date.now() / 1000)
   return {
@@ -64,7 +102,13 @@ function createDesktopSession(user: { id: string; email: string; phone?: string 
     expires_at: now + 60 * 60 * 24 * 365,
     user: {
       id: user.id,
-      app_metadata: { provider: 'desktop-local', providers: ['desktop-local'], tenant_id: user.tenant_id ?? undefined },
+      app_metadata: {
+        provider: 'desktop-local',
+        providers: ['desktop-local'],
+        role: user.role ?? 'cashier',
+        tenant_id: user.tenant_id ?? undefined,
+        is_active: true,
+      },
       user_metadata: {
         role: user.role ?? 'cashier',
         full_name: user.full_name ?? '',
@@ -106,6 +150,9 @@ export async function signIn(phone: string, password: string) {
         const session = createDesktopSession(localUser)
         saveLocalDesktopSession(session)
         useAuthStore.getState().setOfflineSession(session)
+        // Локальний пароль перевірено — відкриваємо програму одразу. Паралельно
+        // отримуємо справжню Supabase-сесію для синхронізації та веб-розділів.
+        startDesktopServerConnection(email, password)
         return session
       } catch (localError) {
         const cached = await verifyOfflineCredential(email, password)
@@ -163,6 +210,9 @@ export async function signIn(phone: string, password: string) {
 }
 
 export async function signOut() {
+  // Відкладена спроба від попереднього локального входу не повинна знову
+  // авторизувати користувача після виходу або зміни касира.
+  desktopServerLoginGeneration += 1
   clearLocalDesktopSession()
   await supabase.auth.signOut()
 }

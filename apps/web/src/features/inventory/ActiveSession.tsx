@@ -48,6 +48,8 @@ interface InventoryItem {
   product: ProductInfo | null
 }
 
+const EMPTY_INVENTORY_ITEMS: InventoryItem[] = []
+
 interface CountEntry {
   id: string
   product_id: string
@@ -113,6 +115,8 @@ interface InventoryLocalDraft {
   savedAt: string
 }
 
+type InventoryDraftPayload = Omit<InventoryLocalDraft, 'savedAt'>
+
 function inventoryDraftKey(sessionId: string) {
   return `forsage:inventory:${sessionId}:active-draft:v1`
 }
@@ -138,13 +142,34 @@ function loadInventoryLocalDraft(sessionId: string): InventoryLocalDraft | null 
   }
 }
 
-function saveInventoryLocalDraft(sessionId: string, draft: Omit<InventoryLocalDraft, 'savedAt'>) {
-  localStorage.setItem(inventoryDraftKey(sessionId), JSON.stringify({ ...draft, savedAt: new Date().toISOString() }))
+function saveInventoryLocalDraft(sessionId: string, draft: InventoryDraftPayload) {
+  try {
+    localStorage.setItem(inventoryDraftKey(sessionId), JSON.stringify({ ...draft, savedAt: new Date().toISOString() }))
+  } catch {
+    // Перехід між сторінками не повинен падати, якщо сховище браузера недоступне або переповнене.
+  }
 }
 
 function clearInventoryLocalDraft(sessionId: string) {
-  localStorage.removeItem(inventoryDraftKey(sessionId))
+  try {
+    localStorage.removeItem(inventoryDraftKey(sessionId))
+  } catch {
+    // У приватному режимі/при блокуванні сховища очищення може бути недоступним.
+  }
 }
+function persistInventoryLocalDraft(sessionId: string, draft: InventoryDraftPayload) {
+  const quickChanged = JSON.stringify(draft.quickProduct) !== JSON.stringify(emptyQuickProduct)
+  const hasDraft = Boolean(
+    draft.query.trim() || draft.selected || draft.qty !== '1' || draft.quickCreateOpen || quickChanged ||
+    draft.priceStatus !== 'unchecked' || draft.observedPrice.trim() || draft.applyNewPrice !== true,
+  )
+  if (!hasDraft) {
+    clearInventoryLocalDraft(sessionId)
+    return
+  }
+  saveInventoryLocalDraft(sessionId, draft)
+}
+
 
 function normalizeScanCode(value: string): string {
   return Array.from(value)
@@ -166,7 +191,7 @@ export default function ActiveSession() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const authSession = useAuthStore((state) => state.session)
-  const role = (authSession?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (authSession?.user?.app_metadata?.role as string) ?? 'cashier'
   const canComplete = ['owner', 'admin'].includes(role)
   const desktopRuntime = Boolean(desktopBridge())
 
@@ -204,9 +229,43 @@ export default function ActiveSession() {
   const scanQueue = useRef<string[]>([])
   const scanQueueRunning = useRef(false)
   const inventoryDraftReadyRef = useRef(false)
+  const inventoryDraftPersistenceDisabledRef = useRef(false)
+  const inventoryCompletedRef = useRef(false)
+  const inventoryDraftSnapshotRef = useRef<InventoryDraftPayload>({
+    query: '',
+    selected: null,
+    qty: '1',
+    quickCreateOpen: false,
+    quickProduct: emptyQuickProduct,
+    priceStatus: 'unchecked',
+    observedPrice: '',
+    applyNewPrice: true,
+  })
+
+  inventoryDraftSnapshotRef.current = {
+    query,
+    selected,
+    qty,
+    quickCreateOpen,
+    quickProduct,
+    priceStatus,
+    observedPrice,
+    applyNewPrice,
+  }
+  const isCurrentSessionCompleted = Boolean(session && session.id === id && session.status === 'completed')
+  inventoryCompletedRef.current = isCurrentSessionCompleted
+
+
+  const sessionItems = session?.items ?? EMPTY_INVENTORY_ITEMS
+  const countedRows = useMemo(
+    () => [...sessionItems]
+      .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? '')),
+    [sessionItems],
+  )
 
   useEffect(() => {
     inventoryDraftReadyRef.current = false
+    inventoryDraftPersistenceDisabledRef.current = false
     if (!id) return
     const draft = loadInventoryLocalDraft(id)
     if (draft) {
@@ -225,33 +284,40 @@ export default function ActiveSession() {
 
   useEffect(() => {
     if (!id || !inventoryDraftReadyRef.current) return
-    if (session?.status === 'completed') {
+    if (session && session.id === id && session.status === 'completed') {
       clearInventoryLocalDraft(id)
       return
     }
     const timer = window.setTimeout(() => {
-      const quickChanged = JSON.stringify(quickProduct) !== JSON.stringify(emptyQuickProduct)
-      const hasDraft = Boolean(
-        query.trim() || selected || qty !== '1' || quickCreateOpen || quickChanged ||
-        priceStatus !== 'unchecked' || observedPrice.trim() || applyNewPrice !== true,
-      )
-      if (!hasDraft) {
+      if (inventoryDraftPersistenceDisabledRef.current) return
+      persistInventoryLocalDraft(id, inventoryDraftSnapshotRef.current)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [id, session?.id, session?.status, query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice])
+
+  useEffect(() => {
+    if (!id) return
+
+    const flush = () => {
+      if (!inventoryDraftReadyRef.current || inventoryDraftPersistenceDisabledRef.current) return
+      if (inventoryCompletedRef.current) {
         clearInventoryLocalDraft(id)
         return
       }
-      saveInventoryLocalDraft(id, {
-        query,
-        selected,
-        qty,
-        quickCreateOpen,
-        quickProduct,
-        priceStatus,
-        observedPrice,
-        applyNewPrice,
-      })
-    }, 250)
-    return () => window.clearTimeout(timer)
-  }, [id, session?.status, query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice])
+      persistInventoryLocalDraft(id, inventoryDraftSnapshotRef.current)
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      flush()
+    }
+  }, [id])
   function money2(kopecks: number | undefined | null): string {
     return ((Number(kopecks) || 0) / 100).toFixed(2)
   }
@@ -331,7 +397,7 @@ export default function ActiveSession() {
     setPrintingLabels('confirm')
     try {
       const settings = await loadProductLabelSettings()
-      printLabels(settings as any, items as any, false)
+      await printLabels(settings as any, items as any, false)
       toast.success(`Відправлено етикеток: ${items.length}`)
       closeInventoryLabelModal()
     } catch (error) {
@@ -426,7 +492,7 @@ export default function ActiveSession() {
   async function removeItem(item: InventoryItem) {
     if (!id) return
     try {
-      await inventoryApi.setItemQty(id, item.id, 0, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+      await inventoryApi.removeItem(id, item.id, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
       setSelectedIds((prev) => {
         const next = new Set(prev)
         if (item.product?.id) next.delete(item.product.id)
@@ -599,23 +665,29 @@ export default function ActiveSession() {
     const value = query.trim()
     if (selected || value.length < 2 || /^\d{6,}$/.test(value)) {
       setSearchResults([])
+      setSearching(false)
       return
     }
+
+    let cancelled = false
+    setSearching(true)
     const timer = window.setTimeout(async () => {
-      setSearching(true)
       try {
         const { data } = await productApi.search(value, 12, {
           silent: true,
           timeoutMs: INVENTORY_READ_TIMEOUT_MS,
         })
-        setSearchResults(data as ProductInfo[])
+        if (!cancelled) setSearchResults(data as ProductInfo[])
       } catch {
-        setSearchResults([])
+        if (!cancelled) setSearchResults([])
       } finally {
-        setSearching(false)
+        if (!cancelled) setSearching(false)
       }
     }, 250)
-    return () => window.clearTimeout(timer)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [query, selected])
 
   const progress = useMemo(() => {
@@ -625,14 +697,8 @@ export default function ActiveSession() {
   }, [session?.summary])
 
   // Рядки списку — товари, які вже додали (пораховані), найновіші зверху.
-  const countedRows = useMemo(
-    () => (session?.items ?? [])
-      .filter((it) => (it.counted_stock ?? 0) > 0)
-      .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? '')),
-    [session?.items],
-  )
   const totalLabelCopies = useMemo(() => {
-    const loadedCopies = countedRows.reduce((sum, item) => sum + labelCopiesForItem(item), 0)
+    const loadedCopies = countedRows.filter((item) => item.counted_stock > 0).reduce((sum, item) => sum + labelCopiesForItem(item), 0)
     const summaryCopies = Math.ceil(Number(session?.summary?.total_counted_units) || 0)
     return Math.max(loadedCopies, summaryCopies)
   }, [countedRows, session?.summary?.total_counted_units])
@@ -873,6 +939,8 @@ export default function ActiveSession() {
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       const updated = Number((response.data as any)?.items_updated ?? 0)
       toast.success(`Ревізію завершено. Оновлено ${Number.isFinite(updated) ? updated : 0} товарів.`)
+      inventoryDraftPersistenceDisabledRef.current = true
+      inventoryCompletedRef.current = true
       clearInventoryLocalDraft(id)
       navigate('/inventory')
     } catch (error) {

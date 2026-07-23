@@ -13,7 +13,7 @@ interface Props {
 
 export function CashReconciliationModal({ open, onClose }: Props) {
   const session = useAuthStore((s) => s.session)
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const isOwnerOrAdmin = role === 'owner' || role === 'admin'
 
   const [expected, setExpected] = useState(0)

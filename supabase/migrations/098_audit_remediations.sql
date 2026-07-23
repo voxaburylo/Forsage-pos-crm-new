@@ -26,23 +26,41 @@ CREATE OR REPLACE FUNCTION process_return(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $BODY$
 DECLARE
     v_return_id         UUID;
     v_item              JSONB;
+    v_sale_item_id      UUID;
+    v_product_id        UUID;
+    v_requested_product UUID;
+    v_requested_qty     NUMERIC(12,3);
     v_unit_price        INTEGER;
     v_total_refund      INTEGER := 0;
     v_already_returned  NUMERIC(12,3);
     v_orig_qty          NUMERIC(12,3);
     v_sale_status       VARCHAR(20);
+    v_sale_customer_id  UUID;
     v_restricted_count  BIGINT;
     v_woff_id           UUID;
     v_full_count        BIGINT;
     v_total_items       BIGINT;
     v_sale_number       VARCHAR(20);
 BEGIN
-    SELECT s.status, s.sale_number INTO v_sale_status, v_sale_number
-    FROM sales s WHERE s.id = p_sale_id
+    IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' OR jsonb_array_length(p_items) = 0 THEN
+        RAISE EXCEPTION 'INVALID_RETURN_ITEMS';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM jsonb_array_elements(p_items) AS e(item)
+        GROUP BY e.item->>'sale_item_id' HAVING COUNT(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'DUPLICATE_ITEM';
+    END IF;
+
+    SELECT s.status, s.sale_number, s.customer_id
+      INTO v_sale_status, v_sale_number, v_sale_customer_id
+    FROM sales s
+    WHERE s.id = p_sale_id AND s.tenant_id = p_tenant_id
     FOR UPDATE;
 
     IF NOT FOUND THEN
@@ -53,66 +71,100 @@ BEGIN
         RAISE EXCEPTION 'ALREADY_RETURNED';
     END IF;
 
+    IF p_customer_id IS NOT NULL AND p_customer_id IS DISTINCT FROM v_sale_customer_id THEN
+        RAISE EXCEPTION 'CUSTOMER_MISMATCH';
+    END IF;
     SELECT COUNT(*) INTO v_restricted_count
     FROM jsonb_array_elements(p_items) AS j(item)
-    JOIN products p ON p.id = (j.item->>'product_id')::UUID
-    JOIN categories c ON c.id = p.category_id AND c.name = 'Електроніка';
+    JOIN sale_items si
+      ON si.id = (j.item->>'sale_item_id')::UUID
+     AND si.sale_id = p_sale_id
+     AND si.tenant_id = p_tenant_id
+    JOIN products p ON p.id = si.product_id AND p.tenant_id = p_tenant_id
+    JOIN categories c
+      ON c.id = p.category_id AND c.tenant_id = p_tenant_id AND c.name = 'Електроніка';
 
     IF v_restricted_count > 0 THEN
         RAISE EXCEPTION 'CATEGORY_RESTRICTED';
     END IF;
 
     FOR v_item IN SELECT * FROM jsonb_array_elements(p_items) LOOP
-        SELECT si.unit_price, si.qty INTO v_unit_price, v_orig_qty
-        FROM sale_items si WHERE si.id = (v_item->>'sale_item_id')::UUID
-        FOR UPDATE;
+        BEGIN
+            v_sale_item_id := (v_item->>'sale_item_id')::UUID;
+            v_requested_qty := (v_item->>'quantity')::NUMERIC(12,3);
+            v_requested_product := CASE
+                WHEN NULLIF(v_item->>'product_id', '') IS NULL THEN NULL
+                ELSE (v_item->>'product_id')::UUID
+            END;
+        EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+            RAISE EXCEPTION 'INVALID_RETURN_ITEMS';
+        END;
+        IF v_requested_qty IS NULL OR v_requested_qty <= 0 THEN
+            RAISE EXCEPTION 'INVALID_RETURN_ITEMS';
+        END IF;
+
+        SELECT si.product_id, si.unit_price, si.qty
+          INTO v_product_id, v_unit_price, v_orig_qty
+        FROM sale_items si
+        JOIN products p ON p.id = si.product_id AND p.tenant_id = p_tenant_id
+        WHERE si.id = v_sale_item_id
+          AND si.sale_id = p_sale_id
+          AND si.tenant_id = p_tenant_id
+        FOR UPDATE OF si;
 
         IF NOT FOUND THEN
             RAISE EXCEPTION 'ITEM_NOT_FOUND';
         END IF;
+        IF v_requested_product IS NOT NULL AND v_requested_product <> v_product_id THEN
+            RAISE EXCEPTION 'PRODUCT_MISMATCH';
+        END IF;
 
         SELECT COALESCE(SUM(ri.quantity), 0)::NUMERIC(12,3) INTO v_already_returned
-        FROM return_items ri WHERE ri.sale_item_id = (v_item->>'sale_item_id')::UUID;
+        FROM return_items ri
+        WHERE ri.sale_item_id = v_sale_item_id AND ri.tenant_id = p_tenant_id;
 
-        IF (v_already_returned + (v_item->>'quantity')::NUMERIC) > v_orig_qty THEN
+        IF v_requested_qty > GREATEST(0, v_orig_qty - v_already_returned) THEN
             RAISE EXCEPTION 'DUPLICATE_RETURN';
         END IF;
 
-        v_total_refund := v_total_refund + ROUND(v_unit_price * (v_item->>'quantity')::NUMERIC)::INTEGER;
+        v_total_refund := v_total_refund + ROUND(v_unit_price * v_requested_qty)::INTEGER;
     END LOOP;
 
     INSERT INTO returns (
         tenant_id, sale_id, customer_id, return_type,
         reason, reason_note, refund_method, refund_kopecks,
-        refund_amount, stock_action, status, approved_by
+        refund_amount, stock_action, status, created_by, approved_by
     ) VALUES (
-        p_tenant_id, p_sale_id, p_customer_id, 'refund',
+        p_tenant_id, p_sale_id, v_sale_customer_id, 'refund',
         p_reason, p_reason_note, p_refund_method, v_total_refund,
-        v_total_refund, p_stock_action, 'completed', p_user_id
+        v_total_refund, p_stock_action, 'completed', p_user_id, p_user_id
     ) RETURNING id INTO v_return_id;
 
     FOR v_item IN SELECT * FROM jsonb_array_elements(p_items) LOOP
-        SELECT si.unit_price INTO v_unit_price
-        FROM sale_items si WHERE si.id = (v_item->>'sale_item_id')::UUID;
+        v_sale_item_id := (v_item->>'sale_item_id')::UUID;
+        v_requested_qty := (v_item->>'quantity')::NUMERIC(12,3);
+        SELECT si.product_id, si.unit_price INTO v_product_id, v_unit_price
+        FROM sale_items si
+        JOIN products p ON p.id = si.product_id AND p.tenant_id = p_tenant_id
+        WHERE si.id = v_sale_item_id
+          AND si.sale_id = p_sale_id
+          AND si.tenant_id = p_tenant_id;
 
         INSERT INTO return_items (
             tenant_id, return_id, product_id, sale_item_id,
             quantity, unit_price_kopecks, total_kopecks, condition
         ) VALUES (
-            p_tenant_id, v_return_id,
-            (v_item->>'product_id')::UUID,
-            (v_item->>'sale_item_id')::UUID,
-            (v_item->>'quantity')::NUMERIC(12,3),
-            v_unit_price,
-            ROUND(v_unit_price * (v_item->>'quantity')::NUMERIC)::INTEGER,
+            p_tenant_id, v_return_id, v_product_id, v_sale_item_id,
+            v_requested_qty, v_unit_price,
+            ROUND(v_unit_price * v_requested_qty)::INTEGER,
             COALESCE(v_item->>'condition', 'good')
         );
 
         IF p_stock_action = 'return_to_stock' THEN
             UPDATE products SET
-                qty_on_hand = qty_on_hand + (v_item->>'quantity')::NUMERIC,
+                qty_on_hand = qty_on_hand + v_requested_qty,
                 updated_at = NOW()
-            WHERE id = (v_item->>'product_id')::UUID;
+            WHERE id = v_product_id AND tenant_id = p_tenant_id;
         END IF;
     END LOOP;
 
@@ -126,36 +178,44 @@ BEGIN
         RETURNING id INTO v_woff_id;
 
         INSERT INTO inventory_writeoff_items (writeoff_id, product_id, qty)
-        SELECT v_woff_id, (item->>'product_id')::UUID, (item->>'quantity')::NUMERIC
-        FROM jsonb_array_elements(p_items) AS item;
+        SELECT v_woff_id, si.product_id, (e.item->>'quantity')::NUMERIC(12,3)
+        FROM jsonb_array_elements(p_items) AS e(item)
+        JOIN sale_items si
+          ON si.id = (e.item->>'sale_item_id')::UUID
+         AND si.sale_id = p_sale_id
+         AND si.tenant_id = p_tenant_id
+        JOIN products p
+          ON p.id = si.product_id AND p.tenant_id = p_tenant_id;
     END IF;
 
-    IF p_refund_method = 'debt_reduction' AND p_customer_id IS NOT NULL THEN
+    IF p_refund_method = 'debt_reduction' AND v_sale_customer_id IS NOT NULL THEN
         UPDATE customers SET
             debt_balance = GREATEST(0, debt_balance - v_total_refund),
             updated_at = NOW()
-        WHERE id = p_customer_id;
+        WHERE id = v_sale_customer_id AND tenant_id = p_tenant_id;
     END IF;
 
     SELECT COUNT(*) INTO v_total_items
-    FROM sale_items WHERE sale_id = p_sale_id;
+    FROM sale_items WHERE sale_id = p_sale_id AND tenant_id = p_tenant_id;
 
     SELECT COUNT(*) INTO v_full_count FROM (
         SELECT si.id
         FROM sale_items si
-        LEFT JOIN return_items ri ON ri.sale_item_id = si.id
+        LEFT JOIN return_items ri
+          ON ri.sale_item_id = si.id AND ri.tenant_id = p_tenant_id
         WHERE si.sale_id = p_sale_id
+          AND si.tenant_id = p_tenant_id
         GROUP BY si.id, si.qty
         HAVING COALESCE(SUM(ri.quantity), 0) >= si.qty
     ) fully;
 
     IF v_total_items > 0 AND v_full_count >= v_total_items THEN
         UPDATE sales SET status = 'returned', updated_at = NOW()
-        WHERE id = p_sale_id;
+        WHERE id = p_sale_id AND tenant_id = p_tenant_id;
     END IF;
 
     RETURN (SELECT row_to_json(r)::jsonb FROM (
-        SELECT * FROM returns WHERE id = v_return_id
+        SELECT * FROM returns WHERE id = v_return_id AND tenant_id = p_tenant_id
     ) r);
 END;
 $BODY$;

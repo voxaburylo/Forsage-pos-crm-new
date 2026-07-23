@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
@@ -19,9 +20,51 @@ function parseStoredString(valueJson: string | undefined): string | null {
     return null
   }
 }
+type OutboxCandidateRow = {
+  sequence: number
+  operation_id: string
+  tenant_id: string
+  device_id: string
+  aggregate_type: string
+  aggregate_id: string
+  operation_type: string
+  payload_json: string
+  created_at: string
+  attempts: number
+  last_error: string | null
+  next_attempt_at: string | null
+  status: 'pending' | 'failed'
+}
+
+function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
+  const prefix = row.tenant_id
+  const keys = new Set<string>([
+    `${prefix}:aggregate:${row.aggregate_type}:${row.aggregate_id}`,
+  ])
+  const addReference = (type: 'supplier' | 'product' | 'invoice', value: unknown) => {
+    if (typeof value === 'string' && value) keys.add(`${prefix}:reference:${type}:${value}`)
+  }
+
+  if (row.aggregate_type === 'supplier') addReference('supplier', row.aggregate_id)
+  if (row.aggregate_type === 'product') addReference('product', row.aggregate_id)
+  if (row.aggregate_type === 'supply_invoice') addReference('invoice', row.aggregate_id)
+
+  addReference('supplier', payload?.supplier_id)
+  addReference('supplier', payload?.primary_supplier_id)
+  addReference('supplier', payload?.duplicate_supplier_id)
+  addReference('supplier', payload?.import?.supplier_id)
+  addReference('product', payload?.product_id)
+  addReference('invoice', payload?.invoice_id)
+  for (const item of Array.isArray(payload?.items) ? payload.items : []) {
+    addReference('product', item?.product_id)
+  }
+  return [...keys]
+}
 
 export class LocalSyncRepository {
-  constructor(private readonly db: LocalDatabase) {}
+  constructor(private readonly db: LocalDatabase) {
+    this.recoverMissingCustomerVehicleOutbox()
+  }
 
   getPullState(): LocalSyncPullState {
     const row = this.db.prepare(`
@@ -94,70 +137,96 @@ export class LocalSyncRepository {
   }
 
   listPending(limit = 50): LocalSyncOutboxOperation[] {
+    const currentTime = nowIso()
+    const maxOperations = Math.max(1, Math.min(100, limit))
+    const failedRows = this.db.prepare(`
+      SELECT sequence, operation_id, tenant_id, device_id, aggregate_type,
+             aggregate_id, operation_type, payload_json, created_at,
+             attempts, last_error, next_attempt_at, status
+      FROM sync_outbox
+      WHERE status = 'failed'
+      ORDER BY sequence ASC
+    `).all() as unknown as OutboxCandidateRow[]
+
+    // Failed operations are barriers only for the same aggregate or an explicit
+    // supplier/product/invoice dependency. They must not freeze unrelated sales.
+    const blockedAt = new Map<string, number>()
+    const block = (keys: string[], sequence: number) => {
+      for (const key of keys) {
+        const current = blockedAt.get(key)
+        if (current === undefined || sequence < current) blockedAt.set(key, sequence)
+      }
+    }
+    for (const row of failedRows) {
+      let payload: any = null
+      try { payload = JSON.parse(row.payload_json) } catch {}
+      block(outboxDependencyKeys(row, payload), row.sequence)
+    }
+
+    // Pending work is intentionally considered before retries. A failed retry
+    // can therefore never block an independent fresh sale, while dependency
+    // barriers above still preserve causal order for related rows.
     const rows = this.db.prepare(`
       SELECT sequence, operation_id, tenant_id, device_id, aggregate_type,
              aggregate_id, operation_type, payload_json, created_at,
-             attempts, last_error
+             attempts, last_error, next_attempt_at, status
       FROM sync_outbox
       WHERE status IN ('pending', 'failed')
         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-      ORDER BY sequence ASC
-      LIMIT ?
-    `).all(nowIso(), Math.max(1, Math.min(100, limit))) as Array<{
-      sequence: number
-      operation_id: string
-      tenant_id: string
-      device_id: string
-      aggregate_type: string
-      aggregate_id: string
-      operation_type: string
-      payload_json: string
-      created_at: string
-      attempts: number
-      last_error: string | null
-    }>
+      ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, sequence ASC
+    `).all(currentTime) as unknown as OutboxCandidateRow[]
 
     const operations: LocalSyncOutboxOperation[] = []
     const corruptSequences: number[] = []
-
     for (const row of rows) {
+      let payload: any
       try {
-        operations.push({
-          sequence: row.sequence,
-          operation_id: row.operation_id,
-          tenant_id: row.tenant_id,
-          device_id: row.device_id,
-          aggregate_type: row.aggregate_type,
-          aggregate_id: row.aggregate_id,
-          operation_type: row.operation_type,
-          payload: JSON.parse(row.payload_json),
-          created_at: row.created_at,
-          attempts: row.attempts,
-          last_error: row.last_error,
-        })
+        payload = JSON.parse(row.payload_json)
       } catch {
         corruptSequences.push(row.sequence)
+        block(outboxDependencyKeys(row, null), row.sequence)
+        continue
       }
+      const keys = outboxDependencyKeys(row, payload)
+      const blocked = keys.some((key) => {
+        const sequence = blockedAt.get(key)
+        return sequence !== undefined && sequence < row.sequence
+      })
+      if (blocked) {
+        block(keys, row.sequence)
+        continue
+      }
+      operations.push({
+        sequence: row.sequence,
+        operation_id: row.operation_id,
+        tenant_id: row.tenant_id,
+        device_id: row.device_id,
+        aggregate_type: row.aggregate_type,
+        aggregate_id: row.aggregate_id,
+        operation_type: row.operation_type,
+        payload,
+        created_at: row.created_at,
+        attempts: row.attempts,
+        last_error: row.last_error,
+      })
+      if (operations.length >= maxOperations) break
     }
 
-    if (corruptSequences.length > 0) {
-      this.markCorruptPayloads(corruptSequences)
-    }
-
+    if (corruptSequences.length > 0) this.markCorruptPayloads(corruptSequences)
     return operations
   }
-
   applyPushResults(results: LocalSyncPushResult[]): void {
     const timestamp = nowIso()
     this.db.transaction(() => {
       for (const result of results) {
         if (result.status === 'synced') {
           const operation = this.db.prepare(`
-            SELECT aggregate_type, aggregate_id, operation_type, payload_json, created_at
+            SELECT tenant_id, aggregate_type, aggregate_id, operation_type, payload_json, created_at
             FROM sync_outbox
             WHERE sequence = ? AND operation_id = ?
             LIMIT 1
           `).get(result.sequence, result.operation_id) as {
+            tenant_id: string
             aggregate_type: string
             aggregate_id: string
             operation_type: string
@@ -210,137 +279,266 @@ export class LocalSyncRepository {
     })
   }
 
+
   private clearDirtyAfterPush(operation: {
+    tenant_id: string
     aggregate_type: string
     aggregate_id: string
     operation_type: string
     payload_json: string | null
     created_at: string
   }): void {
-    if (operation.operation_type === 'product.upsert' || operation.operation_type === 'product.deleted') {
+    let payload: any = null
+    try {
+      payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
+    } catch {
+      payload = null
+    }
+
+    const clearRow = (table: string, id: unknown, idColumn = 'id') => {
+      if (typeof id !== 'string' || !id) return
       this.db.prepare(`
-        UPDATE products
+        UPDATE ${table}
         SET dirty_at = NULL
-        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
+        WHERE ${idColumn} = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(id, operation.created_at)
+    }
+    const clearChildren = (table: string, parentColumn: string, parentId: unknown) => {
+      if (typeof parentId !== 'string' || !parentId) return
+      this.db.prepare(`
+        UPDATE ${table}
+        SET dirty_at = NULL
+        WHERE ${parentColumn} = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(parentId, operation.created_at)
+    }
+
+    if (operation.operation_type === 'product.upsert' || operation.operation_type === 'product.deleted') {
+      clearRow('products', operation.aggregate_id)
       return
     }
 
-    if (operation.operation_type === 'inventory.completed') {
-      this.db.prepare(`
-        UPDATE inventory_sessions
-        SET dirty_at = NULL
-        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
-      this.clearDirtyProductsFromPayload(operation)
+    if (operation.operation_type.startsWith('category.')) {
+      clearRow('categories', operation.aggregate_id)
+      if (operation.operation_type === 'category.deleted') {
+        this.db.prepare(`
+          UPDATE products SET dirty_at = NULL
+          WHERE category_id IS NULL AND dirty_at = ?
+        `).run(operation.created_at)
+      }
+      return
+    }
+    if (operation.operation_type.startsWith('brand.')) {
+      clearRow('brands', operation.aggregate_id)
+      if (operation.operation_type === 'brand.deleted') {
+        this.db.prepare(`
+          UPDATE products SET dirty_at = NULL
+          WHERE brand_id IS NULL AND dirty_at = ?
+        `).run(operation.created_at)
+      }
+      return
+    }
+
+    if (operation.operation_type === 'customer.created'
+      || operation.operation_type === 'customer.updated'
+      || operation.operation_type === 'customer.deleted') {
+      clearRow('customers', operation.aggregate_id)
+      if (operation.operation_type === 'customer.deleted') {
+        clearChildren('customer_vehicles', 'customer_id', operation.aggregate_id)
+      }
+      return
+    }
+    if (operation.operation_type.startsWith('customer_vehicle.')) {
+      clearRow('customer_vehicles', operation.aggregate_id)
       return
     }
 
     if (operation.operation_type === 'customer.debt_paid' || operation.operation_type === 'customer.deposit_changed') {
+      clearRow('customers', operation.aggregate_id)
+      clearRow('customer_deposit_transactions', payload?.transaction_id)
       this.db.prepare(`
-        UPDATE customers
+        UPDATE cash_operations
         SET dirty_at = NULL
-        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
-      try {
-        const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
-        if (payload?.transaction_id) {
-          this.db.prepare(`
-            UPDATE customer_deposit_transactions
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.transaction_id, operation.created_at)
-        }
-      } catch { /* ignore */ }
+        WHERE dirty_at = ? AND type = 'cash_in'
+      `).run(operation.created_at)
       return
     }
-    if (operation.operation_type === 'order.payment_added') {
-      this.db.prepare(`
-        UPDATE customer_orders
-        SET dirty_at = NULL
-        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
-      try {
-        const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
-        if (payload?.customer_id) {
-          this.db.prepare(`
-            UPDATE customers
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.customer_id, operation.created_at)
-        }
-        if (payload?.account_transaction_id) {
-          this.db.prepare(`
-            UPDATE customer_deposit_transactions
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.account_transaction_id, operation.created_at)
-        }
 
-        if (payload?.payment_id) {
+    if (operation.operation_type === 'supplier_catalog.item_upserted'
+      || operation.operation_type === 'supplier_catalog.item_deleted') {
+      clearRow('supplier_price_items', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type === 'supplier_catalog.imported') {
+      clearRow('supplier_price_imports', operation.aggregate_id)
+      this.db.prepare(`
+        UPDATE supplier_price_items
+        SET dirty_at = NULL
+        WHERE tenant_id = ? AND dirty_at = ?
+      `).run(operation.tenant_id, operation.created_at)
+      return
+    }
+    if (operation.operation_type.startsWith('supplier.')) {
+      clearRow('suppliers', operation.aggregate_id)
+      if (operation.operation_type === 'supplier.merged') {
+        clearRow('suppliers', payload?.primary_supplier_id)
+        clearRow('suppliers', payload?.duplicate_supplier_id)
+        for (const table of ['supply_invoices', 'supplier_payments']) {
           this.db.prepare(`
-            UPDATE order_payments
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.payment_id, operation.created_at)
+            UPDATE ${table} SET dirty_at = NULL
+            WHERE supplier_id = ? AND dirty_at = ?
+          `).run(payload?.primary_supplier_id ?? null, operation.created_at)
         }
-      } catch { /* ignore */ }
+      }
+      return
+    }
+
+    if (operation.operation_type === 'shift.opened' || operation.operation_type === 'shift.closed') {
+      clearRow('shifts', operation.aggregate_id)
+      return
+    }
+
+    if (operation.operation_type === 'sale.completed') {
+      clearRow('sales', operation.aggregate_id)
+      clearChildren('cash_operations', 'sale_id', operation.aggregate_id)
+      clearChildren('bonus_transactions', 'source_sale_id', operation.aggregate_id)
+      clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
+      clearRow('customers', payload?.customer_id)
+      this.clearDirtyProductsFromPayload(operation)
+      return
+    }
+    if (operation.operation_type === 'sale.suspended'
+      || operation.operation_type === 'sale.suspended_resumed'
+      || operation.operation_type === 'sale.suspended_deleted') {
+      clearRow('sales', operation.aggregate_id)
+      return
+    }
+
+    if (operation.operation_type === 'return.created') {
+      clearRow('customer_returns', operation.aggregate_id)
+      const localReturn = this.db.prepare(`
+        SELECT customer_id FROM customer_returns WHERE id = ? LIMIT 1
+      `).get(operation.aggregate_id) as { customer_id: string | null } | undefined
+      clearRow('customers', localReturn?.customer_id)
+      clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
+      this.db.prepare(`
+        UPDATE customer_deposit_transactions
+        SET dirty_at = NULL
+        WHERE sale_id = ?
+          AND method = 'return_credit'
+          AND (dirty_at IS NULL OR dirty_at <= ?)
+      `).run(payload?.sale_id ?? null, operation.created_at)
+      this.db.prepare(`
+        UPDATE cash_operations
+        SET dirty_at = NULL
+        WHERE dirty_at = ? AND type = 'return_cash'
+      `).run(operation.created_at)
+      this.clearDirtyProductsFromPayload(operation)
+      return
+    }
+
+    if (operation.operation_type === 'inventory.completed') {
+      clearRow('inventory_sessions', operation.aggregate_id)
+      clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
+      this.clearDirtyProductsFromPayload(operation)
+      return
+    }
+
+    if (operation.operation_type === 'order.payment_added') {
+      clearRow('customer_orders', operation.aggregate_id)
+      clearRow('customers', payload?.customer_id)
+      clearRow('customer_deposit_transactions', payload?.account_transaction_id)
+      clearRow('order_payments', payload?.payment_id)
+      this.db.prepare(`
+        UPDATE cash_operations
+        SET dirty_at = NULL
+        WHERE dirty_at = ? AND type = 'cash_in'
+      `).run(operation.created_at)
       return
     }
 
     if (operation.operation_type === 'order.completed') {
-      this.db.prepare(`
-        UPDATE customer_orders
-        SET dirty_at = NULL
-        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
-      this.db.prepare(`
-        UPDATE customer_order_items
-        SET dirty_at = NULL
-        WHERE order_id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
+      clearRow('customer_orders', operation.aggregate_id)
+      clearChildren('customer_order_items', 'order_id', operation.aggregate_id)
+      clearChildren('stock_reserves', 'order_id', operation.aggregate_id)
+      clearRow('sales', payload?.sale_id)
+      clearChildren('cash_operations', 'sale_id', payload?.sale_id)
+      clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
+      clearChildren('inventory_movements', 'source_id', payload?.sale_id)
+      clearRow('customers', payload?.customer_id)
       this.clearDirtyProductsFromPayload(operation)
       return
     }
 
-    if (operation.operation_type.startsWith('supplier_invoice.')) {
-      this.db.prepare(`
-        UPDATE supply_invoices
-        SET dirty_at = NULL
-        WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
-      this.db.prepare(`
-        UPDATE supply_invoice_items
-        SET dirty_at = NULL
-        WHERE invoice_id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-      `).run(operation.aggregate_id, operation.created_at)
-      try {
-        const payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
-        if (payload?.customer_id) {
-          this.db.prepare(`
-            UPDATE customers
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.customer_id, operation.created_at)
-        }
-        if (payload?.account_transaction_id) {
-          this.db.prepare(`
-            UPDATE customer_deposit_transactions
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.account_transaction_id, operation.created_at)
-        }
+    if (operation.operation_type === 'order.created'
+      || operation.operation_type === 'order.updated'
+      || operation.operation_type === 'order.deleted') {
+      clearRow('customer_orders', operation.aggregate_id)
+      clearChildren('customer_order_items', 'order_id', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type === 'order.status_updated' || operation.operation_type === 'order.canceled') {
+      clearRow('customer_orders', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type === 'order.item_status_updated') {
+      clearRow('customer_order_items', payload?.item_id)
+      return
+    }
+    if (operation.operation_type === 'order.items_arrived') {
+      for (const id of Array.isArray(payload?.item_ids) ? payload.item_ids : []) {
+        clearRow('customer_order_items', id)
+      }
+      return
+    }
 
-        if (payload?.payment_id) {
-          this.db.prepare(`
-            UPDATE supplier_payments
-            SET dirty_at = NULL
-            WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
-          `).run(payload.payment_id, operation.created_at)
-        }
-      } catch { /* ignore */ }
+    if (operation.operation_type.startsWith('supplier_invoice.')) {
+      clearRow('supply_invoices', operation.aggregate_id)
+      clearChildren('supply_invoice_items', 'invoice_id', operation.aggregate_id)
+      clearRow('supplier_payments', payload?.payment_id)
+      this.db.prepare(`
+        UPDATE cash_operations SET dirty_at = NULL
+        WHERE type = 'supplier_payment'
+          AND supplier_id = (SELECT supplier_id FROM supply_invoices WHERE id = ? LIMIT 1)
+          AND dirty_at = ?
+      `).run(operation.aggregate_id, operation.created_at)
+      clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
       this.clearDirtyProductsFromPayload(operation)
       return
+    }
+
+    if (operation.operation_type.startsWith('staff_user.')) {
+      clearRow('staff_users', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type.startsWith('commission_rule.')) {
+      clearRow('commission_rules', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type.startsWith('salary_payment.')) {
+      const localSalary = this.db.prepare(`
+        SELECT cash_operation_id FROM salary_payments WHERE id = ? LIMIT 1
+      `).get(operation.aggregate_id) as { cash_operation_id: string | null } | undefined
+      clearRow('salary_payments', operation.aggregate_id)
+      clearRow('cash_operations', localSalary?.cash_operation_id)
+      return
+    }
+    if (operation.operation_type === 'cash_operation.created') {
+      clearRow('cash_operations', operation.aggregate_id)
+      return
+    }
+
+    if (operation.operation_type === 'reserve.created' || operation.operation_type === 'reserve.released') {
+      clearRow('stock_reserves', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type === 'warehouse_movement.created') {
+      clearRow('warehouse_movements', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type === 'writeoff.created') {
+      clearRow('writeoffs', operation.aggregate_id)
+      clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
+      this.clearDirtyProductsFromPayload(operation)
     }
   }
 
@@ -360,6 +558,56 @@ export class LocalSyncRepository {
     } catch {
       // Якщо payload пошкоджений, pull пізніше вирівняє серверний стан.
     }
+  }
+
+
+  private recoverMissingCustomerVehicleOutbox(): void {
+    const rows = this.db.prepare(`
+      SELECT v.id, v.tenant_id, v.customer_id, v.brand, v.model, v.year, v.vin,
+             v.notes, v.remote_updated_at, v.deleted_at, v.dirty_at, v.created_at, v.updated_at
+      FROM customer_vehicles v
+      WHERE v.dirty_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sync_outbox o
+          WHERE o.tenant_id = v.tenant_id
+            AND o.aggregate_type = 'customer_vehicle'
+            AND o.aggregate_id = v.id
+            AND o.status <> 'synced'
+        )
+    `).all() as any[]
+
+    if (rows.length === 0) return
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const timestamp = row.dirty_at ?? row.updated_at ?? nowIso()
+        const operationType = row.deleted_at
+          ? 'customer_vehicle.deleted'
+          : (row.remote_updated_at ? 'customer_vehicle.updated' : 'customer_vehicle.created')
+        this.db.prepare(`
+          INSERT INTO sync_outbox (
+            operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
+            operation_type, payload_json, status, created_at
+          ) VALUES (?, ?, ?, 'customer_vehicle', ?, ?, ?, 'pending', ?)
+        `).run(
+          randomUUID(),
+          row.tenant_id,
+          this.db.deviceId,
+          row.id,
+          operationType,
+          JSON.stringify({
+            id: row.id,
+            customer_id: row.customer_id,
+            brand: row.brand,
+            model: row.model,
+            year: row.year,
+            vin: row.vin,
+            notes: row.notes,
+          }),
+          timestamp,
+        )
+      }
+    })
   }
 
   private retryDelayMs(sequence: number): number {

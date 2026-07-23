@@ -35,7 +35,7 @@ export default function ProductFormPage() {
   // Закупівельна ціна (маржа) — лише для власника/адміна/кладівника.
   // Касир/менеджер її не бачать (сервер її й не віддає) і НЕ надсилають при
   // збереженні — інакше затерли б реальну закупівлю нулем.
-  const role = useAuthStore((s) => (s.session?.user?.user_metadata?.role as string) ?? 'cashier')
+  const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
 
   // Категорії та бренди для "креативних" селектів
@@ -405,31 +405,6 @@ export default function ProductFormPage() {
               <div></div>
             </div>
 
-            {/* ── Застава за стару деталь (Core Exchange) ── */}
-            <div className="border border-gray-200 rounded-xl p-4 space-y-3">
-              <div className="flex items-center gap-3">
-                <input type="checkbox" id="requires_core_return"
-                  checked={form.requires_core_return ?? false}
-                  onChange={(e) => set('requires_core_return', e.target.checked)}
-                  className="w-4 h-4 accent-yellow-400" />
-                <label htmlFor="requires_core_return" className="text-sm text-gray-700">
-                  Потребує обміну старої деталі (застава)
-                </label>
-              </div>
-              {form.requires_core_return && (
-                <div className="grid grid-cols-2 gap-4">
-                  <Input
-                    label="Сума застави, грн"
-                    type="number" min="0" step="0.01"
-                    value={form.core_deposit_amount ?? ''}
-                    onChange={(e) => set('core_deposit_amount', e.target.value)}
-                    placeholder="500.00"
-                    hint="Додається до чека, повертається при здачі старої деталі"
-                  />
-                  <div></div>
-                </div>
-              )}
-            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Примітки</label>

@@ -1,11 +1,12 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useState } from 'react'
 import { usePOSStore } from '@/stores/posStore'
 import { shiftApi } from './shiftApi'
 import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
 import { cacheCurrentShift, getCachedCurrentShift } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
-import { desktopBridge, desktopCheckoutToSale } from '@/lib/desktopBridge'
+import { desktopBridge, desktopCheckoutToSale, type DesktopCheckoutInput } from '@/lib/desktopBridge'
+import { buildFiscalSaleItems, parseFiscalIntentUnknown, type FiscalIntentUnknown } from './fiscalSale'
 
 const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 type PaymentMethod = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
@@ -21,6 +22,7 @@ export function usePOS() {
   const setCurrentShift = usePOSStore((s) => s.setCurrentShift)
   const scopeKey = useAuthStore((s) => s.session?.user?.id ?? '')
   const cashierId = useAuthStore((s) => s.session?.user?.id ?? '')
+  const [fiscalRecovery, setFiscalRecovery] = useState<FiscalIntentUnknown | null>(null)
 
   const checkShift = useCallback(() => {
     setInitializing(true)
@@ -70,17 +72,42 @@ export function usePOS() {
     checkShift()
   }, [checkShift])
 
+  const resolveFiscalRecovery = useCallback(async (): Promise<boolean> => {
+    if (!fiscalRecovery) return false
+    const desktop = desktopBridge()
+    if (!desktop || !cashierId) {
+      toast.error('Відновлення фіскального чека доступне лише в локальній касі')
+      return false
+    }
+    try {
+      await desktop.fiscal.resolveUnknownSale(fiscalRecovery.operationId, {
+        confirmed_by: cashierId,
+        reason: 'Касир перевірив Cashalot і підтвердив, що чек не зареєстровано',
+        cashalot_checked: true,
+      })
+      setFiscalRecovery(null)
+      toast.success('Операцію розблоковано. Тепер можна повторити оплату')
+      return true
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося розблокувати операцію')
+      return false
+    }
+  }, [cashierId, fiscalRecovery])
+
   // Оформити продаж
   const completeSale = useCallback(async (
     method: PaymentMethod,
     options?: { cashReceived?: number; bonusRedeemed?: number; split?: { cash_amount: number; card_amount: number }; isFiscal?: boolean; terminalAuthCode?: string }
   ) => {
-    const { currentShift, items, customer, notes, total, totalDiscount, managerId, customerOrderId } = store
+    const { currentShift, items, customer, notes, total, totalDiscount, totalCoreDeposit, managerId, customerOrderId } = store
     const hasTireService = items.some((item) => item.sku === 'POS-TIRE-SERVICE')
     const saleManagerId = currentShift
       ? (hasTireService ? (managerId ?? currentShift.cashier_id ?? null) : currentShift.cashier_id)
       : null
-    const bonusRedeemed = options?.bonusRedeemed ?? 0
+    const bonusRedeemed = Math.min(
+      options?.bonusRedeemed ?? 0,
+      Math.max(0, total - totalCoreDeposit),
+    )
     const toPay = Math.max(0, total - bonusRedeemed)
 
     if (!currentShift) { toast.error('Відкрийте зміну'); return null }
@@ -92,17 +119,75 @@ export function usePOS() {
 
     const desktop = desktopBridge()
     if (desktop) {
-      if (options?.isFiscal && (method === 'debt' || (method === 'mixed' && !options?.split))) {
+      const requestedFiscal = options?.isFiscal === true
+      if (requestedFiscal && (method === 'debt' || (method === 'mixed' && !options?.split))) {
         toast.error('Продаж у борг не фіскалізується — вимкніть фіскальний чек')
         return null
       }
 
-      // Фіскалізація через ПРРО Кашалот — ДО запису в локальну базу:
-      // якщо ФСКО відхилить чек, продаж не проводиться взагалі.
+      const operationId = store.getActiveTab()?.idempotencyKey
+      if (!operationId) {
+        toast.error('Не вдалося визначити номер операції каси. Відкрийте новий чек')
+        return null
+      }
+
+      const shouldFiscalize = requestedFiscal && toPay > 0
+      if (requestedFiscal && !shouldFiscalize) {
+        toast.warning('Чек повністю оплачено бонусами, тому ПРРО-чек із нульовою сумою не створюється')
+      }
+
+      const splitPayments = method === 'mixed' && options?.split
+        ? [
+            {
+              method: 'cash' as const,
+              amount: options.split.cash_amount,
+              is_fiscal: shouldFiscalize,
+              fiscal_number: null,
+            },
+            {
+              method: 'card' as const,
+              amount: options.split.card_amount,
+              is_fiscal: shouldFiscalize,
+              fiscal_number: null,
+              bank_auth_code: options.terminalAuthCode ?? null,
+            },
+          ].filter((payment) => payment.amount > 0)
+        : null
+      const payments: DesktopCheckoutInput['payments'] = splitPayments?.length
+        ? splitPayments
+        : [{
+            method: method === 'mixed' ? 'cash' : method,
+            amount: toPay,
+            is_fiscal: shouldFiscalize,
+            fiscal_number: null,
+            bank_auth_code: method === 'card' ? options?.terminalAuthCode ?? null : null,
+          }]
+      const checkoutInput: DesktopCheckoutInput = {
+        client_operation_id: operationId,
+        shift_id: currentShift.id,
+        customer_id: customer?.id ?? null,
+        manager_id: saleManagerId,
+        cashier_id: currentShift.cashier_id,
+        items: items.map((item) => ({
+          product_id: item.productId,
+          qty: item.qty,
+          unit_price: item.unitPrice,
+          discount: item.discount,
+        })),
+        payments,
+        notes: notes || null,
+        // Знижки позицій вже враховані в sale_items; тут лише додаткове
+        // списання бонусів, щоб локальна база не відняла знижку двічі.
+        discount: bonusRedeemed,
+        bonuses_spent: bonusRedeemed,
+        is_fiscal: shouldFiscalize,
+        fiscal_number: null,
+        fiscal_qr_url: null,
+      }
+
       let fiscalNumber: string | null = null
-      let fiscalQrUrl: string | null = null
-      if (options?.isFiscal) {
-        try {
+      try {
+        if (shouldFiscalize) {
           const cashAmount = method === 'mixed' && options?.split
             ? options.split.cash_amount
             : method === 'cash' ? toPay : 0
@@ -110,87 +195,63 @@ export function usePOS() {
             ? options.split.card_amount
             : method === 'card' ? toPay : 0
           const bankAmount = method === 'transfer' ? toPay : 0
-
-          // Розкидаємо загальну знижку чека по позиціях пропорційно,
-          // щоб сума позицій зійшлася з сумою чека до копійки.
-          const lineAmounts = items.map((item) => item.unitPrice * item.qty - item.discount)
-          const linesTotal = lineAmounts.reduce((sum, amount) => sum + amount, 0)
-          let discountLeft = Math.min(totalDiscount, linesTotal)
-          const fiscalItems = items.map((item, index) => {
-            const lineAmount = lineAmounts[index]
-            const isLast = index === items.length - 1
-            const share = isLast
-              ? discountLeft
-              : Math.min(discountLeft, Math.round(totalDiscount * lineAmount / (linesTotal || 1)))
-            discountLeft -= share
-            const gross = item.unitPrice * item.qty
-            const finalAmount = Math.max(0, lineAmount - share)
-            return {
-              name: item.name,
-              vendor_code: item.sku || item.name,
-              unit: item.unit,
-              qty: item.qty,
-              unit_price: item.unitPrice,
-              amount: finalAmount,
-              discount: Math.max(0, gross - finalAmount),
-            }
+          const fiscalItems = [
+            ...buildFiscalSaleItems(
+              items.map((item) => ({
+                name: item.name,
+                sku: item.sku,
+                unit: item.unit,
+                qty: item.qty,
+                unitPrice: item.unitPrice,
+                discount: item.discount,
+              })),
+              totalDiscount + bonusRedeemed,
+            ),
+            ...items.flatMap((item) => {
+              const deposit = item.requiresCoreReturn ? Number(item.coreDepositAmount ?? 0) : 0
+              if (deposit <= 0) return []
+              return [{
+                name: `Застава (обмін): ${item.name}`,
+                vendor_code: `${item.sku || item.productId}-CORE`,
+                barcode: null,
+                unit: item.unit,
+                qty: item.qty,
+                unit_price: deposit,
+                amount: deposit * item.qty,
+                discount: 0,
+                is_service: true,
+              }]
+            }),
+          ]
+          const intent = await desktop.fiscal.fiscalizeSale({
+            operation_id: operationId,
+            checkout: checkoutInput,
+            items: fiscalItems,
+            pay: {
+              // Передаємо суму чека, а не отримані купюри: решта не є виручкою.
+              cash: cashAmount,
+              card: cardAmount,
+              bank: bankAmount,
+              check_total: toPay,
+              auth_code: options?.terminalAuthCode ?? null,
+            },
           })
-
-          const fiscalResult = await desktop.fiscal.registerCheck(fiscalItems, {
-            // У ПРРО передаємо суму самого чека, а не отримані від клієнта
-            // купюри: решта не є виручкою й не повинна потрапляти в Z-звіт.
-            cash: cashAmount,
-            card: cardAmount,
-            bank: bankAmount,
-            check_total: toPay,
-            auth_code: options?.terminalAuthCode ?? null,
-          })
-          fiscalNumber = fiscalResult.ReceiptFiscalNum || null
-          fiscalQrUrl = fiscalResult.FSKOReceiptLink || fiscalResult.CashalotReceiptLink || null
+          const fiscalResult = intent.fiscal_result
+          if (!fiscalResult) throw new Error('ПРРО не повернув результат фіскалізації')
+          fiscalNumber = fiscalResult.ReceiptFiscalNum || fiscalResult.ReceiptLocalNum || null
+          checkoutInput.fiscal_number = fiscalNumber
+          checkoutInput.fiscal_qr_url =
+            fiscalResult.FSKOReceiptLink || fiscalResult.CashalotReceiptLink || null
+          checkoutInput.payments = checkoutInput.payments.map((payment) => ({
+            ...payment,
+            is_fiscal: true,
+            fiscal_number: fiscalNumber,
+          }))
           if (fiscalResult.OfflineMode) {
             toast.warning('ПРРО в режимі офлайн — чек буде дореєстровано автоматично')
           }
-        } catch (error) {
-          toast.error('Фіскалізація не пройшла: '
-            + (error instanceof Error ? error.message : 'невідома помилка')
-            + '. Продаж НЕ проведено.')
-          return null
         }
-      }
 
-      try {
-        const payments = method === 'mixed' && options?.split
-          ? [
-              { method: 'cash' as const, amount: options.split.cash_amount, is_fiscal: !!fiscalNumber, fiscal_number: fiscalNumber },
-              { method: 'card' as const, amount: options.split.card_amount, is_fiscal: !!fiscalNumber, fiscal_number: fiscalNumber, bank_auth_code: options.terminalAuthCode ?? null },
-            ].filter((payment) => payment.amount > 0)
-          : [{
-              method: method === 'mixed' ? 'cash' as const : method,
-              amount: toPay,
-              is_fiscal: !!fiscalNumber,
-              fiscal_number: fiscalNumber,
-              bank_auth_code: method === 'card' ? options?.terminalAuthCode ?? null : null,
-            }]
-
-        const checkoutInput = {
-          shift_id: currentShift.id,
-          customer_id: customer?.id ?? null,
-          manager_id: saleManagerId,
-          cashier_id: currentShift.cashier_id,
-          items: items.map((item) => ({
-            product_id: item.productId,
-            qty: item.qty,
-            unit_price: item.unitPrice,
-            discount: item.discount,
-          })),
-          payments,
-          notes: notes || null,
-          discount: totalDiscount + bonusRedeemed,
-          bonuses_spent: bonusRedeemed,
-          is_fiscal: !!fiscalNumber,
-          fiscal_number: fiscalNumber,
-          fiscal_qr_url: fiscalQrUrl,
-        }
         const result = await desktop.pos.checkout(checkoutInput)
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
         const sale = desktopCheckoutToSale(result, checkoutInput, items.map((item) => ({
@@ -203,17 +264,23 @@ export function usePOS() {
           product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
         })))
 
+        setFiscalRecovery(null)
         store.clearReceipt()
-        toast.success(fiscalNumber
-          ? `Продаж #${sale.sale_number} оформлено, фіскальний чек ${fiscalNumber}`
+        toast.success(shouldFiscalize
+          ? `Продаж #${sale.sale_number} оформлено, фіскальний чек ${fiscalNumber ?? 'зареєстровано'}`
           : 'Локальний продаж #' + sale.sale_number + ' оформлено')
         return sale
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Помилка локального продажу')
+        const recovery = parseFiscalIntentUnknown(error)
+        if (recovery) {
+          setFiscalRecovery(recovery)
+          toast.error('Не повторюйте оплату: спочатку перевірте цей чек у Cashalot')
+        } else {
+          toast.error(error instanceof Error ? error.message : 'Помилка локального продажу')
+        }
         return null
       }
     }
-
     try {
       // Зберігаємо момент спроби — для crash recovery перевірки
       const attemptAt = new Date().toISOString()
@@ -261,5 +328,12 @@ export function usePOS() {
     }
   }, [store])
 
-  return { store, completeSale, checkShift, PAYMENT_ATTEMPT_KEY }
+  return {
+    store,
+    completeSale,
+    checkShift,
+    fiscalRecovery,
+    resolveFiscalRecovery,
+    PAYMENT_ATTEMPT_KEY,
+  }
 }

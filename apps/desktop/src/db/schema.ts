@@ -1,4 +1,6 @@
-export const LOCAL_SCHEMA_VERSION = 10
+import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
+
+export const LOCAL_SCHEMA_VERSION = 14
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -966,6 +968,72 @@ const MIGRATION_009_REPAIR_CUSTOMER_ORDERS_SQL = `
 const MIGRATION_010_CUSTOMER_BIRTH_DATE_SQL = `
   ALTER TABLE customers ADD COLUMN birth_date TEXT;
 `
+
+const MIGRATION_011_ORDER_SALE_LINK_SQL = `
+  ALTER TABLE customer_orders ADD COLUMN sale_id TEXT REFERENCES sales(id) ON DELETE SET NULL;
+  CREATE INDEX IF NOT EXISTS idx_customer_orders_sale
+    ON customer_orders(tenant_id, sale_id)
+    WHERE sale_id IS NOT NULL;
+`
+
+const MIGRATION_012_FISCAL_SALE_INTENTS_SQL = `
+  ALTER TABLE sales ADD COLUMN client_operation_id TEXT;
+  ALTER TABLE sales ADD COLUMN client_payload_hash TEXT;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_operation
+    ON sales(tenant_id, client_operation_id)
+    WHERE client_operation_id IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS fiscal_sale_intents (
+    operation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    cashier_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    checkout_hash TEXT NOT NULL,
+    checkout_json TEXT NOT NULL,
+    fiscal_items_json TEXT NOT NULL,
+    fiscal_pay_json TEXT NOT NULL,
+    fiscal_comment TEXT,
+    state TEXT NOT NULL DEFAULT 'prepared'
+      CHECK (state IN ('prepared', 'fiscalizing', 'fiscalized', 'unknown', 'completed')),
+    fiscal_result_json TEXT,
+    fiscal_number TEXT,
+    fiscal_qr_url TEXT,
+    sale_id TEXT REFERENCES sales(id) ON DELETE SET NULL,
+    checkout_result_json TEXT,
+    last_error TEXT,
+    fiscal_started_at TEXT,
+    fiscalized_at TEXT,
+    completed_at TEXT,
+    manual_reset_count INTEGER NOT NULL DEFAULT 0,
+    resolved_by TEXT,
+    resolved_reason TEXT,
+    resolved_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_fiscal_sale_intents_state
+    ON fiscal_sale_intents(tenant_id, state, updated_at DESC);
+`
+
+
+const MIGRATION_013_FISCAL_RETURN_INTENTS_SQL = `
+  ALTER TABLE customer_returns ADD COLUMN client_operation_id TEXT;
+  ALTER TABLE customer_returns ADD COLUMN client_payload_hash TEXT;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_returns_client_operation
+    ON customer_returns(tenant_id, client_operation_id)
+    WHERE client_operation_id IS NOT NULL;
+
+  ALTER TABLE fiscal_sale_intents ADD COLUMN operation_kind TEXT NOT NULL DEFAULT 'sale';
+  ALTER TABLE fiscal_sale_intents ADD COLUMN return_id TEXT REFERENCES customer_returns(id) ON DELETE SET NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_fiscal_intents_kind_state
+    ON fiscal_sale_intents(tenant_id, operation_kind, state, updated_at DESC);
+`
+const MIGRATION_014_SUPPLIER_CATALOG_SQL = SUPPLIER_CATALOG_SCHEMA_SQL
+
 export interface LocalMigration {
   version: number
   sql: string
@@ -982,4 +1050,8 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 8, sql: MIGRATION_008_LOCAL_STAFF_SQL },
   { version: 9, sql: MIGRATION_009_REPAIR_CUSTOMER_ORDERS_SQL },
   { version: 10, sql: MIGRATION_010_CUSTOMER_BIRTH_DATE_SQL },
+  { version: 11, sql: MIGRATION_011_ORDER_SALE_LINK_SQL },
+  { version: 12, sql: MIGRATION_012_FISCAL_SALE_INTENTS_SQL },
+  { version: 13, sql: MIGRATION_013_FISCAL_RETURN_INTENTS_SQL },
+  { version: 14, sql: MIGRATION_014_SUPPLIER_CATALOG_SQL },
 ]

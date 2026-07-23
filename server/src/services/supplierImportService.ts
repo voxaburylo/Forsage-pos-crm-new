@@ -1,11 +1,13 @@
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
+import { normalizeExactBarcode } from '../lib/productIdentity.js'
 import { createReadStream, promises as fs } from 'fs'
 import readline from 'readline'
 
 interface ColMap {
   sku?: number
+  barcode?: number
   name?: number
   qty?: number
   price?: number
@@ -16,7 +18,8 @@ function guessColumns(header: string, sep: string): ColMap {
   const parts = header.split(sep).map((s) => s.trim().toLowerCase())
   const map: ColMap = {}
   parts.forEach((p, i) => {
-    if (/артикул|sku|код|article/i.test(p))                         map.sku   = i
+    if (/штрих.?код|barcode|ean|шк\b/i.test(p))                    map.barcode = i
+    else if (/артикул|sku|код товар|article/i.test(p))              map.sku   = i
     else if (/назв|товар|наймен|номенклат|детал|запчаст|опис|позиц|наименован|name|product|description|item|title/i.test(p)) map.name  = i
     else if (/кільк|к-сть|qty|кол-во|quantity/i.test(p))           map.qty   = i
     else if (/цін|price|cost|вартість|purchase/i.test(p))           map.price = i
@@ -62,7 +65,6 @@ export async function processImport(
     importId: string
     tempPath: string
     supplierId: string | null
-    updateRetail: boolean
     mode: 'replace' | 'add'
     warehouseName: string | null
   }
@@ -117,23 +119,26 @@ export async function processImport(
       .update({ total_rows: totalRows, updated_at: new Date().toISOString() })
       .eq('id', importId)
 
-    // 2b. Якщо режим 'replace' і вказано постачальника, видаляємо старі записи перед імпортом
+    // У режимі replace старі рядки позначаємо видаленими. Так видалення
+    // синхронізується на інші пристрої і не воскресає після наступного pull.
     if (mode === 'replace' && supplierId) {
+      const timestamp = new Date().toISOString()
       let query = db
         .from('supplier_price_items')
-        .delete()
+        .update({ deleted_at: timestamp, updated_at: timestamp })
         .eq('supplier_id', supplierId)
         .eq('tenant_id', tenantId)
-      
+        .is('deleted_at', null)
+
       if (warehouseName) {
         query = query.eq('warehouse_name', warehouseName)
       } else {
         query = query.is('warehouse_name', null)
       }
 
-      const { error: delError } = await query
-      if (delError) {
-        throw new Error('Не вдалося видалити старі записи прайсу постачальника: ' + delError.message)
+      const { error: deleteError } = await query
+      if (deleteError) {
+        throw new Error('Не вдалося замінити старі записи прайсу постачальника: ' + deleteError.message)
       }
     }
 
@@ -149,6 +154,7 @@ export async function processImport(
     let lineNum = 0
     let chunk: Array<{
       sku: string
+      barcode: string | null
       brand: string
       name: string
       price: number
@@ -184,6 +190,7 @@ export async function processImport(
 
         const rawSku = colMap.sku !== undefined ? parts[colMap.sku] ?? '' : ''
         const sku = rawSku.trim() ? normalizeArticle(rawSku) : 'IMP-' + Date.now() + '-' + lineNum
+        const barcode = colMap.barcode !== undefined ? normalizeExactBarcode(parts[colMap.barcode] ?? '') : null
 
         const rawBrand = colMap.brand !== undefined ? parts[colMap.brand] ?? '' : ''
         const brand = rawBrand.trim()
@@ -205,7 +212,7 @@ export async function processImport(
           }
         }
 
-        chunk.push({ sku, brand, name, price, qty, rowNum: lineNum })
+        chunk.push({ sku, barcode, brand, name, price, qty, rowNum: lineNum })
 
         if (chunk.length >= 1000) {
           await processChunk(chunk, tenantId, supplierId, warehouseName)
@@ -262,7 +269,7 @@ export async function processImport(
 }
 
 async function processChunk(
-  items: Array<{ sku: string; brand: string; name: string; price: number; qty: number; rowNum: number }>,
+  items: Array<{ sku: string; barcode: string | null; brand: string; name: string; price: number; qty: number; rowNum: number }>,
   tenantId: string,
   supplierId: string | null,
   warehouseName: string | null
@@ -271,12 +278,14 @@ async function processChunk(
     tenant_id: tenantId,
     supplier_id: supplierId,
     sku: item.sku,
+    barcode: item.barcode,
     brand: item.brand || null,
     name: item.name,
     price_kopecks: item.price,
     qty: String(item.qty),
     warehouse_name: warehouseName,
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    deleted_at: null,
   }))
 
   const { error } = await db.from('supplier_price_items').insert(rows)

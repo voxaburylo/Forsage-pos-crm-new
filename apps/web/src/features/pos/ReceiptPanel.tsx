@@ -17,7 +17,7 @@ interface Props {
 
 function canUserDiscount(): boolean {
   const session = useAuthStore.getState().session
-  const role = session?.user?.user_metadata?.role as string | undefined
+  const role = session?.user?.app_metadata?.role as string | undefined
   return role ? ['owner', 'admin', 'manager'].includes(role) : false
 }
 

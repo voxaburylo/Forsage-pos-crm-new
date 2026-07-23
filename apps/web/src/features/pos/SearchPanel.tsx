@@ -93,7 +93,8 @@ export interface SearchPanelHandle {
 const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const serverOnline = useServerStatus()
   const desktopRuntime = Boolean(desktopBridge())
-  const effectiveOnline = desktopRuntime || serverOnline
+  const serverReachable = serverOnline
+  const effectiveOnline = desktopRuntime || serverReachable
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
@@ -384,7 +385,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       return
     }
 
-    if (!effectiveOnline) {
+    if (desktopRuntime || !serverReachable) {
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
@@ -417,7 +418,9 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         reportScannerStage('added', normalizedCode, customer.full_name ?? customer.phone)
       } else {
         playErrorTone()
-        toast.error('Штрих-код не знайдено в офлайн-кеші')
+        toast.error(desktopRuntime
+          ? 'Штрих-код не знайдено в локальній базі'
+          : 'Штрих-код не знайдено в офлайн-кеші')
         reportScannerStage('failed', normalizedCode)
       }
       return

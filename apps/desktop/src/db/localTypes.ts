@@ -14,9 +14,15 @@ export interface LocalProduct {
   purchase_price: number
   retail_price: number
   qty_on_hand: number
+  qty_reserved?: number
+  qty_available?: number
   is_active: number
   is_service: number
+  requires_core_return?: number
+  core_deposit_amount?: number
   storage_bin: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export interface LocalProductUpsert {
@@ -35,6 +41,8 @@ export interface LocalProductUpsert {
   notes?: string | null
   is_active?: boolean
   is_service?: boolean
+  requires_core_return?: boolean
+  core_deposit_amount?: number
   storage_bin?: string | null
   is_favorite?: boolean
   photo_url?: string | null
@@ -60,6 +68,7 @@ export interface LocalSaleItemInput {
 }
 
 export interface LocalSaleCheckoutInput {
+  client_operation_id?: string
   tenant_id?: string
   cashier_id: string
   shift_id?: string | null
@@ -84,6 +93,95 @@ export interface LocalSaleCheckoutResult {
   outbox_sequence: number | bigint
 }
 
+export interface LocalFiscalCheckItem {
+  name: string
+  vendor_code: string
+  barcode?: string | null
+  unit?: string | null
+  qty: number
+  unit_price: number
+  amount: number
+  discount?: number
+  is_service?: boolean
+}
+
+export interface LocalFiscalCheckPay {
+  cash: number
+  card: number
+  bank?: number
+  check_total: number
+  auth_code?: string | null
+  rrn?: string | null
+  customer_email?: string | null
+}
+
+export type LocalFiscalSaleIntentState =
+  | 'prepared'
+  | 'fiscalizing'
+  | 'fiscalized'
+  | 'unknown'
+  | 'completed'
+
+export interface LocalFiscalSaleRequest {
+  operation_id: string
+  checkout: LocalSaleCheckoutInput
+  items: LocalFiscalCheckItem[]
+  pay: LocalFiscalCheckPay
+  comment?: string | null
+}
+
+export interface LocalFiscalReturnRequest {
+  operation_id: string
+  return_input: Record<string, unknown>
+  items: LocalFiscalCheckItem[]
+  pay: LocalFiscalCheckPay
+  original_fiscal_number: string
+}
+
+export interface LocalFiscalSaleIntentResult {
+  operation_id: string
+  state: LocalFiscalSaleIntentState
+  payload_hash: string
+  fiscal_result: Record<string, unknown> | null
+  checkout_result: LocalSaleCheckoutResult | null
+  last_error: string | null
+}
+
+export interface LocalFiscalIntentResolution {
+  cashalot_checked: boolean
+  confirmed_by: string
+  reason: string
+}
+
+export interface LocalFiscalReturnIntentScope {
+  tenant_id?: string
+  cashier_id: string
+}
+
+export interface LocalFiscalReturnIntentResolution extends LocalFiscalIntentResolution, LocalFiscalReturnIntentScope {}
+
+export interface LocalFiscalReturnIntentCancelInput extends LocalFiscalReturnIntentScope {
+  confirmed_by: string
+  reason: string
+}
+
+export interface LocalUnresolvedFiscalReturnIntent {
+  operation_id: string
+  tenant_id: string
+  cashier_id: string
+  state: Exclude<LocalFiscalSaleIntentState, 'completed'>
+  sale_id: string | null
+  sale_number: string | null
+  refund_kopecks: number
+  refund_method: string
+  item_count: number
+  fiscal_number: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+  can_cancel: boolean
+}
+
 export interface LocalBootstrapSnapshot {
   exported_at: string
   tenant_id: string
@@ -101,10 +199,26 @@ export interface LocalBootstrapSnapshot {
   deleted_customer_order_ids?: string[]
   customer_order_items?: any[]
   order_payments?: any[]
+  shifts?: any[]
+  sales?: any[]
+  sale_items?: any[]
+  commission_rules?: any[]
+  salary_payments?: any[]
+  cash_operations?: any[]
+  customer_returns?: any[]
+  customer_return_items?: any[]
+  stock_reserves?: any[]
+  warehouse_movements?: any[]
+  writeoffs?: any[]
+  writeoff_items?: any[]
+  bonus_transactions?: any[]
+  customer_deposit_transactions?: any[]
   supply_invoices?: any[]
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: any[]
   supplier_payments?: any[]
+  supplier_price_items?: any[]
+  supplier_price_imports?: any[]
   inventory_sessions?: any[]
   inventory_items?: any[]
   shop_settings?: any
@@ -116,8 +230,11 @@ export interface LocalBootstrapImportResult {
   tenant_id: string
   counts: {
     staff: number
+    deleted_staff: number
     categories: number
+    deleted_categories: number
     brands: number
+    deleted_brands: number
     suppliers: number
     products: number
     product_barcodes: number
@@ -129,12 +246,31 @@ export interface LocalBootstrapImportResult {
     deleted_customer_orders: number
     customer_order_items: number
     order_payments: number
+    shifts: number
+    sales: number
+    sale_items: number
+    commission_rules: number
+    deleted_commission_rules: number
+    salary_payments: number
+    deleted_salary_payments: number
+    cash_operations: number
+    customer_returns: number
+    customer_return_items: number
+    stock_reserves: number
+    deleted_stock_reserves: number
+    warehouse_movements: number
+    writeoffs: number
+    writeoff_items: number
+    bonus_transactions: number
+    customer_deposit_transactions: number
     supply_invoices: number
     deleted_supply_invoices: number
     supply_invoice_items: number
     supplier_payments: number
     inventory_sessions: number
     inventory_items: number
+    supplier_price_items: number
+    supplier_price_imports: number
     settings: number
   }
 }
@@ -170,6 +306,7 @@ export interface LocalSyncPullState {
 export interface LocalSyncPullChanges {
   tenant_id?: string
   cursor: string
+  staff?: any[]
   products?: any[]
   deleted_product_ids?: string[]
   customers?: any[]
@@ -186,20 +323,42 @@ export interface LocalSyncPullChanges {
   deleted_customer_order_ids?: string[]
   customer_order_items?: any[]
   order_payments?: any[]
+  shifts?: any[]
+  sales?: any[]
+  sale_items?: any[]
+  commission_rules?: any[]
+  salary_payments?: any[]
+  cash_operations?: any[]
+  customer_returns?: any[]
+  customer_return_items?: any[]
+  stock_reserves?: any[]
+  warehouse_movements?: any[]
+  writeoffs?: any[]
+  writeoff_items?: any[]
+  bonus_transactions?: any[]
+  customer_deposit_transactions?: any[]
   supply_invoices?: any[]
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: any[]
   supplier_payments?: any[]
+  supplier_price_items?: any[]
+  supplier_price_imports?: any[]
   inventory_sessions?: any[]
   inventory_items?: any[]
   shop_settings?: any
   references_included?: boolean
+  catalog_structure_snapshot_included?: boolean
+  staff_snapshot_included?: boolean
+  commission_rules_snapshot_included?: boolean
+  salary_payments_snapshot_included?: boolean
+  stock_reserves_snapshot_included?: boolean
 }
 
 export interface LocalSyncPullResult {
   applied_at: string
   cursor: string
   counts: {
+    staff: number
     products: number
     deleted_products: number
     customers: number
@@ -214,14 +373,36 @@ export interface LocalSyncPullResult {
     deleted_customer_orders: number
     customer_order_items: number
     order_payments: number
+    shifts: number
+    sales: number
+    sale_items: number
+    commission_rules: number
+    deleted_commission_rules: number
+    salary_payments: number
+    deleted_salary_payments: number
+    cash_operations: number
+    customer_returns: number
+    customer_return_items: number
+    stock_reserves: number
+    deleted_stock_reserves: number
+    warehouse_movements: number
+    writeoffs: number
+    writeoff_items: number
+    bonus_transactions: number
+    customer_deposit_transactions: number
     supply_invoices: number
     deleted_supply_invoices: number
     supply_invoice_items: number
     supplier_payments: number
     categories: number
+    deleted_categories: number
     brands: number
+    deleted_brands: number
+    deleted_staff: number
     inventory_sessions: number
     inventory_items: number
+    supplier_price_items: number
+    supplier_price_imports: number
     settings: number
   }
 }

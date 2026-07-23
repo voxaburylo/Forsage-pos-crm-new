@@ -72,7 +72,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const session = await signIn(normalized, password)
-      navigate(homePathForRole(session.user.user_metadata?.role as string | undefined))
+      navigate(homePathForRole(session.user.app_metadata?.role as string | undefined))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Помилка входу')
     } finally {

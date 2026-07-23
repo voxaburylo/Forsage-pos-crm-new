@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Package, X, ChevronDown, Loader2, User } from 'lucide-react'
 import { posOrderApi } from '@/features/pos/posOrderApi'
@@ -63,21 +63,27 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [payAction, setPayAction] = useState<PaymentAction>('deposit')
   const [closeAfterPayment, setCloseAfterPayment] = useState(false)
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account'>('cash')
-  const [payFiscal, setPayFiscal] = useState(false)
   const [paying, setPaying] = useState(false)
   // Рахунок клієнта (передплата) — для оплати замовлення з балансу
   const [accountBalance, setAccountBalance] = useState<number | null>(null)
+  const paymentAttemptRef = useRef<{ fingerprint: string; paymentId: string } | null>(null)
+  const payOrderCustomerId = payOrder?.customer?.id
+
+  useEffect(() => {
+    paymentAttemptRef.current = null
+  }, [payOrder?.id, payAmount, payAction, payMethod])
 
   useEffect(() => {
     setAccountBalance(null)
-    if (payMethod === 'account') setPayMethod('cash')
-    const customerId = payOrder?.customer?.id
-    if (!customerId) return
-    posCustomerMoneyApi.getDeposit(customerId, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
-      .then((r) => setAccountBalance(r.data?.balance ?? 0))
-      .catch(() => setAccountBalance(0))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payOrder?.id])
+    setPayMethod((current) => current === 'account' ? 'cash' : current)
+    if (!payOrderCustomerId) return
+
+    let cancelled = false
+    posCustomerMoneyApi.getDeposit(payOrderCustomerId, { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS })
+      .then((r) => { if (!cancelled) setAccountBalance(r.data?.balance ?? 0) })
+      .catch(() => { if (!cancelled) setAccountBalance(0) })
+    return () => { cancelled = true }
+  }, [payOrder?.id, payOrderCustomerId])
 
   // Скан картки клієнта при відкритій панелі «Видати» → показуємо ЙОГО замовлення
   useEffect(() => {
@@ -172,13 +178,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     setPayAction(action)
     setCloseAfterPayment(action === 'full' && issueAfterPayment && canIssueOrder(order))
     setPayAmount(action === 'full' ? (remaining / 100).toFixed(2) : '')
-    setPayFiscal(false)
   }
 
   function closePaymentModal() {
     setPayOrder(null)
     setPayAmount('')
-    setPayFiscal(false)
     setCloseAfterPayment(false)
     setPayAction('deposit')
   }
@@ -209,14 +213,23 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     const orderToComplete = payOrder
     const shouldCompleteAfterPayment = payAction === 'full' && closeAfterPayment && canIssueOrder(orderToComplete)
 
+    const paymentFingerprint = [
+      payOrder.id, amountVal, payMethod, store.currentShift?.id ?? '',
+    ].join('|')
+    if (paymentAttemptRef.current?.fingerprint !== paymentFingerprint) {
+      paymentAttemptRef.current = { fingerprint: paymentFingerprint, paymentId: crypto.randomUUID() }
+    }
+    const paymentId = paymentAttemptRef.current.paymentId
+
     setPaying(true)
     try {
       await posOrderApi.addPayment(
         payOrder.id,
         {
           amount: amountVal,
+          payment_id: paymentId,
           method: payMethod,
-          is_fiscal: payMethod === 'account' ? false : payFiscal,
+          is_fiscal: false,
           shift_id: store.currentShift?.id || null,
           notes: payMethod === 'account'
             ? 'Оплата замовлення з рахунку клієнта'
@@ -227,6 +240,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
       )
 
+      paymentAttemptRef.current = null
       closePaymentModal()
 
       if (shouldCompleteAfterPayment) {
@@ -516,11 +530,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                   </div>
                 </div>
 
-                <label className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900 px-3 py-3 text-sm text-gray-300">
-                  <input type="checkbox" checked={payFiscal} onChange={(e) => setPayFiscal(e.target.checked)}
-                    className="h-4 w-4 accent-yellow-500" />
-                  Провести через ПРРО (фіскальний чек)
-                </label>
+                <div className="rounded-xl border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-100">
+                  Передоплата зберігається без фіскального чека. ПРРО для передоплат буде доступне
+                  лише після підключення безпечної інтеграції — програма не ставить фіктивну ознаку фіскалізації.
+                </div>
                 {payAction === 'full' && canIssueOrder(payOrder) && (
                   <label className="flex items-center gap-3 rounded-xl border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
                     <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
@@ -758,11 +771,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                 </div>
               </div>
 
-              <label className="flex items-center gap-3 rounded-lg border border-gray-700 bg-gray-900 px-3 py-3 text-sm text-gray-300">
-                <input type="checkbox" checked={payFiscal} onChange={(e) => setPayFiscal(e.target.checked)}
-                  className="h-4 w-4 accent-yellow-500" />
-                Провести через ПРРО (фіскальний чек)
-              </label>
+              <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-100">
+                Передоплата зберігається без фіскального чека. ПРРО для передоплат буде доступне
+                лише після підключення безпечної інтеграції — програма не ставить фіктивну ознаку фіскалізації.
+              </div>
                 {payAction === 'full' && canIssueOrder(payOrder) && (
                   <label className="flex items-center gap-3 rounded-lg border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
                     <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}

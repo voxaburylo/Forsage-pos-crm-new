@@ -47,41 +47,102 @@ export class LocalStaffRepository {
     }))
   }
 
-  createUser(input: {
-    tenant_id?: string
+  saveServerUser(input: {
+    id: string
     phone: string
-    password?: string
     full_name: string
     role: string
+    is_active?: boolean
     base_rate?: number
     rate_period?: 'day' | 'month'
-  }): any {
-    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    created_at?: string
+    updated_at?: string
+  }, password: string, tenantId = DEFAULT_TENANT_ID): any {
+    const id = String(input.id ?? '').trim()
     const fullName = String(input.full_name ?? '').trim()
     const phone = String(input.phone ?? '').trim()
+    if (!id) throw new Error('Сервер не повернув ідентифікатор співробітника')
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
     if (!phone) throw new Error('Вкажіть телефон співробітника')
-    const existing = this.db.prepare(`
-      SELECT id FROM staff_users WHERE tenant_id = ? AND phone = ? AND deleted_at IS NULL LIMIT 1
-    `).get(tenantId, phone)
-    if (existing) throw new Error('Співробітник з таким телефоном вже існує')
+    if (String(password).length < 6) throw new Error('Пароль має містити щонайменше 6 символів')
+
     const timestamp = nowIso()
-    const id = randomUUID()
-    const passwordHash = input.password ? hashSecret(input.password, id) : null
+    const createdAt = input.created_at || timestamp
+    const updatedAt = input.updated_at || timestamp
+    const duplicate = (this.db.prepare(`
+      SELECT id, phone
+      FROM staff_users
+      WHERE tenant_id = ? AND id <> ? AND deleted_at IS NULL
+    `).all(tenantId, id) as Array<{ id: string; phone: string | null }>)
+      .find((candidate) => normalizePhone(candidate.phone ?? '') === normalizePhone(phone))
+
+    return this.db.transaction(() => {
+      // Old desktop builds could create a local UUID first. Keep that row only
+      // as an inactive FK anchor and stop its unsupported outbox operation.
+      if (duplicate) {
+        this.db.prepare(`
+          UPDATE staff_users
+          SET is_active = 0, deleted_at = ?, dirty_at = NULL, updated_at = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(timestamp, timestamp, duplicate.id, tenantId)
+        this.db.prepare(`
+          DELETE FROM sync_outbox
+          WHERE aggregate_type = 'staff_user'
+            AND aggregate_id = ?
+            AND status IN ('pending', 'failed', 'sending')
+        `).run(duplicate.id)
+      }
+
+      this.db.prepare(`
+        INSERT INTO staff_users (
+          id, tenant_id, full_name, role, phone, is_active, base_rate, rate_period,
+          password_hash, remote_updated_at, dirty_at, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+        ON CONFLICT(id) DO UPDATE SET
+          tenant_id = excluded.tenant_id,
+          full_name = excluded.full_name,
+          role = excluded.role,
+          phone = excluded.phone,
+          is_active = excluded.is_active,
+          base_rate = excluded.base_rate,
+          rate_period = excluded.rate_period,
+          password_hash = excluded.password_hash,
+          remote_updated_at = excluded.remote_updated_at,
+          dirty_at = NULL,
+          updated_at = excluded.updated_at,
+          deleted_at = NULL
+      `).run(
+        id,
+        tenantId,
+        fullName,
+        input.role || 'cashier',
+        phone,
+        input.is_active === false ? 0 : 1,
+        money(input.base_rate),
+        input.rate_period === 'month' ? 'month' : 'day',
+        hashSecret(password, id),
+        updatedAt,
+        createdAt,
+        updatedAt,
+      )
+      this.db.prepare(`
+        DELETE FROM sync_outbox
+        WHERE aggregate_type = 'staff_user'
+          AND aggregate_id = ?
+          AND status IN ('pending', 'failed', 'sending')
+      `).run(id)
+      return this.listUsers(tenantId).find((user) => user.id === id)
+    })
+  }
+
+  saveServerPassword(id: string, password: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
+    this.requireUser(id, tenantId)
+    if (String(password).length < 6) throw new Error('Пароль має містити щонайменше 6 символів')
     this.db.prepare(`
-      INSERT INTO staff_users (
-        id, tenant_id, full_name, role, phone, is_active, base_rate, rate_period,
-        password_hash, dirty_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, tenantId, fullName, input.role || 'cashier', phone, money(input.base_rate),
-      input.rate_period === 'month' ? 'month' : 'day', passwordHash, timestamp, timestamp, timestamp,
-    )
-    this.addOutbox(tenantId, 'staff_user', id, 'staff_user.created', {
-      id, full_name: fullName, role: input.role || 'cashier', phone,
-      base_rate: money(input.base_rate), rate_period: input.rate_period === 'month' ? 'month' : 'day',
-    }, timestamp)
-    return this.listUsers(tenantId).find((user) => user.id === id)
+      UPDATE staff_users SET password_hash = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+    `).run(hashSecret(password, id), nowIso(), id, tenantId)
+    return { success: true }
   }
 
   updateUser(id: string, input: any, tenantId = DEFAULT_TENANT_ID): any {
@@ -129,16 +190,6 @@ export class LocalStaffRepository {
     return { ok: true }
   }
 
-  resetPassword(id: string, password: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
-    this.requireUser(id, tenantId)
-    if (String(password).length < 6) throw new Error('Пароль має містити щонайменше 6 символів')
-    const timestamp = nowIso()
-    this.db.prepare(`
-      UPDATE staff_users SET password_hash = ?, dirty_at = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `).run(hashSecret(password, id), timestamp, timestamp, id, tenantId)
-    return { success: true }
-  }
 
   loginWithPassword(phone: string, password: string, tenantId = DEFAULT_TENANT_ID): any {
     const normalizedPhone = normalizePhone(phone)

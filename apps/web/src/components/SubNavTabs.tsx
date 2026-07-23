@@ -1,11 +1,11 @@
 import { Link, useLocation } from 'react-router-dom'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 
 interface TabItem {
   label: string
   to: string
   roles?: string[]
-  desktopHidden?: boolean
+  serverOnly?: boolean
 }
 
 interface SubNavTabsProps {
@@ -15,9 +15,10 @@ interface SubNavTabsProps {
 
 export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
   const location = useLocation()
+  const offlineMode = useAuthStore((state) => state.offlineMode)
 
   const visibleTabs = tabs.filter(
-    (tab) => (!tab.desktopHidden || !isDesktopRuntime()) && (!tab.roles || !currentRole || tab.roles.includes(currentRole))
+    (tab) => (!tab.serverOnly || !offlineMode) && (!tab.roles || !currentRole || tab.roles.includes(currentRole))
   )
 
   if (visibleTabs.length <= 1) return null
@@ -85,19 +86,18 @@ export const PRODUCTS_TABS = [
 ]
 
 export const ORDERS_TABS = [
-  { to: '/orders', label: 'Замовлення' },
-  { to: '/orders?tab=drafts', label: 'Чернетки' }
+  { to: '/orders', label: 'Замовлення' }
 ]
 
 export const FINANCE_TABS = [
   { to: '/sales', label: 'Журнал продажів' },
   { to: '/returns', label: 'Повернення' },
-  { to: '/cashflow', label: 'Каса та витрати', desktopHidden: true }
+  { to: '/cashflow', label: 'Каса та витрати' }
 ]
 
 export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Постачальники', roles: ['owner', 'admin', 'manager'] },
-  { to: '/suppliers/pos', label: 'Замовлення постачальникам', desktopHidden: true },
+  { to: '/suppliers/pos', label: 'Замовлення постачальникам', serverOnly: true },
 ]
 
 // Поступлення товарів — єдиний дім для приходу (накладні + імпорт), щоб не дублювати
@@ -112,7 +112,6 @@ export const INVENTORY_TABS = [
   { to: '/inventory/movements', label: 'Між комірками', roles: ['owner', 'admin', 'storekeeper'] },
   { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
   { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },
-  { to: '/core-returns', label: 'Повернення старих деталей', desktopHidden: true, roles: ['owner', 'admin', 'manager'] },
 ]
 
 export const ANALYTICS_TABS = [

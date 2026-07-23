@@ -11,14 +11,14 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { listCustomersOffline } from '@/lib/offlineDB'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
 
 const PER_PAGE = 50
 
 export default function CustomersPage() {
   const navigate = useNavigate()
   const session = useAuthStore((state) => state.session)
-  const role = (session?.user.user_metadata?.role as string | undefined) ?? 'cashier'
+  const offlineMode = useAuthStore((state) => state.offlineMode)
+  const role = (session?.user.app_metadata?.role as string | undefined) ?? 'cashier'
   const scopeKey = session?.user.id ?? ''
   const canManageCustomers = ['owner', 'admin', 'manager'].includes(role)
   const canDeleteCustomers = ['owner', 'admin'].includes(role)
@@ -62,7 +62,7 @@ export default function CustomersPage() {
   }
 
   useEffect(() => {
-    if (isDesktopRuntime()) return
+    if (offlineMode) { setGroups([]); return }
     customerGroupsApi.list().then((res) => {
       const seen = new Set<string>()
       const unique = (res.data ?? []).filter((g) => {
@@ -72,7 +72,7 @@ export default function CustomersPage() {
       })
       setGroups(unique)
     }).catch(() => {})
-  }, [])
+  }, [offlineMode])
 
   // Завантаження сторінки: reset=true — новий фільтр (замінюємо), інакше — дозавантаження (додаємо)
   const fetchPage = useCallback(async (pageToLoad: number, reset: boolean) => {
@@ -120,6 +120,11 @@ export default function CustomersPage() {
     }
   }, [search, hasDebt, activeGroup, scopeKey])
 
+  useEffect(() => {
+    const refreshFromLocalPull = () => { void fetchPage(1, true) }
+    window.addEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
+    return () => window.removeEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
+  }, [fetchPage])
   // Скидання при зміні фільтрів/пошуку (з невеликим debounce для пошуку)
   useEffect(() => {
     setSelectedIds(new Set())

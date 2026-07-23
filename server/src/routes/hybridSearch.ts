@@ -4,83 +4,61 @@ import { requireAuth } from '../middleware/auth.js'
 import { buildProductSearchTerms, searchProductsForPOS } from '../services/searchService.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { importFromCatalog } from '../services/productService.js'
+import { importSupplierCatalogProduct } from '../services/supplierCatalogProductService.js'
+import { normalizeExactBarcode } from '../lib/productIdentity.js'
 
 const router = Router()
 router.use(requireAuth)
 
-// GET /api/v1/search/hybrid?q=...&limit=...
 router.get('/hybrid', async (req, res, next) => {
   try {
     const q = String(req.query.q || '').trim()
     const limit = Math.min(Number(req.query.limit) || 10, 50)
     const tenantId = req.user!.tenant_id
+    if (!q) return res.json({ data: { warehouse: [], supplier_catalog: [] } })
 
-    if (!q) {
-      return res.json({ data: { warehouse: [], supplier_catalog: [] } })
-    }
-
-    // 1. Пошук по основному складу
     const warehouseResults = await searchProductsForPOS(q, limit, tenantId)
-
-    // 2. Пошук по прайсах постачальників
     const catalogTerms = buildProductSearchTerms(q)
-    const catalogWordTerms = catalogTerms
-      .flatMap((term) => term.split(/\s+/))
-      .filter((term) => term.length >= 2)
-      .sort((a, b) => b.length - a.length)
-    const catalogConditions = [...new Set([...catalogTerms, ...catalogWordTerms])]
+    const wordTerms = catalogTerms.flatMap((term) => term.split(/\s+/)).filter((term) => term.length >= 2)
+    const conditions = [...new Set([...catalogTerms, ...wordTerms])]
+      .sort((left, right) => right.length - left.length)
       .slice(0, 16)
       .flatMap((term) => {
         const safe = term.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim()
         return safe
-          ? [`sku.ilike.*${safe}*`, `sku.ilike.*${normalizeArticle(safe)}*`, `name.ilike.*${safe}*`]
+          ? [`sku.ilike.*${safe}*`, `sku.ilike.*${normalizeArticle(safe)}*`, `barcode.ilike.*${safe}*`, `name.ilike.*${safe}*`]
           : []
       })
       .join(',')
-    const { data: catalogResults, error: catalogError } = await db
+    const { data: catalogResults, error } = await db
       .from('supplier_price_items')
-      .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)')
+      .select('id, sku, barcode, brand, name, price_kopecks, qty, warehouse_name, supplier_id, supplier:suppliers(id, name)')
       .eq('tenant_id', tenantId)
-      .or(catalogConditions || 'name.ilike.*__no_match__*')
+      .is('deleted_at', null)
+      .or(conditions || 'name.ilike.*__no_match__*')
       .limit(limit)
-
-    if (catalogError) throw new AppError('DB_ERROR', catalogError.message, 500)
-
-    res.json({
-      data: {
-        warehouse: warehouseResults || [],
-        supplier_catalog: catalogResults || []
-      }
-    })
-  } catch (err) { next(err) }
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    res.json({ data: { warehouse: warehouseResults || [], supplier_catalog: catalogResults || [] } })
+  } catch (error) { next(error) }
 })
 
-// GET /api/v1/search/vehicles?q=...&limit=...
 router.get('/vehicles', async (req, res, next) => {
   try {
     const q = String(req.query.q || '').trim()
     const limit = Math.min(Number(req.query.limit) || 10, 50)
     const tenantId = req.user!.tenant_id
-
-    if (!q) {
-      return res.json({ data: [] })
-    }
-
+    if (!q) return res.json({ data: [] })
     const { data, error } = await db
       .from('customer_vehicles')
       .select('id, vin, brand, model, year, customer:customers(id, full_name, phone)')
       .eq('tenant_id', tenantId)
       .or(`vin.ilike.%${q}%,brand.ilike.%${q}%,model.ilike.%${q}%`)
       .limit(limit)
-
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-
     res.json({ data: data || [] })
-  } catch (err) { next(err) }
+  } catch (error) { next(error) }
 })
 
-// GET /api/v1/search/catalog?supplier_id=...&q=...&page=...&limit=...
 router.get('/catalog', async (req, res, next) => {
   try {
     const supplierId = req.query.supplier_id as string || null
@@ -89,133 +67,111 @@ router.get('/catalog', async (req, res, next) => {
     const limit = Math.min(Number(req.query.limit) || 25, 100)
     const offset = (page - 1) * limit
     const tenantId = req.user!.tenant_id
-
-    let queryBuilder = db
+    let query = db
       .from('supplier_price_items')
-      .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)', { count: 'exact' })
+      .select('id, sku, barcode, brand, name, price_kopecks, qty, warehouse_name, supplier_id, supplier:suppliers(id, name)', { count: 'exact' })
       .eq('tenant_id', tenantId)
-
-    if (supplierId) {
-      queryBuilder = queryBuilder.eq('supplier_id', supplierId)
-    }
-
+      .is('deleted_at', null)
+    if (supplierId) query = query.eq('supplier_id', supplierId)
     if (q) {
       const normalized = normalizeArticle(q)
-      queryBuilder = queryBuilder.or(`sku.ilike.%${normalized}%,name.ilike.%${q}%`)
+      const safe = q.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim()
+      query = query.or(`sku.ilike.%${normalized}%,barcode.ilike.%${safe}%,name.ilike.%${safe}%`)
     }
-
-    const { data, error, count } = await queryBuilder
+    const { data, error, count } = await query
       .order('updated_at', { ascending: false })
       .range(offset, offset + limit - 1)
-
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-
-    res.json({
-      data: data || [],
-      pagination: {
-        page,
-        limit,
-        total: count || 0
-      }
-    })
-  } catch (err) { next(err) }
+    res.json({ data: data || [], pagination: { page, limit, total: count || 0 } })
+  } catch (error) { next(error) }
 })
 
-// POST /api/v1/search/import-on-demand
 router.post('/import-on-demand', async (req, res, next) => {
   try {
-    const { sku, brand, name, supplier_id, purchase_price, retail_price } = req.body
-    const tenantId = req.user!.tenant_id
-
-    if (!sku || !name) {
-      throw new AppError('VALIDATION_ERROR', "Артикул та назва є обов'язковими", 400)
+    const { sku, barcode, brand, name, supplier_id, purchase_price, retail_price } = req.body
+    if (!String(name || '').trim()) {
+      throw new AppError('VALIDATION_ERROR', "Назва товару є обов'язковою", 400)
     }
-
-    const product = await importFromCatalog({
-      sku,
-      brandName: brand || '',
-      name,
+    const result = await importSupplierCatalogProduct({
+      sku: String(sku || ''),
+      barcode: normalizeExactBarcode(barcode),
+      brandName: String(brand || ''),
+      name: String(name).trim(),
       supplierId: supplier_id || null,
       purchasePrice: Number(purchase_price) || 0,
-      retailPrice: retail_price !== undefined && retail_price !== null ? Number(retail_price) : undefined
-    }, tenantId)
-
-    res.status(201).json({ data: product })
-  } catch (err) { next(err) }
+      retailPrice: retail_price !== undefined && retail_price !== null ? Number(retail_price) : undefined,
+    }, req.user!.tenant_id, req.user!.id)
+    res.status(result.reused ? 200 : 201).json({ data: result.product, reused: result.reused })
+  } catch (error) { next(error) }
 })
 
-
-// POST /api/v1/search/catalog — додати вручну
 router.post('/catalog', async (req, res, next) => {
   try {
-    const { sku, brand, name, price_kopecks, qty, warehouse_name, supplier_id } = req.body
-    const tenantId = req.user!.tenant_id
-
-    if (!sku || !name) {
+    const { sku, barcode, brand, name, price_kopecks, qty, warehouse_name, supplier_id } = req.body
+    if (!String(sku || '').trim() || !String(name || '').trim()) {
       throw new AppError('VALIDATION_ERROR', "Артикул та назва є обов'язковими", 400)
     }
-
     const { data, error } = await db
       .from('supplier_price_items')
       .insert({
-        tenant_id: tenantId,
-        sku: normalizeArticle(sku),
-        brand: brand || null,
-        name,
-        price_kopecks: Number(price_kopecks) || 0,
-        qty: qty || '0',
-        warehouse_name: warehouse_name || null,
+        tenant_id: req.user!.tenant_id,
+        sku: normalizeArticle(String(sku)),
+        barcode: normalizeExactBarcode(barcode),
+        brand: String(brand || '').trim() || null,
+        name: String(name).trim(),
+        price_kopecks: Math.max(0, Math.round(Number(price_kopecks) || 0)),
+        qty: String(qty || '0'),
+        warehouse_name: String(warehouse_name || '').trim() || null,
         supplier_id: supplier_id || null,
+        deleted_at: null,
       })
-      .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)')
+      .select('id, sku, barcode, brand, name, price_kopecks, qty, warehouse_name, supplier_id, supplier:suppliers(id, name)')
       .single()
-
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     res.status(201).json({ data })
-  } catch (err) { next(err) }
+  } catch (error) { next(error) }
 })
 
-// PUT /api/v1/search/catalog/:id — редагувати
 router.put('/catalog/:id', async (req, res, next) => {
   try {
-    const { sku, brand, name, price_kopecks, qty, warehouse_name, supplier_id } = req.body
-    const tenantId = req.user!.tenant_id
-
+    const { sku, barcode, brand, name, price_kopecks, qty, warehouse_name, supplier_id } = req.body
     const { data, error } = await db
       .from('supplier_price_items')
       .update({
-        sku: sku ? normalizeArticle(sku) : undefined,
-        brand: brand !== undefined ? (brand || null) : undefined,
-        name: name || undefined,
-        price_kopecks: price_kopecks !== undefined ? (Number(price_kopecks) || 0) : undefined,
-        qty: qty !== undefined ? (qty || '0') : undefined,
-        warehouse_name: warehouse_name !== undefined ? (warehouse_name || null) : undefined,
-        supplier_id: supplier_id !== undefined ? (supplier_id || null) : undefined,
+        sku: sku ? normalizeArticle(String(sku)) : undefined,
+        barcode: barcode !== undefined ? normalizeExactBarcode(barcode) : undefined,
+        brand: brand !== undefined ? String(brand || '').trim() || null : undefined,
+        name: name ? String(name).trim() : undefined,
+        price_kopecks: price_kopecks !== undefined ? Math.max(0, Math.round(Number(price_kopecks) || 0)) : undefined,
+        qty: qty !== undefined ? String(qty || '0') : undefined,
+        warehouse_name: warehouse_name !== undefined ? String(warehouse_name || '').trim() || null : undefined,
+        supplier_id: supplier_id !== undefined ? supplier_id || null : undefined,
+        deleted_at: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', req.params.id)
-      .eq('tenant_id', tenantId)
-      .select('id, sku, brand, name, price_kopecks, qty, warehouse_name, supplier:suppliers(id, name)')
-      .single()
-
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
+      .select('id, sku, barcode, brand, name, price_kopecks, qty, warehouse_name, supplier_id, supplier:suppliers(id, name)')
+      .maybeSingle()
     if (error) throw new AppError('DB_ERROR', error.message, 500)
+    if (!data) throw new AppError('NOT_FOUND', 'Чернову позицію не знайдено', 404)
     res.json({ data })
-  } catch (err) { next(err) }
+  } catch (error) { next(error) }
 })
 
-// DELETE /api/v1/search/catalog/:id — видалити
 router.delete('/catalog/:id', async (req, res, next) => {
   try {
-    const tenantId = req.user!.tenant_id
+    const timestamp = new Date().toISOString()
     const { error } = await db
       .from('supplier_price_items')
-      .delete()
+      .update({ deleted_at: timestamp, updated_at: timestamp })
       .eq('id', req.params.id)
-      .eq('tenant_id', tenantId)
-
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     res.status(204).send()
-  } catch (err) { next(err) }
+  } catch (error) { next(error) }
 })
 
 export default router

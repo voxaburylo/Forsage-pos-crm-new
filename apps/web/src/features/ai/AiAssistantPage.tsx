@@ -240,7 +240,7 @@ function dataUrlToChatImage(dataUrl: string): AiChatImage {
 
 export default function AiAssistantPage() {
   const navigate = useNavigate()
-  const role = useAuthStore((state) => state.session?.user.user_metadata?.role as string | undefined)
+  const role = useAuthStore((state) => state.session?.user.app_metadata?.role as string | undefined)
   const canConfigure = role === 'owner' || role === 'admin'
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [loadingStatus, setLoadingStatus] = useState(true)

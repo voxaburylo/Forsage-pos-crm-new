@@ -7,10 +7,12 @@ import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { notifyStatusUpdate } from '../services/telegramBot.js'
 import { calculateAndRecordCommission } from '../services/commissionService.js'
-import { getTerminalAdapter, getFiscalAdapter } from '../services/integrations/adapterFactory.js'
 import { notifyWaitlistCustomers } from './waitlist.js'
 import { createSupplierPOsForOrder } from '../services/supplierService.js'
 import { logAction } from '../services/auditService.js'
+import { addOrderPayment } from '../services/orderPaymentService.js'
+import { markOrderItemsArrived } from '../services/orderBulkArrivalService.js'
+import { cancelOrderSafely } from '../services/orderCancellationService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -131,7 +133,6 @@ const createOrderSchema = z.object({
   prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
   prepayment_is_fiscal:  z.boolean().default(false),
   parent_draft_id:       z.string().uuid().optional().nullable(),
-  discount_amount:       z.number().int().min(0).default(0),
   items: z.array(z.object({
     sku:          z.string().max(100).optional().nullable(),
     name:         z.string().min(1).max(500),
@@ -210,18 +211,6 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
       return s + (i.sell_price * i.qty) + (coreDeposit * i.qty)
     }, 0)
 
-    // Термінальна перевірка передоплати ПЕРЕД створенням замовлення в БД (Оновлено P2 Fix 13)
-    let bankAuthCode: string | null = null
-    let terminalRrn:  string | null = null
-    let finalIsFiscal = input.prepayment_is_fiscal
-
-    const isCardPrepayment = input.prepayment > 0 && input.prepayment_method === 'card'
-
-    // Створюємо замовлення спочатку в статусі 'lead' (чернетка), якщо це карткова передоплата
-    const initialStatus = isCardPrepayment ? 'lead' : (input.prepayment > 0 ? 'new' : 'lead')
-    const initialPrepayment = isCardPrepayment ? 0 : input.prepayment
-    const initialIsFiscal = isCardPrepayment ? false : finalIsFiscal
-
     const { data: order, error: orderErr } = await db
       .from('customer_orders')
       .insert({
@@ -230,16 +219,16 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
         chat_id: input.chat_id ?? null,
         manager_id: req.user!.id,
         vehicle_info: input.vehicle_info ?? null,
-        status: initialStatus,
-        prepayment: initialPrepayment,
+        status: 'lead',
+        prepayment: 0,
         prepayment_method: input.prepayment_method ?? null,
-        prepayment_is_fiscal: initialIsFiscal,
+        prepayment_is_fiscal: false,
         total_amount: totalAmount,
-        total_paid: initialPrepayment,
+        total_paid: 0,
         comment: input.comment ?? null,
         source: input.source,
         parent_draft_id: input.parent_draft_id ?? null,
-        discount_amount: input.discount_amount ?? 0,
+        discount_amount: 0,
       })
       .select()
       .single()
@@ -279,133 +268,8 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
     const { error: itemsErr } = await db.from('customer_order_items').insert(itemsToInsert)
     if (itemsErr) {
       // rollback order draft
-      await db.from('customer_orders').delete().eq('id', order.id)
+      await db.from('customer_orders').delete().eq('id', order.id).eq('tenant_id', req.user!.tenant_id)
       throw new AppError('DB_ERROR', itemsErr.message, 500)
-    }
-
-    // Якщо це передоплата карткою — проводимо транзакцію на терміналі
-    if (isCardPrepayment) {
-      try {
-        finalIsFiscal = true // Термінал -> 100% ПРРО
-        const { getSettings } = await import('../services/adminService.js')
-        const settings = await getSettings(req.user!.tenant_id).catch(() => null)
-
-        if (settings && settings.bank_terminal_enabled) {
-          const terminalAdapter = getTerminalAdapter(settings)
-          if (terminalAdapter) {
-            const terminalResult = await terminalAdapter.processPayment(
-              input.prepayment,
-              "PREPAY-" + order.id
-            )
-            if (!terminalResult.success) {
-              throw new AppError('TERMINAL_DECLINED', terminalResult.error ?? 'Термінал відхилив оплату', 402)
-            }
-            bankAuthCode = terminalResult.authCode
-            terminalRrn = terminalResult.rrn ?? null
-          }
-        }
-
-        // Транзакція успішна! Активуємо замовлення та оновлюємо передоплату
-        const { error: updateErr } = await db
-          .from('customer_orders')
-          .update({
-            status: 'new',
-            prepayment: input.prepayment,
-            total_paid: input.prepayment,
-            prepayment_is_fiscal: true,
-          })
-          .eq('id', order.id)
-
-        if (updateErr) throw new AppError('DB_ERROR', updateErr.message, 500)
-
-        // Оновимо об'єкт order для подальшого коду
-        order.status = 'new'
-        order.prepayment = input.prepayment
-        order.total_paid = input.prepayment
-        order.prepayment_is_fiscal = true
-      } catch (termErr) {
-        // У разі відхилення терміналом або іншої помилки — видаляємо створену чернетку замовлення
-        await db.from('customer_orders').delete().eq('id', order.id)
-        throw termErr
-      }
-    }
-
-    // Якщо є передоплата — фіскалізуємо ПРРО та записуємо платіж
-    if (input.prepayment > 0) {
-      let fiscalNumber: string | null = null
-      let fiscalQrUrl:  string | null = null
-
-      if (finalIsFiscal) {
-        try {
-          const { getSettings } = await import('../services/adminService.js')
-          const settings = await getSettings(req.user!.tenant_id).catch(() => null)
-          if (settings) {
-            const fiscalAdapter = getFiscalAdapter(settings)
-            const fiscalResult = await fiscalAdapter.fiscalize(
-              order.id,
-              "PREPAY-" + order.id.slice(0, 8),
-              input.prepayment,
-              [{ name: "Передоплата замовлення", qty: 1, unit_price: input.prepayment, discount: 0 }],
-              input.prepayment_method ?? 'cash'
-            )
-            if (fiscalResult.success) {
-              fiscalNumber = fiscalResult.fiscal_number
-              fiscalQrUrl  = fiscalResult.qr_url
-            } else {
-              logger.warn({ error: fiscalResult.error }, 'Фіскалізація: не вдалось фіскалізувати')
-            }
-          }
-        } catch (prroErr: any) {
-          logger.error({ error: prroErr.message }, 'ПРРО: помилка інтеграції при передоплаті')
-        }
-      }
-      try {
-        const paymentNotesList = [
-          'Передоплата при створенні',
-          fiscalNumber ? 'Фіскальний №: ' + fiscalNumber : '',
-          fiscalQrUrl ? 'QR-код чеку: ' + fiscalQrUrl : '',
-          bankAuthCode ? 'Код авторизації: ' + bankAuthCode : '',
-          terminalRrn ? 'RRN: ' + terminalRrn : ''
-        ].filter(Boolean).join('\n')
-
-        await db.from('order_payments').insert({
-          tenant_id:  req.user!.tenant_id,
-          order_id:   order.id,
-          amount:     input.prepayment,
-          method:     input.prepayment_method ?? 'cash',
-          is_fiscal:  finalIsFiscal,
-          created_by: req.user!.id,
-          notes:      paymentNotesList,
-        })
-
-        // Касова операція для готівки
-        if (input.prepayment_method === 'cash') {
-          const { data: anyShift } = await db
-            .from('shifts')
-            .select('id')
-            .eq('status', 'open')
-            .eq('tenant_id', req.user!.tenant_id)
-            .limit(1)
-            .maybeSingle()
-
-          if (anyShift) {
-            await db.from('cash_operations').insert({
-              tenant_id: req.user!.tenant_id,
-              shift_id: anyShift.id,
-              type: 'in',
-              amount: input.prepayment,
-              created_by: req.user!.id,
-              note: "Передоплата замовлення #" + order.id.slice(0, 8),
-            })
-            logger.info({ orderId: order.id, amount: input.prepayment }, 'Prepayment cash operation created')
-          } else {
-            logger.warn({ orderId: order.id, prepayment: input.prepayment },
-              'Prepayment received but no open shift found')
-          }
-        }
-      } catch (cashErr) {
-        logger.error({ error: cashErr instanceof Error ? cashErr.message : cashErr }, 'Failed to create cash operation')
-      }
     }
 
     // Логуємо дію
@@ -434,9 +298,9 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
         // слід грошей (термінал/каса вже провели платіж)
         const hasPrepayment = (order.total_paid ?? 0) > 0 || input.prepayment > 0
         if (hasPrepayment) {
-          await db.from('customer_orders').update({ status: 'lead' }).eq('id', order.id)
+          await db.from('customer_orders').update({ status: 'lead' }).eq('id', order.id).eq('tenant_id', req.user!.tenant_id)
         } else {
-          await db.from('customer_orders').delete().eq('id', order.id)
+          await db.from('customer_orders').delete().eq('id', order.id).eq('tenant_id', req.user!.tenant_id)
         }
         if (reserveErr.message.includes('INSUFFICIENT_STOCK')) {
           throw new AppError(
@@ -486,8 +350,9 @@ router.get('/', async (req, res, next) => {
       else query = query.in('status', statuses)
     }
     if (searchRaw) {
-      const safeSearch = searchRaw.replace(/[(),]/g, ' ').trim()
+      const safeSearch = searchRaw.replace(/[(),%]/g, ' ').trim()
       const digits = searchRaw.replace(/\D/g, '')
+      const numericOrder = searchRaw.replace(/^(ORD-?|#)/i, '')
       const customerIds: string[] = []
 
       if (safeSearch || digits) {
@@ -520,7 +385,7 @@ router.get('/', async (req, res, next) => {
       const orderFilters: string[] = []
       const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
       if (uuidLike.test(searchRaw)) orderFilters.push(`id.eq.${searchRaw}`)
-      if (/^\d+$/.test(searchRaw)) orderFilters.push(`order_number.eq.${Number(searchRaw)}`)
+      if (/^\d+$/.test(numericOrder)) orderFilters.push(`order_number.eq.${Number(numericOrder)}`)
       if (safeSearch) {
         orderFilters.push(`kp_number.ilike.%${safeSearch}%`)
       }
@@ -533,30 +398,6 @@ router.get('/', async (req, res, next) => {
       } else {
         query = query.eq('id', '00000000-0000-0000-0000-000000000000')
       }
-    }
-
-    // Пошук: № замовлення (з чека/сканера "ORD-1043", "#1043", "1043"),
-    // ім'я або телефон клієнта. Раніше параметр search тихо ігнорувався.
-    const search = String(req.query.search ?? '').trim()
-    if (search) {
-      const conditions: string[] = []
-      const numeric = search.replace(/^(ORD-?|#)/i, '')
-      if (/^\d+$/.test(numeric)) conditions.push(`order_number.eq.${numeric}`)
-      const safe = search.replace(/[(),%]/g, ' ').trim()
-      if (safe.length >= 2) {
-        const { data: matchedCustomers } = await db.from('customers').select('id')
-          .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
-          .or(`full_name.ilike.%${safe}%,phone.ilike.%${safe.replace(/[\s\-()]/g, '')}%`)
-          .limit(100)
-        if (matchedCustomers?.length) {
-          conditions.push(`customer_id.in.(${matchedCustomers.map((c: any) => c.id).join(',')})`)
-        }
-      }
-      if (conditions.length === 0) {
-        res.json({ data: [] })
-        return
-      }
-      query = query.or(conditions.join(','))
     }
 
     const { data, error } = await query
@@ -594,9 +435,17 @@ router.put('/:id/draft', requireRole('owner', 'admin', 'manager'), async (req, r
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
     const orderId = String(req.params.id)
-    const { data: oldOrder } = await db.from('customer_orders')
+    const { data: oldOrder, error: oldOrderError } = await db.from('customer_orders')
       .select('*, items:customer_order_items(*)')
-      .eq('id', orderId).eq('tenant_id', req.user!.tenant_id).single()
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (oldOrderError) throw new AppError('DB_ERROR', oldOrderError.message, 500)
+    if (!oldOrder) throw new AppError('ORDER_NOT_FOUND', 'Чернетку не знайдено', 404)
+    if (!['lead', 'quoted'].includes(oldOrder.status)) {
+      throw new AppError('NOT_A_DRAFT', 'Редагувати як чернетку можна лише відкриту чернетку', 409)
+    }
 
     if (parsed.data.customer_id) {
       const { data: customer } = await db.from('customers').select('id')
@@ -610,15 +459,19 @@ router.put('/:id/draft', requireRole('owner', 'admin', 'manager'), async (req, r
     if (parsed.data.comment !== undefined) updateFields.comment = parsed.data.comment
     if (parsed.data.vehicle_info !== undefined) updateFields.vehicle_info = parsed.data.vehicle_info
 
-    await db.from('customer_orders').update(updateFields).eq('id', orderId)
+    const { error: draftUpdateError } = await db.from('customer_orders')
+      .update(updateFields)
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+    if (draftUpdateError) throw new AppError('DB_ERROR', draftUpdateError.message, 500)
 
-    // Оновлюємо позиції
+    // Parent was tenant-scoped above; customer_order_items itself has no tenant_id.
     if (parsed.data.items) {
-      // Видаляємо старі позиції і вставляємо нові (простий підхід)
-      await db.from('customer_order_items').delete().eq('order_id', orderId)
+      const { error: deleteError } = await db.from('customer_order_items').delete().eq('order_id', orderId)
+      if (deleteError) throw new AppError('DB_ERROR', deleteError.message, 500)
 
       if (parsed.data.items.length > 0) {
-        await db.from('customer_order_items').insert(
+        const { error: insertError } = await db.from('customer_order_items').insert(
           parsed.data.items.map((item) => ({
             order_id: orderId,
             name: item.name,
@@ -632,16 +485,23 @@ router.put('/:id/draft', requireRole('owner', 'admin', 'manager'), async (req, r
             variants: item.variants,
           }))
         )
-
-        // Перераховуємо total
-        const total = parsed.data.items.reduce((s, i) => s + i.sell_price * i.qty, 0)
-        await db.from('customer_orders').update({ total_amount: total }).eq('id', orderId)
+        if (insertError) throw new AppError('DB_ERROR', insertError.message, 500)
       }
+
+      const total = parsed.data.items.reduce((sum, item) => sum + item.sell_price * item.qty, 0)
+      const { error: totalError } = await db.from('customer_orders')
+        .update({ total_amount: total })
+        .eq('id', orderId)
+        .eq('tenant_id', req.user!.tenant_id)
+      if (totalError) throw new AppError('DB_ERROR', totalError.message, 500)
     }
 
-    const { data } = await db.from('customer_orders')
+    const { data, error: readError } = await db.from('customer_orders')
       .select('*, customer:customers(id, phone, full_name), items:customer_order_items(*)')
-      .eq('id', orderId).single()
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .single()
+    if (readError) throw new AppError('DB_ERROR', readError.message, 500)
 
     await auditOrder(req, 'order_draft_updated', orderId, oldOrder, data)
     res.json({ data })
@@ -660,46 +520,66 @@ router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req
           sku: z.string().max(100).optional().nullable(),
           product_id: z.string().uuid().optional().nullable(),
         })
-      })),
+      })).min(1),
     })
 
     const parsed = convertSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані конвертації', 422, parsed.error.flatten())
 
-    const draftId = req.params.id
+    const draftId = String(req.params.id)
 
-    // Отримуємо вихідну чернетку
-    const { data: draftOrder } = await db.from('customer_orders')
+    const { data: draftOrder, error: draftError } = await db.from('customer_orders')
       .select('*, items:customer_order_items(*)')
-      .eq('id', draftId).single()
+      .eq('id', draftId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
+      .maybeSingle()
 
+    if (draftError) throw new AppError('DB_ERROR', draftError.message, 500)
     if (!draftOrder) throw new AppError('NOT_FOUND', 'Чернетку не знайдено', 404)
+    if (!['lead', 'quoted'].includes(draftOrder.status)) {
+      throw new AppError('NOT_A_DRAFT', 'Перетворити можна лише чернетку', 409)
+    }
 
-    // Отримуємо інформацію про продукти для застав
-    const productIds = parsed.data.items.map(i => i.selected_variant.product_id).filter(Boolean) as string[]
-    const { data: prods } = productIds.length > 0
-      ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price').in('id', productIds)
-          .eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
-      : { data: [] }
-    const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
+    const draftItems = (draftOrder.items as any[]) ?? []
+    const draftItemsById = new Map(draftItems.map((item) => [String(item.id), item]))
+    const requestedIds = parsed.data.items.map((item) => item.item_id)
+    if (new Set(requestedIds).size !== requestedIds.length) {
+      throw new AppError('VALIDATION_ERROR', 'Одна позиція чернетки вибрана кілька разів', 422)
+    }
 
-    // Розраховуємо загальну суму для нового замовлення (включаючи заставу)
-    let totalAmount = parsed.data.items.reduce((sum, item) => sum + item.selected_variant.price, 0)
-    parsed.data.items.forEach((item) => {
-      const pId = item.selected_variant.product_id
-      if (pId) {
-        const prodData = prodMap.get(pId)
-        if (prodData?.requires_core_return) {
-          const draftItem = (draftOrder.items as any[]).find((di) => di.id === item.item_id)
-          const qty = draftItem ? draftItem.qty : 1
-          totalAmount += prodData.core_deposit_amount * qty
-        }
+    const selections = parsed.data.items.map((item) => {
+      const draftItem = draftItemsById.get(item.item_id)
+      if (!draftItem) {
+        throw new AppError('ITEM_NOT_FOUND', 'Позиція не належить цій чернетці', 404)
+      }
+      return {
+        request: item,
+        draftItem,
+        productId: item.selected_variant.product_id ?? draftItem.product_id ?? null,
       }
     })
 
+    const productIds = [...new Set(selections.map((item) => item.productId).filter(Boolean) as string[])]
+    const { data: prods, error: productsError } = productIds.length > 0
+      ? await db.from('products').select('id, requires_core_return, core_deposit_amount, purchase_price')
+          .in('id', productIds).eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+      : { data: [], error: null }
+    if (productsError) throw new AppError('DB_ERROR', productsError.message, 500)
+    if ((prods?.length ?? 0) !== productIds.length) {
+      throw new AppError('PRODUCT_NOT_FOUND', 'Один або кілька товарів не знайдено', 404)
+    }
+    const prodMap = new Map((prods ?? []).map((product: any) => [product.id, product]))
+
+    const totalAmount = selections.reduce((sum, selection) => {
+      const product = selection.productId ? prodMap.get(selection.productId) : null
+      const coreDeposit = product?.requires_core_return ? (product.core_deposit_amount ?? 0) : 0
+      return sum + (selection.request.selected_variant.price + coreDeposit) * selection.draftItem.qty
+    }, 0)
+
     // Створюємо нове замовлення
     const { data: newOrder, error: orderErr } = await db.from('customer_orders').insert({
-      tenant_id:          draftOrder.tenant_id,
+      tenant_id:          req.user!.tenant_id,
       customer_id:        draftOrder.customer_id,
       manager_id:         draftOrder.manager_id,
       vehicle_info:       draftOrder.vehicle_info,
@@ -713,30 +593,25 @@ router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req
     if (orderErr || !newOrder) throw new AppError('DB_ERROR', orderErr?.message ?? 'Convert failed', 500)
 
     // Вставляємо вибрані позиції як реальні
-    const newItems = parsed.data.items.map((item) => {
-      const draftItem = (draftOrder.items as any[]).find((di) => di.id === item.item_id)
-      const name = draftItem 
-        ? (item.selected_variant.brand ? `${draftItem.name} (${item.selected_variant.brand})` : draftItem.name)
-        : 'Запчастина'
-      const qty = draftItem ? draftItem.qty : 1
-
-      const pId = item.selected_variant.product_id || (draftItem ? draftItem.product_id : null);
-      const sType = pId ? 'warehouse' : 'supplier';
-      const prodData = pId ? prodMap.get(pId) : null
-      const requiresCore = prodData?.requires_core_return ?? false
-      const coreDeposit = requiresCore ? (prodData?.core_deposit_amount ?? 0) : 0
+    const newItems = selections.map(({ request, draftItem, productId }) => {
+      const name = request.selected_variant.brand
+        ? `${draftItem.name} (${request.selected_variant.brand})`
+        : draftItem.name
+      const product = productId ? prodMap.get(productId) : null
+      const requiresCore = product?.requires_core_return ?? false
+      const coreDeposit = requiresCore ? (product?.core_deposit_amount ?? 0) : 0
       const coreStatus = requiresCore ? 'pending' : 'none'
-      const buyPrice = prodData ? (prodData.purchase_price ?? 0) : (draftItem ? (draftItem.buy_price ?? 0) : 0);
+      const buyPrice = product ? (product.purchase_price ?? 0) : (draftItem.buy_price ?? 0)
       return {
         order_id:      newOrder.id,
-        product_id:    pId,
-        sku:           item.selected_variant.sku || (draftItem ? draftItem.sku : null),
-        name:          name,
-        source_type:   sType,
+        product_id:    productId,
+        sku:           request.selected_variant.sku || draftItem.sku || null,
+        name,
+        source_type:   productId ? 'warehouse' : 'supplier',
         item_status:   'pending',
         buy_price:     buyPrice,
-        sell_price:    item.selected_variant.price,
-        qty:           qty,
+        sell_price:    request.selected_variant.price,
+        qty:           draftItem.qty,
         is_draft_note: false,
         core_deposit_amount: coreDeposit,
         core_return_status: coreStatus,
@@ -745,15 +620,26 @@ router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req
 
     if (newItems.length > 0) {
       const { error: itemsErr } = await db.from('customer_order_items').insert(newItems)
-      if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+      if (itemsErr) {
+        await db.from('customer_orders').delete()
+          .eq('id', newOrder.id).eq('tenant_id', req.user!.tenant_id)
+        throw new AppError('DB_ERROR', itemsErr.message, 500)
+      }
     }
 
-    // Запускаємо резервування товарів зі складу для нового замовлення
-    await db.rpc('reserve_order_items', {
+    const { error: reserveError } = await db.rpc('reserve_order_items', {
       p_tenant_id: req.user!.tenant_id,
       p_order_id:  newOrder.id,
       p_user_id:   req.user!.id
     })
+    if (reserveError) {
+      await db.from('customer_orders').delete()
+        .eq('id', newOrder.id).eq('tenant_id', req.user!.tenant_id)
+      if (reserveError.message.includes('INSUFFICIENT_STOCK')) {
+        throw new AppError('INSUFFICIENT_STOCK', reserveError.message, 422)
+      }
+      throw new AppError('DB_ERROR', reserveError.message, 500)
+    }
 
     // Додаємо лог активності
     await db.from('order_activity_log').insert({
@@ -782,7 +668,10 @@ router.post('/:id/send-telegram', requireRole('owner', 'admin', 'manager'), asyn
     const { data: order } = await db
       .from('customer_orders')
       .select('*, customer:customers(id, full_name, phone, telegram_chat_id), items:customer_order_items(*)')
-      .eq('id', req.params.id).single()
+      .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
+      .single()
 
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
 
@@ -832,7 +721,7 @@ router.post('/:id/send-telegram', requireRole('owner', 'admin', 'manager'), asyn
     await db.from('customer_orders').update({
       sent_to_telegram_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }).eq('id', req.params.id)
+    }).eq('id', req.params.id).eq('tenant_id', req.user!.tenant_id)
 
     await db.from('order_activity_log').insert({
       order_id: req.params.id,
@@ -852,9 +741,10 @@ router.post('/:id/send-telegram', requireRole('owner', 'admin', 'manager'), asyn
 })
 
 // POST /api/v1/customer-orders/:id/payments — додати платіж
-router.post('/:id/payments', async (req, res, next) => {
+router.post('/:id/payments', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
   try {
     const schema = z.object({
+      payment_id: z.string().uuid(),
       amount:     z.number().int().min(1),
       method:     z.enum(['cash', 'card', 'transfer', 'account']),
       is_fiscal:  z.boolean().default(false),
@@ -862,110 +752,34 @@ router.post('/:id/payments', async (req, res, next) => {
       notes:      z.string().max(500).optional().nullable(),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
-
-    const { data: order } = await db.from('customer_orders')
-      .select('*').eq('id', req.params.id).single()
-    if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
-    if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Замовлення вже завершено', 400)
-
-    const remaining = order.total_amount - (order.discount_amount ?? 0) - (order.total_paid ?? 0)
-    const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
-    if (!canAcceptOpenDraftDeposit && parsed.data.amount > remaining) {
-      throw new AppError('OVERPAYMENT', 'Сума перевищує залишок до сплати', 400)
+    if (!parsed.success) {
+      throw new AppError('VALIDATION_ERROR', 'Невірні дані платежу', 422, parsed.error.flatten())
     }
 
-    // Оплата з рахунку клієнта: атомарно списуємо з балансу ДО запису платежу
-    if (parsed.data.method === 'account') {
-      if (!order.customer_id) throw new AppError('NO_CUSTOMER', 'Замовлення без клієнта — оплата з рахунку неможлива', 400)
-      const { error: depErr } = await db.rpc('customer_deposit_change', {
-        p_tenant_id:   req.user!.tenant_id,
-        p_customer_id: order.customer_id,
-        p_amount:      -parsed.data.amount,
-        p_method:      'account',
-        p_order_id:    order.id,
-        p_notes:       `Оплата замовлення #${order.order_number ?? order.id.slice(0, 8)}`,
-        p_created_by:  req.user!.id,
-      })
-      if (depErr) {
-        if (/INSUFFICIENT_DEPOSIT/.test(depErr.message)) {
-          throw new AppError('INSUFFICIENT_DEPOSIT', 'Недостатньо коштів на рахунку клієнта', 400)
-        }
-        throw new AppError('DB_ERROR', depErr.message, 500)
-      }
-    }
-
-    const { data: payment, error } = await db.from('order_payments').insert({
-      tenant_id:  req.user!.tenant_id,
-      order_id:   order.id,
-      amount:     parsed.data.amount,
-      method:     parsed.data.method,
-      is_fiscal:  parsed.data.is_fiscal,
-      shift_id:   parsed.data.shift_id ?? null,
-      created_by: req.user!.id,
-      notes:      parsed.data.notes ?? null,
-    }).select().single()
-    if (error) {
-      // Компенсація: списання з рахунку вже пройшло, а платіж не записався
-      if (parsed.data.method === 'account' && order.customer_id) {
-        await db.rpc('customer_deposit_change', {
-          p_tenant_id: req.user!.tenant_id, p_customer_id: order.customer_id,
-          p_amount: parsed.data.amount, p_method: 'correction',
-          p_order_id: order.id, p_notes: 'Повернення: платіж не записався',
-          p_created_by: req.user!.id,
-        }).then(() => {}, () => {})
-      }
-      throw new AppError('DB_ERROR', error.message, 500)
-    }
-
-    const newTotalPaid = (order.total_paid ?? 0) + parsed.data.amount
-    
-    // Auto status update on payment (if payment covers prepayment requirement or is made on a draft/lead, transition to 'new')
-    let updatedStatus = order.status
-    if ((order.status === 'lead' || order.status === 'quoted') && newTotalPaid > 0) {
-      updatedStatus = 'new'
-    }
-
-    await db.from('customer_orders').update({ 
-      total_paid: newTotalPaid, 
-      status: updatedStatus,
-      updated_at: new Date().toISOString() 
-    }).eq('id', order.id)
-
-    // Trigger reserves if transitioning to new
-    if (updatedStatus === 'new' && (order.status === 'lead' || order.status === 'quoted')) {
-      await db.rpc('reserve_order_items', {
-        p_tenant_id: req.user!.tenant_id,
-        p_order_id:  order.id,
-        p_user_id:   req.user!.id
-      })
-    }
-
-    if (parsed.data.method === 'cash' && parsed.data.shift_id) {
-      await db.from('cash_operations').insert({
-        tenant_id:  req.user!.tenant_id,
-        shift_id:   parsed.data.shift_id,
-        type:       'in',
-        amount:     parsed.data.amount,
-        note:       `${canAcceptOpenDraftDeposit ? 'Передоплата' : 'Оплата'} замовлення #${order.id.slice(0, 8)}`,
-        created_by: req.user!.id,
-      })
-    }
-
-    await db.from('order_activity_log').insert({
-      order_id: order.id, user_id: req.user!.id, action: 'payment_added',
-      details: { amount: parsed.data.amount, method: parsed.data.method, remaining: newTotalPaid >= (order.total_amount - (order.discount_amount ?? 0)) ? 0 : (order.total_amount - (order.discount_amount ?? 0)) - newTotalPaid },
+    const result = await addOrderPayment({
+      ...parsed.data,
+      order_id: String(req.params.id),
+      tenant_id: req.user!.tenant_id,
+      user_id: req.user!.id,
     })
 
-    await auditOrder(req, 'order_payment_added', order.id, {
-      total_paid: order.total_paid ?? 0,
-      status: order.status,
-    }, {
-      total_paid: newTotalPaid,
-      status: updatedStatus,
-      payment: { id: payment.id, amount: parsed.data.amount, method: parsed.data.method, is_fiscal: parsed.data.is_fiscal },
+    if (!result.replayed) {
+      await auditOrder(
+        req,
+        'order_payment_added',
+        String(req.params.id),
+        result.order_before,
+        {
+          ...result.order_after,
+          payment: result.payment,
+        },
+      )
+    }
+
+    res.status(result.replayed ? 200 : 201).json({
+      data: result.payment,
+      replayed: result.replayed,
     })
-    res.status(201).json({ data: payment })
   } catch (err) { next(err) }
 })
 
@@ -976,6 +790,7 @@ router.get('/:id/payments', async (req, res, next) => {
       .from('order_payments')
       .select('*')
       .eq('order_id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: true })
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -987,28 +802,35 @@ router.get('/:id/payments', async (req, res, next) => {
  * Оновлює загальний статус замовлення на основі статусів позицій
  */
 export async function updateOrderStatus(orderId: string, tenantId: string, userId: string) {
+  const { data: currentOrder } = await db.from('customer_orders').select('status')
+    .eq('id', orderId)
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .maybeSingle()
+  if (!currentOrder || ['completed', 'canceled', 'archived'].includes(currentOrder.status)) return
+
+  // Parent is tenant-scoped above; customer_order_items has no tenant_id column.
   const { data: items } = await db
     .from('customer_order_items')
     .select('item_status')
     .eq('order_id', orderId)
 
-  if (!items || items.length === 0) return
+  const activeItems = (items ?? []).filter((item) => item.item_status !== 'canceled')
+  if (activeItems.length === 0) return
 
-  const allHanded = items.every((i) => i.item_status === 'handed')
-  const allArrived = items.every((i) => i.item_status === 'arrived')
-  const hasPending = items.some((i) => i.item_status === 'pending')
-  const hasOrdered = items.some((i) => i.item_status === 'ordered')
+  const allReady = activeItems.every((item) => ['arrived', 'handed'].includes(item.item_status))
+  const hasPending = activeItems.some((item) => item.item_status === 'pending')
+  const hasOrdered = activeItems.some((item) => item.item_status === 'ordered')
 
   let newStatus: string
-  if (allHanded) newStatus = 'completed'
-  else if (allArrived) newStatus = 'ready'
+  // Even if every line was manually marked handed, only complete_customer_order may
+  // set completed because it creates the receipt and writes off stock atomically.
+  if (allReady) newStatus = 'ready'
   else if (hasOrdered) newStatus = 'ordered'
   else if (hasPending) newStatus = 'new'
   else newStatus = 'new'
 
-  const { data: currentOrder } = await db.from('customer_orders').select('status')
-    .eq('id', orderId).eq('tenant_id', tenantId).single()
-  if (!currentOrder || currentOrder.status === newStatus) return
+  if (currentOrder.status === newStatus) return
 
   // Встановлюємо дедлайн при переході в ready
   if (newStatus === 'ready') {
@@ -1086,8 +908,14 @@ router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний статус', 422)
-    const { data: oldItem } = await db.from('customer_order_items')
-      .select('*').eq('id', req.params.itemId).eq('order_id', req.params.id).single()
+    const { data: oldItem, error: oldItemError } = await db.from('customer_order_items')
+      .select('*, order:customer_orders!inner(tenant_id)')
+      .eq('id', req.params.itemId)
+      .eq('order_id', req.params.id)
+      .eq('order.tenant_id', req.user!.tenant_id)
+      .maybeSingle()
+    if (oldItemError) throw new AppError('DB_ERROR', oldItemError.message, 500)
+    if (!oldItem) throw new AppError('ITEM_NOT_FOUND', 'Позицію замовлення не знайдено', 404)
 
     const updateData: Record<string, unknown> = {
       item_status: parsed.data.item_status,
@@ -1099,6 +927,9 @@ router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager
     const { error } = await db.from('customer_order_items').update(updateData)
       .eq('id', req.params.itemId).eq('order_id', req.params.id)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
+    await db.from('customer_orders')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', req.params.id).eq('tenant_id', req.user!.tenant_id)
 
     // Логуємо
     await db.from('order_activity_log').insert({
@@ -1116,6 +947,7 @@ router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager
           .select('product_id, order:customer_orders!inner(customer_id)')
           .eq('id', req.params.itemId)
           .eq('order_id', req.params.id)
+          .eq('order.tenant_id', req.user!.tenant_id)
           .maybeSingle()
         const productId = (item as any)?.product_id
         const customerId = (item as any)?.order?.customer_id
@@ -1152,7 +984,7 @@ router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager
         const newTotal = allItems
           .filter((i) => i.item_status !== 'canceled')
           .reduce((s, i) => s + i.sell_price * i.qty + (i.core_deposit_amount ?? 0) * i.qty, 0)
-        await db.from('customer_orders').update({ total_amount: newTotal }).eq('id', req.params.id)
+        await db.from('customer_orders').update({ total_amount: newTotal }).eq('id', req.params.id).eq('tenant_id', req.user!.tenant_id)
       }
       await db.rpc('reserve_order_items', {
         p_tenant_id: req.user!.tenant_id,
@@ -1178,7 +1010,7 @@ router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager
 router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
-      status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled', 'archived']),
+      status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'canceled', 'archived']),
       callback_at: z.string().optional().nullable(),
     })
     const parsed = schema.safeParse(req.body)
@@ -1189,6 +1021,7 @@ router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req
       .from('customer_orders')
       .select('status')
       .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
       .single()
 
     const { data: order, error } = await db.rpc('update_customer_order_status', {
@@ -1238,7 +1071,7 @@ router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req
 })
 
 // POST /api/v1/customer-orders/:id/complete — фінальний розрахунок та видача
-router.post('/:id/complete', async (req, res, next) => {
+router.post('/:id/complete', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
   try {
     const schema = z.object({
       payment_method: z.enum(['cash', 'card', 'mixed']),
@@ -1250,11 +1083,20 @@ router.post('/:id/complete', async (req, res, next) => {
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
-    const { data: order } = await db.from('customer_orders').select('*').eq('id', req.params.id).single()
+    const { data: order, error: orderError } = await db.from('customer_orders')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (orderError) throw new AppError('DB_ERROR', orderError.message, 500)
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
-    if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Замовлення вже завершено', 400)
+    if (order.status === 'completed' && order.sale_id) {
+      res.json({ data: { success: true, remaining: 0, sale_id: order.sale_id, replayed: true } })
+      return
+    }
 
-    const totalPaid = order.total_paid ?? order.prepayment
+    const totalPaid = Math.max(order.total_paid ?? 0, order.prepayment ?? 0)
     const remaining = order.total_amount - (order.discount_amount ?? 0) - totalPaid
 
     if (remaining > 0) {
@@ -1281,32 +1123,33 @@ router.post('/:id/complete', async (req, res, next) => {
 
     const result = typeof completionData === 'string' ? JSON.parse(completionData) : completionData
     const saleId = result?.sale_id ?? null
+    const replayed = result?.replayed === true
 
-    await db.from('order_activity_log').insert({
-      order_id: order.id,
-      user_id: req.user!.id,
-      action: 'completed',
-      details: { paid: remaining, method: parsed.data.payment_method, fiscal: parsed.data.is_fiscal, manager_id: order.manager_id, sale_id: saleId },
-    })
+    if (!replayed) {
+      await db.from('order_activity_log').insert({
+        order_id: order.id,
+        user_id: req.user!.id,
+        action: 'completed',
+        details: { paid: remaining, method: parsed.data.payment_method, fiscal: parsed.data.is_fiscal, manager_id: order.manager_id, sale_id: saleId },
+      })
 
-    await auditOrder(req, 'order_completed', order.id, order, {
-      ...order,
-      status: 'completed',
-      sale_id: saleId,
-      payment_method: parsed.data.payment_method,
-    })
+      await auditOrder(req, 'order_completed', order.id, order, {
+        ...order,
+        status: 'completed',
+        sale_id: saleId,
+        payment_method: parsed.data.payment_method,
+      })
 
-    // Сповіщення клієнту про завершення
-    notifyStatusUpdate(order.id, 'completed', req.user!.tenant_id).catch(() => {})
+      notifyStatusUpdate(order.id, 'completed', req.user!.tenant_id).catch(() => {})
 
-    // Розрахунок та запис комісійних менеджера
-    try {
-      await calculateAndRecordCommission(order.id, req.user!.tenant_id, req.user!.id)
-    } catch (commErr: any) {
-      logger.error({ orderId: order.id, error: commErr.message }, 'Failed to calculate manager commission')
+      try {
+        await calculateAndRecordCommission(order.id, req.user!.tenant_id, req.user!.id)
+      } catch (commErr: any) {
+        logger.error({ orderId: order.id, error: commErr.message }, 'Failed to calculate manager commission')
+      }
     }
 
-    res.json({ data: { success: true, remaining, sale_id: saleId } })
+    res.json({ data: { success: true, remaining: Math.max(0, remaining), sale_id: saleId, replayed } })
   } catch (err) { next(err) }
 })
 
@@ -1322,6 +1165,7 @@ router.get('/pending-items', async (req, res, next) => {
       .select('*, order:customer_orders!inner(id, customer_id, total_amount, prepayment, customer:customers(id, phone, full_name))')
       .eq('item_status', 'ordered')
       .eq('supplier_id', supplierId)
+      .eq('order.tenant_id', req.user!.tenant_id)
       .is('order.deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(100)
@@ -1377,46 +1221,34 @@ router.post('/bulk-arrival', requireRole('owner', 'admin', 'manager', 'storekeep
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
-    // Отримуємо унікальні order_id та product_id
-    const { data: items } = await db
-      .from('customer_order_items')
-      .select('id, order_id, product_id')
-      .in('id', parsed.data.item_ids)
+    const items = await markOrderItemsArrived({
+      tenant_id: req.user!.tenant_id,
+      item_ids: parsed.data.item_ids,
+    })
+    const orderIds = [...new Set(items.map((item) => item.order_id))]
+    const productIds = [...new Set(items.map((item) => item.product_id).filter(Boolean) as string[])]
 
-    const orderIds = [...new Set((items ?? []).map((i) => i.order_id))]
-    const productIds = [...new Set((items ?? []).map((i: any) => i.product_id).filter(Boolean))]
-
-    // Оновлюємо всі позиції на arrived
-    const { error } = await db
-      .from('customer_order_items')
-      .update({ item_status: 'arrived' })
-      .in('id', parsed.data.item_ids)
-
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
-
-    // ORD-14: надходження очікуваних товарів — авто-сповіщення клієнтів з листа очікування
-    for (const pid of productIds) {
-      notifyWaitlistCustomers(pid, req.user!.tenant_id).catch(() => {})
+    for (const productId of productIds) {
+      notifyWaitlistCustomers(productId, req.user!.tenant_id).catch(() => {})
     }
-
-    // Авто-перерахунок статусів замовлень
-    for (const oid of orderIds) {
-      await updateOrderStatus(oid, req.user!.tenant_id, req.user!.id)
+    for (const orderId of orderIds) {
+      await updateOrderStatus(orderId, req.user!.tenant_id, req.user!.id)
       await db.from('order_activity_log').insert({
-        order_id: oid, user_id: req.user!.id, action: 'bulk_arrival',
-        details: { items_count: parsed.data.item_ids.length },
+        order_id: orderId,
+        user_id: req.user!.id,
+        action: 'bulk_arrival',
+        details: { items_count: items.filter((item) => item.order_id === orderId).length },
       })
-      await auditOrder(req, 'order_items_bulk_arrived', oid, null, {
-        item_ids: parsed.data.item_ids,
-        items_count: parsed.data.item_ids.length,
+      await auditOrder(req, 'order_items_bulk_arrived', orderId, null, {
+        item_ids: items.filter((item) => item.order_id === orderId).map((item) => item.id),
+        items_count: items.filter((item) => item.order_id === orderId).length,
       })
     }
 
-    res.json({ data: { updated: parsed.data.item_ids.length, orders: orderIds.length } })
+    res.json({ data: { updated: items.length, orders: orderIds.length } })
   } catch (err) { next(err) }
 })
-
-// POST /api/v1/customer-orders/:id/cancel — скасувати з можливістю повернення
+// POST /api/v1/customer-orders/:id/cancel — скасувати без втрати фінансової історії
 router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
@@ -1427,83 +1259,22 @@ router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req,
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
 
-    const { data: order } = await db.from('customer_orders').select('*').eq('id', req.params.id).single()
-    if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
-    if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Завершене замовлення не можна скасувати', 400)
-
-    const { data: payments } = await db
-      .from('order_payments')
-      .select('amount, method')
-      .eq('order_id', order.id)
-      .eq('tenant_id', req.user!.tenant_id)
-
-    const paidAmount = Math.max(
-      order.total_paid ?? 0,
-      order.prepayment ?? 0,
-      (payments ?? []).reduce((sum, p) => sum + (p.amount ?? 0), 0),
-    )
-
-    // Повернення оплати/передоплати, зробленої через касу.
-    if (parsed.data.refund_prepayment && paidAmount > 0) {
-      const { data: anyShift } = await db
-        .from('shifts').select('id').eq('status', 'open').eq('tenant_id', req.user!.tenant_id).limit(1).maybeSingle()
-
-      await db.from('cash_operations').insert({
-        tenant_id: req.user!.tenant_id, shift_id: anyShift?.id ?? null, type: 'out',
-        amount: paidAmount,
-        note: `Повернення оплати за замовленням #${order.order_number ?? order.id.slice(0, 8)}`,
-        created_by: req.user!.id,
-      })
-    }
-
-    // Залишити як кредит клієнту (зменшуємо debt_balance — від'ємний борг)
-    if (parsed.data.keep_as_credit && paidAmount > 0 && order.customer_id) {
-      const { data: customer } = await db.from('customers').select('debt_balance').eq('id', order.customer_id).single()
-      if (customer) {
-        await db.from('customers').update({
-          debt_balance: Math.max(0, (customer.debt_balance ?? 0) - paidAmount),
-        }).eq('id', order.customer_id)
-      }
-    }
-
-    // Оновлюємо статус на canceled через RPC
-    const { error: statusErr } = await db.rpc('update_customer_order_status', {
-      p_tenant_id: req.user!.tenant_id,
-      p_order_id: order.id,
-      p_status: 'canceled',
-      p_user_id: req.user!.id
-    })
-
-    if (statusErr) throw new AppError('DB_ERROR', statusErr.message, 500)
-
-    if (parsed.data.refund_prepayment && paidAmount > 0) {
-      await db.from('customer_orders').update({
-        total_paid: 0,
-        prepayment: 0,
-        updated_at: new Date().toISOString(),
-      }).eq('id', order.id)
-    }
-
-    await db.from('order_activity_log').insert({
-      order_id: order.id, user_id: req.user!.id, action: 'canceled',
-      details: { refund_prepayment: parsed.data.refund_prepayment, keep_as_credit: parsed.data.keep_as_credit, reason: parsed.data.reason, amount: paidAmount },
-    })
-
-    await auditOrder(req, 'order_canceled', order.id, order, {
-      ...order,
-      status: 'canceled',
+    const result = await cancelOrderSafely({
+      order_id: String(req.params.id),
+      tenant_id: req.user!.tenant_id,
+      user_id: req.user!.id,
       refund_prepayment: parsed.data.refund_prepayment,
       keep_as_credit: parsed.data.keep_as_credit,
-      reason: parsed.data.reason ?? null,
+      reason: parsed.data.reason,
     })
 
-    // Сповіщення клієнту про скасування
-    notifyStatusUpdate(order.id, 'canceled', req.user!.tenant_id).catch(() => {})
-
-    res.json({ data: { success: true } })
+    if (!result.replayed) {
+      await auditOrder(req, 'order_canceled', String(req.params.id), result.order_before, result.order_after)
+      notifyStatusUpdate(String(req.params.id), 'canceled', req.user!.tenant_id).catch(() => {})
+    }
+    res.json({ data: { success: true, payment_preserved: result.paid_amount, replayed: result.replayed } })
   } catch (err) { next(err) }
 })
-
 
 // PUT /api/v1/customer-orders/:id — оновити замовлення
 router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
@@ -1521,7 +1292,6 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       prepayment:            z.number().int().min(0).optional(),
       prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
       prepayment_is_fiscal:  z.boolean().optional(),
-      discount_amount:       z.number().int().min(0).optional(),
       items: z.array(z.object({
         id:             z.string().uuid().optional(),
         name:           z.string().min(1).max(500),
@@ -1544,8 +1314,13 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
     const orderId = String(req.params.id)
 
     // Отримуємо поточне замовлення
-    const { data: order } = await db.from('customer_orders')
-      .select('*, items:customer_order_items(*)').eq('id', orderId).single()
+    const { data: order, error: orderError } = await db.from('customer_orders')
+      .select('*, items:customer_order_items(*)')
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
+      .maybeSingle()
+    if (orderError) throw new AppError('DB_ERROR', orderError.message, 500)
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
     if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Завершене замовлення не можна редагувати', 400)
 
@@ -1561,17 +1336,39 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
         422,
       )
     }
-    if (parsed.data.discount_amount !== undefined) updateFields.discount_amount = parsed.data.discount_amount
+    if (parsed.data.customer_id) {
+      const { data: customer } = await db.from('customers').select('id')
+        .eq('id', parsed.data.customer_id)
+        .eq('tenant_id', req.user!.tenant_id)
+        .is('deleted_at', null)
+        .maybeSingle()
+      if (!customer) throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+    }
 
     // Оновлюємо позиції
     if (parsed.data.items) {
       // Отримуємо інформацію про продукти для застав
       const productIds = parsed.data.items.map(i => i.product_id).filter(Boolean) as string[]
-      const { data: prods } = productIds.length > 0
+      const uniqueProductIds = [...new Set(productIds)]
+      const { data: prods, error: productsError } = uniqueProductIds.length > 0
         ? await db.from('products').select('id, requires_core_return, core_deposit_amount')
-            .in('id', productIds).eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
-        : { data: [] }
-      const prodMap = new Map((prods ?? []).map((p: any) => [p.id, p]))
+            .in('id', uniqueProductIds).eq('tenant_id', req.user!.tenant_id).is('deleted_at', null)
+        : { data: [], error: null }
+      if (productsError) throw new AppError('DB_ERROR', productsError.message, 500)
+      if ((prods?.length ?? 0) !== uniqueProductIds.length) {
+        throw new AppError('PRODUCT_NOT_FOUND', 'Один або кілька товарів не знайдено', 404)
+      }
+      const prodMap = new Map((prods ?? []).map((product: any) => [product.id, product]))
+
+      const supplierIds = [...new Set(parsed.data.items.map((item) => item.supplier_id).filter(Boolean) as string[])]
+      if (supplierIds.length > 0) {
+        const { data: suppliers, error: suppliersError } = await db.from('suppliers').select('id')
+          .in('id', supplierIds).eq('tenant_id', req.user!.tenant_id)
+        if (suppliersError) throw new AppError('DB_ERROR', suppliersError.message, 500)
+        if ((suppliers?.length ?? 0) !== supplierIds.length) {
+          throw new AppError('SUPPLIER_NOT_FOUND', 'Один або кілька постачальників не знайдено', 404)
+        }
+      }
 
       // Розраховуємо total_amount (включаючи заставу)
       const totalAmount = parsed.data.items.reduce((s, i) => {
@@ -1597,12 +1394,17 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       const oldByIdMap = new Map(
         (oldItems ?? []).map((i) => [i.id as string, i])
       )
+      const foreignItem = parsed.data.items.find((item) => item.id && !oldByIdMap.has(item.id))
+      if (foreignItem) {
+        throw new AppError('ITEM_NOT_FOUND', 'Позиція не належить цьому замовленню', 404)
+      }
 
-      // Видаляємо старі позиції
-      await db.from('customer_order_items').delete().eq('order_id', orderId)
+      // Видаляємо старі позиції тільки після tenant-scoped перевірки батьківського замовлення.
+      const { error: deleteItemsError } = await db.from('customer_order_items').delete().eq('order_id', orderId)
+      if (deleteItemsError) throw new AppError('DB_ERROR', deleteItemsError.message, 500)
 
       if (parsed.data.items.length > 0) {
-        await db.from('customer_order_items').insert(
+        const { error: insertItemsError } = await db.from('customer_order_items').insert(
           parsed.data.items.map((item) => {
             const prodData = item.product_id ? prodMap.get(item.product_id) : null
             const requiresCore = prodData?.requires_core_return ?? false
@@ -1631,10 +1433,21 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
             }
           })
         )
+        if (insertItemsError) throw new AppError('DB_ERROR', insertItemsError.message, 500)
       }
     }
 
-    await db.from('customer_orders').update(updateFields).eq('id', orderId)
+    const { error: updateError } = await db.from('customer_orders')
+      .update(updateFields)
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+    if (updateError) throw new AppError('DB_ERROR', updateError.message, 500)
+
+    await ensureCustomerCar(
+      parsed.data.customer_id === undefined ? order.customer_id : parsed.data.customer_id,
+      parsed.data.vehicle_info === undefined ? order.vehicle_info : parsed.data.vehicle_info,
+      req.user!.tenant_id,
+    )
 
     // Перезапускаємо резервування товарів, якщо статус новий або в процесі
     if (order.status === 'new' || order.status === 'in_progress') {
@@ -1653,9 +1466,12 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       details: { items_count: parsed.data.items?.length, prepayment: parsed.data.prepayment },
     })
 
-    const { data: updatedOrder } = await db.from('customer_orders')
+    const { data: updatedOrder, error: updatedOrderError } = await db.from('customer_orders')
       .select('*, customer:customers(id, phone, full_name), items:customer_order_items(*)')
-      .eq('id', orderId).single()
+      .eq('id', orderId)
+      .eq('tenant_id', req.user!.tenant_id)
+      .single()
+    if (updatedOrderError) throw new AppError('DB_ERROR', updatedOrderError.message, 500)
 
     await auditOrder(req, 'order_updated', orderId, order, updatedOrder)
     res.json({ data: updatedOrder })

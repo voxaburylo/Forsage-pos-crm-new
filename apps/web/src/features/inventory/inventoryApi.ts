@@ -118,6 +118,17 @@ export const inventoryApi = {
     })
   },
 
+  removeItem: async (id: string, itemId: string, opts: RequestOptions = {}): Promise<void> => {
+    const local = localInventory()
+    if (local?.removeItem) {
+      await local.removeItem(id, itemId)
+      return
+    }
+    await api.delete<void>(`/api/v1/inventory/${id}/items/${itemId}`, {
+      silent: opts.silent ?? true,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
+    } as any)
+  },
   applyPrice: async (id: string, body: { product_id: string; retail_price: number }, opts: RequestOptions = {}): Promise<{ data: any; session: any }> => {
     const local = localInventory()
     if (local?.applyPrice) {

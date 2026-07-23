@@ -10,7 +10,7 @@ import { toast } from '@/components/ui/Toast'
 
 export default function SuppliersPage() {
   const session = useAuthStore((s) => s.session)
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const navigate = useNavigate()
   
   useEffect(() => {

@@ -16,9 +16,8 @@ import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
 import type { Customer } from '@/types/customer'
-import { PrintService } from '@/lib/printService'
-import { renderBarcodeSvg } from '@/lib/barcodeSvg'
-import { loadProductLabelSettings, printLabelDocument } from '@/features/labels/LabelDesigner'
+import type { Product } from '@/types/product'
+import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 
 interface Payment {
   id: string
@@ -326,113 +325,54 @@ export default function OrderDetailPage() {
   }
 
   async function handlePrintItemLabelConfirm() {
-    if (!order || !selectedOrderItem) return
+    if (!selectedOrderItem || printingLabel) return
+
     setPrintingLabel(true)
     try {
-      let barcodeValue = selectedOrderItem.sku || ''
+      let catalogProduct: Product | null = null
       if (selectedOrderItem.product_id) {
         try {
-          const res = await productApi.get(selectedOrderItem.product_id)
-          if (res.data.barcode) {
-            barcodeValue = res.data.barcode
-          }
-        } catch { /* fallback: лишаємо barcodeValue = sku, друк не блокуємо */ }
+          catalogProduct = (await productApi.get(selectedOrderItem.product_id)).data
+        } catch {
+          // Позицію замовлення все одно можна надрукувати без картки каталогу.
+        }
+      }
+
+      const now = new Date().toISOString()
+      const labelProduct: Product = {
+        id: catalogProduct?.id ?? selectedOrderItem.product_id ?? selectedOrderItem.id,
+        sku: selectedOrderItem.sku || catalogProduct?.sku || '',
+        name: selectedOrderItem.name || catalogProduct?.name || 'Товар',
+        barcode: catalogProduct?.barcode || selectedOrderItem.sku || null,
+        additional_barcodes: catalogProduct?.additional_barcodes ?? null,
+        brand_id: catalogProduct?.brand_id ?? null,
+        category_id: catalogProduct?.category_id ?? null,
+        unit: catalogProduct?.unit ?? 'шт',
+        purchase_price: selectedOrderItem.buy_price,
+        retail_price: selectedOrderItem.sell_price,
+        qty_on_hand: catalogProduct?.qty_on_hand ?? 0,
+        reorder_point: catalogProduct?.reorder_point ?? 0,
+        notes: catalogProduct?.notes ?? null,
+        is_active: catalogProduct?.is_active ?? true,
+        is_service: selectedOrderItem.item_type === 'service',
+        storage_bin: catalogProduct?.storage_bin ?? null,
+        is_favorite: catalogProduct?.is_favorite ?? false,
+        photo_url: catalogProduct?.photo_url ?? null,
+        specs: catalogProduct?.specs ?? null,
+        created_at: catalogProduct?.created_at ?? now,
+        updated_at: catalogProduct?.updated_at ?? now,
       }
 
       const settings = await loadProductLabelSettings()
-
-      const w = settings.width_mm
-      const h = settings.height_mm
-      const padding = settings.padding_mm
-      const fontSize = settings.font_size
-      const offsetX = Math.max(-10, Math.min(10, Number(settings.offset_x_mm) || 0))
-      const offsetY = Math.max(-10, Math.min(10, Number(settings.offset_y_mm) || 0))
-      const esc = PrintService.escapeHtml
-
-      const clientName = order.customer?.full_name || order.customer?.phone || '—'
-      const carInfo = order.vehicle_info
-        ? [order.vehicle_info.make, order.vehicle_info.model].filter(Boolean).join(' ')
-        : ''
-      const orderNum = order.order_number != null ? String(order.order_number) : (order.kp_number || order.id.slice(0, 8))
-      const cellInfo = order.pickup_cell ? `Комірка: ${order.pickup_cell}` : ''
-      const today = new Date().toLocaleDateString('uk-UA')
-
-      const barcodeSvg = settings.show_barcode && barcodeValue
-        ? renderBarcodeSvg(barcodeValue, {
-            width: Math.max(0.5, Number(settings.barcode_width_factor) || 1) * 1.2,
-            height: settings.barcode_height,
-          })
-        : ''
-      const productNameHtml = settings.show_product_name
-        ? '<div style="font-size:' + String(fontSize + 1) + 'px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:0.5mm; width:100%;">' + esc(selectedOrderItem.name) + '</div>'
-        : ''
-      const skuHtml = settings.show_sku ? '<div>Арт: ' + esc(selectedOrderItem.sku || '—') + '</div>' : '<div></div>'
-      const labelsHtml = Array(itemLabelCopies).fill(0).map(() => {
-        return `
-          <section class="label-page"><div class="label">
-            <div style="font-size:${fontSize}px; font-weight:bold; border-bottom:0.2mm solid #ddd; padding-bottom:0.5mm; display:flex; justify-content:between; width:100%;">
-              <span>ЗАМОВЛЕННЯ №${esc(orderNum)}</span>
-              ${cellInfo ? `<span style="color:#b45309; font-weight:bold; margin-left:auto;">${esc(cellInfo)}</span>` : ''}
-            </div>
-            ${productNameHtml}
-            <div style="font-size:${fontSize}px; font-weight:bold; color:#1e3a8a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">
-              Клієнт: ${esc(clientName)}
-            </div>
-            ${carInfo ? `<div style="font-size:${fontSize - 1}px; color:#4b5563; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%;">Авто: ${esc(carInfo)}</div>` : ''}
-            
-            <div class="barcode" style="text-align:center; margin:0.5mm 0; width:100%;">${barcodeSvg}</div>
-            
-            <div style="display:flex; justify-content:space-between; align-items:baseline; font-size:${fontSize - 1}px; color:#6b7280; width:100%;">
-              ${skuHtml}
-              <div>${esc(today)}</div>
-            </div>
-          </div></section>
-        `
-      }).join('')
-
-      const html = `<!DOCTYPE html>
-    <html lang="uk"><head><meta charset="utf-8"><style>
-      @page { margin: 0; size: ${w}mm ${h}mm; }
-      html, body { width:${w}mm; margin:0; padding:0; background:#fff; }
-      * { box-sizing: border-box; }
-      .label-page {
-        width:${w}mm; height:${h}mm; margin:0;
-        padding: ${padding}mm;
-        overflow:hidden; break-after:page; page-break-after:always;
-      }
-      .label-page:last-child { break-after:auto; page-break-after:auto; }
-      .label {
-        width: ${Math.max(1, w - padding * 2)}mm;
-        height: ${Math.max(1, h - padding * 2)}mm;
-        transform:translate(${offsetX}mm, ${offsetY}mm);
-        transform-origin:top left;
-        font-family: 'Courier New', monospace;
-        font-size: ${fontSize}px;
-        line-height: 1.2;
-        overflow: hidden;
-        display: flex; flex-direction: column;
-        justify-content: space-between;
-        page-break-inside: avoid;
-      }
-      .barcode svg, .barcode img { display:block; width:auto; max-width:100%; height:${settings.barcode_height}px; margin:0 auto; image-rendering:pixelated; }
-      @media print { * { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
-    </style></head><body>
-      ${labelsHtml}
-    </body></html>`
-
-      // Через printLabelDocument: на desktop з увімкненим TSPL піде прямим
-      // друком без драйвера (як усі етикетки), інакше — звичайний шлях.
-      printLabelDocument({
-        html,
-        title: 'Етикетка замовлення',
-        widthMm: w,
-        heightMm: h,
-        count: (html.match(/label-page/g) ?? []).length,
-      })
-
+      const copies = Math.max(1, Math.min(999, Math.floor(Number(itemLabelCopies) || 1)))
+      await printLabels(
+        settings,
+        Array.from({ length: copies }, () => labelProduct),
+        false,
+      )
       setItemLabelModal(false)
-    } catch {
-      toast.error('Не вдалося надрукувати етикетку')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетку')
     } finally {
       setPrintingLabel(false)
     }

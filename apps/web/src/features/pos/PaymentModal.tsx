@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Banknote, CreditCard, BookOpen, Star, SplitSquareHorizontal, Smartphone, Receipt, Loader2 } from 'lucide-react'
 import { usePOSStore } from '@/stores/posStore'
 import { api } from '@/lib/api'
@@ -6,6 +6,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { canUseIntegratedTerminal, runPaymentConfirmation } from './paymentContract'
 
 interface SplitAmounts {
   cash_amount: number
@@ -16,12 +17,17 @@ interface Props {
   open: boolean
   offline?: boolean
   onClose: () => void
-  onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean, terminalAuthCode?: string, printAfterPayment?: boolean) => Promise<void>
+  onConfirm: (method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer', cashReceived?: number, bonusRedeemed?: number, split?: SplitAmounts, isFiscal?: boolean, terminalAuthCode?: string, printAfterPayment?: boolean) => Promise<boolean>
 }
 
 type Method = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
 
 const FISCAL_KEY = 'forsage_pos_fiscal_enabled'
+
+function parsePaymentKopecks(value: string): number {
+  const parsed = Number.parseFloat(value.replace(',', '.'))
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 100) : 0
+}
 
 const METHODS: { id: Method; label: string; icon: React.ReactNode; color: string; requireCustomer?: boolean }[] = [
   { id: 'cash',     label: 'Готівка',         icon: <Banknote size={20} />,                 color: 'bg-green-500 hover:bg-green-400' },
@@ -46,6 +52,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [fiscal, setFiscal] = useState(() => localStorage.getItem(FISCAL_KEY) !== 'false')
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
+  const submittingRef = useRef(false)
 
   // Кожен новий чек починаємо з готівки. Вибір термінала або іншого способу
   // стосується лише поточної оплати й не переноситься на наступного клієнта.
@@ -74,42 +81,61 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   // Налаштування термінала й бонусний баланс у desktop читаємо з SQLite.
   useEffect(() => {
     if (!open) return
+    let cancelled = false
     adminApi.getSettings()
       .then((res) => {
+        if (cancelled) return
         const d = res.data
-        setTerminalIntegrated(!!d.bank_terminal_enabled && (d.terminal_provider ?? 'manual') !== 'manual')
+        // У desktop поки немає драйвера банківського термінала. Навіть якщо
+        // серверне налаштування увімкнене, касир має вручну підтвердити успішну
+        // оплату й за потреби ввести код авторизації.
+        setTerminalIntegrated(canUseIntegratedTerminal(
+          Boolean(desktopBridge()), !!d.bank_terminal_enabled, d.terminal_provider,
+        ))
       })
-      .catch(() => setTerminalIntegrated(false))
+      .catch(() => { if (!cancelled) setTerminalIntegrated(false) })
+    return () => { cancelled = true }
   }, [open])
 
   useEffect(() => {
-    if (!open || !store.customer) {
-      setBonusBalance(0); setMaxBonus(0); setBonusInput(''); setLoyaltyEnabled(false)
-      return
-    }
+    setBonusBalance(0)
+    setMaxBonus(0)
+    setBonusInput('')
+    setLoyaltyEnabled(false)
+    if (!open || !store.customer) return
+
+    let cancelled = false
+    const customerId = store.customer.id
     if (desktopBridge()) {
-      customerApi.get(store.customer.id).then((res) => {
+      customerApi.get(customerId).then((res) => {
+        if (cancelled) return
         const balance = Number(res.data.bonus_balance ?? 0)
         const maxRedeem = Math.min(balance, Math.floor(store.total * 0.30))
         setBonusBalance(balance)
         setMaxBonus(maxRedeem)
         setLoyaltyEnabled(balance > 0)
       }).catch(() => {
-        setBonusBalance(0); setMaxBonus(0); setLoyaltyEnabled(false)
+        if (!cancelled) {
+          setBonusBalance(0)
+          setMaxBonus(0)
+          setLoyaltyEnabled(false)
+        }
       })
-      return
+      return () => { cancelled = true }
     }
     api.get<{ data: { balance: number; max_redeem: number } }>(
-      '/api/v1/loyalty/customer/' + store.customer.id + '/max-redeem?total=' + store.total
+      '/api/v1/loyalty/customer/' + customerId + '/max-redeem?total=' + store.total
     ).then((res) => {
+      if (cancelled) return
       setBonusBalance(res.data.balance)
       setMaxBonus(res.data.max_redeem)
       setLoyaltyEnabled(res.data.max_redeem > 0 || res.data.balance > 0)
     }).catch(() => {})
-  }, [open, store.customer, store.total])
+    return () => { cancelled = true }
+  }, [open, store.customer?.id, store.total])
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
   const _bonusRedeemed = Math.min(
-    Math.round(parseFloat(bonusInput || '0') * 100),
+    parsePaymentKopecks(bonusInput),
     maxBonus, bonusBalance,
   )
   const _toPay = Math.max(0, store.total - _bonusRedeemed)
@@ -152,8 +178,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           <div className="flex gap-3">
             <button
               type="button"
-              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false); setLoading(false) }}
-              className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700"
+              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false) }}
+              disabled={loading}
+              className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Скасувати
             </button>
@@ -174,15 +201,15 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   }
 
   const bonusRedeemed = Math.min(
-    Math.round(parseFloat(bonusInput || '0') * 100), maxBonus, bonusBalance,
+    parsePaymentKopecks(bonusInput), maxBonus, bonusBalance,
   )
   const toPay        = Math.max(0, store.total - bonusRedeemed)
-  const cashReceived = Math.round(parseFloat(cashInput || '0') * 100)
+  const cashReceived = parsePaymentKopecks(cashInput)
   const change       = Math.max(0, cashReceived - toPay)
   const cashValid    = method !== 'cash' || cashReceived >= toPay
   const debtOk       = method !== 'debt' || !!store.customer
 
-  const splitCashKopecks = Math.round(parseFloat(splitCash || '0') * 100)
+  const splitCashKopecks = parsePaymentKopecks(splitCash)
   const splitCardKopecks = Math.max(0, toPay - splitCashKopecks)
   const splitValid       = method !== 'mixed' || (splitCashKopecks > 0 && splitCashKopecks < toPay)
 
@@ -201,10 +228,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   }
 
   async function handleConfirm(shouldPrint = false) {
-    if (!cashValid || !debtOk || !splitValid) return
+    if (!cashValid || !debtOk || !splitValid || submittingRef.current) return
 
     setPrintAfterPayment(shouldPrint)
-    setLoading(true)
 
     // Картка або змішана оплата з картковою частиною
     if (method === 'card' || (method === 'mixed' && splitCardKopecks > 0)) {
@@ -214,7 +240,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
         await submitSale(undefined, shouldPrint)
         return
       }
-      // Ручний режим: касир проводить картку і вводить код авторизації
+      // Ручний режим: касир проводить картку і вводить код авторизації.
+      // Тут ще немає запиту, тому кнопка підтвердження повинна лишатися активною.
       setTerminalStep('waiting_auth')
       return
     }
@@ -223,23 +250,32 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   }
 
   async function confirmTerminalPayment() {
-    setLoading(true)
-    await submitSale(terminalAuthCode || undefined, printAfterPayment)
+    const completed = await submitSale(terminalAuthCode || undefined, printAfterPayment)
+    if (!completed) return
     setTerminalStep('none')
     setTerminalAuthCode('')
     setPrintAfterPayment(false)
   }
 
-  async function submitSale(authCode?: string, shouldPrint = false) {
+  async function submitSale(authCode?: string, shouldPrint = false): Promise<boolean> {
+    if (submittingRef.current) return false
+    submittingRef.current = true
+    setLoading(true)
     try {
-      if (method === 'mixed') {
-        await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, effectiveFiscal, authCode, shouldPrint)
-      } else {
-        await onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, effectiveFiscal, authCode, shouldPrint)
-      }
+      return await runPaymentConfirmation(
+        () => method === 'mixed'
+          ? onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, effectiveFiscal, authCode, shouldPrint)
+          : onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, effectiveFiscal, authCode, shouldPrint),
+        () => {
+          setCash('')
+          setMethod('cash')
+          setBonusInput('')
+          setSplitCash('')
+        },
+      )
     } finally {
+      submittingRef.current = false
       setLoading(false)
-      setCash(''); setMethod('cash'); setBonusInput(''); setSplitCash('')
     }
   }
 
@@ -432,8 +468,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             ОПЛАТИТИ Й НАДРУКУВАТИ ЧЕК
           </button>
           <div className="flex gap-3">
-            <button type="button" onClick={onClose}
-              className="flex-1 py-4 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">Скасувати</button>
+            <button type="button" onClick={onClose} disabled={loading}
+              className="flex-1 py-4 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors disabled:cursor-not-allowed disabled:opacity-40">Скасувати</button>
             <button type="button" onClick={() => handleConfirm(false)}
               disabled={loading || !cashValid || !debtOk || !splitValid}
               style={{ minHeight: 56 }}

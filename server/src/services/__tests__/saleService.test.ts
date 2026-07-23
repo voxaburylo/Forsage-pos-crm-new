@@ -1,4 +1,5 @@
-﻿import { describe, it, expect } from 'vitest'
+import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 
 describe('calculateSaleAmounts', () => {
   const calculateSaleAmounts = (input: any, discountedTotal: number) => {
@@ -79,5 +80,34 @@ describe('sale number formatting', () => {
   it('should handle large numbers', () => {
     const saleNumber = String(999999).padStart(6, '0')
     expect(saleNumber).toBe('999999')
+  })
+})
+describe('sale transaction tenant isolation regressions', () => {
+  const source = readFileSync(new URL('../saleService.ts', import.meta.url), 'utf8')
+
+  it('scopes customer bonus and linked order writes to the active tenant', () => {
+    expect(source).toContain(
+      'UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1 WHERE id = $2 AND tenant_id = $3',
+    )
+    expect(source).toContain(
+      'SELECT id, status, sale_id FROM customer_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+    )
+    expect(source).toContain(
+      'UPDATE inventory_reserves SET released_at = NOW() WHERE order_id = $1 AND tenant_id = $2 AND released_at IS NULL',
+    )
+    expect(source).toContain(
+      "UPDATE customer_orders SET status = 'completed', sale_id = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+    )
+  })
+
+  it('does not bind a fourth value to the three-placeholder order activity query', () => {
+    expect(source).not.toMatch(/cashierId,\s*'completed',\s*JSON\.stringify/)
+    expect(source).toMatch(/cashierId,\s*JSON\.stringify\(\{ sale_id:/)
+  })
+
+  it('validates a selected customer in the current tenant even without bonus spending', () => {
+    expect(source).toContain(
+      'SELECT id FROM customers WHERE id = $1 AND tenant_id = $2 FOR SHARE',
+    )
   })
 })

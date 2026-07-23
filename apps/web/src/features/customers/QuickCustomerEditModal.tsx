@@ -8,6 +8,8 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { pricingApi, type PriceTier } from '@/features/admin/pricingApi'
 import { customerApi } from './customerApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
+import { useAuthStore } from '@/stores/authStore'
+import { buildRoleSafeCustomerUpdate, canManageCustomerFinancials } from './customerEditPermissions'
 
 interface Props {
   customer: Customer | null
@@ -19,6 +21,8 @@ type VehicleDraft = { id?: string; brand: string; model: string; year: string; v
 const EMPTY_CAR: VehicleDraft = { brand: '', model: '', year: '', vin: '', notes: '' }
 
 export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Props) {
+  const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
+  const canManageFinancials = canManageCustomerFinancials(role)
   const [current, setCurrent] = useState<Customer | null>(null)
   const [form, setForm] = useState({ phone:'', full_name:'', email:'', birth_date:'', card_barcode:'', notes:'', discount_pct:'0', bonus_balance:'0', client_status:'client', loyalty_mode:'discount' as 'discount'|'cashback', price_tier_id:'' })
   const [tiers, setTiers] = useState<PriceTier[]>([])
@@ -51,7 +55,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     Promise.all([
       customerApi.get(customer.id).catch(() => ({ data: customer })),
       customerVehiclesApi.list(customer.id).catch(() => ({ data: [] as CustomerVehicle[] })),
-      pricingApi.listTiers().catch(() => ({ data: [] as PriceTier[] })),
+      canManageFinancials ? pricingApi.listTiers().catch(() => ({ data: [] as PriceTier[] })) : Promise.resolve({ data: [] as PriceTier[] }),
       desktopBridge()?.pos.getCustomerDeposit?.(customer.id).catch(() => null) ?? Promise.resolve(null),
     ]).then(([customerResult, carsResult, tiersResult, depositResult]) => {
       if (cancelled) return
@@ -61,7 +65,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
       setDeposit((depositResult as { balance?: number } | null)?.balance ?? customer.deposit_balance ?? null)
     }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [customer, open])
+  }, [canManageFinancials, customer, open])
 
   function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((old) => ({ ...old, [key]: value }))
@@ -83,16 +87,18 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     if (!current || !form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
     const bonus = Math.round(Number(form.bonus_balance.replace(',', '.')) * 100)
     const discount = Number(form.discount_pct.replace(',', '.'))
-    if (!Number.isFinite(bonus) || bonus < 0) { toast.error('Некоректний баланс бонусів'); return }
-    if (!Number.isFinite(discount) || discount < 0 || discount > 100) { toast.error('Знижка має бути від 0 до 100%'); return }
+    if (canManageFinancials && (!Number.isFinite(bonus) || bonus < 0)) { toast.error('Некоректний баланс бонусів'); return }
+    if (canManageFinancials && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
     setSaving(true)
     try {
-      const { data } = await customerApi.update(current.id, {
+      const update = buildRoleSafeCustomerUpdate(role, {
         phone:form.phone.trim(), full_name:form.full_name.trim(), email:form.email.trim(), birth_date:form.birth_date || null,
         card_barcode:form.card_barcode.replace(/\s/g, '') || null, notes:form.notes.trim(),
+      }, {
         discount_pct:discount, bonus_balance:bonus, client_status:form.client_status,
         loyalty_mode:form.loyalty_mode, price_tier_id:form.price_tier_id || null,
       })
+      const { data } = await customerApi.update(current.id, update)
       onSaved(data)
       toast.success('Картку клієнта збережено')
       onClose()
@@ -148,7 +154,8 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
           <div><label className="mb-1 block text-sm font-medium text-gray-700">Примітки</label><textarea value={form.notes} onChange={(e)=>set('notes',e.target.value)} rows={3} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-300" /></div>
         </section>
         <section className="space-y-3 rounded-xl border border-yellow-100 bg-yellow-50/50 p-4">
-          <h3 className="font-semibold text-gray-900">Бонуси, знижки та ціни</h3>
+          <h3 className="font-semibold text-gray-900">{canManageFinancials ? 'Бонуси, знижки та ціни' : 'Доступ касира'}</h3>
+          {canManageFinancials ? <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input label="Бонусів на рахунку, грн" type="number" min="0" step="0.01" value={form.bonus_balance} onChange={(e)=>set('bonus_balance',e.target.value)} />
             <Input label="Персональний процент, %" type="number" min="0" max="100" step="0.1" value={form.discount_pct} onChange={(e)=>set('discount_pct',e.target.value)} />
@@ -156,6 +163,11 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
             <label className="text-sm font-medium text-gray-700">Процент працює як<select value={form.loyalty_mode} onChange={(e)=>set('loyalty_mode',e.target.value as 'discount'|'cashback')} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="discount">Знижка в касі</option><option value="cashback">Накопичення на рахунок</option></select></label>
           </div>
           {tiers.length > 0 && <label className="block text-sm font-medium text-gray-700">Ціновий рівень<select value={form.price_tier_id} onChange={(e)=>set('price_tier_id',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="">Стандартна ціна</option>{tiers.map((tier)=><option key={tier.id} value={tier.id}>{tier.name} (-{tier.discount_pct}%)</option>)}</select></label>}
+          </> : (
+            <div className="rounded-lg border border-yellow-200 bg-white px-3 py-2.5 text-sm text-gray-600">
+              Касир може змінювати контакти, штрихкод картки, дату народження та автомобілі. Бонуси, знижки, статус і ціновий рівень змінює менеджер або адміністратор.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3"><div className="rounded-lg bg-white p-3"><p className="text-xs text-gray-400">Борг</p><b className="text-red-600">{formatMoney(current.debt_balance)}</b></div><div className="rounded-lg bg-white p-3"><p className="text-xs text-gray-400">Передплата / рахунок</p><b className="text-emerald-600">{deposit===null?'—':formatMoney(deposit)}</b></div></div>
         </section>
       </div>

@@ -21,16 +21,19 @@ function phoneToEmail(phone: string): string {
 // ===================== USERS =====================
 
 function mapSupabaseUser(u: any) {
+  const userMeta = u.user_metadata ?? {}
+  const appMeta = u.app_metadata ?? {}
   return {
     id:        u.id,
     email:     u.email ?? '',
-    phone:     u.user_metadata?.phone ?? u.email?.replace('@forsage.internal', '+') ?? '',
-    full_name: u.user_metadata?.full_name ?? '',
-    role:      u.user_metadata?.role ?? 'cashier',
-    is_active: u.user_metadata?.is_active !== false,
-    base_rate: u.user_metadata?.base_rate ?? 0,
-    rate_period: u.user_metadata?.rate_period ?? 'month',
+    phone:     userMeta.phone ?? u.email?.replace('@forsage.internal', '+') ?? '',
+    full_name: userMeta.full_name ?? '',
+    role:      appMeta.role ?? 'cashier',
+    is_active: appMeta.is_active !== false,
+    base_rate: appMeta.base_rate ?? 0,
+    rate_period: appMeta.rate_period ?? 'month',
     created_at: u.created_at,
+    updated_at: u.updated_at ?? u.created_at,
   }
 }
 
@@ -39,7 +42,7 @@ export async function listUsers(tenantId: string) {
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
   return (data.users ?? [])
-    .filter((user) => user.user_metadata?.tenant_id === tenantId)
+    .filter((user) => user.app_metadata?.tenant_id === tenantId)
     .map(mapSupabaseUser)
 }
 
@@ -57,6 +60,8 @@ export async function createUser(input: CreateUserInput, tenantId: string) {
     user_metadata: {
       phone:     input.phone,
       full_name: input.full_name,
+    },
+    app_metadata: {
       role:      input.role,
       tenant_id: tenantId,
       is_active: true,
@@ -72,13 +77,14 @@ export async function createUser(input: CreateUserInput, tenantId: string) {
 export async function updateUser(id: string, input: UpdateUserInput, tenantId: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
   if (!existing.user) throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
-  if (existing.user.user_metadata?.tenant_id !== tenantId) {
+  if (existing.user.app_metadata?.tenant_id !== tenantId) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
   }
 
-  const currentMeta = existing.user.user_metadata ?? {}
+  const currentUserMeta = existing.user.user_metadata ?? {}
+  const currentAppMeta = existing.user.app_metadata ?? {}
   
-  if (input.phone !== undefined && input.phone !== currentMeta.phone) {
+  if (input.phone !== undefined && input.phone !== currentUserMeta.phone) {
     const email = phoneToEmail(input.phone)
     const { data: allUsers } = await supabaseAdmin.auth.admin.listUsers()
     const dup = allUsers?.users?.find((u) => u.email === email && u.id !== id)
@@ -87,13 +93,16 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
 
   const updatePayload: any = {
     user_metadata: {
-      ...currentMeta,
+      ...currentUserMeta,
+      ...(input.full_name !== undefined ? { full_name: input.full_name } : {}),
+      ...(input.phone     !== undefined ? { phone: input.phone }         : {}),
+    },
+    app_metadata: {
+      ...currentAppMeta,
       ...(input.role      !== undefined ? { role: input.role }           : {}),
       ...(input.is_active !== undefined ? { is_active: input.is_active } : {}),
-      ...(input.full_name !== undefined ? { full_name: input.full_name } : {}),
       ...(input.base_rate !== undefined ? { base_rate: input.base_rate } : {}),
       ...(input.rate_period !== undefined ? { rate_period: input.rate_period } : {}),
-      ...(input.phone     !== undefined ? { phone: input.phone }         : {}),
     }
   }
 
@@ -109,7 +118,7 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
 
 export async function resetPassword(id: string, newPassword: string, tenantId: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
-  if (!existing.user || existing.user.user_metadata?.tenant_id !== tenantId) {
+  if (!existing.user || existing.user.app_metadata?.tenant_id !== tenantId) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
   }
   const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password: newPassword })
@@ -119,12 +128,12 @@ export async function resetPassword(id: string, newPassword: string, tenantId: s
 export async function deactivateUser(id: string, tenantId: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
   if (!existing.user) throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
-  if (existing.user.user_metadata?.tenant_id !== tenantId) {
+  if (existing.user.app_metadata?.tenant_id !== tenantId) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
   }
 
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, {
-    user_metadata: { ...existing.user.user_metadata, is_active: false },
+    app_metadata: { ...existing.user.app_metadata, is_active: false },
   })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -133,7 +142,7 @@ export async function deactivateUser(id: string, tenantId: string) {
 
 export async function deleteUser(id: string, tenantId: string) {
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
-  if (!existing.user || existing.user.user_metadata?.tenant_id !== tenantId) {
+  if (!existing.user || existing.user.app_metadata?.tenant_id !== tenantId) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
   }
   // 1. Clean up references
@@ -157,7 +166,6 @@ export async function listCategories(tenantId: string) {
     .from('categories')
     .select('*')
     .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
     .order('sort_order', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   const result = data ?? []
@@ -191,22 +199,63 @@ export async function updateCategory(id: string, input: Partial<CategoryInput>, 
 
 export async function deleteCategory(id: string, tenantId: string) {
   categoriesCache.delete(tenantId);
-  const deletedAt = new Date().toISOString()
+
+  // categories не мають soft-delete колонок. Спочатку перевіряємо, що категорія
+  // справді належить поточному магазину, а потім відв'язуємо всі залежності.
+  const { data: category, error: findError } = await db
+    .from('categories')
+    .select('id')
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+  if (findError) throw new AppError('DB_ERROR', findError.message, 500)
+  if (!category) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
 
   const { error: productError } = await db
     .from('products')
-    .update({ category_id: null, updated_at: deletedAt })
+    .update({ category_id: null, updated_at: new Date().toISOString() })
     .eq('tenant_id', tenantId)
     .eq('category_id', id)
-    .is('deleted_at', null)
   if (productError) throw new AppError('DB_ERROR', productError.message, 500)
 
-  const { error } = await db
+  const { error: childError } = await db
     .from('categories')
-    .update({ deleted_at: deletedAt, updated_at: deletedAt })
+    .update({ parent_id: null })
+    .eq('tenant_id', tenantId)
+    .eq('parent_id', id)
+  if (childError) throw new AppError('DB_ERROR', childError.message, 500)
+
+  // Ці таблиці також можуть посилатися на категорію і блокувати hard-delete.
+  const { error: discountError } = await db
+    .from('volume_discounts')
+    .update({ category_id: null })
+    .eq('tenant_id', tenantId)
+    .eq('category_id', id)
+  if (discountError) throw new AppError('DB_ERROR', discountError.message, 500)
+
+  const { error: markupError } = await db
+    .from('category_markups')
+    .delete()
+    .eq('tenant_id', tenantId)
+    .eq('category_id', id)
+  if (markupError) throw new AppError('DB_ERROR', markupError.message, 500)
+
+  const { error: commissionError } = await db
+    .from('commission_rules')
+    .update({ category_id: null })
+    .eq('tenant_id', tenantId)
+    .eq('category_id', id)
+  if (commissionError) throw new AppError('DB_ERROR', commissionError.message, 500)
+
+  const { data: deleted, error } = await db
+    .from('categories')
+    .delete()
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .select('id')
+    .maybeSingle()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (!deleted) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
 }
 
 // Повне очищення каталогу: soft-delete усіх товарів + hard-delete усіх категорій.
@@ -223,7 +272,36 @@ export async function resetCatalog(tenantId: string) {
     .select('id')
   if (prodErr) throw new AppError('DB_ERROR', prodErr.message, 500)
 
-  // 2. Hard-delete усіх категорій тенанта (вони більше нічим не використовуються).
+  // 2. Відв'язуємо всі залежності категорій. Без цього FK може обірвати
+  //    очищення посеред операції й залишити каталог у змішаному стані.
+  const { error: childCategoryErr } = await db
+    .from('categories')
+    .update({ parent_id: null })
+    .eq('tenant_id', tenantId)
+    .not('parent_id', 'is', null)
+  if (childCategoryErr) throw new AppError('DB_ERROR', childCategoryErr.message, 500)
+
+  const { error: volumeDiscountErr } = await db
+    .from('volume_discounts')
+    .update({ category_id: null })
+    .eq('tenant_id', tenantId)
+    .not('category_id', 'is', null)
+  if (volumeDiscountErr) throw new AppError('DB_ERROR', volumeDiscountErr.message, 500)
+
+  const { error: categoryMarkupErr } = await db
+    .from('category_markups')
+    .delete()
+    .eq('tenant_id', tenantId)
+  if (categoryMarkupErr) throw new AppError('DB_ERROR', categoryMarkupErr.message, 500)
+
+  const { error: commissionRuleErr } = await db
+    .from('commission_rules')
+    .update({ category_id: null })
+    .eq('tenant_id', tenantId)
+    .not('category_id', 'is', null)
+  if (commissionRuleErr) throw new AppError('DB_ERROR', commissionRuleErr.message, 500)
+
+  // 3. Тепер hard-delete категорій не порушує зовнішні ключі.
   const { data: deletedCats, error: catErr } = await db
     .from('categories')
     .delete()
@@ -251,7 +329,6 @@ export async function listBrands(tenantId: string) {
     .from('brands')
     .select('*')
     .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
     .order('name', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   const result = data ?? []
@@ -285,22 +362,41 @@ export async function updateBrand(id: string, input: Partial<BrandInput>, tenant
 
 export async function deleteBrand(id: string, tenantId: string) {
   brandsCache.delete(tenantId);
-  const deletedAt = new Date().toISOString()
+
+  // brands не мають soft-delete колонок, тому видалення фізичне й обов'язково
+  // обмежене tenant_id.
+  const { data: brand, error: findError } = await db
+    .from('brands')
+    .select('id')
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+  if (findError) throw new AppError('DB_ERROR', findError.message, 500)
+  if (!brand) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
 
   const { error: productError } = await db
     .from('products')
-    .update({ brand_id: null, updated_at: deletedAt })
+    .update({ brand_id: null, updated_at: new Date().toISOString() })
     .eq('tenant_id', tenantId)
     .eq('brand_id', id)
-    .is('deleted_at', null)
   if (productError) throw new AppError('DB_ERROR', productError.message, 500)
 
-  const { error } = await db
+  const { error: commissionError } = await db
+    .from('commission_rules')
+    .update({ brand_id: null })
+    .eq('tenant_id', tenantId)
+    .eq('brand_id', id)
+  if (commissionError) throw new AppError('DB_ERROR', commissionError.message, 500)
+
+  const { data: deleted, error } = await db
     .from('brands')
-    .update({ deleted_at: deletedAt, updated_at: deletedAt })
+    .delete()
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .select('id')
+    .maybeSingle()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (!deleted) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
 }
 
 // ===================== SETTINGS =====================
@@ -353,7 +449,7 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
   if (listErr) throw new AppError('AUTH_ERROR', listErr.message, 500)
 
   const usersToDelete = (allUsers?.users ?? []).filter(
-    (u) => u.user_metadata?.tenant_id === tenantId && u.id !== currentUserId
+    (u) => u.app_metadata?.tenant_id === tenantId && u.id !== currentUserId
   )
   const userIdsToDelete = usersToDelete.map((user) => user.id)
 

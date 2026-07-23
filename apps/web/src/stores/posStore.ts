@@ -173,6 +173,7 @@ interface POSState {
   setCustomerOrderId: (id: string | null) => void
   clearReceipt: () => void
   restoreReceipt: (receipt: {
+    idempotencyKey?: string
     items: Array<Omit<POSItem, 'total'>>
     customer: POSCustomer | null
     notes?: string
@@ -348,7 +349,7 @@ export const usePOSStore = create<POSState>((set, get) => {
       if (!tab) return
       if (discount > 0) {
         const session = useAuthStore.getState().session
-        const role = session?.user?.user_metadata?.role as string | undefined
+        const role = session?.user?.app_metadata?.role as string | undefined
         if (role && !['owner', 'admin', 'manager'].includes(role)) return
       }
       const updated = tab.items.map((i) => {
@@ -448,7 +449,7 @@ export const usePOSStore = create<POSState>((set, get) => {
       const target = reusable ?? createEmptyTab()
       const restoredTab: ReceiptTab = {
         ...target,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: receipt.idempotencyKey?.trim() || crypto.randomUUID(),
         items: restoredItems,
         customer: receipt.customer,
         notes: receipt.notes ?? '',

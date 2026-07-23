@@ -382,19 +382,25 @@ export default function OrderFormPage() {
 
   // Auto-search customers
   useEffect(() => {
-    if (customerSearch.trim().length < 2) {
+    const query = customerSearch.trim()
+    if (query.length < 2) {
       setSearchedCustomers([])
       setSearchCustomersLoading(false)
       return
     }
+
+    let cancelled = false
     setSearchCustomersLoading(true)
-    const t = setTimeout(() => {
-      customerApi.list({ search: customerSearch.trim(), per_page: 8 })
-        .then((r) => setSearchedCustomers((r as any).data ?? []))
-        .catch(() => setSearchedCustomers([]))
-        .finally(() => setSearchCustomersLoading(false))
+    const timer = window.setTimeout(() => {
+      customerApi.list({ search: query, per_page: 8 })
+        .then((r) => { if (!cancelled) setSearchedCustomers((r as any).data ?? []) })
+        .catch(() => { if (!cancelled) setSearchedCustomers([]) })
+        .finally(() => { if (!cancelled) setSearchCustomersLoading(false) })
     }, 300)
-    return () => clearTimeout(t)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [customerSearch])
 
   // Decode brand from VIN on the fly

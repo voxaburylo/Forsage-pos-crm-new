@@ -6,17 +6,19 @@
 
 -- ============================================================
 -- 1. Helper: Отримує tenant_id поточного користувача з JWT
---    Падає до MVP_TENANT_ID якщо не знайдено в метаданих
+--    Довіряє лише app_metadata і повертає NULL без tenant claim.
 -- ============================================================
 CREATE SCHEMA IF NOT EXISTS app;
 CREATE OR REPLACE FUNCTION app.user_tenant_id()
 RETURNS UUID
 LANGUAGE sql STABLE
 AS $$
-  SELECT COALESCE(
-    (auth.jwt() -> 'user_metadata' ->> 'tenant_id')::UUID,
-    '00000000-0000-0000-0000-000000000001'::UUID
-  );
+  SELECT CASE
+    WHEN COALESCE(auth.jwt() -> 'app_metadata' ->> 'tenant_id', '')
+      ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    THEN (auth.jwt() -> 'app_metadata' ->> 'tenant_id')::UUID
+    ELSE NULL::UUID
+  END;
 $$;
 
 -- ============================================================
@@ -27,7 +29,7 @@ RETURNS BOOLEAN
 LANGUAGE sql STABLE
 AS $$
   SELECT COALESCE(
-    (auth.jwt() -> 'user_metadata' ->> 'role') = ANY(required_roles),
+    (auth.jwt() -> 'app_metadata' ->> 'role') = ANY(required_roles),
     false
   );
 $$;
@@ -152,6 +154,7 @@ CREATE POLICY "shop_settings_all" ON shop_settings
 -- ---------- AUDIT_LOG ----------
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "audit_log_select" ON audit_log;
+DROP POLICY IF EXISTS "audit_log_all" ON audit_log;
 CREATE POLICY "audit_log_all" ON audit_log
   FOR ALL USING (tenant_id = app.user_tenant_id());
 

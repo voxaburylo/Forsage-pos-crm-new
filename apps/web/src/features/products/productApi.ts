@@ -2,6 +2,8 @@ import { api } from '@/lib/api'
 import type { Product, PaginatedProducts, ProductFormData } from '@/types/product'
 import { hryvniaToKopecks } from '@/types/product'
 import { desktopBridge, desktopProductToProduct, type DesktopProduct } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
+import { performCatalogDelete } from './catalogDeletePermissions'
 
 export interface StockBreakdown {
   on_hand: number
@@ -65,7 +67,7 @@ export async function mirrorProductToDesktop(product: Product): Promise<void> {
       sku: product.sku,
       name: product.name,
       barcode: product.barcode,
-      additional_barcodes: Array.isArray(product.additional_barcodes) ? product.additional_barcodes : [],
+      ...(Array.isArray(product.additional_barcodes) ? { additional_barcodes: product.additional_barcodes } : {}),
       brand_id: product.brand_id,
       category_id: product.category_id,
       unit: product.unit,
@@ -76,6 +78,8 @@ export async function mirrorProductToDesktop(product: Product): Promise<void> {
       notes: product.notes,
       is_active: product.is_active,
       is_service: product.is_service,
+      requires_core_return: product.requires_core_return === true,
+      core_deposit_amount: Number(product.core_deposit_amount ?? 0),
       storage_bin: product.storage_bin,
       is_favorite: product.is_favorite === true,
       photo_url: product.photo_url,
@@ -179,6 +183,12 @@ function desktopUpdatePayload(id: string, existing: DesktopProduct, form: Partia
     notes: form.notes !== undefined ? (form.notes || null) : (existing.notes ?? null),
     is_active: form.is_active !== undefined ? form.is_active : existing.is_active === 1,
     is_service: form.is_service !== undefined ? form.is_service : existing.is_service === 1,
+    requires_core_return: form.requires_core_return !== undefined
+      ? form.requires_core_return
+      : existing.requires_core_return === 1,
+    core_deposit_amount: form.core_deposit_amount !== undefined
+      ? hryvniaToKopecks(form.core_deposit_amount)
+      : Number(existing.core_deposit_amount ?? 0),
     storage_bin: form.storage_bin !== undefined ? (form.storage_bin || null) : existing.storage_bin,
     is_favorite: form.is_favorite !== undefined ? form.is_favorite : existing.is_favorite === 1,
     photo_url: form.photo_url !== undefined ? (form.photo_url || null) : (existing.photo_url ?? null),
@@ -262,13 +272,16 @@ export const productApi = {
   },
 
   delete: async (id: string) => {
-    const desktopCatalog = desktopBridge()?.catalog
-    if (desktopCatalog?.deleteProduct) {
-      await desktopCatalog.deleteProduct(id)
-      requestDesktopSync()
-      return undefined as void
-    }
-    return api.delete<void>(`/api/v1/products/${id}`)
+    const role = useAuthStore.getState().session?.user?.app_metadata?.role as string | undefined
+    return performCatalogDelete(role, async () => {
+      const desktopCatalog = desktopBridge()?.catalog
+      if (desktopCatalog?.deleteProduct) {
+        await desktopCatalog.deleteProduct(id)
+        requestDesktopSync()
+        return undefined as void
+      }
+      return api.delete<void>(`/api/v1/products/${id}`)
+    })
   },
 
   getStock: async (id: string) => {
@@ -277,13 +290,15 @@ export const productApi = {
       const product = await local(id)
       if (!product) throw new Error('Товар не знайдено')
       const onHand = Number(product.qty_on_hand ?? 0)
-      return { data: { on_hand: onHand, reserved: 0, available: onHand } }
+      const reserved = Number(product.qty_reserved ?? 0)
+      const available = Number(product.qty_available ?? (onHand - reserved))
+      return { data: { on_hand: onHand, reserved, available } }
     }
     return api.get<{ data: StockBreakdown }>(`/api/v1/products/${id}/stock`)
   },
 
   priceHistory: (id: string) =>
-    desktopBridge() ? Promise.resolve({ data: [] as unknown[] }) : api.get<{ data: unknown[] }>(`/api/v1/products/${id}/price-history`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ data: [] as unknown[] }) : api.get<{ data: unknown[] }>(`/api/v1/products/${id}/price-history`),
 
   generateBarcode: async (id: string) => {
     const desktopCatalog = desktopBridge()?.catalog
@@ -308,7 +323,7 @@ export const productApi = {
     }),
 
   getAnalogs: (id: string) =>
-    desktopBridge() ? Promise.resolve({ analogs: [], grouped: {} }) : api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ analogs: [], grouped: {} }) : api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`),
 
   addAnalog: (id: string, analogProductId: string, analogType: 'substitute' | 'oem' | 'cross') =>
     api.post(`/api/v1/products/${id}/analogs`, {
@@ -320,7 +335,7 @@ export const productApi = {
     api.delete(`/api/v1/products/${id}/analogs/${analogId}`),
 
   getCrossNumbers: (id: string) =>
-    desktopBridge() ? Promise.resolve({ data: [] as ProductCrossNumber[] }) : api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ data: [] as ProductCrossNumber[] }) : api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`),
 
   addCrossNumbers: (
     id: string,
@@ -344,16 +359,16 @@ export const productApi = {
     ),
 
   getFitment: (id: string) =>
-    desktopBridge() ? Promise.resolve({ fitments: [], grouped: {} }) : api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ fitments: [], grouped: {} }) : api.get<{ fitments: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/fitment`),
 
   getHistory: (id: string) =>
-    desktopBridge() ? Promise.resolve({ data: [] as any[] }) : api.get<{ data: any[] }>(`/api/v1/products/${id}/history`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ data: [] as any[] }) : api.get<{ data: any[] }>(`/api/v1/products/${id}/history`),
 
   getSupplierPrices: (id: string) =>
-    desktopBridge() ? Promise.resolve({ data: [] }) : api.get<{ data: Array<{ supplier_id: string; supplier_name: string; price: number; date: string }> }>(`/api/v1/products/${id}/supplier-prices`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ data: [] }) : api.get<{ data: Array<{ supplier_id: string; supplier_name: string; price: number; date: string }> }>(`/api/v1/products/${id}/supplier-prices`),
 
   getCobuy: (id: string) =>
-    desktopBridge() ? Promise.resolve([] as any[]) : api.get<any[]>(`/api/v1/products/${id}/cobuy`),
+    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve([] as any[]) : api.get<any[]>(`/api/v1/products/${id}/cobuy`),
 
   generateBarcodeOnly: async () => {
     const local = desktopBridge()?.catalog.generateBarcode

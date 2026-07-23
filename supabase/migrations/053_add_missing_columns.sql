@@ -31,4 +31,5 @@ CREATE TABLE IF NOT EXISTS product_cobuy (
 );
 
 ALTER TABLE product_cobuy ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "product_cobuy_all" ON product_cobuy;
 CREATE POLICY "product_cobuy_all" ON product_cobuy FOR ALL USING (true);

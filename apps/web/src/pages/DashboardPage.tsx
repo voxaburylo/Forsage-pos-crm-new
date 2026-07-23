@@ -47,7 +47,7 @@ const PERIOD_LABELS: Record<Period, string> = { today: 'Сьогодні', week:
 export default function DashboardPage() {
   const navigate = useNavigate()
   // Прибуток — тільки власнику/адміну; менеджер бачить виторг і чеки
-  const role = useAuthStore((s) => (s.session?.user?.user_metadata?.role as string) ?? 'cashier')
+  const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canSeeProfit = ['owner', 'admin'].includes(role)
   const [period, setPeriod] = useState<Period>('month')
   const [analytics, setAnalytics] = useState<Analytics | null>(null)

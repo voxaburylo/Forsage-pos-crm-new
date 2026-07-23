@@ -62,6 +62,7 @@ router.post('/push', async (req, res, next) => {
     const data = await pushLocalOperations({
       tenantId: req.user!.tenant_id,
       userId: req.user!.id,
+      role: req.user!.role,
       operations: parsed.data.operations.map((operation) => ({
         ...operation,
         payload: operation.payload ?? {},

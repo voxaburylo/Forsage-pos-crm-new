@@ -49,7 +49,7 @@ router.post('/login', async (req, res, next) => {
       user: {
         id: data.user.id,
         phone,
-        role: data.user.user_metadata?.role ?? 'cashier',
+        role: data.user.app_metadata?.role ?? 'cashier',
       },
     })
   } catch (err) { next(err) }

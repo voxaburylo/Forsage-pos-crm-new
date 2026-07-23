@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { backup, DatabaseSync, type StatementSync } from 'node:sqlite'
 import { LOCAL_MIGRATIONS } from './schema'
@@ -122,6 +122,29 @@ export class LocalDatabase {
       schemaVersion: schema.version ?? 0,
       pendingOperations: pending.count,
     }
+  }
+
+
+  async backupIfDue(maxAgeMs = 24 * 60 * 60_000, retain = 14): Promise<string | null> {
+    const backupFiles = () => readdirSync(this.backupsPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /^Forsage-\d{4}-\d{2}-\d{2}_.+\.db$/.test(entry.name))
+      .map((entry) => {
+        const filePath = path.join(this.backupsPath, entry.name)
+        return { filePath, modifiedAt: statSync(filePath).mtimeMs }
+      })
+      .sort((left, right) => right.modifiedAt - left.modifiedAt)
+
+    const existing = backupFiles()
+    if (existing[0] && Date.now() - existing[0].modifiedAt < Math.max(60_000, maxAgeMs)) {
+      return null
+    }
+
+    const destination = await this.backupNow()
+    const keepCount = Math.max(1, Math.floor(retain))
+    for (const stale of backupFiles().slice(keepCount)) {
+      unlinkSync(stale.filePath)
+    }
+    return destination
   }
 
   async backupNow(): Promise<string> {

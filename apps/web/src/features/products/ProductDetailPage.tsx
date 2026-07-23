@@ -15,8 +15,28 @@ import {
   DEFAULT_BIN_LABEL,
 } from '@/features/labels/LabelDesigner'
 import { warehouseApi } from '@/features/inventory/warehouseApi'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { canDeleteCatalog } from './catalogDeletePermissions'
+
 import { useAuthStore } from '@/stores/authStore'
+
+function settleOptional<T, F>(
+  operation: Promise<T>,
+  fallback: F,
+  timeoutMs = 8_000,
+): Promise<T | F> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = 0
+    const finish = (value: T | F) => {
+      if (settled) return
+      settled = true
+      if (timer) window.clearTimeout(timer)
+      resolve(value)
+    }
+    timer = window.setTimeout(() => finish(fallback), timeoutMs)
+    operation.then(finish).catch(() => finish(fallback))
+  })
+}
 
 function StockBadge({ product }: { product: Product }) {
   const status = stockStatus(product)
@@ -37,8 +57,10 @@ export default function ProductDetailPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   // Закупівля/маржа — тільки власник/адмін/кладівник (сервер їх і не віддає іншим)
-  const role = useAuthStore((s) => (s.session?.user?.user_metadata?.role as string) ?? 'cashier')
+  const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
+  const offlineMode = useAuthStore((s) => s.offlineMode)
   const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
+  const canDeleteProduct = canDeleteCatalog(role)
   const [product, setProduct] = useState<Product | null>(null)
   const [history, setHistory] = useState<Array<{
     type: 'price_change' | 'sale' | 'return' | 'writeoff'
@@ -226,31 +248,33 @@ export default function ProductDetailPage() {
     try {
       const settings = await loadProductLabelSettings()
       const binSettings = settings.bin_settings || DEFAULT_BIN_LABEL
-      printLabels(binSettings as any, [{ label: product.storage_bin }], true)
+      await printLabels(binSettings as any, [{ label: product.storage_bin }], true)
       toast.success('Етикетку комірки відправлено на друк')
-    } catch {
-      toast.error('Помилка друку')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетку')
     }
   }
 
   useEffect(() => {
     if (!id) return
-    Promise.all([
-      productApi.get(id),
-      productApi.getHistory(id).catch(() => ({ data: [] })),
-      productApi.getAnalogs(id).catch(() => null),
-      productApi.getCrossNumbers(id).catch(() => ({ data: [] })),
-      productApi.getFitment(id).catch(() => null),
-      productApi.getCobuy(id).catch(() => []),
-    ]).then(([{ data }, { data: hist }, analogsData, crossNumbersData, fitmentData, cobuyData]) => {
+    productApi.get(id).then(({ data }) => {
       setProduct(data)
-      setHistory(hist as typeof history)
-      if (analogsData) setAnalogs(analogsData)
-      setCrossNumbers(crossNumbersData.data)
-      if (fitmentData) setFitment(fitmentData)
-      setCobuy(cobuyData)
+      setLoading(false)
+      return Promise.all([
+        settleOptional(productApi.getHistory(id), { data: [] }),
+        settleOptional(productApi.getAnalogs(id), null),
+        settleOptional(productApi.getCrossNumbers(id), { data: [] }),
+        settleOptional(productApi.getFitment(id), null),
+        settleOptional(productApi.getCobuy(id), []),
+      ]).then(([{ data: hist }, analogsData, crossNumbersData, fitmentData, cobuyData]) => {
+        setHistory(hist as typeof history)
+        if (analogsData) setAnalogs(analogsData)
+        setCrossNumbers(crossNumbersData.data)
+        if (fitmentData) setFitment(fitmentData)
+        setCobuy(cobuyData)
+      })
     }).catch(() => navigate('/products')).finally(() => setLoading(false))
-  }, [id, navigate])
+  }, [id, navigate, offlineMode])
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [reserveOpen, setReserveOpen] = useState(false)
@@ -310,9 +334,11 @@ export default function ProductDetailPage() {
           <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/products/${product.id}/edit`)}>
             Редагувати
           </Button>
-          <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
-            Видалити
-          </Button>
+          {canDeleteProduct && (
+            <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
+              Видалити
+            </Button>
+          )}
         </div>
       }
     >
@@ -483,7 +509,7 @@ export default function ProductDetailPage() {
 
 
                 {/* ?Аналоги? */}
-        {!isDesktopRuntime() && (
+        {!offlineMode && (
         <Card>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <h3 className="font-semibold text-gray-800">🔗 Крос-номери та аналоги</h3>
@@ -800,10 +826,10 @@ export default function ProductDetailPage() {
                 try {
                   const settings = await loadProductLabelSettings()
                   const items = Array(printCopies).fill(product)
-                  printLabels(settings as any, items, false)
+                  await printLabels(settings as any, items, false)
                   setPrintModalOpen(false)
-                } catch {
-                  toast.error('Помилка друку')
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати етикетки')
                 }
               }}
             >
@@ -813,15 +839,17 @@ export default function ProductDetailPage() {
         </div>
       </Modal>
 
-      <ConfirmDialog
-        open={confirmDeleteOpen}
-        onClose={() => setConfirmDeleteOpen(false)}
-        onConfirm={handleDelete}
-        title="Видалити товар"
-        message={<>Видалити товар <strong>{product.name}</strong>?</>}
-        confirmLabel="Видалити"
-        danger
-      />
+      {canDeleteProduct && (
+        <ConfirmDialog
+          open={confirmDeleteOpen}
+          onClose={() => setConfirmDeleteOpen(false)}
+          onConfirm={handleDelete}
+          title="Видалити товар"
+          message={<>Видалити товар <strong>{product.name}</strong>?</>}
+          confirmLabel="Видалити"
+          danger
+        />
+      )}
 
       <Modal open={reserveOpen} onClose={() => setReserveOpen(false)} title="Зарезервувати товар" size="sm">
         <div className="space-y-4">

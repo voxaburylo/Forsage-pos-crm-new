@@ -1,6 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Plus, TrendingDown } from 'lucide-react'
 import { api } from '@/lib/api'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { cashOperationApi } from '@/features/pos/cashOperationApi'
+import { shiftApi } from '@/features/pos/shiftApi'
 import { Layout } from '@/components/Layout'
 import { Card, Button, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -37,49 +40,107 @@ export default function CashflowPage() {
   const [categoryId, setCategoryId] = useState('')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const [summary, setSummary] = useState<CashSummary>({ total_in: 0, total_out: 0, net: 0 })
   const [totalOps, setTotalOps] = useState(0)
+  const desktop = Boolean(desktopBridge()?.pos?.createCashOperation)
+  const [shiftId, setShiftId] = useState('')
+  const noOpenShift = desktop && !loading && !shiftId
 
   async function load() {
+    setLoading(true)
     try {
-      const [opsRes, catRes, summaryRes] = await Promise.all([
+      if (desktop) {
+        const shiftResponse = await shiftApi.current({ silent: true })
+        const currentShiftId = shiftResponse.data?.id ?? ''
+        setShiftId(currentShiftId)
+        setCategories([])
+        if (!currentShiftId) {
+          setOps([])
+          setTotalOps(0)
+          setSummary({ total_in: 0, total_out: 0, net: 0 })
+          return
+        }
+        const [opsResponse, summaryResponse] = await Promise.all([
+          cashOperationApi.list(currentShiftId),
+          cashOperationApi.summary(currentShiftId),
+        ])
+        const localOps: CashOp[] = opsResponse.data.map((operation) => ({
+          ...operation,
+          expense_category_id: null,
+        }))
+        setOps(localOps)
+        setTotalOps(localOps.length)
+        setSummary(summaryResponse.data)
+        return
+      }
+
+      const [opsResponse, categoryResponse, summaryResponse] = await Promise.all([
         api.get<{ data: CashOp[]; total: number }>('/api/v1/cash-operations'),
         api.get<{ data: ExpenseCategory[] }>('/api/v1/expense-categories'),
         api.get<{ data: CashSummary }>('/api/v1/cash-operations/summary'),
       ])
-      setOps(opsRes.data)
-      setTotalOps(opsRes.total)
-      setCategories(catRes.data)
-      setSummary(summaryRes.data)
-    } catch { toast.error('Помилка завантаження') }
-    finally { setLoading(false) }
+      setOps(opsResponse.data)
+      setTotalOps(opsResponse.total)
+      setCategories(categoryResponse.data)
+      setSummary(summaryResponse.data)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Помилка завантаження')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { void load() }, [])
 
   async function handleSave() {
+    if (savingRef.current) return
     const kopecks = Math.round(parseFloat(amount || '0') * 100)
     if (kopecks <= 0) { toast.error('Вкажіть суму'); return }
-    if (etype === 'out' && !categoryId) { toast.error('Виберіть категорію витрат'); return }
+    if (!desktop && etype === 'out' && !categoryId) { toast.error('Виберіть категорію витрат'); return }
+    if (desktop && !shiftId) { toast.error('Спочатку відкрийте касову зміну'); return }
     setSaving(true)
+    savingRef.current = true
     try {
-      await api.post('/api/v1/cash-operations', {
-        shift_id: null,
-        type: etype,
-        amount: kopecks,
-        note: note.trim() || null,
-        expense_category_id: etype === 'out' ? categoryId : null,
-      })
+      if (desktop) {
+        await cashOperationApi.create(
+          shiftId,
+          etype,
+          kopecks,
+          note.trim() || undefined,
+          etype === 'in' ? 'other' : 'cashbox',
+        )
+      } else {
+        await api.post('/api/v1/cash-operations', {
+          shift_id: null,
+          type: etype,
+          amount: kopecks,
+          note: note.trim() || null,
+          expense_category_id: etype === 'out' ? categoryId : null,
+        })
+      }
       toast.success('Операцію збережено')
-      setModalOpen(false); setAmount(''); setNote(''); setCategoryId('')
-      load()
-    } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
-    finally { setSaving(false) }
+      setModalOpen(false)
+      setAmount('')
+      setNote('')
+      setCategoryId('')
+      await load()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Помилка')
+    } finally {
+      setSaving(false)
+      savingRef.current = false
+    }
   }
 
   return (
     <Layout title="Каса та витрати">
       <div className="max-w-4xl space-y-4">
+        {noOpenShift && (
+          <Card className="border-amber-200 bg-amber-50 text-sm text-amber-900">
+            Спочатку відкрийте касову зміну в розділі «Каса». Після цього тут будуть доступні внесення та витрати.
+          </Card>
+        )}
         <p className="text-sm text-gray-500">
           Ручні внесення та витрати готівки. Продажі й повернення дивіться у сусідніх вкладках — вони не дублюються в цьому журналі.
         </p>
@@ -101,8 +162,15 @@ export default function CashflowPage() {
 
         {/* Кнопки */}
         <div className="flex gap-3">
-          <Button icon={<Plus size={16} />} onClick={() => { setEtype('in'); setModalOpen(true) }}>Внесення готівки</Button>
-          <Button icon={<TrendingDown size={16} />} variant="secondary" onClick={() => { setEtype('out'); setModalOpen(true) }}>Витрата з каси</Button>
+          <Button
+            icon={<Plus size={16} />}
+            disabled={loading || noOpenShift}
+            onClick={() => { setEtype('in'); setModalOpen(true) }}
+          >Внесення готівки</Button>
+          <Button icon={<TrendingDown size={16} />} variant="secondary"
+            disabled={loading || noOpenShift}
+            onClick={() => { setEtype('out'); setModalOpen(true) }}
+          >Витрата з каси</Button>
         </div>
 
         {/* Таблиця */}
@@ -181,7 +249,7 @@ export default function CashflowPage() {
         <div className="space-y-4">
           <Input label="Сума (грн) *" type="number" min="0.01" step="0.01" value={amount}
             onChange={(e) => setAmount(e.target.value)} placeholder="0.00" autoFocus />
-          {etype === 'out' && (
+          {!desktop && etype === 'out' && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Категорія витрат *</label>
               <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}

@@ -3,7 +3,19 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
-import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
+import type {
+  LocalBootstrapSnapshot,
+  LocalFiscalIntentResolution,
+  LocalFiscalReturnIntentCancelInput,
+  LocalFiscalReturnIntentResolution,
+  LocalFiscalReturnIntentScope,
+  LocalFiscalSaleRequest,
+  LocalFiscalReturnRequest,
+  LocalProductUpsert,
+  LocalSaleCheckoutInput,
+  LocalSyncPullChanges,
+  LocalSyncPushResult,
+} from './db/localTypes'
 import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
@@ -13,11 +25,10 @@ import { LocalSupplyRepository } from './repositories/supplyRepository'
 import { LocalStaffRepository } from './repositories/staffRepository'
 import { LocalWarehouseRepository } from './repositories/warehouseRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
+import { LocalSupplierCatalogRepository } from './repositories/supplierCatalogRepository'
 import {
   CashalotService,
   type CashalotConfigUpdate,
-  type FiscalCheckItemInput,
-  type FiscalCheckPayInput,
 } from './fiscal/cashalotService'
 import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
 
@@ -35,6 +46,7 @@ let localSupply: LocalSupplyRepository | null = null
 let localStaff: LocalStaffRepository | null = null
 let localWarehouse: LocalWarehouseRepository | null = null
 let localSync: LocalSyncRepository | null = null
+let localSupplierCatalog: LocalSupplierCatalogRepository | null = null
 let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
 
@@ -47,6 +59,8 @@ interface DesktopPrintOptions {
   /** true — не задавати pageSize, друкувати на папері за налаштуванням драйвера
    * (для чекового рулону 58/80мм, де висота змінна). */
   useDriverPaper?: boolean
+  /** true — для етикеток не дозволяти fallback без точного розміру та нульових полів. */
+  strictPageSize?: boolean
 }
 
 function rendererIndexPath(): string {
@@ -104,9 +118,76 @@ function requireLocalSync(): LocalSyncRepository {
   return localSync
 }
 
+function requireLocalSupplierCatalog(): LocalSupplierCatalogRepository {
+  if (!localSupplierCatalog) throw new Error('LOCAL_SUPPLIER_CATALOG_NOT_READY')
+  return localSupplierCatalog
+}
+
 function requireCashalot(): CashalotService {
   if (!cashalot) throw new Error('FISCAL_SERVICE_NOT_READY')
   return cashalot
+}
+
+async function processFiscalReturn(request: LocalFiscalReturnRequest) {
+  const pos = requireLocalPos()
+  let intent = pos.prepareFiscalReturnIntent(request)
+  if (intent.state === 'completed') {
+    return { intent, data: intent.checkout_result }
+  }
+  if (intent.state === 'fiscalizing' || intent.state === 'unknown') {
+    throw new Error(
+      `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Результат попереднього фіскального повернення потрібно перевірити у Cashalot`,
+    )
+  }
+
+  if (intent.state === 'prepared') {
+    const fiscal = requireCashalot()
+    if (!fiscal.isEnabled()) {
+      throw new Error('ПРРО Cashalot не налаштовано або вимкнено')
+    }
+    pos.startFiscalSaleIntent(intent.operation_id)
+    try {
+      const result = await fiscal.fiscalizeReturnCheck(
+        request.items,
+        request.pay,
+        request.original_fiscal_number,
+      )
+      intent = pos.markFiscalSaleIntentFiscalized(
+        intent.operation_id,
+        result as unknown as Record<string, unknown>,
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      try {
+        pos.markFiscalSaleIntentUnknown(intent.operation_id, detail)
+      } catch {
+        // Намір уже залишився у безпечному блокувальному стані fiscalizing/unknown.
+      }
+      throw new Error(
+        `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Не повторюйте повернення. Перевірте чек у Cashalot: ${detail}`,
+      )
+    }
+  }
+
+  const fiscalResult = intent.fiscal_result
+  if (!fiscalResult) {
+    throw new Error(
+      `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Збережений результат фіскального повернення не знайдено`,
+    )
+  }
+  const fiscalNumber = String(
+    fiscalResult.ReceiptFiscalNum ?? fiscalResult.ReceiptLocalNum ?? '',
+  ).trim() || null
+  const data = pos.createReturn({
+    ...request.return_input,
+    client_operation_id: intent.operation_id,
+    is_fiscal: true,
+    fiscal_number: fiscalNumber,
+  })
+  return {
+    intent: pos.getFiscalSaleIntent(intent.operation_id),
+    data,
+  }
 }
 
 async function createWindow(): Promise<void> {
@@ -126,12 +207,35 @@ async function createWindow(): Promise<void> {
     },
   })
 
+  const developmentUrl = process.env.FORSAGE_WEB_URL
+  const developmentOrigin = !app.isPackaged && developmentUrl
+    ? new URL(developmentUrl).origin
+    : null
+  const packagedRendererPath = path.resolve(rendererIndexPath()).toLocaleLowerCase('en-US')
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
 
-  const developmentUrl = process.env.FORSAGE_WEB_URL
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    let allowed = false
+    try {
+      const parsed = new URL(targetUrl)
+      if (developmentOrigin) {
+        allowed = parsed.origin === developmentOrigin
+      } else if (parsed.protocol === 'file:') {
+        allowed = path.resolve(fileURLToPath(parsed)).toLocaleLowerCase('en-US') === packagedRendererPath
+      }
+    } catch {
+      allowed = false
+    }
+
+    if (allowed) return
+    event.preventDefault()
+    if (/^https?:\/\//i.test(targetUrl)) void shell.openExternal(targetUrl)
+  })
+
   if (!app.isPackaged && developmentUrl) await mainWindow.loadURL(developmentUrl)
   else await mainWindow.loadFile(rendererIndexPath())
 
@@ -199,27 +303,29 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
       ...minimalBase,
       margins: { marginType: 'none' as const },
     }
-    const attempts: Electron.WebContentsPrintOptions[] = options.useDriverPaper
-      ? [
-          { ...base },
-          // Частина драйверів етикеток/чекових принтерів відхиляє навіть
-          // margins: none як "Invalid printer settings". У такому випадку
-          // віддаємо папір і поля повністю драйверу, щоб друк не падав.
-          { ...minimalBase },
-          { silent: options.silent === true },
-          {},
-        ]
-      : [
-          { ...base, pageSize, landscape },
-          { ...base, pageSize },
-          { ...base, landscape },
-          { ...base },
-          { ...minimalBase, pageSize, landscape },
-          { ...minimalBase, pageSize },
-          { ...minimalBase, landscape },
-          { ...minimalBase },
-          {},
-        ]
+    const attempts: Electron.WebContentsPrintOptions[] = options.strictPageSize
+      ? [{ ...base, pageSize, landscape }]
+      : options.useDriverPaper
+        ? [
+            { ...base },
+            // Частина драйверів етикеток/чекових принтерів відхиляє навіть
+            // margins: none як "Invalid printer settings". У такому випадку
+            // віддаємо папір і поля повністю драйверу, щоб друк не падав.
+            { ...minimalBase },
+            { silent: options.silent === true },
+            {},
+          ]
+        : [
+            { ...base, pageSize, landscape },
+            { ...base, pageSize },
+            { ...base, landscape },
+            { ...base },
+            { ...minimalBase, pageSize, landscape },
+            { ...minimalBase, pageSize },
+            { ...minimalBase, landscape },
+            { ...minimalBase },
+            {},
+          ]
 
     const printOnce = (opts: Electron.WebContentsPrintOptions) =>
       new Promise<void>((resolve, reject) => {
@@ -270,6 +376,9 @@ app.whenReady().then(async () => {
     : app.getPath('userData')
   desktopDataRoot = dataRoot
   localDatabase = new LocalDatabase(dataRoot)
+  void localDatabase.backupIfDue().catch((error) => {
+    console.error('[desktop] Automatic local backup failed', error)
+  })
   localBootstrap = new LocalBootstrapRepository(localDatabase)
   localCatalog = new LocalCatalogRepository(localDatabase)
   localInventory = new LocalInventoryRepository(localDatabase)
@@ -279,6 +388,7 @@ app.whenReady().then(async () => {
   localStaff = new LocalStaffRepository(localDatabase)
   localWarehouse = new LocalWarehouseRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
+  localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
 
   ipcMain.handle('desktop:get-runtime-info', () => requireLocalDatabase().info())
@@ -376,14 +486,38 @@ app.whenReady().then(async () => {
     requireLocalCatalog().listPopular(undefined, limit),
   )
 
+  ipcMain.handle('desktop:supplier-catalog:list', (_event, options?: any) =>
+    requireLocalSupplierCatalog().list(options),
+  )
+  ipcMain.handle('desktop:supplier-catalog:list-imports', (_event, tenantId?: string, limit?: number) =>
+    requireLocalSupplierCatalog().listImports(tenantId, limit),
+  )
+  ipcMain.handle('desktop:supplier-catalog:get-import', (_event, id: string, tenantId?: string) =>
+    requireLocalSupplierCatalog().getImport(id, tenantId),
+  )
+  ipcMain.handle('desktop:supplier-catalog:create', (_event, input: any) =>
+    requireLocalSupplierCatalog().create(input),
+  )
+  ipcMain.handle('desktop:supplier-catalog:update', (_event, id: string, input: any, tenantId?: string) =>
+    requireLocalSupplierCatalog().update(id, input, tenantId),
+  )
+  ipcMain.handle('desktop:supplier-catalog:delete', (_event, id: string, tenantId?: string) =>
+    requireLocalSupplierCatalog().delete(id, tenantId),
+  )
+  ipcMain.handle('desktop:supplier-catalog:import-rows', (_event, filename: string, rows: any[], options: any) =>
+    requireLocalSupplierCatalog().importRows(filename, rows, options),
+  )
+
   ipcMain.handle('desktop:auth:login', (_event, phone: string, password: string) =>
     requireLocalStaff().loginWithPassword(phone, password),
   )
   ipcMain.handle('desktop:staff:list-users', () => requireLocalStaff().listUsers())
-  ipcMain.handle('desktop:staff:create-user', (_event, input: any) => requireLocalStaff().createUser(input))
+  ipcMain.handle('desktop:staff:save-server-user', (_event, input: any, password: string) =>
+    requireLocalStaff().saveServerUser(input, password))
   ipcMain.handle('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
   ipcMain.handle('desktop:staff:delete-user', (_event, id: string) => requireLocalStaff().deleteUser(id))
-  ipcMain.handle('desktop:staff:reset-password', (_event, id: string, password: string) => requireLocalStaff().resetPassword(id, password))
+  ipcMain.handle('desktop:staff:save-server-password', (_event, id: string, password: string) =>
+    requireLocalStaff().saveServerPassword(id, password))
   ipcMain.handle('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
   ipcMain.handle('desktop:staff:verify-pin', (_event, userId: string, pin: string) => requireLocalStaff().verifyPin(userId, pin))
   ipcMain.handle('desktop:staff:list-commission-rules', () => requireLocalStaff().listCommissionRules())
@@ -446,6 +580,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:inventory:set-item-qty', (_event, sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) =>
     requireLocalInventory().setItemQty(sessionId, itemId, input),
   )
+  ipcMain.handle('desktop:inventory:remove-item', (_event, sessionId: string, itemId: string, tenantId?: string) =>
+    requireLocalInventory().removeItem(sessionId, itemId, tenantId),
+  )
   ipcMain.handle('desktop:inventory:labels', (_event, sessionId: string, tenantId?: string) =>
     requireLocalInventory().getLabels(sessionId, tenantId),
   )
@@ -487,6 +624,9 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('desktop:orders:list-payments', (_event, orderId: string, tenantId?: string) =>
     requireLocalOrders().listPayments(orderId, tenantId),
+  )
+  ipcMain.handle('desktop:orders:list-payments-period', (_event, input?: { date_from?: string; date_to?: string; shift_id?: string }) =>
+    requireLocalOrders().listPaymentsByPeriod(input),
   )
   ipcMain.handle('desktop:orders:add-payment', (_event, orderId: string, input: any) =>
     requireLocalOrders().addPayment(orderId, input),
@@ -704,18 +844,69 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:fiscal:service-cash', (_event, amount: number, direction: 'in' | 'out') =>
     requireCashalot().serviceCash(amount, direction),
   )
-  ipcMain.handle('desktop:fiscal:register-check', (
+  ipcMain.handle('desktop:fiscal:fiscalize-sale', async (_event, request: LocalFiscalSaleRequest) => {
+    const pos = requireLocalPos()
+    const intent = pos.prepareFiscalSaleIntent(request)
+    if (intent.state === 'completed' || intent.state === 'fiscalized') return intent
+    if (intent.state === 'fiscalizing' || intent.state === 'unknown') {
+      throw new Error(
+        `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Результат попередньої фіскалізації потрібно перевірити у Cashalot`,
+      )
+    }
+
+    const fiscal = requireCashalot()
+    if (!fiscal.isEnabled()) {
+      throw new Error('ПРРО Cashalot не налаштовано або вимкнено')
+    }
+
+    pos.startFiscalSaleIntent(intent.operation_id)
+    try {
+      const result = await fiscal.fiscalizeCheck(request.items, request.pay, request.comment)
+      return pos.markFiscalSaleIntentFiscalized(
+        intent.operation_id,
+        result as unknown as Record<string, unknown>,
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      try {
+        pos.markFiscalSaleIntentUnknown(intent.operation_id, detail)
+      } catch {
+        // Намір уже залишився у безпечному блокувальному стані fiscalizing/unknown.
+      }
+      throw new Error(
+        `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Не повторюйте оплату. Перевірте чек у Cashalot: ${detail}`,
+      )
+    }
+  })
+  ipcMain.handle('desktop:fiscal:get-sale-intent', (_event, operationId: string) =>
+    requireLocalPos().getFiscalSaleIntent(operationId),
+  )
+  ipcMain.handle('desktop:fiscal:resolve-unknown-sale', (
     _event,
-    items: FiscalCheckItemInput[],
-    pay: FiscalCheckPayInput,
-    comment?: string | null,
-  ) => requireCashalot().fiscalizeCheck(items, pay, comment))
-  ipcMain.handle('desktop:fiscal:register-return', (
+    operationId: string,
+    resolution: LocalFiscalIntentResolution,
+  ) => requireLocalPos().resolveUnknownFiscalSaleIntent(operationId, resolution))
+  ipcMain.handle('desktop:fiscal:fiscalize-return', (_event, request: LocalFiscalReturnRequest) =>
+    processFiscalReturn(request),
+  )
+  ipcMain.handle('desktop:fiscal:list-unresolved-returns', (_event, scope: LocalFiscalReturnIntentScope) =>
+    requireLocalPos().listUnresolvedFiscalReturnIntents(scope),
+  )
+  ipcMain.handle('desktop:fiscal:resume-return', async (
     _event,
-    items: FiscalCheckItemInput[],
-    pay: FiscalCheckPayInput,
-    originalFiscalNumber: string,
-  ) => requireCashalot().fiscalizeReturnCheck(items, pay, originalFiscalNumber))
+    operationId: string,
+    scope: LocalFiscalReturnIntentScope,
+  ) => processFiscalReturn(requireLocalPos().getFiscalReturnRequest(operationId, scope)))
+  ipcMain.handle('desktop:fiscal:resolve-unknown-return', (
+    _event,
+    operationId: string,
+    resolution: LocalFiscalReturnIntentResolution,
+  ) => requireLocalPos().resolveUnknownFiscalReturnIntent(operationId, resolution))
+  ipcMain.handle('desktop:fiscal:cancel-prepared-return', (
+    _event,
+    operationId: string,
+    input: LocalFiscalReturnIntentCancelInput,
+  ) => requireLocalPos().cancelPreparedFiscalReturnIntent(operationId, input))
 
   await createWindow()
 }).catch((error: unknown) => {
@@ -733,5 +924,6 @@ app.on('before-quit', () => {
   localCatalog = null
   localPos = null
   localSync = null
+  localSupplierCatalog = null
 })
 

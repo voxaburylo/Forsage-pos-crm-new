@@ -6,7 +6,7 @@ import { Card, Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 
-interface Employee { id: string; email: string; user_metadata: { full_name?: string; role?: string } }
+interface Employee { id: string; email: string; full_name?: string; role?: string }
 interface Product  { id: string; name: string; sku: string | null; buy_price: number; qty_on_hand: number }
 
 interface ConsumptionItem {
@@ -80,7 +80,7 @@ export default function InternalConsumptionsPage() {
 
   function getEmployeeName(id: string) {
     const e = employees.find((e) => e.id === id)
-    return e?.user_metadata?.full_name ?? e?.email ?? id
+    return e?.full_name ?? e?.email ?? id
   }
 
   function addFormItem() {
@@ -279,7 +279,7 @@ export default function InternalConsumptionsPage() {
               <option value="">— Виберіть —</option>
               {employees.map((e) => (
                 <option key={e.id} value={e.id}>
-                  {e.user_metadata?.full_name ?? e.email} ({e.user_metadata?.role ?? '—'})
+                  {e.full_name ?? e.email} ({e.role ?? '—'})
                 </option>
               ))}
             </select>

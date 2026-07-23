@@ -73,15 +73,27 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
   try {
     const state = await desktop.sync.getPullState()
     if (!state.cursor) {
-      const snapshotResponse = await api.get<{ data: DesktopBootstrapSnapshot }>('/api/v1/sync/bootstrap', {
-        silent: true,
-        timeoutMs: 180_000,
-      })
-      const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
-      return {
-        applied_at: imported.imported_at,
-        cursor: snapshotResponse.data.exported_at,
-        counts: imported.counts,
+      try {
+        const snapshotResponse = await api.get<{ data: DesktopBootstrapSnapshot }>('/api/v1/sync/bootstrap', {
+          silent: true,
+          timeoutMs: 180_000,
+        })
+        const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
+        return {
+          applied_at: imported.imported_at,
+          cursor: snapshotResponse.data.exported_at,
+          counts: imported.counts,
+        }
+      } catch (bootstrapError) {
+        if ((bootstrapError as { status?: number })?.status !== 403) throw bootstrapError
+        // Касир/менеджер/комірник не мають доступу до повного bootstrap із
+        // зарплатами й закупочними даними. Для порожньої БД використовуємо
+        // звичайний role-filtered pull із повними безпечними довідниками.
+        const initialResponse = await api.get<PullResponse>('/api/v1/sync/changes?include_references=true', {
+          silent: true,
+          timeoutMs: 180_000,
+        })
+        return desktop.sync.applyPullChanges(initialResponse.data)
       }
     }
 
@@ -114,10 +126,10 @@ export async function syncDesktopNow(options: DesktopSyncOptions = {}): Promise<
   pending: number
   pulled: DesktopSyncPullResult | null
 }> {
-  // Спочатку швидко підтягуємо нові замовлення та інші серверні зміни.
-  // Відправляємо локальну чергу невеликими порціями, щоб один великий пакет
-  // не блокував IPC та елементи форми на кілька секунд.
-  const pulled = await pullDesktopChanges(options)
+  // Локальна база є джерелом робочих змін. Спочатку підтверджуємо outbox,
+  // а вже потім рухаємо pull-cursor: інакше втрачена HTTP-відповідь могла
+  // залишити dirty-рядок локально та назавжди перескочити серверний результат.
   const pushed = await pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE)
+  const pulled = await pullDesktopChanges(options)
   return { ...pushed, pulled }
 }

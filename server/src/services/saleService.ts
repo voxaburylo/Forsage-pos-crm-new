@@ -456,6 +456,16 @@ async function executeSaleTransaction(
       }
     }
 
+    if (input.customer_id && !(useBonusAtomic && bonusesSpent > 0)) {
+      const customerRes = await client.query(
+        'SELECT id FROM customers WHERE id = $1 AND tenant_id = $2 FOR SHARE',
+        [input.customer_id, tenantId],
+      )
+      if (customerRes.rowCount === 0) {
+        throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+      }
+    }
+
     const total = Math.max(0, subtotal - input.discount)
 
     // 5. Create sale record
@@ -547,8 +557,8 @@ async function executeSaleTransaction(
     // 9. Atomic loyalty bonus earned
     if (useBonusAtomic && bonusesEarned > 0 && input.customer_id) {
       await client.query(
-        'UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1 WHERE id = $2',
-        [bonusesEarned, input.customer_id]
+        'UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1 WHERE id = $2 AND tenant_id = $3',
+        [bonusesEarned, input.customer_id, tenantId]
       )
 
       await client.query(
@@ -561,40 +571,45 @@ async function executeSaleTransaction(
     // 10. Link and complete customer order if customer_order_id is provided
     if (input.customer_order_id) {
       const orderRes = await client.query(
-        'SELECT id, status FROM customer_orders WHERE id = $1 FOR UPDATE',
-        [input.customer_order_id]
+        'SELECT id, status, sale_id FROM customer_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        [input.customer_order_id, tenantId]
       )
-      if (orderRes.rows && orderRes.rows.length > 0) {
-        const order = orderRes.rows[0]
-        if (order.status !== 'completed') {
-          // Release reserves
-          await client.query(
-            'UPDATE inventory_reserves SET released_at = NOW() WHERE order_id = $1 AND released_at IS NULL',
-            [input.customer_order_id]
-          )
-          // Update customer order items status to \'handed\'
-          await client.query(
-            "UPDATE customer_order_items SET item_status = 'handed' WHERE order_id = $1 AND item_status NOT IN ('canceled', 'handed')",
-            [input.customer_order_id]
-          )
-          // Update customer order status & link to sale
-          await client.query(
-            "UPDATE customer_orders SET status = 'completed', sale_id = $1, updated_at = NOW() WHERE id = $2",
-            [sale.id, input.customer_order_id]
-          )
-          // Insert order activity log
-          await client.query(
-            `INSERT INTO order_activity_log (order_id, user_id, action, details)
-             VALUES ($1, $2, 'completed', $3)`,
-            [
-              input.customer_order_id,
-              cashierId,
-              'completed',
-              JSON.stringify({ sale_id: sale.id, method: input.payment_method, note: 'Видано через касу (POS)' })
-            ]
-          )
-        }
+      if (!orderRes.rows || orderRes.rows.length === 0) {
+        throw new AppError('ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
       }
+      const order = orderRes.rows[0]
+      if (order.status === 'completed' && order.sale_id) {
+        throw new AppError('ORDER_ALREADY_COMPLETED', 'Замовлення вже завершено', 409)
+      }
+
+      await client.query(
+        'UPDATE inventory_reserves SET released_at = NOW() WHERE order_id = $1 AND tenant_id = $2 AND released_at IS NULL',
+        [input.customer_order_id, tenantId]
+      )
+      await client.query(
+        `UPDATE customer_order_items i
+         SET item_status = 'handed'
+         WHERE i.order_id = $1
+           AND i.item_status NOT IN ('canceled', 'handed')
+           AND EXISTS (
+             SELECT 1 FROM customer_orders o
+             WHERE o.id = i.order_id AND o.tenant_id = $2
+           )`,
+        [input.customer_order_id, tenantId]
+      )
+      await client.query(
+        "UPDATE customer_orders SET status = 'completed', sale_id = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+        [sale.id, input.customer_order_id, tenantId]
+      )
+      await client.query(
+        `INSERT INTO order_activity_log (order_id, user_id, action, details)
+         VALUES ($1, $2, 'completed', $3)`,
+        [
+          input.customer_order_id,
+          cashierId,
+          JSON.stringify({ sale_id: sale.id, method: input.payment_method, note: 'Видано через касу (POS)' })
+        ]
+      )
     }
 
     return sale

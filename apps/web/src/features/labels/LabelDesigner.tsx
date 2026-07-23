@@ -262,7 +262,7 @@ function NumberField({ label, value, min, max, step = 0.5, onChange }: {
 }
 
 // ================================================================
-// Малюємо фейковий штрих-код для попереднього перегляду
+// Той самий CODE128 raster, що входить до реального HTML-документа друку.
 // ================================================================
 
 function labelBarcodeWidthPct(settings: LabelSettings, pos?: { x: number; y: number }): number {
@@ -270,36 +270,39 @@ function labelBarcodeWidthPct(settings: LabelSettings, pos?: { x: number; y: num
   const desired = 80 * Math.max(0.5, Math.min(2.5, Number(settings.barcode_width_factor) || 1))
   return Math.max(5, Math.min(100 - x, desired))
 }
-function MockBarcode({ width, height, value, displayValue = true, fontSize = 7, previewScale = 5, align = 'center' }:
+
+function alignedBarcodeLeftPct(settings: LabelSettings, pos?: { x: number; y: number }): number {
+  const x = Math.max(0, Math.min(95, Number(pos?.x ?? settings.pos_barcode?.x ?? 5) || 0))
+  const width = labelBarcodeWidthPct(settings, pos)
+  const freeSpace = Math.max(0, 100 - x - width)
+  if (settings.align_barcode === 'right') return x + freeSpace
+  if (settings.align_barcode === 'center') return x + freeSpace / 2
+  return x
+}
+
+function barcodeJustifyContent(align: LabelSettings['align_barcode']): 'flex-start' | 'center' | 'flex-end' {
+  if (align === 'right') return 'flex-end'
+  if (align === 'center') return 'center'
+  return 'flex-start'
+}
+
+function RenderedBarcode({ width, height, value, displayValue = true, fontSize = 7, previewScale = 5, align = 'center' }:
   { width: number; height: number; value: string; displayValue?: boolean; fontSize?: number; previewScale?: number; align?: string }) {
   const flexAlign = align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center'
+  const imageHeight = Math.max(8, Math.round(height))
+  const barcodeHtml = renderBarcodeSvg(value, { width: 1.2, height: imageHeight })
+    .replace(
+      '<img ',
+      `<img style="display:block;width:100%;height:${imageHeight}px;object-fit:fill;image-rendering:pixelated" `,
+    )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: flexAlign, width: width + 'px' }}>
-      <svg width={width} height={height} viewBox="0 0 100 35" preserveAspectRatio="none" style={{ display: 'block' }}>
-        <rect x="0" y="0" width="3" height="35" fill="black" />
-        <rect x="5" y="0" width="1" height="35" fill="black" />
-        <rect x="8" y="0" width="2" height="35" fill="black" />
-        <rect x="12" y="0" width="4" height="35" fill="black" />
-        <rect x="18" y="0" width="1" height="35" fill="black" />
-        <rect x="21" y="0" width="3" height="35" fill="black" />
-        <rect x="26" y="0" width="2" height="35" fill="black" />
-        <rect x="30" y="0" width="1" height="35" fill="black" />
-        <rect x="33" y="0" width="3" height="35" fill="black" />
-        <rect x="38" y="0" width="4" height="35" fill="black" />
-        <rect x="44" y="0" width="1" height="35" fill="black" />
-        <rect x="47" y="0" width="2" height="35" fill="black" />
-        <rect x="51" y="0" width="3" height="35" fill="black" />
-        <rect x="56" y="0" width="1" height="35" fill="black" />
-        <rect x="59" y="0" width="4" height="35" fill="black" />
-        <rect x="65" y="0" width="2" height="35" fill="black" />
-        <rect x="69" y="0" width="1" height="35" fill="black" />
-        <rect x="72" y="0" width="3" height="35" fill="black" />
-        <rect x="77" y="0" width="2" height="35" fill="black" />
-        <rect x="81" y="0" width="4" height="35" fill="black" />
-        <rect x="87" y="0" width="1" height="35" fill="black" />
-        <rect x="90" y="0" width="3" height="35" fill="black" />
-        <rect x="95" y="0" width="2" height="35" fill="black" />
-      </svg>
+      <div
+        aria-label={`Штрихкод ${value}`}
+        style={{ width: '100%', height: imageHeight + 'px', overflow: 'hidden' }}
+        dangerouslySetInnerHTML={{ __html: barcodeHtml }}
+      />
       {displayValue && (
         <span style={{ fontSize: fontSize * previewScale * 25.4 / 72 + 'px', color: '#333', fontFamily: 'monospace', marginTop: '2px', letterSpacing: '1px' }}>{value}</span>
       )}
@@ -493,20 +496,24 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
     })
 
     if (settings.show_barcode) {
+      const barcodePos = settings.pos_barcode || { x: 5, y: 42 }
+      const barcodeWidth = innerW * labelBarcodeWidthPct(settings, barcodePos) / 100
+      const availableWidth = innerW * (100 - barcodePos.x) / 100
       items.push({
         key: 'pos_barcode',
         visible: settings.show_barcode,
         defaultPos: settings.pos_barcode,
         children: (
-          <MockBarcode
-            width={innerW * labelBarcodeWidthPct(settings, settings.pos_barcode) / 100}
-            height={settings.barcode_height * (previewScale / 3.78)}
-            value={binLabel}
-            displayValue={settings.show_barcode_text}
-            fontSize={settings.font_size}
-            previewScale={previewScale}
-            align={settings.align_barcode || 'center'}
-          />
+          <div style={{ width: availableWidth, display: 'flex', justifyContent: barcodeJustifyContent(settings.align_barcode) }}>
+            <RenderedBarcode
+              width={barcodeWidth}
+              height={settings.barcode_height * (previewScale / 3.78)}
+              value={binLabel}
+              displayValue={settings.show_barcode_text}
+              fontSize={settings.font_size}
+              previewScale={previewScale}
+            />
+          </div>
         ),
       })
     }
@@ -538,20 +545,24 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
     if (settings.show_barcode) {
       // Якщо в товару немає штрих-коду, все одно показуємо плейсхолдер у прев'ю
       const barcodeVal = product.barcode || '123456789012'
+      const barcodePos = settings.pos_barcode || { x: 5, y: 42 }
+      const barcodeWidth = innerW * labelBarcodeWidthPct(settings, barcodePos) / 100
+      const availableWidth = innerW * (100 - barcodePos.x) / 100
       items.push({
         key: 'pos_barcode',
         visible: settings.show_barcode,
         defaultPos: settings.pos_barcode,
         children: (
-          <MockBarcode
-            width={innerW * labelBarcodeWidthPct(settings, settings.pos_barcode) / 100}
-            height={settings.barcode_height * (previewScale / 3.78)}
-            value={barcodeVal}
-            displayValue={settings.show_barcode_text}
-            fontSize={settings.font_size}
-            previewScale={previewScale}
-            align={settings.align_barcode || 'center'}
-          />
+          <div style={{ width: availableWidth, display: 'flex', justifyContent: barcodeJustifyContent(settings.align_barcode) }}>
+            <RenderedBarcode
+              width={barcodeWidth}
+              height={settings.barcode_height * (previewScale / 3.78)}
+              value={barcodeVal}
+              displayValue={settings.show_barcode_text}
+              fontSize={settings.font_size}
+              previewScale={previewScale}
+            />
+          </div>
         ),
       })
     }
@@ -704,9 +715,10 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
       if (settings.show_barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
+        const barcodeLeft = alignedBarcodeLeftPct(settings, pBc)
         const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
-        body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
+        body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
       }
     } else if (product) {
       if (settings.show_product_name) {
@@ -716,9 +728,10 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
+        const barcodeLeft = alignedBarcodeLeftPct(settings, pBc)
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
-        body += `<div class="barcode" style="position:absolute;left:${pBc.x}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
+        body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
         const pSku = settings.pos_sku || { x: 5, y: 75 }
@@ -747,10 +760,12 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   const html = `<!DOCTYPE html>
 <html lang="uk"><head><meta charset="utf-8"><title>Етикетки ${w}×${h} мм</title><style>
   @page { margin: 0; size: ${w}mm ${h}mm; }
-  html, body { margin: 0 !important; padding: 0 !important; width: ${w}mm; min-width: ${w}mm; background: #fff; }
+  html, body { margin: 0 !important; padding: 0 !important; width: ${w}mm; min-width: ${w}mm; height: auto; min-height: 0; overflow: visible; background: #fff; }
   *, *::before, *::after { box-sizing: border-box; }
-  body { font-family: 'Courier New', monospace; color: #000; }
+  body { font-family: 'Courier New', monospace; color: #000; font-size: 0; line-height: 0; }
   .label-page {
+    display: block;
+    vertical-align: top;
     position: relative;
     width: ${w}mm;
     height: ${h}mm;
@@ -806,7 +821,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   }
   @media print {
     html, body { width: ${w}mm !important; min-width: ${w}mm !important; }
-    .label-page { width: ${w}mm !important; height: ${h}mm !important; }
+    .label-page { width: ${w}mm !important; height: calc(${h}mm - 0.01mm) !important; }
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
 </style></head><body>
@@ -822,17 +837,17 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   }
 }
 
-function printLabelDocumentViaDriver(document: LabelPrintDocument) {
-  PrintService.printHtml(document.html, {
+async function printLabelDocumentViaDriver(document: LabelPrintDocument): Promise<void> {
+  await PrintService.printHtmlAndWait(document.html, {
     mode: 'iframe',
     title: document.title,
     pageSizeMm: { width: document.widthMm, height: document.heightMm },
     preferDesktopNative: true,
     showDesktopPreview: false,
-    // Предпросмотр етикетки вже є у вкладці "Печать этикеток".
-    // Для принтера етикеток важливо не змушувати драйвер відкривати зайві
-    // сторінки — інакше деякі моделі друкують порожню етикетку через одну.
-    useDriverPaper: true,
+    // Етикетка повинна мати рівно фізичний розмір із дизайнера: без fallback
+    // на папір/поля драйвера, який спричиняв зсув і порожню другу етикетку.
+    useDriverPaper: false,
+    strictPageSize: true,
     cleanupDelayMs: 30000,
     readyDelayMs: 50,
   })
@@ -858,42 +873,51 @@ export async function resolveTsplPrinter(): Promise<string | null> {
   }
 }
 
-export function printLabelDocument(document: LabelPrintDocument) {
-  const desktop = desktopBridge()
-  if (desktop?.print?.labelsTspl) {
-    const tspl = loadTsplSettings()
-    resolveTsplPrinter().then((printerName) => {
-      if (!printerName) {
-        printLabelDocumentViaDriver(document)
-        return
-      }
+function labelPrintErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '')
+  if (raw.includes('TSPL_PRINTER_NOT_SET')) return 'Принтер етикеток не вибрано.'
+  if (raw.includes('RAW_PRINT_TIMEOUT')) return 'Принтер не відповів протягом 30 секунд.'
+  if (raw.includes('RAW_PRINT_OPEN_FAILED')) return 'Не вдалося відкрити вибраний принтер етикеток.'
+  if (raw.includes('RAW_PRINT_WRITE_FAILED') || raw.includes('RAW_PRINT_INCOMPLETE')) return 'Принтер прийняв етикетки не повністю.'
+  if (raw.includes('TSPL_NO_LABELS')) return 'У документі немає етикеток для друку.'
+  return raw
+    .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*Error:\s*/i, '')
+    .trim() || 'Невідома помилка принтера.'
+}
 
-      desktop.print.labelsTspl(document.html, {
-        printerName,
-        widthMm: document.widthMm,
-        heightMm: document.heightMm,
-        gapMm: tspl.gapMm,
-        density: tspl.density,
-        rotate180: tspl.rotate180,
-      }).then(({ labels }) => {
-        import('@/components/ui/Toast').then(({ toast }) => toast.success('Надруковано ' + labels + ' етикеток'))
-      }).catch((error: unknown) => {
-        console.error('TSPL label print failed, falling back to driver', error)
-        import('@/components/ui/Toast').then(({ toast }) => {
-          const message = error instanceof Error ? error.message : 'невідома помилка'
-          toast.error('Прямий друк етикеток не вдався: ' + message)
-        })
-        printLabelDocumentViaDriver(document)
-      })
-    })
+export async function printLabelDocument(document: LabelPrintDocument): Promise<void> {
+  const desktop = desktopBridge()
+  const tspl = loadTsplSettings()
+  if (!desktop?.print?.labelsTspl || !tspl.enabled) {
+    await printLabelDocumentViaDriver(document)
     return
   }
 
-  printLabelDocumentViaDriver(document)
+  const printerName = await resolveTsplPrinter()
+  if (!printerName) {
+    throw new Error('Прямий друк увімкнено, але принтер етикеток не вибрано. Оберіть принтер у дизайнері етикеток.')
+  }
+
+  try {
+    const { labels } = await desktop.print.labelsTspl(document.html, {
+      printerName,
+      widthMm: document.widthMm,
+      heightMm: document.heightMm,
+      gapMm: tspl.gapMm,
+      density: tspl.density,
+      rotate180: tspl.rotate180,
+    })
+    void labels
+  } catch (error) {
+    console.error('TSPL label print failed', error)
+    throw new Error(
+      'Прямий друк етикеток не вдався: ' + labelPrintErrorMessage(error) + ' Повторний друк через драйвер не запускався.',
+    )
+  }
 }
 
-export function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean) {
-  printLabelDocument(buildLabelPrintDocument(settings, items, isBins))
+export function printLabels(settings: LabelSettings, items: Array<Product | { label: string }>, isBins: boolean): Promise<void> {
+  return printLabelDocument(buildLabelPrintDocument(settings, items, isBins))
 }
 
 // ================================================================
@@ -912,6 +936,7 @@ export default function LabelDesigner() {
   const [binInput, setBinInput] = useState('')
   const [binLabels, setBinLabels] = useState<string[]>([])
   const [printPreviewDoc, setPrintPreviewDoc] = useState<LabelPrintDocument | null>(null)
+  const [confirmPrinting, setConfirmPrinting] = useState(false)
   const [productSettings, setProductSettings] = useState<LabelSettings>(DEFAULT_LABEL)
   const [binSettings, setBinSettings] = useState<LabelSettings>(DEFAULT_BIN_LABEL)
   const settings = binMode ? binSettings : productSettings
@@ -926,7 +951,6 @@ export default function LabelDesigner() {
   useEffect(() => {
     if (!tsplAvailable || typeof desktopPrint?.listPrinters !== 'function') return
     desktopPrint.listPrinters().then(setSystemPrinters).catch(() => setSystemPrinters([]))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tsplAvailable])
 
   function updateTspl(patch: Partial<TsplLabelPrintSettings>) {
@@ -1077,14 +1101,24 @@ export default function LabelDesigner() {
 
   // Пошук товарів
   useEffect(() => {
-    if (!searchQuery.trim() || binMode) { setSearchResults([]); return }
-    const timer = setTimeout(async () => {
+    const query = searchQuery.trim()
+    if (!query || binMode) {
+      setSearchResults([])
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
       try {
-        const { data } = await productApi.search(searchQuery, 10)
-        setSearchResults(data)
-      } catch { setSearchResults([]) }
+        const { data } = await productApi.search(query, 10)
+        if (!cancelled) setSearchResults(data)
+      } catch {
+        if (!cancelled) setSearchResults([])
+      }
     }, 250)
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [searchQuery, binMode])
 
   const updateSetting = useCallback(<K extends keyof LabelSettings>(key: K, value: LabelSettings[K]) => {
@@ -1293,13 +1327,16 @@ export default function LabelDesigner() {
     }
   }
 
-  function handleConfirmPrint() {
-    if (!printPreviewDoc) return
+  async function handleConfirmPrint() {
+    if (!printPreviewDoc || confirmPrinting) return
+    setConfirmPrinting(true)
     try {
-      printLabelDocument(printPreviewDoc)
+      await printLabelDocument(printPreviewDoc)
       setPrintPreviewDoc(null)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити друк')
+    } finally {
+      setConfirmPrinting(false)
     }
   }
 
@@ -1873,10 +1910,10 @@ export default function LabelDesigner() {
             </div>
 
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button variant="outline" onClick={() => setPrintPreviewDoc(null)}>
+              <Button variant="outline" onClick={() => setPrintPreviewDoc(null)} disabled={confirmPrinting}>
                 Закрити
               </Button>
-              <Button icon={<Printer size={16} />} onClick={handleConfirmPrint}>
+              <Button icon={<Printer size={16} />} onClick={handleConfirmPrint} loading={confirmPrinting}>
                 Друк
               </Button>
             </div>

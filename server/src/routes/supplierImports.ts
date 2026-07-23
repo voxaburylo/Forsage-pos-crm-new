@@ -16,7 +16,6 @@ const ALLOWED = ['owner', 'admin'] as const
 router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
   try {
     const supplierId = req.query.supplier_id as string || null
-    const updateRetail = req.query.update_retail === 'true'
     const mode = (req.query.mode as 'replace' | 'add') || 'replace'
     const warehouseName = (req.query.warehouse_name as string) || null
 
@@ -76,7 +75,6 @@ router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {
           importId: importRecord.id,
           tempPath,
           supplierId,
-          updateRetail,
           mode,
           warehouseName,
         })

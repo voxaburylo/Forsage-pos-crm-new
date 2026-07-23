@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 
 // ─── Emoji picker (compact) ─────────────────────────────────────
@@ -25,6 +26,7 @@ const COLOR_OPTIONS = [
 
 export default function SettingsPage() {
   const navigate = useNavigate()
+  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [form, setForm]     = useState<Partial<ShopSettings>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving]   = useState(false)
@@ -71,11 +73,11 @@ export default function SettingsPage() {
   const [aiTesting, setAiTesting] = useState(false)
 
   useEffect(() => {
-    if (isDesktopRuntime()) return
+    if (offlineMode) { setAiStatus(null); return }
     aiApi.status()
       .then(({ data }) => { setAiStatus(data); setAiModel(data.model); setAiEnabled(data.enabled) })
       .catch(() => {})
-  }, [])
+  }, [offlineMode])
 
   useEffect(() => {
     const desktop = desktopBridge()
@@ -328,7 +330,7 @@ export default function SettingsPage() {
               <h3 className="text-sm font-semibold text-gray-800">Основна інформація</h3>
             </div>
 
-            {!isDesktopRuntime() && (
+            {!offlineMode && (
             <div className="pt-2 pb-2 border-b border-gray-100 flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold text-gray-700">Чернова номенклатура</p>
@@ -835,7 +837,7 @@ export default function SettingsPage() {
 
         {/* ========== Помічник АІ (Gemini) ========== */}
         {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}
-        {!isDesktopRuntime() && (
+        {!offlineMode && (
         <Card className="mt-6 space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-gray-100">
             <div className="flex items-center gap-2">

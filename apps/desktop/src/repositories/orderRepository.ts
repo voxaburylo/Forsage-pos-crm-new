@@ -4,12 +4,15 @@ import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalPosRepository } from './posRepository'
 
 function nowIso(): string { return new Date().toISOString() }
+function dayStamp(date: Date): string {
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+}
 function num(value: unknown): number { const n = Number(value ?? 0); return Number.isFinite(n) ? n : 0 }
 function boolInt(value: unknown): number { return value === true || value === 1 ? 1 : 0 }
 function parseJson(value: string | null): any { if (!value) return null; try { return JSON.parse(value) } catch { return null } }
 
 const ACTIVE_STATUSES = ['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']
-const NON_ISSUEABLE = new Set(['completed', 'canceled', 'archived'])
+const NON_ISSUEABLE = new Set(['canceled', 'archived'])
 
 type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
 
@@ -57,9 +60,36 @@ export class LocalOrderRepository {
     const id = orderId ?? randomUUID()
     const existing = orderId ? this.getOrder(orderId, tenantId) : null
     if (orderId && !existing) throw new Error('Замовлення не знайдено')
-    const items = Array.isArray(input.items) ? input.items : existing?.items ?? []
-    const totalAmount = items.reduce((sum: number, item: any) =>
-      sum + Math.round(num(item.sell_price) * num(item.qty)), 0)
+    const rawItems = Array.isArray(input.items) ? input.items : existing?.items ?? []
+    const items = rawItems.map((item: any) => {
+      const product = item.product_id ? this.db.prepare(`
+        SELECT requires_core_return, core_deposit_amount
+        FROM products
+        WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+        LIMIT 1
+      `).get(item.product_id, tenantId) as {
+        requires_core_return: number
+        core_deposit_amount: number
+      } | undefined : undefined
+      const savedCoreDeposit = Math.max(0, Math.round(num(item.core_deposit_amount)))
+      const coreDepositAmount = savedCoreDeposit > 0
+        ? savedCoreDeposit
+        : product?.requires_core_return === 1
+          ? Math.max(0, Math.round(num(product.core_deposit_amount)))
+          : 0
+      return {
+        ...item,
+        core_deposit_amount: coreDepositAmount,
+        core_return_status: item.core_return_status
+          ?? (coreDepositAmount > 0 ? 'pending' : 'none'),
+      }
+    })
+    const totalAmount = items.reduce((sum: number, item: any) => {
+      const qty = num(item.qty)
+      return sum
+        + Math.round(num(item.sell_price) * qty)
+        + Math.round(num(item.core_deposit_amount) * qty)
+    }, 0)
     const orderNumber = existing?.order_number ?? this.nextOrderNumber(tenantId, timestamp)
     const status = existing?.status ?? 'lead'
     const totalPaid = existing?.total_paid ?? num(input.prepayment)
@@ -99,7 +129,7 @@ export class LocalOrderRepository {
         status, num(input.prepayment ?? prepayment),
         input.prepayment_method !== undefined ? input.prepayment_method : existing?.prepayment_method ?? null,
         input.prepayment_is_fiscal === true ? 1 : existing?.prepayment_is_fiscal ? 1 : 0,
-        totalAmount, num(input.prepayment ?? totalPaid), 0,
+        totalAmount, num(input.prepayment ?? totalPaid), existing?.discount_amount ?? 0,
         input.pickup_deadline_at ?? existing?.pickup_deadline_at ?? null,
         input.pickup_cell ?? existing?.pickup_cell ?? null,
         input.comment !== undefined ? input.comment : existing?.comment ?? null,
@@ -115,20 +145,24 @@ export class LocalOrderRepository {
           INSERT INTO customer_order_items (
             id, tenant_id, order_id, name, sku, product_id, supplier_id,
             source_type, item_type, item_status, buy_price, sell_price, qty,
-            expected_date, dirty_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            expected_date, core_deposit_amount, core_return_status,
+            dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name, sku = excluded.sku, product_id = excluded.product_id,
             supplier_id = excluded.supplier_id, source_type = excluded.source_type,
             item_type = excluded.item_type, item_status = excluded.item_status,
             buy_price = excluded.buy_price, sell_price = excluded.sell_price,
             qty = excluded.qty, expected_date = excluded.expected_date,
+            core_deposit_amount = excluded.core_deposit_amount,
+            core_return_status = excluded.core_return_status,
             dirty_at = excluded.dirty_at, updated_at = excluded.updated_at, deleted_at = NULL
         `).run(
           itemId, tenantId, id, item.name, item.sku ?? null, item.product_id ?? null,
           item.supplier_id ?? null, item.source_type ?? 'warehouse', item.item_type ?? 'product',
           item.item_status ?? 'pending', num(item.buy_price), num(item.sell_price),
-          num(item.qty) || 1, item.expected_date ?? null, timestamp,
+          num(item.qty) || 1, item.expected_date ?? null,
+          item.core_deposit_amount, item.core_return_status, timestamp,
           item.created_at ?? timestamp, timestamp,
         )
       }
@@ -146,9 +180,16 @@ export class LocalOrderRepository {
           }
         }
       }
-      this.addOutbox(tenantId, 'customer_order', id, orderId ? 'order.updated' : 'order.created', {
-        id, ...input, order_number: orderNumber, total_amount: totalAmount,
-      }, timestamp)
+
+      const syncPayload = this.getOrder(id, tenantId)
+      this.addOutbox(
+        tenantId,
+        'customer_order',
+        id,
+        orderId ? 'order.updated' : 'order.created',
+        syncPayload ?? { id, ...input, order_number: orderNumber, total_amount: totalAmount },
+        timestamp,
+      )
     })
     return this.getOrder(id, tenantId)
   }
@@ -198,32 +239,49 @@ export class LocalOrderRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
-    const paid = num(order.total_paid ?? order.prepayment)
-    if (input.keep_as_credit && paid > 0 && order.customer_id) {
-      this.pos.addCustomerDeposit({
-        tenant_id: tenantId, customer_id: order.customer_id, amount: paid,
-        method: 'transfer', notes: `Кредит із скасованого замовлення #${order.order_number ?? order.id.slice(0, 8)}`,
-      })
+    if (order.status === 'completed') throw new Error('Завершене замовлення не можна скасувати')
+    if (order.status === 'canceled') return order
+
+    const ledger = this.db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) AS paid
+      FROM order_payments
+      WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
+    `).get(tenantId, orderId) as { paid: number } | undefined
+    const paid = Math.max(num(order.total_paid), num(order.prepayment), num(ledger?.paid))
+    if (paid > 0 && (input.refund_prepayment || input.keep_as_credit)) {
+      throw new Error('Оплачене замовлення можна скасувати без зміни оплати. Повернення або зарахування на рахунок проведіть через касу.')
     }
+
     const timestamp = nowIso()
-    this.db.prepare(`
-      UPDATE customer_orders
-      SET status = 'canceled', total_paid = ?, prepayment = ?, comment = ?,
-          dirty_at = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `).run(
-      input.refund_prepayment || input.keep_as_credit ? 0 : paid,
-      input.refund_prepayment || input.keep_as_credit ? 0 : num(order.prepayment),
-      input.reason ? `${order.comment ? order.comment + '\n' : ''}Скасування: ${input.reason}` : order.comment,
-      timestamp, timestamp, orderId, tenantId,
-    )
-    this.addOutbox(tenantId, 'customer_order', orderId, 'order.canceled', {
-      id: orderId, refund_prepayment: input.refund_prepayment === true,
-      keep_as_credit: input.keep_as_credit === true, reason: input.reason ?? null,
-    }, timestamp)
+    const reason = String(input.reason ?? '').trim()
+    const priorComment = String(order.comment ?? '').trim()
+    const comment = reason ? `${priorComment ? `${priorComment}\n` : ''}Скасування: ${reason}` : priorComment || null
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE customer_orders
+        SET status = 'canceled', comment = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(comment, timestamp, timestamp, orderId, tenantId)
+      this.db.prepare(`
+        UPDATE customer_order_items
+        SET item_status = 'canceled', dirty_at = ?, updated_at = ?
+        WHERE order_id = ? AND tenant_id = ? AND item_status <> 'handed' AND deleted_at IS NULL
+      `).run(timestamp, timestamp, orderId, tenantId)
+      this.db.prepare(`
+        UPDATE stock_reserves
+        SET released_at = ?, dirty_at = ?, updated_at = ?
+        WHERE order_id = ? AND tenant_id = ? AND released_at IS NULL AND deleted_at IS NULL
+      `).run(timestamp, timestamp, timestamp, orderId, tenantId)
+      this.addOutbox(tenantId, 'customer_order', orderId, 'order.canceled', {
+        id: orderId,
+        refund_prepayment: false,
+        keep_as_credit: false,
+        reason: input.reason ?? null,
+        paid_amount_preserved: paid,
+      }, timestamp)
+    })
     return this.getOrder(orderId, tenantId)
   }
-
   listPendingItems(supplierId: string, tenantId = DEFAULT_TENANT_ID): any[] {
     return this.db.prepare(`
       SELECT i.*, o.order_number, o.customer_id
@@ -236,19 +294,27 @@ export class LocalOrderRepository {
   }
 
   bulkArrival(itemIds: string[], tenantId = DEFAULT_TENANT_ID): { updated: number } {
+    const uniqueIds = [...new Set(itemIds)]
+    if (uniqueIds.length === 0) throw new Error('Оберіть хоча б одну позицію')
+    const placeholders = uniqueIds.map(() => '?').join(',')
+    const ownedRows = this.db.prepare(`
+      SELECT id FROM customer_order_items
+      WHERE tenant_id = ? AND deleted_at IS NULL AND id IN (${placeholders})
+    `).all(tenantId, ...uniqueIds) as Array<{ id: string }>
+    if (ownedRows.length !== uniqueIds.length) {
+      throw new Error('Одна або кілька позицій не знайдені у вашому магазині')
+    }
+
     const timestamp = nowIso()
-    let updated = 0
     this.db.transaction(() => {
-      for (const itemId of itemIds) {
-        const result = this.db.prepare(`
-          UPDATE customer_order_items SET item_status = 'arrived', dirty_at = ?, updated_at = ?
-          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
-        `).run(timestamp, timestamp, itemId, tenantId)
-        updated += Number(result.changes)
-      }
-      this.addOutbox(tenantId, 'customer_order', 'bulk', 'order.items_arrived', { item_ids: itemIds }, timestamp)
+      this.db.prepare(`
+        UPDATE customer_order_items
+        SET item_status = 'arrived', dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND deleted_at IS NULL AND id IN (${placeholders})
+      `).run(timestamp, timestamp, tenantId, ...uniqueIds)
+      this.addOutbox(tenantId, 'customer_order', 'bulk', 'order.items_arrived', { item_ids: uniqueIds }, timestamp)
     })
-    return { updated }
+    return { updated: uniqueIds.length }
   }
   listReadyOrders(input: { tenant_id?: string; search?: string; limit?: number } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
@@ -303,9 +369,39 @@ export class LocalOrderRepository {
     `).all(tenantId, orderId) as any[]
   }
 
+  listPaymentsByPeriod(input: {
+    tenant_id?: string
+    date_from?: string
+    date_to?: string
+    shift_id?: string
+  } = {}): any[] {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const conditions = ['p.tenant_id = ?', 'p.deleted_at IS NULL']
+    const params: any[] = [tenantId]
+    if (input.date_from) {
+      conditions.push('p.created_at >= ?')
+      params.push(input.date_from)
+    }
+    if (input.date_to) {
+      conditions.push('p.created_at <= ?')
+      params.push(input.date_to)
+    }
+    if (input.shift_id) {
+      conditions.push('p.shift_id = ?')
+      params.push(input.shift_id)
+    }
+    return this.db.prepare(`
+      SELECT p.*
+      FROM order_payments p
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY p.created_at ASC
+    `).all(...params) as any[]
+  }
+
   addPayment(orderId: string, input: {
     tenant_id?: string
     user_id?: string | null
+    payment_id?: string
     amount: number
     method: PaymentMethod
     is_fiscal?: boolean
@@ -317,15 +413,37 @@ export class LocalOrderRepository {
     if (amount <= 0) throw new Error('Некоректна сума')
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
+    const paymentId = input.payment_id ?? randomUUID()
+    const existingPayment = this.db.prepare(`
+      SELECT * FROM order_payments WHERE id = ? LIMIT 1
+    `).get(paymentId) as any | undefined
+    if (existingPayment) {
+      const sameRequest = existingPayment.tenant_id === tenantId
+        && existingPayment.order_id === orderId
+        && num(existingPayment.amount) === amount
+        && existingPayment.method === input.method
+      if (!sameRequest) throw new Error('Цей ідентифікатор платежу вже використано для іншої оплати')
+      return { data: existingPayment, order }
+    }
     if (order.status === 'completed') throw new Error('Замовлення вже видане')
     const remaining = this.remainingDue(order)
     const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
     if (!canAcceptOpenDraftDeposit && amount > remaining) throw new Error('Сума перевищує залишок до сплати')
     if (input.method === 'account' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата з рахунку неможлива')
 
+    const shiftId = input.shift_id ?? null
+    if (input.method === 'cash' && !shiftId) throw new Error('Спочатку відкрийте касову зміну')
+    if (shiftId) {
+      const openShift = this.db.prepare(`
+        SELECT id FROM shifts
+        WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL
+        LIMIT 1
+      `).get(shiftId, tenantId)
+      if (!openShift) throw new Error('Касову зміну не знайдено або вже закрито')
+    }
+
     const timestamp = nowIso()
-    const paymentId = randomUUID()
-    const accountTransactionId = input.method === 'account' ? randomUUID() : null
+    const accountTransactionId = input.method === 'account' ? paymentId : null
     const nextPaid = num(order.total_paid ?? order.prepayment) + amount
     const nextStatus = (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
 
@@ -370,7 +488,7 @@ export class LocalOrderRepository {
           id, tenant_id, order_id, amount, method, is_fiscal, shift_id, created_by,
           notes, dirty_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(paymentId, tenantId, orderId, amount, input.method, boolInt(input.is_fiscal), input.shift_id ?? null, input.user_id ?? null, input.notes ?? null, timestamp, timestamp, timestamp)
+      `).run(paymentId, tenantId, orderId, amount, input.method, boolInt(input.is_fiscal), shiftId, input.user_id ?? null, input.notes ?? null, timestamp, timestamp, timestamp)
 
       this.db.prepare(`
         UPDATE customer_orders
@@ -378,13 +496,13 @@ export class LocalOrderRepository {
         WHERE id = ? AND tenant_id = ?
       `).run(nextPaid, nextStatus, timestamp, timestamp, orderId, tenantId)
 
-      if (input.method === 'cash' && input.shift_id) {
+      if (input.method === 'cash' && shiftId) {
         this.db.prepare(`
           INSERT INTO cash_operations (
             id, tenant_id, shift_id, user_id, type, source, amount, notes,
             dirty_at, created_at, updated_at
           ) VALUES (?, ?, ?, ?, 'cash_in', 'cashbox', ?, ?, ?, ?, ?)
-        `).run(randomUUID(), tenantId, input.shift_id, input.user_id ?? null, amount, input.notes ?? `Передоплата замовлення #${order.order_number ?? order.id.slice(0, 8)}`, timestamp, timestamp, timestamp)
+        `).run(paymentId, tenantId, shiftId, input.user_id ?? null, amount, input.notes ?? `Передоплата замовлення #${order.order_number ?? order.id.slice(0, 8)}`, timestamp, timestamp, timestamp)
       }
 
       this.addOutbox(tenantId, 'customer_order', orderId, 'order.payment_added', {
@@ -393,7 +511,7 @@ export class LocalOrderRepository {
         amount,
         method: input.method,
         is_fiscal: input.is_fiscal === true,
-        shift_id: input.shift_id ?? null,
+        shift_id: shiftId,
         notes: input.notes ?? null,
         created_by: input.user_id ?? null,
         created_at: timestamp,
@@ -411,73 +529,315 @@ export class LocalOrderRepository {
     shift_id?: string | null
     payment_method?: 'cash' | 'card' | 'mixed'
     is_fiscal?: boolean
-  } = {}): { data: { success: true; sale_id: string | null } } {
+  } = {}): { data: { success: true; sale_id: string; sale_number: string } } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
-    if (order.status === 'completed') throw new Error('Замовлення вже видане')
+    if (order.status === 'completed' && order.sale_id) {
+      const existingSale = this.db.prepare(`
+        SELECT id, sale_number
+        FROM sales
+        WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+        LIMIT 1
+      `).get(order.sale_id, tenantId) as { id: string; sale_number: string } | undefined
+      if (!existingSale) throw new Error('Замовлення позначене виданим, але пов’язаний чек відсутній')
+      return {
+        data: {
+          success: true,
+          sale_id: existingSale.id,
+          sale_number: existingSale.sale_number,
+        },
+      }
+    }
     if (NON_ISSUEABLE.has(order.status)) throw new Error('Це замовлення не можна видати через касу')
     const remaining = this.remainingDue(order)
     if (remaining > 0) throw new Error('Не всі оплати проведено')
+
+    const activeItems = order.items.filter((item: any) => item.item_status !== 'canceled')
+    if (activeItems.length === 0) {
+      throw new Error('У замовленні немає активних позицій для видачі')
+    }
+    const unlinkedItems = activeItems.filter((item: any) => !item.product_id)
+    if (unlinkedItems.length > 0) {
+      const names = unlinkedItems.slice(0, 3).map((item: any) => `«${item.name || 'Без назви'}»`).join(', ')
+      const suffix = unlinkedItems.length > 3 ? ` та ще ${unlinkedItems.length - 3}` : ''
+      throw new Error(`Не можна видати замовлення. Не прив'язано до картки товару: ${names}${suffix}. Виберіть товар у кожній позиції.`)
+    }
+
     const cashierId = input.user_id ?? order.manager_id ?? 'local'
     const shiftId = input.shift_id ?? this.pos.findOpenShift(cashierId, tenantId)
     if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
     const timestamp = nowIso()
+    const saleId = randomUUID()
+    const orderPayments = this.listPayments(orderId, tenantId)
+    const paymentTotals = { cash: 0, card: 0, transfer: 0 }
+    for (const payment of orderPayments) {
+      const amount = Math.max(0, Math.round(num(payment.amount)))
+      if (payment.method === 'card') paymentTotals.card += amount
+      else if (payment.method === 'transfer' || payment.method === 'account') paymentTotals.transfer += amount
+      else paymentTotals.cash += amount
+    }
+    const listedPaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
+    const legacyPaid = Math.max(0, Math.round(num(order.total_paid ?? order.prepayment)) - listedPaid)
+    if (legacyPaid > 0) {
+      const legacyMethod = order.prepayment_method ?? input.payment_method
+      if (legacyMethod === 'card') paymentTotals.card += legacyPaid
+      else if (legacyMethod === 'transfer' || legacyMethod === 'account') paymentTotals.transfer += legacyPaid
+      else paymentTotals.cash += legacyPaid
+    }
+    const usedMethods = [
+      paymentTotals.cash > 0 ? 'cash' : null,
+      paymentTotals.card > 0 ? 'card' : null,
+      paymentTotals.transfer > 0 ? 'transfer' : null,
+    ].filter(Boolean) as Array<'cash' | 'card' | 'transfer'>
+    const paymentMethod: 'cash' | 'card' | 'mixed' | 'transfer' = usedMethods.length > 1
+      ? 'mixed'
+      : usedMethods[0] ?? (input.payment_method === 'card' || input.payment_method === 'mixed' ? input.payment_method : 'cash')
+    const isFiscal = input.is_fiscal === true || orderPayments.some((payment) => payment.is_fiscal === 1)
 
-    const stockItems = order.items
-      .filter((item: any) => item.item_status !== 'canceled' && item.product_id)
-      .map((item: any) => ({ product_id: item.product_id, qty: num(item.qty), buy_price: num(item.buy_price), name: item.name }))
-      .filter((item: any) => item.qty > 0)
+    return this.db.transaction(() => {
+      const settingsRow = this.db.prepare(
+        "SELECT value_json FROM app_meta WHERE key = 'shop_settings' LIMIT 1",
+      ).get() as { value_json: string } | undefined
+      let allowNegativeQty = true
+      if (settingsRow?.value_json) {
+        try {
+          allowNegativeQty = JSON.parse(settingsRow.value_json)?.allow_negative_qty !== false
+        } catch {
+          allowNegativeQty = true
+        }
+      }
 
-    const saleId: string | null = null
-    this.db.transaction(() => {
-      for (const item of stockItems) {
+      let subtotal = 0
+      const preparedItems = activeItems.map((item: any) => {
         const product = this.db.prepare(`
-          SELECT id, qty_on_hand, is_service
+          SELECT id, sku, name, purchase_price, qty_on_hand, is_service,
+                 requires_core_return, core_deposit_amount
           FROM products
           WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
           LIMIT 1
-        `).get(item.product_id, tenantId) as { id: string; qty_on_hand: number; is_service: number } | undefined
-        if (!product || product.is_service === 1) continue
-        const qtyAfter = num(product.qty_on_hand) - item.qty
+        `).get(item.product_id, tenantId) as {
+          id: string
+          sku: string
+          name: string
+          purchase_price: number
+          qty_on_hand: number
+          is_service: number
+          requires_core_return: number
+          core_deposit_amount: number
+        } | undefined
+        if (!product) {
+          throw new Error(`Не можна видати замовлення: товар «${item.name || item.product_id}» не знайдено в локальній базі`)
+        }
+
+        const qty = num(item.qty)
+        if (qty <= 0) throw new Error(`Некоректна кількість у позиції «${item.name || product.name}»`)
+        const unitPrice = Math.round(num(item.sell_price))
+        const savedCoreDeposit = Math.max(0, Math.round(num(item.core_deposit_amount)))
+        const coreDepositAmount = savedCoreDeposit > 0
+          ? savedCoreDeposit
+          : product.requires_core_return === 1
+            ? Math.max(0, Math.round(num(product.core_deposit_amount)))
+            : 0
+        const lineAmount = Math.round(unitPrice * qty) + Math.round(coreDepositAmount * qty)
+        subtotal += lineAmount
+        if (product.is_service !== 1 && !allowNegativeQty && num(product.qty_on_hand) < qty) {
+          throw new Error(`Недостатньо залишку для «${product.name}»: є ${num(product.qty_on_hand)}, потрібно ${qty}`)
+        }
+
+        return {
+          id: randomUUID(),
+          order_item_id: item.id,
+          product_id: product.id,
+          description: item.name || product.name,
+          sku: item.sku || product.sku,
+          qty,
+          unit_price: unitPrice,
+          purchase_price: Math.round(num(item.buy_price ?? product.purchase_price)),
+          discount: 0,
+          total: lineAmount,
+          core_deposit_amount: coreDepositAmount,
+          core_return_status: item.core_return_status
+            && item.core_return_status !== 'none'
+            ? item.core_return_status
+            : coreDepositAmount > 0 ? 'pending' : 'none',
+          is_service: product.is_service === 1,
+          qty_on_hand: num(product.qty_on_hand),
+        }
+      })
+
+      const discount = Math.max(0, Math.round(num(order.discount_amount)))
+      const total = Math.max(0, subtotal - discount)
+      const saleNumber = this.nextSaleNumber(tenantId, timestamp)
+      const notes = `Видача замовлення #${order.order_number ?? order.id.slice(0, 8)}`
+
+      this.db.prepare(`
+        INSERT INTO sales (
+          id, tenant_id, sale_number, customer_id, cashier_id, manager_id, shift_id,
+          status, subtotal, discount, total, payment_method, is_debt, is_fiscal,
+          cash_amount, card_amount, transfer_amount, debt_amount, pickup_cell, notes,
+          completed_at, dirty_at, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+      `).run(
+        saleId,
+        tenantId,
+        saleNumber,
+        order.customer_id ?? null,
+        cashierId,
+        order.manager_id ?? cashierId,
+        shiftId,
+        subtotal,
+        discount,
+        total,
+        paymentMethod,
+        isFiscal ? 1 : 0,
+        paymentTotals.cash,
+        paymentTotals.card,
+        paymentTotals.transfer,
+        order.pickup_cell ?? null,
+        notes,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+      )
+
+      for (const item of preparedItems) {
         this.db.prepare(`
-          UPDATE products
-          SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
-          WHERE id = ? AND tenant_id = ?
-        `).run(qtyAfter, timestamp, timestamp, item.product_id, tenantId)
-        this.db.prepare(`
-          INSERT INTO inventory_movements (
-            id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
-            unit_cost, notes, dirty_at, created_at, updated_at
-          ) VALUES (?, ?, ?, 'order', ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(randomUUID(), tenantId, item.product_id, orderId, -item.qty, qtyAfter, item.buy_price, `Видача замовлення #${order.order_number ?? order.id.slice(0, 8)}`, timestamp, timestamp, timestamp)
+          INSERT INTO sale_items (
+            id, tenant_id, sale_id, product_id, description, sku, qty, unit_price,
+            purchase_price, discount, total, core_deposit_amount, core_return_status,
+            created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          item.id,
+          tenantId,
+          saleId,
+          item.product_id,
+          item.description,
+          item.sku,
+          item.qty,
+          item.unit_price,
+          item.purchase_price,
+          item.discount,
+          item.total,
+          item.core_deposit_amount,
+          item.core_return_status,
+          timestamp,
+          timestamp,
+        )
+
+        if (!item.is_service) {
+          const qtyAfter = item.qty_on_hand - item.qty
+          this.db.prepare(`
+            UPDATE products
+            SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
+            WHERE id = ? AND tenant_id = ?
+          `).run(qtyAfter, timestamp, timestamp, item.product_id, tenantId)
+          this.db.prepare(`
+            INSERT INTO inventory_movements (
+              id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+              unit_cost, notes, dirty_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'order', ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            randomUUID(),
+            tenantId,
+            item.product_id,
+            orderId,
+            -item.qty,
+            qtyAfter,
+            item.purchase_price,
+            notes,
+            timestamp,
+            timestamp,
+            timestamp,
+          )
+        }
       }
+
+      this.db.prepare(`
+        UPDATE stock_reserves
+        SET released_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND order_id = ? AND released_at IS NULL AND deleted_at IS NULL
+      `).run(timestamp, timestamp, tenantId, orderId)
 
       this.db.prepare(`
         UPDATE customer_order_items
         SET item_status = 'handed', dirty_at = ?, updated_at = ?
-        WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL AND item_status <> 'canceled'
+        WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
+          AND item_status NOT IN ('canceled', 'handed')
       `).run(timestamp, timestamp, tenantId, orderId)
 
       this.db.prepare(`
         UPDATE customer_orders
-        SET status = 'completed', dirty_at = ?, updated_at = ?
+        SET status = 'completed', sale_id = ?, dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ?
-      `).run(timestamp, timestamp, orderId, tenantId)
+      `).run(saleId, timestamp, timestamp, orderId, tenantId)
 
+      const syncItems = preparedItems.map(({ qty_on_hand: _qtyOnHand, ...item }: any) => item)
       this.addOutbox(tenantId, 'customer_order', orderId, 'order.completed', {
         order_id: orderId,
         sale_id: saleId,
+        sale_number: saleNumber,
         shift_id: shiftId,
         cashier_id: cashierId,
-        payment_method: input.payment_method ?? 'cash',
-        is_fiscal: input.is_fiscal === true,
+        customer_id: order.customer_id ?? null,
+        manager_id: order.manager_id ?? cashierId,
+        payment_method: paymentMethod,
+        is_fiscal: isFiscal,
+        subtotal,
+        discount,
+        total,
+        cash_amount: paymentTotals.cash,
+        card_amount: paymentTotals.card,
+        transfer_amount: paymentTotals.transfer,
+        debt_amount: 0,
+        pickup_cell: order.pickup_cell ?? null,
+        notes,
         completed_at: timestamp,
-        items: stockItems.map((item: any) => ({ product_id: item.product_id, qty: item.qty })),
+        order_payment_ids: orderPayments.map((payment) => payment.id),
+        items: syncItems,
+        sale: {
+          id: saleId,
+          sale_number: saleNumber,
+          shift_id: shiftId,
+          cashier_id: cashierId,
+          customer_id: order.customer_id ?? null,
+          manager_id: order.manager_id ?? cashierId,
+          payment_method: paymentMethod,
+          is_fiscal: isFiscal,
+          subtotal,
+          discount,
+          total,
+          cash_amount: paymentTotals.cash,
+          card_amount: paymentTotals.card,
+          transfer_amount: paymentTotals.transfer,
+          debt_amount: 0,
+          pickup_cell: order.pickup_cell ?? null,
+          notes,
+          completed_at: timestamp,
+          items: syncItems,
+        },
       }, timestamp)
-    })
 
-    return { data: { success: true, sale_id: saleId } }
+      return { data: { success: true as const, sale_id: saleId, sale_number: saleNumber } }
+    })
+  }
+
+  private nextSaleNumber(tenantId: string, timestamp: string): string {
+    const date = dayStamp(new Date(timestamp))
+    const device = this.db.deviceId.replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase().padEnd(4, '0')
+    const scope = `${tenantId}:sale:${date}:${device}`
+    const row = this.db.prepare(`
+      INSERT INTO local_sequences(scope, value, updated_at)
+      VALUES (?, 1, ?)
+      ON CONFLICT(scope) DO UPDATE SET value = value + 1, updated_at = excluded.updated_at
+      RETURNING value
+    `).get(scope, timestamp) as { value: number } | undefined
+    return `L-${date.slice(2)}-${device}-${String(row?.value ?? 1).padStart(4, '0')}`
   }
 
   private nextOrderNumber(tenantId: string, timestamp: string): number {
@@ -510,7 +870,8 @@ export class LocalOrderRepository {
       prepayment_is_fiscal: row.prepayment_is_fiscal === 1,
       total_amount: num(row.total_amount),
       total_paid: num(row.total_paid),
-      discount_amount: 0,
+      discount_amount: num(row.discount_amount),
+      sale_id: row.sale_id ?? null,
       pickup_deadline_at: row.pickup_deadline_at,
       pickup_cell: row.pickup_cell,
       comment: row.comment,
@@ -545,7 +906,7 @@ export class LocalOrderRepository {
   }
 
   private remainingDue(order: any): number {
-    return Math.max(0, num(order.total_amount) - num(order.total_paid ?? order.prepayment))
+    return Math.max(0, num(order.total_amount) - num(order.discount_amount) - num(order.total_paid ?? order.prepayment))
   }
 
   private addOutbox(tenantId: string, aggregateType: string, aggregateId: string, operationType: string, payload: unknown, timestamp: string): number | bigint {

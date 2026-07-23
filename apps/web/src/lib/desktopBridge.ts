@@ -23,14 +23,20 @@ export interface DesktopProduct {
   purchase_price: number
   retail_price: number
   qty_on_hand: number
+  qty_reserved?: number
+  qty_available?: number
   reorder_point?: number
   notes?: string | null
   is_active: number
   is_service: number
+  requires_core_return?: number
+  core_deposit_amount?: number
   storage_bin: string | null
   is_favorite?: number
   photo_url?: string | null
   specs_json?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export interface DesktopCatalogListOptions {
@@ -50,6 +56,7 @@ export interface DesktopCatalogListResult {
   total: number
 }
 export interface DesktopCheckoutInput {
+  client_operation_id?: string
   cashier_id: string
   shift_id?: string | null
   customer_id?: string | null
@@ -103,12 +110,29 @@ export interface DesktopBootstrapSnapshot {
   deleted_customer_order_ids?: string[]
   customer_order_items?: unknown[]
   order_payments?: unknown[]
+  shifts?: unknown[]
+  sales?: unknown[]
+  sale_items?: unknown[]
+  commission_rules?: unknown[]
+  salary_payments?: unknown[]
+  cash_operations?: unknown[]
+  customer_returns?: unknown[]
+  customer_return_items?: unknown[]
+  stock_reserves?: unknown[]
+  warehouse_movements?: unknown[]
+  writeoffs?: unknown[]
+  writeoff_items?: unknown[]
+  bonus_transactions?: unknown[]
+  customer_deposit_transactions?: unknown[]
   supply_invoices?: unknown[]
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: unknown[]
   supplier_payments?: unknown[]
+  supplier_price_items?: unknown[]
+  supplier_price_imports?: unknown[]
   inventory_sessions?: unknown[]
   inventory_items?: unknown[]
+  shop_settings?: Record<string, unknown> | null
   counts?: Record<string, number>
 }
 
@@ -150,6 +174,7 @@ export interface DesktopSyncPullState {
 export interface DesktopSyncPullChanges {
   tenant_id?: string
   cursor: string
+  staff?: unknown[]
   products?: unknown[]
   deleted_product_ids?: string[]
   customers?: unknown[]
@@ -166,11 +191,35 @@ export interface DesktopSyncPullChanges {
   deleted_customer_order_ids?: string[]
   customer_order_items?: unknown[]
   order_payments?: unknown[]
+  shifts?: unknown[]
+  sales?: unknown[]
+  sale_items?: unknown[]
+  commission_rules?: unknown[]
+  salary_payments?: unknown[]
+  cash_operations?: unknown[]
+  customer_returns?: unknown[]
+  customer_return_items?: unknown[]
+  stock_reserves?: unknown[]
+  warehouse_movements?: unknown[]
+  writeoffs?: unknown[]
+  writeoff_items?: unknown[]
+  bonus_transactions?: unknown[]
+  customer_deposit_transactions?: unknown[]
   supply_invoices?: unknown[]
   deleted_supply_invoice_ids?: string[]
   supply_invoice_items?: unknown[]
   supplier_payments?: unknown[]
+  supplier_price_items?: unknown[]
+  supplier_price_imports?: unknown[]
+  inventory_sessions?: unknown[]
+  inventory_items?: unknown[]
+  shop_settings?: Record<string, unknown> | null
   references_included?: boolean
+  catalog_structure_snapshot_included?: boolean
+  staff_snapshot_included?: boolean
+  commission_rules_snapshot_included?: boolean
+  salary_payments_snapshot_included?: boolean
+  stock_reserves_snapshot_included?: boolean
 }
 
 export interface DesktopSyncPullResult {
@@ -232,6 +281,78 @@ export interface DesktopFiscalCheckPay {
   customer_email?: string | null
 }
 
+export type DesktopFiscalSaleIntentState =
+  | 'prepared'
+  | 'fiscalizing'
+  | 'fiscalized'
+  | 'unknown'
+  | 'completed'
+
+export interface DesktopFiscalSaleRequest {
+  operation_id: string
+  checkout: DesktopCheckoutInput
+  items: DesktopFiscalCheckItem[]
+  pay: DesktopFiscalCheckPay
+  comment?: string | null
+}
+
+export interface DesktopFiscalSaleIntentResult {
+  operation_id: string
+  state: DesktopFiscalSaleIntentState
+  payload_hash: string
+  fiscal_result: DesktopFiscalResult | null
+  checkout_result: DesktopCheckoutResult | null
+  last_error: string | null
+}
+
+export interface DesktopFiscalIntentResolution {
+  cashalot_checked: boolean
+  confirmed_by: string
+  reason: string
+}
+
+export interface DesktopFiscalReturnIntentScope {
+  tenant_id?: string
+  cashier_id: string
+}
+
+export interface DesktopFiscalReturnIntentResolution extends DesktopFiscalIntentResolution, DesktopFiscalReturnIntentScope {}
+
+export interface DesktopFiscalReturnIntentCancelInput extends DesktopFiscalReturnIntentScope {
+  confirmed_by: string
+  reason: string
+}
+
+export interface DesktopUnresolvedFiscalReturnIntent {
+  operation_id: string
+  tenant_id: string
+  cashier_id: string
+  state: Exclude<DesktopFiscalSaleIntentState, 'completed'>
+  sale_id: string | null
+  sale_number: string | null
+  refund_kopecks: number
+  refund_method: string
+  item_count: number
+  fiscal_number: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+  can_cancel: boolean
+}
+
+export interface DesktopFiscalReturnRequest {
+  operation_id: string
+  return_input: Record<string, unknown>
+  items: DesktopFiscalCheckItem[]
+  pay: DesktopFiscalCheckPay
+  original_fiscal_number: string
+}
+
+export interface DesktopFiscalReturnProcessResult {
+  intent: DesktopFiscalSaleIntentResult
+  data: any
+}
+
 interface ForsageDesktopBridge {
   auth?: {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
@@ -274,6 +395,8 @@ interface ForsageDesktopBridge {
       category_id?: string | null
       is_service?: boolean
       is_active?: boolean
+      requires_core_return?: boolean
+      core_deposit_amount?: number
       is_favorite?: boolean
       barcode?: string | null
       additional_barcodes?: string[]
@@ -295,6 +418,8 @@ interface ForsageDesktopBridge {
       category_id?: string | null
       is_service?: boolean
       is_active?: boolean
+      requires_core_return?: boolean
+      core_deposit_amount?: number
       is_favorite?: boolean
       barcode?: string | null
       additional_barcodes?: string[]
@@ -307,12 +432,27 @@ interface ForsageDesktopBridge {
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
+  supplierCatalog?: {
+    list: (options?: {
+      tenant_id?: string
+      query?: string
+      supplier_id?: string | null
+      page?: number
+      limit?: number
+    }) => Promise<{ data: any[]; pagination: { page: number; limit: number; total: number } }>
+    listImports: (tenantId?: string, limit?: number) => Promise<any[]>
+    getImport: (id: string, tenantId?: string) => Promise<any | null>
+    create: (input: any) => Promise<any>
+    update: (id: string, input: any, tenantId?: string) => Promise<any>
+    delete: (id: string, tenantId?: string) => Promise<{ ok: true }>
+    importRows: (filename: string, rows: any[], options: any) => Promise<{ success: true; importId: string }>
+  }
   staff?: {
     listUsers: () => Promise<any[]>
-    createUser: (input: any) => Promise<any>
+    saveServerUser: (input: any, password: string) => Promise<any>
     updateUser: (id: string, input: any) => Promise<any>
     deleteUser: (id: string) => Promise<{ ok: true }>
-    resetPassword: (id: string, password: string) => Promise<{ success: true }>
+    saveServerPassword: (id: string, password: string) => Promise<{ success: true }>
     setPin: (userId: string, pin: string) => Promise<{ success: true }>
     verifyPin: (userId: string, pin: string) => Promise<{ valid: boolean; error?: string }>
     listCommissionRules: () => Promise<any[]>
@@ -345,6 +485,7 @@ interface ForsageDesktopBridge {
     count: (sessionId: string, input: any) => Promise<any>
     scan: (sessionId: string, input: any) => Promise<any>
     setItemQty: (sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) => Promise<any>
+    removeItem: (sessionId: string, itemId: string, tenantId?: string) => Promise<{ ok: true }>
     labels: (sessionId: string, tenantId?: string) => Promise<any[]>
     applyPrice: (sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }) => Promise<any>
     complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
@@ -361,6 +502,7 @@ interface ForsageDesktopBridge {
     bulkArrival?: (itemIds: string[], tenantId?: string) => Promise<{ updated: number }>
     get: (id: string, tenantId?: string) => Promise<any | null>
     listPayments: (orderId: string, tenantId?: string) => Promise<any[]>
+    listPaymentsByPeriod?: (input?: { date_from?: string; date_to?: string; shift_id?: string }) => Promise<any[]>
     addPayment: (orderId: string, input: any) => Promise<any>
     complete: (orderId: string, input?: any) => Promise<any>
   }
@@ -434,6 +576,7 @@ interface ForsageDesktopBridge {
       silent?: boolean
       showPreviewWindow?: boolean
       useDriverPaper?: boolean
+      strictPageSize?: boolean
     }) => Promise<{ success: true }>
     listPrinters: () => Promise<Array<{ name: string; displayName: string; isDefault: boolean }>>
     labelsTspl: (html: string, options: {
@@ -455,16 +598,17 @@ interface ForsageDesktopBridge {
     closeShift: () => Promise<DesktopFiscalResult>
     xReport: () => Promise<DesktopFiscalResult>
     serviceCash: (amount: number, direction: 'in' | 'out') => Promise<DesktopFiscalResult>
-    registerCheck: (
-      items: DesktopFiscalCheckItem[],
-      pay: DesktopFiscalCheckPay,
-      comment?: string | null,
-    ) => Promise<DesktopFiscalResult>
-    registerReturn: (
-      items: DesktopFiscalCheckItem[],
-      pay: DesktopFiscalCheckPay,
-      originalFiscalNumber: string,
-    ) => Promise<DesktopFiscalResult>
+    fiscalizeSale: (request: DesktopFiscalSaleRequest) => Promise<DesktopFiscalSaleIntentResult>
+    getSaleIntent: (operationId: string) => Promise<DesktopFiscalSaleIntentResult>
+    resolveUnknownSale: (operationId: string, resolution: DesktopFiscalIntentResolution) => Promise<DesktopFiscalSaleIntentResult>
+    fiscalizeReturn: (request: DesktopFiscalReturnRequest) => Promise<DesktopFiscalReturnProcessResult>
+    listUnresolvedReturns: (scope: DesktopFiscalReturnIntentScope) => Promise<DesktopUnresolvedFiscalReturnIntent[]>
+    resumeReturn: (operationId: string, scope: DesktopFiscalReturnIntentScope) => Promise<DesktopFiscalReturnProcessResult>
+    resolveUnknownReturn: (operationId: string, resolution: DesktopFiscalReturnIntentResolution) => Promise<DesktopFiscalSaleIntentResult>
+    cancelPreparedReturn: (
+      operationId: string,
+      input: DesktopFiscalReturnIntentCancelInput,
+    ) => Promise<{ operation_id: string; cancelled: true }>
   }
 }
 
@@ -509,17 +653,20 @@ export function desktopProductToProduct(product: DesktopProduct): Product {
     purchase_price: product.purchase_price,
     retail_price: product.retail_price,
     qty_on_hand: Number(product.qty_on_hand),
-    qty_available: Number(product.qty_on_hand),
+    qty_reserved: Number(product.qty_reserved ?? 0),
+    qty_available: Number(product.qty_available ?? product.qty_on_hand),
     reorder_point: Number(product.reorder_point ?? 0),
     notes: product.notes ?? null,
     is_active: product.is_active === 1,
     is_service: product.is_service === 1,
+    requires_core_return: product.requires_core_return === 1,
+    core_deposit_amount: Number(product.core_deposit_amount ?? 0),
     storage_bin: product.storage_bin,
     is_favorite: product.is_favorite === 1,
     photo_url: product.photo_url ?? null,
     specs: parseDesktopSpecs(product),
-    created_at: '',
-    updated_at: '',
+    created_at: product.created_at ?? '',
+    updated_at: product.updated_at ?? '',
     brand: brandId || brandName ? { id: brandId ?? '', name: brandName ?? '' } : null,
     category: categoryId || categoryName ? { id: categoryId ?? '', name: categoryName ?? '' } : null,
   }
@@ -554,7 +701,7 @@ export function desktopCheckoutToSale(
     notes: input.notes ?? null,
     completed_at: completedAt,
     is_fiscal: input.is_fiscal === true,
-    fiscal_number: null,
+    fiscal_number: input.fiscal_number ?? null,
     bank_auth_code: input.payments.find((payment) => payment.bank_auth_code)?.bank_auth_code ?? null,
     cash_amount: cashAmount,
     card_amount: cardAmount,

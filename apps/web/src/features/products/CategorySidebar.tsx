@@ -13,7 +13,8 @@ interface CategorySidebarProps {
   activeCategory: string
   onCategory: (id: string) => void
   onReload: () => void
-  isAdmin: boolean
+  canEdit: boolean
+  canDelete: boolean
 }
 
 export function CategorySidebar({
@@ -21,7 +22,8 @@ export function CategorySidebar({
   activeCategory,
   onCategory,
   onReload,
-  isAdmin,
+  canEdit,
+  canDelete,
 }: CategorySidebarProps) {
   const [newCatName, setNewCatName]         = useState('')
   const [addingCat, setAddingCat]           = useState(false)
@@ -72,7 +74,7 @@ export function CategorySidebar({
           <span className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
             <Tag size={12} /> Категорії
           </span>
-          {isAdmin && (
+          {canEdit && (
             <div className="flex items-center gap-0.5">
               <button onClick={() => setAddingCat(!addingCat)}
                 className="text-yellow-500 hover:text-yellow-600 p-0.5 rounded transition-colors" title="Додати категорію">
@@ -136,20 +138,24 @@ export function CategorySidebar({
                   }`}>
                   <span className="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0 mt-px" />
                   <span className="flex-1 truncate">{cat.name}</span>
-                  {isAdmin && (
+                  {(canEdit || canDelete) && (
                     <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setEditingId(cat.id); setEditName(cat.name) }}
-                        className="text-gray-400 hover:text-blue-500 p-0.5 rounded"
-                        aria-label="Перейменувати">
-                        <Pencil size={11} />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteCat(cat) }}
-                        className="text-gray-400 hover:text-red-500 p-0.5 rounded"
-                        aria-label="Видалити">
-                        <Trash2 size={11} />
-                      </button>
+                      {canEdit && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setEditingId(cat.id); setEditName(cat.name) }}
+                          className="text-gray-400 hover:text-blue-500 p-0.5 rounded"
+                          aria-label="Перейменувати">
+                          <Pencil size={11} />
+                        </button>
+                      )}
+                      {canDelete && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteCat(cat) }}
+                          className="text-gray-400 hover:text-red-500 p-0.5 rounded"
+                          aria-label="Видалити">
+                          <Trash2 size={11} />
+                        </button>
+                      )}
                     </span>
                   )}
                 </div>

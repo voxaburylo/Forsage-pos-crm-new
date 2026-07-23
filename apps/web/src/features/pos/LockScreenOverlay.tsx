@@ -25,7 +25,7 @@ export function LockScreenOverlay({ onUnlock }: Props) {
   const [error, setError] = useState(false)
 
   const name = session?.user?.user_metadata?.full_name ?? 'Касир'
-  const role = session?.user?.user_metadata?.role ?? ''
+  const role = session?.user?.app_metadata?.role ?? ''
 
   async function handleSubmit(pinValue = pin) {
     if (pinValue.length < 4) return

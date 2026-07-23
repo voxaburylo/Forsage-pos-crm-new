@@ -4,7 +4,7 @@ import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Downlo
 import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
 import { api } from '@/lib/api'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
 import type { SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
@@ -51,6 +51,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 }
 
 export default function DailyReport() {
+  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [tab, setTab]           = useState<Tab>('today')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
@@ -341,7 +342,7 @@ export default function DailyReport() {
             <Card className="mb-4 border-yellow-200 bg-yellow-50/40">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-sm font-bold text-gray-800">🔎 Контроль дня</p>
-                {!isDesktopRuntime() && (
+                {!offlineMode && (
                 <button
                   onClick={async () => {
                     setSendingTg(true)

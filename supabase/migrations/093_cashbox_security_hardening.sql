@@ -6,10 +6,12 @@ CREATE OR REPLACE FUNCTION app.user_tenant_id()
 RETURNS UUID
 LANGUAGE sql STABLE
 AS $$
-  SELECT COALESCE(
-    (auth.jwt() -> 'user_metadata' ->> 'tenant_id')::UUID,
-    '00000000-0000-0000-0000-000000000001'::UUID
-  );
+  SELECT CASE
+    WHEN COALESCE(auth.jwt() -> 'app_metadata' ->> 'tenant_id', '')
+      ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    THEN (auth.jwt() -> 'app_metadata' ->> 'tenant_id')::UUID
+    ELSE NULL::UUID
+  END;
 $$;
 
 CREATE OR REPLACE FUNCTION app.has_role(required_roles TEXT[])
@@ -17,7 +19,7 @@ RETURNS BOOLEAN
 LANGUAGE sql STABLE
 AS $$
   SELECT COALESCE(
-    (auth.jwt() -> 'user_metadata' ->> 'role') = ANY(required_roles),
+    (auth.jwt() -> 'app_metadata' ->> 'role') = ANY(required_roles),
     false
   );
 $$;

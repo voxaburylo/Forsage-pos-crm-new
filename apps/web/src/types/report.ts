@@ -4,8 +4,11 @@ export interface SalesSummary {
   by_method: {
     cash: number
     card: number
+    transfer: number
+    account: number
     debt: number
   }
+  payment_received_total: number
 }
 
 export interface SalesPeriodReport extends SalesSummary {

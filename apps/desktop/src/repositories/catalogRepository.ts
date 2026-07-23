@@ -6,6 +6,9 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+const PRODUCT_SEARCH_REPAIR_KEY = 'product_search_index_repair_version'
+const PRODUCT_SEARCH_REPAIR_VERSION = 2
+
 export function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? '')
     .toLocaleLowerCase('uk-UA')
@@ -110,6 +113,14 @@ export class LocalCatalogRepository {
   }
 
   private repairProductSearchIndex(): void {
+    const marker = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?')
+      .get(PRODUCT_SEARCH_REPAIR_KEY) as { value_json: string } | undefined
+    try {
+      if (marker && Number(JSON.parse(marker.value_json)) === PRODUCT_SEARCH_REPAIR_VERSION) return
+    } catch {
+      // Invalid marker is treated as an unfinished repair.
+    }
+
     try {
       const rows = this.db.prepare(`
         SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.storage_bin, p.search_text,
@@ -131,9 +142,9 @@ export class LocalCatalogRepository {
         search_text?: string | null
         extra_barcodes?: string | null
       }>
-      if (rows.length === 0) return
 
       const update = this.db.prepare('UPDATE products SET search_text = ? WHERE id = ? AND tenant_id = ?')
+      const repairedAt = nowIso()
       this.db.transaction(() => {
         for (const row of rows) {
           const next = normalizeSearchText([
@@ -145,13 +156,19 @@ export class LocalCatalogRepository {
           ].filter(Boolean).join(' '))
           if (next && next !== (row.search_text ?? '')) update.run(next, row.id, row.tenant_id)
         }
+        this.db.prepare(`
+          INSERT INTO app_meta(key, value_json, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = excluded.updated_at
+        `).run(PRODUCT_SEARCH_REPAIR_KEY, JSON.stringify(PRODUCT_SEARCH_REPAIR_VERSION), repairedAt)
       })
     } catch {
-      // Пошук не повинен блокувати запуск програми. Нові/оновлені товари все одно
-      // отримують search_text при збереженні, а ремонт повториться при наступному старті.
+      // Пошук не повинен блокувати запуск програми. Маркер не ставимо:
+      // безпечний одноразовий ремонт повториться при наступному старті.
     }
   }
-
   saveProduct(input: LocalProductUpsert, options: LocalProductSaveOptions = {}): LocalProduct {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const storedById = this.findStoredProductById(input.id, tenantId)
@@ -176,7 +193,11 @@ export class LocalCatalogRepository {
     }
 
     const product = this.upsertProduct(input)
-    this.addProductOutbox('product.upsert', product.id, input)
+    this.addProductOutbox('product.upsert', product.id, {
+      ...input,
+      brand_id: product.brand_id ?? null,
+      category_id: product.category_id ?? null,
+    })
     return product
   }
 
@@ -195,20 +216,20 @@ export class LocalCatalogRepository {
 
   upsertProduct(input: LocalProductUpsert): LocalProduct {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    input = this.normalizeProductReferences(input, tenantId)
     const timestamp = nowIso()
     const searchText = productSearchText(input)
 
     this.db.transaction(() => {
-      this.ensureReferencePlaceholders(input, tenantId, timestamp)
-
       this.db.prepare(`
         INSERT INTO products (
           id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
           purchase_price, retail_price, qty_on_hand, reorder_point, notes,
-          is_active, is_service, storage_bin, is_favorite, photo_url, specs_json,
+          is_active, is_service, requires_core_return, core_deposit_amount,
+          storage_bin, is_favorite, photo_url, specs_json,
           search_text, dirty_at, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           sku = excluded.sku,
           name = excluded.name,
@@ -223,6 +244,8 @@ export class LocalCatalogRepository {
           notes = excluded.notes,
           is_active = excluded.is_active,
           is_service = excluded.is_service,
+          requires_core_return = excluded.requires_core_return,
+          core_deposit_amount = excluded.core_deposit_amount,
           storage_bin = excluded.storage_bin,
           is_favorite = excluded.is_favorite,
           photo_url = excluded.photo_url,
@@ -247,6 +270,8 @@ export class LocalCatalogRepository {
         input.notes ?? null,
         input.is_active === false ? 0 : 1,
         input.is_service === true ? 1 : 0,
+        input.requires_core_return === true ? 1 : 0,
+        Math.max(0, Math.round(Number(input.core_deposit_amount ?? 0))),
         input.storage_bin ?? null,
         input.is_favorite === true ? 1 : 0,
         input.photo_url ?? null,
@@ -265,6 +290,7 @@ export class LocalCatalogRepository {
         barcodeEntries.set(barcode, { isPrimary: isPrimary || previous?.isPrimary === true })
       }
       collectBarcode(input.barcode, true)
+      const replacesAdditionalBarcodes = input.additional_barcodes !== undefined
       for (const barcode of input.additional_barcodes ?? []) collectBarcode(barcode, false)
       const barcodeValues = [...barcodeEntries.keys()]
 
@@ -295,24 +321,39 @@ export class LocalCatalogRepository {
         }
       }
 
-      if (barcodeValues.length > 0) {
-        const placeholders = barcodeValues.map(() => '?').join(', ')
-        this.db.prepare(`
-          UPDATE product_barcodes
-          SET deleted_at = ?, updated_at = ?, is_primary = 0
-          WHERE tenant_id = ?
-            AND product_id = ?
-            AND deleted_at IS NULL
-            AND barcode NOT IN (${placeholders})
-        `).run(timestamp, timestamp, tenantId, input.id, ...barcodeValues)
+      if (replacesAdditionalBarcodes) {
+        if (barcodeValues.length > 0) {
+          const placeholders = barcodeValues.map(() => '?').join(', ')
+          this.db.prepare(`
+            UPDATE product_barcodes
+            SET deleted_at = ?, updated_at = ?, is_primary = 0
+            WHERE tenant_id = ?
+              AND product_id = ?
+              AND deleted_at IS NULL
+              AND barcode NOT IN (${placeholders})
+          `).run(timestamp, timestamp, tenantId, input.id, ...barcodeValues)
+        } else {
+          this.db.prepare(`
+            UPDATE product_barcodes
+            SET deleted_at = ?, updated_at = ?, is_primary = 0
+            WHERE tenant_id = ?
+              AND product_id = ?
+              AND deleted_at IS NULL
+          `).run(timestamp, timestamp, tenantId, input.id)
+        }
       } else {
+        // Часткове редагування картки не повинно стирати додаткові штрихкоди,
+        // отримані з імпорту або сервера. Оновлюємо лише попередній основний код.
+        const primaryBarcode = String(input.barcode ?? '').trim()
         this.db.prepare(`
           UPDATE product_barcodes
           SET deleted_at = ?, updated_at = ?, is_primary = 0
           WHERE tenant_id = ?
             AND product_id = ?
             AND deleted_at IS NULL
-        `).run(timestamp, timestamp, tenantId, input.id)
+            AND is_primary = 1
+            AND (? = '' OR barcode <> ?)
+        `).run(timestamp, timestamp, tenantId, input.id, primaryBarcode, primaryBarcode)
       }
 
       for (const [barcode, meta] of barcodeEntries) {
@@ -348,16 +389,17 @@ export class LocalCatalogRepository {
     const row = this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
              purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
-             is_service, storage_bin, is_favorite, photo_url, specs_json
+             is_service, requires_core_return, core_deposit_amount, storage_bin,
+             is_favorite, photo_url, specs_json, created_at, updated_at
       FROM products
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).get(id, tenantId) as LocalProduct | undefined
-    return row ?? null
+    return row ? (this.attachAvailability([row], tenantId)[0] ?? null) : null
   }
 
   findBySku(sku: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
     const active = this.findStoredProductBySku(sku, tenantId, false)
-    if (active) return active as LocalProduct
+    if (active) return this.attachAvailability([active as LocalProduct], tenantId)[0] ?? null
 
     // Старі імпорти використовували код постачальника як SKU, а після
     // очищення дублів така картка лишилась tombstone. Використовуємо її як
@@ -376,7 +418,8 @@ export class LocalCatalogRepository {
     const row = this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
              purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
-             is_service, storage_bin, is_favorite, photo_url, specs_json, deleted_at
+             is_service, requires_core_return, core_deposit_amount, storage_bin,
+             is_favorite, photo_url, specs_json, created_at, updated_at, deleted_at
       FROM products
       WHERE id = ? AND tenant_id = ?
       LIMIT 1
@@ -396,7 +439,8 @@ export class LocalCatalogRepository {
     const exact = this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
              purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
-             is_service, storage_bin, is_favorite, photo_url, specs_json, deleted_at
+             is_service, requires_core_return, core_deposit_amount, storage_bin,
+             is_favorite, photo_url, specs_json, created_at, updated_at, deleted_at
       FROM products
       WHERE tenant_id = ?
         ${deletedClause}
@@ -454,6 +498,8 @@ export class LocalCatalogRepository {
       notes: (restored as any).notes ?? null,
       is_active: true,
       is_service: restored.is_service === 1,
+      requires_core_return: restored.requires_core_return === 1,
+      core_deposit_amount: Number(restored.core_deposit_amount ?? 0),
       storage_bin: restored.storage_bin,
       is_favorite: (restored as any).is_favorite === 1,
       photo_url: (restored as any).photo_url ?? null,
@@ -483,7 +529,8 @@ export class LocalCatalogRepository {
     const candidates = this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, brand_id, category_id, unit,
              purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active,
-             is_service, storage_bin, is_favorite, photo_url, specs_json
+             is_service, requires_core_return, core_deposit_amount, storage_bin,
+             is_favorite, photo_url, specs_json, created_at, updated_at
       FROM products
       WHERE tenant_id = ?
         AND deleted_at IS NULL
@@ -491,7 +538,7 @@ export class LocalCatalogRepository {
         AND id <> ?
     `).all(tenantId, deletedProduct.id) as unknown as LocalProduct[]
     const exactNameMatches = candidates.filter((candidate) => wantedNames.has(normalizeSearchText(candidate.name)))
-    return exactNameMatches.length === 1 ? exactNameMatches[0] : null
+    return exactNameMatches.length === 1 ? (this.attachAvailability([exactNameMatches[0]], tenantId)[0] ?? null) : null
   }
 
   listProductBarcodes(tenantId = DEFAULT_TENANT_ID): Array<{ product_id: string; barcode: string; is_primary: number }> {
@@ -510,16 +557,26 @@ export class LocalCatalogRepository {
     const compact = compactLookupCode(normalized)
 
     const row = this.db.prepare(`
-      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.unit, p.purchase_price,
-             p.retail_price, p.qty_on_hand, p.is_active, p.is_service, p.storage_bin
+      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.brand_id,
+             (SELECT br.name FROM brands br WHERE br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL) AS brand_name,
+             p.category_id,
+             (SELECT c.name FROM categories c WHERE c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL) AS category_name,
+             p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point, p.notes,
+             p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
+             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
       FROM products p
       WHERE p.tenant_id = ?
         AND p.deleted_at IS NULL
         AND p.is_active = 1
         AND (p.barcode = ? OR p.barcode = ?)
       UNION
-      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.unit, p.purchase_price,
-             p.retail_price, p.qty_on_hand, p.is_active, p.is_service, p.storage_bin
+      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode, p.brand_id,
+             (SELECT br.name FROM brands br WHERE br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL) AS brand_name,
+             p.category_id,
+             (SELECT c.name FROM categories c WHERE c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL) AS category_name,
+             p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point, p.notes,
+             p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
+             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
       FROM product_barcodes b
       JOIN products p ON p.id = b.product_id
       WHERE b.tenant_id = ?
@@ -530,7 +587,7 @@ export class LocalCatalogRepository {
       LIMIT 1
     `).get(tenantId, normalized, compact, tenantId, normalized, compact) as LocalProduct | undefined
 
-    return row ?? null
+    return row ? (this.attachAvailability([row], tenantId)[0] ?? null) : null
   }
   listProducts(options: LocalProductListOptions = {}, tenantId = DEFAULT_TENANT_ID): LocalProductListResult {
     const raw = (options.query ?? '').trim()
@@ -655,7 +712,8 @@ export class LocalCatalogRepository {
       SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode,
              p.brand_id, br.name AS brand_name, p.category_id, c.name AS category_name,
              p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
-             p.notes, p.is_active, p.is_service, p.storage_bin, p.is_favorite, p.photo_url, p.specs_json
+             p.notes, p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
+             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
       FROM products p
       LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
       LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL
@@ -664,7 +722,19 @@ export class LocalCatalogRepository {
       LIMIT ? OFFSET ?
     `).all(...dataParams, limit, offset) as unknown as LocalProduct[]
 
-    return { data, total: Number(totalRow?.total ?? data.length) }
+    const availableData = this.attachAvailability(data, tenantId)
+    if (sortField === 'qty_on_hand') {
+      availableData.sort((left, right) => {
+        const difference = Number(left.qty_available ?? left.qty_on_hand) - Number(right.qty_available ?? right.qty_on_hand)
+        return sortDir === 'DESC' ? -difference : difference
+      })
+    } else if (!sortField) {
+      availableData.sort((left, right) =>
+        Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
+        - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1),
+      )
+    }
+    return { data: availableData, total: Number(totalRow?.total ?? data.length) }
   }
 
   listCategories(tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory[] {
@@ -885,14 +955,22 @@ export class LocalCatalogRepository {
   // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі
   // до вводу назви, коли поле пошуку порожнє.
   listPopular(tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
-    return this.db.prepare(`
-      SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
-             qty_on_hand, reorder_point, notes, is_active, is_service, storage_bin, is_favorite, photo_url, specs_json
+    const products = this.db.prepare(`
+      SELECT id, tenant_id, sku, name, barcode, brand_id,
+             (SELECT br.name FROM brands br WHERE br.id = products.brand_id AND br.tenant_id = products.tenant_id AND br.deleted_at IS NULL) AS brand_name,
+             category_id,
+             (SELECT c.name FROM categories c WHERE c.id = products.category_id AND c.tenant_id = products.tenant_id AND c.deleted_at IS NULL) AS category_name,
+             unit, purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active, is_service, requires_core_return,
+             core_deposit_amount, storage_bin, is_favorite, photo_url, specs_json, created_at, updated_at
       FROM products
       WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1
       ORDER BY is_favorite DESC, name ASC
       LIMIT ?
     `).all(tenantId, limit) as unknown as LocalProduct[]
+    return this.attachAvailability(products, tenantId).sort((left, right) =>
+      Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
+      - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1),
+    )
   }
 
   searchProducts(query: string, tenantId = DEFAULT_TENANT_ID, limit = 20): LocalProduct[] {
@@ -944,9 +1022,13 @@ export class LocalCatalogRepository {
       params.push(...tokens.map((token) => `%${token}%`))
     }
 
-    return this.db.prepare(`
-      SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
-             qty_on_hand, reorder_point, notes, is_active, is_service, storage_bin, is_favorite, photo_url, specs_json
+    const products = this.db.prepare(`
+      SELECT id, tenant_id, sku, name, barcode, brand_id,
+             (SELECT br.name FROM brands br WHERE br.id = products.brand_id AND br.tenant_id = products.tenant_id AND br.deleted_at IS NULL) AS brand_name,
+             category_id,
+             (SELECT c.name FROM categories c WHERE c.id = products.category_id AND c.tenant_id = products.tenant_id AND c.deleted_at IS NULL) AS category_name,
+             unit, purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active, is_service, requires_core_return,
+             core_deposit_amount, storage_bin, is_favorite, photo_url, specs_json, created_at, updated_at
       FROM products
       WHERE tenant_id = ?
         AND deleted_at IS NULL
@@ -959,6 +1041,36 @@ export class LocalCatalogRepository {
         name ASC
       LIMIT ?
     `).all(...params, raw, compact, raw, compact, limit) as unknown as LocalProduct[]
+    return this.attachAvailability(products, tenantId).sort((left, right) =>
+      Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
+      - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1),
+    )
+  }
+  private attachAvailability(products: LocalProduct[], tenantId: string): LocalProduct[] {
+    if (products.length === 0) return products
+    const productIds = [...new Set(products.map((product) => product.id))]
+    const placeholders = productIds.map(() => '?').join(',')
+    const reserveRows = this.db.prepare(
+      `SELECT product_id, COALESCE(SUM(qty), 0) AS qty_reserved
+       FROM stock_reserves
+       WHERE tenant_id = ?
+         AND product_id IN (${placeholders})
+         AND released_at IS NULL
+         AND deleted_at IS NULL
+         AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+       GROUP BY product_id`,
+    ).all(tenantId, ...productIds) as Array<{ product_id: string; qty_reserved: number }>
+    const reservedByProduct = new Map(
+      reserveRows.map((row) => [row.product_id, Number(row.qty_reserved ?? 0)]),
+    )
+    return products.map((product) => {
+      const qtyReserved = reservedByProduct.get(product.id) ?? 0
+      return {
+        ...product,
+        qty_reserved: qtyReserved,
+        qty_available: Number(product.qty_on_hand ?? 0) - qtyReserved,
+      }
+    })
   }
   private addCatalogOutbox(
     aggregateType: 'category' | 'brand' | 'settings',
@@ -975,28 +1087,17 @@ export class LocalCatalogRepository {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
     `).run(randomUUID(), tenantId, this.db.deviceId, aggregateType, aggregateId, operationType, JSON.stringify(payload), timestamp)
   }
-  private ensureReferencePlaceholders(input: LocalProductUpsert, tenantId: string, timestamp: string): void {
+  private normalizeProductReferences(input: LocalProductUpsert, tenantId: string): LocalProductUpsert {
     const brandId = input.brand_id?.trim()
-    if (brandId && !this.referenceExists('brands', brandId, tenantId)) {
-      this.db.prepare(`
-        INSERT INTO brands (id, tenant_id, name, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO NOTHING
-      `).run(brandId, tenantId, `Бренд ${brandId.slice(0, 8)}`, timestamp, timestamp)
-    }
-
     const categoryId = input.category_id?.trim()
-    if (categoryId && !this.referenceExists('categories', categoryId, tenantId)) {
-      this.db.prepare(`
-        INSERT INTO categories (id, tenant_id, name, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO NOTHING
-      `).run(categoryId, tenantId, `Папка ${categoryId.slice(0, 8)}`, timestamp, timestamp)
+    return {
+      ...input,
+      brand_id: brandId && this.referenceExists('brands', brandId, tenantId) ? brandId : null,
+      category_id: categoryId && this.referenceExists('categories', categoryId, tenantId) ? categoryId : null,
     }
   }
-
   private referenceExists(table: 'brands' | 'categories', id: string, tenantId: string): boolean {
-    const row = this.db.prepare(`SELECT 1 AS ok FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`).get(id, tenantId)
+    const row = this.db.prepare(`SELECT 1 AS ok FROM ${table} WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1`).get(id, tenantId)
     return Boolean(row)
   }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { RotateCcw, Search, Package, AlertTriangle, Info } from 'lucide-react'
 import { returnApi } from './returnApi'
@@ -22,8 +22,13 @@ import {
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
+import { parseFiscalIntentUnknown, type FiscalIntentUnknown } from './fiscalSale'
 import { formatMoney } from '@/lib/utils'
-import { desktopBridge } from '@/lib/desktopBridge'
+import {
+  desktopBridge,
+  type DesktopUnresolvedFiscalReturnIntent,
+} from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
@@ -79,6 +84,15 @@ export default function ReturnForm() {
   const [method, setMethod] = useState<RefundMethod>('cash')
 
   // Condition — глобальний для всіх позицій (спрощення)
+  const returnAttemptRef = useRef<{ fingerprint: string; operationId: string } | null>(null)
+  const [fiscalRecovery, setFiscalRecovery] = useState<FiscalIntentUnknown | null>(null)
+  const [fiscalRecoveryText, setFiscalRecoveryText] = useState('')
+  const [resolvingFiscal, setResolvingFiscal] = useState(false)
+  const [unresolvedReturns, setUnresolvedReturns] = useState<DesktopUnresolvedFiscalReturnIntent[]>([])
+  const [selectedUnresolvedId, setSelectedUnresolvedId] = useState<string | null>(null)
+  const [startupRecoveryText, setStartupRecoveryText] = useState('')
+  const [startupRecoveryBusy, setStartupRecoveryBusy] = useState(false)
+  const [startupRecoveryLoading, setStartupRecoveryLoading] = useState(false)
   const [globalCondition, setGlobalCondition] = useState<ItemCondition>('good')
 
   // Stock action — синхронізується з condition
@@ -87,6 +101,7 @@ export default function ReturnForm() {
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
   // Фіскальний номер оригінального чека (якщо продаж був через ПРРО)
+  const session = useAuthStore((state) => state.session)
   const [saleFiscalNumber, setSaleFiscalNumber] = useState<string | null>(null)
   // Фіскальний номер чека повернення (після FiscalizeReturnCheck)
   const [returnFiscalNumber, setReturnFiscalNumber] = useState<string | null>(null)
@@ -103,9 +118,43 @@ export default function ReturnForm() {
     }
   }, [globalCondition])
 
+  useEffect(() => {
+    const desktop = desktopBridge()
+    const cashierId = session?.user?.id
+    if (!desktop || !cashierId) return
+    let cancelled = false
+    setStartupRecoveryLoading(true)
+    desktop.fiscal.listUnresolvedReturns({ cashier_id: cashierId })
+      .then((items) => {
+        if (cancelled) return
+        setUnresolvedReturns(items)
+        setSelectedUnresolvedId((current) => (
+          current && items.some((item) => item.operation_id === current)
+            ? current
+            : items[0]?.operation_id ?? null
+        ))
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          toast.error(error instanceof Error
+            ? error.message
+            : 'Не вдалося перевірити незавершені фіскальні повернення')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStartupRecoveryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [session?.user?.id])
+
   const activeItems = selected.filter((i) => i.qty > 0)
   const totalRefund = activeItems.reduce((s, i) => s + i.qty * i.unit_price, 0)
   const hasSelection = activeItems.length > 0
+  const selectedUnresolvedReturn = unresolvedReturns.find(
+    (item) => item.operation_id === selectedUnresolvedId,
+  ) ?? unresolvedReturns[0] ?? null
 
   // Дозволені stock_action для поточного condition
   const allowedStockActions = CONDITION_ALLOWED_ACTIONS[globalCondition] ?? []
@@ -245,72 +294,237 @@ export default function ReturnForm() {
       return
     }
 
+    const returnBody = {
+      sale_id: found.id,
+      reason,
+      reason_note: reasonNote || null,
+      refund_method: method,
+      stock_action: stockAction,
+      fiscal_number: null,
+      items: activeItems.map((item) => ({
+        sale_item_id: item.id,
+        product_id: item.product_id,
+        quantity: item.qty,
+        condition: globalCondition,
+      })),
+    }
+    const fingerprint = JSON.stringify({
+      ...returnBody,
+      fiscal_number: undefined,
+    })
+    if (returnAttemptRef.current?.fingerprint !== fingerprint) {
+      returnAttemptRef.current = {
+        fingerprint,
+        operationId: crypto.randomUUID(),
+      }
+    }
+    const operationId = returnAttemptRef.current.operationId
+
     setSubmitting(true)
     try {
-      // Фіскалізація повернення через ПРРО Кашалот (desktop-каса) — ДО запису
-      // на сервер: якщо ФСКО відхилить чек повернення, повернення не проводиться.
-      // Фіскалізуємо лише коли гроші реально повертаються (готівка/термінал)
-      // і оригінальний чек був фіскальним.
       let fiscalReturnNum: string | null = null
       const desktop = desktopBridge()
-      if (desktop?.fiscal && saleFiscalNumber && (method === 'cash' || method === 'terminal')) {
+      const requiresFiscalReturn = Boolean(
+        desktop && saleFiscalNumber && (method === 'cash' || method === 'terminal'),
+      )
+
+      if (requiresFiscalReturn && desktop && saleFiscalNumber) {
         const config = await desktop.fiscal.getConfig().catch(() => null)
-        if (config?.enabled) {
-          try {
-            const fiscalItems = activeItems.map((i) => ({
-              name: i.product_name,
-              vendor_code: i.sku || i.product_name,
-              unit: i.unit,
-              qty: i.qty,
-              unit_price: i.unit_price,
-              amount: i.qty * i.unit_price,
-            }))
-            const fiscalResult = await desktop.fiscal.registerReturn(fiscalItems, {
-              cash: method === 'cash' ? totalRefund : 0,
-              card: method === 'terminal' ? totalRefund : 0,
-              check_total: totalRefund,
-            }, saleFiscalNumber)
-            fiscalReturnNum = fiscalResult.ReceiptFiscalNum || null
-            if (fiscalResult.OfflineMode) {
-              toast.warning('ПРРО в режимі офлайн — чек повернення буде дореєстровано автоматично')
-            }
-          } catch (error) {
-            toast.error('Фіскалізація повернення не пройшла: '
-              + (error instanceof Error ? error.message : 'невідома помилка')
-              + '. Повернення НЕ проведено.')
-            return
-          }
-        } else if (config) {
-          toast.warning('Чек був фіскальним, але ПРРО вимкнено — повернення пройде без фіскального чека')
+        if (!config?.enabled) {
+          toast.error('Оригінальний чек фіскальний. Увімкніть і налаштуйте Cashalot для повернення')
+          return
         }
+        const approvedBy = session?.user?.id ?? 'local'
+        const shift = await desktop.pos.getOpenShift(approvedBy)
+        const fiscalItems = activeItems.map((item) => ({
+          name: item.product_name,
+          vendor_code: item.sku || item.product_name,
+          unit: item.unit,
+          qty: item.qty,
+          unit_price: item.unit_price,
+          amount: item.qty * item.unit_price,
+        }))
+        const response = await desktop.fiscal.fiscalizeReturn({
+          operation_id: operationId,
+          return_input: {
+            ...returnBody,
+            approved_by: approvedBy,
+            shift_id: shift?.id ?? null,
+            client_operation_id: operationId,
+            is_fiscal: true,
+          },
+          items: fiscalItems,
+          pay: {
+            cash: method === 'cash' ? totalRefund : 0,
+            card: method === 'terminal' ? totalRefund : 0,
+            check_total: totalRefund,
+          },
+          original_fiscal_number: saleFiscalNumber,
+        })
+        const fiscalResult = response.intent.fiscal_result
+        fiscalReturnNum = fiscalResult?.ReceiptFiscalNum
+          || fiscalResult?.ReceiptLocalNum
+          || response.data?.fiscal_number
+          || null
+        if (fiscalResult?.OfflineMode) {
+          toast.warning('ПРРО в режимі офлайн — чек повернення буде дореєстровано автоматично')
+        }
+        window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      } else {
+        const result = await returnApi.create(returnBody, operationId)
+        fiscalReturnNum = result.data?.fiscal_number ?? null
       }
 
-      await returnApi.create({
-        sale_id: found.id,
-        reason,
-        reason_note: reasonNote || null,
-        refund_method: method,
-        stock_action: stockAction,
-        fiscal_number: fiscalReturnNum,
-        items: activeItems.map((i) => ({
-          sale_item_id: i.id,
-          product_id: i.product_id,
-          quantity: i.qty,
-          condition: globalCondition,
-        })),
-      })
+      returnAttemptRef.current = null
+      setFiscalRecovery(null)
       setReturnFiscalNumber(fiscalReturnNum)
       toast.success('Повернення оформлено')
       setDone(true)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка оформлення повернення')
+      const recovery = parseFiscalIntentUnknown(err)
+      if (recovery) {
+        setFiscalRecovery(recovery)
+        toast.error('Не повторюйте повернення: спочатку перевірте чек у Cashalot')
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Помилка оформлення повернення')
+      }
     } finally {
       setSubmitting(false)
     }
   }
 
+  async function refreshUnresolvedReturns(preferredOperationId?: string) {
+    const desktop = desktopBridge()
+    const cashierId = session?.user?.id
+    if (!desktop || !cashierId) return
+    const items = await desktop.fiscal.listUnresolvedReturns({ cashier_id: cashierId })
+    setUnresolvedReturns(items)
+    setSelectedUnresolvedId((current) => {
+      const preferred = preferredOperationId ?? current
+      return preferred && items.some((item) => item.operation_id === preferred)
+        ? preferred
+        : items[0]?.operation_id ?? null
+    })
+  }
+
+  async function resumeUnresolvedReturn(intent: DesktopUnresolvedFiscalReturnIntent) {
+    const desktop = desktopBridge()
+    const cashierId = session?.user?.id
+    if (!desktop || !cashierId) {
+      toast.error('Відновлення доступне лише авторизованому касиру в локальній програмі')
+      return
+    }
+    setStartupRecoveryBusy(true)
+    try {
+      const result = await desktop.fiscal.resumeReturn(intent.operation_id, {
+        cashier_id: cashierId,
+      })
+      if (result.intent.state !== 'completed') {
+        throw new Error('Повернення ще не завершено')
+      }
+      window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      toast.success(
+        intent.state === 'fiscalized'
+          ? 'Фіскальне повернення безпечно збережено у локальній базі'
+          : 'Повернення продовжено та завершено',
+      )
+      setStartupRecoveryText('')
+      await refreshUnresolvedReturns()
+    } catch (error) {
+      const recovery = parseFiscalIntentUnknown(error)
+      toast.error(recovery
+        ? 'Не повторюйте повернення. Перевірте його результат у Cashalot'
+        : error instanceof Error
+          ? error.message
+          : 'Не вдалося продовжити повернення')
+      await refreshUnresolvedReturns(intent.operation_id).catch(() => undefined)
+    } finally {
+      setStartupRecoveryBusy(false)
+    }
+  }
+
+  async function resolveStartupUnknownReturn(intent: DesktopUnresolvedFiscalReturnIntent) {
+    const desktop = desktopBridge()
+    const cashierId = session?.user?.id
+    if (!desktop || !cashierId) {
+      toast.error('Розблокування доступне лише авторизованому касиру')
+      return
+    }
+    setStartupRecoveryBusy(true)
+    try {
+      await desktop.fiscal.resolveUnknownReturn(intent.operation_id, {
+        cashier_id: cashierId,
+        cashalot_checked: true,
+        confirmed_by: cashierId,
+        reason: 'Касир перевірив Cashalot і підтвердив, що чек повернення не зареєстровано',
+      })
+      setStartupRecoveryText('')
+      toast.success('Результат перевірено. Тепер повернення можна безпечно продовжити')
+      await refreshUnresolvedReturns(intent.operation_id)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося розблокувати повернення')
+    } finally {
+      setStartupRecoveryBusy(false)
+    }
+  }
+
+  async function cancelPreparedReturn(intent: DesktopUnresolvedFiscalReturnIntent) {
+    const desktop = desktopBridge()
+    const cashierId = session?.user?.id
+    if (!desktop || !cashierId || intent.state !== 'prepared') return
+    const confirmed = window.confirm(
+      'Скасувати підготовлене повернення? Воно ще не передавалося у Cashalot. Ця дія не змінить гроші та залишки.',
+    )
+    if (!confirmed) return
+    setStartupRecoveryBusy(true)
+    try {
+      await desktop.fiscal.cancelPreparedReturn(intent.operation_id, {
+        cashier_id: cashierId,
+        confirmed_by: cashierId,
+        reason: 'Касир скасував підготовлене повернення до передачі у Cashalot',
+      })
+      setStartupRecoveryText('')
+      toast.success('Підготовлене повернення скасовано. Гроші та залишки не змінювалися')
+      await refreshUnresolvedReturns()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося скасувати повернення')
+      await refreshUnresolvedReturns(intent.operation_id).catch(() => undefined)
+    } finally {
+      setStartupRecoveryBusy(false)
+    }
+  }
+
+  async function resolveFiscalReturnRecovery() {
+    if (!fiscalRecovery) return
+    const desktop = desktopBridge()
+    const confirmedBy = session?.user?.id
+    if (!desktop || !confirmedBy) {
+      toast.error('Розблокування доступне лише авторизованому касиру в локальній програмі')
+      return
+    }
+    setResolvingFiscal(true)
+    try {
+      await desktop.fiscal.resolveUnknownReturn(fiscalRecovery.operationId, {
+        cashier_id: confirmedBy,
+        cashalot_checked: true,
+        confirmed_by: confirmedBy,
+        reason: 'Касир перевірив Cashalot і підтвердив, що чек повернення не зареєстровано',
+      })
+      setFiscalRecovery(null)
+      setFiscalRecoveryText('')
+      toast.success('Повернення розблоковано. Тепер можна повторити його оформлення')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося розблокувати повернення')
+    } finally {
+      setResolvingFiscal(false)
+    }
+  }
+
   function reset() {
     setDone(false)
+    returnAttemptRef.current = null
+    setFiscalRecovery(null)
+    setFiscalRecoveryText('')
     setFound(null)
     setSaleItems([])
     setSelected([])
@@ -682,6 +896,210 @@ export default function ReturnForm() {
           </Card>
         )}
       </div>
+      {startupRecoveryLoading && unresolvedReturns.length === 0 && (
+        <div className="fixed bottom-5 right-5 z-[110] rounded-xl bg-gray-900 px-4 py-3 text-sm text-white shadow-xl">
+          Перевіряємо незавершені повернення…
+        </div>
+      )}
+      {selectedUnresolvedReturn && (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center bg-black/80 p-3 sm:p-5"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="unresolved-return-title"
+        >
+          <div className="max-h-[94vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-amber-300 bg-white p-4 shadow-2xl sm:p-6">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 shrink-0 text-amber-600" size={24} />
+              <div>
+                <h2 id="unresolved-return-title" className="text-xl font-bold text-gray-900">
+                  Є незавершене фіскальне повернення
+                </h2>
+                <p className="mt-1 text-sm leading-6 text-gray-600">
+                  Програма відновила операцію після перезапуску. Виберіть її та завершіть
+                  безпечну дію — повторного списання грошей або зміни залишків не буде.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.4fr)]">
+              <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl bg-gray-50 p-2">
+                {unresolvedReturns.map((intent) => {
+                  const selectedIntent = intent.operation_id === selectedUnresolvedReturn.operation_id
+                  const stateLabel = intent.state === 'prepared'
+                    ? 'Підготовлено'
+                    : intent.state === 'fiscalized'
+                      ? 'Чек уже зареєстровано'
+                      : 'Результат невідомий'
+                  return (
+                    <button
+                      key={intent.operation_id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedUnresolvedId(intent.operation_id)
+                        setStartupRecoveryText('')
+                      }}
+                      className={`w-full rounded-xl border p-3 text-left transition ${
+                        selectedIntent
+                          ? 'border-amber-500 bg-amber-50'
+                          : 'border-gray-200 bg-white hover:border-gray-300'
+                      }`}
+                    >
+                      <span className="block font-semibold text-gray-900">
+                        {intent.sale_number ? `Чек ${intent.sale_number}` : 'Повернення'}
+                      </span>
+                      <span className="mt-1 block text-xs font-medium text-amber-700">
+                        {stateLabel}
+                      </span>
+                      <span className="mt-1 block text-sm text-gray-600">
+                        {formatMoney(intent.refund_kopecks)} · {intent.item_count} поз.
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="rounded-xl border border-gray-200 p-4">
+                <div className="grid gap-2 text-sm sm:grid-cols-2">
+                  <p>
+                    <span className="text-gray-500">Продаж:</span>{' '}
+                    <strong>{selectedUnresolvedReturn.sale_number ?? 'номер недоступний'}</strong>
+                  </p>
+                  <p>
+                    <span className="text-gray-500">Сума:</span>{' '}
+                    <strong>{formatMoney(selectedUnresolvedReturn.refund_kopecks)}</strong>
+                  </p>
+                  <p>
+                    <span className="text-gray-500">Спосіб:</span>{' '}
+                    <strong>
+                      {REFUND_METHOD_LABELS[selectedUnresolvedReturn.refund_method as RefundMethod]
+                        ?? selectedUnresolvedReturn.refund_method}
+                    </strong>
+                  </p>
+                  <p>
+                    <span className="text-gray-500">Створено:</span>{' '}
+                    <strong>{new Date(selectedUnresolvedReturn.created_at).toLocaleString('uk-UA')}</strong>
+                  </p>
+                </div>
+                <p className="mt-3 break-all rounded-lg bg-gray-50 p-2 text-xs text-gray-500">
+                  Операція: {selectedUnresolvedReturn.operation_id}
+                </p>
+
+                {selectedUnresolvedReturn.state === 'prepared' && (
+                  <div className="mt-5 space-y-3">
+                    <p className="rounded-xl bg-blue-50 p-3 text-sm leading-6 text-blue-800">
+                      Повернення ще не надсилалося у Cashalot. Його можна продовжити або
+                      скасувати без зміни грошей і складських залишків.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={startupRecoveryBusy}
+                      onClick={() => resumeUnresolvedReturn(selectedUnresolvedReturn)}
+                      className="w-full rounded-xl bg-yellow-400 px-4 py-3 font-bold text-black disabled:opacity-40"
+                    >
+                      {startupRecoveryBusy ? 'Зачекайте…' : 'Продовжити повернення'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={startupRecoveryBusy || !selectedUnresolvedReturn.can_cancel}
+                      onClick={() => cancelPreparedReturn(selectedUnresolvedReturn)}
+                      className="w-full rounded-xl border border-red-300 px-4 py-3 font-semibold text-red-700 disabled:opacity-40"
+                    >
+                      Скасувати підготовлене повернення
+                    </button>
+                  </div>
+                )}
+
+                {selectedUnresolvedReturn.state === 'fiscalized' && (
+                  <div className="mt-5 space-y-3">
+                    <p className="rounded-xl bg-green-50 p-3 text-sm leading-6 text-green-800">
+                      Чек повернення вже зареєстровано у Cashalot. Програма тільки дозапише
+                      його у локальну базу — повторного звернення до ПРРО не буде.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={startupRecoveryBusy}
+                      onClick={() => resumeUnresolvedReturn(selectedUnresolvedReturn)}
+                      className="w-full rounded-xl bg-green-600 px-4 py-3 font-bold text-white disabled:opacity-40"
+                    >
+                      {startupRecoveryBusy ? 'Завершуємо…' : 'Завершити локальне збереження'}
+                    </button>
+                  </div>
+                )}
+
+                {(selectedUnresolvedReturn.state === 'unknown'
+                  || selectedUnresolvedReturn.state === 'fiscalizing') && (
+                  <div className="mt-5">
+                    <p className="rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-800">
+                      Не повторюйте і не скасовуйте повернення. Спочатку відкрийте Cashalot
+                      та перевірте, чи існує чек повернення.
+                      {selectedUnresolvedReturn.last_error
+                        ? ` Причина зупинки: ${selectedUnresolvedReturn.last_error}`
+                        : ''}
+                    </p>
+                    <p className="mt-4 text-sm font-semibold text-gray-900">
+                      Якщо чека в Cashalot немає, введіть «ЧЕКА НЕМАЄ»
+                    </p>
+                    <input
+                      autoFocus
+                      value={startupRecoveryText}
+                      onChange={(event) => setStartupRecoveryText(event.target.value)}
+                      placeholder="ЧЕКА НЕМАЄ"
+                      className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-yellow-500"
+                    />
+                    <button
+                      type="button"
+                      disabled={startupRecoveryBusy
+                        || startupRecoveryText.trim().toUpperCase() !== 'ЧЕКА НЕМАЄ'}
+                      onClick={() => resolveStartupUnknownReturn(selectedUnresolvedReturn)}
+                      className="mt-3 w-full rounded-xl bg-yellow-400 px-4 py-3 font-bold text-black disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {startupRecoveryBusy
+                        ? 'Зберігаємо перевірку…'
+                        : 'Я перевірив: чека немає'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {fiscalRecovery && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-lg rounded-2xl border border-red-400 bg-white p-6 shadow-2xl">
+            <h2 className="text-xl font-bold text-red-700">Не повторюйте повернення</h2>
+            <p className="mt-3 text-sm leading-6 text-gray-700">
+              Перевірте в Cashalot, чи був створений чек повернення. Автоматичний повтор
+              заблоковано, щоб клієнт не отримав гроші двічі.
+            </p>
+            <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">
+              {fiscalRecovery.message}
+            </p>
+            <p className="mt-2 break-all text-xs text-gray-500">
+              Операція: {fiscalRecovery.operationId}
+            </p>
+            <p className="mt-5 text-sm font-semibold text-gray-900">
+              Якщо чека повернення в Cashalot немає, введіть «ЧЕКА НЕМАЄ»
+            </p>
+            <input
+              autoFocus
+              value={fiscalRecoveryText}
+              onChange={(event) => setFiscalRecoveryText(event.target.value)}
+              placeholder="ЧЕКА НЕМАЄ"
+              className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-yellow-500"
+            />
+            <button
+              type="button"
+              disabled={resolvingFiscal || fiscalRecoveryText.trim().toUpperCase() !== 'ЧЕКА НЕМАЄ'}
+              onClick={resolveFiscalReturnRecovery}
+              className="mt-3 w-full rounded-xl bg-yellow-400 px-4 py-3 font-bold text-black disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {resolvingFiscal ? 'Перевіряємо...' : 'Я перевірив: чека немає, розблокувати'}
+            </button>
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }

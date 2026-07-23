@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
-  Plus, Phone, MessageSquare, Truck, FilePen, ClipboardList,
+  Plus, Phone, MessageSquare, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
-  Trash2, X, Check, Pencil, Copy, ArrowRight, Clock, Camera,
+  Trash2, X, Check, Pencil, Copy, ArrowRight, Clock,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
@@ -319,35 +318,66 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   const [searchPhone, setSearchPhone] = useState('')
   const [searchResults, setSearchResults] = useState<CustomerSearchResult[]>([])
   const [linking, setLinking] = useState(false)
+  const customerId = customer?.id
+  const loadDataRequestRef = useRef(0)
 
   const loadData = useCallback(() => {
+    const requestId = ++loadDataRequestRef.current
+    const isCurrentRequest = () => requestId === loadDataRequestRef.current
     setLoading(true)
-    const promises: Promise<unknown>[] = [
-      orderApi.list().then((r) => setChatOrders((r.data ?? []).filter((order) => order.chat_id === chat.id).slice(0, 10)))
-        .catch(() => { setChatOrders([]) }),
-    ]
-    if (customer?.id) {
-      promises.push(
-        customerVehiclesApi.list(customer.id).then((r) => setVehicles(r.data ?? [])),
-        orderApi.list().then((r) => setOrders((r.data ?? []).filter((order) => order.customer_id === customer.id).slice(0, 5)))
-          .catch(() => {}),
+
+    const ordersRequest = orderApi.list()
+      .then((response) => {
+        if (!isCurrentRequest()) return
+        const allOrders = response.data ?? []
+        setChatOrders(allOrders.filter((order) => order.chat_id === chat.id).slice(0, 10))
+        setOrders(customerId
+          ? allOrders.filter((order) => order.customer_id === customerId).slice(0, 5)
+          : [])
+      })
+      .catch(() => {
+        if (!isCurrentRequest()) return
+        setChatOrders([])
+        setOrders([])
+      })
+
+    const requests: Promise<unknown>[] = [ordersRequest]
+    if (customerId) {
+      requests.push(
+        customerVehiclesApi.list(customerId)
+          .then((response) => { if (isCurrentRequest()) setVehicles(response.data ?? []) })
+          .catch(() => { if (isCurrentRequest()) setVehicles([]) }),
       )
     } else {
-      setVehicles([]); setOrders([])
+      setVehicles([])
+      setOrders([])
     }
-    Promise.all(promises).finally(() => setLoading(false))
-  }, [chat.id, customer])
 
-  useEffect(() => { loadData() }, [loadData])
+    Promise.allSettled(requests)
+      .finally(() => { if (isCurrentRequest()) setLoading(false) })
+  }, [chat.id, customerId])
 
   useEffect(() => {
-    if (searchPhone.trim().length < 3) { setSearchResults([]); return }
-    const t = setTimeout(() => {
-      customerApi.list({ search: searchPhone.trim(), per_page: 5 })
-        .then((r) => setSearchResults(r.data ?? []))
-        .catch(() => {})
+    loadData()
+    return () => { loadDataRequestRef.current += 1 }
+  }, [loadData])
+
+  useEffect(() => {
+    const query = searchPhone.trim()
+    if (query.length < 3) {
+      setSearchResults([])
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      customerApi.list({ search: query, per_page: 5 })
+        .then((r) => { if (!cancelled) setSearchResults(r.data ?? []) })
+        .catch(() => { if (!cancelled) setSearchResults([]) })
     }, 400)
-    return () => clearTimeout(t)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [searchPhone])
 
   const detectedVins = useMemo(() => {
@@ -1310,6 +1340,7 @@ export default function OrdersPage() {
   const location = useLocation()
   // Режим «Чат-боти» (маршрут /chats) — лише чати; режим замовлень (/orders) — лише замовлення.
   const chatMode = location.pathname.startsWith('/chats')
+  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [searchParams, setSearchParams] = useSearchParams()
   const urlChatId = searchParams.get('chat_id')
 
@@ -1317,7 +1348,7 @@ export default function OrdersPage() {
   const [chats, setChats] = useState<Chat[]>([])
   const [orders, setOrders] = useState<CustomerOrder[]>([])
   const [messages, setMessages] = useState<Message[]>([])
-  const [loadingChats, setLoadingChats] = useState(!isDesktopRuntime())
+  const [loadingChats, setLoadingChats] = useState(chatMode && !offlineMode)
   const [loadingOrders, setLoadingOrders] = useState(true)
 
   // ui
@@ -1339,7 +1370,12 @@ export default function OrdersPage() {
   }, [searchParams, chatMode])
   const [search, setSearch] = useState('')
   const [selection, setSelection] = useState<Selection>(null)
-  const [now] = useState(() => new Date())
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
   const [showCustPanelMobile, setShowCustPanelMobile] = useState(false)
 
   useEffect(() => {
@@ -1359,7 +1395,7 @@ export default function OrdersPage() {
   const [cancelModal, setCancelModal] = useState<CustomerOrder | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const session = useAuthStore((s) => s.session)
-  const role = (session?.user?.user_metadata?.role as string) ?? 'cashier'
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
   // bulk arrival
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1368,48 +1404,70 @@ export default function OrdersPage() {
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
   const orderCacheRef = useRef(new Map<string, CustomerOrder[]>())
+  const orderLoadRequestRef = useRef(0)
 
   // ── завантаження чатів ──
   const loadChats = useCallback(() => {
-    if (isDesktopRuntime()) { setChats([]); setLoadingChats(false); return }
+    if (!chatMode || offlineMode) { setChats([]); setLoadingChats(false); return }
     api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
       .then((r) => { setChats((r.data ?? []).filter((chat) => chat.channel.platform === 'telegram')); setLoadingChats(false) })
       .catch(() => setLoadingChats(false))
-  }, [])
+  }, [chatMode, offlineMode])
   useEffect(() => {
+    if (!chatMode || offlineMode) {
+      setChats([])
+      setLoadingChats(false)
+      return
+    }
+    setLoadingChats(true)
     loadChats()
-    const t = setInterval(loadChats, 5000)
-    return () => clearInterval(t)
-  }, [loadChats])
+    const timer = window.setInterval(loadChats, 5000)
+    return () => window.clearInterval(timer)
+  }, [chatMode, offlineMode, loadChats])
 
   // ── завантаження замовлень за вкладкою ──
-  const loadOrders = useCallback((showLoading = true) => {
+  const loadOrders = useCallback(async (showLoading = true) => {
+    const requestId = ++orderLoadRequestRef.current
     const cacheKey = `${tab}:${offset}`
     const cached = orderCacheRef.current.get(cacheKey)
     if (cached) setOrders(cached)
     setLoadingOrders(showLoading || !cached)
-    orderApi.list(offset, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }, 50)
-      .then((r) => {
-        const next = r.data ?? []
-        orderCacheRef.current.set(cacheKey, next)
-        if (tab === 'all') {
-          orderCacheRef.current.set(`active:${offset}`, next.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)))
-          orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => o.status === 'ready'))
-          orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => o.status === 'completed'))
-          orderCacheRef.current.set(`canceled:${offset}`, next.filter((o) => o.status === 'canceled'))
-          orderCacheRef.current.set(`drafts:${offset}`, next.filter(isDraft))
-        }
-        setOrders(next)
-      })
-      .catch((error) => {
-        if (showLoading) toast.error(getErrorMessage(error, 'Помилка завантаження замовлень'))
-      })
-      .finally(() => setLoadingOrders(false))
+    try {
+      const response = await orderApi.list(offset, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }, 50)
+      if (requestId !== orderLoadRequestRef.current) return
+      const next = response.data ?? []
+      orderCacheRef.current.set(cacheKey, next)
+      if (tab === 'all') {
+        orderCacheRef.current.set(`active:${offset}`, next.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)))
+        orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => o.status === 'ready'))
+        orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => o.status === 'completed'))
+        orderCacheRef.current.set(`canceled:${offset}`, next.filter((o) => o.status === 'canceled'))
+        orderCacheRef.current.set(`drafts:${offset}`, next.filter(isDraft))
+      }
+      setOrders(next)
+    } catch (error) {
+      if (requestId === orderLoadRequestRef.current && showLoading) {
+        toast.error(getErrorMessage(error, 'Помилка завантаження замовлень'))
+      }
+    } finally {
+      if (requestId === orderLoadRequestRef.current) setLoadingOrders(false)
+    }
   }, [tab, offset])
   useEffect(() => {
-    loadOrders()
-    const t = setInterval(() => loadOrders(false), 15_000)
-    return () => clearInterval(t)
+    void loadOrders()
+    const timer = window.setInterval(() => { void loadOrders(false) }, 15_000)
+    return () => {
+      orderLoadRequestRef.current += 1
+      window.clearInterval(timer)
+    }
+  }, [loadOrders])
+  useEffect(() => {
+    const refreshFromLocalPull = () => {
+      orderCacheRef.current.clear()
+      void loadOrders(false)
+    }
+    window.addEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
+    return () => window.removeEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
   }, [loadOrders])
 
   // ── постачальники (для масового приймання) ──
@@ -1436,16 +1494,24 @@ export default function OrdersPage() {
   // ── повідомлення для активного чату ──
   const activeChatId = selection?.kind === 'chat' ? selection.id : null
   useEffect(() => {
-    if (isDesktopRuntime() || !activeChatId) { setMessages([]); return }
+    if (!chatMode || offlineMode || !activeChatId) { setMessages([]); return }
+    let cancelled = false
+    let requestId = 0
     function load() {
+      const currentRequest = ++requestId
       api.get<{ data: Message[] }>(`/api/v1/chats/${activeChatId}/messages`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
-        .then((r) => setMessages(r.data ?? []))
+        .then((r) => {
+          if (!cancelled && currentRequest === requestId) setMessages(r.data ?? [])
+        })
         .catch(() => {})
     }
     load()
-    const t = setInterval(load, 2000)
-    return () => clearInterval(t)
-  }, [activeChatId])
+    const timer = window.setInterval(load, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [activeChatId, chatMode, offlineMode])
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
@@ -1674,21 +1740,6 @@ export default function OrdersPage() {
           </div>
           {!chatMode && (
           <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
-            <Button variant="secondary" size="sm" icon={<Camera size={14} />}
-              className="!hidden md:!inline-flex" onClick={() => navigate('/ai-assistant')}
-              title="Сфотографуйте рукописне замовлення з зошита — ШІ розпізнає його і заведе клієнта, авто та позиції">
-              З фото (ШІ)
-            </Button>
-            <Button variant="secondary" size="sm" icon={<Camera size={14} />}
-              className="md:hidden !px-2" onClick={() => navigate('/ai-assistant')}
-              title="Замовлення з фото (ШІ)" />
-            <Button variant="secondary" size="sm" icon={<Truck size={14} />}
-              className="!hidden md:!inline-flex" onClick={() => setBulkOpen(true)}>
-              Приймання
-            </Button>
-            <Button variant="secondary" size="sm" icon={<Truck size={14} />}
-              className="md:hidden !px-2" onClick={() => setBulkOpen(true)}
-              title="Приймання" />
             <div className="flex items-center gap-1 rounded-xl bg-gray-50 p-0.5">
               <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')} title="Нове замовлення">
                 <span className="hidden sm:inline">Нове замовлення</span><span className="sm:hidden">Нове</span>
@@ -1866,7 +1917,7 @@ export default function OrdersPage() {
               <OrderInlineView order={selectedOrder} now={now}
                 onOpenFull={() => navigate('/orders/' + selectedOrder.id)}
                 onEditDraft={() => navigate('/quotes/' + selectedOrder.id)}
-                onOpenChat={(chatId) => setSelection({ kind: 'chat', id: chatId })}
+                onOpenChat={(chatId) => navigate('/chats?chat_id=' + encodeURIComponent(chatId))}
                 onChangeStatus={(s) => changeOrderStatus(selectedOrder.id, s)}
                 onItemStatus={(itemId, s) => updateItemStatus(selectedOrder.id, itemId, s)}
                 onPay={() => openOrderPaymentInPos(selectedOrder)}
