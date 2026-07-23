@@ -4,6 +4,10 @@ import { AppError } from '../middleware/errorHandler.js'
 import { listUsers } from './adminService.js'
 
 const PAGE_SIZE = 1000
+// Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
+// такий запит як Bad Request (уся синхронізація падала з DB_ERROR). Ліміт на
+// сторінку вибірки тут не годиться — потрібен окремий, менший крок.
+const IN_FILTER_CHUNK = 200
 const CURSOR_OVERLAP_MS = 5_000
 
 async function fetchAll(buildQuery: (from: number, to: number) => any): Promise<any[]> {
@@ -27,8 +31,8 @@ function withChangedSince(query: any, since?: string): any {
 
 async function loadAvailability(productIds: string[]): Promise<Map<string, { qty_reserved: number; qty_available: number }>> {
   const result = new Map<string, { qty_reserved: number; qty_available: number }>()
-  for (let start = 0; start < productIds.length; start += PAGE_SIZE) {
-    const ids = productIds.slice(start, start + PAGE_SIZE)
+  for (let start = 0; start < productIds.length; start += IN_FILTER_CHUNK) {
+    const ids = productIds.slice(start, start + IN_FILTER_CHUNK)
     if (ids.length === 0) continue
     const { data, error } = await db
       .from('products_available')
