@@ -13,7 +13,7 @@ import { supplierApi } from '@/features/suppliers/supplierApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { Button, Input, Card } from '@/components/ui'
+import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
@@ -315,6 +315,10 @@ export default function OrderFormPage() {
 
   // ORD-36: шаблони частих позицій (localStorage)
   const TEMPLATES_KEY = 'order_item_templates'
+  const [supplierRowIndex, setSupplierRowIndex] = useState<number | null>(null)
+  const [supplierName, setSupplierName] = useState('')
+  const [templateModalOpen, setTemplateModalOpen] = useState(false)
+  const [templateName, setTemplateName] = useState('')
   const [templates, setTemplates] = useState<Array<{ name: string; items: ItemRow[] }>>(() => {
     try { return JSON.parse(localStorage.getItem(TEMPLATES_KEY) ?? '[]') } catch { return [] }
   })
@@ -329,12 +333,21 @@ export default function OrderFormPage() {
     })
     toast.success(`Додано шаблон «${t.name}»`)
   }
+  // Назву питаємо власною модалкою: Electron не реалізує window.prompt(),
+  // тож на касі кнопка збереження шаблону просто мовчала.
   function saveAsTemplate() {
     const filled = items.filter((r) => r.name.trim())
     if (filled.length === 0) { toast.error('Немає позицій для шаблону'); return }
-    const name = prompt('Назва шаблону (напр. «ТО Kia Rio»):')?.trim()
-    if (!name) return
+    setTemplateName('')
+    setTemplateModalOpen(true)
+  }
+  function submitTemplate() {
+    const name = templateName.trim()
+    if (!name) { toast.error('Вкажіть назву шаблону'); return }
+    const filled = items.filter((r) => r.name.trim())
+    if (filled.length === 0) { toast.error('Немає позицій для шаблону'); return }
     persistTemplates([...templates.filter((t) => t.name !== name), { name, items: filled }])
+    setTemplateModalOpen(false)
     toast.success('Шаблон збережено')
   }
   function deleteTemplate(name: string) {
@@ -642,13 +655,22 @@ export default function OrderFormPage() {
   }
 
 
-  async function createSupplierForItem(i: number) {
-    const name = prompt('Назва нового постачальника')?.trim()
-    if (!name) return
+  // Так само через модалку, а не prompt() — інакше на касі кнопка мовчить.
+  function createSupplierForItem(i: number) {
+    setSupplierName('')
+    setSupplierRowIndex(i)
+  }
+
+  async function submitSupplier() {
+    const name = supplierName.trim()
+    if (!name) { toast.error('Вкажіть назву постачальника'); return }
+    const rowIndex = supplierRowIndex
+    if (rowIndex === null) return
     try {
       const { data } = await supplierApi.create({ name })
       setSuppliers((current) => uniqueSuppliers([data, ...current]))
-      updateItem(i, 'supplier_id', data.id)
+      updateItem(rowIndex, 'supplier_id', data.id)
+      setSupplierRowIndex(null)
       toast.success(`Постачальника «${data.name}» додано`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося додати постачальника')
@@ -1698,6 +1720,36 @@ export default function OrderFormPage() {
           </div>
         </aside>
       )}
+
+      <Modal open={supplierRowIndex !== null} onClose={() => setSupplierRowIndex(null)} title="Новий постачальник" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Назва постачальника</label>
+            <Input value={supplierName} autoFocus
+              onChange={(e) => setSupplierName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitSupplier() }} />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button type="button" variant="secondary" onClick={() => setSupplierRowIndex(null)}>Скасувати</Button>
+            <Button type="button" onClick={submitSupplier}>Додати</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={templateModalOpen} onClose={() => setTemplateModalOpen(false)} title="Зберегти як шаблон" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Назва шаблону</label>
+            <Input value={templateName} autoFocus placeholder="Напр. «ТО Kia Rio»"
+              onChange={(e) => setTemplateName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitTemplate() }} />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button type="button" variant="secondary" onClick={() => setTemplateModalOpen(false)}>Скасувати</Button>
+            <Button type="button" onClick={submitTemplate}>Зберегти</Button>
+          </div>
+        </div>
+      </Modal>
     </Layout>
   )
 }

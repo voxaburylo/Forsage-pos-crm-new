@@ -557,6 +557,8 @@ export default function InvoiceFormPage() {
   const [invoiceImportHeaderRow, setInvoiceImportHeaderRow] = useState<number | null>(null)
   const [resolvingImportedProducts, setResolvingImportedProducts] = useState(false)
   const [bulkMarkupSelection, setBulkMarkupSelection] = useState('')
+  const [customPctOpen, setCustomPctOpen] = useState(false)
+  const [customPctValue, setCustomPctValue] = useState('')
   const [selectedLineKeys, setSelectedLineKeys] = useState<string[]>([])
   const [bulkCategoryId, setBulkCategoryId] = useState('')
   // Оплата постачальнику
@@ -1121,6 +1123,16 @@ export default function InvoiceFormPage() {
       )
     }
   }
+  function applyCustomPct() {
+    const pct = parseFloat(String(customPctValue).replace(',', '.'))
+    if (!Number.isFinite(pct) || pct <= 0) {
+      toast.error('Вкажіть відсоток числом більше нуля')
+      return
+    }
+    setCustomPctOpen(false)
+    applyBulkQuickPercent(pct)
+  }
+
   // Застосування фіксованої націнки на всю накладну
   function applyBulkQuickPercent(pct: number) {
     if (pct <= 0) return
@@ -1951,13 +1963,10 @@ export default function InvoiceFormPage() {
                           const pct = parseFloat(val.split(':')[1])
                           applyBulkQuickPercent(pct)
                         } else if (val === 'manual') {
-                          const customPct = prompt('Введіть свій відсоток націнки (%):')
-                          if (customPct !== null) {
-                            const pct = parseFloat(customPct)
-                            if (!isNaN(pct) && pct > 0) {
-                              applyBulkQuickPercent(pct)
-                            }
-                          }
+                          // Власна модалка: Electron не реалізує window.prompt(),
+                          // і на касі цей пункт просто нічого не робив.
+                          setCustomPctValue('')
+                          setCustomPctOpen(true)
                         }
                       }}
                       className="border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white"
@@ -2651,6 +2660,21 @@ export default function InvoiceFormPage() {
               Створити
             </Button>
             <Button variant="secondary" onClick={() => setSupplierModal(false)}>Скасувати</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={customPctOpen} onClose={() => setCustomPctOpen(false)} title="Своя націнка" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Відсоток націнки, %</label>
+            <Input value={customPctValue} autoFocus inputMode="decimal" placeholder="Напр. 35"
+              onChange={(e) => setCustomPctValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') applyCustomPct() }} />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="secondary" onClick={() => setCustomPctOpen(false)}>Скасувати</Button>
+            <Button onClick={applyCustomPct}>Застосувати до всіх</Button>
           </div>
         </div>
       </Modal>
