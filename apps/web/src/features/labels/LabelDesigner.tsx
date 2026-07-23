@@ -848,7 +848,8 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
 // Головна сторінка
 // ================================================================
 export default function LabelDesigner() {
-  const [tab, setTab] = useState<Tab>('design')
+  // Друк — головний сценарій сторінки, дизайн налаштовують зрідка
+  const [tab, setTab] = useState<Tab>('print')
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -1295,17 +1296,17 @@ export default function LabelDesigner() {
     <Layout title="Друк етикеток">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div className="flex gap-2">
-          <button onClick={() => setTab('design')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === 'design' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
-            }`}>
-            <Settings size={16} /> Дизайнер
-          </button>
           <button onClick={() => setTab('print')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === 'print' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
             }`}>
             <Printer size={16} /> Друк
+          </button>
+          <button onClick={() => setTab('design')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'design' ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
+            }`}>
+            <Settings size={16} /> Дизайнер
           </button>
         </div>
 
