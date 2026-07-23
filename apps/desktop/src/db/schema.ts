@@ -455,6 +455,7 @@ const MIGRATION_002_BUSINESS_SQL = `
     price_checked INTEGER NOT NULL DEFAULT 0,
     observed_retail_price INTEGER,
     last_counted_by TEXT,
+    first_counted_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT,

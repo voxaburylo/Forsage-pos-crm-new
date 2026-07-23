@@ -29,6 +29,9 @@ async function loadSessionData(sessionId: string, tenantId: string, userId: stri
       .select('*, product:products(id,sku,name,barcode,additional_barcodes,unit,retail_price,purchase_price,storage_bin)')
       .eq('session_id', sessionId)
       .eq('was_counted', true)
+      // Порядок додавання: останній пробитий зверху, стабільно — редагування
+      // старого товару не підкидає його, бо first_counted_at не змінюється.
+      .order('first_counted_at', { ascending: false, nullsFirst: false })
       .order('updated_at', { ascending: false })
       .limit(100),
     db.from('inventory_items')

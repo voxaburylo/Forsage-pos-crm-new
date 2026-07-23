@@ -41,6 +41,7 @@ interface InventoryItem {
   price_checked: boolean
   observed_retail_price: number | null
   updated_at: string
+  first_counted_at: string | null
   product: ProductInfo | null
 }
 
@@ -340,10 +341,14 @@ export default function ActiveSession() {
   }, [session?.summary])
 
   // Рядки списку — товари, які вже додали (пораховані), найновіші зверху.
+  // Порядок додавання: останній пробитий зверху. Сортуємо за часом ПЕРШОГО
+  // підрахунку, а не updated_at — інакше редагування старого товару підкидало
+  // його вгору. updated_at лишаємо запасним ключем для старих даних без поля.
   const countedRows = useMemo(
     () => (session?.items ?? [])
       .filter((it) => (it.counted_stock ?? 0) > 0)
-      .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? '')),
+      .sort((a, b) =>
+        (b.first_counted_at ?? b.updated_at ?? '').localeCompare(a.first_counted_at ?? a.updated_at ?? '')),
     [session?.items],
   )
 
