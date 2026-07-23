@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Receipt, FolderOpen } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge, type DesktopFiscalConfig, type DesktopFiscalResult } from '@/lib/desktopBridge'
 
@@ -48,6 +49,8 @@ export function FiscalSettingsCard() {
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [status, setStatus] = useState<ParsedStatus | null>(null)
+  const [cashDirection, setCashDirection] = useState<'in' | 'out' | null>(null)
+  const [cashAmount, setCashAmount] = useState('')
 
   useEffect(() => {
     desktopBridge()?.fiscal?.getConfig()
@@ -114,13 +117,21 @@ export function FiscalSettingsCard() {
     }
   }
 
-  async function serviceCash(direction: 'in' | 'out') {
+  // Суму питаємо власною модалкою: Electron не реалізує window.prompt(),
+  // тож на касі кнопки внесення/видачі просто мовчали.
+  function askServiceCash(direction: 'in' | 'out') {
+    if (!desktopBridge()?.fiscal) return
+    setCashDirection(direction)
+    setCashAmount('')
+  }
+
+  function submitServiceCash() {
     const desktop = desktopBridge()
-    if (!desktop?.fiscal) return
-    const input = window.prompt(direction === 'in' ? 'Сума внесення в касу (грн):' : 'Сума видачі з каси (грн):', '0')
-    if (input === null) return
-    const kopecks = Math.round(parseFloat(input.replace(',', '.')) * 100)
+    if (!desktop?.fiscal || !cashDirection) return
+    const kopecks = Math.round(parseFloat(String(cashAmount).replace(',', '.')) * 100)
     if (!Number.isFinite(kopecks) || kopecks <= 0) { toast.error('Некоректна сума'); return }
+    const direction = cashDirection
+    setCashDirection(null)
     runAction('service', () => desktop.fiscal.serviceCash(kopecks, direction), direction === 'in' ? 'Внесення проведено' : 'Видачу проведено')
   }
 
@@ -258,11 +269,11 @@ export function FiscalSettingsCard() {
             X-звіт
           </Button>
           <Button type="button" variant="secondary" loading={busy === 'service'}
-            onClick={() => serviceCash('in')}>
+            onClick={() => askServiceCash('in')}>
             Внесення готівки
           </Button>
           <Button type="button" variant="secondary" loading={busy === 'service'}
-            onClick={() => serviceCash('out')}>
+            onClick={() => askServiceCash('out')}>
             Видача готівки
           </Button>
         </div>
@@ -271,6 +282,24 @@ export function FiscalSettingsCard() {
           Ці кнопки — для налаштування й нештатних ситуацій.
         </p>
       </div>
+
+      <Modal open={cashDirection !== null} onClose={() => setCashDirection(null)}
+        title={cashDirection === 'out' ? 'Видача готівки з каси' : 'Внесення готівки в касу'} size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Сума, грн</label>
+            <Input value={cashAmount} autoFocus inputMode="decimal" placeholder="0,00"
+              onChange={(e) => setCashAmount(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitServiceCash() }} />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button type="button" variant="secondary" onClick={() => setCashDirection(null)}>Скасувати</Button>
+            <Button type="button" onClick={submitServiceCash}>
+              {cashDirection === 'out' ? 'Провести видачу' : 'Провести внесення'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </Card>
   )
 }
