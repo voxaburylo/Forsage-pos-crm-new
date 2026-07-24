@@ -55,6 +55,10 @@ async function tryLocalRead<T>(path: string, method: string | undefined): Promis
     if (m && m[1] !== 'suspended' && m[1] !== 'calculate-price') {
       return (await read.sale(m[1]) ?? { data: null }) as T
     }
+    if (rawPath === 'products' && read.products) return await read.products(query) as T
+    // /products/{id} — але не /products/search, /products/generate-barcode-only тощо
+    m = rawPath.match(/^products\/([0-9a-f-]{16,})$/i)
+    if (m && read.product) return (await read.product(m[1]) ?? { data: null }) as T
   } catch {
     return undefined // локальна помилка — спробуємо сервер
   }

@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     customer: (id: string) => ipcRenderer.invoke('desktop:read:customer', id),
     sales: (params?: unknown) => ipcRenderer.invoke('desktop:read:sales', params),
     sale: (id: string) => ipcRenderer.invoke('desktop:read:sale', id),
+    products: (params?: unknown) => ipcRenderer.invoke('desktop:read:products', params),
+    product: (id: string) => ipcRenderer.invoke('desktop:read:product', id),
   },
   fiscal: {
     pickFolder: (defaultPath?: string) => ipcRenderer.invoke('desktop:fiscal:pick-folder', defaultPath),

@@ -369,6 +369,10 @@ app.whenReady().then(async () => {
     requireLocalRead().listSales(params ?? {}))
   ipcMain.handle('desktop:read:sale', (_e, id: string) =>
     requireLocalRead().getSale(id))
+  ipcMain.handle('desktop:read:products', (_e, params?: Record<string, string | number | undefined>) =>
+    requireLocalRead().listProducts(params ?? {}))
+  ipcMain.handle('desktop:read:product', (_e, id: string) =>
+    requireLocalRead().getProduct(id))
   ipcMain.handle('desktop:print:list-printers', async () => {
     if (!mainWindow) return []
     const printers = await mainWindow.webContents.getPrintersAsync()

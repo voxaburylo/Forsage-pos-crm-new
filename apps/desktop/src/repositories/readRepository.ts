@@ -144,6 +144,73 @@ export class LocalReadRepository {
     return { data, pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) } }
   }
 
+  // ───────────────────────── Товари ─────────────────────────
+  listProducts(params: ListParams = {}): { data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } } {
+    const page = toInt(params.page, 1)
+    const perPage = toInt(params.per_page, 50)
+    const offset = (page - 1) * perPage
+    const where: string[] = ['p.tenant_id = ?', 'p.deleted_at IS NULL']
+    const args: any[] = [this.tenantId]
+
+    const search = (params.search ?? '').toString().replace(/^oem:/, '').trim()
+    if (search) {
+      where.push('(p.sku LIKE ? OR p.name LIKE ? OR p.barcode LIKE ?)')
+      const like = `%${search}%`
+      args.push(like, like, like)
+    }
+    if (params.category_id) { where.push('p.category_id = ?'); args.push(String(params.category_id)) }
+    if (params.brand_id) { where.push('p.brand_id = ?'); args.push(String(params.brand_id)) }
+    if (params.is_active !== undefined) { where.push('p.is_active = ?'); args.push(params.is_active === 'true' ? 1 : 0) }
+    if (params.low_stock === 'true') where.push('p.qty_on_hand <= p.reorder_point')
+
+    const whereSql = where.join(' AND ')
+    const sortField = ({ sku: 'p.sku', name: 'p.name', retail_price: 'p.retail_price', qty_on_hand: 'p.qty_on_hand', created_at: 'p.created_at' } as Record<string, string>)[String(params.sort_field ?? '')] ?? 'p.name'
+    const sortDir = String(params.sort_dir) === 'desc' ? 'DESC' : 'ASC'
+
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM products p WHERE ${whereSql}`).get(...args) as { n: number }).n
+    const rows = this.db.prepare(`
+      SELECT p.*, b.name AS b_name, cat.name AS cat_name
+      FROM products p
+      LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN categories cat ON cat.id = p.category_id
+      WHERE ${whereSql}
+      ORDER BY ${sortField} COLLATE NOCASE ${sortDir}
+      LIMIT ? OFFSET ?
+    `).all(...args, perPage, offset) as any[]
+
+    return { data: rows.map((r) => this.mapProduct(r)), pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) || 1 } }
+  }
+
+  getProduct(id: string): { data: any } | null {
+    const row = this.db.prepare(`
+      SELECT p.*, b.name AS b_name, cat.name AS cat_name
+      FROM products p
+      LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN categories cat ON cat.id = p.category_id
+      WHERE p.id = ? AND p.tenant_id = ? AND p.deleted_at IS NULL
+    `).get(id, this.tenantId) as any
+    if (!row) return null
+    return { data: this.mapProduct(row) }
+  }
+
+  private mapProduct(r: any): any {
+    const { b_name, cat_name, specs_json, search_text, dirty_at, remote_updated_at, ...rest } = r
+    let specs: any = {}
+    try { specs = specs_json ? JSON.parse(specs_json) : {} } catch { specs = {} }
+    const qtyOnHand = Number(r.qty_on_hand ?? 0)
+    return {
+      ...rest,
+      is_active: !!r.is_active,
+      is_service: !!r.is_service,
+      is_favorite: !!r.is_favorite,
+      specs,
+      brand: r.brand_id ? { id: r.brand_id, name: b_name } : null,
+      category: r.category_id ? { id: r.category_id, name: cat_name } : null,
+      qty_reserved: 0,
+      qty_available: qtyOnHand,
+    }
+  }
+
   getSale(id: string): { data: any } | null {
     const row = this.db.prepare(
       'SELECT * FROM sales WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL',
