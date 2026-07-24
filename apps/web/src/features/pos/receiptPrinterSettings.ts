@@ -11,6 +11,16 @@ export interface ReceiptPrinterSettings {
 }
 
 const STORAGE_KEY = 'forsage_receipt_printer_v1'
+const LABEL_PRINTER_RE = /hl80|hilabel|label|xprinter|tspl|3\s*inch|80\s*mm|80мм/i
+const RECEIPT_PRINTER_RE = /pos-?58|58\s*mm|58мм|receipt|чек/i
+
+function isLabelPrinterName(name: string): boolean {
+  return LABEL_PRINTER_RE.test(name) && !RECEIPT_PRINTER_RE.test(name)
+}
+
+function isReceiptPrinterName(name: string): boolean {
+  return RECEIPT_PRINTER_RE.test(name) && !isLabelPrinterName(name)
+}
 
 export const DEFAULT_RECEIPT_PRINTER_SETTINGS: ReceiptPrinterSettings = {
   printerName: '',
@@ -18,13 +28,13 @@ export const DEFAULT_RECEIPT_PRINTER_SETTINGS: ReceiptPrinterSettings = {
 
 /** Впізнаємо чековий принтер за назвою (POS-58, 58мм, receipt тощо). */
 export function pickReceiptPrinter(printers: Array<{ name: string; isDefault?: boolean }>): string | null {
-  const byName = printers.find((p) => /pos-?58|58\s*mm|58мм|receipt|чек/i.test(p.name))
+  const byName = printers.find((p) => isReceiptPrinterName(p.name))
   if (byName) return byName.name
 
   // Явного чекового немає — беремо принтер за замовчуванням, але НІКОЛИ
   // етикетковий: краще лишити вибір користувачу, ніж друкувати чек на етикетки.
   const fallback = printers.find(
-    (p) => p.isDefault === true && !/hl80|hilabel|label|xprinter|tspl|3\s*inch/i.test(p.name),
+    (p) => p.isDefault === true && !isLabelPrinterName(p.name),
   )
   return fallback ? fallback.name : null
 }
@@ -35,7 +45,7 @@ export function loadReceiptPrinterSettings(): ReceiptPrinterSettings {
     if (!raw) return { ...DEFAULT_RECEIPT_PRINTER_SETTINGS }
     const parsed = JSON.parse(raw) as Partial<ReceiptPrinterSettings>
     return {
-      printerName: typeof parsed.printerName === 'string' ? parsed.printerName : '',
+      printerName: typeof parsed.printerName === 'string' && !isLabelPrinterName(parsed.printerName) ? parsed.printerName : '',
     }
   } catch {
     return { ...DEFAULT_RECEIPT_PRINTER_SETTINGS }

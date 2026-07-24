@@ -47,8 +47,10 @@ const RAW_DOC_NAME = 'Forsage labels (TSPL)'
 // Статуси спулера, за яких завдання нікуди не поїде: принтер відвалився по USB,
 // скінчились етикетки, відкрита кришка. Windows не прибирає такі завдання сам —
 // вони лишаються Retained і мовчки блокують ВСІ наступні друки.
-const STUCK_JOB_PATTERN = 'Error|Blocked|Offline|PaperOut|UserIntervention'
+const FATAL_JOB_PATTERN = 'Error|Offline|PaperOut|UserIntervention'
 const NOT_READY_PATTERN = 'Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
+// Blocked у Windows для RAW/USB-принтерів може бути коротким перехідним станом.
+// Його не можна одразу знімати з черги: так програма сама скасовувала живий друк.
 // Найпідступніше зависання не має статусу помилки взагалі: `Printing, Retained`
 // з PagesPrinted=0, яке висить годинами. Ловимо його за віком і відсутністю
 // прогресу — інакше воно блокує чергу непоміченим.
@@ -60,14 +62,14 @@ param([string]$PrinterName)
 $ErrorActionPreference = 'Stop'
 
 $docName = '${RAW_DOC_NAME}'
-$stuckPattern = '${STUCK_JOB_PATTERN}'
-$inFlightPattern = '${IN_FLIGHT_JOB_PATTERN}'
+$fatalPattern = '${FATAL_JOB_PATTERN}'
+$inFlightPattern = 'Blocked|${IN_FLIGHT_JOB_PATTERN}'
 $staleSeconds = ${STALE_JOB_SECONDS}
 
 function Get-StuckJobs {
   $now = Get-Date
   @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue | Where-Object {
-    $_.JobStatus -match $stuckPattern -or (
+    $_.JobStatus -match $fatalPattern -or (
       $_.JobStatus -match $inFlightPattern -and
       $_.PagesPrinted -eq 0 -and
       $_.SubmittedTime -and
@@ -152,9 +154,17 @@ try {
     $mine = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
       Where-Object { $_.DocumentName -eq $docName })
     if ($mine.Count -eq 0) { break }
-    $bad = @($mine | Where-Object { $_.JobStatus -match $stuckPattern })
+    $bad = @($mine | Where-Object { $_.JobStatus -match $fatalPattern })
     if ($bad.Count -gt 0) { $failure = $bad[0].JobStatus; break }
     Start-Sleep -Milliseconds 400
+  }
+  if (-not $failure) {
+    $left = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
+      Where-Object { $_.DocumentName -eq $docName })
+    if ($left.Count -gt 0) {
+      $active = @($left | Where-Object { $_.PagesPrinted -gt 0 })
+      if ($active.Count -eq 0) { $failure = $left[0].JobStatus }
+    }
   }
   if ($failure) {
     Get-StuckJobs | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
