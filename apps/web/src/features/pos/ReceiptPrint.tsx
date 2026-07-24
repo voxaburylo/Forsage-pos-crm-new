@@ -64,8 +64,12 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
           margin: 0;
           padding: 2mm ${sidePadding}mm 4mm;
           font-family: 'Courier New', 'Lucida Console', monospace;
-          font-size: 10px;
-          line-height: 1.35;
+          /* Термопринтер друкує лише чистий чорний; сірі відтінки він дизерить
+             у крапки — виходить «брудно». Тому все чорне і жирнувате, а шрифт
+             більший, бо на 10px чек майже не читався. */
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.4;
           color: #000;
           background: #fff;
           overflow: hidden;
@@ -75,15 +79,15 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
         .receipt-print * { box-sizing: border-box; }
         .receipt-print .rp-center { text-align: center; }
         .receipt-print .rp-bold { font-weight: 700; }
-        .receipt-print .rp-large { font-size: 14px; }
-        .receipt-print .rp-small { font-size: 8px; color: #666; }
-        .receipt-print .rp-dash { border: none; border-top: 1px dashed #333; margin: 2mm 0; }
-        .receipt-print .rp-thin { border: none; border-top: 1px solid #999; margin: 1.5mm 0; }
+        .receipt-print .rp-large { font-size: 17px; }
+        .receipt-print .rp-small { font-size: 11px; color: #000; }
+        .receipt-print .rp-dash { border: none; border-top: 1px dashed #000; margin: 2mm 0; }
+        .receipt-print .rp-thin { border: none; border-top: 1px solid #000; margin: 1.5mm 0; }
         .receipt-print .rp-row { display: flex; justify-content: space-between; gap: 2mm; }
         .receipt-print .rp-row > :last-child { flex-shrink: 0; text-align: right; }
         .receipt-print .rp-item-name { white-space: normal; overflow-wrap: anywhere; }
-        .receipt-print .rp-total { font-size: 18px; font-weight: 700; text-align: center; margin: 2mm 0; }
-        .receipt-print .rp-thanks { text-align: center; margin-top: 2mm; font-size: 10px; }
+        .receipt-print .rp-total { font-size: 22px; font-weight: 700; text-align: center; margin: 2mm 0; }
+        .receipt-print .rp-thanks { text-align: center; margin-top: 2mm; font-size: 13px; }
         .receipt-print svg { display: block; width: 22mm; height: 22mm; margin: 0 auto; }
       `}</style>
 
