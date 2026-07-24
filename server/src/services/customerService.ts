@@ -97,16 +97,31 @@ export async function getCustomer(id: string, tenantId: string) {
   return data
 }
 
+// Той самий номер міг зберегтись у різних форматах: старі записи — «0676…»,
+// нові нормалізуються у «+380676…». Шукаємо дубль за всіма варіантами, інакше
+// клієнт створювався повторно або падав на unique-обмеженні по phone.
+function phoneVariants(phone: string): string[] {
+  const variants = new Set<string>([phone, normalizePhone(phone)])
+  const core = phone.replace(/\D/g, '').slice(-9)
+  if (core.length === 9) {
+    variants.add(`+380${core}`)
+    variants.add(`380${core}`)
+    variants.add(`0${core}`)
+    variants.add(`80${core}`)
+  }
+  return [...variants]
+}
+
 export async function findByPhone(phone: string, tenantId: string) {
-  const normalized = normalizePhone(phone)
   const { data } = await db
     .from(TABLE)
     .select('*')
-    .eq('phone', normalized)
+    .in('phone', phoneVariants(phone))
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
-    .maybeSingle()
-  return data
+    .order('created_at', { ascending: true })
+    .limit(1)
+  return data?.[0] ?? null
 }
 
 export async function createCustomer(input: CreateCustomerInput, tenantId: string) {
@@ -143,6 +158,12 @@ export async function createCustomer(input: CreateCustomerInput, tenantId: strin
   if (error) {
     if (error.code === '23505' && input.card_barcode) {
       throw new AppError('BARCODE_DUPLICATE', `Штрихкод картки ${input.card_barcode} вже використовується`, 409)
+    }
+    // Конфлікт унікальності по телефону (інший формат того самого номера або
+    // гонка) — не помилка, а підтягуємо наявного клієнта.
+    if (error.code === '23505') {
+      const existingByPhone = await findByPhone(input.phone, tenantId)
+      if (existingByPhone) return { customer: existingByPhone, reused: true, vehicleAdded: false }
     }
     throw new AppError('DB_ERROR', error.message, 500)
   }
