@@ -1287,6 +1287,15 @@ export default function OrderFormPage() {
                   <span className="text-xs text-yellow-700">У базі не знайдено. Знайдіть у постачальника та внесіть вручну.</span>
                 </button>
               )}
+
+              {/* Ручне додавання доступне завжди, не лише коли пошук порожній */}
+              <button
+                type="button"
+                onClick={openBackorder}
+                className="mt-3 w-full flex items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-600 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700 transition-colors"
+              >
+                <Plus size={15} /> Додати позицію вручну (під замовлення)
+              </button>
             </Card>
 
             {/* ─── Додані позиції замовлення ─── */}
