@@ -76,6 +76,7 @@ interface ItemRow {
   item_type?:  'product' | 'service'
   item_status?: CustomerOrder['items'][number]['item_status']
   buy_price?:  string
+  manual_edit?: boolean
 }
 
 const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product', buy_price: '0' }
@@ -309,7 +310,7 @@ export default function OrderFormPage() {
   }, [id])
 
   // Step 3: Items
-  const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
+  const [items, setItems] = useState<ItemRow[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
   const [supplierRowIndex, setSupplierRowIndex] = useState<number | null>(null)
@@ -629,6 +630,10 @@ export default function OrderFormPage() {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
+  function addManualItemRow() {
+    setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true }])
+  }
+
 
   // Новий постачальник просто з форми «під замовлення» (без prompt — Electron його не має).
   function openNewSupplier() {
@@ -729,7 +734,7 @@ export default function OrderFormPage() {
         sell_price:  Math.round(parseFloat(row.sell_price || '0') * 100),
         buy_price:   Math.round(parseFloat(row.buy_price || '0') * 100),
         supplier_id: row.supplier_id || null,
-        source_type: row.supplier_id ? 'supplier' : 'warehouse',
+        source_type: row.product_id ? 'warehouse' : 'supplier',
         item_type:   row.item_type ?? 'product',
         item_status: row.item_status,
         expected_date: row.supplier_id && row.expected_date ? row.expected_date : null,
@@ -1264,13 +1269,104 @@ export default function OrderFormPage() {
                 <h4 className="font-bold text-gray-800 text-sm">Позиції замовлення</h4>
                 <span className="text-xs text-gray-400">{items.filter((r) => r.name.trim()).length} шт</span>
               </div>
-              {items.filter((r) => r.name.trim()).length === 0 ? (
+              {items.length === 0 ? (
                 <p className="px-4 py-8 text-center text-sm text-gray-400">
-                  Почніть із пошуку товару вгорі — знайдений додайте кнопкою, а якщо його немає в базі, оформіть під замовлення.
+                  Почніть із пошуку товару вгорі або додайте замовлену запчастину вручну кнопкою внизу.
                 </p>
               ) : (
                 <div className="divide-y divide-gray-100">
                   {items.map((row, idx) => {
+                    if (row.manual_edit) {
+                      return (
+                        <div key={idx} className="bg-yellow-50/60 px-3 py-3 sm:px-4">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <span className="text-xs font-bold text-orange-700">⏳ Запчастина під замовлення</span>
+                            <button
+                              type="button"
+                              onClick={() => removeItem(idx)}
+                              className="rounded p-1.5 text-red-500 hover:bg-red-50 hover:text-red-700"
+                              title="Видалити рядок"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-12">
+                            <label className="lg:col-span-4">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Назва запчастини *</span>
+                              <input
+                                autoFocus
+                                value={row.name}
+                                onChange={(e) => updateItem(idx, 'name', e.target.value)}
+                                placeholder="Назва запчастини"
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              />
+                            </label>
+                            <label className="lg:col-span-2">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Артикул / OEM</span>
+                              <input
+                                value={row.sku}
+                                onChange={(e) => updateItem(idx, 'sku', e.target.value)}
+                                placeholder="Артикул"
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              />
+                            </label>
+                            <label className="lg:col-span-1">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">К-сть</span>
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={row.qty}
+                                onChange={(e) => updateItem(idx, 'qty', e.target.value)}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              />
+                            </label>
+                            <label className="lg:col-span-3">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Постачальник</span>
+                              <select
+                                value={row.supplier_id}
+                                onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              >
+                                <option value="">Не обрано</option>
+                                {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+                              </select>
+                            </label>
+                            <label className="lg:col-span-2">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Очікуємо</span>
+                              <input
+                                type="date"
+                                value={row.expected_date ?? ''}
+                                onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              />
+                            </label>
+                            <label className="lg:col-span-2 lg:col-start-7">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Закупка, грн</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={row.buy_price ?? '0'}
+                                onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              />
+                            </label>
+                            <label className="lg:col-span-2">
+                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Продаж, грн</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={row.sell_price}
+                                onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      )
+                    }
                     if (!row.name.trim()) return null
                     const isBackorder = !!row.supplier_id || !row.product_id
                     const supplierName = suppliers.find((s) => s.id === row.supplier_id)?.name
@@ -1315,6 +1411,17 @@ export default function OrderFormPage() {
                   })}
                 </div>
               )}
+
+              <div className="border-t border-gray-100 p-3">
+                <button
+                  type="button"
+                  onClick={addManualItemRow}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-yellow-400 px-4 py-3 text-sm font-bold text-gray-900 transition-colors hover:bg-yellow-500"
+                >
+                  <Plus size={17} />
+                  Новий рядок
+                </button>
+              </div>
 
               {!isDesktop && (
                 <div className="px-4 py-3 border-t border-gray-100 flex gap-2 justify-end bg-gray-50/50">
