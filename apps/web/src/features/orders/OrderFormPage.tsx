@@ -1582,13 +1582,6 @@ export default function OrderFormPage() {
               {/* Checkout Actions */}
               <Card className="space-y-4">
                 <h4 className="font-bold text-gray-800 text-sm border-b border-gray-100 pb-2">Коментар</h4>
-                
-                <div className="space-y-3">
-<div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    Передоплата та повна оплата приймаються тільки в касі. Менеджер оформлює замовлення,
-                    а касир знаходить його за номером, телефоном або штрихкодом картки клієнта.
-                  </div>
-                </div>
 
                 {/* Comment Box */}
                 <div className="space-y-3">

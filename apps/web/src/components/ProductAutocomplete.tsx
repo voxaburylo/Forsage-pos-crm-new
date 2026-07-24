@@ -61,6 +61,14 @@ export function ProductAutocomplete({
   const justSelected = useRef(false)
   const searchRequestRef = useRef(0)
 
+  // Форма замовлення рендерить дві копії поля — картку (md:hidden) і рядок
+  // таблиці (hidden md:block). CSS-приховування не розмонтовує React, тож
+  // прихована копія теж реагувала на ввід і відкривала ДРУГИЙ дропдаун через
+  // портал (у кутку, з нульовими координатами). Відкриваємо лише видиму копію.
+  function isElementVisible() {
+    return !!wrapRef.current && wrapRef.current.offsetParent !== null
+  }
+
   function updateDropdownPosition() {
     const rect = wrapRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -134,7 +142,7 @@ export function ProductAutocomplete({
           setResults(sortSuggestions(local.warehouse))
           setSupplierResults(local.supplierCatalog)
           updateDropdownPosition()
-          setOpen(local.warehouse.length > 0 || local.supplierCatalog.length > 0)
+          setOpen((local.warehouse.length > 0 || local.supplierCatalog.length > 0) && isElementVisible())
           setHighlight(0)
           return
         }
@@ -145,7 +153,7 @@ export function ProductAutocomplete({
         setResults(sortSuggestions(warehouse))
         setSupplierResults(catalog)
         updateDropdownPosition()
-        setOpen(warehouse.length > 0 || catalog.length > 0)
+        setOpen((warehouse.length > 0 || catalog.length > 0) && isElementVisible())
         setHighlight(0)
       } catch {
         if (!cancelled && requestId === searchRequestRef.current) {
@@ -234,7 +242,7 @@ export function ProductAutocomplete({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
-        onFocus={() => { if (results.length > 0 || supplierResults.length > 0) { updateDropdownPosition(); setOpen(true) } }}
+        onFocus={() => { if ((results.length > 0 || supplierResults.length > 0) && isElementVisible()) { updateDropdownPosition(); setOpen(true) } }}
         placeholder={placeholder}
         required={required}
         autoComplete="off"
