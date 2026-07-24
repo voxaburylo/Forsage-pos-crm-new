@@ -1502,11 +1502,6 @@ export default function OrderFormPage() {
                       className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
                     />
                   </div>
-
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    Передоплата та повна оплата приймаються тільки в касі. Менеджер оформлює замовлення,
-                    а касир знаходить його за номером, телефоном або штрихкодом картки клієнта.
-                  </div>
                 </div>
 
                 {/* Comment Box */}

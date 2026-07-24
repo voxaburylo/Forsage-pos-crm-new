@@ -44,6 +44,14 @@ export function ProductAutocomplete({
   const wrapRef = useRef<HTMLDivElement>(null)
   const justSelected = useRef(false)
 
+  // Форма замовлення рендерить дві копії поля — картку (md:hidden) і рядок
+  // таблиці (hidden md:block). CSS-приховування не розмонтовує React, тож
+  // прихована копія теж реагувала на ввід і відкривала ДРУГИЙ дропдаун.
+  // Відкриваємо лише видиму копію.
+  function isElementVisible() {
+    return !!wrapRef.current && wrapRef.current.offsetParent !== null
+  }
+
   // Закриття при кліку поза полем
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
@@ -71,7 +79,7 @@ export function ProductAutocomplete({
           const catalog = warehouseOnly ? [] : (res.data?.supplier_catalog || [])
           setResults(warehouse)
           setSupplierResults(catalog)
-          setOpen(warehouse.length > 0 || catalog.length > 0)
+          setOpen((warehouse.length > 0 || catalog.length > 0) && isElementVisible())
           setHighlight(0)
         })
         .catch(() => {
@@ -149,7 +157,7 @@ export function ProductAutocomplete({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
-        onFocus={() => { if (results.length > 0 || supplierResults.length > 0) setOpen(true) }}
+        onFocus={() => { if ((results.length > 0 || supplierResults.length > 0) && isElementVisible()) setOpen(true) }}
         placeholder={placeholder}
         required={required}
         autoComplete="off"
