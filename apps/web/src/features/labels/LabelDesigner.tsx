@@ -272,21 +272,6 @@ function labelBarcodeWidthPct(settings: LabelSettings, pos?: { x: number; y: num
   return Math.max(5, Math.min(100 - x, desired))
 }
 
-function alignedBarcodeLeftPct(settings: LabelSettings, pos?: { x: number; y: number }): number {
-  const x = Math.max(0, Math.min(95, Number(pos?.x ?? settings.pos_barcode?.x ?? 5) || 0))
-  const width = labelBarcodeWidthPct(settings, pos)
-  const freeSpace = Math.max(0, 100 - x - width)
-  if (settings.align_barcode === 'right') return x + freeSpace
-  if (settings.align_barcode === 'center') return x + freeSpace / 2
-  return x
-}
-
-function barcodeJustifyContent(align: LabelSettings['align_barcode']): 'flex-start' | 'center' | 'flex-end' {
-  if (align === 'right') return 'flex-end'
-  if (align === 'center') return 'center'
-  return 'flex-start'
-}
-
 function RenderedBarcode({ width, height, value, displayValue = true, fontSize = 7, previewScale = 5, align = 'center' }:
   { width: number; height: number; value: string; displayValue?: boolean; fontSize?: number; previewScale?: number; align?: string }) {
   const flexAlign = align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center'
@@ -499,22 +484,20 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
     if (settings.show_barcode) {
       const barcodePos = settings.pos_barcode || { x: 5, y: 42 }
       const barcodeWidth = innerW * labelBarcodeWidthPct(settings, barcodePos) / 100
-      const availableWidth = innerW * (100 - barcodePos.x) / 100
       items.push({
         key: 'pos_barcode',
         visible: settings.show_barcode,
         defaultPos: settings.pos_barcode,
         children: (
-          <div style={{ width: availableWidth, display: 'flex', justifyContent: barcodeJustifyContent(settings.align_barcode) }}>
-            <RenderedBarcode
-              width={barcodeWidth}
-              height={settings.barcode_height * (previewScale / 3.78)}
-              value={binLabel}
-              displayValue={settings.show_barcode_text}
-              fontSize={settings.font_size}
-              previewScale={previewScale}
-            />
-          </div>
+          <RenderedBarcode
+            width={barcodeWidth}
+            height={settings.barcode_height * (previewScale / 3.78)}
+            value={binLabel}
+            displayValue={settings.show_barcode_text}
+            fontSize={settings.font_size}
+            previewScale={previewScale}
+            align={settings.align_barcode}
+          />
         ),
       })
     }
@@ -548,22 +531,20 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
       const barcodeVal = product.barcode || '123456789012'
       const barcodePos = settings.pos_barcode || { x: 5, y: 42 }
       const barcodeWidth = innerW * labelBarcodeWidthPct(settings, barcodePos) / 100
-      const availableWidth = innerW * (100 - barcodePos.x) / 100
       items.push({
         key: 'pos_barcode',
         visible: settings.show_barcode,
         defaultPos: settings.pos_barcode,
         children: (
-          <div style={{ width: availableWidth, display: 'flex', justifyContent: barcodeJustifyContent(settings.align_barcode) }}>
-            <RenderedBarcode
-              width={barcodeWidth}
-              height={settings.barcode_height * (previewScale / 3.78)}
-              value={barcodeVal}
-              displayValue={settings.show_barcode_text}
-              fontSize={settings.font_size}
-              previewScale={previewScale}
-            />
-          </div>
+          <RenderedBarcode
+            width={barcodeWidth}
+            height={settings.barcode_height * (previewScale / 3.78)}
+            value={barcodeVal}
+            displayValue={settings.show_barcode_text}
+            fontSize={settings.font_size}
+            previewScale={previewScale}
+            align={settings.align_barcode}
+          />
         ),
       })
     }
@@ -716,7 +697,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
       if (settings.show_barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
-        const barcodeLeft = alignedBarcodeLeftPct(settings, pBc)
+        const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
         const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
@@ -729,7 +710,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
-        const barcodeLeft = alignedBarcodeLeftPct(settings, pBc)
+        const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`

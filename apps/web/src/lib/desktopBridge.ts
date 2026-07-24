@@ -704,6 +704,7 @@ export function desktopCheckoutToSale(
     completed_at: completedAt,
     is_fiscal: input.is_fiscal === true,
     fiscal_number: input.fiscal_number ?? null,
+    fiscal_qr_url: input.fiscal_qr_url ?? null,
     bank_auth_code: input.payments.find((payment) => payment.bank_auth_code)?.bank_auth_code ?? null,
     cash_amount: cashAmount,
     card_amount: cardAmount,

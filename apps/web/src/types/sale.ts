@@ -27,6 +27,7 @@ export interface Sale {
   completed_at: string
   is_fiscal: boolean
   fiscal_number: string | null
+  fiscal_qr_url?: string | null
   bank_auth_code: string | null
   cash_amount: number
   card_amount: number

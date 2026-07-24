@@ -42,8 +42,8 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
   const phone = shopPhone ?? cached('forsage_shop_phone')
   const seller = sellerName || sale.manager?.full_name || cached('forsage_seller_name')
   const sidePadding = receiptWidth === 80 ? 4 : 3
-  const qrLink = `${window.location.origin}/sales?search=${encodeURIComponent(sale.sale_number)}`
-  const qr = qrSvg(qrLink)
+  const fiscalQrUrl = typeof sale.fiscal_qr_url === 'string' ? sale.fiscal_qr_url.trim() : ''
+  const fiscalQr = fiscalQrUrl ? qrSvg(fiscalQrUrl) : ''
   return createPortal(
     <div className="receipt-print">
       <style>{`
@@ -156,17 +156,21 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
 
       <hr className="rp-thin" />
 
-      {/* QR — швидке відкриття чека */}
+      {/* QR фіскального чека */}
       {isOfflineReceipt ? (
         <div className="rp-center rp-small" style={{ marginTop: '2mm' }}>
           НЕФІСКАЛЬНИЙ ОФЛАЙН-ЧЕК<br />
           Буде передано в систему після відновлення зв’язку
         </div>
-      ) : (
+      ) : fiscalQr ? (
         <div className="rp-center" style={{ marginTop: '2mm' }}>
           <div style={{ display: 'inline-block', width: '22mm', height: '22mm' }}
-            dangerouslySetInnerHTML={{ __html: qr }} />
-          <div className="rp-small">Скануйте, щоб відкрити чек</div>
+            dangerouslySetInnerHTML={{ __html: fiscalQr }} />
+          <div className="rp-small">Фіскальний чек</div>
+        </div>
+      ) : (
+        <div className="rp-center rp-small" style={{ marginTop: '2mm' }}>
+          QR фіскального чека ще не отримано
         </div>
       )}
 
