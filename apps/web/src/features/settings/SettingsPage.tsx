@@ -482,6 +482,34 @@ export default function SettingsPage() {
               </p>
             </div>
 
+            {isDesktopRuntime() && (
+              <div className="pt-2 border-t border-gray-100">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <Printer size={14} className="inline mr-1" />
+                  Друк завис?
+                </label>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const reset = desktopBridge()?.print?.resetSpooler
+                    if (!reset) { toast.error('Доступно лише в десктоп-касі'); return }
+                    try {
+                      await reset()
+                      toast.success('Чергу друку очищено, службу перезапущено. Спробуйте надрукувати ще раз.')
+                    } catch {
+                      toast.error('Не вдалося скинути друк')
+                    }
+                  }}
+                  className="w-full rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-100 transition-colors"
+                >
+                  🖨 Скинути завислий друк
+                </button>
+                <p className="text-xs text-gray-400 mt-1">
+                  Очищає всі черги друку і перезапускає службу Windows — замість перезавантаження ПК.
+                </p>
+              </div>
+            )}
+
             {/* Вечірній звіт власнику */}
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">

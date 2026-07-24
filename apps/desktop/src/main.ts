@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
 import type { LocalBootstrapSnapshot, LocalProductUpsert, LocalSaleCheckoutInput, LocalSyncPullChanges, LocalSyncPushResult } from './db/localTypes'
@@ -34,6 +35,8 @@ interface DesktopPrintOptions {
   /** true — не задавати pageSize, друкувати на папері за налаштуванням драйвера
    * (для чекового рулону 58/80мм, де висота змінна). */
   useDriverPaper?: boolean
+  /** Явний принтер (для preflight-очистки саме його черги). */
+  deviceName?: string
 }
 
 function rendererIndexPath(): string {
@@ -108,6 +111,49 @@ function sanitizePageMm(value: unknown, fallback: number, min: number, max: numb
   return Math.max(min, Math.min(max, numeric))
 }
 
+// Виконати PowerShell-скрипт керування чергами друку. Тихо, з таймаутом,
+// без вікна. Помилки не кидаємо назовні — це «прибирання», яке не має валити друк.
+function runPrintPowerShell(script: string, timeoutMs = 15000): Promise<string> {
+  return new Promise((resolve) => {
+    const ps = spawn('powershell.exe', [
+      '-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script,
+    ], { windowsHide: true })
+    let out = ''
+    ps.stdout?.on('data', (c) => { out += String(c) })
+    ps.on('error', () => resolve(''))
+    const timer = setTimeout(() => { try { ps.kill() } catch { /* ignore */ } resolve(out) }, timeoutMs)
+    ps.on('close', () => { clearTimeout(timer); resolve(out) })
+  })
+}
+
+// Прибрати завислі завдання (у стані помилки/блокування/видалення), які інакше
+// «затикають» чергу і наступний друк стає за ними та висить. Безпечно: чіпаємо
+// лише те, що вже не друкується. Якщо name задано — лише цей принтер.
+async function cleanupStuckPrintJobs(printerName?: string): Promise<void> {
+  const filter = printerName
+    ? `Get-PrintJob -PrinterName '${printerName.replace(/'/g, "''")}' -ErrorAction SilentlyContinue`
+    : `Get-Printer -ErrorAction SilentlyContinue | Get-PrintJob -ErrorAction SilentlyContinue`
+  await runPrintPowerShell(
+    `${filter} | Where-Object { $_.JobStatus -match 'Error|Blocked|Deleting|Offline|PaperOut|Paused' } ` +
+    `| Remove-PrintJob -ErrorAction SilentlyContinue`,
+    10000,
+  )
+}
+
+// Повне скидання зависання друку без перезавантаження ПК: зупинити службу,
+// стерти всі завдання з усіх черг, знову запустити службу.
+async function resetPrintSpooler(): Promise<{ success: true }> {
+  await runPrintPowerShell(
+    'Stop-Service -Name Spooler -Force -ErrorAction SilentlyContinue; ' +
+    "Start-Sleep -Milliseconds 400; " +
+    "Remove-Item -Path \"$env:SystemRoot\\System32\\spool\\PRINTERS\\*\" -Force -ErrorAction SilentlyContinue; " +
+    'Start-Sleep -Milliseconds 300; ' +
+    'Start-Service -Name Spooler -ErrorAction SilentlyContinue',
+    30000,
+  )
+  return { success: true }
+}
+
 async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}): Promise<{ success: true }> {
   if (typeof html !== 'string' || html.trim().length === 0) {
     throw new Error('PRINT_HTML_EMPTY')
@@ -129,6 +175,10 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
       nodeIntegration: false,
     },
   })
+
+  // Preflight: приберемо завислі завдання, щоб новий друк не став у чергу за
+  // застряглим (типова причина «друк завис» після помилкового принтера).
+  await cleanupStuckPrintJobs(options.deviceName).catch(() => {})
 
   try {
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
@@ -186,7 +236,18 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
 
     const printOnce = (opts: Electron.WebContentsPrintOptions) =>
       new Promise<void>((resolve, reject) => {
+        // Якщо служба друку зависла, callback від Chromium може не прийти ніколи —
+        // тоді Promise висів би вічно і блокував наступні друки. Обмежуємо часом.
+        let done = false
+        const timer = setTimeout(() => {
+          if (done) return
+          done = true
+          reject(new Error('PRINT_TIMEOUT'))
+        }, 25000)
         printWindow.webContents.print(opts, (success, failureReason) => {
+          if (done) return
+          done = true
+          clearTimeout(timer)
           if (success || failureReason === 'cancelled') resolve()
           else reject(new Error(failureReason || 'PRINT_FAILED'))
         })
@@ -290,6 +351,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:print:html', (_event, html: string, options?: DesktopPrintOptions) =>
     printHtmlDocument(html, options),
   )
+  ipcMain.handle('desktop:print:reset', () => resetPrintSpooler())
   ipcMain.handle('desktop:print:list-printers', async () => {
     if (!mainWindow) return []
     const printers = await mainWindow.webContents.getPrintersAsync()

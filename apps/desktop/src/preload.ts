@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listPrinters: () => ipcRenderer.invoke('desktop:print:list-printers'),
     labelsTspl: (html: string, options: unknown) =>
       ipcRenderer.invoke('desktop:print:labels-tspl', html, options),
+    // Скинути завислий друк без перезавантаження ПК: чистить черги і
+    // перезапускає службу друку Windows.
+    resetSpooler: () => ipcRenderer.invoke('desktop:print:reset'),
   },
   fiscal: {
     pickFolder: (defaultPath?: string) => ipcRenderer.invoke('desktop:fiscal:pick-folder', defaultPath),
