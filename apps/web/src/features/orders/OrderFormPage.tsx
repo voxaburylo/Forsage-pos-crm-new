@@ -53,14 +53,99 @@ function vinMake(vin: string): string {
 
 interface Supplier { id: string; name: string }
 
+function normalizeSupplierName(value: string): string {
+  return value.trim().toLocaleLowerCase('uk-UA')
+}
+
 function uniqueSuppliers(list: Supplier[]): Supplier[] {
   const seen = new Set<string>()
   return list.filter((supplier) => {
-    const key = supplier.name.trim().toLocaleLowerCase('uk-UA')
+    const key = normalizeSupplierName(supplier.name)
     if (!key || seen.has(key)) return false
     seen.add(key)
     return true
   })
+}
+
+function SupplierQuickPicker({
+  suppliers,
+  value,
+  onChange,
+  onCreate,
+  placeholder = 'Постачальник',
+}: {
+  suppliers: Supplier[]
+  value: string
+  onChange: (supplierId: string) => void
+  onCreate: (name: string) => Promise<Supplier | null>
+  placeholder?: string
+}) {
+  const [text, setText] = useState('')
+  const [creating, setCreating] = useState(false)
+  const listId = useMemo(() => 'supplier-list-' + Math.random().toString(36).slice(2), [])
+
+  useEffect(() => {
+    if (!value) {
+      setText('')
+      return
+    }
+    const selected = suppliers.find((supplier) => supplier.id === value)
+    if (selected) setText(selected.name)
+  }, [value, suppliers])
+
+  function applyText(nextText: string) {
+    setText(nextText)
+    const exact = suppliers.find((supplier) => normalizeSupplierName(supplier.name) === normalizeSupplierName(nextText))
+    onChange(exact?.id ?? '')
+  }
+
+  async function handleCreate() {
+    const name = text.trim()
+    if (!name) {
+      toast.error('Вкажіть назву постачальника')
+      return
+    }
+    const exact = suppliers.find((supplier) => normalizeSupplierName(supplier.name) === normalizeSupplierName(name))
+    if (exact) {
+      onChange(exact.id)
+      setText(exact.name)
+      return
+    }
+    setCreating(true)
+    try {
+      const created = await onCreate(name)
+      if (created) {
+        onChange(created.id)
+        setText(created.name)
+      }
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <div className="flex gap-1.5">
+      <input
+        value={text}
+        list={listId}
+        onChange={(event) => applyText(event.target.value)}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+      />
+      <datalist id={listId}>
+        {suppliers.map((supplier) => <option key={supplier.id} value={supplier.name} />)}
+      </datalist>
+      <button
+        type="button"
+        onClick={handleCreate}
+        disabled={creating}
+        title="Додати постачальника"
+        className="shrink-0 rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-600 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700 disabled:opacity-60"
+      >
+        {creating ? '...' : <Plus size={16} />}
+      </button>
+    </div>
+  )
 }
 
 interface ItemRow {
@@ -313,8 +398,6 @@ export default function OrderFormPage() {
   const [items, setItems] = useState<ItemRow[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
-  const [supplierRowIndex, setSupplierRowIndex] = useState<number | null>(null)
-  const [supplierName, setSupplierName] = useState('')
 
   // Step 4: Summary & Checkout
   const [comment, setComment] = useState('')
@@ -635,23 +718,19 @@ export default function OrderFormPage() {
   }
 
 
-  // Новий постачальник просто з форми «під замовлення» (без prompt — Electron його не має).
-  function openNewSupplier() {
-    setSupplierName('')
-    setSupplierRowIndex(0)
-  }
-
-  async function submitSupplier() {
-    const name = supplierName.trim()
-    if (!name) { toast.error('Вкажіть назву постачальника'); return }
+  async function createSupplierFromName(name: string): Promise<Supplier | null> {
+    const cleanName = name.trim()
+    if (!cleanName) { toast.error('Вкажіть назву постачальника'); return null }
+    const existing = suppliers.find((supplier) => normalizeSupplierName(supplier.name) === normalizeSupplierName(cleanName))
+    if (existing) return existing
     try {
-      const { data } = await supplierApi.create({ name })
+      const { data } = await supplierApi.create({ name: cleanName })
       setSuppliers((current) => uniqueSuppliers([data, ...current]))
-      setBackorder((b) => ({ ...b, supplier_id: data.id }))
-      setSupplierRowIndex(null)
-      toast.success(`Постачальника «${data.name}» додано`)
+      toast.success('Постачальника «' + data.name + '» додано')
+      return data
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося додати постачальника')
+      return null
     }
   }
 
@@ -1323,14 +1402,13 @@ export default function OrderFormPage() {
                             </label>
                             <label className="lg:col-span-3">
                               <span className="mb-1 block text-[11px] font-medium text-gray-500">Постачальник</span>
-                              <select
+                              <SupplierQuickPicker
+                                suppliers={suppliers}
                                 value={row.supplier_id}
-                                onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              >
-                                <option value="">Не обрано</option>
-                                {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
-                              </select>
+                                onChange={(supplierId) => updateItem(idx, 'supplier_id', supplierId)}
+                                onCreate={createSupplierFromName}
+                                placeholder="Пошук або новий"
+                              />
                             </label>
                             <label className="lg:col-span-2">
                               <span className="mb-1 block text-[11px] font-medium text-gray-500">Очікуємо</span>
@@ -1666,16 +1744,13 @@ export default function OrderFormPage() {
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Постачальник *</label>
-              <div className="flex gap-1.5">
-                <select value={backorder.supplier_id}
-                  onChange={(e) => setBackorder((b) => ({ ...b, supplier_id: e.target.value }))}
-                  className="min-w-0 flex-1 bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400">
-                  <option value="">Оберіть…</option>
-                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-                <button type="button" onClick={openNewSupplier} title="Додати постачальника"
-                  className="rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-500 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700">+</button>
-              </div>
+              <SupplierQuickPicker
+                suppliers={suppliers}
+                value={backorder.supplier_id}
+                onChange={(supplierId) => setBackorder((b) => ({ ...b, supplier_id: supplierId }))}
+                onCreate={createSupplierFromName}
+                placeholder="Пошук або новий постачальник"
+              />
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Закупка, грн</label>
@@ -1696,21 +1771,6 @@ export default function OrderFormPage() {
           <div className="flex gap-2 justify-end pt-1">
             <Button type="button" variant="secondary" onClick={() => setBackorderOpen(false)}>Скасувати</Button>
             <Button type="button" onClick={submitBackorder}>Додати в замовлення</Button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={supplierRowIndex !== null} onClose={() => setSupplierRowIndex(null)} title="Новий постачальник" size="sm">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Назва постачальника</label>
-            <Input value={supplierName} autoFocus
-              onChange={(e) => setSupplierName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitSupplier() }} />
-          </div>
-          <div className="flex gap-2 justify-end">
-            <Button type="button" variant="secondary" onClick={() => setSupplierRowIndex(null)}>Скасувати</Button>
-            <Button type="button" onClick={submitSupplier}>Додати</Button>
           </div>
         </div>
       </Modal>
