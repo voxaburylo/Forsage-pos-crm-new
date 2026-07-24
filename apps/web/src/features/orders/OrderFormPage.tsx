@@ -2,10 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
-import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { productApi } from '@/features/products/productApi'
-import { adminApi } from '@/features/admin/adminApi'
-import { pricingApi } from '@/features/admin/pricingApi'
 import { kopecksToHryvnia } from '@/types/product'
 import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
@@ -310,8 +307,6 @@ export default function OrderFormPage() {
   // Step 3: Items
   const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [quickMarkupPercents, setQuickMarkupPercents] = useState<number[]>([20, 30, 40])
-  const [pricingMenuIndex, setPricingMenuIndex] = useState<number | null>(null)
 
   // ORD-36: шаблони частих позицій (localStorage)
   const TEMPLATES_KEY = 'order_item_templates'
@@ -382,14 +377,6 @@ export default function OrderFormPage() {
 
     supplierApi.list({ per_page: 200, is_active: 'true' })
       .then((r) => setSuppliers(uniqueSuppliers((r as any).data ?? [])))
-      .catch(() => {})
-    adminApi.getSettings()
-      .then((res) => {
-        const values = (res.data.quick_percents ?? [])
-          .map((pct) => Number(pct))
-          .filter((pct) => Number.isFinite(pct) && pct > 0)
-        if (values.length > 0) setQuickMarkupPercents(values.slice(0, 6))
-      })
       .catch(() => {})
   }, [])
 
@@ -580,23 +567,65 @@ export default function OrderFormPage() {
     }
   }
 
-  // ORD-29: підбір запчастин по VIN авто (бекенд vinSearch через product_fitment)
-  const [vinSuggestions, setVinSuggestions] = useState<Product[]>([])
-  const [vinLoading, setVinLoading] = useState(false)
-  const [vinPanelOpen, setVinPanelOpen] = useState(false)
-  async function pickByVin() {
-    const vin = selectedVehicle?.vin?.trim()
-    if (!vin) return
-    setVinPanelOpen(true)
-    setVinLoading(true)
-    try {
-      const r = await productApi.search(vin, 15)
-      setVinSuggestions(r.data ?? [])
-    } catch {
-      setVinSuggestions([])
-    } finally {
-      setVinLoading(false)
-    }
+  // Єдине поле пошуку товару в замовленні: шукаємо ЛИШЕ у власній базі.
+  const [search, setSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<Product[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+
+  useEffect(() => {
+    const q = search.trim()
+    if (q.length < 2) { setSearchResults([]); setSearchLoading(false); return }
+    setSearchLoading(true)
+    let cancelled = false
+    const t = window.setTimeout(async () => {
+      try {
+        const r = await productApi.search(q, 12)
+        if (!cancelled) setSearchResults(r.data ?? [])
+      } catch {
+        if (!cancelled) setSearchResults([])
+      } finally {
+        if (!cancelled) setSearchLoading(false)
+      }
+    }, 180)
+    return () => { cancelled = true; window.clearTimeout(t) }
+  }, [search])
+
+  // Форма «Товар під замовлення»: менеджер сам знайшов запчастину в постачальника
+  // і вносить її вручну. Зберігається в тому ж замовленні зі статусом «Під замовлення».
+  const emptyBackorder = { name: '', brand: '', sku: '', qty: '1', supplier_id: '', buy_price: '', sell_price: '', expected_date: '' }
+  const [backorderOpen, setBackorderOpen] = useState(false)
+  const [backorder, setBackorder] = useState({ ...emptyBackorder })
+
+  function openBackorder() {
+    setBackorder({ ...emptyBackorder, name: search.trim() })
+    setBackorderOpen(true)
+  }
+
+  function submitBackorder() {
+    const name = [backorder.brand.trim(), backorder.name.trim()].filter(Boolean).join(' ')
+    if (!name) { toast.error('Вкажіть назву товару'); return }
+    if (!backorder.supplier_id) { toast.error('Оберіть постачальника'); return }
+    const sell = parseFloat(backorder.sell_price.replace(',', '.'))
+    if (!Number.isFinite(sell) || sell <= 0) { toast.error('Вкажіть ціну продажу клієнту'); return }
+    const qtyNum = Math.max(1, parseInt(backorder.qty) || 1)
+    setItems((rows) => {
+      const base = rows.filter((r) => r.name.trim())
+      return [...base, {
+        ...EMPTY_ITEM,
+        name,
+        sku: backorder.sku.trim(),
+        qty: String(qtyNum),
+        sell_price: backorder.sell_price.replace(',', '.') || '0',
+        buy_price: backorder.buy_price.replace(',', '.') || '0',
+        supplier_id: backorder.supplier_id,
+        expected_date: backorder.expected_date || '',
+        product_id: null,
+      }]
+    })
+    setBackorderOpen(false)
+    setSearch('')
+    setSearchResults([])
+    toast.success(`Додано під замовлення: ${name}`)
   }
   function addProductAsItem(p: Product) {
     setItems((rows) => {
@@ -612,106 +641,36 @@ export default function OrderFormPage() {
         item_type: p.is_service ? 'service' : 'product',
       }]
     })
+    setSearch('')
+    setSearchResults([])
     toast.success(`Додано: ${p.name}`)
   }
 
   // Items manipulation
-  function addItem() { setItems((p) => [...p, { ...EMPTY_ITEM }]) }
   function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)) }
   function updateItem<K extends keyof ItemRow>(i: number, key: K, val: ItemRow[K]) {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
-  function moneyInputToKop(value: string | undefined): number {
-    const parsed = Number(String(value ?? '').replace(',', '.'))
-    return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0
-  }
 
-  function kopToInput(value: number): string {
-    const hryvnia = Math.max(0, Math.round(value)) / 100
-    return Number.isInteger(hryvnia) ? String(hryvnia) : hryvnia.toFixed(2)
-  }
-
-  function applyMarkupToItem(i: number, pct: number) {
-    const purchase = moneyInputToKop(items[i]?.buy_price)
-    if (purchase <= 0) { toast.error('Спочатку вкажіть закупку'); return }
-    const retail = Math.round(purchase * (1 + pct / 100))
-    updateItem(i, 'sell_price', kopToInput(retail))
-  }
-
-  async function applyGridToItem(i: number) {
-    const purchase = moneyInputToKop(items[i]?.buy_price)
-    if (purchase <= 0) { toast.error('Спочатку вкажіть закупку'); return }
-    try {
-      const result = await pricingApi.autoRetail(purchase)
-      const retail = result.data.retail_price ?? 0
-      if (retail <= 0) throw new Error('empty')
-      updateItem(i, 'sell_price', kopToInput(retail))
-      setPricingMenuIndex(null)
-      toast.success('Ціну розраховано по сітці')
-    } catch {
-      toast.error('Не вдалося розрахувати по сітці')
-    }
-  }
-
-
-  // Так само через модалку, а не prompt() — інакше на касі кнопка мовчить.
-  function createSupplierForItem(i: number) {
+  // Новий постачальник просто з форми «під замовлення» (без prompt — Electron його не має).
+  function openNewSupplier() {
     setSupplierName('')
-    setSupplierRowIndex(i)
+    setSupplierRowIndex(0)
   }
 
   async function submitSupplier() {
     const name = supplierName.trim()
     if (!name) { toast.error('Вкажіть назву постачальника'); return }
-    const rowIndex = supplierRowIndex
-    if (rowIndex === null) return
     try {
       const { data } = await supplierApi.create({ name })
       setSuppliers((current) => uniqueSuppliers([data, ...current]))
-      updateItem(rowIndex, 'supplier_id', data.id)
+      setBackorder((b) => ({ ...b, supplier_id: data.id }))
       setSupplierRowIndex(null)
       toast.success(`Постачальника «${data.name}» додано`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося додати постачальника')
     }
-  }
-
-  function applyMarkupAndClose(i: number, pct: number) {
-    applyMarkupToItem(i, pct)
-    setPricingMenuIndex(null)
-  }
-
-  function renderPricingMenu(i: number) {
-    if (pricingMenuIndex !== i) return null
-    return (
-      <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-xl border border-gray-200 bg-white p-2 shadow-2xl">
-        <button type="button" onClick={() => applyGridToItem(i)} className="flex w-full items-center justify-between rounded-lg bg-blue-50 px-3 py-2 text-left text-xs font-bold text-blue-700 hover:bg-blue-100">
-          <span>Розрахувати по сітці</span>
-          <span>→</span>
-        </button>
-        <div className="mt-2 grid grid-cols-3 gap-1.5">
-          {quickMarkupPercents.map((pct) => (
-            <button key={pct} type="button" onClick={() => applyMarkupAndClose(i, pct)} className="rounded-lg bg-yellow-50 px-2 py-2 text-xs font-extrabold text-yellow-700 hover:bg-yellow-100">
-              +{pct}%
-            </button>
-          ))}
-        </div>
-      </div>
-    )
-  }
-  // Підстановка товару з каталогу (ORD-1): SKU + ціна + залишок + тип (ORD-24)
-  function selectProduct(i: number, p: { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number; qty_available?: number; is_service?: boolean; purchase_price?: number }) {
-    setItems((rows) => rows.map((row, idx) => idx === i ? {
-      ...row,
-      name: p.name,
-      sku: p.sku ?? '',
-      sell_price: kopecksToHryvnia(p.retail_price),
-      buy_price: p.purchase_price ? kopecksToHryvnia(p.purchase_price) : '0',
-      product_id: p.id,
-      stock: p.qty_available ?? p.qty_on_hand ?? 0,
-      item_type: p.is_service ? 'service' : 'product',
-    } : row))
   }
 
   const totalKop = useMemo(() => {
@@ -1268,250 +1227,139 @@ export default function OrderFormPage() {
               <button type="button" onClick={saveAsTemplate} className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200">
                 💾 Зберегти як шаблон
               </button>
-              {/* ORD-29: підбір по VIN */}
-              {selectedVehicle?.vin && (
-                <button type="button" onClick={pickByVin} className="text-xs font-semibold px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100">
-                  🔍 Підібрати по VIN
-                </button>
-              )}
             </div>
 
-            {/* Панель підбору по VIN (ORD-29) */}
-            {vinPanelOpen && (
-              <Card className="border-blue-100">
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="font-bold text-gray-800 text-sm">
-                    Сумісні запчастини для {selectedVehicle?.brand} {selectedVehicle?.model}
-                    <span className="ml-1 font-mono text-xs text-gray-400">{selectedVehicle?.vin}</span>
-                  </h4>
-                  <button type="button" onClick={() => setVinPanelOpen(false)} className="text-gray-400 hover:text-gray-600 text-sm">✕</button>
-                </div>
-                {vinLoading ? (
-                  <p className="text-xs text-gray-400 py-2">Підбираємо...</p>
-                ) : vinSuggestions.length === 0 ? (
-                  <p className="text-xs text-gray-400 py-2">Сумісних товарів за VIN не знайдено. Перевірте, що для авто заповнено сумісність (fitment) у каталозі.</p>
-                ) : (
-                  <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
-                    {vinSuggestions.map((p) => {
-                      const stock = p.qty_available ?? p.qty_on_hand ?? 0
-                      return (
-                        <div key={p.id} className="flex items-center justify-between gap-2 py-2">
-                          <div className="min-w-0">
-                            <p className="text-xs font-semibold text-gray-800 truncate">{p.name}</p>
-                            <p className="text-[10px] text-gray-400 font-mono">{p.sku} · {stock > 0 ? `склад: ${stock}` : 'немає'}</p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-xs font-bold text-yellow-600">{formatMoney(p.retail_price)}</span>
-                            <Button size="sm" variant="secondary" icon={<Plus size={12} />} onClick={() => addProductAsItem(p)} />
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </Card>
-            )}
-
-            {/* Parts Table */}
-            <Card padding="none">
-              {/* Mobile: позиції картками (ORD-17) */}
-              <div className="md:hidden divide-y divide-gray-100">
-                {items.map((row, idx) => (
-                  <div key={idx} className="p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-gray-400">Позиція {idx + 1}</span>
-                      {items.length > 1 && (
-                        <button type="button" onClick={() => removeItem(idx)} className="text-red-500 hover:text-red-700 p-1" title="Видалити">
-                          <Trash2 size={14} />
-                        </button>
-                      )}
-                    </div>
-                    <ProductAutocomplete
-                      value={row.name}
-                      onChange={(val) => setItems((p) => p.map((r, i) => i === idx ? { ...r, name: val, product_id: null, stock: undefined } : r))}
-                      onSelect={(prod) => selectProduct(idx, prod)}
-                      placeholder="Назва або артикул..."
-                    />
-                    {row.product_id && row.stock !== undefined && (
-                      <span className={`block text-[10px] font-semibold ${row.stock > 0 ? 'text-green-600' : 'text-orange-500'}`}>
-                        {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
-                      </span>
-                    )}
-                    <div className="grid grid-cols-3 gap-2">
-                      <input value={row.sku} onChange={(e) => updateItem(idx, 'sku', e.target.value)} placeholder="Артикул"
-                        className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-mono" />
-                      <input value={row.qty} onChange={(e) => updateItem(idx, 'qty', e.target.value)} type="number" min="1" placeholder="К-сть"
-                        className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 text-center" />
-                      <input value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} type="number" min="0" step="any" placeholder="Ціна"
-                        className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold text-right" />
-                    </div>
-                    <div className="relative mt-1">
-                      <div className="flex rounded-lg border border-gray-200 bg-white focus-within:ring-1 focus-within:ring-yellow-400">
-                        <input value={row.buy_price || ''} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} type="number" min="0" step="any" placeholder="Закупка (грн)"
-                          className="min-w-0 flex-1 rounded-l-lg px-2.5 py-2 text-right text-xs font-semibold outline-none" />
-                        <button type="button" onClick={() => setPricingMenuIndex(pricingMenuIndex === idx ? null : idx)} className="w-10 rounded-r-lg border-l border-gray-200 bg-gray-50 text-sm font-bold text-gray-500 hover:bg-yellow-50 hover:text-yellow-700" title="Сітка / швидка націнка">⌄</button>
-                      </div>
-                      {renderPricingMenu(idx)}
-                    </div>
-                    <div className="flex gap-1.5">
-                      <select value={row.supplier_id} onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
-                        className="min-w-0 flex-1 bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400">
-                        <option value="">Наявність на складі</option>
-                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                      </select>
-                      <button type="button" onClick={() => createSupplierForItem(idx)} className="rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-500 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700" title="Додати постачальника">+</button>
-                    </div>
-                    {row.supplier_id && (
-                      <input type="date" value={row.expected_date || ''} onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
-                        className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                        title="Очікувана дата надходження" />
-                    )}
-                  </div>
-                ))}
+            {/* ─── Єдине поле пошуку товару ─── */}
+            <Card>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Пошук товару</label>
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Артикул, OEM, назва або штрихкод..."
+                  autoFocus
+                  className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                />
               </div>
 
-              <div className="overflow-x-auto hidden md:block">
-                <table className="w-full min-w-[1000px] table-fixed text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-gray-50 text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-100">
-                      <th className="px-3 py-3 w-[4%] text-center">#</th>
-                      <th className="px-3 py-3 w-[28%]">Назва запчастини</th>
-                      <th className="px-3 py-3 w-[15%]">Артикул / SKU</th>
-                      <th className="px-3 py-3 w-[8%]">К-сть</th>
-                      <th className="px-3 py-3 w-[12%]">Закупка (грн)</th>
-                      <th className="px-3 py-3 w-[12%]">Роздріб (грн)</th>
-                      <th className="px-3 py-3 w-[17%]">Постачальник</th>
-                      <th className="px-3 py-3 w-[4%] text-center"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {items.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50/20 align-top">
-                        <td className="px-3 py-3 text-center text-gray-400 font-mono text-xs">{idx + 1}</td>
-                        <td className="px-3 py-3">
-                          <ProductAutocomplete
-                            value={row.name}
-                            onChange={(val) => setItems((p) => p.map((r, i) => i === idx ? { ...r, name: val, product_id: null, stock: undefined } : r))}
-                            onSelect={(p) => selectProduct(idx, p)}
-                            placeholder="Введіть назву або артикул..."
-                            className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                            required
-                          />
-                          {row.product_id && row.stock !== undefined && (
-                            <span className={`mt-1 inline-block text-[10px] font-semibold ${row.stock > 0 ? 'text-green-600' : 'text-orange-500'}`}>
-                              {row.stock > 0 ? `✓ На складі: ${row.stock}` : '⚠ Немає на складі — під замовлення'}
+              {searchLoading && (
+                <p className="mt-3 text-xs text-gray-400">Шукаю у базі…</p>
+              )}
+
+              {/* Знайдені товари зі складу */}
+              {!searchLoading && searchResults.length > 0 && (
+                <div className="mt-3 divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden">
+                  {searchResults.map((p) => {
+                    const stock = p.qty_available ?? p.qty_on_hand ?? 0
+                    return (
+                      <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-gray-50">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-gray-800 truncate">{p.name}</p>
+                          <p className="text-[11px] text-gray-400 font-mono truncate">
+                            {p.sku}
+                            {p.storage_bin && <> · 📍 {p.storage_bin}</>}
+                            {' · '}
+                            <span className={stock > 0 ? 'text-green-600' : 'text-orange-500'}>
+                              {stock > 0 ? `на складі: ${stock}` : 'немає на складі'}
                             </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-3">
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-sm font-bold text-yellow-600">{formatMoney(p.retail_price)}</span>
+                          <Button size="sm" onClick={() => addProductAsItem(p)} icon={<Plus size={14} />}>Додати</Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Не знайдено → пропонуємо додати під замовлення */}
+              {!searchLoading && search.trim().length >= 2 && searchResults.length === 0 && (
+                <button
+                  type="button"
+                  onClick={openBackorder}
+                  className="mt-3 w-full flex flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-yellow-300 bg-yellow-50 px-4 py-6 text-center hover:bg-yellow-100 transition-colors"
+                >
+                  <span className="text-2xl">➕</span>
+                  <span className="text-sm font-bold text-yellow-800">Додати товар під замовлення</span>
+                  <span className="text-xs text-yellow-700">У базі не знайдено. Знайдіть у постачальника та внесіть вручну.</span>
+                </button>
+              )}
+            </Card>
+
+            {/* ─── Додані позиції замовлення ─── */}
+            <Card padding="none">
+              <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                <h4 className="font-bold text-gray-800 text-sm">Позиції замовлення</h4>
+                <span className="text-xs text-gray-400">{items.filter((r) => r.name.trim()).length} шт</span>
+              </div>
+              {items.filter((r) => r.name.trim()).length === 0 ? (
+                <p className="px-4 py-8 text-center text-sm text-gray-400">
+                  Почніть із пошуку товару вгорі — знайдений додайте кнопкою, а якщо його немає в базі, оформіть під замовлення.
+                </p>
+              ) : (
+                <div className="divide-y divide-gray-100">
+                  {items.map((row, idx) => {
+                    if (!row.name.trim()) return null
+                    const isBackorder = !!row.supplier_id || !row.product_id
+                    const supplierName = suppliers.find((s) => s.id === row.supplier_id)?.name
+                    return (
+                      <div key={idx} className="flex items-center gap-3 px-4 py-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-semibold text-gray-800">{row.name}</span>
+                            {isBackorder ? (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">⏳ Під замовлення</span>
+                            ) : (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-green-100 text-green-700">✓ На складі</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-400 font-mono mt-0.5">
+                            {row.sku && <>{row.sku} · </>}
+                            {formatMoney(Math.round(parseFloat(row.sell_price || '0') * 100))}
+                            {isBackorder && supplierName && <> · {supplierName}</>}
+                            {isBackorder && row.expected_date && <> · до {row.expected_date}</>}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="text-[10px] text-gray-400">×</span>
                           <input
-                            value={row.sku}
-                            onChange={(e) => updateItem(idx, 'sku', e.target.value)}
-                            placeholder="Артикул..."
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-mono"
-                          />
-                        </td>
-                        <td className="px-3 py-3">
-                          <input
-                            value={row.qty}
-                            onChange={(e) => updateItem(idx, 'qty', e.target.value)}
                             type="number"
                             min="1"
-                            required
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
+                            value={row.qty}
+                            onChange={(e) => updateItem(idx, 'qty', e.target.value)}
+                            className="w-14 bg-white border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-yellow-400"
                           />
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="relative">
-                            <div className="flex rounded-lg border border-gray-200 bg-white focus-within:ring-1 focus-within:ring-yellow-400">
-                              <input
-                                value={row.buy_price || ''}
-                                onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
-                                type="number"
-                                min="0"
-                                step="any"
-                                placeholder="Закупка"
-                                className="min-w-0 flex-1 rounded-l-lg px-2.5 py-1.5 text-right text-xs font-semibold outline-none"
-                              />
-                              <button type="button" onClick={() => setPricingMenuIndex(pricingMenuIndex === idx ? null : idx)} className="w-8 rounded-r-lg border-l border-gray-200 bg-gray-50 text-sm font-bold text-gray-500 hover:bg-yellow-50 hover:text-yellow-700" title="Сітка / швидка націнка">⌄</button>
-                            </div>
-                            {renderPricingMenu(idx)}
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <input
-                            value={row.sell_price}
-                            onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
-                            type="number"
-                            min="0"
-                            step="any"
-                            required
-                            className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 font-semibold"
-                          />
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="flex gap-1.5">
-                            <select
-                              value={row.supplier_id}
-                              onChange={(e) => updateItem(idx, 'supplier_id', e.target.value)}
-                              className="min-w-0 flex-1 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                            >
-                              <option value="">Наявність на складі</option>
-                              {suppliers.map((s) => (
-                                <option key={s.id} value={s.id}>{s.name}</option>
-                              ))}
-                            </select>
-                            <button type="button" onClick={() => createSupplierForItem(idx)} className="rounded-lg border border-gray-200 bg-white px-2 text-sm font-bold text-gray-500 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700" title="Додати постачальника">+</button>
-                          </div>
-                    {row.supplier_id && (
-                            <div className="mt-1.5">
-                              <input
-                                type="date"
-                                value={row.expected_date || ''}
-                                onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
-                                className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                                title="Очікувана дата надходження"
-                              />
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          {items.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeItem(idx)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition-colors"
-                              title="Видалити"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeItem(idx)}
+                          className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition-colors shrink-0"
+                          title="Видалити"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
 
-              {/* Table Action Footer */}
-              <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50">
-                <Button variant="secondary" size="sm" onClick={addItem} icon={<Plus size={12} />}>
-                  Додати рядок
-                </Button>
-                
-                {!isDesktop && (
-                <div className="flex gap-2">
+              {!isDesktop && (
+                <div className="px-4 py-3 border-t border-gray-100 flex gap-2 justify-end bg-gray-50/50">
                   <Button variant="secondary" onClick={() => setStep(selectedCustomer ? 2 : 1)}>Назад</Button>
                   <Button disabled={!hasValidItems} onClick={() => setStep(4)}>Далі</Button>
                 </div>
-                )}
-              </div>
+              )}
               {!isDesktop && !hasValidItems && (
                 <p className="px-4 pb-3 text-xs text-orange-600">
-                  Додайте назву хоча б однієї позиції, щоб перейти далі.
+                  Додайте хоча б одну позицію, щоб перейти далі.
                 </p>
               )}
             </Card>
+
           </div>
         )}
 
@@ -1713,6 +1561,68 @@ export default function OrderFormPage() {
           </div>
         </aside>
       )}
+
+      <Modal open={backorderOpen} onClose={() => setBackorderOpen(false)} title="Товар під замовлення" size="md">
+        <div className="space-y-3">
+          <p className="text-xs text-gray-500">
+            Знайдіть запчастину на сайті постачальника і внесіть дані вручну. Позиція додасться в замовлення зі статусом «Під замовлення».
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Назва товару *</label>
+              <Input value={backorder.name} autoFocus
+                onChange={(e) => setBackorder((b) => ({ ...b, name: e.target.value }))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Бренд</label>
+              <Input value={backorder.brand} placeholder="напр. BOSCH"
+                onChange={(e) => setBackorder((b) => ({ ...b, brand: e.target.value }))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Артикул</label>
+              <Input value={backorder.sku}
+                onChange={(e) => setBackorder((b) => ({ ...b, sku: e.target.value }))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Кількість</label>
+              <Input type="number" min="1" value={backorder.qty}
+                onChange={(e) => setBackorder((b) => ({ ...b, qty: e.target.value }))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Постачальник *</label>
+              <div className="flex gap-1.5">
+                <select value={backorder.supplier_id}
+                  onChange={(e) => setBackorder((b) => ({ ...b, supplier_id: e.target.value }))}
+                  className="min-w-0 flex-1 bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yellow-400">
+                  <option value="">Оберіть…</option>
+                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <button type="button" onClick={openNewSupplier} title="Додати постачальника"
+                  className="rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-500 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700">+</button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Закупка, грн</label>
+              <Input type="number" min="0" step="any" value={backorder.buy_price}
+                onChange={(e) => setBackorder((b) => ({ ...b, buy_price: e.target.value }))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Ціна продажу клієнту, грн *</label>
+              <Input type="number" min="0" step="any" value={backorder.sell_price}
+                onChange={(e) => setBackorder((b) => ({ ...b, sell_price: e.target.value }))} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Очікувана дата надходження</label>
+              <Input type="date" value={backorder.expected_date}
+                onChange={(e) => setBackorder((b) => ({ ...b, expected_date: e.target.value }))} />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <Button type="button" variant="secondary" onClick={() => setBackorderOpen(false)}>Скасувати</Button>
+            <Button type="button" onClick={submitBackorder}>Додати в замовлення</Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={supplierRowIndex !== null} onClose={() => setSupplierRowIndex(null)} title="Новий постачальник" size="sm">
         <div className="space-y-4">
