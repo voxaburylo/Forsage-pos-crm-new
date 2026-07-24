@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../src/db/localTypes'
 import { LocalOrderRepository } from '../src/repositories/orderRepository'
+import { LocalPosRepository } from '../src/repositories/posRepository'
 
 describe('LocalOrderRepository.completeOrder', () => {
   let root = ''
@@ -137,6 +138,43 @@ describe('LocalOrderRepository.completeOrder', () => {
       WHERE source_type = 'order' AND source_id = ?
     `).get(orderId)).toEqual({ count: 1 })
     expect(db.prepare('SELECT COUNT(*) AS count FROM cash_operations').get()).toEqual({ count: 1 })
+  })
+
+  it('marks a fully returned issued order item and restores stock', () => {
+    const productId = insertProduct({ qty: 3, price: 500 })
+    const { orderId } = createPaidOrder({
+      productId,
+      qty: 1,
+      unitPrice: 500,
+      itemStatus: 'ready',
+    })
+    const completed = repository.completeOrder(orderId, {
+      tenant_id: DEFAULT_TENANT_ID,
+      user_id: cashierId,
+      shift_id: shiftId,
+    })
+    const pos = new LocalPosRepository(db)
+    const sale = pos.getSaleForReturn(completed.data.sale_id, DEFAULT_TENANT_ID)
+
+    pos.createReturn({
+      tenant_id: DEFAULT_TENANT_ID,
+      sale_id: completed.data.sale_id,
+      approved_by: cashierId,
+      shift_id: shiftId,
+      reason: 'other',
+      reason_note: 'Exchange test',
+      refund_method: 'terminal',
+      stock_action: 'return_to_stock',
+      items: [{
+        sale_item_id: sale.items[0].id,
+        product_id: productId,
+        quantity: 1,
+        condition: 'good',
+      }],
+    })
+
+    expect(repository.getOrder(orderId, DEFAULT_TENANT_ID).items[0].item_status).toBe('returned')
+    expect(db.prepare('SELECT qty_on_hand FROM products WHERE id = ?').get(productId)).toEqual({ qty_on_hand: 3 })
   })
 
   it('repairs a completed order without sale_id and keeps the repair idempotent', () => {

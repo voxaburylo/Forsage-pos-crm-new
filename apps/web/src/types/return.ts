@@ -88,6 +88,9 @@ export interface SaleItemForReturn {
   total: number
   already_returned_qty: number
   available_qty: number
+  refundable_total: number
+  already_refunded_kopecks: number
+  available_refund: number
 }
 
 /** Дані з GET /api/v1/returns/sale/:id/items */

@@ -2126,6 +2126,36 @@ export class LocalPosRepository {
         }
       }
 
+      // Якщо чек створено під час видачі замовлення, відразу показуємо у його
+      // картці лише ті позиції, які вже повернуті повністю.
+      this.db.prepare(`
+        UPDATE customer_order_items
+        SET item_status = 'returned', dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ?
+          AND deleted_at IS NULL
+          AND order_id = (
+            SELECT id FROM customer_orders
+            WHERE sale_id = ? AND tenant_id = ? AND deleted_at IS NULL
+            LIMIT 1
+          )
+          AND product_id IN (
+            SELECT si.product_id
+            FROM sale_items si
+            LEFT JOIN (
+              SELECT sale_item_id, SUM(quantity) AS qty
+              FROM customer_return_items
+              WHERE tenant_id = ?
+              GROUP BY sale_item_id
+            ) returned ON returned.sale_item_id = si.id
+            WHERE si.sale_id = ? AND si.tenant_id = ? AND si.deleted_at IS NULL
+            GROUP BY si.product_id
+            HAVING COALESCE(SUM(returned.qty), 0) >= SUM(si.qty)
+          )
+      `).run(
+        timestamp, timestamp, tenantId, ready.sale.id, tenantId,
+        tenantId, ready.sale.id, tenantId,
+      )
+
       if (input.refund_method === 'cash') {
         this.addCashOperation(
           tenantId,

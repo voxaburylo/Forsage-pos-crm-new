@@ -37,6 +37,7 @@ export interface CustomerOrder {
   total_amount: number
   total_paid: number
   discount_amount: number
+  sale_id: string | null
   pickup_deadline_at: string | null
   pickup_cell: string | null
   comment: string | null

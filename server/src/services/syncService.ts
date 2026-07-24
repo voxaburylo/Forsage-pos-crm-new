@@ -2168,6 +2168,51 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       )
     }
 
+    const returnedOrderItems = await client.query(
+      `WITH returned_by_item AS (
+         SELECT ri.sale_item_id, SUM(ri.quantity) AS qty
+         FROM return_items ri
+         JOIN returns r ON r.id = ri.return_id
+         WHERE r.sale_id = $1 AND r.tenant_id = $2
+         GROUP BY ri.sale_item_id
+       ), fully_returned_products AS (
+         SELECT si.product_id
+         FROM sale_items si
+         LEFT JOIN returned_by_item returned ON returned.sale_item_id = si.id
+         WHERE si.sale_id = $1 AND si.tenant_id = $2
+         GROUP BY si.product_id
+         HAVING COALESCE(SUM(returned.qty), 0) >= SUM(si.qty)
+       )
+       UPDATE customer_order_items coi
+       SET item_status = 'returned', updated_at = $3
+       WHERE coi.order_id = (
+         SELECT id FROM customer_orders
+         WHERE sale_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         LIMIT 1
+       )
+         AND coi.product_id IN (SELECT product_id FROM fully_returned_products)
+         AND coi.item_status <> 'returned'
+       RETURNING coi.id, coi.product_id`,
+      [saleId, tenantId, createdAt],
+    )
+    if (returnedOrderItems.rowCount) {
+      const orderResult = await client.query(
+        'SELECT id FROM customer_orders WHERE sale_id = $1 AND tenant_id = $2 LIMIT 1',
+        [saleId, tenantId],
+      )
+      const orderId = orderResult.rows[0]?.id
+      if (orderId) {
+        await client.query(
+          `INSERT INTO order_activity_log (order_id, user_id, action, details)
+           VALUES ($1,$2,'items_returned',$3::jsonb)`,
+          [orderId, userId, JSON.stringify({
+            return_id: returnId,
+            product_ids: returnedOrderItems.rows.map((row) => row.product_id),
+          })],
+        )
+      }
+    }
+
     const remainingResult = await client.query(
       `SELECT COALESCE(SUM(GREATEST(si.qty - COALESCE(returned.qty, 0), 0)), 0) AS remaining
        FROM sale_items si

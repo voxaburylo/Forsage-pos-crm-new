@@ -8,7 +8,6 @@ import { logger } from '../lib/logger.js'
 import { notifyStatusUpdate } from '../services/telegramBot.js'
 import { calculateAndRecordCommission } from '../services/commissionService.js'
 import { notifyWaitlistCustomers } from './waitlist.js'
-import { createSupplierPOsForOrder } from '../services/supplierService.js'
 import { logAction } from '../services/auditService.js'
 import { addOrderPayment } from '../services/orderPaymentService.js'
 import { markOrderItemsArrived } from '../services/orderBulkArrivalService.js'
@@ -313,13 +312,6 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
         }
         throw new AppError('DB_ERROR', `Failed to reserve order items: ${reserveErr.message}`, 500)
       }
-    }
-
-    // Автоматично створюємо замовлення постачальникам, якщо замовлення активне
-    if (order.status === 'new' || order.status === 'in_progress') {
-      await createSupplierPOsForOrder(order.id, req.user!.tenant_id).catch((err) => {
-        logger.error({ error: err.message, orderId: order.id }, 'Failed to auto-create supplier POs on order create')
-      })
     }
 
     res.status(201).json({ data: order })
@@ -647,11 +639,6 @@ router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req
       user_id:  req.user!.id,
       action:   'created_from_draft',
       details:  { parent_draft_id: draftId },
-    })
-
-    // Автоматично створюємо замовлення постачальникам
-    await createSupplierPOsForOrder(newOrder.id, req.user!.tenant_id).catch((err) => {
-      logger.error({ error: err.message, orderId: newOrder.id }, 'Failed to auto-create supplier POs on order convert')
     })
 
     await auditOrder(req, 'order_created_from_draft', newOrder.id, draftOrder, {
@@ -1057,14 +1044,6 @@ router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req
 
     // Сповіщення в Telegram при зміні статусу менеджером
     notifyStatusUpdate(String(req.params.id), parsed.data.status, req.user!.tenant_id).catch(() => {})
-
-    // Автоматично створюємо замовлення постачальникам, якщо замовлення перейшло з чернетки
-    const isPromotedFromLead = oldOrder?.status === 'lead' && ['new', 'in_progress', 'ordered'].includes(parsed.data.status)
-    if (isPromotedFromLead) {
-      await createSupplierPOsForOrder(String(req.params.id), req.user!.tenant_id).catch((err) => {
-        logger.error({ error: err.message, orderId: req.params.id }, 'Failed to auto-create supplier POs on status change')
-      })
-    }
 
     res.json({ data: order })
   } catch (err) { next(err) }

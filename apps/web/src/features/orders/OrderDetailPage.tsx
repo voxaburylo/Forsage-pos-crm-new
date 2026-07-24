@@ -12,9 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
 import { productApi } from '@/features/products/productApi'
 import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
-import { ProductAutocomplete } from '@/components/ProductAutocomplete'
 import { customerApi } from '@/features/customers/customerApi'
-import { supplierApi } from '@/features/suppliers/supplierApi'
 import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
@@ -46,6 +44,7 @@ const ACTION_LABELS: Record<string, string> = {
   'item_status:handed': 'Видано клієнту',
   'item_status:canceled': 'Скасовано позицію',
   'item_status:returned': 'Повернуто позицію',
+  items_returned: 'Повернуто товар за чеком',
   status_changed: 'Змінено статус',
   payment_added: 'Додано платіж',
   completed: 'Завершено',
@@ -61,21 +60,6 @@ const ORDER_DETAIL_READ_TIMEOUT_MS = 10_000
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
-}
-
-// Редагована копія позиції для inline-редагування прямо на картці
-interface DraftEditItem {
-  id?: string
-  name: string
-  sku: string
-  qty: string
-  sell_price: string
-  supplier_id: string | null
-  product_id: string | null
-  item_type: 'product' | 'service'
-  buy_price: string
-  expected_date: string | null
-  item_status: ItemStatus
 }
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
@@ -111,6 +95,12 @@ const ITEM_STATUS_COLOR: Record<ItemStatus, BadgeColor> = {
   returned: 'red',
 }
 
+function itemStatusLabel(item: CustomerOrder['items'][number]): string {
+  if (item.item_status === 'pending' && item.source_type === 'supplier') return 'Під замовлення'
+  if (item.item_status === 'pending' && item.source_type === 'warehouse') return 'Зарезервовано'
+  return ITEM_STATUS_LABEL[item.item_status]
+}
+
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: string; icon: string }>> = {
   pending:  [{ status: 'ordered', label: 'Замовити постачальнику', icon: '📥' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
   ordered:  [{ status: 'arrived', label: 'Приїхало', icon: '📦' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
@@ -136,90 +126,8 @@ export default function OrderDetailPage() {
   const [payments, setPayments] = useState<Payment[]>([])
   const [actionsOpen, setActionsOpen] = useState(false)
 
-  // Inline-редагування позицій та авто прямо на картці (без переходу на форму)
-  const [editItems, setEditItems] = useState(false)
-  const [draftItems, setDraftItems] = useState<DraftEditItem[]>([])
-  const [draftVehicle, setDraftVehicle] = useState({ make: '', model: '', year: '', vin: '' })
-  const [draftComment, setDraftComment] = useState('')
-  const [savingItems, setSavingItems] = useState(false)
-  const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
   const [quickCustomer, setQuickCustomer] = useState<Customer | null>(null)
   const [customerEditorOpen, setCustomerEditorOpen] = useState(false)
-
-  function startEdit() {
-    if (!order) return
-    setDraftItems(order.items.map((i) => ({
-      id: i.id,
-      name: i.name,
-      sku: i.sku ?? '',
-      qty: String(i.qty),
-      sell_price: (i.sell_price / 100).toFixed(2),
-      supplier_id: i.supplier_id,
-      product_id: i.product_id,
-      item_type: i.item_type,
-      buy_price: (i.buy_price / 100).toFixed(2),
-      expected_date: i.expected_date,
-      item_status: i.item_status,
-    })))
-    const v = order.vehicle_info
-    setDraftVehicle({ make: v?.make ?? '', model: v?.model ?? '', year: v?.year ? String(v.year) : '', vin: v?.vin ?? '' })
-    setDraftComment(order.comment ?? '')
-    setEditItems(true)
-  }
-
-  function updateDraftItem(idx: number, patch: Partial<DraftEditItem>) {
-    setDraftItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)))
-  }
-  function addDraftItem() {
-    setDraftItems((prev) => [...prev, { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: null, product_id: null, item_type: 'product', buy_price: '0', expected_date: null, item_status: 'pending' }])
-  }
-  function removeDraftItem(idx: number) {
-    setDraftItems((prev) => prev.filter((_, i) => i !== idx))
-  }
-
-  async function saveEdit() {
-    if (!id) return
-    const valid = draftItems.filter((i) => i.name.trim())
-    if (valid.length === 0) { toast.error('Додайте хоча б одну позицію з назвою'); return }
-    setSavingItems(true)
-    try {
-      const vehicle_info = (draftVehicle.make || draftVehicle.model || draftVehicle.vin)
-        ? {
-            make: draftVehicle.make || undefined,
-            model: draftVehicle.model || undefined,
-            year: draftVehicle.year ? parseInt(draftVehicle.year) : undefined,
-            vin: draftVehicle.vin || undefined,
-          }
-        : null
-      await orderApi.update(id, {
-        comment: draftComment.trim() || null,
-        vehicle_info,
-        items: valid.map((i) => ({
-          id: i.id,
-          name: i.name.trim(),
-          sku: i.sku.trim() || null,
-          product_id: i.product_id,
-          supplier_id: i.supplier_id,
-          source_type: i.supplier_id ? 'supplier' : 'warehouse',
-          item_type: i.item_type,
-          buy_price: Math.round(parseFloat(i.buy_price || '0') * 100),
-          sell_price: Math.round(parseFloat(i.sell_price || '0') * 100),
-          qty: parseFloat(i.qty) || 1,
-          expected_date: i.expected_date,
-          item_status: i.item_status,
-        })),
-      }, { silent: true })
-      toast.success('Замовлення оновлено')
-      setEditItems(false)
-      load()
-    } catch (e) {
-      toast.error(getErrorMessage(e, 'Помилка збереження'))
-    } finally {
-      setSavingItems(false)
-    }
-  }
-
-  const draftTotal = draftItems.reduce((s, i) => s + (parseFloat(i.sell_price || '0') * (parseFloat(i.qty) || 0)), 0)
 
   useEffect(() => {
     if (!actionsOpen) return
@@ -243,20 +151,6 @@ export default function OrderDetailPage() {
   }, [id, navigate])
 
   useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    supplierApi.list({ per_page: 200 })
-      .then((result) => {
-        const seen = new Set<string>()
-        setSuppliers((result.data ?? []).filter((supplier) => {
-          const key = supplier.name.trim().toLocaleLowerCase('uk-UA')
-          if (!key || seen.has(key)) return false
-          seen.add(key)
-          return true
-        }))
-      })
-      .catch(() => {})
-  }, [])
 
   async function openCustomerEditor() {
     if (!order?.customer) return
@@ -406,32 +300,34 @@ export default function OrderDetailPage() {
               <span className="hidden sm:inline">Редагувати КП</span>
             </Button>
           )}
-          {canEdit && !editItems && (
-            <Button variant="secondary" icon={<Pencil size={15} />} onClick={startEdit}>
+          {canEdit && (
+            <Button variant="secondary" icon={<Pencil size={15} />} onClick={() => navigate(`/orders/${id}/edit`)}>
               <span className="hidden sm:inline">Редагувати</span>
             </Button>
           )}
-          {editItems && (
+          {order.status === 'completed' && order.sale_id && (
             <>
-              <Button variant="secondary" onClick={() => setEditItems(false)}>Скасувати</Button>
-              <Button className="!bg-green-600 hover:!bg-green-700 text-white" loading={savingItems} onClick={saveEdit}>
-                Зберегти
+              <Button variant="secondary" onClick={() => navigate(`/returns?saleId=${order.sale_id}&orderId=${id}`)}>
+                ↩️ <span className="hidden sm:inline">Повернути</span>
+              </Button>
+              <Button variant="secondary" onClick={() => navigate(`/returns?saleId=${order.sale_id}&exchangeOrderId=${id}`)}>
+                🔁 <span className="hidden sm:inline">Обміняти</span>
               </Button>
             </>
           )}
-          {canComplete && !editItems && (
+          {canComplete && (
             <Button onClick={openOrderPaymentInPos} className="bg-green-600 hover:bg-green-700 text-white">
               {remaining > 0 ? <>💰<span className="hidden sm:inline">&nbsp;Оплата / видача в касі</span></> : <>📦<span className="hidden sm:inline">&nbsp;Видати товар</span></>}
             </Button>
           )}
-          {hasPendingWarehouseItems && !editItems && !['completed', 'canceled'].includes(order.status) && (
+          {hasPendingWarehouseItems && !['completed', 'canceled'].includes(order.status) && (
             <Button className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold" onClick={() => navigate(`/inventory/picking?orderId=${id}`)}>
               📦<span className="hidden sm:inline">&nbsp;Зібрати</span>
             </Button>
           )}
 
           {/* Випадаюче меню для другорядних дій */}
-          <div className={`relative ${editItems ? 'hidden' : ''}`}>
+          <div className="relative">
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setActionsOpen(!actionsOpen); }}
@@ -442,14 +338,6 @@ export default function OrderDetailPage() {
 
             {actionsOpen && (
               <div className="absolute right-0 mt-1.5 w-52 bg-white border border-gray-150 rounded-xl shadow-lg py-1.5 z-30 focus:outline-none animate-in fade-in slide-in-from-top-1 duration-100">
-                {canEdit && (
-                  <button
-                    onClick={() => navigate(`/orders/${id}/edit`)}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
-                  >
-                    📝 Повна форма
-                  </button>
-                )}
                 <button
                   onClick={() => startRepeatOrder(order, navigate)}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
@@ -577,19 +465,8 @@ export default function OrderDetailPage() {
                   <div className="text-gray-400">Клієнт не вказаний</div>
                 )}
 
-                {/* Авто: у режимі редагування — поля, інакше рядок */}
-                {editItems ? (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 max-w-xl">
-                    <input value={draftVehicle.make} onChange={(e) => setDraftVehicle((v) => ({ ...v, make: e.target.value }))} placeholder="Марка"
-                      className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent" />
-                    <input value={draftVehicle.model} onChange={(e) => setDraftVehicle((v) => ({ ...v, model: e.target.value }))} placeholder="Модель"
-                      className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent" />
-                    <input value={draftVehicle.year} onChange={(e) => setDraftVehicle((v) => ({ ...v, year: e.target.value }))} placeholder="Рік" inputMode="numeric"
-                      className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent" />
-                    <input value={draftVehicle.vin} onChange={(e) => setDraftVehicle((v) => ({ ...v, vin: e.target.value.toUpperCase() }))} placeholder="VIN"
-                      className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent" />
-                  </div>
-                ) : order.vehicle_info && (
+                {/* Автомобіль замовлення */}
+                {order.vehicle_info && (
                   <div className="space-y-1">
                     <div>🚗 {[order.vehicle_info.make, order.vehicle_info.model, order.vehicle_info.year].filter(Boolean).join(' ') || 'Автомобіль'}</div>
                     {order.vehicle_info.vin && (
@@ -603,11 +480,7 @@ export default function OrderDetailPage() {
                   </div>
                 )}
 
-                {editItems ? (
-                  <textarea value={draftComment} onChange={(e) => setDraftComment(e.target.value)} rows={2}
-                    placeholder="Нотатка до замовлення"
-                    className="mt-2 w-full max-w-2xl rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
-                ) : order.comment ? (
+                {order.comment ? (
                   <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 italic text-amber-900">📝 {order.comment}</div>
                 ) : null}
                 {order.pickup_deadline_at && (
@@ -643,64 +516,9 @@ export default function OrderDetailPage() {
         <Card>
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-800">Позиції замовлення</h3>
-            {editItems && (
-              <button onClick={addDraftItem} className="text-sm font-medium text-gray-600 hover:text-gray-900 flex items-center gap-1">
-                <span className="text-lg leading-none">+</span> Додати позицію
-              </button>
-            )}
           </div>
 
-          {editItems ? (
-            <div className="overflow-x-auto">
-              <div className="min-w-[1140px] space-y-2">
-                <div className="grid grid-cols-[36px_minmax(240px,2fr)_minmax(150px,1fr)_80px_minmax(110px,1fr)_minmax(110px,1fr)_minmax(180px,1.2fr)_minmax(140px,1fr)_36px] gap-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                  <span>№</span><span>Назва</span><span>Артикул</span><span>К-сть</span>
-                  <span>Закупка</span><span>Роздріб</span><span>Постачальник</span><span>Статус</span><span></span>
-                </div>
-                {draftItems.map((it, idx) => (
-                  <div key={it.id ?? `new-${idx}`} className="grid grid-cols-[36px_minmax(240px,2fr)_minmax(150px,1fr)_80px_minmax(110px,1fr)_minmax(110px,1fr)_minmax(180px,1.2fr)_minmax(140px,1fr)_36px] items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-2">
-                    <span className="text-center text-sm font-bold text-gray-400">{idx + 1}</span>
-                    <ProductAutocomplete
-                      value={it.name}
-                      onChange={(value) => updateDraftItem(idx, { name: value, product_id: null })}
-                      onSelect={(product) => updateDraftItem(idx, {
-                        name: product.name,
-                        sku: product.sku ?? '',
-                        product_id: product.id,
-                        item_type: product.is_service ? 'service' : 'product',
-                        buy_price: ((product.purchase_price ?? 0) / 100).toFixed(2),
-                        sell_price: ((product.retail_price ?? 0) / 100).toFixed(2),
-                      })}
-                      placeholder="Назва, артикул, штрихкод або аналог..."
-                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400"
-                    />
-                    <input value={it.sku} onChange={(e) => updateDraftItem(idx, { sku: e.target.value })} placeholder="Артикул"
-                      className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
-                    <input type="number" min="0.001" step="any" value={it.qty} onChange={(e) => updateDraftItem(idx, { qty: e.target.value })}
-                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-center text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
-                    <input type="number" min="0" step="0.01" value={it.buy_price} onChange={(e) => updateDraftItem(idx, { buy_price: e.target.value })}
-                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-right text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
-                    <input type="number" min="0" step="0.01" value={it.sell_price} onChange={(e) => updateDraftItem(idx, { sell_price: e.target.value })}
-                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-right text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
-                    <select value={it.supplier_id ?? ''} onChange={(e) => updateDraftItem(idx, { supplier_id: e.target.value || null })}
-                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
-                      <option value="">Власний склад</option>
-                      {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
-                    </select>
-                    <select value={it.item_status} onChange={(e) => updateDraftItem(idx, { item_status: e.target.value as ItemStatus })}
-                      className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
-                      {Object.entries(ITEM_STATUS_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                    </select>
-                    <button onClick={() => removeDraftItem(idx)} title="Видалити позицію" className="rounded p-1.5 text-gray-300 hover:bg-red-50 hover:text-red-500">🗑</button>
-                  </div>
-                ))}
-              </div>
-              <div className="flex justify-end pt-2 border-t border-gray-100 text-sm">
-                <span className="text-gray-500 mr-2">Разом:</span>
-                <span className="font-bold text-gray-900">{draftTotal.toFixed(2)} ₴</span>
-              </div>
-            </div>
-          ) : order.items.length === 0 ? (
+          {order.items.length === 0 ? (
             <p className="text-sm text-gray-400">Позиції відсутні</p>
           ) : (
             <div className="space-y-2.5">
@@ -714,7 +532,7 @@ export default function OrderDetailPage() {
                         {item.sku && <span className="text-gray-400 text-xs font-mono bg-white px-1.5 py-0.5 rounded border border-gray-100">{item.sku}</span>}
                       </div>
                       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                        <Badge color={ITEM_STATUS_COLOR[item.item_status]}>{ITEM_STATUS_LABEL[item.item_status]}</Badge>
+                        <Badge color={ITEM_STATUS_COLOR[item.item_status]}>{itemStatusLabel(item)}</Badge>
                         {item.expected_date && (
                           <span className={`text-xs ${new Date(item.expected_date) < new Date() ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
                             ⏳ Очікується: {formatDate(item.expected_date)}

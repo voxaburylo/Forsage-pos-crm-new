@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { RotateCcw, Search, Package, AlertTriangle, Info } from 'lucide-react'
 import { returnApi } from './returnApi'
 import { saleApi } from './saleApi'
@@ -30,6 +30,8 @@ import {
   type DesktopUnresolvedFiscalReturnIntent,
 } from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
+import { orderApi } from '@/features/orders/orderApi'
+import { startRepeatOrder } from '@/features/orders/orderActions'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
 const METHODS = Object.entries(REFUND_METHOD_LABELS) as [RefundMethod, string][]
@@ -61,7 +63,10 @@ interface SelectedItem {
   sku: string
   unit: string
   unit_price: number
+  original_qty: number
   available_qty: number
+  refundable_total: number
+  available_refund: number
   qty: number
   condition: ItemCondition
 }
@@ -106,6 +111,8 @@ export default function ReturnForm() {
   // Фіскальний номер чека повернення (після FiscalizeReturnCheck)
   const [returnFiscalNumber, setReturnFiscalNumber] = useState<string | null>(null)
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const exchangeOrderId = searchParams.get('exchangeOrderId')
 
   // Коли змінюється condition — автопідбираємо stock_action
   useEffect(() => {
@@ -150,7 +157,15 @@ export default function ReturnForm() {
   }, [session?.user?.id])
 
   const activeItems = selected.filter((i) => i.qty > 0)
-  const totalRefund = activeItems.reduce((s, i) => s + i.qty * i.unit_price, 0)
+  const selectedRefund = (item: SelectedItem) => {
+    if (item.qty <= 0 || item.original_qty <= 0) return 0
+    if (item.qty >= item.available_qty - Number.EPSILON) return item.available_refund
+    return Math.min(
+      item.available_refund,
+      Math.round(item.refundable_total * item.qty / item.original_qty),
+    )
+  }
+  const totalRefund = activeItems.reduce((sum, item) => sum + selectedRefund(item), 0)
   const hasSelection = activeItems.length > 0
   const selectedUnresolvedReturn = unresolvedReturns.find(
     (item) => item.operation_id === selectedUnresolvedId,
@@ -244,7 +259,10 @@ export default function ReturnForm() {
         sku: item.sku,
         unit: item.unit,
         unit_price: item.unit_price,
+        original_qty: item.qty,
         available_qty: item.available_qty,
+        refundable_total: item.refundable_total,
+        available_refund: item.available_refund,
         qty: 0,
         condition: 'good' as ItemCondition,
       }))
@@ -257,9 +275,22 @@ export default function ReturnForm() {
     }
   }
 
-  // Авто-пошук, якщо прийшли з картки продажу (/returns?sale=НОМЕР)
+  // Авто-пошук, якщо прийшли з картки продажу або безпосередньо з виданого замовлення.
   useEffect(() => {
+    const saleId = searchParams.get('saleId')
     const presale = searchParams.get('sale')
+    if (saleId) {
+      saleApi.get(saleId, { silent: true })
+        .then(({ data: sale }) => selectSale({
+          id: sale.id,
+          sale_number: sale.sale_number,
+          total: sale.total,
+          status: sale.status,
+          completed_at: sale.completed_at,
+        }))
+        .catch((error) => toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити чек замовлення'))
+      return
+    }
     if (presale) {
       setSaleNumber(presale)
       searchSale(presale)
@@ -336,14 +367,17 @@ export default function ReturnForm() {
         }
         const approvedBy = session?.user?.id ?? 'local'
         const shift = await desktop.pos.getOpenShift(approvedBy)
-        const fiscalItems = activeItems.map((item) => ({
-          name: item.product_name,
-          vendor_code: item.sku || item.product_name,
-          unit: item.unit,
-          qty: item.qty,
-          unit_price: item.unit_price,
-          amount: item.qty * item.unit_price,
-        }))
+        const fiscalItems = activeItems.map((item) => {
+          const amount = selectedRefund(item)
+          return {
+            name: item.product_name,
+            vendor_code: item.sku || item.product_name,
+            unit: item.unit,
+            qty: item.qty,
+            unit_price: item.qty > 0 ? Math.round(amount / item.qty) : 0,
+            amount,
+          }
+        })
         const response = await desktop.fiscal.fiscalizeReturn({
           operation_id: operationId,
           return_input: {
@@ -539,6 +573,16 @@ export default function ReturnForm() {
     setStep(1)
   }
 
+  async function startExchangeOrder() {
+    if (!exchangeOrderId) return
+    try {
+      const { data: order } = await orderApi.get(exchangeOrderId, { silent: true })
+      startRepeatOrder(order, navigate)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося створити замовлення на заміну')
+    }
+  }
+
   // ===== DONE STATE =====
   if (done) {
     return (
@@ -561,7 +605,12 @@ export default function ReturnForm() {
             </p>
           )}
           <div className="mb-4" />
-          <Button onClick={reset}>Нове повернення</Button>
+          <div className="flex flex-col sm:flex-row justify-center gap-2">
+            {exchangeOrderId && (
+              <Button onClick={startExchangeOrder}>Створити замовлення на заміну</Button>
+            )}
+            <Button variant={exchangeOrderId ? 'secondary' : 'primary'} onClick={reset}>Нове повернення</Button>
+          </div>
         </Card>
       </Layout>
     )

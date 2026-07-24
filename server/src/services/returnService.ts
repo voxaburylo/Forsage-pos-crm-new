@@ -2,6 +2,7 @@ import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { logAction } from './auditService.js'
+import { allocateReturnableLineTotals } from './returnAllocation.js'
 import type { CreateReturnInput, ReturnListQuery } from '../validators/returnSchema.js'
 import { CONDITION_ALLOWED_ACTIONS } from '../validators/returnSchema.js'
 
@@ -23,77 +24,6 @@ interface SaleItemForReturnValidation {
     name: string
     tenant_id: string
   }> | null
-}
-
-export interface ReturnRefundAllocationInput {
-  id: string
-  qty: number
-  unit_price: number
-  discount?: number | null
-  core_deposit_amount?: number | null
-}
-
-/**
- * Allocates the amount actually paid for products across receipt lines.
- * Core deposits are excluded because they are refunded by the dedicated
- * core-return flow. Integer remainders are distributed deterministically.
- */
-export function allocateReturnableLineTotals(
-  saleTotal: number,
-  items: ReturnRefundAllocationInput[],
-): Map<string, number> {
-  const normalized = items.map((item) => {
-    const qty = Number(item.qty)
-    const unitPrice = Number(item.unit_price)
-    const discount = Number(item.discount ?? 0)
-    const coreDeposit = Number(item.core_deposit_amount ?? 0)
-    if (
-      !Number.isFinite(qty) || qty <= 0
-      || !Number.isFinite(unitPrice) || unitPrice < 0
-      || !Number.isFinite(discount) || discount < 0
-      || !Number.isFinite(coreDeposit) || coreDeposit < 0
-    ) {
-      throw new AppError('DB_ERROR', 'Некоректні суми в позиціях чека', 500)
-    }
-    return {
-      id: item.id,
-      weight: Math.max(0, unitPrice * qty - discount),
-      coreTotal: Math.max(0, coreDeposit * qty),
-    }
-  })
-
-  const trustedSaleTotal = Number(saleTotal)
-  if (!Number.isFinite(trustedSaleTotal) || trustedSaleTotal < 0) {
-    throw new AppError('DB_ERROR', 'Некоректна сума чека', 500)
-  }
-
-  const lineNetTotal = normalized.reduce((sum, item) => sum + item.weight, 0)
-  const coreTotal = normalized.reduce((sum, item) => sum + item.coreTotal, 0)
-  const refundPool = Math.min(
-    Math.round(lineNetTotal),
-    Math.max(0, Math.round(trustedSaleTotal) - Math.round(coreTotal)),
-  )
-
-  if (lineNetTotal <= 0 || refundPool <= 0) {
-    return new Map(normalized.map((item) => [item.id, 0]))
-  }
-
-  const allocations = normalized.map((item) => {
-    const raw = item.weight * refundPool / lineNetTotal
-    const base = Math.floor(raw)
-    return { id: item.id, amount: base, fraction: raw - base }
-  })
-  let remainder = refundPool - allocations.reduce((sum, item) => sum + item.amount, 0)
-  const ranked = [...allocations].sort((a, b) => (
-    b.fraction - a.fraction || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-  ))
-  for (const item of ranked) {
-    if (remainder <= 0) break
-    item.amount += 1
-    remainder -= 1
-  }
-
-  return new Map(allocations.map((item) => [item.id, item.amount]))
 }
 
 export interface ResolvedReturnItem {
@@ -248,10 +178,11 @@ export async function getSaleItems(saleId: string, tenantId: string) {
 
   // Збираємо вже повернуті кількості по кожній позиції
   const returnedQtyMap = new Map<string, number>()
+  const returnedTotalMap = new Map<string, number>()
   if (ids.length > 0) {
     const { data: existingReturnItems, error: existingReturnsError } = await db
       .from('return_items')
-      .select('sale_item_id, quantity')
+      .select('sale_item_id, quantity, total_kopecks')
       .eq('tenant_id', tenantId)
       .in('sale_item_id', ids)
 
@@ -264,6 +195,10 @@ export async function getSaleItems(saleId: string, tenantId: string) {
       returnedQtyMap.set(
         ri.sale_item_id,
         (returnedQtyMap.get(ri.sale_item_id) ?? 0) + Number(ri.quantity)
+      )
+      returnedTotalMap.set(
+        ri.sale_item_id,
+        (returnedTotalMap.get(ri.sale_item_id) ?? 0) + Number(ri.total_kopecks ?? 0),
       )
     }
   }
@@ -281,8 +216,21 @@ export async function getSaleItems(saleId: string, tenantId: string) {
     throw new AppError('DB_ERROR', 'Не вдалося завантажити позиції чека', 500)
   }
 
+  const refundableByItem = allocateReturnableLineTotals(
+    Number(sale.total),
+    (saleItems ?? []).map((item: any) => ({
+      id: item.id,
+      qty: item.qty,
+      unit_price: item.unit_price,
+      discount: item.discount,
+      core_deposit_amount: item.core_deposit_amount,
+    })),
+  )
+
   const items = (saleItems ?? []).map((item: any) => {
     const returnedQty = returnedQtyMap.get(item.id) ?? 0
+    const refundableTotal = refundableByItem.get(item.id) ?? 0
+    const alreadyRefunded = returnedTotalMap.get(item.id) ?? 0
     return {
       id: item.id,
       product_id: item.product_id,
@@ -294,6 +242,9 @@ export async function getSaleItems(saleId: string, tenantId: string) {
       total: item.total,
       already_returned_qty: returnedQty,
       available_qty: Math.max(0, item.qty - returnedQty),
+      refundable_total: refundableTotal,
+      already_refunded_kopecks: alreadyRefunded,
+      available_refund: Math.max(0, refundableTotal - alreadyRefunded),
     }
   })
 
@@ -531,7 +482,8 @@ export async function createReturn(
 
 
   // ==================================================================
-  // 5.5. Connected Returns Mappings (P1 Fix 10)
+  // 5.5. Відображаємо повністю повернені позиції у картці виданого замовлення.
+  // Часткове повернення не ховаємо під загальним статусом «повернено».
   // ==================================================================
   try {
     const { data: order } = await db
@@ -539,29 +491,69 @@ export async function createReturn(
       .select('id')
       .eq('sale_id', input.sale_id)
       .eq('tenant_id', tenantId)
-      .single()
+      .maybeSingle()
 
     if (order) {
-      for (const item of resolvedItems) {
-        const { data: orderItem } = await db
-          .from('customer_order_items')
-          .select('id')
-          .eq('order_id', order.id)
-          .eq('product_id', item.product_id)
-          .limit(1)
-          .single()
+      const { data: allSaleItems, error: allSaleItemsError } = await db
+        .from('sale_items')
+        .select('id, product_id, qty')
+        .eq('sale_id', input.sale_id)
+        .eq('tenant_id', tenantId)
+      if (allSaleItemsError) throw allSaleItemsError
 
-        if (orderItem) {
-          await db
-            .from('customer_order_items')
-            .update({ item_status: 'returned' })
-            .eq('id', orderItem.id)
-            .eq('order_id', order.id)
-        }
+      const saleItemIds = (allSaleItems ?? []).map((item) => item.id)
+      const { data: allReturnItems, error: allReturnItemsError } = saleItemIds.length > 0
+        ? await db
+            .from('return_items')
+            .select('sale_item_id, quantity')
+            .eq('tenant_id', tenantId)
+            .in('sale_item_id', saleItemIds)
+        : { data: [], error: null }
+      if (allReturnItemsError) throw allReturnItemsError
+
+      const soldByProduct = new Map<string, number>()
+      const returnedBySaleItem = new Map<string, number>()
+      for (const item of allSaleItems ?? []) {
+        soldByProduct.set(item.product_id, (soldByProduct.get(item.product_id) ?? 0) + Number(item.qty))
+      }
+      for (const item of allReturnItems ?? []) {
+        returnedBySaleItem.set(
+          item.sale_item_id,
+          (returnedBySaleItem.get(item.sale_item_id) ?? 0) + Number(item.quantity),
+        )
+      }
+      const returnedByProduct = new Map<string, number>()
+      for (const item of allSaleItems ?? []) {
+        returnedByProduct.set(
+          item.product_id,
+          (returnedByProduct.get(item.product_id) ?? 0) + (returnedBySaleItem.get(item.id) ?? 0),
+        )
+      }
+      const fullyReturnedProductIds = [...soldByProduct.entries()]
+        .filter(([productId, soldQty]) => (returnedByProduct.get(productId) ?? 0) >= soldQty)
+        .map(([productId]) => productId)
+
+      if (fullyReturnedProductIds.length > 0) {
+        const { error: orderItemsError } = await db
+          .from('customer_order_items')
+          .update({ item_status: 'returned' })
+          .eq('order_id', order.id)
+          .in('product_id', fullyReturnedProductIds)
+        if (orderItemsError) throw orderItemsError
+
+        await db.from('order_activity_log').insert({
+          order_id: order.id,
+          user_id: userId,
+          action: 'items_returned',
+          details: { return_id: returnRecord.id, product_ids: fullyReturnedProductIds },
+        })
       }
     }
   } catch (err) {
-    logger.error({ error: err }, 'Failed to map return to customer order')
+    logger.error({
+      error: err instanceof Error ? err.message : err,
+      saleId: input.sale_id,
+    }, 'Failed to map return to customer order')
   }
 
   // ==================================================================

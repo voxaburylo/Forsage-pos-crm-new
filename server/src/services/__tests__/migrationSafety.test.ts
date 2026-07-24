@@ -43,7 +43,8 @@ describe('critical migration safety', () => {
   it('does not guess a shift for historical cash refunds', () => {
     const sql = migration('20260722213000_return_cash_operations.sql')
     expect(sql).toContain('AFTER INSERT OR UPDATE OF status, refund_method, refund_kopecks, refund_amount')
-    expect(sql).toContain('ON CONFLICT (id) DO NOTHING')
+    expect(sql).toContain('WHERE co.id = NEW.id')
+    expect(sql).toContain('RETURN_CASH_OPERATION_CONFLICT')
     expect(sql).not.toMatch(/INSERT INTO cash_operations[\s\S]*?SELECT[\s\S]*?FROM returns r/)
     expect(sql).toContain('ручну касову звірку')
   })

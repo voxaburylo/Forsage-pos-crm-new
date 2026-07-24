@@ -64,6 +64,7 @@ function uniqueSuppliers(list: Supplier[]): Supplier[] {
 }
 
 interface ItemRow {
+  id?:         string
   name:        string
   sku:         string
   qty:         string
@@ -73,6 +74,7 @@ interface ItemRow {
   product_id?: string | null
   stock?:      number
   item_type?:  'product' | 'service'
+  item_status?: CustomerOrder['items'][number]['item_status']
   buy_price?:  string
 }
 
@@ -285,6 +287,7 @@ export default function OrderFormPage() {
         // Items
         if (o.items && o.items.length > 0) {
           setItems(o.items.map(item => ({
+            id: item.id,
             name: item.name,
             sku: item.sku ?? '',
             qty: item.qty.toString(),
@@ -293,6 +296,7 @@ export default function OrderFormPage() {
             expected_date: item.expected_date ? item.expected_date.split('T')[0] : '',
             product_id: item.product_id ?? null,
             item_type: item.item_type ?? 'product',
+            item_status: item.item_status,
             buy_price: item.buy_price ? (item.buy_price / 100).toString() : '0',
           })))
         }
@@ -308,46 +312,8 @@ export default function OrderFormPage() {
   const [items, setItems] = useState<ItemRow[]>([{ ...EMPTY_ITEM }])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
-  // ORD-36: шаблони частих позицій (localStorage)
-  const TEMPLATES_KEY = 'order_item_templates'
   const [supplierRowIndex, setSupplierRowIndex] = useState<number | null>(null)
   const [supplierName, setSupplierName] = useState('')
-  const [templateModalOpen, setTemplateModalOpen] = useState(false)
-  const [templateName, setTemplateName] = useState('')
-  const [templates, setTemplates] = useState<Array<{ name: string; items: ItemRow[] }>>(() => {
-    try { return JSON.parse(localStorage.getItem(TEMPLATES_KEY) ?? '[]') } catch { return [] }
-  })
-  function persistTemplates(next: Array<{ name: string; items: ItemRow[] }>) {
-    setTemplates(next)
-    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(next))
-  }
-  function applyTemplate(t: { name: string; items: ItemRow[] }) {
-    setItems((prev) => {
-      const base = prev.filter((r) => r.name.trim())
-      return [...base, ...t.items.map((i) => ({ ...EMPTY_ITEM, ...i }))]
-    })
-    toast.success(`Додано шаблон «${t.name}»`)
-  }
-  // Назву питаємо власною модалкою: Electron не реалізує window.prompt(),
-  // тож на касі кнопка збереження шаблону просто мовчала.
-  function saveAsTemplate() {
-    const filled = items.filter((r) => r.name.trim())
-    if (filled.length === 0) { toast.error('Немає позицій для шаблону'); return }
-    setTemplateName('')
-    setTemplateModalOpen(true)
-  }
-  function submitTemplate() {
-    const name = templateName.trim()
-    if (!name) { toast.error('Вкажіть назву шаблону'); return }
-    const filled = items.filter((r) => r.name.trim())
-    if (filled.length === 0) { toast.error('Немає позицій для шаблону'); return }
-    persistTemplates([...templates.filter((t) => t.name !== name), { name, items: filled }])
-    setTemplateModalOpen(false)
-    toast.success('Шаблон збережено')
-  }
-  function deleteTemplate(name: string) {
-    persistTemplates(templates.filter((t) => t.name !== name))
-  }
 
   // Step 4: Summary & Checkout
   const [comment, setComment] = useState('')
@@ -571,18 +537,23 @@ export default function OrderFormPage() {
   const [search, setSearch] = useState('')
   const [searchResults, setSearchResults] = useState<Product[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState('')
 
   useEffect(() => {
     const q = search.trim()
-    if (q.length < 2) { setSearchResults([]); setSearchLoading(false); return }
+    if (q.length < 2) { setSearchResults([]); setSearchLoading(false); setSearchError(''); return }
     setSearchLoading(true)
+    setSearchError('')
     let cancelled = false
     const t = window.setTimeout(async () => {
       try {
         const r = await productApi.search(q, 12)
         if (!cancelled) setSearchResults(r.data ?? [])
       } catch {
-        if (!cancelled) setSearchResults([])
+        if (!cancelled) {
+          setSearchResults([])
+          setSearchError('Не вдалося виконати пошук. Перевірте з’єднання та повторіть.')
+        }
       } finally {
         if (!cancelled) setSearchLoading(false)
       }
@@ -630,6 +601,12 @@ export default function OrderFormPage() {
   function addProductAsItem(p: Product) {
     setItems((rows) => {
       const base = rows.filter((r) => r.name.trim())
+      const existingIndex = base.findIndex((row) => row.product_id === p.id)
+      if (existingIndex >= 0) {
+        return base.map((row, index) => index === existingIndex
+          ? { ...row, qty: String((parseFloat(row.qty) || 0) + 1) }
+          : row)
+      }
       return [...base, {
         ...EMPTY_ITEM,
         name: p.name,
@@ -744,6 +721,7 @@ export default function OrderFormPage() {
       prepayment_method: null,
       prepayment_is_fiscal: false,
       items: validItems.map((row) => ({
+        id:          row.id,
         name:        row.name.trim(),
         sku:         row.sku.trim() || null,
         product_id:  row.product_id || null,
@@ -753,6 +731,7 @@ export default function OrderFormPage() {
         supplier_id: row.supplier_id || null,
         source_type: row.supplier_id ? 'supplier' : 'warehouse',
         item_type:   row.item_type ?? 'product',
+        item_status: row.item_status,
         expected_date: row.supplier_id && row.expected_date ? row.expected_date : null,
       })),
     }
@@ -1214,21 +1193,6 @@ export default function OrderFormPage() {
               </div>
             </div>
 
-            {/* Шаблони частих позицій (ORD-36) */}
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-gray-400">Шаблони:</span>
-              {templates.length === 0 && <span className="text-xs text-gray-300">поки немає</span>}
-              {templates.map((t) => (
-                <span key={t.name} className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-yellow-50 text-yellow-700 border border-yellow-200">
-                  <button type="button" onClick={() => applyTemplate(t)} className="hover:underline">+ {t.name}</button>
-                  <button type="button" onClick={() => deleteTemplate(t.name)} className="text-yellow-400 hover:text-red-500" title="Видалити шаблон">×</button>
-                </span>
-              ))}
-              <button type="button" onClick={saveAsTemplate} className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200">
-                💾 Зберегти як шаблон
-              </button>
-            </div>
-
             {/* ─── Єдине поле пошуку товару ─── */}
             <Card>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Пошук товару</label>
@@ -1244,7 +1208,10 @@ export default function OrderFormPage() {
               </div>
 
               {searchLoading && (
-                <p className="mt-3 text-xs text-gray-400">Шукаю у базі…</p>
+                <p className="mt-3 text-xs text-gray-400">Шукаю у власній базі…</p>
+              )}
+              {!searchLoading && searchError && (
+                <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{searchError}</p>
               )}
 
               {/* Знайдені товари зі складу */}
@@ -1258,7 +1225,8 @@ export default function OrderFormPage() {
                           <p className="text-sm font-semibold text-gray-800 truncate">{p.name}</p>
                           <p className="text-[11px] text-gray-400 font-mono truncate">
                             {p.sku}
-                            {p.storage_bin && <> · 📍 {p.storage_bin}</>}
+                            {p.barcode && <> · {p.barcode}</>}
+                            {p.storage_bin && <> · полиця {p.storage_bin}</>}
                             {' · '}
                             <span className={stock > 0 ? 'text-green-600' : 'text-orange-500'}>
                               {stock > 0 ? `на складі: ${stock}` : 'немає на складі'}
@@ -1276,7 +1244,7 @@ export default function OrderFormPage() {
               )}
 
               {/* Не знайдено → пропонуємо додати під замовлення */}
-              {!searchLoading && search.trim().length >= 2 && searchResults.length === 0 && (
+              {!searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && (
                 <button
                   type="button"
                   onClick={openBackorder}
@@ -1288,14 +1256,6 @@ export default function OrderFormPage() {
                 </button>
               )}
 
-              {/* Ручне додавання доступне завжди, не лише коли пошук порожній */}
-              <button
-                type="button"
-                onClick={openBackorder}
-                className="mt-3 w-full flex items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-600 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700 transition-colors"
-              >
-                <Plus size={15} /> Додати позицію вручну (під замовлення)
-              </button>
             </Card>
 
             {/* ─── Додані позиції замовлення ─── */}
@@ -1648,20 +1608,6 @@ export default function OrderFormPage() {
         </div>
       </Modal>
 
-      <Modal open={templateModalOpen} onClose={() => setTemplateModalOpen(false)} title="Зберегти як шаблон" size="sm">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Назва шаблону</label>
-            <Input value={templateName} autoFocus placeholder="Напр. «ТО Kia Rio»"
-              onChange={(e) => setTemplateName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitTemplate() }} />
-          </div>
-          <div className="flex gap-2 justify-end">
-            <Button type="button" variant="secondary" onClick={() => setTemplateModalOpen(false)}>Скасувати</Button>
-            <Button type="button" onClick={submitTemplate}>Зберегти</Button>
-          </div>
-        </div>
-      </Modal>
     </Layout>
   )
 }

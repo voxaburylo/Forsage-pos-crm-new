@@ -133,7 +133,7 @@ function runFiscalIntentSmoke() {
     shift_id: shiftId,
     reason: 'other',
     reason_note: 'Fiscal smoke return',
-    refund_method: 'card',
+    refund_method: 'terminal',
     stock_action: 'return_to_stock',
     items: [{
       sale_item_id: returnable.items[0].id,
