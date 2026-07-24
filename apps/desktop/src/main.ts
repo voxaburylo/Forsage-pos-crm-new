@@ -7,6 +7,7 @@ import { LocalBootstrapRepository } from './repositories/bootstrapRepository'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
+import { LocalReadRepository } from './repositories/readRepository'
 import {
   CashalotService,
   type CashalotConfigUpdate,
@@ -24,6 +25,7 @@ let localBootstrap: LocalBootstrapRepository | null = null
 let localCatalog: LocalCatalogRepository | null = null
 let localPos: LocalPosRepository | null = null
 let localSync: LocalSyncRepository | null = null
+let localRead: LocalReadRepository | null = null
 let cashalot: CashalotService | null = null
 
 interface DesktopPrintOptions {
@@ -68,6 +70,11 @@ function requireLocalPos(): LocalPosRepository {
 function requireLocalSync(): LocalSyncRepository {
   if (!localSync) throw new Error('LOCAL_SYNC_NOT_READY')
   return localSync
+}
+
+function requireLocalRead(): LocalReadRepository {
+  if (!localRead) throw new Error('LOCAL_READ_NOT_READY')
+  return localRead
 }
 
 function requireCashalot(): CashalotService {
@@ -285,6 +292,7 @@ app.whenReady().then(async () => {
   localCatalog = new LocalCatalogRepository(localDatabase)
   localPos = new LocalPosRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
+  localRead = new LocalReadRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
 
   ipcMain.handle('desktop:get-runtime-info', () => requireLocalDatabase().info())
@@ -352,6 +360,15 @@ app.whenReady().then(async () => {
     printHtmlDocument(html, options),
   )
   ipcMain.handle('desktop:print:reset', () => resetPrintSpooler())
+  // Локальне читання для офлайн-режиму (клієнти, чеки)
+  ipcMain.handle('desktop:read:customers', (_e, params?: Record<string, string | number | undefined>) =>
+    requireLocalRead().listCustomers(params ?? {}))
+  ipcMain.handle('desktop:read:customer', (_e, id: string) =>
+    requireLocalRead().getCustomer(id))
+  ipcMain.handle('desktop:read:sales', (_e, params?: Record<string, string | number | undefined>) =>
+    requireLocalRead().listSales(params ?? {}))
+  ipcMain.handle('desktop:read:sale', (_e, id: string) =>
+    requireLocalRead().getSale(id))
   ipcMain.handle('desktop:print:list-printers', async () => {
     if (!mainWindow) return []
     const printers = await mainWindow.webContents.getPrintersAsync()

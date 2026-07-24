@@ -28,9 +28,46 @@ async function refreshToken(): Promise<string | null> {
   }
 }
 
+// Офлайн-читання: у десктоп-касі GET на відомі розділи обслуговуємо з локальної
+// SQLite, щоб програма працювала без інтернету (local-first). Повертає результат
+// або undefined, якщо шлях не покрито локально (тоді йдемо на сервер).
+async function tryLocalRead<T>(path: string, method: string | undefined): Promise<T | undefined> {
+  if (method && method !== 'GET') return undefined
+  let bridge: import('./desktopBridge').ForsageDesktopBridge | null = null
+  try {
+    const mod = await import('./desktopBridge')
+    if (!mod.isDesktopRuntime()) return undefined
+    bridge = mod.desktopBridge()
+  } catch { return undefined }
+  const read = bridge?.read
+  if (!read) return undefined
+
+  const [rawPath, rawQuery = ''] = path.replace(/^\/api\/v1\//, '').split('?')
+  const query: Record<string, string> = {}
+  new URLSearchParams(rawQuery).forEach((v, k) => { query[k] = v })
+
+  try {
+    if (rawPath === 'customers') return await read.customers(query) as T
+    let m = rawPath.match(/^customers\/([^/]+)$/)
+    if (m) return (await read.customer(m[1]) ?? { data: null }) as T
+    if (rawPath === 'sales') return await read.sales(query) as T
+    m = rawPath.match(/^sales\/([^/]+)$/)
+    if (m && m[1] !== 'suspended' && m[1] !== 'calculate-price') {
+      return (await read.sale(m[1]) ?? { data: null }) as T
+    }
+  } catch {
+    return undefined // локальна помилка — спробуємо сервер
+  }
+  return undefined
+}
+
 export async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const token = await getAccessToken()
   const { silent, _retry, timeoutMs, ...fetchOptions } = options ?? {}
+
+  // Local-first читання в десктоп-касі: покриті розділи беремо з локальної БД.
+  const local = await tryLocalRead<T>(path, fetchOptions.method)
+  if (local !== undefined) return local
 
   // Опціональний таймаут — щоб UI (зокрема вікно оплати) не зависав, якщо сервер не відповідає
   const controller = timeoutMs ? new AbortController() : null

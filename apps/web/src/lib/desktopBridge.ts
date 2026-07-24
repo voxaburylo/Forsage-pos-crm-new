@@ -188,7 +188,7 @@ export interface DesktopFiscalCheckPay {
   customer_email?: string | null
 }
 
-interface ForsageDesktopBridge {
+export interface ForsageDesktopBridge {
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   backupNow: () => Promise<string>
   bootstrap: {
@@ -249,6 +249,12 @@ interface ForsageDesktopBridge {
       rotate180?: boolean
     }) => Promise<{ success: true; labels: number }>
     resetSpooler?: () => Promise<{ success: true }>
+  }
+  read?: {
+    customers: (params?: Record<string, string | number | undefined>) => Promise<{ data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } }>
+    customer: (id: string) => Promise<{ data: any } | null>
+    sales: (params?: Record<string, string | number | undefined>) => Promise<{ data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } }>
+    sale: (id: string) => Promise<{ data: any } | null>
   }
   fiscal: {
     pickFolder: (defaultPath?: string) => Promise<string | null>

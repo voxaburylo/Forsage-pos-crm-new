@@ -55,6 +55,13 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     // перезапускає службу друку Windows.
     resetSpooler: () => ipcRenderer.invoke('desktop:print:reset'),
   },
+  // Локальне читання даних для офлайн-режиму.
+  read: {
+    customers: (params?: unknown) => ipcRenderer.invoke('desktop:read:customers', params),
+    customer: (id: string) => ipcRenderer.invoke('desktop:read:customer', id),
+    sales: (params?: unknown) => ipcRenderer.invoke('desktop:read:sales', params),
+    sale: (id: string) => ipcRenderer.invoke('desktop:read:sale', id),
+  },
   fiscal: {
     pickFolder: (defaultPath?: string) => ipcRenderer.invoke('desktop:fiscal:pick-folder', defaultPath),
     getConfig: () => ipcRenderer.invoke('desktop:fiscal:get-config'),
