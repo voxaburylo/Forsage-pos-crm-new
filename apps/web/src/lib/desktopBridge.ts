@@ -257,6 +257,8 @@ export interface ForsageDesktopBridge {
     sale: (id: string) => Promise<{ data: any } | null>
     products: (params?: Record<string, string | number | undefined>) => Promise<{ data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } }>
     product: (id: string) => Promise<{ data: any } | null>
+    suppliers: (params?: Record<string, string | number | undefined>) => Promise<{ data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } }>
+    supplier: (id: string) => Promise<{ data: any } | null>
   }
   fiscal: {
     pickFolder: (defaultPath?: string) => Promise<string | null>

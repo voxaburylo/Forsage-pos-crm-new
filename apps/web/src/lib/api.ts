@@ -59,6 +59,9 @@ async function tryLocalRead<T>(path: string, method: string | undefined): Promis
     // /products/{id} — але не /products/search, /products/generate-barcode-only тощо
     m = rawPath.match(/^products\/([0-9a-f-]{16,})$/i)
     if (m && read.product) return (await read.product(m[1]) ?? { data: null }) as T
+    if (rawPath === 'suppliers' && read.suppliers) return await read.suppliers(query) as T
+    m = rawPath.match(/^suppliers\/([0-9a-f-]{16,})$/i)
+    if (m && read.supplier) return (await read.supplier(m[1]) ?? { data: null }) as T
   } catch {
     return undefined // локальна помилка — спробуємо сервер
   }

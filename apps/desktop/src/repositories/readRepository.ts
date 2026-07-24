@@ -144,6 +144,38 @@ export class LocalReadRepository {
     return { data, pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) } }
   }
 
+  // ───────────────────────── Постачальники ─────────────────────────
+  listSuppliers(params: ListParams = {}): { data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } } {
+    const page = toInt(params.page, 1)
+    const perPage = toInt(params.per_page, 50)
+    const offset = (page - 1) * perPage
+    const where: string[] = ['tenant_id = ?', 'deleted_at IS NULL']
+    const args: any[] = [this.tenantId]
+
+    const search = (params.search ?? '').trim()
+    if (search) {
+      where.push('(name LIKE ? OR phone LIKE ? OR contact_name LIKE ?)')
+      const like = `%${search}%`
+      args.push(like, like, like)
+    }
+    const whereSql = where.join(' AND ')
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM suppliers WHERE ${whereSql}`).get(...args) as { n: number }).n
+    const rows = this.db.prepare(
+      `SELECT * FROM suppliers WHERE ${whereSql} ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?`,
+    ).all(...args, perPage, offset) as any[]
+    const data = rows.map((r) => { const { remote_updated_at, dirty_at, ...rest } = r; return { ...rest, is_active: !!r.is_active } })
+    return { data, pagination: { page, per_page: perPage, total, total_pages: Math.ceil(total / perPage) || 1 } }
+  }
+
+  getSupplier(id: string): { data: any } | null {
+    const row = this.db.prepare(
+      'SELECT * FROM suppliers WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL',
+    ).get(id, this.tenantId) as any
+    if (!row) return null
+    const { remote_updated_at, dirty_at, ...rest } = row
+    return { data: { ...rest, is_active: !!row.is_active } }
+  }
+
   // ───────────────────────── Товари ─────────────────────────
   listProducts(params: ListParams = {}): { data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } } {
     const page = toInt(params.page, 1)
