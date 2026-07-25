@@ -7,6 +7,7 @@ import { kopecksToHryvnia } from '@/types/product'
 import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
+import { adminApi } from '@/features/admin/adminApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -399,6 +400,24 @@ export default function OrderFormPage() {
   const [items, setItems] = useState<ItemRow[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
+  // Швидка націнка: відсотки та округлення беремо з Налаштувань магазину.
+  const [quickPercents, setQuickPercents] = useState<number[]>([])
+  const [priceRounding, setPriceRounding] = useState<{ enabled: boolean; step: number; dir: 'up' | 'down' | 'nearest' }>({ enabled: false, step: 100, dir: 'nearest' })
+  useEffect(() => {
+    adminApi.getSettings()
+      .then((r) => {
+        const s = r.data
+        const pcts = Array.isArray(s.quick_percents) ? s.quick_percents.filter((n) => Number(n) > 0) : []
+        setQuickPercents(pcts)
+        setPriceRounding({
+          enabled: s.price_rounding_enabled === true,
+          step: Number(s.price_rounding_step) || 100,
+          dir: s.price_rounding_dir === 'up' || s.price_rounding_dir === 'down' ? s.price_rounding_dir : 'nearest',
+        })
+      })
+      .catch(() => {})
+  }, [])
+
 
   // Step 4: Summary & Checkout
   const [comment, setComment] = useState('')
@@ -716,8 +735,10 @@ export default function OrderFormPage() {
     setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true, name }])
   }
 
-  // Швидка націнка: рахує ціну продажу від закупки за обраним відсотком.
+  // Швидка націнка: рахує ціну продажу від закупки за обраним відсотком,
+  // з округленням як у Налаштуваннях (price_rounding_*).
   const MARKUP_PRESETS = [20, 30, 40, 50, 70, 100]
+  const markupOptions = quickPercents.length ? quickPercents : MARKUP_PRESETS
   function applyMarkup(index: number, pct: number) {
     setItems((rows) => rows.map((row, i) => {
       if (i !== index) return row
@@ -726,8 +747,16 @@ export default function OrderFormPage() {
         toast.error('Спершу вкажіть ціну закупки')
         return row
       }
-      const sell = Math.round(buy * (1 + pct / 100) * 100) / 100
-      return { ...row, sell_price: String(sell) }
+      let kop = Math.round(buy * 100 * (1 + pct / 100))
+      if (priceRounding.enabled) {
+        const step = Math.max(1, priceRounding.step)
+        const scaled = kop / step
+        const r = priceRounding.dir === 'up' ? Math.ceil(scaled)
+          : priceRounding.dir === 'down' ? Math.floor(scaled)
+          : Math.round(scaled)
+        kop = r * step
+      }
+      return { ...row, sell_price: String(kop / 100) }
     }))
   }
 
@@ -845,17 +874,11 @@ export default function OrderFormPage() {
         const result = await orderApi.create(payload)
         const newOrder = (result as { data: { id: string } }).data
 
-        // Без передоплати бекенд створює lead. Одразу переводимо запис у робоче
-        // (відкрите) замовлення; оплату пізніше прийме касир у касі.
-        try {
-          await orderApi.updateStatus(newOrder.id, 'new')
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Не вдалося активувати замовлення'
-          toast.warning(`${msg}. Виправте і активуйте з картки замовлення.`)
-          navigate('/orders/' + newOrder.id)
-          return
-        }
-        toast.success('Замовлення оформлено!')
+        // Одразу переводимо запис у ВІДКРИТЕ замовлення. Якщо позиції «під замовлення»
+        // (немає на складі — резервувати нічого), лишаємо його відкритим і без помилки:
+        // це нормальний стан «очікуємо відповідь клієнта».
+        await orderApi.updateStatus(newOrder.id, 'new').catch(() => {})
+        toast.success('Замовлення збережено')
         navigate('/orders/' + newOrder.id)
       }
     } catch (err) {
@@ -1455,7 +1478,7 @@ export default function OrderFormPage() {
                                   className="shrink-0 rounded-lg border border-gray-200 bg-white px-1.5 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-300"
                                 >
                                   <option value="">+%</option>
-                                  {MARKUP_PRESETS.map((p) => <option key={p} value={p}>+{p}%</option>)}
+                                  {markupOptions.map((p) => <option key={p} value={p}>+{p}%</option>)}
                                 </select>
                               </div>
                             </label>
@@ -1664,7 +1687,7 @@ export default function OrderFormPage() {
                   className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
                   onClick={() => handleSave()}
                 >
-                  {id ? 'Зберегти зміни' : 'Оформити замовлення'}
+                  {id ? 'Зберегти зміни' : 'Зберегти'}
                 </Button>
               </div>
             </div>

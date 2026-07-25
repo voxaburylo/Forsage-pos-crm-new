@@ -169,8 +169,11 @@ function chatLabel(chat: Chat): string {
   return chat.customer?.full_name ?? chat.first_name ?? chat.username ?? `ID ${chat.platform_chat_id.slice(0, 6)}`
 }
 
+// Чернетка = ЛИШЕ рукописна (QuickDraft, source='mobile_draft') або позначені
+// нотатки-чернетки. Замовлення з форми (source='walk_in') — це відкрите замовлення,
+// що очікує відповідь клієнта, а НЕ чернетка.
 function isDraft(o: CustomerOrder) {
-  return o.status === 'lead' && (o.source === 'walk_in' || o.source === 'mobile_draft')
+  return o.status === 'lead' && (o.source === 'mobile_draft' || o.items.some((i) => (i as { is_draft_note?: boolean }).is_draft_note))
 }
 function isLead(o: CustomerOrder) {
   return o.status === 'lead' && !isDraft(o)
