@@ -12,7 +12,7 @@ import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
-import { buildMessengerText } from './orderDocuments'
+import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
 import { toast } from '@/components/ui/Toast'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
@@ -725,6 +725,49 @@ export default function OrderFormPage() {
     }
   }
 
+  // Складаємо CustomerOrder-подібний об'єкт із поточного стану форми для документів,
+  // щоб можна було сформувати рахунок/накладну прямо з рядків, ще до збереження.
+  function buildOrderForDocs(): CustomerOrder {
+    const validItems = items.filter((r) => r.name.trim())
+    const veh = selectedVehicle
+      ? { make: selectedVehicle.brand, model: selectedVehicle.model, year: selectedVehicle.year ?? undefined, vin: selectedVehicle.vin ?? undefined }
+      : loadedVehicleInfo ?? null
+    return {
+      id: id ?? 'new',
+      order_number: null,
+      customer: selectedCustomer ? { id: selectedCustomer.id, phone: selectedCustomer.phone, full_name: selectedCustomer.full_name } : null,
+      vehicle_info: veh,
+      created_at: new Date().toISOString(),
+      total_amount: totalKop,
+      total_paid: 0,
+      prepayment: 0,
+      items: validItems.map((r, i) => ({
+        id: r.id ?? String(i),
+        name: r.name.trim(),
+        sku: r.sku.trim() || null,
+        qty: parseFloat(r.qty) || 1,
+        sell_price: Math.round(parseFloat((r.sell_price || '0').replace(',', '.')) * 100),
+        buy_price: 0,
+        product_id: r.product_id ?? null,
+        supplier_id: r.supplier_id || null,
+      })),
+    } as unknown as CustomerOrder
+  }
+
+  function printDoc(kind: 'invoice' | 'delivery') {
+    const validItems = items.filter((r) => r.name.trim())
+    if (!validItems.length) { toast.error('Немає позицій для документа'); return }
+    const seller = loadSellerRequisites()
+    if (!hasSellerRequisites(seller)) toast.warning('Реквізити продавця не заповнені (Налаштування → Реквізити продавця)')
+    const order = buildOrderForDocs()
+    try {
+      if (kind === 'invoice') printInvoice(order, seller)
+      else printDeliveryNote(order, seller)
+    } catch {
+      toast.error('Не вдалося сформувати документ. Перевірте, чи не заблоковані спливаючі вікна.')
+    }
+  }
+
   // Items manipulation
   function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)) }
   function updateItem<K extends keyof ItemRow>(i: number, key: K, val: ItemRow[K]) {
@@ -787,9 +830,11 @@ export default function OrderFormPage() {
 
   // Сума до сплати: знижка береться з картки клієнта у касі, у замовленні її не дублюємо.
   const toPayKop = Math.max(0, totalKop)
-  // Форма завжди зберігає РЕАЛЬНЕ відкрите замовлення (очікує відповідь клієнта).
-  // Рукописні чернетки — окрема сутність (розділ «Чернетки»/QuickDraft).
-  async function handleSave() {
+  // Дві дії збереження:
+  //  • 'save'  — лишити ВІДКРИТИМ (клієнт ще думає); статус не форсуємо.
+  //  • 'order' — «В замовлення»: закрити накладну як «Замовлено» (status='ordered',
+  //              резерв складу НЕ виконується, тож не впаде на позиціях під замовлення).
+  async function handleSave(action: 'save' | 'order' = 'save') {
     const validItems = items.filter((row) => row.name.trim())
     if (validItems.length === 0) {
       toast.error('Додайте хоча б одну позицію з назвою')
@@ -797,8 +842,8 @@ export default function OrderFormPage() {
       return
     }
 
-    // ORD-5: не дати випадково оформити замовлення на 0 грн
-    if (toPayKop === 0) {
+    // ORD-5: не дати випадково оформити замовлення на 0 грн (лише при «В замовлення»)
+    if (action === 'order' && toPayKop === 0) {
       if (!confirm('Сума замовлення 0 ₴. Оформити замовлення без вартості?')) {
         setStep(3)
         return
@@ -866,21 +911,28 @@ export default function OrderFormPage() {
 
     setSaving(true)
     try {
+      let orderId = id
       if (id) {
         await orderApi.update(id, payload)
-        toast.success('Замовлення оновлено')
-        navigate('/orders/' + id)
       } else {
         const result = await orderApi.create(payload)
-        const newOrder = (result as { data: { id: string } }).data
-
-        // Одразу переводимо запис у ВІДКРИТЕ замовлення. Якщо позиції «під замовлення»
-        // (немає на складі — резервувати нічого), лишаємо його відкритим і без помилки:
-        // це нормальний стан «очікуємо відповідь клієнта».
-        await orderApi.updateStatus(newOrder.id, 'new').catch(() => {})
-        toast.success('Замовлення збережено')
-        navigate('/orders/' + newOrder.id)
+        orderId = (result as { data: { id: string } }).data.id
       }
+      if (!orderId) throw new Error('Не отримано ідентифікатор замовлення')
+
+      if (action === 'order') {
+        // «В замовлення»: закриваємо накладну як «Замовлено». Резерв складу тут
+        // не виконується (лише для new/in_progress), тож на позиціях під замовлення не впаде.
+        await orderApi.updateStatus(orderId, 'ordered').catch(() => {
+          toast.warning('Збережено, але не вдалося позначити «Замовлено»')
+        })
+        toast.success('Оформлено в замовлення')
+      } else {
+        // «Зберегти»: лишаємо ВІДКРИТИМ (клієнт ще думає). Новий запис — lead
+        // (вкладка «Ліди»), це відкрите замовлення, а не чернетка.
+        toast.success('Замовлення збережено (відкрите)')
+      }
+      navigate('/orders/' + orderId)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка збереження')
     } finally {
@@ -1667,28 +1719,46 @@ export default function OrderFormPage() {
 
             </div>
 
-            {/* Save Buttons Panel */}
-            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4 lg:sticky lg:bottom-4">
-              {!isDesktop
-                ? <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
-                : <span className="text-xs text-gray-400 hidden sm:block">Ctrl+S — {id ? 'зберегти зміни' : 'оформити замовлення'}</span>}
+            {/* Панель дій: документи + збереження */}
+            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm space-y-4 lg:sticky lg:bottom-4">
+              {/* Документи прямо з рядків замовлення (без відкриття накладної) */}
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" disabled={!hasValidItems} className="flex-1 min-w-[9rem]" onClick={() => printDoc('invoice')}>
+                  🧾 Рахунок-фактура
+                </Button>
+                <Button variant="secondary" disabled={!hasValidItems} className="flex-1 min-w-[9rem]" onClick={() => printDoc('delivery')}>
+                  📄 Видаткова накладна
+                </Button>
+                <Button variant="secondary" disabled={!hasValidItems} className="flex-1 min-w-[9rem]" onClick={copyMessengerText}>
+                  💬 Копіювати в буфер
+                </Button>
+              </div>
 
-              <div className="flex gap-2 w-full sm:w-auto">
-                <Button
-                  variant="secondary"
-                  disabled={saving || !hasValidItems}
-                  className="flex-1 sm:flex-initial"
-                  onClick={copyMessengerText}
-                >
-                  💬 Копіювати для месенджера
-                </Button>
-                <Button
-                  disabled={saving}
-                  className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
-                  onClick={() => handleSave()}
-                >
-                  {id ? 'Зберегти зміни' : 'Зберегти'}
-                </Button>
+              <div className="border-t border-gray-100" />
+
+              {/* Збереження: «Зберегти» = відкрите (клієнт думає); «В замовлення» = замовлено */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                {!isDesktop
+                  ? <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
+                  : <span className="text-xs text-gray-400 hidden sm:block">«Зберегти» — лишити відкритим (клієнт думає) · «В замовлення» — закрити як замовлено</span>}
+
+                <div className="flex gap-2 w-full sm:w-auto">
+                  <Button
+                    variant="secondary"
+                    disabled={saving}
+                    className="flex-1 sm:flex-initial"
+                    onClick={() => handleSave('save')}
+                  >
+                    {id ? 'Зберегти зміни' : 'Зберегти'}
+                  </Button>
+                  <Button
+                    disabled={saving}
+                    className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
+                    onClick={() => handleSave('order')}
+                  >
+                    В замовлення
+                  </Button>
+                </div>
               </div>
             </div>
 

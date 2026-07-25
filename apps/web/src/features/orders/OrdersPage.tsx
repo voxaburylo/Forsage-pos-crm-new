@@ -990,13 +990,14 @@ interface OrdersTableProps {
   onNextPage: () => void
   hasMore: boolean
   onQuickView: (o: CustomerOrder) => void
+  onQuickOrder: (o: CustomerOrder) => void
   onDelete: (o: CustomerOrder) => void
   canDelete: boolean
   statusTab: Tab
   onStatusTab: (t: Tab) => void
 }
 
-function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, onNextPage, hasMore, onQuickView, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
+function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, onNextPage, hasMore, onQuickView, onQuickOrder, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
   const navigate = useNavigate()
 
   const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
@@ -1119,6 +1120,9 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                     {hasDebt && <div className="text-red-500 font-semibold">Борг: {formatMoney(o.total_amount - paid)}</div>}
                   </div>
                   <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    {(isLead(o) || o.status === 'new') && (
+                      <Button size="sm" className="!bg-green-500 hover:!bg-green-600 text-white font-semibold" title="Закрити накладну як замовлено" onClick={() => onQuickOrder(o)}>В замовлення</Button>
+                    )}
                     <Button variant="secondary" size="sm" icon={<Copy size={13} />} title="Повторити" onClick={() => startRepeatOrder(o, navigate)} />
                     <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
                     {canDelete && (
@@ -1283,6 +1287,11 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                       {/* Дії */}
                       <td className="px-5 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+                          {(isLead(o) || o.status === 'new') && (
+                            <Button size="sm" className="!bg-green-500 hover:!bg-green-600 text-white font-semibold" title="Закрити накладну як замовлено" onClick={() => onQuickOrder(o)}>
+                              В замовлення
+                            </Button>
+                          )}
                           <Button
                             variant="secondary"
                             size="sm"
@@ -1680,6 +1689,16 @@ export default function OrdersPage() {
     } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) }
   }
 
+  // Швидке «В замовлення» прямо зі списку, без відкриття накладної:
+  // закриваємо відкрите замовлення як «Замовлено» (status='ordered', без резерву складу).
+  async function handleQuickOrder(order: CustomerOrder) {
+    try {
+      await orderApi.updateStatus(order.id, 'ordered', undefined, { silent: true })
+      toast.success(`${formatOrderNo(order)} → В замовлення`)
+      loadOrders()
+    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося оформити в замовлення')) }
+  }
+
   async function handleDeleteOrder(order: CustomerOrder) {
     const label = formatOrderNo(order)
     const client = order.customer?.full_name ?? order.customer?.phone ?? 'без клієнта'
@@ -1967,6 +1986,7 @@ export default function OrdersPage() {
               onNextPage={() => setOffset(offset + 50)}
               hasMore={orders.length >= 50}
               onQuickView={(o) => navigate('/orders/' + o.id)}
+              onQuickOrder={handleQuickOrder}
               onDelete={handleDeleteOrder}
               canDelete={role === 'owner' || role === 'admin'}
               statusTab={tab}
