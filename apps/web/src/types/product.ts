@@ -48,6 +48,7 @@ export interface ProductFormData {
   specs: Record<string, string>   // технічні характеристики
   requires_core_return?: boolean
   core_deposit_amount?: string    // гривні (рядок форми)
+  cross_numbers?: string          // аналоги/крос-номери через кому (рядок форми)
 }
 
 export interface PaginatedProducts {

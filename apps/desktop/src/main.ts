@@ -499,6 +499,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:catalog:delete-product', (_event, id: string) =>
     requireLocalCatalog().deleteProduct(id),
   )
+  ipcMain.handle('desktop:catalog:list-cross-numbers', (_event, productId: string) =>
+    requireLocalCatalog().listCrossNumbers(productId),
+  )
   ipcMain.handle('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
   )

@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:delete-product', id),
     listPopular: (limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
+    listCrossNumbers: (productId: string) =>
+      ipcRenderer.invoke('desktop:catalog:list-cross-numbers', productId),
   },
   supplierCatalog: {
     list: (options?: unknown) =>

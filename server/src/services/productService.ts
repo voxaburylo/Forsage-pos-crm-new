@@ -226,7 +226,39 @@ export async function getProduct(id: string, tenantId: string) {
   return enriched
 }
 
+// Замінити ВЕСЬ набір крос-номерів товару списком із картки товару.
+// numbers=[] очищає; використовується у create/update продукту.
+export async function setProductCrossNumbers(productId: string, numbers: string[], tenantId: string, userId: string) {
+  const unique = new Map<string, string>()
+  for (const raw of numbers) {
+    const num = String(raw ?? '').trim()
+    const normalized = normalizeOemValue(num)
+    if (normalized) unique.set(normalized, num)
+  }
+  const { error: delErr } = await db
+    .from('product_cross_numbers')
+    .delete()
+    .eq('tenant_id', tenantId)
+    .eq('product_id', productId)
+  if (delErr) throw new AppError('DB_ERROR', delErr.message, 500)
+  if (unique.size === 0) return
+  const rows = [...unique.entries()].map(([normalized, num]) => ({
+    tenant_id: tenantId,
+    product_id: productId,
+    number: num,
+    normalized_number: normalized,
+    number_type: 'cross',
+    source: 'Картка товару',
+    is_verified: true,
+    created_by: userId,
+  }))
+  const { error } = await db.from('product_cross_numbers').insert(rows)
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+}
+
 export async function createProduct(input: CreateProductInput, _userId: string, tenantId: string) {
+  // cross_numbers зберігаються в окрему таблицю, у колонки products їх не пишемо.
+  const { cross_numbers: crossNumbers, ...productInput } = input as CreateProductInput & { cross_numbers?: string[] }
   // Унікальний індекс products_tenant_id_sku_key покриває і soft-deleted рядки,
   // тому шукаємо дубль БЕЗ фільтра deleted_at — інакше «привид» у кошику
   // валив insert сирою помилкою constraint.
@@ -264,20 +296,21 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
   if (existing && existing.deleted_at) {
     const { data, error } = await db
       .from(TABLE)
-      .update({ ...input, ...normalized, deleted_at: null, updated_at: new Date().toISOString() })
+      .update({ ...productInput, ...normalized, deleted_at: null, updated_at: new Date().toISOString() })
       .eq('id', existing.id)
       .eq('tenant_id', tenantId)
       .select('*, brand:brands(id,name), category:categories(id,name)')
       .single()
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
+    if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
     await searchCache.clear()
     return data
   }
 
   const { data, error } = await db
     .from(TABLE)
-    .insert({ ...input, ...normalized, tenant_id: tenantId })
+    .insert({ ...productInput, ...normalized, tenant_id: tenantId })
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .single()
 
@@ -292,6 +325,7 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
     }
     throw new AppError('DB_ERROR', error.message, 500)
   }
+  if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
   await searchCache.clear()
   return data
 }
@@ -334,7 +368,8 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     priceChanges.push({ price_type: 'purchase', old_price: existing.purchase_price, new_price: input.purchase_price })
   }
 
-  const updateData: any = { ...input, updated_at: new Date().toISOString() }
+  const { cross_numbers: crossNumbers, ...productInput } = input as UpdateProductInput & { cross_numbers?: string[] }
+  const updateData: any = { ...productInput, updated_at: new Date().toISOString() }
   if (input.oem_number !== undefined) {
     updateData.normalized_oem = normalizeOemValue(input.oem_number)
   }
@@ -382,6 +417,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     })
   }
 
+  if (crossNumbers !== undefined) await setProductCrossNumbers(id, crossNumbers, existing.tenant_id, userId)
   await searchCache.clear()
   return data
 }

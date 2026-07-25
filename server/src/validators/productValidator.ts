@@ -41,6 +41,7 @@ export const createProductSchema = z.object({
   specs: z.record(z.string()).optional().nullable(),
   requires_core_return: z.boolean().optional(),
   core_deposit_amount: z.number().int().min(0).optional(),   // копійки
+  cross_numbers: z.array(z.string().max(100)).optional(),    // аналоги/крос-номери (повний список)
 })
 
 export const updateProductSchema = createProductSchema.partial()

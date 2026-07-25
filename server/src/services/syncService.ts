@@ -3,6 +3,7 @@ import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { normalizeOemValue } from '../validators/productValidator.js'
 import { listUsers } from './adminService.js'
 import { addOrderPayment } from './orderPaymentService.js'
 import {
@@ -2956,6 +2957,26 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
         )`,
         values,
       )
+    }
+
+    // Крос-номери/аналоги з картки товару (офлайн-desktop → сервер): повний список замінює наявні.
+    if (owns('cross_numbers')) {
+      const list = Array.isArray(payload.cross_numbers) ? payload.cross_numbers : []
+      const uniqueCross = new Map<string, string>()
+      for (const raw of list) {
+        const num = String(raw ?? '').trim()
+        const norm = normalizeOemValue(num)
+        if (norm) uniqueCross.set(norm, num)
+      }
+      await client.query('DELETE FROM product_cross_numbers WHERE product_id = $1 AND tenant_id = $2', [productId, tenantId])
+      for (const [norm, num] of uniqueCross) {
+        await client.query(
+          `INSERT INTO product_cross_numbers (tenant_id, product_id, number, normalized_number, number_type, source, is_verified)
+           VALUES ($1, $2, $3, $4, 'cross', 'Картка товару', true)
+           ON CONFLICT (tenant_id, product_id, normalized_number) DO NOTHING`,
+          [tenantId, productId, num, norm],
+        )
+      }
     }
 
     if (!barcodesTouched) return

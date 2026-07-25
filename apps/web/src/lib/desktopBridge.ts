@@ -400,6 +400,7 @@ interface ForsageDesktopBridge {
       is_favorite?: boolean
       barcode?: string | null
       additional_barcodes?: string[]
+      cross_numbers?: string[]
       storage_bin?: string | null
       photo_url?: string | null
       specs?: Record<string, string>
@@ -423,6 +424,7 @@ interface ForsageDesktopBridge {
       is_favorite?: boolean
       barcode?: string | null
       additional_barcodes?: string[]
+      cross_numbers?: string[]
       storage_bin?: string | null
       photo_url?: string | null
       specs?: Record<string, string>
@@ -430,6 +432,7 @@ interface ForsageDesktopBridge {
     savePhoto?: (folder: string, bytes: ArrayBuffer) => Promise<string>
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
+    listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   supplierCatalog?: {

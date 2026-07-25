@@ -18,7 +18,7 @@ const EMPTY: ProductFormData = {
   unit: 'шт', purchase_price: '', retail_price: '',
   qty_on_hand: '0', reorder_point: '0', notes: '', is_active: true,
   is_service: false, storage_bin: '', is_favorite: false, specs: {},
-  requires_core_return: false, core_deposit_amount: '',
+  requires_core_return: false, core_deposit_amount: '', cross_numbers: '',
 }
 
 export default function ProductFormPage() {
@@ -67,7 +67,10 @@ export default function ProductFormPage() {
   useEffect(() => {
     if (!isEdit) return
     setLoading(true)
-    productApi.get(id).then(({ data }) => {
+    Promise.all([
+      productApi.get(id),
+      productApi.getCrossNumbers(id).catch(() => ({ data: [] })),
+    ]).then(([{ data }, crossRes]) => {
       setForm({
         sku: data.sku,
         name: data.name,
@@ -88,6 +91,7 @@ export default function ProductFormPage() {
         specs: (data.specs as Record<string, string>) ?? {},
         requires_core_return: data.requires_core_return ?? false,
         core_deposit_amount: data.core_deposit_amount ? kopecksToHryvnia(data.core_deposit_amount) : '',
+        cross_numbers: (crossRes.data ?? []).map((c) => c.number).join(', '),
       })
     }).catch(() => {
       toast.error('Товар не знайдено')
@@ -415,6 +419,19 @@ export default function ProductFormPage() {
                 placeholder="Додаткова інформація..."
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent resize-none"
               />
+            </div>
+
+            {/* Аналоги / крос-номери — за цими кодами товар знайдеться в пошуку й на касі */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Аналоги / крос-номери</label>
+              <textarea
+                value={form.cross_numbers ?? ''}
+                onChange={(e) => set('cross_numbers', e.target.value)}
+                rows={2}
+                placeholder="Через кому: 96182220, 94788122, OC90"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent resize-none font-mono"
+              />
+              <p className="text-xs text-gray-400 mt-1">За цими кодами товар знаходитиметься в пошуку й на касі. Розділяйте комою, крапкою з комою або новим рядком.</p>
             </div>
 
             {/* ── Технічні характеристики (залежать від категорії) ── */}

@@ -49,6 +49,19 @@ function buildQuery(filters: ProductFilters): string {
   return params.toString() ? `?${params.toString()}` : ''
 }
 
+// Крос-номери/аналоги з форми: рядок через кому/крапку з комою/новий рядок → масив.
+function parseCrossNumbers(raw?: string): string[] {
+  if (!raw) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of raw.split(/[\n,;]+/)) {
+    const v = part.trim()
+    const key = v.toUpperCase()
+    if (v && !seen.has(key)) { seen.add(key); out.push(v) }
+  }
+  return out
+}
+
 function cleanSpecs(raw: Record<string, string> | undefined | null): Record<string, string> | null {
   if (!raw) return null
   const specs: Record<string, string> = {}
@@ -111,6 +124,7 @@ function formToCreatePayload(form: ProductFormData) {
     photo_url: form.photo_url || null,
     requires_core_return: form.requires_core_return ?? false,
     core_deposit_amount: hryvniaToKopecks(form.core_deposit_amount),
+    cross_numbers: parseCrossNumbers(form.cross_numbers),
   }
 }
 
@@ -139,6 +153,7 @@ function formToUpdatePayload(partial: Partial<ProductFormData>): Record<string, 
   if (partial.photo_url !== undefined)      out.photo_url = partial.photo_url || null
   if (partial.requires_core_return !== undefined) out.requires_core_return = partial.requires_core_return
   if (partial.core_deposit_amount !== undefined)  out.core_deposit_amount = hryvniaToKopecks(partial.core_deposit_amount)
+  if (partial.cross_numbers !== undefined)        out.cross_numbers = parseCrossNumbers(partial.cross_numbers)
   return out
 }
 
@@ -193,6 +208,7 @@ function desktopUpdatePayload(id: string, existing: DesktopProduct, form: Partia
     is_favorite: form.is_favorite !== undefined ? form.is_favorite : existing.is_favorite === 1,
     photo_url: form.photo_url !== undefined ? (form.photo_url || null) : (existing.photo_url ?? null),
     specs: form.specs ?? desktopExistingSpecs(existing),
+    ...(form.cross_numbers !== undefined ? { cross_numbers: parseCrossNumbers(form.cross_numbers) } : {}),
   } as DesktopProductSavePayload
 }
 export const productApi = {
@@ -334,8 +350,21 @@ export const productApi = {
   removeAnalog: (id: string, analogId: string) =>
     api.delete(`/api/v1/products/${id}/analogs/${analogId}`),
 
-  getCrossNumbers: (id: string) =>
-    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ data: [] as ProductCrossNumber[] }) : api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`),
+  getCrossNumbers: async (id: string) => {
+    const local = desktopBridge()?.catalog?.listCrossNumbers
+    if (local) {
+      const rows = await local(id)
+      return {
+        data: rows.map((r) => ({
+          id: r.id, number: r.number, normalized_number: r.number,
+          number_type: 'cross' as const, brand: null, source: r.source,
+          is_verified: true, created_at: '',
+        })) as ProductCrossNumber[],
+      }
+    }
+    if (desktopBridge() && useAuthStore.getState().offlineMode) return { data: [] as ProductCrossNumber[] }
+    return api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`)
+  },
 
   addCrossNumbers: (
     id: string,

@@ -48,6 +48,8 @@ export interface LocalProductUpsert {
   photo_url?: string | null
   specs?: Record<string, string>
   additional_barcodes?: string[]
+  /** Крос-номери/аналоги (повний список). undefined = не чіпати; [] = очистити. */
+  cross_numbers?: string[]
 }
 
 export interface LocalSalePaymentInput {

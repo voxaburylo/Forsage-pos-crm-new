@@ -378,11 +378,43 @@ export class LocalCatalogRepository {
           timestamp,
         )
       }
+
+      // Крос-номери/аналоги: повний список із картки товару замінює наявні.
+      // undefined = не чіпати (часткове редагування); [] = очистити.
+      if (input.cross_numbers !== undefined) {
+        this.db.prepare('DELETE FROM product_cross_numbers WHERE tenant_id = ? AND product_id = ?')
+          .run(tenantId, input.id)
+        const insertCross = this.db.prepare(`
+          INSERT INTO product_cross_numbers (
+            id, tenant_id, product_id, cross_number, brand, source, notes, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, NULL, 'Картка товару', NULL, ?, ?)
+          ON CONFLICT(tenant_id, product_id, cross_number) DO NOTHING
+        `)
+        const seenCross = new Set<string>()
+        for (const raw of input.cross_numbers) {
+          const num = String(raw ?? '').trim()
+          const key = num.toUpperCase()
+          if (!num || seenCross.has(key)) continue
+          seenCross.add(key)
+          insertCross.run(randomUUID(), tenantId, input.id, num, timestamp, timestamp)
+        }
+      }
     })
 
     const product = this.findById(input.id, tenantId)
     if (!product) throw new Error('LOCAL_PRODUCT_UPSERT_FAILED')
     return product
+  }
+
+  listCrossNumbers(productId: string, tenantId = DEFAULT_TENANT_ID): Array<{ id: string; number: string; source: string }> {
+    const rows = this.db.prepare(`
+      SELECT id, cross_number AS number, source
+      FROM product_cross_numbers
+      WHERE tenant_id = ? AND product_id = ? AND deleted_at IS NULL
+      ORDER BY created_at ASC
+    `).all(tenantId, productId) as Array<{ id: string; number: string; source: string }>
+    return rows
   }
 
   findById(id: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
