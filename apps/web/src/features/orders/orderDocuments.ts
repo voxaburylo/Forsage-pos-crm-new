@@ -135,8 +135,11 @@ export function buildMessengerText(input: MessengerInput): string {
   for (const line of input.lines) {
     const sum = line.unitHrn * line.qty
     total += sum
-    const qtyPart = line.qty > 1 ? ` x${line.qty}` : ''
-    out.push(`${line.name} ${moneyShort(line.unitHrn)}${qtyPart} =${moneyShort(sum)}`)
+    // К-сть 1 → показуємо лише суму (без дублювання ціни): «Назва =300».
+    // К-сть >1 → ціна за одиницю + кількість: «Назва 1100 x2 =2200».
+    out.push(line.qty > 1
+      ? `${line.name} ${moneyShort(line.unitHrn)} x${line.qty} =${moneyShort(sum)}`
+      : `${line.name} =${moneyShort(sum)}`)
   }
 
   out.push('')
