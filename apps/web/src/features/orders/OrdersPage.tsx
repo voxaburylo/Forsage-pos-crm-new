@@ -1535,9 +1535,10 @@ export default function OrdersPage() {
     if (chatMode) return orders.filter(isLead)
     return orders.filter((o) => {
       if (tab === 'bots')      return false
-      // «Список замовлень» — лише реальні замовлення: без лідів (вони в Чат-ботах)
-      // і без чернеток (вони у вкладці «Чернетки»)
-      if (tab === 'all')       return !['completed', 'canceled', 'lead'].includes(o.status)
+      // «Список замовлень» → «Усі активні»: усі відкриті замовлення, включно з
+      // відкритими лідами (щоб збережені «Зберегти»-замовлення не губились —
+      // окремої вкладки «Ліди» більше немає). Ховаємо лише рукописні чернетки.
+      if (tab === 'all')       return !['completed', 'canceled'].includes(o.status) && !isDraft(o)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
       if (tab === 'active')    return ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
