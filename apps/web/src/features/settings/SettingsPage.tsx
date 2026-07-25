@@ -15,6 +15,7 @@ import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/
 import { useAuthStore } from '@/stores/authStore'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
+import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
 
 // ─── Emoji picker (compact) ─────────────────────────────────────
 const EMOJI_OPTIONS = ['📦','🛍','⚙️','🍕','☕','🔧','💡','🎁','🧴','🔑','🚗','🏷️','📱','💧','🧲','🪫']
@@ -44,6 +45,23 @@ export default function SettingsPage() {
     if (typeof desktopPrint?.listPrinters !== 'function') return
     desktopPrint.listPrinters().then(setDesktopPrinters).catch(() => setDesktopPrinters([]))
   }, [])
+
+  // Реквізити продавця для документів (рахунок-фактура / видаткова накладна).
+  // Зберігаються локально на цьому пристрої.
+  const [seller, setSeller] = useState<SellerRequisites>(() => loadSellerRequisites())
+  const [sellerSaving, setSellerSaving] = useState(false)
+  function setSellerField<K extends keyof SellerRequisites>(key: K, value: string) {
+    setSeller((prev) => ({ ...prev, [key]: value }))
+  }
+  function handleSaveSeller() {
+    setSellerSaving(true)
+    try {
+      saveSellerRequisites(seller)
+      toast.success('Реквізити продавця збережено')
+    } finally {
+      setSellerSaving(false)
+    }
+  }
 
   // Local state for new markup rule
   const [newMin, setNewMin] = useState('')
@@ -875,6 +893,45 @@ export default function SettingsPage() {
           </div>
 
         </form>
+
+        {/* ========== Реквізити продавця (для рахунків / накладних) ========== */}
+        <Card className="mt-6 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
+            <CreditCard size={18} className="text-yellow-500" />
+            <h3 className="text-sm font-semibold text-gray-800">Реквізити продавця</h3>
+          </div>
+          <p className="text-xs text-gray-400 -mt-2">
+            Використовуються в рахунку-фактурі та видатковій накладній. Зберігаються локально на цьому пристрої.
+          </p>
+          <Input label="Назва (ФОП / ТОВ)" value={seller.name}
+            onChange={(e) => setSellerField('name', e.target.value)}
+            placeholder="ФОП Петренко Андрій Васильович" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input label="Код ЄДРПОУ / ІПН" value={seller.edrpou}
+              onChange={(e) => setSellerField('edrpou', e.target.value)}
+              placeholder="1234567890" />
+            <Input label="Телефон" value={seller.phone}
+              onChange={(e) => setSellerField('phone', e.target.value)}
+              placeholder="+380671234567" />
+          </div>
+          <Input label="IBAN" value={seller.iban}
+            onChange={(e) => setSellerField('iban', e.target.value)}
+            placeholder="UA00 3052 9900 0000 0000 0000 00000" />
+          <Input label="Банк" value={seller.bank}
+            onChange={(e) => setSellerField('bank', e.target.value)}
+            placeholder="АТ КБ «ПриватБанк»" />
+          <Input label="Адреса" value={seller.address}
+            onChange={(e) => setSellerField('address', e.target.value)}
+            placeholder="м. Київ, вул. Автозапчастин, 1" />
+          <Input label="Підписант (директор / ФОП)" value={seller.director}
+            onChange={(e) => setSellerField('director', e.target.value)}
+            placeholder="Петренко А.В." />
+          <div>
+            <Button type="button" onClick={handleSaveSeller} loading={sellerSaving} icon={<Save size={16} />}>
+              Зберегти реквізити
+            </Button>
+          </div>
+        </Card>
 
         {/* ========== Помічник АІ (Gemini) ========== */}
         {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}

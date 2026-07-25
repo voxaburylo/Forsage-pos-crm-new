@@ -16,6 +16,7 @@ import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
+import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
 
 interface Payment {
   id: string
@@ -369,6 +370,49 @@ export default function OrderDetailPage() {
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                 >
                   🖨 Квитанція
+                </button>
+                <button
+                  onClick={() => {
+                    const seller = loadSellerRequisites()
+                    if (!hasSellerRequisites(seller)) toast.warning('Реквізити продавця не заповнені (Налаштування → Реквізити продавця)')
+                    try {
+                      printInvoice(order, seller)
+                    } catch (err) {
+                      console.error(err)
+                      toast.error('Не вдалося сформувати рахунок. Перевірте, чи не заблоковані спливаючі вікна.')
+                    }
+                    setActionsOpen(false)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  🧾 Рахунок-фактура
+                </button>
+                <button
+                  onClick={() => {
+                    const seller = loadSellerRequisites()
+                    if (!hasSellerRequisites(seller)) toast.warning('Реквізити продавця не заповнені (Налаштування → Реквізити продавця)')
+                    try {
+                      printDeliveryNote(order, seller)
+                    } catch (err) {
+                      console.error(err)
+                      toast.error('Не вдалося сформувати накладну. Перевірте, чи не заблоковані спливаючі вікна.')
+                    }
+                    setActionsOpen(false)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  📄 Видаткова накладна
+                </button>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(orderMessengerText(order))
+                      .then(() => toast.success('Скопійовано для месенджера'))
+                      .catch(() => toast.error('Не вдалося скопіювати'))
+                    setActionsOpen(false)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
+                >
+                  💬 Копіювати для месенджера
                 </button>
                 <button
                   onClick={() => {

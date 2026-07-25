@@ -10,7 +10,8 @@ import { supplierApi } from '@/features/suppliers/supplierApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { Button, Input, Card, Modal } from '@/components/ui'
+import { Button, Input, Card } from '@/components/ui'
+import { buildMessengerText } from './orderDocuments'
 import { toast } from '@/components/ui/Toast'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
@@ -645,42 +646,12 @@ export default function OrderFormPage() {
     return () => { cancelled = true; window.clearTimeout(t) }
   }, [search])
 
-  // Форма «Товар під замовлення»: менеджер сам знайшов запчастину в постачальника
-  // і вносить її вручну. Зберігається в тому ж замовленні зі статусом «Під замовлення».
-  const emptyBackorder = { name: '', brand: '', sku: '', qty: '1', supplier_id: '', buy_price: '', sell_price: '', expected_date: '' }
-  const [backorderOpen, setBackorderOpen] = useState(false)
-  const [backorder, setBackorder] = useState({ ...emptyBackorder })
-
+  // Товар не знайдено в базі → одразу додаємо inline-рядок «під замовлення»
+  // з підставленою назвою. Без окремого модального вікна — заповнюємо прямо тут.
   function openBackorder() {
-    setBackorder({ ...emptyBackorder, name: search.trim() })
-    setBackorderOpen(true)
-  }
-
-  function submitBackorder() {
-    const name = [backorder.brand.trim(), backorder.name.trim()].filter(Boolean).join(' ')
-    if (!name) { toast.error('Вкажіть назву товару'); return }
-    if (!backorder.supplier_id) { toast.error('Оберіть постачальника'); return }
-    const sell = parseFloat(backorder.sell_price.replace(',', '.'))
-    if (!Number.isFinite(sell) || sell <= 0) { toast.error('Вкажіть ціну продажу клієнту'); return }
-    const qtyNum = Math.max(1, parseInt(backorder.qty) || 1)
-    setItems((rows) => {
-      const base = rows.filter((r) => r.name.trim())
-      return [...base, {
-        ...EMPTY_ITEM,
-        name,
-        sku: backorder.sku.trim(),
-        qty: String(qtyNum),
-        sell_price: backorder.sell_price.replace(',', '.') || '0',
-        buy_price: backorder.buy_price.replace(',', '.') || '0',
-        supplier_id: backorder.supplier_id,
-        expected_date: backorder.expected_date || '',
-        product_id: null,
-      }]
-    })
-    setBackorderOpen(false)
+    addManualItemRow(search.trim())
     setSearch('')
     setSearchResults([])
-    toast.success(`Додано під замовлення: ${name}`)
   }
   function addProductAsItem(p: Product) {
     setItems((rows) => {
@@ -707,14 +678,57 @@ export default function OrderFormPage() {
     toast.success(`Додано: ${p.name}`)
   }
 
+  // Копіювання списку для месенджера (підтвердження клієнту)
+  async function copyMessengerText() {
+    const validItems = items.filter((r) => r.name.trim())
+    if (!validItems.length) { toast.error('Немає позицій для копіювання'); return }
+    const veh = selectedVehicle
+      ? { vin: selectedVehicle.vin, make: selectedVehicle.brand, model: selectedVehicle.model }
+      : loadedVehicleInfo
+        ? { vin: loadedVehicleInfo.vin, make: loadedVehicleInfo.make, model: loadedVehicleInfo.model }
+        : null
+    const car = veh ? [veh.make, veh.model].filter(Boolean).join(' ') : ''
+    const text = buildMessengerText({
+      vin: veh?.vin ?? null,
+      car: car || null,
+      lines: validItems.map((r) => ({
+        name: r.name.trim(),
+        qty: parseFloat(r.qty) || 1,
+        unitHrn: parseFloat((r.sell_price || '0').replace(',', '.')) || 0,
+      })),
+      fullyPaid: false,
+    })
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('Скопійовано для месенджера')
+    } catch {
+      toast.error('Не вдалося скопіювати')
+    }
+  }
+
   // Items manipulation
   function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)) }
   function updateItem<K extends keyof ItemRow>(i: number, key: K, val: ItemRow[K]) {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
-  function addManualItemRow() {
-    setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true }])
+  function addManualItemRow(name = '') {
+    setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true, name }])
+  }
+
+  // Швидка націнка: рахує ціну продажу від закупки за обраним відсотком.
+  const MARKUP_PRESETS = [20, 30, 40, 50, 70, 100]
+  function applyMarkup(index: number, pct: number) {
+    setItems((rows) => rows.map((row, i) => {
+      if (i !== index) return row
+      const buy = parseFloat((row.buy_price || '0').replace(',', '.')) || 0
+      if (buy <= 0) {
+        toast.error('Спершу вкажіть ціну закупки')
+        return row
+      }
+      const sell = Math.round(buy * (1 + pct / 100) * 100) / 100
+      return { ...row, sell_price: String(sell) }
+    }))
   }
 
 
@@ -744,8 +758,9 @@ export default function OrderFormPage() {
 
   // Сума до сплати: знижка береться з картки клієнта у касі, у замовленні її не дублюємо.
   const toPayKop = Math.max(0, totalKop)
-  // Submit Order / Save Draft
-  async function handleSave(asDraft: boolean) {
+  // Форма завжди зберігає РЕАЛЬНЕ відкрите замовлення (очікує відповідь клієнта).
+  // Рукописні чернетки — окрема сутність (розділ «Чернетки»/QuickDraft).
+  async function handleSave() {
     const validItems = items.filter((row) => row.name.trim())
     if (validItems.length === 0) {
       toast.error('Додайте хоча б одну позицію з назвою')
@@ -754,7 +769,7 @@ export default function OrderFormPage() {
     }
 
     // ORD-5: не дати випадково оформити замовлення на 0 грн
-    if (!asDraft && toPayKop === 0) {
+    if (toPayKop === 0) {
       if (!confirm('Сума замовлення 0 ₴. Оформити замовлення без вартості?')) {
         setStep(3)
         return
@@ -762,7 +777,7 @@ export default function OrderFormPage() {
     }
 
     // ORD-27: попередження про можливий дубль (той самий клієнт+сума за короткий проміжок)
-    if (!asDraft && !id && customerId && totalKop > 0) {
+    if (!id && customerId && totalKop > 0) {
       try {
         const recent = await orderApi.list()
         const cutoff = Date.now() - 30 * 60 * 1000
@@ -797,7 +812,7 @@ export default function OrderFormPage() {
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
       source: 'walk_in',
-      parent_draft_id: !asDraft ? sourceDraftId : null,
+      parent_draft_id: null,
       vehicle_info: vehicleInfo,
       comment: finalComment || null,
       // Гроші приймаються тільки через касу: там є зміна, ПРРО, борги і журнал дій.
@@ -829,27 +844,19 @@ export default function OrderFormPage() {
       } else {
         const result = await orderApi.create(payload)
         const newOrder = (result as { data: { id: string } }).data
-        
-        if (asDraft) {
-          toast.success('Чернетку збережено')
-          navigate('/orders?tab=drafts')
-        } else {
-          // Без передоплати бекенд створює lead. Якщо менеджер натиснув "оформити замовлення",
-          // переводимо запис у робоче замовлення; оплату пізніше прийме касир у касі.
-          try {
-            await orderApi.updateStatus(newOrder.id, 'new')
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Не вдалося активувати замовлення'
-            toast.warning(`${msg}. Збережено як чернетку — виправте і активуйте з картки замовлення.`)
-            navigate('/orders/' + newOrder.id)
-            return
-          }
-          if (sourceDraftId) {
-            await orderApi.delete(sourceDraftId).catch(() => {})
-          }
-          toast.success('Замовлення оформлено!')
+
+        // Без передоплати бекенд створює lead. Одразу переводимо запис у робоче
+        // (відкрите) замовлення; оплату пізніше прийме касир у касі.
+        try {
+          await orderApi.updateStatus(newOrder.id, 'new')
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Не вдалося активувати замовлення'
+          toast.warning(`${msg}. Виправте і активуйте з картки замовлення.`)
           navigate('/orders/' + newOrder.id)
+          return
         }
+        toast.success('Замовлення оформлено!')
+        navigate('/orders/' + newOrder.id)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка збереження')
@@ -886,7 +893,7 @@ export default function OrderFormPage() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        saveRef.current(step !== 4)
+        saveRef.current()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -1430,16 +1437,27 @@ export default function OrderFormPage() {
                                 className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
                               />
                             </label>
-                            <label className="lg:col-span-2">
+                            <label className="lg:col-span-3">
                               <span className="mb-1 block text-[11px] font-medium text-gray-500">Продаж, грн</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={row.sell_price}
-                                onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              />
+                              <div className="flex gap-1">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={row.sell_price}
+                                  onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
+                                  className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                                />
+                                <select
+                                  value=""
+                                  title="Швидка націнка від закупки"
+                                  onChange={(e) => { const pct = Number(e.target.value); if (pct) applyMarkup(idx, pct); e.target.value = '' }}
+                                  className="shrink-0 rounded-lg border border-gray-200 bg-white px-1.5 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-300"
+                                >
+                                  <option value="">+%</option>
+                                  {MARKUP_PRESETS.map((p) => <option key={p} value={p}>+{p}%</option>)}
+                                </select>
+                              </div>
                             </label>
                           </div>
                         </div>
@@ -1493,7 +1511,7 @@ export default function OrderFormPage() {
               <div className="border-t border-gray-100 p-3">
                 <button
                   type="button"
-                  onClick={addManualItemRow}
+                  onClick={() => addManualItemRow()}
                   className="flex w-full items-center justify-center gap-2 rounded-xl bg-yellow-400 px-4 py-3 text-sm font-bold text-gray-900 transition-colors hover:bg-yellow-500"
                 >
                   <Plus size={17} />
@@ -1633,21 +1651,18 @@ export default function OrderFormPage() {
                 : <span className="text-xs text-gray-400 hidden sm:block">Ctrl+S — {id ? 'зберегти зміни' : 'оформити замовлення'}</span>}
 
               <div className="flex gap-2 w-full sm:w-auto">
-                {/* Кнопка «як чернетку» лише при СТВОРЕННІ — при редагуванні наявного замовлення вона не має сенсу */}
-                {!id && (
-                  <Button
-                    variant="secondary"
-                    disabled={saving}
-                    className="flex-1 sm:flex-initial"
-                    onClick={() => handleSave(true)}
-                  >
-                    Зберегти як Чернетку
-                  </Button>
-                )}
+                <Button
+                  variant="secondary"
+                  disabled={saving || !hasValidItems}
+                  className="flex-1 sm:flex-initial"
+                  onClick={copyMessengerText}
+                >
+                  💬 Копіювати для месенджера
+                </Button>
                 <Button
                   disabled={saving}
                   className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
-                  onClick={() => handleSave(false)}
+                  onClick={() => handleSave()}
                 >
                   {id ? 'Зберегти зміни' : 'Оформити замовлення'}
                 </Button>
@@ -1715,65 +1730,6 @@ export default function OrderFormPage() {
           </div>
         </aside>
       )}
-
-      <Modal open={backorderOpen} onClose={() => setBackorderOpen(false)} title="Товар під замовлення" size="md">
-        <div className="space-y-3">
-          <p className="text-xs text-gray-500">
-            Знайдіть запчастину на сайті постачальника і внесіть дані вручну. Позиція додасться в замовлення зі статусом «Під замовлення».
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="sm:col-span-2">
-              <label className="block text-xs text-gray-500 mb-1">Назва товару *</label>
-              <Input value={backorder.name} autoFocus
-                onChange={(e) => setBackorder((b) => ({ ...b, name: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Бренд</label>
-              <Input value={backorder.brand} placeholder="напр. BOSCH"
-                onChange={(e) => setBackorder((b) => ({ ...b, brand: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Артикул</label>
-              <Input value={backorder.sku}
-                onChange={(e) => setBackorder((b) => ({ ...b, sku: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Кількість</label>
-              <Input type="number" min="1" value={backorder.qty}
-                onChange={(e) => setBackorder((b) => ({ ...b, qty: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Постачальник *</label>
-              <SupplierQuickPicker
-                suppliers={suppliers}
-                value={backorder.supplier_id}
-                onChange={(supplierId) => setBackorder((b) => ({ ...b, supplier_id: supplierId }))}
-                onCreate={createSupplierFromName}
-                placeholder="Пошук або новий постачальник"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Закупка, грн</label>
-              <Input type="number" min="0" step="any" value={backorder.buy_price}
-                onChange={(e) => setBackorder((b) => ({ ...b, buy_price: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Ціна продажу клієнту, грн *</label>
-              <Input type="number" min="0" step="any" value={backorder.sell_price}
-                onChange={(e) => setBackorder((b) => ({ ...b, sell_price: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Очікувана дата надходження</label>
-              <Input type="date" value={backorder.expected_date}
-                onChange={(e) => setBackorder((b) => ({ ...b, expected_date: e.target.value }))} />
-            </div>
-          </div>
-          <div className="flex gap-2 justify-end pt-1">
-            <Button type="button" variant="secondary" onClick={() => setBackorderOpen(false)}>Скасувати</Button>
-            <Button type="button" onClick={submitBackorder}>Додати в замовлення</Button>
-          </div>
-        </div>
-      </Modal>
 
     </Layout>
   )
