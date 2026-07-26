@@ -211,7 +211,6 @@ export default function ActiveSession() {
   const [applyNewPrice, setApplyNewPrice] = useState(true)
   // Завершення ревізії та масова націнка — власні модалки замість prompt/confirm
   const [completeOpen, setCompleteOpen] = useState(false)
-  const [completeTyped, setCompleteTyped] = useState('')
   const [pctOpen, setPctOpen] = useState(false)
   const [pctValue, setPctValue] = useState('10')
   const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
@@ -466,7 +465,9 @@ export default function ActiveSession() {
     if (!id) return
     initAudio()
     try {
-      const response = await inventoryApi.count(id, { product_id: product.id, qty: 1, price_checked: true, observed_retail_price: null }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: unknown; session: SessionData }
+      // Швидкий скан рахує ЛИШЕ кількість, ціну не перевіряє — інакше статистика
+      // «Ціну перевірено» роздувалась до всіх порахованих і не відповідала дійсності.
+      const response = await inventoryApi.count(id, { product_id: product.id, qty: 1, price_checked: false, observed_retail_price: null }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: unknown; session: SessionData }
       setSession(response.session)
       const updatedItem = response.session.items.find((item) => item.product_id === product.id)
       const counted = Number(updatedItem?.counted_stock ?? 1)
@@ -955,17 +956,11 @@ export default function ActiveSession() {
   // (десктоп-каса) prompt() не реалізує — кнопка «Завершити» просто мовчала.
   function openCompleteConfirm() {
     if (!session || !canComplete) return
-    setCompleteTyped('')
     setCompleteOpen(true)
   }
 
   async function completeSession() {
     if (!id || !session || !canComplete || completing) return
-    const missing = Math.max(0, session.summary.total_products - session.summary.counted_products)
-    const priceIssues = session.summary.price_mismatch_products ?? 0
-    if (missing > 0 || priceIssues > 0) {
-      if (completeTyped.trim().toUpperCase() !== 'ЗАВЕРШИТИ') return
-    }
     setCompleting(true)
     toast.success('Застосовую залишки ревізії...')
     try {
@@ -1501,38 +1496,25 @@ export default function ActiveSession() {
         {(() => {
           const missing = Math.max(0, (session.summary.total_products ?? 0) - (session.summary.counted_products ?? 0))
           const priceIssues = session.summary.price_mismatch_products ?? 0
-          const needsTyping = missing > 0 || priceIssues > 0
+          const hasWarnings = missing > 0 || priceIssues > 0
           return (
             <div className="space-y-4">
-              {needsTyping ? (
-                <>
-                  <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-800 space-y-1">
-                    <p className="font-semibold flex items-center gap-1.5"><AlertTriangle size={15} /> Увага!</p>
-                    <p>Не пораховано: <strong>{missing}</strong> товарів.</p>
-                    <p>Розбіжностей цін: <strong>{priceIssues}</strong>.</p>
-                    <p className="pt-1">Непораховані залишки стануть <strong>нульовими</strong>.</p>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">
-                      Для підтвердження введіть <strong>ЗАВЕРШИТИ</strong>
-                    </label>
-                    <Input value={completeTyped} autoFocus
-                      onChange={(e) => setCompleteTyped(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') completeSession() }}
-                      placeholder="ЗАВЕРШИТИ" />
-                  </div>
-                </>
+              {hasWarnings ? (
+                <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-800 space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5"><AlertTriangle size={15} /> Увага!</p>
+                  {missing > 0 && <p>Не пораховано: <strong>{missing}</strong> товарів — їх залишки стануть <strong>нульовими</strong>.</p>}
+                  {priceIssues > 0 && <p>Розбіжностей цін: <strong>{priceIssues}</strong>.</p>}
+                  <p className="pt-1">Завершити ревізію та застосувати фактичні залишки?</p>
+                </div>
               ) : (
                 <p className="text-sm text-gray-600">
                   Завершити ревізію та застосувати всі фактичні залишки?
                 </p>
               )}
               <div className="flex gap-2 justify-end">
-                <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Скасувати</Button>
-                <Button onClick={completeSession} loading={completing}
-                  disabled={needsTyping && completeTyped.trim().toUpperCase() !== 'ЗАВЕРШИТИ'}
-                  icon={<CheckCircle size={16} />}>
-                  Завершити
+                <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Ні</Button>
+                <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
+                  Так, завершити
                 </Button>
               </div>
             </div>
