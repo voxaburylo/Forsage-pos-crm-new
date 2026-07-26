@@ -30,12 +30,15 @@ function enrich(order: any): EnrichedCustomerOrder {
   }
 }
 
+// У чергу збірки — лише ПІДТВЕРДЖЕНІ замовлення («В замовлення» → 'ordered' і далі).
+// Відкриті (lead/new), що чекають відповіді клієнта, сюди не потрапляють.
+const PICKING_STATUSES = ['ordered', 'in_progress', 'arrived', 'called', 'no_answer', 'ready']
 async function localOrders(): Promise<EnrichedCustomerOrder[]> {
   const orders = desktopBridge()?.orders
   if (!orders?.list) return []
   const rows = await orders.list({ limit: 500, offset: 0 })
   return (rows ?? [])
-    .filter((order: any) => !['completed', 'canceled'].includes(order.status))
+    .filter((order: any) => PICKING_STATUSES.includes(order.status))
     .map(enrich)
 }
 

@@ -32,7 +32,9 @@ router.get('/orders', async (req, res, next) => {
       .from('customer_orders')
       .select('*, customer:customers(id, full_name, phone), items:customer_order_items(*)')
       .eq('tenant_id', req.user!.tenant_id)
-      .in('status', ['new', 'ordered', 'ready'])
+      // Лише ПІДТВЕРДЖЕНІ замовлення («В замовлення» і далі). Відкриті (lead/new),
+      // що ще чекають відповіді клієнта, у чергу збірки не потрапляють.
+      .in('status', ['ordered', 'in_progress', 'arrived', 'called', 'no_answer', 'ready'])
       .in('id', orderIds)
       .is('pickup_cell', null)
       .order('created_at', { ascending: false })
