@@ -15,6 +15,7 @@ export interface POSItem {
   qtyOnHand: number    // поточний залишок на складі
   requiresCoreReturn?: boolean
   coreDepositAmount?: number
+  photoUrl?: string | null // фото товару для показу в кошику
 }
 
 export interface POSCustomer {

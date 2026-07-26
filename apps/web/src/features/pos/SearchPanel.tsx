@@ -530,6 +530,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       qtyOnHand: qtyAvailable,
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
+      photoUrl: p.photo_url ?? null,
     })
     // Після вибору товару клавіатура знову належить сканеру.
     inputRef.current?.blur()

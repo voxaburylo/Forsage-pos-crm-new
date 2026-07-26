@@ -56,6 +56,7 @@ export function CrossSellPanel() {
       qty: 1, unitPrice: p.retail_price, discount, discountPct: tierPct > 0 ? tierPct : undefined, qtyOnHand: p.qty_on_hand,
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
+      photoUrl: p.photo_url ?? null,
     })
     playSuccessBeep()
     setSuggestions((prev) => prev.filter((s) => s.id !== p.id))

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { ToastContainer } from '@/components/ui'
@@ -84,6 +84,18 @@ function Loader() {
 function App() {
   const desktop = isDesktopRuntime()
   const Router = desktop ? HashRouter : BrowserRouter
+
+  // Захист від випадкової зміни числа колесом миші: якщо курсор над сфокусованим
+  // числовим полем і крутиш колесо — браузер міняє значення. У касі/ревізії це
+  // небезпечно (тихо міняється кількість/ціна). Знімаємо фокус — колесо гортає сторінку.
+  useEffect(() => {
+    const onWheel = () => {
+      const el = document.activeElement as HTMLInputElement | null
+      if (el && el.tagName === 'INPUT' && el.type === 'number') el.blur()
+    }
+    document.addEventListener('wheel', onWheel, { passive: true })
+    return () => document.removeEventListener('wheel', onWheel)
+  }, [])
 
   return (
     <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>

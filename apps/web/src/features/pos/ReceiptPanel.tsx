@@ -78,6 +78,14 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
         }`}
       >
         <div className="flex items-start justify-between gap-2 mb-1.5">
+          {item.photoUrl && (
+            <img
+              src={item.photoUrl}
+              alt=""
+              className="w-9 h-9 shrink-0 rounded-lg border border-gray-700 object-cover"
+              loading="lazy"
+            />
+          )}
           <div className="flex-1 min-w-0">
             <p className="text-white text-sm leading-tight truncate font-medium flex items-center gap-1.5">
               {item.name}
