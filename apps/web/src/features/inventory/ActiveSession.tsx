@@ -1494,23 +1494,26 @@ export default function ActiveSession() {
 
       <Modal open={completeOpen} onClose={() => setCompleteOpen(false)} title="Завершити ревізію" size="sm">
         {(() => {
-          const missing = Math.max(0, (session.summary.total_products ?? 0) - (session.summary.counted_products ?? 0))
+          const counted = session.summary.counted_products ?? 0
+          const missing = Math.max(0, (session.summary.total_products ?? 0) - counted)
           const priceIssues = session.summary.price_mismatch_products ?? 0
-          const hasWarnings = missing > 0 || priceIssues > 0
           return (
             <div className="space-y-4">
-              {hasWarnings ? (
-                <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-800 space-y-1">
-                  <p className="font-semibold flex items-center gap-1.5"><AlertTriangle size={15} /> Увага!</p>
-                  {missing > 0 && <p>Не пораховано: <strong>{missing}</strong> товарів — їх залишки стануть <strong>нульовими</strong>.</p>}
-                  {priceIssues > 0 && <p>Розбіжностей цін: <strong>{priceIssues}</strong>.</p>}
-                  <p className="pt-1">Завершити ревізію та застосувати фактичні залишки?</p>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-600">
-                  Завершити ревізію та застосувати всі фактичні залишки?
-                </p>
-              )}
+              {/* ВАЖЛИВО: завершення застосовує залишки ЛИШЕ для порахованих товарів.
+                  Непораховані НЕ обнуляються — їхній залишок лишається як є (перевірено:
+                  desktop complete, серверний sync і RPC complete_inventory_session). */}
+              <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 text-sm text-blue-900 space-y-1">
+                <p>Буде застосовано фактичні залишки для <strong>{counted}</strong> порахованих товарів.</p>
+                {missing > 0 && (
+                  <p>Решта <strong>{missing}</strong> товарів <strong>не зміняться</strong> — їхні залишки залишаються без змін.</p>
+                )}
+                {priceIssues > 0 && (
+                  <p className="flex items-center gap-1.5 pt-1 font-semibold text-red-700">
+                    <AlertTriangle size={14} /> Розбіжностей цін: {priceIssues} — варто перевірити перед завершенням.
+                  </p>
+                )}
+              </div>
+              <p className="text-sm text-gray-600">Завершити ревізію?</p>
               <div className="flex gap-2 justify-end">
                 <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Ні</Button>
                 <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
