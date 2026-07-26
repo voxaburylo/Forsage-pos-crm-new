@@ -144,6 +144,32 @@ export default function WarehousePicking() {
     }
   }
 
+  // Позначити позицію постачальника («під замовлення») як таку, що надійшла / ні.
+  // Раніше ці позиції були лише для перегляду — комплектацію не можна було завершити.
+  async function handleSupplierArrival(item: EnrichedOrderItem, arrived: boolean) {
+    if (!currentOrder) return
+    const newStatus: EnrichedOrderItem['item_status'] = arrived ? 'arrived' : 'pending'
+    try {
+      await pickingApi.pickItem(item.id, newStatus)
+      if (arrived) { playSuccessBeep(); toast.success('Позицію позначено як «Надійшло»') }
+      else { playWarning(); toast.success('Статус позиції скинуто') }
+
+      const updatedItems = currentOrder.items.map((i) => i.id === item.id ? { ...i, item_status: newStatus } : i)
+      setCurrentOrder({ ...currentOrder, items: updatedItems })
+
+      const allWarehousePicked = updatedItems
+        .filter((i) => i.source_type === 'warehouse')
+        .every((i) => i.item_status === 'arrived' || i.item_status === 'handed')
+      const allSupplierReady = updatedItems
+        .filter((i) => i.source_type === 'supplier')
+        .every((i) => i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled')
+      if (arrived && allWarehousePicked && allSupplierReady) setCellModalOpen(true)
+    } catch (err: any) {
+      playErrorTone()
+      toast.error(err?.message || 'Помилка оновлення статусу позиції')
+    }
+  }
+
   // Зібрати всі товари складу в один клік
   async function handlePickAll() {
     if (!currentOrder) return
@@ -300,7 +326,9 @@ export default function WarehousePicking() {
     
     const pickedCount = warehouseItems.filter(i => i.item_status === 'arrived' || i.item_status === 'handed').length
     const totalCount = warehouseItems.length
-    const warehouseFinished = pickedCount === totalCount && totalCount > 0
+    // Замовлення може складатися лише з позицій «під замовлення» (без складу) —
+    // тоді складська частина вважається готовою автоматично.
+    const warehouseFinished = totalCount === 0 ? true : pickedCount === totalCount
     const suppliersReady = supplierItems.every(i =>
       i.item_status === 'arrived' || i.item_status === 'handed' || i.item_status === 'canceled'
     )
@@ -485,22 +513,44 @@ export default function WarehousePicking() {
               <h4 className="font-semibold text-gray-500 text-sm uppercase tracking-wider flex items-center gap-2">
                 <Clock size={16} /> Позиції під замовлення від постачальників
               </h4>
-              <div className="space-y-2 opacity-75">
-                {supplierItems.map(item => (
-                  <div key={item.id} className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl p-4 text-sm">
-                    <div>
-                      <div className="font-medium text-gray-800">{item.name}</div>
-                      <div className="flex gap-4 mt-1.5 text-xs text-gray-400">
-                        {item.sku && <span>Арт: <strong className="font-mono">{item.sku}</strong></span>}
-                        <span>Кількість: <strong>{item.qty} шт</strong></span>
-                        <span>Статус: <Badge color={item.item_status === 'arrived' ? 'green' : 'yellow'}>{getItemStatusLabel(item.item_status)}</Badge></span>
+              <div className="space-y-2">
+                {supplierItems.map(item => {
+                  const arrived = item.item_status === 'arrived' || item.item_status === 'handed'
+                  const canceled = item.item_status === 'canceled'
+                  return (
+                    <div key={item.id} className={`flex items-center justify-between border rounded-xl p-4 text-sm transition-all ${arrived ? 'bg-green-50/50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                      <div className="min-w-0 pr-4">
+                        <div className="font-medium text-gray-800">{item.name}</div>
+                        <div className="flex gap-4 mt-1.5 text-xs text-gray-400 flex-wrap">
+                          {item.sku && <span>Арт: <strong className="font-mono">{item.sku}</strong></span>}
+                          <span>Кількість: <strong>{item.qty} шт</strong></span>
+                          {item.expected_date && <span>Очікуємо: <strong>{formatDate(item.expected_date)}</strong></span>}
+                          <span>Статус: <Badge color={arrived ? 'green' : canceled ? 'gray' : 'yellow'}>{getItemStatusLabel(item.item_status)}</Badge></span>
+                        </div>
                       </div>
+                      {!canceled && (
+                        <div className="shrink-0">
+                          {arrived ? (
+                            <Button
+                              variant="secondary"
+                              className="bg-green-100 hover:bg-green-200 text-green-800 border-none flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
+                              onClick={() => handleSupplierArrival(item, false)}
+                            >
+                              <CheckCircle size={14} /> Надійшло · скасувати
+                            </Button>
+                          ) : (
+                            <Button
+                              onClick={() => handleSupplierArrival(item, true)}
+                              className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold px-4 py-2 text-xs flex items-center gap-1"
+                            >
+                              <CheckSquare size={14} /> Надійшло
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div className="text-xs text-gray-400 italic">
-                      Надходить через постачальника
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
