@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, memo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangle, Camera, CheckCircle, ChevronDown, Copy, PackageCheck,
@@ -1546,7 +1546,7 @@ export default function ActiveSession() {
 // Один рядок товару в ревізії: кількість і ціна редагуються прямо тут.
 // Поля неконтрольовані (defaultValue + key) — зберігаються на blur/Enter і
 // не збивають фокус при фоновому оновленні кожні 8с.
-function InventoryRow({
+function InventoryRowBase({
   item, isActive, canEditPrice, selected,
   onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, highlighted, onRemove,
 }: {
@@ -1677,3 +1677,16 @@ function InventoryRow({
     </div>
   )
 }
+
+// Мемоізуємо рядок ревізії: інакше кожне натискання клавіші в батьківському
+// компоненті (напр. у вікні створення товару) перемальовувало ВСІ рядки й ввід
+// «залипав». Порівнюємо лише значущі поля; функції-обробники ігноруємо — вони
+// логічно стабільні (closure над item + стабільними сеттерами стану).
+const InventoryRow = memo(InventoryRowBase, (prev, next) =>
+  prev.item === next.item &&
+  prev.isActive === next.isActive &&
+  prev.canEditPrice === next.canEditPrice &&
+  prev.selected === next.selected &&
+  prev.labelPrinting === next.labelPrinting &&
+  prev.highlighted === next.highlighted,
+)

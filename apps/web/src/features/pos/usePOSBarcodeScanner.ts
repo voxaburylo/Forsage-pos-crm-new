@@ -69,20 +69,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     let fieldBuf = ''
     let fieldFirstAt = 0
     let fieldLastAt = 0
-    const scannerSink = document.createElement('input')
-    scannerSink.type = 'text'
-    scannerSink.readOnly = true
-    scannerSink.tabIndex = -1
-    scannerSink.setAttribute('aria-hidden', 'true')
-    scannerSink.dataset.posScannerCapture = 'true'
-    scannerSink.style.position = 'fixed'
-    scannerSink.style.left = '-10000px'
-    scannerSink.style.top = '0'
-    scannerSink.style.width = '1px'
-    scannerSink.style.height = '1px'
-    scannerSink.style.opacity = '0'
-    scannerSink.style.pointerEvents = 'none'
-    document.body.appendChild(scannerSink)
 
     const clearTimer = () => {
       if (idleTimer !== null) window.clearTimeout(idleTimer)
@@ -107,12 +93,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       return avg <= FIELD_AVG_INTERVAL_MS
     }
 
-    const focusScannerSurface = () => {
-      const active = document.activeElement
-      if (isExplicitInputMode(active)) return
-      scannerSink.focus({ preventScroll: true })
-    }
-
     const emitCode = (rawCode: string, event?: KeyboardEvent) => {
       const code = normalizeCode(rawCode)
       event?.preventDefault()
@@ -122,7 +102,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       resetField()
       if (code) {
         terminatorGuardUntil = Date.now() + TERMINATOR_GUARD_MS
-        focusScannerSurface()
         window.dispatchEvent(new CustomEvent('forsage:pos-scanner-stage', {
           detail: { stage: 'captured', code, at: Date.now() },
         }))
@@ -144,10 +123,6 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
         || element instanceof HTMLTextAreaElement
         || element.isContentEditable
     }
-
-    // Після запуску браузер/PWA іноді відновлює фокус на старій кнопці або
-    // полі. Один раз повертаємо його на поверхню сканера.
-    const focusFrame = window.requestAnimationFrame(focusScannerSurface)
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
@@ -252,12 +227,16 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       idleTimer = window.setTimeout(finishAfterIdle, IDLE_COMPLETE_MS)
     }
 
+    // Втрата фокуса вікна (alt-tab/клік поза застосунком) скидає стан сканера —
+    // щоб не лишалось «залиплого» захоплення клавіатури.
+    const handleWindowBlur = () => { reset(); resetField(); prefixGuardUntil = 0 }
+
     window.addEventListener('keydown', handleKeyDown, true)
+    window.addEventListener('blur', handleWindowBlur)
     return () => {
-      window.cancelAnimationFrame(focusFrame)
       clearTimer()
       window.removeEventListener('keydown', handleKeyDown, true)
-      scannerSink.remove()
+      window.removeEventListener('blur', handleWindowBlur)
     }
   }, [])
 }
