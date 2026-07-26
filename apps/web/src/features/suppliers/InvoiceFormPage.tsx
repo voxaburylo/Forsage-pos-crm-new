@@ -1080,15 +1080,16 @@ export default function InvoiceFormPage() {
   }
 
   // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
-  async function recalcRetail(onlyIndex?: number, forceUseGrid?: boolean, purchaseOverride?: number) {
-    const targets = onlyIndex !== undefined ? [onlyIndex] : items.map((_, i) => i)
+  async function recalcRetail(onlyIndex?: number | number[], forceUseGrid?: boolean, purchaseOverride?: number) {
+    const isSingle = typeof onlyIndex === 'number'
+    const targets = Array.isArray(onlyIndex) ? onlyIndex : isSingle ? [onlyIndex] : items.map((_, i) => i)
     const localSettings = forceUseGrid
       ? await adminApi.getSettings().then((res) => res.data as any).catch(() => null)
       : null
 
     const updates = await Promise.all(targets.map(async (idx) => {
       const it = items[idx]
-      const purchasePrice = purchaseOverride !== undefined && onlyIndex !== undefined ? purchaseOverride : it?.purchase_price
+      const purchasePrice = purchaseOverride !== undefined && isSingle ? purchaseOverride : it?.purchase_price
       if (!it || !purchasePrice || purchasePrice <= 0) return null
 
       if (forceUseGrid && localSettings) {
@@ -1107,7 +1108,7 @@ export default function InvoiceFormPage() {
     const validUpdates = updates.filter((u): u is { idx: number; retail: number } => u !== null)
     const map = new Map(validUpdates.map((u) => [u.idx, u.retail]))
     if (map.size === 0) {
-      if (onlyIndex === undefined) {
+      if (!isSingle) {
         toast.warning(forceUseGrid
           ? 'Не вдалося розрахувати за сіткою: перевірте правила націнки і закупівельні ціни'
           : 'Наценки категорій не задані — задайте їх у «Ціноутворення»'
@@ -1116,7 +1117,7 @@ export default function InvoiceFormPage() {
       return
     }
     setItems((prev) => prev.map((it, i) => map.has(i) ? { ...it, retail_price: map.get(i)! } : it))
-    if (onlyIndex === undefined) {
+    if (!isSingle) {
       toast.success(forceUseGrid
         ? `За сіткою перераховано ${map.size} позицій`
         : `Роздрібні ціни перераховано для ${map.size} позицій`
@@ -1133,17 +1134,19 @@ export default function InvoiceFormPage() {
     applyBulkQuickPercent(pct)
   }
 
-  // Застосування фіксованої націнки на всю накладну
+  // Групова націнка: до вибраних галочками (якщо є) або до всіх; галочки після — знімаються.
   function applyBulkQuickPercent(pct: number) {
     if (pct <= 0) return
+    const scope = selectedLineKeys.length ? new Set(selectedLineKeys) : null
     setItems((prev) =>
       prev.map((it) => {
+        if (scope && !scope.has(it.client_key)) return it
         if (it.purchase_price <= 0) return it
-        const calculatedRetail = Math.round(it.purchase_price * (1 + pct / 100))
-        return { ...it, retail_price: calculatedRetail }
+        return { ...it, retail_price: Math.round(it.purchase_price * (1 + pct / 100)) }
       })
     )
-    toast.success(`Встановлено націнку ${pct}% для всіх товарів`)
+    setSelectedLineKeys([])
+    toast.success(`Націнку ${pct}% застосовано ${scope ? 'до вибраних' : 'до всіх товарів'}`)
   }
 
   function applySingleQuickPercent(index: number, pct: number) {
@@ -1333,12 +1336,18 @@ export default function InvoiceFormPage() {
     setSelectedLineKeys(checked ? items.map((item) => item.client_key) : [])
   }
 
+  function selectedIndices(): number[] {
+    const set = new Set(selectedLineKeys)
+    return items.map((it, i) => (set.has(it.client_key) ? i : -1)).filter((i) => i >= 0)
+  }
+
   function applyBulkCategory() {
     if (selectedLineKeys.length === 0) { toast.warning('Виберіть товари галочками'); return }
     if (!bulkCategoryId) { toast.warning('Виберіть категорію'); return }
     const selected = new Set(selectedLineKeys)
     setItems((prev) => prev.map((item) => selected.has(item.client_key) ? { ...item, category_id: bulkCategoryId } : item))
     toast.success(`Категорію встановлено для ${selected.size} товарів`)
+    setSelectedLineKeys([]) // галочки знімаються автоматично після застосування
   }
 
   function appendLineItems(newItems: LineItem[]) {
@@ -1958,7 +1967,9 @@ export default function InvoiceFormPage() {
                         const val = e.target.value
                         setBulkMarkupSelection(val)
                         if (val === 'grid') {
-                          recalcRetail(undefined, true)
+                          const idxs = selectedLineKeys.length ? selectedIndices() : undefined
+                          recalcRetail(idxs, true)
+                          setSelectedLineKeys([])
                         } else if (val.startsWith('pct:')) {
                           const pct = parseFloat(val.split(':')[1])
                           applyBulkQuickPercent(pct)
@@ -1971,14 +1982,12 @@ export default function InvoiceFormPage() {
                       }}
                       className="border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white"
                     >
-                      <option value="">— Застосувати до всіх —</option>
-                      <option value="grid">📈 Розрахувати за сіткою</option>
+                      <option value="">Націнка…</option>
+                      <option value="grid">За таблицею</option>
                       {quickPercents.map((pct) => (
-                        <option key={pct} value={`pct:${pct}`}>
-                          ⚡ {pct}% націнки
-                        </option>
+                        <option key={pct} value={`pct:${pct}`}>{pct}%</option>
                       ))}
-                      <option value="manual">✍️ Свій відсоток націнки...</option>
+                      <option value="manual">Свій відсоток…</option>
                     </select>
                   </div>
                 )}
@@ -2201,28 +2210,30 @@ export default function InvoiceFormPage() {
                     </div>
                   </td>
                   <td className="px-2 py-2">
-                    <div className="flex flex-col gap-1 items-end">
+                    <div className="flex items-center justify-end gap-1">
                       <input ref={(el) => { retailRefs.current[i] = el }} type="text" inputMode="decimal"
                         value={moneyValue(i, 'retail_price', item.retail_price)}
-                      onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
-                      onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
-                      onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
-                      onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'retail')}
+                        onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
+                        onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
+                        onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
+                        onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'retail')}
                         onBlur={() => finishMoneyEdit(i, 'retail_price')}
                         disabled={isEdit}
-                        className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
-                      {!isEdit && quickPercents.length > 0 && (
+                        className="w-full min-w-[80px] text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
+                      {!isEdit && (
                         <select
+                          value=""
+                          title="Націнка: за таблицею або швидкий відсоток"
                           onChange={(e) => {
                             const val = e.target.value
-                            if (val) {
-                              applySingleQuickPercent(i, parseFloat(val))
-                              e.target.value = ''
-                            }
+                            if (val === 'grid') recalcRetail(i, true)
+                            else if (val) applySingleQuickPercent(i, parseFloat(val))
+                            e.target.value = ''
                           }}
-                          className="mt-1 border border-gray-200 rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white w-24"
+                          className="shrink-0 border border-gray-200 rounded px-1 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-yellow-400"
                         >
-                          <option value="">⚡ Швидкий %</option>
+                          <option value="">▾</option>
+                          <option value="grid">За таблицею</option>
                           {quickPercents.map((pct) => (
                             <option key={pct} value={pct}>{pct}%</option>
                           ))}
@@ -2414,14 +2425,18 @@ export default function InvoiceFormPage() {
                 </div>
 
                 <div className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2.5 py-2">
-                  {!isEdit && quickPercents.length > 0 ? (
+                  {!isEdit ? (
                     <select
+                      value=""
                       onChange={(e) => {
                         const val = e.target.value
-                        if (val) { applySingleQuickPercent(i, parseFloat(val)); e.target.value = '' }
+                        if (val === 'grid') recalcRetail(i, true)
+                        else if (val) applySingleQuickPercent(i, parseFloat(val))
+                        e.target.value = ''
                       }}
                       className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white">
-                      <option value="">Швидкий %</option>
+                      <option value="">Націнка ▾</option>
+                      <option value="grid">За таблицею</option>
                       {quickPercents.map((pct) => (
                         <option key={pct} value={pct}>{pct}%</option>
                       ))}
