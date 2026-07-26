@@ -281,8 +281,26 @@ export class LocalInventoryRepository {
     this.db.transaction(() => {
       for (const item of items) {
         if (!item.product_id) continue
+        const counted = num(item.counted_stock)
+        const prevRow = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
+          .get(item.product_id, tenantId) as { qty_on_hand?: number } | undefined
+        const prevQty = num(prevRow?.qty_on_hand ?? 0)
         this.db.prepare('UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
-          .run(num(item.counted_stock), timestamp, timestamp, item.product_id, tenantId)
+          .run(counted, timestamp, timestamp, item.product_id, tenantId)
+        // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,
+        // і списання ревізією було невидиме в історії товару).
+        const delta = counted - prevQty
+        if (delta !== 0) {
+          this.db.prepare(`
+            INSERT INTO inventory_movements (
+              id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+              unit_cost, notes, dirty_at, created_at, updated_at
+            ) VALUES (?, ?, ?, 'inventory', ?, ?, ?, 0, ?, ?, ?, ?)
+          `).run(
+            randomUUID(), tenantId, item.product_id, sessionId, delta, counted,
+            `Ревізія ${session.name ?? sessionId}`, timestamp, timestamp, timestamp,
+          )
+        }
         updated += 1
       }
       this.db.prepare(`

@@ -204,9 +204,22 @@ export class LocalCatalogRepository {
   deleteProduct(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
     const timestamp = nowIso()
     this.db.transaction(() => {
+      // Якщо на товарі є залишок — не ховаємо його «тихо» (раніше видалені товари
+      // лишались із qty>0 і склад застрягав). Списуємо в нуль зі слідом у русі складу.
+      const prev = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
+        .get(id, tenantId) as { qty_on_hand?: number } | undefined
+      const prevQty = Number(prev?.qty_on_hand ?? 0)
+      if (prevQty !== 0) {
+        this.db.prepare(`
+          INSERT INTO inventory_movements (
+            id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+            unit_cost, notes, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 'adjustment', ?, ?, 0, 0, ?, ?, ?, ?)
+        `).run(randomUUID(), tenantId, id, id, -prevQty, 'Списання залишку при видаленні товару', timestamp, timestamp, timestamp)
+      }
       this.db.prepare(`
         UPDATE products
-        SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        SET deleted_at = ?, qty_on_hand = 0, dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ?
       `).run(timestamp, timestamp, timestamp, id, tenantId)
       this.addProductOutbox('product.deleted', id, { id, tenant_id: tenantId } as LocalProductUpsert)
