@@ -5,6 +5,7 @@ import {
   Plus, Printer, Search, Trash2,
 } from 'lucide-react'
 import { pricingApi } from '@/features/admin/pricingApi'
+import { adminApi } from '@/features/admin/adminApi'
 import { productApi } from '@/features/products/productApi'
 import { inventoryApi } from '@/features/inventory/inventoryApi'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
@@ -222,6 +223,13 @@ export default function ActiveSession() {
   // DOM-вузлів (важкий скрол/ввід). Решту — за «показати всі».
   const [showAllCounted, setShowAllCounted] = useState(false)
   const COUNTED_RENDER_CAP = 150
+  // Швидкі відсотки націнки з налаштувань — для випадачки біля ціни в рядку.
+  const [quickPercents, setQuickPercents] = useState<number[]>([])
+  useEffect(() => {
+    adminApi.getSettings()
+      .then((r) => setQuickPercents(Array.isArray(r.data.quick_percents) ? r.data.quick_percents.filter((n) => Number(n) > 0) : []))
+      .catch(() => {})
+  }, [])
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   // Редагування цін товару прямо в сесії (без окремого вікна)
@@ -1422,6 +1430,7 @@ export default function ActiveSession() {
                   onSetPurchase={(value) => setItemPurchase(item, value)}
                   onSetRetail={(value) => setItemRetail(item, value)}
                   onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
+                  quickPercents={quickPercents}
                   onPrintLabel={() => printInventoryLabels(item)}
                   labelPrinting={printingLabels === item.id}
                   highlighted={highlightedItemId === item.id}
@@ -1561,7 +1570,7 @@ export default function ActiveSession() {
 // не збивають фокус при фоновому оновленні кожні 8с.
 function InventoryRowBase({
   item, isActive, canEditPrice, selected,
-  onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, onPrintLabel, labelPrinting, highlighted, onRemove,
+  onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, quickPercents, onPrintLabel, labelPrinting, highlighted, onRemove,
 }: {
   item: InventoryItem
   isActive: boolean
@@ -1574,6 +1583,7 @@ function InventoryRowBase({
   onSetPurchase: (value: string) => void
   onSetRetail: (value: string) => void
   onMarkup: (kind: 'percent' | 'table', pct?: number) => void
+  quickPercents: number[]
   onPrintLabel: () => void
   labelPrinting: boolean
   highlighted: boolean
@@ -1671,12 +1681,21 @@ function InventoryRowBase({
       </div>
       <div className="flex items-center gap-1.5 lg:justify-end">
         {canEditPrice && isActive && (
-          <>
-            <button type="button" onClick={() => onMarkup('percent', 30)}
-              className="rounded border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold text-gray-600 hover:bg-gray-100">+30%</button>
-            <button type="button" onClick={() => onMarkup('table')}
-              className="rounded border border-blue-200 bg-white px-2 py-1 text-[10px] font-semibold text-blue-600 hover:bg-blue-50">табл</button>
-          </>
+          <select
+            value=""
+            title="Розрахувати ціну: за таблицею націнки або швидкий відсоток"
+            onChange={(e) => {
+              const v = e.target.value
+              if (v === 'table') onMarkup('table')
+              else if (v) onMarkup('percent', parseFloat(v))
+              e.target.value = ''
+            }}
+            className="shrink-0 rounded border border-gray-200 bg-white px-1 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-yellow-400"
+          >
+            <option value="">▾</option>
+            <option value="table">За таблицею</option>
+            {quickPercents.map((p) => <option key={p} value={p}>{p}%</option>)}
+          </select>
         )}
         {product && (
           <button type="button" onClick={onPrintLabel} disabled={labelPrinting} aria-label="Надрукувати етикетки"
@@ -1701,5 +1720,6 @@ const InventoryRow = memo(InventoryRowBase, (prev, next) =>
   prev.canEditPrice === next.canEditPrice &&
   prev.selected === next.selected &&
   prev.labelPrinting === next.labelPrinting &&
-  prev.highlighted === next.highlighted,
+  prev.highlighted === next.highlighted &&
+  prev.quickPercents === next.quickPercents,
 )

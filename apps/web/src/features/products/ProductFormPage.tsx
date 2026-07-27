@@ -31,6 +31,8 @@ export default function ProductFormPage() {
   const [form, setForm] = useState<ProductFormData>(EMPTY)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Швидкі відсотки націнки з налаштувань (для випадачки біля ціни).
+  const [quickPercents, setQuickPercents] = useState<number[]>([])
 
   // Закупівельна ціна (маржа) — лише для власника/адміна/кладівника.
   // Касир/менеджер її не бачать (сервер її й не віддає) і НЕ надсилають при
@@ -62,7 +64,33 @@ export default function ProductFormPage() {
       setCategories(catRes.data)
       setBrands(brandRes.data)
     }).catch(() => {})
+    adminApi.getSettings()
+      .then((r) => setQuickPercents(Array.isArray(r.data.quick_percents) ? r.data.quick_percents.filter((n) => Number(n) > 0) : []))
+      .catch(() => {})
   }, [])
+
+  // Розрахунок роздрібної: «За таблицею» (правила націнки) або швидкий відсоток від закупки.
+  async function applyRetailMarkup(value: string) {
+    const purchase = Math.round(parseFloat((form.purchase_price || '0').replace(',', '.')) * 100)
+    if (!purchase) { toast.error('Спершу вкажіть закупівельну ціну'); return }
+    if (value === 'table') {
+      try {
+        const res = await pricingApi.autoRetail(purchase, form.category_id || undefined)
+        if (res.data.retail_price !== null) {
+          set('retail_price', (res.data.retail_price / 100).toFixed(2))
+          toast.success('Ціну розраховано за таблицею націнки')
+        } else {
+          toast.warning('Націнка для цього товару не налаштована')
+        }
+      } catch { toast.error('Помилка розрахунку') }
+      return
+    }
+    if (value.startsWith('pct:')) {
+      const pct = parseFloat(value.slice(4)) || 0
+      if (pct <= 0) return
+      set('retail_price', (Math.round(purchase * (1 + pct / 100)) / 100).toFixed(2))
+    }
+  }
 
   useEffect(() => {
     if (!isEdit) return
@@ -336,14 +364,27 @@ export default function ProductFormPage() {
                 />
               )}
               <div>
-                <Input
-                  label="Роздрібна ціна (₴) *"
-                  type="number" min="0" step="0.01"
-                  value={form.retail_price}
-                  onChange={(e) => set('retail_price', e.target.value)}
-                  placeholder="450.00"
-                  required
-                />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Роздрібна ціна (₴) *</label>
+                <div className="flex items-stretch gap-1">
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={form.retail_price}
+                    onChange={(e) => set('retail_price', e.target.value)}
+                    placeholder="450.00"
+                    required
+                    className="min-w-0 flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <select
+                    value=""
+                    title="Розрахувати ціну: за таблицею націнки або швидкий відсоток від закупки"
+                    onChange={(e) => { const v = e.target.value; if (v) applyRetailMarkup(v); e.target.value = '' }}
+                    className="shrink-0 border border-gray-200 rounded-lg px-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-accent"
+                  >
+                    <option value="">▾</option>
+                    <option value="table">За таблицею</option>
+                    {quickPercents.map((p) => <option key={p} value={`pct:${p}`}>{p}%</option>)}
+                  </select>
+                </div>
                 {form.purchase_price && form.retail_price
                   && parseFloat(form.purchase_price) > parseFloat(form.retail_price)
                   && (
@@ -352,25 +393,6 @@ export default function ProductFormPage() {
                       <span>Увага: ціна закупівлі вища за роздрібну (прибуток від'ємний). Товар буде збережено.</span>
                     </div>
                   )}
-                {form.purchase_price && (
-                  <button type="button"
-                    className="mt-1 text-xs text-yellow-600 hover:text-yellow-700 flex items-center gap-1"
-                    onClick={async () => {
-                      const purchase = Math.round(parseFloat(form.purchase_price || '0') * 100)
-                      if (!purchase) return
-                      try {
-                        const res = await pricingApi.autoRetail(purchase, form.category_id || undefined)
-                        if (res.data.retail_price !== null) {
-                          set('retail_price', (res.data.retail_price / 100).toFixed(2))
-                          toast.success('Ціну розраховано за правилами націнки')
-                        } else {
-                          toast.warning('Націнка для даного товару не налаштована')
-                        }
-                      } catch { toast.error('Помилка розрахунку') }
-                    }}>
-                    <Wand2 size={12} /> Розрахувати за націнкою
-                  </button>
-                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Одиниця</label>

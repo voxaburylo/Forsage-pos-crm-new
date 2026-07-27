@@ -8,6 +8,7 @@ import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
 import { adminApi } from '@/features/admin/adminApi'
+import { pricingApi } from '@/features/admin/pricingApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -803,6 +804,18 @@ export default function OrderFormPage() {
     }))
   }
 
+  // «За таблицею»: роздрібна за правилами націнки від закупки (як у картці товару/накладній).
+  async function applyMarkupTable(index: number) {
+    const row = items[index]
+    const buy = Math.round((parseFloat((row?.buy_price || '0').replace(',', '.')) || 0) * 100)
+    if (!buy) { toast.error('Спершу вкажіть ціну закупки'); return }
+    try {
+      const res = await pricingApi.autoRetail(buy)
+      if (res.data.retail_price != null) updateItem(index, 'sell_price', String(res.data.retail_price / 100))
+      else toast.warning('Націнка за таблицею не налаштована')
+    } catch { toast.error('Помилка розрахунку за таблицею') }
+  }
+
 
   async function createSupplierFromName(name: string): Promise<Supplier | null> {
     const cleanName = name.trim()
@@ -1527,12 +1540,13 @@ export default function OrderFormPage() {
                                 />
                                 <select
                                   value=""
-                                  title="Швидка націнка від закупки"
-                                  onChange={(e) => { const pct = Number(e.target.value); if (pct) applyMarkup(idx, pct); e.target.value = '' }}
+                                  title="Розрахувати ціну: за таблицею націнки або швидкий відсоток від закупки"
+                                  onChange={(e) => { const v = e.target.value; if (v === 'table') applyMarkupTable(idx); else if (v) applyMarkup(idx, Number(v)); e.target.value = '' }}
                                   className="shrink-0 rounded-lg border border-gray-200 bg-white px-1.5 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-300"
                                 >
-                                  <option value="">+%</option>
-                                  {markupOptions.map((p) => <option key={p} value={p}>+{p}%</option>)}
+                                  <option value="">▾</option>
+                                  <option value="table">За таблицею</option>
+                                  {markupOptions.map((p) => <option key={p} value={p}>{p}%</option>)}
                                 </select>
                               </div>
                             </label>
