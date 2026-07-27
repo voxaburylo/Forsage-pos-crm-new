@@ -788,7 +788,7 @@ export default function InvoiceFormPage() {
     let cancelled = false
     const timer = window.setTimeout(async () => {
       try {
-        const res = await productApi.list({ search: query, per_page: 10 })
+        const res = await productApi.list({ search: query, per_page: 50 })
         if (!cancelled) setProductResults(res.data)
       } catch {
         if (!cancelled) setProductResults([])
@@ -811,7 +811,7 @@ export default function InvoiceFormPage() {
     let cancelled = false
     setReplaceSearching(true)
     const timer = window.setTimeout(() => {
-      productApi.list({ search: query, per_page: 12 })
+      productApi.list({ search: query, per_page: 50 })
         .then((res) => { if (!cancelled) setReplaceResults(res.data ?? []) })
         .catch(() => { if (!cancelled) setReplaceResults([]) })
         .finally(() => { if (!cancelled) setReplaceSearching(false) })
@@ -1942,14 +1942,19 @@ export default function InvoiceFormPage() {
             )}
 
             {importTab === 'manual' && productResults.length > 0 && (
-              <div className="mt-2 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
+              <div className="mt-2 max-h-96 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
                 {productResults.map((p) => (
                   <button key={p.id} type="button" onClick={() => addItem(p)}
-                    className="w-full px-3 py-2 text-left text-sm hover:bg-yellow-50 flex items-center justify-between">
-                    <span>{p.name}</span>
-                    <span className="text-gray-400 text-xs">{p.sku} — {formatMoney(p.retail_price)}</span>
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-yellow-50 flex items-center justify-between gap-3">
+                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                    <span className="shrink-0 text-gray-400 text-xs font-mono">{p.sku} — {formatMoney(p.retail_price)}</span>
                   </button>
                 ))}
+                {productResults.length >= 50 && (
+                  <p className="px-3 py-1.5 text-center text-[11px] text-gray-400 border-t border-gray-100">
+                    Показано перші 50 — уточніть запит, якщо не знайшли
+                  </p>
+                )}
               </div>
             )}
           </Card>
