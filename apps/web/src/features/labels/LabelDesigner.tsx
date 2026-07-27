@@ -125,7 +125,7 @@ export const DEFAULT_LABEL: LabelSettings = {
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
   pos_sku: { x: 0, y: 74 },
-  pos_price: { x: 0, y: 80 },
+  pos_price: { x: 0, y: 76 },
   pos_bin: { x: 0, y: 82 },
   show_barcode_text: true,
   barcode_width_factor: 1.25,
@@ -156,7 +156,7 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
   pos_sku: { x: 0, y: 74 },
-  pos_price: { x: 0, y: 80 },
+  pos_price: { x: 0, y: 76 },
   pos_bin: { x: 0, y: 86 },
 }
 
@@ -434,7 +434,13 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
   const offsetX = Math.max(-10, Math.min(10, Number(settings.offset_x_mm) || 0)) * previewScale
   const offsetY = Math.max(-10, Math.min(10, Number(settings.offset_y_mm) || 0)) * previewScale
 
-  type RndItem = { key: PosKey; visible: boolean; children: React.ReactNode; defaultPos?: { x: number; y: number } }
+  type RndItem = {
+    key: PosKey
+    visible: boolean
+    children: React.ReactNode
+    defaultPos?: { x: number; y: number }
+    dragBox?: { width: number; height: number }
+  }
 
   const items: RndItem[] = []
 
@@ -571,15 +577,23 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
       })
     }
     if (settings.show_price) {
+      const priceFontPx = settings.font_size_price * previewScale * 25.4 / 72
+      const pricePos = settings.pos_price || DEFAULT_LABEL.pos_price || { x: 0, y: 76 }
+      const priceX = Math.max(0, Math.min(95, Number(pricePos.x) || 0))
+      const priceDragWidth = Math.max(40, innerW * (100 - priceX) / 100)
+      const priceDragHeight = Math.max(18, priceFontPx + 4)
       items.push({
         key: 'pos_price',
         visible: settings.show_price,
-        defaultPos: settings.pos_price || DEFAULT_LABEL.pos_price,
+        defaultPos: pricePos,
+        dragBox: { width: priceDragWidth, height: priceDragHeight },
         children: (
           <div style={{
-            fontSize: settings.font_size_price * previewScale * 25.4 / 72 + 'px',
+            fontSize: priceFontPx + 'px',
             fontWeight: 700,
-            width: innerW * (100 - (settings.pos_price?.x ?? 5)) / 100 + 'px',
+            width: '100%',
+            height: '100%',
+            lineHeight: .9,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -634,12 +648,13 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             <Rnd
               key={item.key}
               position={{ x: Math.round(innerW * pos.x / 100), y: Math.round(innerH * pos.y / 100) }}
+              size={item.dragBox}
               onDragStop={(_e, d) => {
                 const newX = Math.round((d.x / innerW) * 100)
                 const newY = Math.round((d.y / innerH) * 100)
                 onPosChange?.(item.key, { x: Math.max(0, Math.min(100, newX)), y: Math.max(0, Math.min(100, newY)) })
               }}
-              bounds="parent"
+              bounds={item.key === 'pos_price' ? undefined : 'parent'}
               enableResizing={false}
               style={{ zIndex: 10 }}
             >
@@ -725,7 +740,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         body += `<div style="position:absolute;left:${pSku.x}%;top:${pSku.y}%;width:${100 - pSku.x}%;font-size:${settings.font_size_sku}pt;line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_sku || 'left'};">${esc(skuText)}</div>`
       }
       if (settings.show_price) {
-        const pPrice = settings.pos_price || { x: 0, y: 80 }
+        const pPrice = settings.pos_price || DEFAULT_LABEL.pos_price || { x: 0, y: 76 }
         body += `<div style="position:absolute;left:${pPrice.x}%;top:${pPrice.y}%;width:${100 - pPrice.x}%;font-size:${settings.font_size_price}pt;line-height:.9;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_price || 'left'};">${esc(kopecksToHryvnia(product.retail_price))} грн</div>`
       }
     }
