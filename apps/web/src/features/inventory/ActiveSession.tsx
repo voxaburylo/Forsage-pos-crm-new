@@ -218,6 +218,10 @@ export default function ActiveSession() {
   const [completing, setCompleting] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
+  // На великих ревізіях рендеримо лише останні рядки, щоб не тримати тисячі
+  // DOM-вузлів (важкий скрол/ввід). Решту — за «показати всі».
+  const [showAllCounted, setShowAllCounted] = useState(false)
+  const COUNTED_RENDER_CAP = 150
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   // Редагування цін товару прямо в сесії (без окремого вікна)
@@ -1404,7 +1408,7 @@ export default function ActiveSession() {
                 <p className="py-8 text-center text-sm text-gray-400">
                   Скануйте штрихкод або знайдіть товар — він з'явиться тут рядком.
                 </p>
-              ) : countedRows.map((item) => (
+              ) : (showAllCounted ? countedRows : countedRows.slice(0, COUNTED_RENDER_CAP)).map((item) => (
                 <InventoryRow
                   key={item.id}
                   item={item}
@@ -1424,6 +1428,15 @@ export default function ActiveSession() {
                   onRemove={() => removeItem(item)}
                 />
               ))}
+              {!showAllCounted && countedRows.length > COUNTED_RENDER_CAP && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllCounted(true)}
+                  className="w-full py-3 text-center text-sm font-semibold text-gray-500 hover:bg-gray-50"
+                >
+                  Показати всі ({countedRows.length}) — зараз видно останні {COUNTED_RENDER_CAP}
+                </button>
+              )}
             </div>
           )}
         </Card>
