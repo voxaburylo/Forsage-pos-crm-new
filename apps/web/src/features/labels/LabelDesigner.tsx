@@ -120,12 +120,12 @@ export const DEFAULT_LABEL: LabelSettings = {
   font_size: 6, barcode_height: 24,
   show_shop_name: false, show_product_name: true, show_barcode: true,
   show_sku: false, show_price: true, show_storage_bin: false,
-  font_size_shop: 4.5, font_size_title: 5.6, font_size_sku: 4.5, font_size_price: 10,
+  font_size_shop: 4.5, font_size_title: 5.2, font_size_sku: 4.5, font_size_price: 10,
   pos_shop_name: { x: 0, y: 0 },
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
   pos_sku: { x: 0, y: 74 },
-  pos_price: { x: 0, y: 82 },
+  pos_price: { x: 0, y: 88 },
   pos_bin: { x: 0, y: 82 },
   show_barcode_text: true,
   barcode_width_factor: 1.25,
@@ -147,7 +147,7 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   height_mm: 25,
   padding_mm: 0.8,
   font_size_shop: 4.5,
-  font_size_title: 5.6,
+  font_size_title: 5.2,
   font_size_sku: 4.5,
   font_size_price: 10,
   font_size: 6,
@@ -156,7 +156,7 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
   pos_sku: { x: 0, y: 74 },
-  pos_price: { x: 0, y: 82 },
+  pos_price: { x: 0, y: 88 },
   pos_bin: { x: 0, y: 86 },
 }
 
@@ -514,12 +514,12 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             fontWeight: 700,
             wordBreak: 'break-word',
             lineHeight: 1,
-            letterSpacing: '-0.35px',
+            letterSpacing: '-0.6px',
             display: '-webkit-box',
-            WebkitLineClamp: settings.max_name_lines ?? 2,
+            WebkitLineClamp: Math.max(settings.max_name_lines ?? 0, 3),
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-            width: innerW * (100 - (settings.pos_product_name?.x ?? 5)) / 100 + 'px',
+            width: innerW + 'px',
             textAlign: settings.align_product_name || 'left',
           }}>
             {product.name}
@@ -530,12 +530,12 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
     if (settings.show_barcode) {
       // Якщо в товару немає штрих-коду, все одно показуємо плейсхолдер у прев'ю
       const barcodeVal = product.barcode || '123456789012'
-      const barcodePos = settings.pos_barcode || { x: 5, y: 42 }
-      const barcodeWidth = innerW * labelBarcodeWidthPct(settings, barcodePos) / 100
+      const barcodePos = { ...(settings.pos_barcode || { x: 0, y: 40 }), x: 0 }
+      const barcodeWidth = innerW
       items.push({
         key: 'pos_barcode',
         visible: settings.show_barcode,
-        defaultPos: settings.pos_barcode,
+        defaultPos: barcodePos,
         children: (
           <RenderedBarcode
             width={barcodeWidth}
@@ -574,7 +574,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
       items.push({
         key: 'pos_price',
         visible: settings.show_price,
-        defaultPos: settings.pos_price,
+        defaultPos: { x: (settings.pos_price || DEFAULT_LABEL.pos_price)?.x ?? 0, y: Math.max((settings.pos_price || DEFAULT_LABEL.pos_price)?.y ?? 0, DEFAULT_LABEL.pos_price?.y ?? 88) },
         children: (
           <div style={{
             fontSize: settings.font_size_price * previewScale * 25.4 / 72 + 'px',
@@ -585,7 +585,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             whiteSpace: 'nowrap',
             textAlign: settings.align_price || 'left',
           }}>
-            {kopecksToHryvnia(product.retail_price)} ₴
+            {kopecksToHryvnia(product.retail_price)} грн
           </div>
         ),
       })
@@ -706,12 +706,13 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     } else if (product) {
       if (settings.show_product_name) {
         const pName = settings.pos_product_name || { x: 5, y: 25 }
-        body += `<div style="position:absolute;left:${pName.x}%;top:${pName.y}%;width:${100 - pName.x}%;font-size:${settings.font_size_title}pt;font-weight:700;letter-spacing:-0.15pt;overflow-wrap:anywhere;line-height:1;display:-webkit-box;-webkit-line-clamp:${settings.max_name_lines ?? 2};-webkit-box-orient:vertical;overflow:hidden;text-align:${settings.align_product_name || 'left'};">${esc(product.name)}</div>`
+        body += `<div style="position:absolute;left:${pName.x}%;top:${pName.y}%;width:${100 - pName.x}%;font-size:${settings.font_size_title}pt;font-weight:700;letter-spacing:-0.3pt;overflow-wrap:anywhere;line-height:1;display:-webkit-box;-webkit-line-clamp:${Math.max(settings.max_name_lines ?? 0, 3)};-webkit-box-orient:vertical;overflow:hidden;text-align:${settings.align_product_name || 'left'};">${esc(product.name)}</div>`
       }
       if (settings.show_barcode && product.barcode) {
-        const pBc = settings.pos_barcode || { x: 10, y: 45 }
-        const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
-        const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
+        const rawBc = settings.pos_barcode || { x: 0, y: 40 }
+        const pBc = { ...rawBc, x: 0 }
+        const barcodeBlockWidth = 100
+        const barcodeLeft = 0
         const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:visible;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
@@ -724,8 +725,9 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         body += `<div style="position:absolute;left:${pSku.x}%;top:${pSku.y}%;width:${100 - pSku.x}%;font-size:${settings.font_size_sku}pt;line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_sku || 'left'};">${esc(skuText)}</div>`
       }
       if (settings.show_price) {
-        const pPrice = settings.pos_price || { x: 50, y: 75 }
-        body += `<div style="position:absolute;left:${pPrice.x}%;top:${pPrice.y}%;width:${100 - pPrice.x}%;font-size:${settings.font_size_price}pt;line-height:.9;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_price || 'left'};">${esc(kopecksToHryvnia(product.retail_price))} ₴</div>`
+        const rawPrice = settings.pos_price || { x: 0, y: 88 }
+        const pPrice = { ...rawPrice, y: Math.max(rawPrice.y, 88) }
+        body += `<div style="position:absolute;left:${pPrice.x}%;top:${pPrice.y}%;width:${100 - pPrice.x}%;font-size:${settings.font_size_price}pt;line-height:.9;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_price || 'left'};">${esc(kopecksToHryvnia(product.retail_price))} грн</div>`
       }
     }
 
