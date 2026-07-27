@@ -10,6 +10,7 @@ import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { PICKING_STATUSES } from '@/features/inventory/pickingApi'
 
 interface NavItem {
   to: string
@@ -206,8 +207,10 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     function fetchPicking() {
       const local = desktopBridge()?.orders?.list
       if (local) {
+        // Той самий фільтр, що й у списку збірки — інакше лічильник у меню
+        // показував більше, ніж реально в черзі (враховував відкриті lead/new).
         local({ limit: 500, offset: 0 })
-          .then((rows) => setPickingCount((rows ?? []).filter((order: any) => !['completed', 'canceled'].includes(order.status)).length))
+          .then((rows) => setPickingCount((rows ?? []).filter((order: any) => PICKING_STATUSES.includes(order.status)).length))
           .catch(() => {})
         return
       }
