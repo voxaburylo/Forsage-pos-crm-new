@@ -98,6 +98,7 @@ const emptyQuickProduct = {
   name: '',
   barcode: '',
   qty: '1',
+  unit: 'шт',
   purchase_price: '',
   retail_price: '',
   storage_bin: '',
@@ -470,6 +471,11 @@ export default function ActiveSession() {
       if (next.has(productId)) next.delete(productId); else next.add(productId)
       return next
     })
+  }
+
+  function toggleSelectAllCounted(checked: boolean) {
+    if (!checked) { setSelectedIds(new Set()); return }
+    setSelectedIds(new Set(countedRows.map((r) => r.product?.id).filter((x): x is string => !!x)))
   }
 
   // Скан/вибір товару → одразу додаємо рядок (+1), без картки й підтверджень.
@@ -890,6 +896,16 @@ export default function ActiveSession() {
     }
   }
 
+  async function handleQuickGenBarcode() {
+    try {
+      const { data } = await productApi.generateBarcodeOnly()
+      updateQuickProduct({ barcode: data.barcode })
+      toast.success('Штрихкод згенеровано')
+    } catch {
+      toast.error('Не вдалося згенерувати штрихкод')
+    }
+  }
+
   async function createProductFromInventory() {
     if (!id) return
     const draft = quickProduct
@@ -907,7 +923,7 @@ export default function ActiveSession() {
         barcode: draft.barcode.trim(),
         brand_id: '',
         category_id: '',
-        unit: 'шт',
+        unit: (draft.unit as any) || 'шт',
         purchase_price: draft.purchase_price,
         retail_price: draft.retail_price,
         qty_on_hand: '0',
@@ -1110,9 +1126,12 @@ export default function ActiveSession() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-semibold text-gray-500">Штрихкод</label>
-                <input value={quickProduct.barcode} onChange={(event) => updateQuickProduct({ barcode: event.target.value })}
-                  inputMode="numeric"
-                  className="w-full rounded-xl border border-gray-300 px-3 py-3 font-mono text-base outline-none focus:border-yellow-500" />
+                <div className="flex gap-2">
+                  <input value={quickProduct.barcode} onChange={(event) => updateQuickProduct({ barcode: event.target.value })}
+                    inputMode="numeric"
+                    className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-3 font-mono text-base outline-none focus:border-yellow-500" />
+                  <Button type="button" variant="secondary" onClick={handleQuickGenBarcode} className="shrink-0">Генерувати</Button>
+                </div>
               </div>
               <div className="sm:col-span-2">
                 <label className="mb-1 block text-xs font-semibold text-gray-500">Назва</label>
@@ -1121,10 +1140,16 @@ export default function ActiveSession() {
                   className="w-full rounded-xl border-2 border-yellow-400 px-3 py-3 text-base font-semibold outline-none focus:border-yellow-500" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-semibold text-gray-500">Факт, шт</label>
-                <input type="number" min="1" step="1" inputMode="numeric" value={quickProduct.qty}
-                  onChange={(event) => updateQuickProduct({ qty: event.target.value })}
-                  className="w-full rounded-xl border border-gray-300 px-3 py-3 text-center text-xl font-bold outline-none focus:border-yellow-500" />
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Факт / од. виміру</label>
+                <div className="flex gap-2">
+                  <input type="number" min="1" step="1" inputMode="numeric" value={quickProduct.qty}
+                    onChange={(event) => updateQuickProduct({ qty: event.target.value })}
+                    className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-3 text-center text-xl font-bold outline-none focus:border-yellow-500" />
+                  <select value={quickProduct.unit} onChange={(event) => updateQuickProduct({ unit: event.target.value })}
+                    className="shrink-0 rounded-xl border border-gray-300 bg-white px-2 text-base outline-none focus:border-yellow-500">
+                    {['шт', 'кг', 'л', 'м', 'компл'].map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
               </div>
               <div>
                 <label className="mb-1 block text-xs font-semibold text-gray-500">Комірка</label>
@@ -1374,6 +1399,16 @@ export default function ActiveSession() {
         />
 <Card padding="none">
           <div className="flex items-center gap-2 px-4 py-3">
+            {canEditPrice && isActive && countedRows.length > 0 && (
+              <input
+                type="checkbox"
+                aria-label="Вибрати всі"
+                title="Вибрати всі"
+                checked={countedRows.every((r) => r.product?.id && selectedIds.has(r.product.id))}
+                onChange={(e) => toggleSelectAllCounted(e.target.checked)}
+                className="h-4 w-4 shrink-0 rounded border-gray-300"
+              />
+            )}
             <button onClick={() => setShowRecent(!showRecent)}
               className="flex min-w-0 flex-1 items-center justify-between text-left">
               <span className="truncate font-semibold text-gray-900">Додані товари ({countedRows.length})</span>
@@ -1655,7 +1690,7 @@ function InventoryRowBase({
           ) : (
             <p className="whitespace-normal break-words font-medium text-gray-900" title={product?.name}>{product?.name ?? 'Товар'}</p>
           )}
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-gray-500">
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-600">
             <span className="flex items-center gap-1">
               <span className="font-sans font-semibold uppercase tracking-wide text-gray-400">Арт.</span>
               {canEditPrice && product ? (
@@ -1665,14 +1700,14 @@ function InventoryRowBase({
                   disabled={!isActive}
                   onBlur={(event) => onSetSku(event.target.value)}
                   onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-                  className="w-32 rounded border border-gray-200 px-1.5 py-0.5 font-mono text-[11px] text-gray-800 outline-none focus:border-yellow-500 disabled:bg-gray-50"
+                  className="w-40 rounded border border-gray-200 px-2 py-1 font-mono text-xs text-gray-900 outline-none focus:border-yellow-500 disabled:bg-gray-50"
                 />
               ) : (
-                <span>{product?.sku || 'без SKU'}</span>
+                <span className="font-mono text-gray-800">{product?.sku || 'без SKU'}</span>
               )}
             </span>
-            <span className="select-all text-gray-700">{barcode}</span>
-            {product?.storage_bin && <span className="text-blue-600">{product.storage_bin}</span>}
+            <span className="select-all font-mono text-gray-500">{barcode}</span>
+            {product?.storage_bin && <span className="font-semibold text-blue-600">{product.storage_bin}</span>}
           </div>
         </div>
       </div>
@@ -1723,9 +1758,9 @@ function InventoryRowBase({
               else if (v) onMarkup('percent', parseFloat(v))
               e.target.value = ''
             }}
-            className="shrink-0 rounded border border-gray-200 bg-white px-1 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-yellow-400"
+            className="w-14 shrink-0 rounded border border-gray-200 bg-white px-1 py-1 text-center text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-yellow-400"
           >
-            <option value="">▾</option>
+            <option value="">%▾</option>
             <option value="table">За таблицею</option>
             {quickPercents.map((p) => <option key={p} value={p}>{p}%</option>)}
           </select>

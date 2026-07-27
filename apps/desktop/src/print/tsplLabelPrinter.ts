@@ -92,6 +92,16 @@ try {
     if (@(Get-StuckJobs).Count -gt 0) { throw 'TSPL_QUEUE_STUCK' }
   }
   $printer = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
+  # Під час пакетного друку USB-принтер часто дає КОРОТКОЧАСНИЙ not-ready між
+  # завданнями (Offline/NotAvailable на частку секунди), а друк потім іде нормально.
+  # Тому не кидаємо помилку одразу: перевіряємо статус кілька разів. Реальний обрив
+  # кабелю/скінчена стрічка лишаються not-ready і після повторів — тоді помилка.
+  $tries = 0
+  while ($printer -and ($printer.PrinterStatus -match '${NOT_READY_PATTERN}') -and $tries -lt 4) {
+    Start-Sleep -Milliseconds 400
+    $printer = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
+    $tries++
+  }
   if ($printer -and ($printer.PrinterStatus -match '${NOT_READY_PATTERN}')) {
     throw "TSPL_PRINTER_NOT_READY: $($printer.PrinterStatus)"
   }

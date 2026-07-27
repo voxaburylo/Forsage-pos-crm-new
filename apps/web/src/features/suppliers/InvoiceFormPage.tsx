@@ -1844,8 +1844,11 @@ export default function InvoiceFormPage() {
   }
 
   function closeInvoiceForm() {
-    invoiceDraftPersistenceDisabledRef.current = true
-    clearSupplyInvoiceDraft(invoiceDraftKey)
+    // Раніше «Назад» СТИРАВ чернетку — тому випадковий вихід губив усю роботу.
+    // Тепер чернетку НЕ чистимо: вона лишається і відновиться при наступному
+    // відкритті. Якщо накладна не порожня — питаємо підтвердження.
+    const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
+    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться чернеткою і відновиться, коли відкриєш «Нова накладна» знову.')) return
     navigate('/suppliers/invoices')
   }
 
