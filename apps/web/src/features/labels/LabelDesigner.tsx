@@ -116,20 +116,20 @@ export const DEFAULT_BIN_LABEL: LabelSettings = {
 }
 
 export const DEFAULT_LABEL: LabelSettings = {
-  width_mm: 40, height_mm: 30, padding_mm: 1.5,
-  font_size: 6, barcode_height: 20,
-  show_shop_name: true, show_product_name: true, show_barcode: true,
-  show_sku: true, show_price: true, show_storage_bin: true,
-  font_size_shop: 5, font_size_title: 6.5, font_size_sku: 5, font_size_price: 10,
+  width_mm: 40, height_mm: 25, padding_mm: 0.8,
+  font_size: 6, barcode_height: 24,
+  show_shop_name: false, show_product_name: true, show_barcode: true,
+  show_sku: false, show_price: true, show_storage_bin: false,
+  font_size_shop: 4.5, font_size_title: 5.6, font_size_sku: 4.5, font_size_price: 10,
   pos_shop_name: { x: 0, y: 0 },
-  pos_product_name: { x: 0, y: 10 },
-  pos_barcode: { x: 5, y: 36 },
-  pos_sku: { x: 0, y: 68 },
-  pos_price: { x: 55, y: 78 },
+  pos_product_name: { x: 0, y: 0 },
+  pos_barcode: { x: 0, y: 40 },
+  pos_sku: { x: 0, y: 74 },
+  pos_price: { x: 0, y: 82 },
   pos_bin: { x: 0, y: 82 },
   show_barcode_text: true,
-  barcode_width_factor: 1.0,
-  max_name_lines: 2,
+  barcode_width_factor: 1.25,
+  max_name_lines: 3,
   offset_x_mm: 0,
   offset_y_mm: 0,
   align_shop_name: 'left',
@@ -145,18 +145,18 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   ...DEFAULT_LABEL,
   width_mm: 40,
   height_mm: 25,
-  padding_mm: 1,
+  padding_mm: 0.8,
   font_size_shop: 4.5,
-  font_size_title: 6,
+  font_size_title: 5.6,
   font_size_sku: 4.5,
-  font_size_price: 9,
-  font_size: 5.5,
-  barcode_height: 18,
+  font_size_price: 10,
+  font_size: 6,
+  barcode_height: 24,
   pos_shop_name: { x: 0, y: 0 },
-  pos_product_name: { x: 0, y: 11 },
-  pos_barcode: { x: 4, y: 38 },
-  pos_sku: { x: 0, y: 72 },
-  pos_price: { x: 55, y: 78 },
+  pos_product_name: { x: 0, y: 0 },
+  pos_barcode: { x: 0, y: 40 },
+  pos_sku: { x: 0, y: 74 },
+  pos_price: { x: 0, y: 82 },
   pos_bin: { x: 0, y: 86 },
 }
 
@@ -513,7 +513,8 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             fontSize: settings.font_size_title * previewScale * 25.4 / 72 + 'px',
             fontWeight: 700,
             wordBreak: 'break-word',
-            lineHeight: 1.1,
+            lineHeight: 1,
+            letterSpacing: '-0.35px',
             display: '-webkit-box',
             WebkitLineClamp: settings.max_name_lines ?? 2,
             WebkitBoxOrient: 'vertical',
@@ -705,7 +706,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     } else if (product) {
       if (settings.show_product_name) {
         const pName = settings.pos_product_name || { x: 5, y: 25 }
-        body += `<div style="position:absolute;left:${pName.x}%;top:${pName.y}%;width:${100 - pName.x}%;font-size:${settings.font_size_title}pt;font-weight:700;overflow-wrap:anywhere;line-height:1.1;display:-webkit-box;-webkit-line-clamp:${settings.max_name_lines ?? 2};-webkit-box-orient:vertical;overflow:hidden;text-align:${settings.align_product_name || 'left'};">${esc(product.name)}</div>`
+        body += `<div style="position:absolute;left:${pName.x}%;top:${pName.y}%;width:${100 - pName.x}%;font-size:${settings.font_size_title}pt;font-weight:700;letter-spacing:-0.15pt;overflow-wrap:anywhere;line-height:1;display:-webkit-box;-webkit-line-clamp:${settings.max_name_lines ?? 2};-webkit-box-orient:vertical;overflow:hidden;text-align:${settings.align_product_name || 'left'};">${esc(product.name)}</div>`
       }
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
