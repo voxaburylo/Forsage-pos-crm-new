@@ -1514,28 +1514,61 @@ export default function ActiveSession() {
         )}
       </div>
 
-      <Modal open={completeOpen} onClose={() => setCompleteOpen(false)} title="Завершити ревізію" size="sm">
+      <Modal open={completeOpen} onClose={() => setCompleteOpen(false)} title="Завершити ревізію" size="md">
         {(() => {
           const counted = session.summary.counted_products ?? 0
           const missing = Math.max(0, (session.summary.total_products ?? 0) - counted)
           const priceIssues = session.summary.price_mismatch_products ?? 0
+          // Список змін залишків: було (облік) → стане (факт). Зменшення — зверху й червоним,
+          // щоб одразу побачити помилки (напр. «було 24 → стане 1») ДО застосування.
+          const changes = session.items
+            .map((it) => ({ name: it.product?.name ?? it.product?.sku ?? '—', was: it.expected_stock, now: it.counted_stock }))
+            .sort((a, b) => (a.now - a.was) - (b.now - b.was))
+          const decreases = changes.filter((c) => c.now < c.was).length
           return (
             <div className="space-y-4">
-              {/* ВАЖЛИВО: завершення застосовує залишки ЛИШЕ для порахованих товарів.
-                  Непораховані НЕ обнуляються — їхній залишок лишається як є (перевірено:
-                  desktop complete, серверний sync і RPC complete_inventory_session). */}
+              {/* Завершення застосовує залишки ЛИШЕ для порахованих товарів.
+                  Непораховані НЕ обнуляються (перевірено на всіх шляхах завершення). */}
               <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 text-sm text-blue-900 space-y-1">
                 <p>Буде застосовано фактичні залишки для <strong>{counted}</strong> порахованих товарів.</p>
                 {missing > 0 && (
-                  <p>Решта <strong>{missing}</strong> товарів <strong>не зміняться</strong> — їхні залишки залишаються без змін.</p>
+                  <p>Решта <strong>{missing}</strong> товарів <strong>не зміняться</strong> — залишки без змін.</p>
                 )}
                 {priceIssues > 0 && (
                   <p className="flex items-center gap-1.5 pt-1 font-semibold text-red-700">
-                    <AlertTriangle size={14} /> Розбіжностей цін: {priceIssues} — варто перевірити перед завершенням.
+                    <AlertTriangle size={14} /> Розбіжностей цін: {priceIssues}.
                   </p>
                 )}
               </div>
-              <p className="text-sm text-gray-600">Завершити ревізію?</p>
+
+              {changes.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Зміни залишків: {changes.length}{decreases > 0 ? ` · зменшень: ${decreases}` : ''}
+                  </p>
+                  <div className="max-h-64 divide-y divide-gray-50 overflow-y-auto rounded-lg border border-gray-100">
+                    {changes.map((c, i) => {
+                      const down = c.now < c.was
+                      const up = c.now > c.was
+                      return (
+                        <div key={i} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-sm">
+                          <span className="min-w-0 flex-1 truncate text-gray-800">{c.name}</span>
+                          <span className={`shrink-0 font-mono font-semibold ${down ? 'text-red-600' : up ? 'text-green-600' : 'text-gray-400'}`}>
+                            {c.was} → {c.now}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {decreases > 0 && (
+                    <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-red-600">
+                      <AlertTriangle size={13} /> Червоним — залишок зменшиться. Перевірте, чи це правильно.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <p className="text-sm text-gray-600">Застосувати ці зміни й завершити ревізію?</p>
               <div className="flex gap-2 justify-end">
                 <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Ні</Button>
                 <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
