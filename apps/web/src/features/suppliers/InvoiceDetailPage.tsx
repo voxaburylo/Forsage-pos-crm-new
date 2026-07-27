@@ -86,6 +86,20 @@ export default function InvoiceDetailPage() {
     }
   }
 
+  // Редагування проведеної накладної: безпечно через скасування (повертає залишки)
+  // + відкриття копії-чернетки з тими самими позиціями. Далі правиш і проводиш заново.
+  async function handleEditPosted() {
+    if (!confirm('Щоб редагувати проведену накладну, її буде СКАСОВАНО (залишки повернуться зі складу), і відкриється копія для правок.\n\nПотім потрібно буде провести її заново. Продовжити?')) return
+    setActionLoading(true)
+    try {
+      await supplierApi.cancelInvoice(id!)
+      navigate(`/suppliers/invoices/new?clone=${id}`)
+    } catch {
+      toast.error('Не вдалося підготувати накладну до редагування')
+      setActionLoading(false)
+    }
+  }
+
   async function handleSupplierPayment() {
     if (!invoice) return
     const amount = Math.round(Number(paymentAmount) * 100)
@@ -156,6 +170,9 @@ export default function InvoiceDetailPage() {
             <>
               <Button variant="secondary" icon={<Tag size={15} />} onClick={() => setLabelModal(true)}>
                 Друк етикеток
+              </Button>
+              <Button variant="outline" onClick={handleEditPosted} disabled={actionLoading}>
+                Редагувати
               </Button>
               <Button variant="danger-outline" onClick={handleCancel} disabled={actionLoading}>
                 {actionLoading ? '...' : 'Скасувати'}
