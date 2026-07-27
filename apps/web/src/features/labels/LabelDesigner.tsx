@@ -125,7 +125,7 @@ export const DEFAULT_LABEL: LabelSettings = {
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
   pos_sku: { x: 0, y: 74 },
-  pos_price: { x: 0, y: 88 },
+  pos_price: { x: 0, y: 80 },
   pos_bin: { x: 0, y: 82 },
   show_barcode_text: true,
   barcode_width_factor: 1.25,
@@ -156,7 +156,7 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
   pos_sku: { x: 0, y: 74 },
-  pos_price: { x: 0, y: 88 },
+  pos_price: { x: 0, y: 80 },
   pos_bin: { x: 0, y: 86 },
 }
 
@@ -574,7 +574,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
       items.push({
         key: 'pos_price',
         visible: settings.show_price,
-        defaultPos: { x: (settings.pos_price || DEFAULT_LABEL.pos_price)?.x ?? 0, y: Math.max((settings.pos_price || DEFAULT_LABEL.pos_price)?.y ?? 0, DEFAULT_LABEL.pos_price?.y ?? 88) },
+        defaultPos: settings.pos_price || DEFAULT_LABEL.pos_price,
         children: (
           <div style={{
             fontSize: settings.font_size_price * previewScale * 25.4 / 72 + 'px',
@@ -725,8 +725,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         body += `<div style="position:absolute;left:${pSku.x}%;top:${pSku.y}%;width:${100 - pSku.x}%;font-size:${settings.font_size_sku}pt;line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_sku || 'left'};">${esc(skuText)}</div>`
       }
       if (settings.show_price) {
-        const rawPrice = settings.pos_price || { x: 0, y: 88 }
-        const pPrice = { ...rawPrice, y: Math.max(rawPrice.y, 88) }
+        const pPrice = settings.pos_price || { x: 0, y: 80 }
         body += `<div style="position:absolute;left:${pPrice.x}%;top:${pPrice.y}%;width:${100 - pPrice.x}%;font-size:${settings.font_size_price}pt;line-height:.9;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_price || 'left'};">${esc(kopecksToHryvnia(product.retail_price))} грн</div>`
       }
     }
