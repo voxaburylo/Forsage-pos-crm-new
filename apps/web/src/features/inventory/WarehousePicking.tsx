@@ -62,6 +62,9 @@ export default function WarehousePicking() {
   const [filterTab, setFilterTab] = useState<'all' | 'ready' | 'pending_supplier'>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [barcodeInput, setBarcodeInput] = useState('')
+  // Не рендеримо весь список одразу — лише перші N, решту за «показати всі».
+  const [showAllPickOrders, setShowAllPickOrders] = useState(false)
+  const PICK_RENDER_CAP = 80
 
   // Завантажити список замовлень на збірку
   async function loadOrders() {
@@ -692,7 +695,7 @@ export default function WarehousePicking() {
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              {filteredOrders.map(order => {
+              {(showAllPickOrders ? filteredOrders : filteredOrders.slice(0, PICK_RENDER_CAP)).map(order => {
                 const warehouseItems = order.items.filter(i => i.source_type === 'warehouse')
                 const pickedCount = warehouseItems.filter(i =>
                   i.item_status === 'arrived' || i.item_status === 'handed'
@@ -752,6 +755,15 @@ export default function WarehousePicking() {
                   </div>
                 )
               })}
+              {!showAllPickOrders && filteredOrders.length > PICK_RENDER_CAP && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllPickOrders(true)}
+                  className="w-full py-3 text-center text-sm font-semibold text-gray-500 hover:bg-gray-50"
+                >
+                  Показати всі ({filteredOrders.length}) — зараз видно перші {PICK_RENDER_CAP}
+                </button>
+              )}
             </div>
           )}
         </Card>
