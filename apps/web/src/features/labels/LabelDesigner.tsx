@@ -273,8 +273,8 @@ function labelBarcodeWidthFactor(settings: LabelSettings): number {
   return Math.max(BARCODE_WIDTH_FACTOR_MIN, Math.min(BARCODE_WIDTH_FACTOR_MAX, Number(settings.barcode_width_factor) || 1))
 }
 
-function barcodeModuleWidthFromFactor(factor: number): number {
-  return Math.max(0.3, Math.min(3, factor * 1.2))
+function barcodeQuietZonePx(targetWidth: number): number {
+  return Math.max(4, Math.min(18, Math.round(targetWidth * 0.07)))
 }
 
 function labelBarcodeWidthPct(settings: LabelSettings, pos?: { x: number; y: number }): number {
@@ -287,10 +287,10 @@ function RenderedBarcode({ width, height, value, displayValue = true, fontSize =
   { width: number; height: number; value: string; displayValue?: boolean; fontSize?: number; previewScale?: number; align?: string; widthFactor?: number }) {
   const flexAlign = align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center'
   const imageHeight = Math.max(8, Math.round(height))
-  const barcodeHtml = renderBarcodeSvg(value, { width: barcodeModuleWidthFromFactor(widthFactor), height: imageHeight })
+  const barcodeHtml = renderBarcodeSvg(value, { width: widthFactor * 1.2, targetWidth: width, quietZone: barcodeQuietZonePx(width), height: imageHeight })
     .replace(
       '<img ',
-      `<img style="display:block;width:100%;height:${imageHeight}px;object-fit:fill;image-rendering:pixelated" `,
+      `<img style="display:block;width:auto;max-width:100%;height:${imageHeight}px;object-fit:contain;image-rendering:pixelated" `,
     )
 
   return (
@@ -708,7 +708,11 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   const offsetY = Math.max(-10, Math.min(10, Number(settings.offset_y_mm) || 0))
   const barcodeHeight = Math.max(10, Math.min(80, Number(settings.barcode_height) || 28))
   const barcodeWidth = labelBarcodeWidthFactor(settings)
-  const barcodeModuleWidth = barcodeModuleWidthFromFactor(barcodeWidth)
+  const innerWidthMm = Math.max(1, w - padding * 2)
+  const innerHeightMm = Math.max(1, h - padding * 2)
+  const cssPxPerMm = 96 / 25.4
+  const barcodeAlign = settings.align_barcode === 'left' ? 'flex-start' : settings.align_barcode === 'right' ? 'flex-end' : 'center'
+  const barcodeTargetWidthPx = (blockWidthPct: number) => Math.max(1, Math.round(innerWidthMm * blockWidthPct / 100 * cssPxPerMm))
 
   const labelsHtml = items.map((item, index) => {
     const product = isBins ? null : item as Product
@@ -728,7 +732,8 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
         const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
-        const barcode = renderBarcodeSvg(binLabel, { width: barcodeModuleWidth, height: barcodeHeight })
+        const targetWidthPx = barcodeTargetWidthPx(barcodeBlockWidth)
+        const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, targetWidth: targetWidthPx, quietZone: barcodeQuietZonePx(targetWidthPx), height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:hidden;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
       }
@@ -741,7 +746,8 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         const pBc = settings.pos_barcode || { x: 0, y: 40 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
         const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
-        const barcode = renderBarcodeSvg(product.barcode, { width: barcodeModuleWidth, height: barcodeHeight })
+        const targetWidthPx = barcodeTargetWidthPx(barcodeBlockWidth)
+        const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, targetWidth: targetWidthPx, quietZone: barcodeQuietZonePx(targetWidthPx), height: barcodeHeight })
         if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:hidden;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
       }
@@ -793,8 +799,8 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   }
   .label-content {
     position: relative;
-    width: ${Math.max(1, w - padding * 2)}mm;
-    height: ${Math.max(1, h - padding * 2)}mm;
+    width: ${innerWidthMm}mm;
+    height: ${innerHeightMm}mm;
     transform: translate(${offsetX}mm, ${offsetY}mm);
     transform-origin: top left;
     overflow: hidden;
@@ -803,7 +809,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     display: inline-flex;
     flex: 0 1 auto;
     flex-direction: column;
-    align-items: center;
+    align-items: ${barcodeAlign};
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -825,12 +831,12 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
   .barcode svg,
   .barcode img {
     display: block;
-    width: 100%;
+    width: auto;
     max-width: 100%;
     height: ${barcodeHeight}px;
     flex: 0 1 auto;
     overflow: hidden;
-    object-fit: fill;
+    object-fit: contain;
     shape-rendering: crispEdges;
     image-rendering: pixelated;
   }
