@@ -24,6 +24,9 @@ function humanizeApiError(message: string, code?: string): string {
   if (code === 'BARCODE_TAKEN') return message || 'Товар з таким штрихкодом вже існує'
 
   const lower = message.toLowerCase()
+  if (lower.includes('requested range not satisfiable')) {
+    return 'За цим пошуком немає товарів. Очистіть пошук або змініть запит.'
+  }
   if (lower.includes('duplicate key') || lower.includes('unique constraint') || lower.includes('already exists')) {
     if (lower.includes('barcode') || lower.includes('штрих')) return 'Товар з таким штрихкодом вже існує'
     if (lower.includes('sku') || lower.includes('артикул')) return 'Товар з таким артикулом вже існує'

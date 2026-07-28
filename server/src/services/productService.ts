@@ -261,9 +261,13 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
     q = q
       .order('qty_on_hand', { ascending: false })
       .order('is_service', { ascending: false })
+      .order('is_favorite', { ascending: false })
       .order('name', { ascending: true })
+      .order('id', { ascending: true })
   } else {
     q = q.order(orderCol, { ascending: orderAsc })
+    if (orderCol !== 'name') q = q.order('name', { ascending: true })
+    q = q.order('id', { ascending: true })
   }
   q = q.range(offset, offset + per_page - 1)
 
@@ -301,6 +305,25 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
   }
 
   const enriched = await enrichWithAvailability(data ?? [])
+  if (sort_field === 'qty_on_hand') {
+    enriched.sort((left: any, right: any) => {
+      const leftQty = Number(left.qty_available ?? left.qty_on_hand ?? 0)
+      const rightQty = Number(right.qty_available ?? right.qty_on_hand ?? 0)
+      const qtyDiff = leftQty - rightQty
+      if (qtyDiff !== 0) return sort_dir === 'desc' ? -qtyDiff : qtyDiff
+      return String(left.name ?? '').localeCompare(String(right.name ?? ''), 'uk', { sensitivity: 'base' })
+        || String(left.id ?? '').localeCompare(String(right.id ?? ''))
+    })
+  } else if (search && !sort_field) {
+    enriched.sort((left: any, right: any) => {
+      const leftAvailable = Number(left.qty_available ?? left.qty_on_hand ?? 0) > 0 || left.is_service === true
+      const rightAvailable = Number(right.qty_available ?? right.qty_on_hand ?? 0) > 0 || right.is_service === true
+      return Number(rightAvailable) - Number(leftAvailable)
+        || Number(right.is_favorite === true) - Number(left.is_favorite === true)
+        || String(left.name ?? '').localeCompare(String(right.name ?? ''), 'uk', { sensitivity: 'base' })
+        || String(left.id ?? '').localeCompare(String(right.id ?? ''))
+    })
+  }
 
   const result = {
     data: enriched,

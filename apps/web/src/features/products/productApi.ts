@@ -238,7 +238,16 @@ export const productApi = {
         },
       }
     }
-    return api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`)
+    try {
+      return await api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`)
+    } catch (err: any) {
+      if (err?.status === 416 || /Requested range not satisfiable/i.test(String(err?.message ?? ''))) {
+        const page = Math.max(1, filters.page ?? 1)
+        const perPage = Math.max(1, Math.min(500, filters.per_page ?? 50))
+        return { data: [], pagination: { page, per_page: perPage, total: 0, total_pages: 1 } }
+      }
+      throw err
+    }
   },
 
   get: async (id: string) => {
