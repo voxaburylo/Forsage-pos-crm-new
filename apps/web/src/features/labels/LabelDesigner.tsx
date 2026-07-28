@@ -71,6 +71,12 @@ export interface LabelSettings {
   font_size_title: number
   font_size_sku: number
   font_size_price: number
+  // Жирність шрифту для кожного текстового елемента
+  font_weight_shop: number
+  font_weight_title: number
+  font_weight_sku: number
+  font_weight_price: number
+  font_weight_barcode_text: number
   // Позиції елементів (відносні, в % від розміру)
   pos_shop_name?: { x: number; y: number }
   pos_product_name?: { x: number; y: number }
@@ -100,6 +106,7 @@ export const DEFAULT_BIN_LABEL: LabelSettings = {
   show_shop_name: true, show_product_name: false, show_barcode: true,
   show_sku: false, show_price: false, show_storage_bin: false,
   font_size_shop: 5, font_size_title: 12, font_size_sku: 5, font_size_price: 10,
+  font_weight_shop: 400, font_weight_title: 700, font_weight_sku: 400, font_weight_price: 700, font_weight_barcode_text: 400,
   pos_shop_name: { x: 0, y: 0 },
   pos_product_name: { x: 0, y: 12 },
   pos_barcode: { x: 5, y: 45 },
@@ -124,6 +131,7 @@ export const DEFAULT_LABEL: LabelSettings = {
   show_shop_name: false, show_product_name: true, show_barcode: true,
   show_sku: false, show_price: true, show_storage_bin: false,
   font_size_shop: 4.5, font_size_title: 5.2, font_size_sku: 4.5, font_size_price: 10,
+  font_weight_shop: 400, font_weight_title: 700, font_weight_sku: 400, font_weight_price: 700, font_weight_barcode_text: 400,
   pos_shop_name: { x: 0, y: 0 },
   pos_product_name: { x: 0, y: 0 },
   pos_barcode: { x: 0, y: 40 },
@@ -310,6 +318,42 @@ function labelBarcodeWidthFactor(settings: LabelSettings): number {
   return Math.max(BARCODE_WIDTH_FACTOR_MIN, Math.min(BARCODE_WIDTH_FACTOR_MAX, Number(settings.barcode_width_factor) || 1))
 }
 
+const LABEL_FONT_WEIGHTS = [300, 400, 500, 600, 700, 800, 900] as const
+
+function labelFontWeight(value: unknown, fallback = 400): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  const rounded = Math.round(numeric / 100) * 100
+  return Math.max(300, Math.min(900, rounded))
+}
+
+function FontWeightSelect({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  const labels: Record<number, string> = {
+    300: '300 — тонкий',
+    400: '400 — звичайний',
+    500: '500 — середній',
+    600: '600 — напівжирний',
+    700: '700 — жирний',
+    800: '800 — дуже жирний',
+    900: '900 — максимум',
+  }
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      <select
+        value={labelFontWeight(value, 400)}
+        onChange={(event) => onChange(labelFontWeight(event.target.value, 400))}
+        className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+      >
+        {LABEL_FONT_WEIGHTS.map((weight) => (
+          <option key={weight} value={weight}>{labels[weight]}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 function barcodeQuietZonePx(targetWidth: number): number {
   return Math.max(4, Math.min(18, Math.round(targetWidth * 0.07)))
 }
@@ -320,8 +364,8 @@ function labelBarcodeWidthPct(settings: LabelSettings, pos?: { x: number; y: num
   return Math.max(5, Math.min(100 - x, desired))
 }
 
-function RenderedBarcode({ width, height, value, displayValue = true, fontSize = 7, previewScale = 5, align = 'center', widthFactor = 1 }:
-  { width: number; height: number; value: string; displayValue?: boolean; fontSize?: number; previewScale?: number; align?: string; widthFactor?: number }) {
+function RenderedBarcode({ width, height, value, displayValue = true, fontSize = 7, fontWeight = 400, previewScale = 5, align = 'center', widthFactor = 1 }:
+  { width: number; height: number; value: string; displayValue?: boolean; fontSize?: number; fontWeight?: number; previewScale?: number; align?: string; widthFactor?: number }) {
   const flexAlign = align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center'
   const imageHeight = Math.max(8, Math.round(height))
   const barcodeHtml = renderBarcodeSvg(value, { width: widthFactor * 1.2, targetWidth: width, quietZone: barcodeQuietZonePx(width), height: imageHeight })
@@ -338,7 +382,7 @@ function RenderedBarcode({ width, height, value, displayValue = true, fontSize =
         dangerouslySetInnerHTML={{ __html: barcodeHtml }}
       />
       {displayValue && (
-        <span style={{ fontSize: fontSize * previewScale * 25.4 / 72 + 'px', color: '#333', fontFamily: 'monospace', marginTop: '2px', letterSpacing: '1px' }}>{value}</span>
+        <span style={{ fontSize: fontSize * previewScale * 25.4 / 72 + 'px', fontWeight: labelFontWeight(fontWeight, 400), color: '#333', fontFamily: 'monospace', marginTop: '2px', letterSpacing: '1px' }}>{value}</span>
       )}
     </div>
   )
@@ -399,6 +443,7 @@ export const LABEL_PRESETS: Record<string, Partial<LabelSettings> & { name: stri
     name: 'Комірка стандартна (40×30 мм)',
     width_mm: 40, height_mm: 30, padding_mm: 1.5,
     font_size_shop: 5, font_size_title: 12, font_size_sku: 5, font_size_price: 10,
+    font_weight_shop: 400, font_weight_title: 700, font_weight_sku: 400, font_weight_price: 700, font_weight_barcode_text: 400,
     font_size: 6, barcode_height: 22,
     show_shop_name: true, show_product_name: false, show_barcode: true, show_barcode_text: true,
     show_sku: false, show_price: false, show_storage_bin: false,
@@ -507,6 +552,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
           textAlign: settings.align_shop_name || 'left',
+          fontWeight: labelFontWeight(settings.font_weight_shop, 400),
         }}>
           {shopName}
         </div>
@@ -523,7 +569,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
       children: (
         <div style={{
           fontSize: Math.min(settings.font_size_title * previewScale * 25.4 / 72, settings.width_mm * 1.5) + 'px',
-          fontWeight: 700,
+          fontWeight: labelFontWeight(settings.font_weight_title, 700),
           textAlign: settings.align_product_name || 'center',
           width: innerW * (100 - (settings.pos_bin?.x ?? 5)) / 100 + 'px',
           overflow: 'hidden',
@@ -552,6 +598,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             previewScale={previewScale}
             align={settings.align_barcode}
             widthFactor={labelBarcodeWidthFactor(settings)}
+            fontWeight={settings.font_weight_barcode_text}
           />
         ),
       })
@@ -566,7 +613,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
         children: (
           <div style={{
             fontSize: settings.font_size_title * previewScale * 25.4 / 72 + 'px',
-            fontWeight: 700,
+            fontWeight: labelFontWeight(settings.font_weight_title, 700),
             wordBreak: 'break-word',
             lineHeight: 1,
             letterSpacing: '-0.6px',
@@ -601,6 +648,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             previewScale={previewScale}
             align={settings.align_barcode}
             widthFactor={labelBarcodeWidthFactor(settings)}
+            fontWeight={settings.font_weight_barcode_text}
           />
         ),
       })
@@ -619,6 +667,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             textAlign: settings.align_sku || 'left',
+            fontWeight: labelFontWeight(settings.font_weight_sku, 400),
           }}>
             {settings.show_sku && product.sku}
             {settings.show_storage_bin && (product as any).storage_bin && <span> · {(product as any).storage_bin}</span>}
@@ -640,7 +689,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
         children: (
           <div style={{
             fontSize: priceFontPx + 'px',
-            fontWeight: 700,
+            fontWeight: labelFontWeight(settings.font_weight_price, 700),
             width: '100%',
             height: '100%',
             lineHeight: .9,
@@ -759,12 +808,12 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
 
     if (settings.show_shop_name) {
       const pShop = settings.pos_shop_name || { x: 5, y: 5 }
-      body += `<div style="position:absolute;left:${pShop.x}%;top:${pShop.y}%;width:${100 - pShop.x}%;font-size:${settings.font_size_shop}pt;line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_shop_name || 'left'};">${esc(shopName)}</div>`
+      body += `<div style="position:absolute;left:${pShop.x}%;top:${pShop.y}%;width:${100 - pShop.x}%;font-size:${settings.font_size_shop}pt;font-weight:${labelFontWeight(settings.font_weight_shop, 400)};line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_shop_name || 'left'};">${esc(shopName)}</div>`
     }
 
     if (binLabel) {
       const pBin = settings.pos_bin || { x: 5, y: 88 }
-      body += `<div style="position:absolute;left:${pBin.x}%;top:${pBin.y}%;width:${100 - pBin.x}%;font-size:${Math.min(settings.font_size_title, 30)}pt;font-weight:700;line-height:1;text-align:${settings.align_product_name || 'center'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(binLabel)}</div>`
+      body += `<div style="position:absolute;left:${pBin.x}%;top:${pBin.y}%;width:${100 - pBin.x}%;font-size:${Math.min(settings.font_size_title, 30)}pt;font-weight:${labelFontWeight(settings.font_weight_title, 700)};line-height:1;text-align:${settings.align_product_name || 'center'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(binLabel)}</div>`
       if (settings.show_barcode) {
         const pBc = settings.pos_barcode || { x: 10, y: 45 }
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
@@ -777,7 +826,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     } else if (product) {
       if (settings.show_product_name) {
         const pName = settings.pos_product_name || { x: 5, y: 25 }
-        body += `<div style="position:absolute;left:${pName.x}%;top:${pName.y}%;width:${100 - pName.x}%;font-size:${settings.font_size_title}pt;font-weight:700;letter-spacing:-0.3pt;overflow-wrap:anywhere;line-height:1;display:-webkit-box;-webkit-line-clamp:${Math.max(settings.max_name_lines ?? 0, 3)};-webkit-box-orient:vertical;overflow:hidden;text-align:${settings.align_product_name || 'left'};">${esc(product.name)}</div>`
+        body += `<div style="position:absolute;left:${pName.x}%;top:${pName.y}%;width:${100 - pName.x}%;font-size:${settings.font_size_title}pt;font-weight:${labelFontWeight(settings.font_weight_title, 700)};letter-spacing:-0.3pt;overflow-wrap:anywhere;line-height:1;display:-webkit-box;-webkit-line-clamp:${Math.max(settings.max_name_lines ?? 0, 3)};-webkit-box-orient:vertical;overflow:hidden;text-align:${settings.align_product_name || 'left'};">${esc(product.name)}</div>`
       }
       if (settings.show_barcode && product.barcode) {
         const pBc = settings.pos_barcode || { x: 0, y: 40 }
@@ -793,11 +842,11 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         let skuText = ''
         if (settings.show_sku) skuText += product.sku
         if (settings.show_storage_bin && (product as any).storage_bin) skuText += ` · ${(product as any).storage_bin}`
-        body += `<div style="position:absolute;left:${pSku.x}%;top:${pSku.y}%;width:${100 - pSku.x}%;font-size:${settings.font_size_sku}pt;line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_sku || 'left'};">${esc(skuText)}</div>`
+        body += `<div style="position:absolute;left:${pSku.x}%;top:${pSku.y}%;width:${100 - pSku.x}%;font-size:${settings.font_size_sku}pt;font-weight:${labelFontWeight(settings.font_weight_sku, 400)};line-height:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_sku || 'left'};">${esc(skuText)}</div>`
       }
       if (settings.show_price) {
         const pPrice = settings.pos_price || DEFAULT_LABEL.pos_price || { x: 0, y: 76 }
-        body += `<div style="position:absolute;left:${pPrice.x}%;top:${pPrice.y}%;width:${100 - pPrice.x}%;font-size:${settings.font_size_price}pt;line-height:.9;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_price || 'left'};">${esc(kopecksToHryvnia(product.retail_price))} грн</div>`
+        body += `<div style="position:absolute;left:${pPrice.x}%;top:${pPrice.y}%;width:${100 - pPrice.x}%;font-size:${settings.font_size_price}pt;line-height:.9;font-weight:${labelFontWeight(settings.font_weight_price, 700)};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:${settings.align_price || 'left'};">${esc(kopecksToHryvnia(product.retail_price))} грн</div>`
       }
     }
 
@@ -859,6 +908,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     color: #333;
     font-family: monospace;
     font-size: ${settings.font_size}pt;
+    font-weight: ${labelFontWeight(settings.font_weight_barcode_text, 400)};
     font-variant-numeric: tabular-nums;
     letter-spacing: .2mm;
     line-height: 1;
@@ -1328,6 +1378,11 @@ export default function LabelDesigner() {
         font_size_title: Math.max(4, Math.min(20, productSettings.font_size_title || 7)),
         font_size_sku: Math.max(4, Math.min(20, productSettings.font_size_sku || 5)),
         font_size_price: Math.max(4, Math.min(30, productSettings.font_size_price || 12)),
+        font_weight_shop: labelFontWeight(productSettings.font_weight_shop, 400),
+        font_weight_title: labelFontWeight(productSettings.font_weight_title, 700),
+        font_weight_sku: labelFontWeight(productSettings.font_weight_sku, 400),
+        font_weight_price: labelFontWeight(productSettings.font_weight_price, 700),
+        font_weight_barcode_text: labelFontWeight(productSettings.font_weight_barcode_text, 400),
         max_name_lines: Math.max(1, Math.min(5, productSettings.max_name_lines || 2)),
         barcode_width_factor: Math.max(BARCODE_WIDTH_FACTOR_MIN, Math.min(BARCODE_WIDTH_FACTOR_MAX, productSettings.barcode_width_factor || 1.0)),
         font_size: Math.max(4, Math.min(20, productSettings.font_size || 7)),
@@ -1344,6 +1399,11 @@ export default function LabelDesigner() {
         font_size_title: Math.max(4, Math.min(20, binSettings.font_size_title || 7)),
         font_size_sku: Math.max(4, Math.min(20, binSettings.font_size_sku || 5)),
         font_size_price: Math.max(4, Math.min(30, binSettings.font_size_price || 12)),
+        font_weight_shop: labelFontWeight(binSettings.font_weight_shop, 400),
+        font_weight_title: labelFontWeight(binSettings.font_weight_title, 700),
+        font_weight_sku: labelFontWeight(binSettings.font_weight_sku, 400),
+        font_weight_price: labelFontWeight(binSettings.font_weight_price, 700),
+        font_weight_barcode_text: labelFontWeight(binSettings.font_weight_barcode_text, 400),
         max_name_lines: Math.max(1, Math.min(5, binSettings.max_name_lines || 2)),
         barcode_width_factor: Math.max(BARCODE_WIDTH_FACTOR_MIN, Math.min(BARCODE_WIDTH_FACTOR_MAX, binSettings.barcode_width_factor || 1.0)),
         font_size: Math.max(4, Math.min(20, binSettings.font_size || 7)),
@@ -1683,21 +1743,37 @@ export default function LabelDesigner() {
                   <div className="grid grid-cols-2 gap-3">
                     <NumberField label="Назва магазину (pt)" value={settings.font_size_shop} min={4} max={20}
                       onChange={(v) => updateSetting('font_size_shop', v)} />
+                    <FontWeightSelect label="Жирність магазину" value={settings.font_weight_shop}
+                      onChange={(v) => updateSetting('font_weight_shop', v)} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
                     <NumberField label="Назва товару (pt)" value={settings.font_size_title} min={4} max={20}
                       onChange={(v) => updateSetting('font_size_title', v)} />
+                    <FontWeightSelect label="Жирність назви" value={settings.font_weight_title}
+                      onChange={(v) => updateSetting('font_weight_title', v)} />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <NumberField label="Артикул / SKU (pt)" value={settings.font_size_sku} min={4} max={20}
                       onChange={(v) => updateSetting('font_size_sku', v)} />
+                    <FontWeightSelect label="Жирність SKU" value={settings.font_weight_sku}
+                      onChange={(v) => updateSetting('font_weight_sku', v)} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
                     <NumberField label="Ціна (pt)" value={settings.font_size_price} min={4} max={30}
                       onChange={(v) => updateSetting('font_size_price', v)} />
+                    <FontWeightSelect label="Жирність ціни" value={settings.font_weight_price}
+                      onChange={(v) => updateSetting('font_weight_price', v)} />
                   </div>
                   <NumberField label="Рядків назви (макс)" value={settings.max_name_lines} min={1} max={5} step={1}
                     onChange={(v) => updateSetting('max_name_lines', v)} />
                 </>
               ) : (
-                <NumberField label="Номер комірки (pt)" value={settings.font_size_title} min={4} max={30}
-                  onChange={(v) => updateSetting('font_size_title', v)} />
+                <div className="grid grid-cols-2 gap-3">
+                  <NumberField label="Номер комірки (pt)" value={settings.font_size_title} min={4} max={30}
+                    onChange={(v) => updateSetting('font_size_title', v)} />
+                  <FontWeightSelect label="Жирність комірки" value={settings.font_weight_title}
+                    onChange={(v) => updateSetting('font_weight_title', v)} />
+                </div>
               )}
               <div className="grid grid-cols-2 gap-3">
                 <NumberField label="Ширина штрих-коду" value={settings.barcode_width_factor} min={BARCODE_WIDTH_FACTOR_MIN} max={BARCODE_WIDTH_FACTOR_MAX} step={0.05}
@@ -1705,8 +1781,12 @@ export default function LabelDesigner() {
                 <NumberField label="Висота штрих-коду (px)" value={settings.barcode_height} min={10} max={60}
                   onChange={(v) => updateSetting('barcode_height', v)} />
               </div>
-              <NumberField label="Цифри штрих-коду (pt)" value={settings.font_size} min={4} max={20}
-                onChange={(v) => updateSetting('font_size', v)} />
+              <div className="grid grid-cols-2 gap-3">
+                <NumberField label="Цифри штрих-коду (pt)" value={settings.font_size} min={4} max={20}
+                  onChange={(v) => updateSetting('font_size', v)} />
+                <FontWeightSelect label="Жирність цифр" value={settings.font_weight_barcode_text}
+                  onChange={(v) => updateSetting('font_weight_barcode_text', v)} />
+              </div>
             </Card>
 
             <Card className="space-y-4">

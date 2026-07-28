@@ -102,6 +102,7 @@ const emptyQuickProduct = {
   purchase_price: '',
   retail_price: '',
   storage_bin: '',
+  category_id: '',
 }
 
 type InventoryQuickProductDraft = typeof emptyQuickProduct
@@ -207,6 +208,7 @@ export default function ActiveSession() {
   const [qty, setQty] = useState('1')
   const [quickCreateOpen, setQuickCreateOpen] = useState(false)
   const [quickProduct, setQuickProduct] = useState(emptyQuickProduct)
+  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
   const [creatingProduct, setCreatingProduct] = useState(false)
   const [priceStatus, setPriceStatus] = useState<'unchecked' | 'match' | 'mismatch'>('unchecked')
   const [observedPrice, setObservedPrice] = useState('')
@@ -230,6 +232,9 @@ export default function ActiveSession() {
   useEffect(() => {
     adminApi.getSettings()
       .then((r) => setQuickPercents(Array.isArray(r.data.quick_percents) ? r.data.quick_percents.filter((n) => Number(n) > 0) : []))
+      .catch(() => {})
+    adminApi.listCategories()
+      .then((r) => setCategories((r.data ?? []).map((category: any) => ({ id: String(category.id), name: String(category.name ?? '') })).filter((category) => category.id && category.name)))
       .catch(() => {})
   }, [])
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
@@ -949,7 +954,7 @@ export default function ActiveSession() {
         name,
         barcode: draft.barcode.trim(),
         brand_id: '',
-        category_id: '',
+        category_id: draft.category_id || '',
         unit: (draft.unit as any) || 'шт',
         purchase_price: draft.purchase_price,
         retail_price: draft.retail_price,
@@ -1186,6 +1191,14 @@ export default function ActiveSession() {
                 <input value={quickProduct.storage_bin} onChange={(event) => updateQuickProduct({ storage_bin: event.target.value })}
                   placeholder="Полиця / ячейка"
                   className="w-full rounded-xl border border-gray-300 px-3 py-3 text-base outline-none focus:border-yellow-500" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-500">Папка</label>
+                <select value={quickProduct.category_id} onChange={(event) => updateQuickProduct({ category_id: event.target.value })}
+                  className="w-full rounded-xl border border-gray-300 bg-white px-3 py-3 text-base outline-none focus:border-yellow-500">
+                  <option value="">Без папки</option>
+                  {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
               </div>
               <div>
                 <label className="mb-1 block text-xs font-semibold text-gray-500">Закупка, ₴</label>
