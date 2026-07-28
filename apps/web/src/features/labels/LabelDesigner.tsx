@@ -1332,7 +1332,7 @@ export default function LabelDesigner() {
     let cancelled = false
     const timer = window.setTimeout(async () => {
       try {
-        const { data } = await productApi.search(query, 10)
+        const { data } = await productApi.search(query, 50)
         if (!cancelled) setSearchResults(data)
       } catch {
         if (!cancelled) setSearchResults([])
@@ -1473,7 +1473,7 @@ export default function LabelDesigner() {
     const seq = ++scanSeq.current
     setScanning(true)
     try {
-      const { data } = await productApi.search(code, 10)
+      const { data } = await productApi.search(code, 50)
       if (seq !== scanSeq.current) return
       const norm = (v: unknown) => String(v ?? '').trim().toLowerCase()
       const wanted = norm(code)
