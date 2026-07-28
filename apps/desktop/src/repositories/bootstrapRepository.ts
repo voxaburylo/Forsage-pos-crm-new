@@ -775,7 +775,11 @@ export class LocalBootstrapRepository {
         is_service = excluded.is_service,
         storage_bin = excluded.storage_bin,
         is_favorite = excluded.is_favorite,
-        photo_url = excluded.photo_url,
+        photo_url = CASE
+          WHEN products.photo_url LIKE 'file:%' AND products.photo_url != COALESCE(excluded.photo_url, '')
+            THEN products.photo_url
+          ELSE excluded.photo_url
+        END,
         specs_json = excluded.specs_json,
         requires_core_return = CASE WHEN ? THEN excluded.requires_core_return ELSE products.requires_core_return END,
         core_deposit_amount = CASE WHEN ? THEN excluded.core_deposit_amount ELSE products.core_deposit_amount END,

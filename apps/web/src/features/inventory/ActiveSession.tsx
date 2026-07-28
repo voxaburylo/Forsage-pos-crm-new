@@ -218,6 +218,7 @@ export default function ActiveSession() {
   const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [completing, setCompleting] = useState(false)
+  const [pendingRowWrites, setPendingRowWrites] = useState(0)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
   // На великих ревізіях рендеримо лише останні рядки, щоб не тримати тисячі
@@ -233,6 +234,7 @@ export default function ActiveSession() {
   }, [])
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const pendingRowWritesRef = useRef(0)
   // Редагування цін товару прямо в сесії (без окремого вікна)
   const canEditPrice = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
   const [editRetail, setEditRetail] = useState('')
@@ -259,6 +261,25 @@ export default function ActiveSession() {
     observedPrice: '',
     applyNewPrice: true,
   })
+
+  async function trackRowWrite(work: Function) {
+    pendingRowWritesRef.current += 1
+    setPendingRowWrites(pendingRowWritesRef.current)
+    try {
+      await work()
+    } finally {
+      pendingRowWritesRef.current = Math.max(0, pendingRowWritesRef.current - 1)
+      setPendingRowWrites(pendingRowWritesRef.current)
+    }
+  }
+
+  async function waitForPendingRowWrites() {
+    let attempts = 0
+    while (pendingRowWritesRef.current !== 0 && attempts !== 100) {
+      attempts += 1
+      await new Promise(function (resolve) { window.setTimeout(resolve, 50) })
+    }
+  }
 
   const isCurrentSessionCompleted = Boolean(session && session.id === id && session.status === 'completed')
 
@@ -515,7 +536,9 @@ export default function ActiveSession() {
     if (!Number.isFinite(qty) || qty < 0) { toast.error('Некоректна кількість'); return }
     if (qty === item.counted_stock) return
     try {
-      await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+      await trackRowWrite(async function () {
+        await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+      })
       load(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити кількість')
@@ -996,6 +1019,9 @@ export default function ActiveSession() {
     setCompleting(true)
     toast.success('Застосовую залишки ревізії...')
     try {
+      const activeElement = document.activeElement
+      if (activeElement instanceof HTMLElement) activeElement.blur()
+      await waitForPendingRowWrites()
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       const updated = Number((response.data as any)?.items_updated ?? 0)
       setCompleteOpen(false)
@@ -1538,7 +1564,7 @@ export default function ActiveSession() {
           <div className="space-y-2">
             <div className="flex justify-end">
               <Button onClick={openCompleteConfirm} loading={completing} icon={<CheckCircle size={16} />}>
-                {completing ? 'Застосовую залишки...' : 'Завершити та застосувати залишки'}
+                {completing ? 'Застосовую залишки...' : pendingRowWrites ? 'Зберігаю правки рядків...' : 'Завершити та застосувати залишки'}
               </Button>
             </div>
             {completing && (

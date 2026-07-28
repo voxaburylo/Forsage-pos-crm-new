@@ -84,6 +84,11 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
   const [tmpFolder] = useState(() => `tmp_${Date.now()}`)
   const folder = productId ?? tmpFolder
 
+  useEffect(function syncCurrentPhotoUrl() {
+    setPhotos(currentPhotoUrl ? [currentPhotoUrl] : [])
+    setMainIdx(0)
+  }, [currentPhotoUrl])
+
   // Стабильная ссылка на onPhotoUrl, чтобы processFile/обработчики не пересоздавались
   // на каждый рендер родителя (иначе useCallback бесполезен).
   const onPhotoUrlRef = useRef(onPhotoUrl)
