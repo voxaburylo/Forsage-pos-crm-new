@@ -653,7 +653,7 @@ export default function OrderFormPage() {
     let cancelled = false
     const t = window.setTimeout(async () => {
       try {
-        const r = await productApi.search(q, 12)
+        const r = await productApi.search(q, 50)
         if (!cancelled) setSearchResults(r.data ?? [])
       } catch {
         if (!cancelled) {
@@ -1398,7 +1398,7 @@ export default function OrderFormPage() {
 
               {/* Знайдені товари зі складу */}
               {!searchLoading && searchResults.length > 0 && (
-                <div className="mt-3 divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden">
+                <div className="mt-3 max-h-96 divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-100">
                   {searchResults.map((p) => {
                     const stock = p.qty_available ?? p.qty_on_hand ?? 0
                     return (
@@ -1422,6 +1422,11 @@ export default function OrderFormPage() {
                       </div>
                     )
                   })}
+                  {searchResults.length >= 50 && (
+                    <p className="px-3 py-1.5 text-center text-[11px] text-gray-400">
+                      Показано перші 50 — уточніть запит, якщо не знайшли
+                    </p>
+                  )}
                 </div>
               )}
 
