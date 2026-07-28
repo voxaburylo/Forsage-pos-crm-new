@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode } from 'lucide-react'
 import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
@@ -35,14 +35,20 @@ interface LineItem {
   is_new?: boolean
   client_key: string
 }
+type InvoicePaymentMethod = 'cash' | 'card' | 'transfer'
+type SupplierPaymentFundSource = 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
+type InvoiceFundSource = SupplierPaymentFundSource | 'split_cashbox_owner'
+
 interface SupplyInvoiceLocalDraft {
   supplierId: string
   invoiceNumber: string
   notes: string
   items: LineItem[]
   paidAmount: string
-  paymentMethod: 'cash' | 'card' | 'transfer'
-  fundSource: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
+  cashboxPaidAmount?: string
+  payFullNow?: boolean
+  paymentMethod: InvoicePaymentMethod
+  fundSource: InvoiceFundSource
   postImmediately: boolean
   serverInvoiceId?: string | null
   savedAt: string
@@ -72,8 +78,10 @@ function loadSupplyInvoiceDraft(key: string): SupplyInvoiceLocalDraft | null {
         category_id: item.category_id ?? null,
       })) as LineItem[],
       paidAmount: String(draft.paidAmount ?? ''),
+      cashboxPaidAmount: String(draft.cashboxPaidAmount ?? ''),
+      payFullNow: draft.payFullNow === true,
       paymentMethod: draft.paymentMethod === 'card' || draft.paymentMethod === 'transfer' ? draft.paymentMethod : 'cash',
-      fundSource: draft.fundSource === 'owner_funds' || draft.fundSource === 'bank_account' || draft.fundSource === 'business_card'
+      fundSource: draft.fundSource === 'owner_funds' || draft.fundSource === 'bank_account' || draft.fundSource === 'business_card' || draft.fundSource === 'split_cashbox_owner'
         ? draft.fundSource
         : 'cashbox',
       postImmediately: draft.postImmediately !== false,
@@ -156,7 +164,7 @@ function draftFromServerInvoice(inv: SupplyInvoice): SupplyInvoiceLocalDraft | n
       items: normalizeSupplyInvoiceDraftItems(rawPayload.items),
       paidAmount: String(rawPayload.paidAmount ?? ''),
       paymentMethod: rawPayload.paymentMethod === 'card' || rawPayload.paymentMethod === 'transfer' ? rawPayload.paymentMethod : 'cash',
-      fundSource: rawPayload.fundSource === 'owner_funds' || rawPayload.fundSource === 'bank_account' || rawPayload.fundSource === 'business_card'
+      fundSource: rawPayload.fundSource === 'owner_funds' || rawPayload.fundSource === 'bank_account' || rawPayload.fundSource === 'business_card' || rawPayload.fundSource === 'split_cashbox_owner'
         ? rawPayload.fundSource
         : 'cashbox',
       postImmediately: rawPayload.postImmediately !== false,
@@ -659,8 +667,10 @@ export default function InvoiceFormPage() {
   const [bulkCategoryId, setBulkCategoryId] = useState('')
   // Оплата постачальнику
   const [paidAmount, setPaidAmount] = useState('')          // гривні (рядок форми)
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash')
-  const [fundSource, setFundSource] = useState<'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'>('cashbox')
+  const [cashboxPaidAmount, setCashboxPaidAmount] = useState('') // частина оплати з каси при змішаній оплаті
+  const [payFullNow, setPayFullNow] = useState(false)
+  const [paymentMethod, setPaymentMethod] = useState<InvoicePaymentMethod>('cash')
+  const [fundSource, setFundSource] = useState<InvoiceFundSource>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
   const itemsRef = useRef(items)
@@ -670,6 +680,8 @@ export default function InvoiceFormPage() {
     notes,
     items,
     paidAmount,
+    cashboxPaidAmount,
+    payFullNow,
     paymentMethod,
     fundSource,
     postImmediately,
@@ -684,12 +696,14 @@ export default function InvoiceFormPage() {
       notes,
       items,
       paidAmount,
+      cashboxPaidAmount,
+      payFullNow,
       paymentMethod,
       fundSource,
       postImmediately,
       serverInvoiceId: serverDraftIdRef.current,
     }
-  }, [supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately, serverDraftId])
+  }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, postImmediately, serverDraftId])
 
   function applySupplyInvoiceDraft(draft: SupplyInvoiceLocalDraft, fallbackSupplier = preSelectedSupplier) {
     setSupplierId(draft.supplierId || fallbackSupplier)
@@ -697,6 +711,8 @@ export default function InvoiceFormPage() {
     setNotes(draft.notes)
     setItems(draft.items)
     setPaidAmount(draft.paidAmount)
+    setCashboxPaidAmount(draft.cashboxPaidAmount ?? '')
+    setPayFullNow(draft.payFullNow === true)
     setPaymentMethod(draft.paymentMethod)
     setFundSource(draft.fundSource)
     setPostImmediately(draft.postImmediately)
@@ -1516,6 +1532,38 @@ export default function InvoiceFormPage() {
 
   const total = items.reduce((sum, i) => sum + i.total, 0)
 
+  function buildSupplierPaymentParts(paidKopecks: number): Array<{ amount: number; fund_source: SupplierPaymentFundSource; note: string }> {
+    const paid = Math.max(0, Math.min(paidKopecks, total))
+    if (paid <= 0) return []
+    if (fundSource === 'split_cashbox_owner') {
+      const cashbox = Math.max(0, Math.min(parseMoneyToKopecks(cashboxPaidAmount), paid))
+      const owner = paid - cashbox
+      const parts: Array<{ amount: number; fund_source: SupplierPaymentFundSource; note: string }> = []
+      if (cashbox > 0) parts.push({ amount: cashbox, fund_source: 'cashbox', note: 'Оплата накладної з каси' })
+      if (owner > 0) parts.push({ amount: owner, fund_source: 'owner_funds', note: 'Оплата накладної власними коштами' })
+      return parts
+    }
+    return [{ amount: paid, fund_source: fundSource, note: 'Оплата під час створення накладної' }]
+  }
+
+  async function requireCashboxFunds(amount: number): Promise<string | null> {
+    if (amount <= 0) return null
+    const [shiftRes, cashRes] = await Promise.all([
+      shiftApi.current({ silent: true }).catch(() => null),
+      shiftApi.expectedCash({ silent: true }).catch(() => null),
+    ])
+    const shiftId = (shiftRes as any)?.data?.id ?? null
+    if (!shiftId) {
+      toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
+      return null
+    }
+    const available = Number((cashRes as any)?.data?.expected_amount ?? 0)
+    if (available < amount) {
+      toast.error(`У касі недостатньо грошей. Доступно ${formatMoney(available)}, потрібно ${formatMoney(amount)}. Виберіть оплату частково з власних коштів.`)
+      return null
+    }
+    return shiftId
+  }
   function bindExistingProductToItem(item: LineItem, product: Product): LineItem {
     const purchase = item.purchase_price > 0 ? item.purchase_price : product.purchase_price
     const retail = item.retail_price > 0 ? item.retail_price : product.retail_price
@@ -1658,17 +1706,13 @@ export default function InvoiceFormPage() {
     invoiceSubmitRef.current = true
     setSaving(true)
     try {
-      // Перевіряємо касову зміну до створення нових карток товарів. Інакше при
-      // відмові оплати накладна не створювалась, а її товари вже лишались у базі.
-      const paidKopecks = !isEdit ? parseMoneyToKopecks(paidAmount) : 0
-      const shift = !isEdit && paidKopecks > 0 && fundSource === 'cashbox'
-        ? await shiftApi.current().catch(() => null)
-        : null
-      const shiftId = (shift as any)?.data?.id ?? null
-      if (!isEdit && paidKopecks > 0 && fundSource === 'cashbox' && !shiftId) {
-        toast.error('Щоб платити з каси, спочатку відкрийте касову зміну')
-        return
-      }
+      // Перевіряємо касу до створення нових карток товарів. Інакше при відмові
+      // оплати накладна не створювалась, а її товари вже лишались у базі.
+      const paidKopecks = !isEdit ? Math.min(payFullNow ? total : parseMoneyToKopecks(paidAmount), total) : 0
+      const paymentParts = !isEdit ? buildSupplierPaymentParts(paidKopecks) : []
+      const cashboxPart = paymentParts.find((part) => part.fund_source === 'cashbox')?.amount ?? 0
+      const shiftId = cashboxPart > 0 ? await requireCashboxFunds(cashboxPart) : null
+      if (cashboxPart > 0 && !shiftId) return
 
       // 1. Create missing products first. Робимо послідовно, щоб два однакові
       // рядки з імпорту/телефона не створювали товар паралельно і не ловили duplicate.
@@ -1835,19 +1879,24 @@ export default function InvoiceFormPage() {
           total: i.total,
         })),
       }
+      const recordInitialPayments = async (invoiceId: string) => {
+        for (const part of paymentParts) {
+          await supplierApi.payInvoice(invoiceId, {
+            amount: part.amount,
+            payment_method: paymentMethod,
+            fund_source: part.fund_source,
+            shift_id: part.fund_source === 'cashbox' ? shiftId : null,
+            note: part.note,
+          })
+        }
+      }
       const existingDraftId = isEdit ? id! : serverDraftIdRef.current
       if (existingDraftId) {
         const updated = await supplierApi.updateInvoice(existingDraftId, { ...body, draft_payload: null })
         const invoiceId = updated.data.id
 
-        if (!isEdit && paidKopecks > 0) {
-          await supplierApi.payInvoice(invoiceId, {
-            amount: paidKopecks,
-            payment_method: paymentMethod,
-            fund_source: fundSource,
-            shift_id: shiftId,
-            note: 'Оплата під час створення накладної',
-          })
+        if (!isEdit && paymentParts.length > 0) {
+          await recordInitialPayments(invoiceId)
         }
 
         if (!isEdit && postImmediately) {
@@ -1863,11 +1912,15 @@ export default function InvoiceFormPage() {
       } else {
         const created = await supplierApi.createInvoice({
           ...body,
-          paid_amount: paidKopecks,
-          payment_method: paidKopecks > 0 ? paymentMethod : null,
-          fund_source: paidKopecks > 0 ? fundSource : null,
-          shift_id: shiftId,
+          paid_amount: 0,
+          payment_method: null,
+          fund_source: null,
+          shift_id: null,
         })
+
+        if (!isEdit && created?.data?.id && paymentParts.length > 0) {
+          await recordInitialPayments(created.data.id)
+        }
 
         // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
         if (postImmediately && created?.data?.id) {
@@ -2526,15 +2579,15 @@ export default function InvoiceFormPage() {
                 <input
                   type="text" inputMode="decimal"
                   value={paidAmount}
-                  onPaste={(e) => { e.preventDefault(); setPaidAmount(kopecksForForm(parseMoneyToKopecks(e.clipboardData.getData('text')))) }}
-                  onChange={(e) => setPaidAmount(e.target.value)}
+                  onPaste={(e) => { e.preventDefault(); setPayFullNow(false); setPaidAmount(kopecksForForm(parseMoneyToKopecks(e.clipboardData.getData('text')))) }}
+                  onChange={(e) => { setPayFullNow(false); setPaidAmount(e.target.value) }}
                   placeholder="0.00"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-semibold text-right focus:outline-none focus:ring-2 focus:ring-yellow-400"
                 />
               </div>
               <div className="w-36">
                 <label className="block text-xs font-medium text-gray-500 mb-1">Спосіб</label>
-                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as 'cash' | 'card' | 'transfer')}
+                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as InvoicePaymentMethod)}
                   className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
                   <option value="cash">Готівка</option>
                   <option value="card">Картка</option>
@@ -2543,21 +2596,51 @@ export default function InvoiceFormPage() {
               </div>
               <div className="w-52">
                 <label className="block text-xs font-medium text-gray-500 mb-1">Звідки гроші</label>
-                <select value={fundSource} onChange={(e) => setFundSource(e.target.value as typeof fundSource)}
+                <select value={fundSource} onChange={(e) => {
+                    const next = e.target.value as InvoiceFundSource
+                    setFundSource(next)
+                    if (next === 'split_cashbox_owner') setPaymentMethod('cash')
+                  }}
                   className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
                   <option value="cashbox">З каси магазину</option>
+                  <option value="split_cashbox_owner">Частково: каса + власні кошти</option>
                   <option value="owner_funds">Власні кошти власника</option>
                   <option value="bank_account">Розрахунковий рахунок</option>
                   <option value="business_card">Картка підприємства</option>
                 </select>
               </div>
-              <Button type="button" variant="outline" size="sm" onClick={() => setPaidAmount((total / 100).toFixed(2))}>
+              <Button type="button" variant="outline" size="sm" onClick={() => { setPayFullNow(true); setPaidAmount((total / 100).toFixed(2)); if (fundSource === 'split_cashbox_owner' && !cashboxPaidAmount) setCashboxPaidAmount((total / 100).toFixed(2)) }}>
                 Оплатити повністю
               </Button>
-              <Button type="button" variant="outline" size="sm" onClick={() => setPaidAmount('0')}>
+              <Button type="button" variant="outline" size="sm" onClick={() => { setPayFullNow(false); setPaidAmount('0'); setCashboxPaidAmount('') }}>
                 Без оплати (в борг)
               </Button>
             </div>
+            {fundSource === 'split_cashbox_owner' && (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-xl border border-yellow-200 bg-yellow-50 p-3">
+                <div>
+                  <label className="block text-xs font-medium text-yellow-800 mb-1">З каси, грн</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={cashboxPaidAmount}
+                    onPaste={(e) => { e.preventDefault(); setCashboxPaidAmount(kopecksForForm(parseMoneyToKopecks(e.clipboardData.getData('text')))) }}
+                    onChange={(e) => setCashboxPaidAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full border border-yellow-200 rounded-lg px-3 py-2 text-sm font-semibold text-right focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-yellow-800 mb-1">Власні кошти, грн</label>
+                  <div className="w-full border border-yellow-100 rounded-lg px-3 py-2 text-sm font-semibold text-right bg-white text-gray-700">
+                    {kopecksForForm(Math.max(0, Math.min(parseMoneyToKopecks(paidAmount), total) - Math.min(parseMoneyToKopecks(cashboxPaidAmount), Math.min(parseMoneyToKopecks(paidAmount), total))))}
+                  </div>
+                </div>
+                <div className="text-xs text-yellow-800 leading-relaxed flex items-center">
+                  Якщо в касі не вистачає грошей — впишіть скільки реально берете з каси, решта піде як власні кошти.
+                </div>
+              </div>
+            )}
             {(() => {
               const paid = parseMoneyToKopecks(paidAmount)
               const debt = Math.max(0, total - Math.min(paid, total))

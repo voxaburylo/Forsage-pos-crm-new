@@ -1,7 +1,8 @@
-﻿import { randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { getShiftCashBreakdown } from './shiftService.js'
 import type {
   CreateSupplierInput, UpdateSupplierInput, SupplierListQuery,
   CreateSupplyInvoiceInput, UpdateSupplyInvoiceInput, SaveSupplyInvoiceDraftInput, SupplyInvoiceListQuery,
@@ -20,6 +21,28 @@ function normalizeSupplyInvoiceItems(items: CreateSupplyInvoiceInput['items'] | 
 
 function supplyInvoiceItemsTotal(items: Array<{ total: number }>): number {
   return items.reduce((sum, item) => sum + item.total, 0)
+}
+
+async function assertCashboxHasFunds(amount: number, fundSource: string | null | undefined, shiftId: string | null | undefined, tenantId: string) {
+  if (fundSource !== 'cashbox' || amount <= 0) return
+  if (!shiftId) throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, спочатку відкрийте касову зміну', 400)
+  const { data: shift, error } = await db
+    .from('shifts')
+    .select('id,opening_cash,status')
+    .eq('id', shiftId)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'open')
+    .maybeSingle()
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (!shift) throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, спочатку відкрийте касову зміну', 400)
+  const cash = await getShiftCashBreakdown(shiftId, tenantId, Number(shift.opening_cash ?? 0))
+  if (cash.expected_amount < amount) {
+    throw new AppError(
+      'CASHBOX_INSUFFICIENT_FUNDS',
+      `У касі недостатньо грошей. Доступно ${(cash.expected_amount / 100).toFixed(2)} грн, потрібно ${(amount / 100).toFixed(2)} грн. Оплатіть частину власними коштами.`,
+      422,
+    )
+  }
 }
 
 function draftPayloadTotal(payload: unknown): number {
@@ -248,6 +271,7 @@ export async function createSupplyInvoice(userId: string, input: CreateSupplyInv
   if (paidAmount > 0) {
     const method = input.payment_method ?? 'cash'
     const fundSource = input.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
+    await assertCashboxHasFunds(paidAmount, fundSource, input.shift_id ?? null, tenantId)
     const { error: paymentError } = await db.from('supplier_payments').insert({
       tenant_id: tenantId,
       invoice_id: invoice.id,
@@ -476,6 +500,7 @@ export async function addInvoicePayment(
     if (!invoice) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
     const remaining = Number(invoice.total) - Number(invoice.paid_amount)
     if (amount > remaining) throw new AppError('PAYMENT_TOO_LARGE', 'Сума перевищує борг за накладною', 422)
+    await assertCashboxHasFunds(amount, fundSource, shiftId, tenantId)
 
     await client.query(
       `INSERT INTO supplier_payments

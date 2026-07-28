@@ -1,4 +1,4 @@
-﻿import { randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
@@ -593,9 +593,42 @@ export class LocalSupplyRepository {
     `).run(item.id, tenantId, invoiceId, item.product_id, item.qty, item.purchase_price, item.total, timestamp, timestamp, timestamp)
   }
 
+  private getCashboxAvailable(tenantId: string, shiftId: string | null | undefined): number {
+    if (!shiftId) throw new Error('Щоб платити з каси, спочатку відкрийте касову зміну')
+    const shift = this.db.prepare(`
+      SELECT id, opening_cash
+      FROM shifts
+      WHERE id = ? AND tenant_id = ? AND status = 'open'
+      LIMIT 1
+    `).get(shiftId, tenantId) as { id: string; opening_cash: number } | undefined
+    if (!shift) throw new Error('Щоб платити з каси, спочатку відкрийте касову зміну')
+    const rows = this.db.prepare(`
+      SELECT type, COALESCE(SUM(amount), 0) AS total
+      FROM cash_operations
+      WHERE tenant_id = ? AND shift_id = ? AND deleted_at IS NULL
+      GROUP BY type
+    `).all(tenantId, shift.id) as Array<{ type: string; total: number }>
+    const by: Record<string, number> = {}
+    for (const row of rows) by[row.type] = Number(row.total ?? 0) || 0
+    const cashSales = by.sale_cash ?? 0
+    const cashReturns = by.return_cash ?? 0
+    const cashIn = by.cash_in ?? 0
+    const cashOut = (by.cash_out ?? 0) + (by.salary_payout ?? 0) + (by.supplier_payment ?? 0)
+    return Number(shift.opening_cash ?? 0) + cashSales + cashIn - cashReturns - cashOut
+  }
+
+  private ensureCashboxPaymentAllowed(tenantId: string, input: PaymentInput, amount: number): void {
+    if (input.fund_source !== 'cashbox' || amount <= 0) return
+    const available = this.getCashboxAvailable(tenantId, input.shift_id)
+    if (available < amount) {
+      throw new Error(`У касі недостатньо грошей. Доступно ${(available / 100).toFixed(2)} грн, потрібно ${(amount / 100).toFixed(2)} грн. Оплатіть частину власними коштами.`)
+    }
+  }
+
   private insertPayment(invoiceId: string, tenantId: string, input: PaymentInput & { payment_id?: string }, supplierId: string | null, timestamp: string): string {
     const paymentId = input.payment_id ?? randomUUID()
     const amount = money(input.amount)
+    this.ensureCashboxPaymentAllowed(tenantId, input, amount)
     this.db.prepare(`
       INSERT INTO supplier_payments (
         id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source,
