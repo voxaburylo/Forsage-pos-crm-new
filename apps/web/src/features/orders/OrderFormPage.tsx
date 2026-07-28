@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useMemo, useRef, useId } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
@@ -85,7 +85,8 @@ function SupplierQuickPicker({
 }) {
   const [text, setText] = useState('')
   const [creating, setCreating] = useState(false)
-  const listId = useMemo(() => 'supplier-list-' + Math.random().toString(36).slice(2), [])
+  const reactListId = useId()
+  const listId = `supplier-list-${reactListId.replace(/:/g, '')}`
 
   useEffect(() => {
     if (!value) {

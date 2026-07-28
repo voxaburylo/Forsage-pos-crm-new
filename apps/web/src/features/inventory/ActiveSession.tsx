@@ -260,20 +260,24 @@ export default function ActiveSession() {
     applyNewPrice: true,
   })
 
-  inventoryDraftSnapshotRef.current = {
-    query,
-    selected,
-    qty,
-    quickCreateOpen,
-    quickProduct,
-    priceStatus,
-    observedPrice,
-    applyNewPrice,
-  }
   const isCurrentSessionCompleted = Boolean(session && session.id === id && session.status === 'completed')
-  inventoryCompletedRef.current = isCurrentSessionCompleted
 
+  useEffect(() => {
+    inventoryDraftSnapshotRef.current = {
+      query,
+      selected,
+      qty,
+      quickCreateOpen,
+      quickProduct,
+      priceStatus,
+      observedPrice,
+      applyNewPrice,
+    }
+  }, [query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice])
 
+  useEffect(() => {
+    inventoryCompletedRef.current = isCurrentSessionCompleted
+  }, [isCurrentSessionCompleted])
   const sessionItems = session?.items ?? EMPTY_INVENTORY_ITEMS
   // Порядок додавання: останній пробитий зверху. Сортуємо за часом ПЕРШОГО
   // підрахунку, а не updated_at — інакше редагування старого товару підкидало

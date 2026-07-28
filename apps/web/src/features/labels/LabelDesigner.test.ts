@@ -16,7 +16,7 @@ function product(name = 'Тестовий товар') {
 }
 
 describe('label print document', () => {
-  it('uses the designer geometry and creates exactly one section per label', () => {
+  it('uses the current print geometry and creates exactly one section per label', () => {
     const settings = {
       ...DEFAULT_LABEL,
       width_mm: 58,
@@ -43,7 +43,8 @@ describe('label print document', () => {
     expect(document.html).toContain('@page { margin: 0; size: 58mm 40mm; }')
     expect(document.html).toContain('height: calc(40mm - 0.01mm) !important;')
     expect(document.html).toContain('transform: translate(1.5mm, -0.5mm)')
-    expect(document.html).toContain('left:10%;top:42%;width:40%')
+    // Product labels intentionally print the barcode full-width for readability and centering.
+    expect(document.html).toContain('left:0%;top:42%;width:100%')
     expect(document.html).toContain('height: 31px')
     expect(document.html).toContain('font-size: 9pt')
     expect(document.html).not.toContain('Форсаж')
