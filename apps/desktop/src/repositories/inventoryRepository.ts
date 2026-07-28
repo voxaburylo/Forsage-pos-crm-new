@@ -93,7 +93,10 @@ export class LocalInventoryRepository {
     if (!session) throw new Error('Ревізію не знайдено')
     return {
       ...session,
-      items: this.listCountedItems(sessionId, tenantId, 100),
+      // Раніше було 100 — на великих ревізіях половина порахованих не показувалась
+      // (і екран «було→стане» їх не бачив). 1000 покриває реальні ревізії; веб-рендер
+      // усе одно обмежений (150 + «показати всі»), тож DOM легкий.
+      items: this.listCountedItems(sessionId, tenantId, 1000),
       price_issues: this.listPriceIssues(sessionId, tenantId),
       my_entries: this.listEntries(sessionId, tenantId, userId),
       summary: this.summary(sessionId, tenantId),
