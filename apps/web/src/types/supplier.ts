@@ -1,4 +1,4 @@
-﻿export interface Supplier {
+export interface Supplier {
   id: string
   name: string
   phone: string | null
@@ -40,6 +40,9 @@ export interface SupplyInvoice {
   paid_amount?: number
   payment_method?: 'cash' | 'card' | 'transfer' | null
   notes: string | null
+  draft_payload?: Record<string, unknown> | null
+  draft_saved_at?: string | null
+  draft_saved_by?: string | null
   posted_by: string | null
   posted_at: string | null
   created_at: string

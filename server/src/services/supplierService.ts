@@ -1,14 +1,37 @@
+﻿import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type {
   CreateSupplierInput, UpdateSupplierInput, SupplierListQuery,
-  CreateSupplyInvoiceInput, UpdateSupplyInvoiceInput, SupplyInvoiceListQuery,
+  CreateSupplyInvoiceInput, UpdateSupplyInvoiceInput, SaveSupplyInvoiceDraftInput, SupplyInvoiceListQuery,
 } from '../validators/supplierSchema.js'
 
 const SUPPLIER_TABLE = 'suppliers'
 const INVOICE_TABLE  = 'supply_invoices'
 const ITEM_TABLE     = 'supply_invoice_items'
+
+function normalizeSupplyInvoiceItems(items: CreateSupplyInvoiceInput['items'] | NonNullable<UpdateSupplyInvoiceInput['items']>) {
+  return items.map((item) => ({
+    ...item,
+    total: Math.round(item.qty * item.purchase_price),
+  }))
+}
+
+function supplyInvoiceItemsTotal(items: Array<{ total: number }>): number {
+  return items.reduce((sum, item) => sum + item.total, 0)
+}
+
+function draftPayloadTotal(payload: unknown): number {
+  const items = Array.isArray((payload as any)?.items) ? (payload as any).items : []
+  return items.reduce((sum: number, item: any) => {
+    const explicitTotal = Number(item?.total ?? 0)
+    if (Number.isFinite(explicitTotal) && explicitTotal > 0) return sum + Math.round(explicitTotal)
+    const qty = Number(item?.qty ?? 0)
+    const purchase = Number(item?.purchase_price ?? 0)
+    return sum + Math.max(0, Math.round(qty * purchase))
+  }, 0)
+}
 
 // ===================== Постачальники =====================
 
@@ -172,12 +195,23 @@ export async function getSupplyInvoice(id: string, tenantId: string) {
   return data
 }
 
+export async function getLatestSupplyInvoiceDraft(tenantId: string) {
+  const { data, error } = await db
+    .from(INVOICE_TABLE)
+    .select('*, supplier:suppliers(id,name)')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'draft')
+    .not('draft_payload', 'is', null)
+    .order('draft_saved_at', { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return data ?? null
+}
 export async function createSupplyInvoice(userId: string, input: CreateSupplyInvoiceInput, tenantId: string) {
-  const itemsWithTotal = input.items.map((item) => ({
-    ...item,
-    total: Math.round(item.qty * item.purchase_price),
-  }))
-  const totalKopecks = itemsWithTotal.reduce((sum, item) => sum + item.total, 0)
+  const itemsWithTotal = normalizeSupplyInvoiceItems(input.items)
+  const totalKopecks = supplyInvoiceItemsTotal(itemsWithTotal)
 
   // Оплата постачальнику не може перевищувати суму накладної
   const paidAmount = Math.min(input.paid_amount ?? 0, totalKopecks)
@@ -244,27 +278,146 @@ export async function createSupplyInvoice(userId: string, input: CreateSupplyInv
   return getSupplyInvoice(invoice.id, tenantId)
 }
 
-export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoiceInput, tenantId: string) {
+export async function saveSupplyInvoiceDraft(userId: string, input: SaveSupplyInvoiceDraftInput, tenantId: string) {
+  const timestamp = new Date().toISOString()
+  const invoiceId = input.invoice_id ?? randomUUID()
+  const draftPayload = {
+    ...(input.draft_payload as Record<string, unknown>),
+    serverInvoiceId: invoiceId,
+    savedAt: timestamp,
+  }
+  const totalKopecks = input.total ?? draftPayloadTotal(draftPayload)
+
+  if (input.invoice_id) {
+    const { data: existing, error: existingError } = await db
+      .from(INVOICE_TABLE)
+      .select('id,status')
+      .eq('id', invoiceId)
+      .eq('tenant_id', tenantId)
+      .single()
+    if (existingError || !existing) throw new AppError('NOT_FOUND', 'Чернетку накладної не знайдено', 404)
+    if (existing.status !== 'draft') throw new AppError('INVOICE_POSTED', 'Не можна редагувати проведену накладну', 400)
+
+    const { error } = await db
+      .from(INVOICE_TABLE)
+      .update({
+        supplier_id: input.supplier_id ?? null,
+        invoice_number: input.invoice_number ?? null,
+        notes: input.notes ?? null,
+        total: totalKopecks,
+        draft_payload: draftPayload,
+        draft_saved_at: timestamp,
+        draft_saved_by: userId,
+        updated_at: timestamp,
+      })
+      .eq('id', invoiceId)
+      .eq('tenant_id', tenantId)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    return getSupplyInvoice(invoiceId, tenantId)
+  }
+
+  const { error } = await db
+    .from(INVOICE_TABLE)
+    .insert({
+      id: invoiceId,
+      supplier_id: input.supplier_id ?? null,
+      invoice_number: input.invoice_number ?? null,
+      notes: input.notes ?? null,
+      status: 'draft',
+      total: totalKopecks,
+      paid_amount: 0,
+      payment_method: null,
+      draft_payload: draftPayload,
+      draft_saved_at: timestamp,
+      draft_saved_by: userId,
+      tenant_id: tenantId,
+    })
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  return getSupplyInvoice(invoiceId, tenantId)
+}
+
+export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoiceInput, tenantId: string, userId?: string) {
   const existing = await getSupplyInvoice(id, tenantId)
   if (existing.status !== 'draft') {
     throw new AppError('INVOICE_POSTED', 'Не можна редагувати проведену накладну', 400)
   }
 
-  const { data, error } = await db
-    .from(INVOICE_TABLE)
-    .update({ ...input, updated_at: new Date().toISOString() })
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,purchase_price,retail_price,barcode,storage_bin,category_id,photo_url))')
-    .single()
+  const timestamp = new Date().toISOString()
+  const hasItems = input.items !== undefined
+  const normalizedItems = hasItems ? normalizeSupplyInvoiceItems(input.items ?? []) : null
+  const totalKopecks = normalizedItems ? supplyInvoiceItemsTotal(normalizedItems) : Number(existing.total ?? 0)
+  const hasDraftPayload = Object.prototype.hasOwnProperty.call(input, 'draft_payload')
+  const shouldClearDraft = hasItems || input.draft_payload === null
+  const shouldSetDraft = hasDraftPayload && input.draft_payload !== null && !hasItems
+  const draftPayload = shouldClearDraft
+    ? null
+    : shouldSetDraft
+      ? { ...(input.draft_payload as Record<string, unknown>), serverInvoiceId: id, savedAt: timestamp }
+      : ((existing as any).draft_payload ?? null)
+  const draftSavedAt = shouldClearDraft
+    ? null
+    : shouldSetDraft
+      ? timestamp
+      : ((existing as any).draft_saved_at ?? null)
+  const draftSavedBy = shouldClearDraft
+    ? null
+    : shouldSetDraft
+      ? (userId ?? null)
+      : ((existing as any).draft_saved_by ?? null)
 
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data
+  await runTransaction(async (client) => {
+    const invoiceResult = await client.query(
+      `SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [id, tenantId],
+    )
+    const invoice = invoiceResult.rows[0]
+    if (!invoice) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
+    if (invoice.status !== 'draft') throw new AppError('INVOICE_POSTED', 'Не можна редагувати проведену накладну', 400)
+
+    await client.query(
+      `UPDATE supply_invoices
+       SET supplier_id = $1, invoice_number = $2, notes = $3, total = $4,
+           draft_payload = $5::jsonb, draft_saved_at = $6, draft_saved_by = $7,
+           updated_at = $8
+       WHERE id = $9 AND tenant_id = $10`,
+      [
+        input.supplier_id !== undefined ? input.supplier_id : existing.supplier_id,
+        input.invoice_number !== undefined ? input.invoice_number : existing.invoice_number,
+        input.notes !== undefined ? input.notes : existing.notes,
+        totalKopecks,
+        draftPayload ? JSON.stringify(draftPayload) : null,
+        draftSavedAt,
+        draftSavedBy,
+        timestamp,
+        id,
+        tenantId,
+      ],
+    )
+
+    if (normalizedItems) {
+      await client.query('DELETE FROM supply_invoice_items WHERE invoice_id = $1 AND tenant_id = $2', [id, tenantId])
+      for (const item of normalizedItems) {
+        await client.query(
+          `INSERT INTO supply_invoice_items (id, tenant_id, invoice_id, product_id, qty, purchase_price, total, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [randomUUID(), tenantId, id, item.product_id, Number(item.qty ?? 0), Number(item.purchase_price ?? 0), item.total, timestamp],
+        )
+      }
+    }
+  })
+
+  return getSupplyInvoice(id, tenantId)
 }
 
 export async function postSupplyInvoice(id: string, userId: string, tenantId: string) {
   // Ensure the invoice belongs to the tenant
-  await getSupplyInvoice(id, tenantId)
+  const invoice = await getSupplyInvoice(id, tenantId)
+  if ((invoice as any).draft_payload) {
+    throw new AppError('INVOICE_DRAFT_NOT_FINALIZED', 'Спочатку відкрийте чернетку накладної та збережіть її позиції', 400)
+  }
+  if ((invoice.items?.length ?? 0) === 0) {
+    throw new AppError('INVOICE_EMPTY', 'У накладній немає товарів', 422)
+  }
 
   const { error } = await db.rpc('post_supply_invoice', {
     p_invoice_id: id,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+﻿import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Trash2, Camera, ImagePlus, Clipboard, Loader2, Barcode } from 'lucide-react'
 import { compressToJpeg, uploadToStorage } from '@/features/products/ProductPhotoUpload'
@@ -9,6 +9,7 @@ import { productApi } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { adminApi } from '@/features/admin/adminApi'
 import type { Product, ProductFormData } from '@/types/product'
+import type { SupplyInvoice } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -43,6 +44,7 @@ interface SupplyInvoiceLocalDraft {
   paymentMethod: 'cash' | 'card' | 'transfer'
   fundSource: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
   postImmediately: boolean
+  serverInvoiceId?: string | null
   savedAt: string
 }
 
@@ -75,6 +77,7 @@ function loadSupplyInvoiceDraft(key: string): SupplyInvoiceLocalDraft | null {
         ? draft.fundSource
         : 'cashbox',
       postImmediately: draft.postImmediately !== false,
+      serverInvoiceId: typeof draft.serverInvoiceId === 'string' ? draft.serverInvoiceId : null,
       savedAt: String(draft.savedAt ?? new Date().toISOString()),
     }
   } catch {
@@ -92,8 +95,103 @@ function clearSupplyInvoiceDraft(key: string) {
 
 type SupplyInvoiceDraftData = Omit<SupplyInvoiceLocalDraft, 'savedAt'>
 
+function hasSupplyInvoiceDraftContent(draft: SupplyInvoiceDraftData): boolean {
+  return Boolean(
+    draft.supplierId || draft.invoiceNumber.trim() || draft.notes.trim() || draft.paidAmount.trim() || draft.items.length > 0,
+  )
+}
+
+function normalizeSupplyInvoiceDraftItems(items: unknown): LineItem[] {
+  return (Array.isArray(items) ? items : []).map((raw) => {
+    const item = raw as Partial<LineItem>
+    const qty = Number(item.qty) || 0
+    const purchase = Number(item.purchase_price) || 0
+    return {
+      ...item,
+      client_key: item.client_key || makeLineKey(),
+      product_id: item.product_id || undefined,
+      product_name: String(item.product_name ?? ''),
+      sku: String(item.sku ?? ''),
+      barcode: item.barcode ?? '',
+      unit: normalizeInvoiceUnit(item.unit),
+      qty,
+      purchase_price: purchase,
+      retail_price: Number(item.retail_price) || 0,
+      category_id: item.category_id ?? null,
+      total: Number(item.total) || Math.round(qty * purchase),
+      storage_bin: item.storage_bin ?? null,
+      photo_url: item.photo_url ?? null,
+      is_new: item.is_new === true,
+    } as LineItem
+  })
+}
+
+function invoiceItemsToLineItems(inv: SupplyInvoice): LineItem[] {
+  return (inv.items ?? []).map((i) => ({
+    client_key: makeLineKey(),
+    product_id: i.product_id,
+    product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
+    qty: i.qty,
+    purchase_price: i.purchase_price,
+    retail_price: i.product?.retail_price ?? 0,
+    category_id: (i.product as any)?.category_id ?? null,
+    total: i.total,
+    storage_bin: i.product?.storage_bin ?? null,
+    sku: i.product?.sku ?? '',
+    barcode: (i.product as any)?.barcode ?? '',
+    unit: normalizeInvoiceUnit((i.product as any)?.unit),
+    photo_url: (i.product as any)?.photo_url ?? null,
+  }))
+}
+
+function draftFromServerInvoice(inv: SupplyInvoice): SupplyInvoiceLocalDraft | null {
+  const rawPayload = inv.draft_payload as Partial<SupplyInvoiceLocalDraft> | null | undefined
+  const payloadHasItems = Array.isArray(rawPayload?.items)
+  const savedAt = String(inv.draft_saved_at ?? rawPayload?.savedAt ?? inv.updated_at ?? new Date().toISOString())
+  if (rawPayload && payloadHasItems) {
+    return {
+      supplierId: String(rawPayload.supplierId ?? inv.supplier_id ?? ''),
+      invoiceNumber: String(rawPayload.invoiceNumber ?? inv.invoice_number ?? ''),
+      notes: String(rawPayload.notes ?? inv.notes ?? ''),
+      items: normalizeSupplyInvoiceDraftItems(rawPayload.items),
+      paidAmount: String(rawPayload.paidAmount ?? ''),
+      paymentMethod: rawPayload.paymentMethod === 'card' || rawPayload.paymentMethod === 'transfer' ? rawPayload.paymentMethod : 'cash',
+      fundSource: rawPayload.fundSource === 'owner_funds' || rawPayload.fundSource === 'bank_account' || rawPayload.fundSource === 'business_card'
+        ? rawPayload.fundSource
+        : 'cashbox',
+      postImmediately: rawPayload.postImmediately !== false,
+      serverInvoiceId: inv.id,
+      savedAt,
+    }
+  }
+  if (inv.status === 'draft' && (inv.items?.length ?? 0) > 0) {
+    return {
+      supplierId: inv.supplier_id ?? '',
+      invoiceNumber: inv.invoice_number ?? '',
+      notes: inv.notes ?? '',
+      items: invoiceItemsToLineItems(inv),
+      paidAmount: inv.paid_amount ? kopecksForForm(inv.paid_amount) : '',
+      paymentMethod: inv.payment_method === 'card' || inv.payment_method === 'transfer' ? inv.payment_method : 'cash',
+      fundSource: 'cashbox',
+      postImmediately: false,
+      serverInvoiceId: inv.id,
+      savedAt,
+    }
+  }
+  return null
+}
+
+function newestSupplyInvoiceDraft(localDraft: SupplyInvoiceLocalDraft | null, serverDraft: SupplyInvoiceLocalDraft | null): SupplyInvoiceLocalDraft | null {
+  if (!localDraft) return serverDraft
+  if (!serverDraft) return localDraft
+  const localTime = Date.parse(localDraft.savedAt || '') || 0
+  const serverTime = Date.parse(serverDraft.savedAt || '') || 0
+  return serverTime > localTime ? serverDraft : localDraft
+}
+
+
 function persistSupplyInvoiceDraft(key: string, draft: SupplyInvoiceDraftData) {
-  const hasDraft = Boolean(draft.supplierId || draft.invoiceNumber.trim() || draft.notes.trim() || draft.paidAmount.trim() || draft.items.length > 0)
+  const hasDraft = hasSupplyInvoiceDraftContent(draft) || Boolean(draft.serverInvoiceId)
   if (!hasDraft) {
     clearSupplyInvoiceDraft(key)
     return
@@ -523,11 +621,13 @@ export default function InvoiceFormPage() {
   const invoiceDraftReadyRef = useRef(false)
   const invoiceSubmitRef = useRef(false)
   const invoiceDraftPersistenceDisabledRef = useRef(false)
+  const serverDraftIdRef = useRef<string | null>(isEdit && id ? id : null)
 
   const [supplierId, setSupplierId] = useState(preSelectedSupplier)
   const [invoiceNumber, setInvoiceNumber] = useState('')
   const [notes, setNotes] = useState('')
   const [items, setItems] = useState<LineItem[]>([])
+  const [serverDraftId, setServerDraftId] = useState<string | null>(isEdit && id ? id : null)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(isEdit)
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
@@ -573,6 +673,7 @@ export default function InvoiceFormPage() {
     paymentMethod,
     fundSource,
     postImmediately,
+    serverInvoiceId: serverDraftId,
   })
 
   useEffect(() => {
@@ -586,8 +687,9 @@ export default function InvoiceFormPage() {
       paymentMethod,
       fundSource,
       postImmediately,
+      serverInvoiceId: serverDraftIdRef.current,
     }
-  }, [supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately])
+  }, [supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately, serverDraftId])
 
   function applySupplyInvoiceDraft(draft: SupplyInvoiceLocalDraft, fallbackSupplier = preSelectedSupplier) {
     setSupplierId(draft.supplierId || fallbackSupplier)
@@ -598,18 +700,64 @@ export default function InvoiceFormPage() {
     setPaymentMethod(draft.paymentMethod)
     setFundSource(draft.fundSource)
     setPostImmediately(draft.postImmediately)
+    const draftId = draft.serverInvoiceId || (isEdit && id ? id : null)
+    serverDraftIdRef.current = draftId
+    setServerDraftId(draftId)
   }
+
+  useEffect(() => {
+    const draftId = isEdit && id ? id : serverDraftId
+    serverDraftIdRef.current = draftId
+  }, [id, isEdit, serverDraftId])
 
   useEffect(() => {
     if (isEdit || cloneId) return
     invoiceDraftReadyRef.current = false
-    const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
-    if (draft) {
-      applySupplyInvoiceDraft(draft, preSelectedSupplier)
+    let cancelled = false
+    let readyTimer: number | null = null
+    const markReady = () => {
+      readyTimer = window.setTimeout(() => { invoiceDraftReadyRef.current = true }, 0)
+    }
+    const localDraft = loadSupplyInvoiceDraft(invoiceDraftKey)
+    if (localDraft) {
+      applySupplyInvoiceDraft(localDraft, preSelectedSupplier)
       toast.success('Чернетку накладної відновлено')
     }
-    const timer = window.setTimeout(() => { invoiceDraftReadyRef.current = true }, 0)
-    return () => window.clearTimeout(timer)
+    if (desktopBridge()) {
+      markReady()
+      return () => {
+        cancelled = true
+        if (readyTimer != null) window.clearTimeout(readyTimer)
+      }
+    }
+
+    const serverId = localDraft?.serverInvoiceId
+    if (serverId) {
+      supplierApi.getInvoice(serverId).then((res) => {
+        if (cancelled) return
+        const serverDraft = draftFromServerInvoice(res.data)
+        const draft = newestSupplyInvoiceDraft(localDraft, serverDraft)
+        if (draft) applySupplyInvoiceDraft(draft, preSelectedSupplier)
+      }).catch(() => {})
+        .finally(() => { if (!cancelled) markReady() })
+    } else if (!localDraft) {
+      supplierApi.getLatestInvoiceDraft().then((res) => {
+        if (cancelled || !res.data) return
+        const serverDraft = draftFromServerInvoice(res.data)
+        if (serverDraft) {
+          applySupplyInvoiceDraft(serverDraft, preSelectedSupplier)
+          persistSupplyInvoiceDraft(invoiceDraftKey, serverDraft)
+          toast.success('Серверну чернетку накладної відновлено')
+        }
+      }).catch(() => {})
+        .finally(() => { if (!cancelled) markReady() })
+    } else {
+      markReady()
+    }
+    return () => {
+      cancelled = true
+      if (readyTimer != null) window.clearTimeout(readyTimer)
+    }
   }, [cloneId, invoiceDraftKey, isEdit, preSelectedSupplier])
 
   useEffect(() => {
@@ -618,7 +766,38 @@ export default function InvoiceFormPage() {
       persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately])
+  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately, serverDraftId])
+
+  useEffect(() => {
+    if (!invoiceDraftReadyRef.current || invoiceDraftPersistenceDisabledRef.current) return
+    if (desktopBridge()) return
+    const draft = invoiceDraftSnapshotRef.current
+    if (!hasSupplyInvoiceDraftContent(draft)) return
+    const timer = window.setTimeout(async () => {
+      const current = invoiceDraftSnapshotRef.current
+      if (!hasSupplyInvoiceDraftContent(current) || invoiceDraftPersistenceDisabledRef.current) return
+      try {
+        const res = await supplierApi.saveInvoiceDraft({
+          invoice_id: serverDraftIdRef.current,
+          supplier_id: current.supplierId || null,
+          invoice_number: current.invoiceNumber.trim() || null,
+          notes: current.notes.trim() || null,
+          total: current.items.reduce((sum, item) => sum + Math.max(0, Math.round(Number(item.total ?? 0))), 0),
+          draft_payload: current as unknown as Record<string, unknown>,
+        })
+        const savedId = res.data?.id
+        if (savedId && savedId !== serverDraftIdRef.current) {
+          serverDraftIdRef.current = savedId
+          setServerDraftId(savedId)
+          persistSupplyInvoiceDraft(invoiceDraftKey, { ...current, serverInvoiceId: savedId })
+        }
+      } catch {
+        // Локальна чернетка вже збережена. Якщо сервер тимчасово недоступний,
+        // наступна зміна рядка повторить фонове збереження.
+      }
+    }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately, serverDraftId])
 
   useEffect(() => {
     const flushDraft = () => {
@@ -699,30 +878,19 @@ export default function InvoiceFormPage() {
       invoiceDraftReadyRef.current = false
       supplierApi.getInvoice(id).then((res) => {
         const inv = res.data
-        const loadedItems = (inv.items ?? []).map((i) => ({
-          client_key: makeLineKey(),
-          product_id: i.product_id,
-          product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
-          qty: i.qty,
-          purchase_price: i.purchase_price,
-          retail_price: i.product?.retail_price ?? 0,
-          category_id: (i.product as any)?.category_id ?? null,
-          total: i.total,
-          storage_bin: i.product?.storage_bin ?? null,
-          sku: i.product?.sku ?? '',
-          barcode: (i.product as any)?.barcode ?? '',
-          unit: normalizeInvoiceUnit((i.product as any)?.unit),
-          photo_url: (i.product as any)?.photo_url ?? null,
-        }))
-        const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
+        const serverDraft = draftFromServerInvoice(inv)
+        const localDraft = loadSupplyInvoiceDraft(invoiceDraftKey)
+        const draft = newestSupplyInvoiceDraft(localDraft, serverDraft)
+        serverDraftIdRef.current = id
+        setServerDraftId(id)
         if (draft) {
-          applySupplyInvoiceDraft(draft, inv.supplier_id ?? '')
+          applySupplyInvoiceDraft({ ...draft, serverInvoiceId: id }, inv.supplier_id ?? '')
           toast.success('Чернетку накладної відновлено')
         } else {
           setSupplierId(inv.supplier_id ?? '')
           setInvoiceNumber(inv.invoice_number ?? '')
           setNotes(inv.notes ?? '')
-          setItems(loadedItems)
+          setItems(invoiceItemsToLineItems(inv))
         }
       }).catch(() => {
         toast.error('Не вдалось завантажити накладну')
@@ -742,28 +910,19 @@ export default function InvoiceFormPage() {
     invoiceDraftReadyRef.current = false
     supplierApi.getInvoice(cloneId).then((res) => {
       const inv = res.data
-      const loadedItems = (inv.items ?? []).map((i) => ({
-        client_key: makeLineKey(),
-        product_id: i.product_id,
-        product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
-        qty: i.qty,
-        purchase_price: i.purchase_price,
-        retail_price: i.product?.retail_price ?? 0,
-        category_id: (i.product as any)?.category_id ?? null,
-        total: i.total,
-        storage_bin: i.product?.storage_bin ?? null,
-        sku: i.product?.sku ?? '',
-        barcode: (i.product as any)?.barcode ?? '',
-        unit: normalizeInvoiceUnit((i.product as any)?.unit),
-        photo_url: (i.product as any)?.photo_url ?? null,
-      }))
+      const serverDraft = draftFromServerInvoice(inv)
+      const loadedItems = serverDraft?.items ?? invoiceItemsToLineItems(inv)
       const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
       if (draft) {
         applySupplyInvoiceDraft(draft, inv.supplier_id ?? '')
         toast.success('Чернетку накладної відновлено')
       } else {
+        serverDraftIdRef.current = null
+        setServerDraftId(null)
         setSupplierId(inv.supplier_id ?? '')
-        setItems(loadedItems)
+        setInvoiceNumber('')
+        setNotes('')
+        setItems(loadedItems.map((item) => ({ ...item, client_key: makeLineKey() })))
         toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
       }
     }).catch(() => toast.error('Не вдалось завантажити накладну для копіювання'))
@@ -1669,9 +1828,31 @@ export default function InvoiceFormPage() {
           total: i.total,
         })),
       }
-      if (isEdit) {
-        await supplierApi.updateInvoice(id!, { invoice_number: body.invoice_number, notes: body.notes })
-        toast.success('Накладну оновлено')
+      const existingDraftId = isEdit ? id! : serverDraftIdRef.current
+      if (existingDraftId) {
+        const updated = await supplierApi.updateInvoice(existingDraftId, { ...body, draft_payload: null })
+        const invoiceId = updated.data.id
+
+        if (!isEdit && paidKopecks > 0) {
+          await supplierApi.payInvoice(invoiceId, {
+            amount: paidKopecks,
+            payment_method: paymentMethod,
+            fund_source: fundSource,
+            shift_id: shiftId,
+            note: 'Оплата під час створення накладної',
+          })
+        }
+
+        if (!isEdit && postImmediately) {
+          try {
+            await supplierApi.postInvoice(invoiceId)
+            toast.success('Накладну створено і проведено — залишки оновлено')
+          } catch {
+            toast.warning('Накладну збережено, але не вдалось провести — проведіть вручну зі списку')
+          }
+        } else {
+          toast.success(isEdit ? 'Накладну оновлено' : 'Накладну створено')
+        }
       } else {
         const created = await supplierApi.createInvoice({
           ...body,
@@ -1716,7 +1897,7 @@ export default function InvoiceFormPage() {
     // Тепер чернетку НЕ чистимо: вона лишається і відновиться при наступному
     // відкритті. Якщо накладна не порожня — питаємо підтвердження.
     const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
-    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться чернеткою і відновиться, коли відкриєш «Нова накладна» знову.')) return
+    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться чернеткою і відновиться тут або з іншого пристрою.')) return
     navigate('/suppliers/invoices')
   }
 

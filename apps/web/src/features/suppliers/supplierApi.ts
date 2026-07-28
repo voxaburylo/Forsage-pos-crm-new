@@ -1,4 +1,4 @@
-import { api } from '@/lib/api'
+﻿import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
@@ -113,6 +113,10 @@ export const supplierApi = {
     return api.get<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`)
   },
 
+  getLatestInvoiceDraft: async () => {
+    if (localSupply()) return { data: null } as { data: SupplyInvoice | null }
+    return api.get<{ data: SupplyInvoice | null }>('/api/v1/suppliers/invoices/draft/latest', { silent: true, timeoutMs: 5000 })
+  },
   createInvoice: async (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; fund_source?: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card' | null; shift_id?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) => {
     const local = localSupply()
     if (local?.createInvoice) {
@@ -123,7 +127,7 @@ export const supplierApi = {
     return api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices', body)
   },
 
-  updateInvoice: async (id: string, body: { invoice_number?: string | null; notes?: string | null }) => {
+  updateInvoice: async (id: string, body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; items?: Array<{ product_id: string; qty: number; purchase_price: number; total: number }>; draft_payload?: Record<string, unknown> | null }) => {
     const local = localSupply()
     if (local?.updateInvoice) {
       const data = await local.updateInvoice(id, { ...body, user_id: currentUserId() })
@@ -131,6 +135,20 @@ export const supplierApi = {
       return { data } as { data: SupplyInvoice }
     }
     return api.put<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}`, body)
+  },
+
+  saveInvoiceDraft: async (body: {
+    invoice_id?: string | null
+    supplier_id?: string | null
+    invoice_number?: string | null
+    notes?: string | null
+    total?: number
+    draft_payload: Record<string, unknown>
+  }) => {
+    // Локальна desktop-програма має свій SQLite-чернетник. Спільний серверний
+    // draft потрібен тільки вебу, щоб відкрити приймання з іншого пристрою.
+    if (localSupply()) return { data: null as unknown as SupplyInvoice }
+    return api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices/draft', body, undefined, { silent: true, timeoutMs: 5000 })
   },
 
   payInvoice: async (id: string, body: {

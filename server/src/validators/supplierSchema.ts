@@ -1,4 +1,4 @@
-﻿import { z } from 'zod'
+import { z } from 'zod'
 
 export function normalizePhone(raw: string): string {
   const digits = raw.replace(/\D/g, '')
@@ -51,9 +51,23 @@ export const createSupplyInvoiceSchema = z.object({
   items:          z.array(supplyInvoiceItemSchema).min(1),
 })
 
+export const supplyInvoiceDraftPayloadSchema = z.object({}).passthrough()
+
 export const updateSupplyInvoiceSchema = z.object({
+  supplier_id:    z.string().uuid().optional().nullable(),
   invoice_number: z.string().max(100).optional().nullable(),
   notes:          z.string().max(2000).optional().nullable(),
+  items:          z.array(supplyInvoiceItemSchema).optional(),
+  draft_payload:  supplyInvoiceDraftPayloadSchema.optional().nullable(),
+})
+
+export const saveSupplyInvoiceDraftSchema = z.object({
+  invoice_id:     z.string().uuid().optional().nullable(),
+  supplier_id:    z.string().uuid().optional().nullable(),
+  invoice_number: z.string().max(100).optional().nullable(),
+  notes:          z.string().max(2000).optional().nullable(),
+  total:          z.number().int().min(0).optional(),
+  draft_payload:  supplyInvoiceDraftPayloadSchema,
 })
 
 export const invoicePaymentSchema = z.object({
@@ -77,4 +91,5 @@ export const supplyInvoiceListSchema = z.object({
 
 export type CreateSupplyInvoiceInput = z.infer<typeof createSupplyInvoiceSchema>
 export type UpdateSupplyInvoiceInput = z.infer<typeof updateSupplyInvoiceSchema>
+export type SaveSupplyInvoiceDraftInput = z.infer<typeof saveSupplyInvoiceDraftSchema>
 export type SupplyInvoiceListQuery   = z.infer<typeof supplyInvoiceListSchema>
