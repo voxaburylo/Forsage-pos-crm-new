@@ -63,7 +63,7 @@ export const productListSchema = z.object({
 
 export const posSearchSchema = z.object({
   q: z.string().min(1).max(100),
-  limit: z.coerce.number().int().min(1).max(20).default(10),
+  limit: z.coerce.number().int().min(1).max(200).default(10),
 })
 
 export type CreateProductInput = z.infer<typeof createProductSchema>

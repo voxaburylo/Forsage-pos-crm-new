@@ -784,7 +784,7 @@ export default function InvoiceFormPage() {
     let cancelled = false
     const timer = window.setTimeout(async () => {
       try {
-        const res = await productApi.list({ search: query, per_page: 50 })
+        const res = await productApi.search(query, 200)
         if (!cancelled) setProductResults(res.data)
       } catch {
         if (!cancelled) setProductResults([])
@@ -816,7 +816,7 @@ export default function InvoiceFormPage() {
     }
 
     try {
-      const res = await productApi.list({ search: query, per_page: 10 })
+      const res = await productApi.search(query, 200)
       const exactResult = findExactProductForQuery(query, res.data)
       if (exactResult) {
         addItem(exactResult)
@@ -1450,8 +1450,8 @@ export default function InvoiceFormPage() {
       if (identifierMatch) return identifierMatch
     } else {
       const [skuResult, barcodeResult] = await Promise.all([
-        skuTrim ? productApi.list({ search: skuTrim, per_page: 30 }) : Promise.resolve(null),
-        barcodeTrim ? productApi.list({ search: barcodeTrim, per_page: 30 }) : Promise.resolve(null),
+        skuTrim ? productApi.search(skuTrim, 200) : Promise.resolve(null),
+        barcodeTrim ? productApi.search(barcodeTrim, 200) : Promise.resolve(null),
       ])
       const normalizedSku = normalizeSkuValue(skuTrim)
       for (const product of skuResult?.data ?? []) {
@@ -1469,7 +1469,7 @@ export default function InvoiceFormPage() {
     }
 
     if (nameTrim.length >= 2) {
-      const existing = await productApi.list({ search: nameTrim, per_page: 50 })
+      const existing = await productApi.search(nameTrim, 200)
       const exactName = normalizeExactInvoiceProductName(nameTrim)
       const exactMatches = existing.data.filter(
         (product) => normalizeExactInvoiceProductName(product.name) === exactName,

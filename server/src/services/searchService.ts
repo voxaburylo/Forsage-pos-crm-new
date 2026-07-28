@@ -1,4 +1,4 @@
-﻿import { db } from '../db/supabase.js'
+import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
@@ -232,7 +232,7 @@ async function crossNumberSearch(code: string, limit: number, tenantId: string):
   const productIds = [...new Set(matches.map((row: any) => row.product_id))].slice(0, limit)
   const { data: products, error: productError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
@@ -284,13 +284,13 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
 
   const { data, error } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, oem_number, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
     .or(orString)
     .order('qty_on_hand', { ascending: false })
-    .limit(Math.min(limit * 5, 100))
+    .limit(Math.min(limit * 5, 500))
 
   if (error) { logger.warn({ error: error.message }, '[search] directProductSearch error'); return [] }
   if (!data || data.length === 0) return []
@@ -363,7 +363,7 @@ async function supplierCodeSearch(code: string, limit: number, tenantId: string)
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
@@ -411,7 +411,7 @@ async function aliasSearch(terms: string[], originalQ: string, limit: number, te
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
@@ -445,7 +445,7 @@ async function barcodeSearch(barcode: string, limit: number, tenantId: string): 
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)
@@ -469,7 +469,7 @@ async function additionalBarcodesSearch(barcode: string, limit: number, tenantId
   try {
     const { data, error } = await db
       .from(PRODUCTS_TABLE)
-      .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+      .select('*, brand:brands(id,name), category:categories(id,name)')
       .eq('tenant_id', tenantId)
       .is('deleted_at', null)
       .eq('is_active', true)
@@ -523,7 +523,7 @@ async function vinSearch(vin: string, limit: number, tenantId: string): Promise<
 
   const { data: products, error: prodError } = await db
     .from(PRODUCTS_TABLE)
-    .select('id, sku, name, barcode, photo_url, retail_price, qty_on_hand, unit, storage_bin, is_service, requires_core_return, core_deposit_amount, brand:brands(name)')
+    .select('*, brand:brands(id,name), category:categories(id,name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .eq('is_active', true)

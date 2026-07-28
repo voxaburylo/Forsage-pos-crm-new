@@ -229,30 +229,25 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           setLoading(false)
           return
         }
+        const activeQuery = query.trim()
+        const selectedCategoryId = categoryFilter
+          ? categories.find((category) => category.name === categoryFilter)?.id
+          : undefined
 
-        if (categoryFilter) {
-          // Fetch products with large limit and filter by category name
-          const { data } = await api.get<{ data: Product[] }>(
-            `/api/v1/products?search=${encodeURIComponent(query)}&per_page=100`,
-            { silent: true, timeoutMs: 10000 },
-          )
+        if (activeQuery && !selectedCategoryId) {
+          const res = await productApi.search(activeQuery, 100)
           if (epoch !== searchEpoch.current) return
-          setResults((data ?? []).filter((p) => p.category?.name === categoryFilter))
+          setResults(res.data ?? [])
           setSupplierResults([])
-        } else if (query.trim()) {
-          const { data } = await api.get<{ data: { warehouse: Product[], supplier_catalog: any[] } }>(
-            `/api/v1/search/hybrid?q=${encodeURIComponent(query)}&limit=10`,
-            { silent: true, timeoutMs: 10000 },
-          )
-          if (epoch !== searchEpoch.current) return
-          setResults(data?.warehouse || [])
-          setSupplierResults(data?.supplier_catalog || [])
         } else {
-          // If query is empty and no category filter, load first page of active products
-          const res = await api.get<{ data: Product[] }>(
-            '/api/v1/products?per_page=50&is_active=true',
-            { silent: true, timeoutMs: 10000 },
-          )
+          const res = await productApi.list({
+            search: activeQuery || undefined,
+            category_id: selectedCategoryId,
+            per_page: activeQuery ? 100 : 50,
+            is_active: 'true',
+            sort_field: activeQuery ? undefined : 'qty_on_hand',
+            sort_dir: activeQuery ? undefined : 'desc',
+          })
           if (epoch !== searchEpoch.current) return
           setResults(res.data ?? [])
           setSupplierResults([])

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { Component, lazy, Suspense, useEffect, type ErrorInfo, type ReactNode } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { ToastContainer } from '@/components/ui'
@@ -80,6 +80,60 @@ function Loader() {
   )
 }
 
+const ROUTE_RELOAD_KEY = 'forsage:web-route-reload-attempted'
+
+function isRouteChunkError(error: unknown): boolean {
+  const message = String((error as Error | null)?.message ?? error ?? '')
+  const name = String((error as Error | null)?.name ?? '')
+  return /ChunkLoadError|Loading chunk|dynamically imported module|Importing a module script failed|Failed to fetch/i.test(`${name} ${message}`)
+}
+
+type AppErrorBoundaryState = { error: Error | null }
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    if (isRouteChunkError(error) && typeof window !== 'undefined') {
+      const alreadyTried = window.sessionStorage.getItem(ROUTE_RELOAD_KEY) === '1'
+      if (!alreadyTried) {
+        window.sessionStorage.setItem(ROUTE_RELOAD_KEY, '1')
+        window.location.reload()
+        return
+      }
+    }
+    console.error('[App] route render error', error, info)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-sm text-center">
+          <div className="text-lg font-semibold text-gray-900">Не вдалося відкрити розділ</div>
+          <p className="mt-2 text-sm text-gray-600">
+            Сторінка завантажилась неповністю. Натисніть оновити — програма відкриє актуальну версію без білого екрана.
+          </p>
+          <button
+            type="button"
+            className="mt-4 rounded-xl bg-yellow-400 px-4 py-2 text-sm font-semibold text-gray-900 hover:bg-yellow-300"
+            onClick={() => {
+              window.sessionStorage.removeItem(ROUTE_RELOAD_KEY)
+              window.location.reload()
+            }}
+          >
+            Оновити сторінку
+          </button>
+        </div>
+      </div>
+    )
+  }
+}
 
 function App() {
   const desktop = isDesktopRuntime()
@@ -100,6 +154,7 @@ function App() {
   return (
     <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <LocalSyncAgent />
+      <AppErrorBoundary>
       <Suspense fallback={<Loader />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -177,6 +232,7 @@ function App() {
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Suspense>
+      </AppErrorBoundary>
       <ToastContainer />
       <CommandPalette />
     </Router>

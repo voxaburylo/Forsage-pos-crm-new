@@ -123,6 +123,8 @@ export default function ProductsPage() {
 
   function handleSearchChange(value: string) {
     setSearch(value)
+    setPage(1)
+    setPages({})
     if (value.trim()) resetSearchScope()
   }
 
@@ -311,6 +313,49 @@ export default function ProductsPage() {
         return
       }
     }
+    const activeSearch = debouncedSearch.trim()
+    if (activeSearch) {
+      let localSearch: PaginatedProducts | null = null
+      localSearch = await listProductsOffline({
+        search: activeSearch,
+        lowStock: false,
+        stockFilter: '',
+        categoryId: undefined,
+        brandId: undefined,
+        page: 1,
+        perPage: 200,
+        sortField: sort?.field,
+        sortDir: sort?.dir,
+        scopeKey,
+      }).catch(() => null)
+      if (!isCurrentRequest()) return
+      if (localSearch?.data.length || localSearch?.pagination.total) {
+        setResult(localSearch)
+        setPages({ 1: localSearch.data })
+        setLoading(false)
+      }
+      try {
+        const response = await productApi.search(activeSearch, 200)
+        if (!isCurrentRequest()) return
+        const found = response.data ?? []
+        setResult({
+          data: found,
+          pagination: {
+            page: 1,
+            per_page: Math.max(found.length, 1),
+            total: found.length,
+            total_pages: 1,
+          },
+        })
+        setPages({ 1: found })
+      } catch (e) {
+        if (!localSearch?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка пошуку')
+      } finally {
+        if (isCurrentRequest()) setLoading(false)
+      }
+      return
+    }
+
     const local = await listProductsOffline({
       search: debouncedSearch || undefined,
       lowStock: debouncedSearch ? false : lowStock,

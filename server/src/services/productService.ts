@@ -4,6 +4,7 @@ import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle, normalizeOemValue } from '../validators/productValidator.js'
 import { logAction } from './auditService.js'
+import { buildProductSearchTerms } from './searchService.js'
 import { SimpleCache } from '../lib/simpleCache.js'
 import type {
   CreateProductInput,
@@ -24,6 +25,10 @@ function productListSearchTerms(search: string): string[] {
   const values = new Set<string>()
   const clean = cleanProductSearchTerm(search)
   if (clean) values.add(clean)
+  for (const term of buildProductSearchTerms(search)) {
+    const safeTerm = cleanProductSearchTerm(term)
+    if (safeTerm) values.add(safeTerm)
+  }
   for (const token of clean.split(/\s+/)) {
     if (token.length >= 2) values.add(token)
   }
@@ -43,16 +48,114 @@ function productListSearchTerms(search: string): string[] {
   return [...values].filter(Boolean).slice(0, 16)
 }
 
-function productListSearchOr(search: string, crossIdFilter = ''): string {
+function productIdCondition(productIds: string[]): string[] {
+  const ids = [...new Set(productIds)].filter(Boolean)
+  return ids.length > 0 ? [`id.in.(${ids.join(',')})`] : []
+}
+
+function productListSearchOr(search: string, relatedProductIds: string[] = []): string {
   const conditions: string[] = []
   for (const term of productListSearchTerms(search)) {
     const normalized = normalizeArticle(term)
-    conditions.push(`sku.ilike.%${normalized}%`)
+    conditions.push(`sku.ilike.%${term}%`)
+    if (normalized) conditions.push(`sku.ilike.%${normalized}%`)
     conditions.push(`name.ilike.%${term}%`)
     conditions.push(`barcode.ilike.%${term}%`)
+    if (normalized) {
+      conditions.push(`normalized_oem.ilike.%${normalized}%`)
+      conditions.push(`normalized_supplier_article.ilike.%${normalized}%`)
+      conditions.push(`oem_number.ilike.%${normalized}%`)
+    }
   }
-  const unique = [...new Set(conditions)]
-  return unique.join(',') + crossIdFilter
+  conditions.push(...productIdCondition(relatedProductIds))
+  return [...new Set(conditions)].join(',')
+}
+
+function productListOemSearchOr(search: string, relatedProductIds: string[] = []): string {
+  const normalized = normalizeOemValue(search)
+  const conditions = normalized
+    ? [`normalized_oem.ilike.%${normalized}%`, `normalized_supplier_article.ilike.%${normalized}%`, `oem_number.ilike.%${normalized}%`]
+    : []
+  conditions.push(...productIdCondition(relatedProductIds))
+  return [...new Set(conditions)].join(',')
+}
+
+async function collectProductIdsFromRelatedSearch(search: string, tenantId: string): Promise<string[]> {
+  const source = search.startsWith('oem:') ? search.slice(4).trim() : search
+  const terms = productListSearchTerms(source)
+  const normalizedTerms = [...new Set(terms.map((term) => normalizeArticle(term)).filter(Boolean))]
+  const normalizedOem = normalizeOemValue(source)
+  const compactBarcode = String(source ?? '').replace(/[\s\u00a0\u202f-]/g, '').trim()
+  const ids = new Set<string>()
+
+  const addRows = (rows: any[] | null | undefined) => {
+    for (const row of rows ?? []) {
+      if (row?.product_id) ids.add(row.product_id)
+    }
+  }
+
+  const queries: Array<PromiseLike<void>> = []
+
+  if (terms.length > 0) {
+    const aliasOr = terms.map((term) => `alias.ilike.%${term}%`).join(',')
+    queries.push(db
+      .from('product_aliases')
+      .select('product_id')
+      .eq('tenant_id', tenantId)
+      .or(aliasOr)
+      .limit(500)
+      .then(({ data, error }) => {
+        if (error) logger.warn({ error: error.message }, '[productService] alias list search error')
+        else addRows(data)
+      }))
+  }
+
+  if (normalizedTerms.length > 0) {
+    const supplierOr = normalizedTerms
+      .flatMap((term) => [`supplier_code.ilike.%${term}%`, `normalized_supplier_article.ilike.%${term}%`])
+      .join(',')
+    queries.push(db
+      .from('product_supplier_codes')
+      .select('product_id')
+      .eq('tenant_id', tenantId)
+      .or(supplierOr)
+      .limit(500)
+      .then(({ data, error }) => {
+        if (error) logger.warn({ error: error.message }, '[productService] supplier-code list search error')
+        else addRows(data)
+      }))
+  }
+
+  if (normalizedOem) {
+    queries.push(db
+      .from('product_cross_numbers')
+      .select('product_id')
+      .eq('tenant_id', tenantId)
+      .ilike('normalized_number', `%${normalizedOem}%`)
+      .limit(500)
+      .then(({ data, error }) => {
+        if (error) logger.warn({ error: error.message }, '[productService] cross-number list search error')
+        else addRows(data)
+      }))
+  }
+
+  const barcodeTerms = [...new Set([compactBarcode, ...normalizedTerms].filter((term) => term.length >= 4))]
+  if (barcodeTerms.length > 0) {
+    const barcodeOr = barcodeTerms.flatMap((term) => [`barcode.eq.${term}`, `barcode.ilike.%${term}%`]).join(',')
+    queries.push(db
+      .from('product_barcodes')
+      .select('product_id')
+      .eq('tenant_id', tenantId)
+      .or(barcodeOr)
+      .limit(500)
+      .then(({ data, error }) => {
+        if (error) logger.warn({ error: error.message }, '[productService] barcode list search error')
+        else addRows(data)
+      }))
+  }
+
+  await Promise.all(queries)
+  return [...ids].slice(0, 500)
 }
 
 async function enrichWithAvailability(products: any[]): Promise<any[]> {
@@ -91,26 +194,16 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
 export async function listProducts(query: ProductListQuery, tenantId: string) {
   const { search, category_id, brand_id, is_active, low_stock, stock_filter, page, per_page, sort_field, sort_dir } = query
   const offset = (page - 1) * per_page
-  let crossIdFilter = ''
 
-  if (search) {
-    const crossQuery = search.startsWith('oem:') ? search.slice(4).trim() : search
-    const normalizedCross = normalizeOemValue(crossQuery)
-    if (normalizedCross) {
-      const { data: crossMatches, error: crossError } = await db
-        .from('product_cross_numbers')
-        .select('product_id')
-        .eq('tenant_id', tenantId)
-        .ilike('normalized_number', `%${normalizedCross}%`)
-        .limit(500)
-      if (crossError) {
-        logger.warn({ error: crossError.message }, '[productService] cross-number list search error')
-      } else {
-        const ids = [...new Set((crossMatches ?? []).map((row: any) => row.product_id))]
-        if (ids.length > 0) crossIdFilter = `,id.in.(${ids.join(',')})`
-      }
-    }
+  // Звичайний запит — перевіряємо кеш (тільки для пошукових запитів)
+  const isCacheable = !!search && !category_id && !brand_id && is_active === undefined && low_stock !== 'true' && !stock_filter
+  const cacheKey = isCacheable ? JSON.stringify({ tenantId, search, page, per_page, sort_field, sort_dir }) : null
+  if (cacheKey) {
+    const cached = await searchCache.get(cacheKey)
+    if (cached) return cached
   }
+
+  const relatedProductIds = search ? await collectProductIdsFromRelatedSearch(search, tenantId) : []
 
   // Фільтр "мало на складі": PostgREST не вміє порівнювати дві колонки →
   // завантажуємо всі відфільтровані записи, фільтруємо в JS, пагінуємо вручну
@@ -122,13 +215,10 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
       .is('deleted_at', null)
 
     if (search) {
-      if (search.startsWith('oem:')) {
-        const oem = search.slice(4).trim()
-        const normalized = normalizeOemValue(oem)
-        allQ = allQ.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%${crossIdFilter}`)
-      } else {
-        allQ = allQ.or(productListSearchOr(search, crossIdFilter))
-      }
+      const searchOr = search.startsWith('oem:')
+        ? productListOemSearchOr(search.slice(4).trim(), relatedProductIds)
+        : productListSearchOr(search, relatedProductIds)
+      if (searchOr) allQ = allQ.or(searchOr)
     }
     if (category_id === '__uncategorized') allQ = allQ.is('category_id', null)
     else if (category_id) allQ = allQ.eq('category_id', category_id)
@@ -157,13 +247,6 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
     }
   }
 
-  // Звичайний запит — перевіряємо кеш (тільки для пошукових запитів)
-  const isCacheable = !!search && !category_id && !brand_id && is_active === undefined && !stock_filter
-  const cacheKey = isCacheable ? JSON.stringify({ tenantId, search, page, per_page, sort_field, sort_dir }) : null
-  if (cacheKey) {
-    const cached = await searchCache.get(cacheKey)
-    if (cached) return cached
-  }
 
   const orderCol = sort_field ?? 'name'
   const orderAsc = sort_dir !== 'desc'
@@ -173,17 +256,22 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
     .select('*, brand:brands(id,name), category:categories(id,name)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
-    .order(orderCol, { ascending: orderAsc })
-    .range(offset, offset + per_page - 1)
+
+  if (search && !sort_field) {
+    q = q
+      .order('qty_on_hand', { ascending: false })
+      .order('is_service', { ascending: false })
+      .order('name', { ascending: true })
+  } else {
+    q = q.order(orderCol, { ascending: orderAsc })
+  }
+  q = q.range(offset, offset + per_page - 1)
 
   if (search) {
-    if (search.startsWith('oem:')) {
-      const oem = search.slice(4).trim()
-      const normalized = normalizeOemValue(oem)
-      q = q.or(`normalized_oem.ilike.%${normalized}%,normalized_supplier_article.ilike.%${normalized}%${crossIdFilter}`)
-    } else {
-      q = q.or(productListSearchOr(search, crossIdFilter))
-    }
+    const searchOr = search.startsWith('oem:')
+      ? productListOemSearchOr(search.slice(4).trim(), relatedProductIds)
+      : productListSearchOr(search, relatedProductIds)
+    if (searchOr) q = q.or(searchOr)
   }
   if (category_id === '__uncategorized') q = q.is('category_id', null)
   else if (category_id) q = q.eq('category_id', category_id)
@@ -193,7 +281,24 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
   if (stock_filter === 'no_price') q = q.eq('retail_price', 0)
 
   const { data, error, count } = await q
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    const status = Number((error as any).status ?? 0)
+    const message = String((error as any).message ?? '')
+    if (status === 416 || /Requested range not satisfiable/i.test(message)) {
+      const emptyResult = {
+        data: [],
+        pagination: {
+          page,
+          per_page,
+          total: 0,
+          total_pages: 1,
+        },
+      }
+      if (cacheKey) await searchCache.set(cacheKey, emptyResult)
+      return emptyResult
+    }
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
 
   const enriched = await enrichWithAvailability(data ?? [])
 
