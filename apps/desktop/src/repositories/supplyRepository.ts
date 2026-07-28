@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+﻿import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
@@ -42,6 +42,15 @@ interface CreateSupplyInvoiceInput {
   shift_id?: string | null
   user_id?: string | null
   items: SupplyInvoiceItemInput[]
+}
+
+interface UpdateSupplyInvoiceInput {
+  tenant_id?: string
+  supplier_id?: string | null
+  invoice_number?: string | null
+  notes?: string | null
+  user_id?: string | null
+  items?: SupplyInvoiceItemInput[]
 }
 
 interface PaymentInput {
@@ -344,21 +353,56 @@ export class LocalSupplyRepository {
     return this.getInvoice(invoiceId, tenantId)
   }
 
-  updateInvoice(id: string, input: { tenant_id?: string; invoice_number?: string | null; notes?: string | null; user_id?: string | null }): any {
+  updateInvoice(id: string, input: UpdateSupplyInvoiceInput): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const invoice = this.getInvoice(id, tenantId)
-    if (invoice.status !== 'draft') throw new Error('Не можна редагувати проведену накладну')
+    if (invoice.status !== 'draft') {
+      throw new Error('Проведену накладну не можна редагувати напряму. Натисніть «Редагувати» в проведеній накладній — програма скасує її і відкриє копію для правок.')
+    }
     const timestamp = nowIso()
+    const normalizedItems = input.items === undefined ? null : input.items.map((item) => {
+      const product = this.findProduct(item.product_id, tenantId)
+      if (!product) throw new Error('Товар у накладній не знайдено в локальній базі')
+      const itemQty = qty(item.qty)
+      if (itemQty <= 0) throw new Error('Кількість у накладній має бути більше нуля')
+      const purchasePrice = money(item.purchase_price)
+      return {
+        id: item.id ?? randomUUID(),
+        product_id: item.product_id,
+        qty: itemQty,
+        purchase_price: purchasePrice,
+        total: money(item.total ?? itemQty * purchasePrice),
+      }
+    })
+    if (normalizedItems && normalizedItems.length === 0) throw new Error('Додайте хоча б один товар у накладну')
+    const total = normalizedItems
+      ? normalizedItems.reduce((sum, item) => sum + item.total, 0)
+      : Number(invoice.total ?? 0)
+    const supplierId = input.supplier_id !== undefined ? input.supplier_id : invoice.supplier_id ?? null
+    const invoiceNumber = input.invoice_number !== undefined ? text(input.invoice_number) : invoice.invoice_number ?? null
+    const notes = input.notes !== undefined ? input.notes ?? null : invoice.notes ?? null
+
     this.db.transaction(() => {
       this.db.prepare(`
         UPDATE supply_invoices
-        SET invoice_number = ?, notes = ?, dirty_at = ?, updated_at = ?
+        SET supplier_id = ?, invoice_number = ?, notes = ?, total = ?, dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ?
-      `).run(text(input.invoice_number), input.notes ?? null, timestamp, timestamp, id, tenantId)
+      `).run(supplierId, invoiceNumber, notes, total, timestamp, timestamp, id, tenantId)
+
+      if (normalizedItems) {
+        this.db.prepare('DELETE FROM supply_invoice_items WHERE invoice_id = ? AND tenant_id = ?').run(id, tenantId)
+        for (const item of normalizedItems) {
+          this.insertItem(id, tenantId, item, timestamp)
+        }
+      }
+
       this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.updated', {
         id,
-        invoice_number: text(input.invoice_number),
-        notes: input.notes ?? null,
+        supplier_id: supplierId,
+        invoice_number: invoiceNumber,
+        notes,
+        total,
+        items: normalizedItems ?? undefined,
       }, timestamp)
     })
     return this.getInvoice(id, tenantId)

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+﻿import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
@@ -2398,17 +2398,60 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
 
 async function applySupplierInvoiceUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
+  const hasItems = Array.isArray(payload.items)
+  const items = hasItems ? payload.items : []
+  const total = hasItems
+    ? items.reduce((sum: number, item: any) => sum + invoiceLineTotal(item), 0)
+    : Math.max(0, Math.round(Number(payload.total ?? 0)))
+  const timestamp = operation.applied_at ?? operation.created_at ?? new Date().toISOString()
+
   await runTransaction(async (client) => {
-    const invoice = await client.query('SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [operation.aggregate_id, tenantId])
+    const invoice = await client.query(
+      'SELECT status, supplier_id, invoice_number, notes, total FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      [operation.aggregate_id, tenantId],
+    )
     if (!invoice.rowCount) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
     if (invoice.rows[0].status !== 'draft') throw new AppError('INVOICE_POSTED', 'Не можна редагувати проведену накладну', 400)
+
     await client.query(
-      'UPDATE supply_invoices SET invoice_number = $1, notes = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4',
-      [payload.invoice_number ?? null, payload.notes ?? null, operation.aggregate_id, tenantId],
+      `UPDATE supply_invoices
+       SET supplier_id = $1, invoice_number = $2, notes = $3, total = $4,
+           draft_payload = NULL, draft_saved_at = NULL, draft_saved_by = NULL,
+           updated_at = $5
+       WHERE id = $6 AND tenant_id = $7`,
+      [
+        Object.prototype.hasOwnProperty.call(payload, 'supplier_id') ? payload.supplier_id ?? null : invoice.rows[0].supplier_id ?? null,
+        Object.prototype.hasOwnProperty.call(payload, 'invoice_number') ? payload.invoice_number ?? null : invoice.rows[0].invoice_number ?? null,
+        Object.prototype.hasOwnProperty.call(payload, 'notes') ? payload.notes ?? null : invoice.rows[0].notes ?? null,
+        hasItems ? total : Number(invoice.rows[0].total ?? 0),
+        timestamp,
+        operation.aggregate_id,
+        tenantId,
+      ],
     )
+
+    if (hasItems) {
+      if (items.length === 0) throw new AppError('SYNC_INVOICE_EMPTY', 'У накладній немає товарів', 422)
+      await client.query('DELETE FROM supply_invoice_items WHERE invoice_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+      for (const item of items) {
+        await client.query(
+          `INSERT INTO supply_invoice_items (id, tenant_id, invoice_id, product_id, qty, purchase_price, total, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            item.id ?? randomUUID(),
+            tenantId,
+            operation.aggregate_id,
+            item.product_id,
+            Number(item.qty ?? 0),
+            Number(item.purchase_price ?? 0),
+            invoiceLineTotal(item),
+            timestamp,
+          ],
+        )
+      }
+    }
   })
 }
-
 async function applySupplierInvoicePosted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const { data: invoice } = await db
     .from('supply_invoices')
