@@ -45,6 +45,9 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
       if (hasMeaningfulDesktopSyncChanges(result)) {
         window.dispatchEvent(new CustomEvent('forsage:desktop-sync-completed', { detail: result }))
       }
+      if (Number(result.pulled?.counts?.settings ?? 0) > 0) {
+        window.dispatchEvent(new CustomEvent('forsage:label-settings-synced', { detail: result }))
+      }
       return result
     } catch (error) {
       retryAttemptRef.current += 1

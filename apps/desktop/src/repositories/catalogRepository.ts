@@ -994,7 +994,9 @@ export class LocalCatalogRepository {
       VALUES ('shop_settings', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
     `).run(JSON.stringify(settings), timestamp)
-    this.addCatalogOutbox('settings', 'shop', 'settings.updated', settings, tenantId, timestamp)
+    // Синхронізуємо лише змінені поля. Повна застаріла копія налаштувань
+    // не повинна перезаписувати нові значення, збережені у веб-версії.
+    this.addCatalogOutbox('settings', 'shop', 'settings.updated', input, tenantId, timestamp)
     return settings
   }
   // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі

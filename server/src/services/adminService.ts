@@ -3,6 +3,7 @@ import { db } from '../db/supabase.js'
 import { pool } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { CreateUserInput, UpdateUserInput, CategoryInput, BrandInput, SettingsInput } from '../validators/adminSchema.js'
+import { nextSettingsRowUpdatedAt, prepareLabelSettingsUpdate } from './labelSettingsConflict.js'
 
 interface CacheEntry<T> {
   data: T;
@@ -419,26 +420,82 @@ export async function updateSettings(input: SettingsInput, tenantId: string) {
   // продакшні (Render) не працює/висне, тоді як REST-клієнт працює всюди.
   if (!tenantId) throw new AppError('VALIDATION_ERROR', 'Не визначено магазин (tenant)', 400)
 
-  const { data, error } = await db
-    .from('shop_settings')
-    .update({ ...input, updated_at: new Date().toISOString() })
-    .eq('tenant_id', tenantId)
-    .select('*')
-    .single()
+  const hasLabelSettings = input.label_settings !== undefined
+  const maxAttempts = hasLabelSettings ? 3 : 1
+  const serverReceivedAt = new Date().toISOString()
 
-  if (error) {
-    const isMissingColumn = error.code === 'PGRST204'
-      || /could not find .* column|column .* does not exist/i.test(error.message)
-    if (isMissingColumn) {
-      throw new AppError(
-        'SETTINGS_SCHEMA_DRIFT',
-        `Не вдалося зберегти: у БД бракує колонки. ${error.message}. Застосуйте міграції shop_settings.`,
-        500,
-      )
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const updates: SettingsInput = { ...input }
+    let expectedUpdatedAt: string | null | undefined
+
+    if (hasLabelSettings) {
+      const { data: current, error: currentError } = await db
+        .from('shop_settings')
+        .select('label_settings,updated_at')
+        .eq('tenant_id', tenantId)
+        .single()
+      if (currentError || !current) {
+        throw new AppError('DB_ERROR', currentError?.message ?? 'Налаштування не знайдено', 500)
+      }
+
+      expectedUpdatedAt = current.updated_at
+      const prepared = prepareLabelSettingsUpdate({
+        // Онлайн PUT упорядковуємо за часом надходження на сервер, а не за
+        // годинником браузера. Offline desktop зберігає окрему edit-time логіку.
+        incoming: input.label_settings
+          ? { ...input.label_settings, sync_updated_at: serverReceivedAt }
+          : input.label_settings,
+        incomingFallbackUpdatedAt: serverReceivedAt,
+        current: current.label_settings,
+        currentRowUpdatedAt: current.updated_at,
+        serverReceivedAt,
+      })
+      if (prepared.shouldApply && prepared.normalizedIncoming) {
+        updates.label_settings = prepared.normalizedIncoming as SettingsInput['label_settings']
+      } else {
+        delete updates.label_settings
+      }
     }
-    throw new AppError('DB_ERROR', error.message, 500)
+
+    // Якщо прийшов лише застарілий макет, нічого не перезаписуємо та повертаємо
+    // чинну серверну версію, щоб дизайнер одразу її підхопив.
+    if (Object.keys(updates).length === 0) return getSettings(tenantId)
+
+    let query = db
+      .from('shop_settings')
+      .update({
+        ...updates,
+        updated_at: nextSettingsRowUpdatedAt(expectedUpdatedAt, new Date(serverReceivedAt)),
+      })
+      .eq('tenant_id', tenantId)
+    if (hasLabelSettings) {
+      query = expectedUpdatedAt == null
+        ? query.is('updated_at', null)
+        : query.eq('updated_at', expectedUpdatedAt)
+    }
+    const { data, error } = await query.select('*').maybeSingle()
+
+    if (error) {
+      const isMissingColumn = error.code === 'PGRST204'
+        || /could not find .* column|column .* does not exist/i.test(error.message)
+      if (isMissingColumn) {
+        throw new AppError(
+          'SETTINGS_SCHEMA_DRIFT',
+          `Не вдалося зберегти: у БД бракує колонки. ${error.message}. Застосуйте міграції shop_settings.`,
+          500,
+        )
+      }
+      throw new AppError('DB_ERROR', error.message, 500)
+    }
+    if (data) return data
+    // updated_at змінився між SELECT та UPDATE: перечитуємо і вирішуємо конфлікт знову.
   }
-  return data
+
+  throw new AppError(
+    'SETTINGS_CONFLICT',
+    'Макет етикетки одночасно змінено на іншому пристрої. Повторіть збереження.',
+    409,
+  )
 }
 
 export async function resetAllData(tenantId: string, currentUserId: string) {

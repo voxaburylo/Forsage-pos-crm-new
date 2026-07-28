@@ -2,16 +2,11 @@ import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
+import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
 
 const SERVER_PULL_SCOPE = 'desktop_server_pull'
 const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
 const CORRUPT_OUTBOX_RETRY_MS = 5 * 60_000
-// Стеля спроб для однієї операції outbox: після стількох невдач вона стає
-// «мертвою» — більше НЕ ретраїться і НЕ блокує чергу свого типу. Раніше
-// безнадійні операції (напр. повернення без зміни, видалення категорії з
-// товарами) молотили сотні разів і тримали бар'єр залежностей вічно.
-const MAX_OUTBOX_ATTEMPTS = 30
-
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -176,8 +171,10 @@ export class LocalSyncRepository {
              aggregate_id, operation_type, payload_json, created_at,
              attempts, last_error, next_attempt_at, status
       FROM sync_outbox
-      WHERE status IN ('pending', 'failed')
-        AND attempts < ${MAX_OUTBOX_ATTEMPTS}
+      WHERE (
+          status = 'pending'
+          OR (status = 'failed' AND attempts < ${MAX_OUTBOX_ATTEMPTS})
+        )
         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, sequence ASC
     `).all(currentTime) as unknown as OutboxCandidateRow[]

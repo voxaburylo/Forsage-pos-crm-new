@@ -17,6 +17,16 @@ describe('localizeDesktopIpcError', () => {
       .toContain('Локальна база зараз зайнята')
   })
 
+  it('explains that an unsafe barcode must be widened in the designer', () => {
+    expect(localizeDesktopIpcError(new Error('TSPL_BARCODE_TOO_NARROW')).message)
+      .toContain('Збільште його ширину в дизайнері етикетки')
+  })
+  it('localizes barcode DOM and canvas preparation failures', () => {
+    expect(localizeDesktopIpcError(new Error('TSPL_BARCODE_IMAGE_NOT_FOUND')).message)
+      .toContain('Збережіть дизайн і повторіть друк')
+    expect(localizeDesktopIpcError(new Error('TSPL_BARCODE_CANVAS_UNAVAILABLE')).message)
+      .toContain('Перезапустіть програму та повторіть')
+  })
   it('preserves the fiscal recovery protocol marker', () => {
     const marker = 'FISCAL_INTENT_UNKNOWN|op-1|Не повторюйте оплату'
     expect(localizeDesktopIpcError(

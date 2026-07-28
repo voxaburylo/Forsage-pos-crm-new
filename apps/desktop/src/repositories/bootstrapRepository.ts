@@ -3,7 +3,11 @@ import type { LocalBootstrapImportResult, LocalBootstrapSnapshot, LocalSyncPullC
 import { normalizeSearchText } from './catalogRepository'
 import { LocalSecondarySyncImporter } from './secondarySyncImporter'
 import { LocalSupplierCatalogRepository } from './supplierCatalogRepository'
-import { mergePulledShopSettings, parseStoredSettings } from './settingsMerge'
+import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
+import {
+  mergePulledShopSettingsPreservingPending,
+  parseStoredSettings,
+} from './settingsMerge'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -513,19 +517,24 @@ export class LocalBootstrapRepository {
 
   private upsertSettings(settings: any, importedAt: string): void {
     const pendingLocalSettings = this.db.prepare(`
-      SELECT 1 FROM sync_outbox
+      SELECT payload_json FROM sync_outbox
       WHERE aggregate_type = 'settings'
         AND aggregate_id = 'shop'
         AND operation_type = 'settings.updated'
-        AND status <> 'synced'
-      LIMIT 1
-    `).get() as Record<string, unknown> | undefined
-
-    if (pendingLocalSettings) return
+        AND (
+          status = 'pending'
+          OR (status = 'failed' AND attempts < ${MAX_OUTBOX_ATTEMPTS})
+        )
+      ORDER BY sequence ASC
+    `).all() as Array<{ payload_json: string | null }>
 
     const stored = this.db.prepare("SELECT value_json FROM app_meta WHERE key = 'shop_settings'")
       .get() as { value_json: string } | undefined
-    const safeSettings = mergePulledShopSettings(parseStoredSettings(stored?.value_json), settings)
+    const safeSettings = mergePulledShopSettingsPreservingPending(
+      parseStoredSettings(stored?.value_json),
+      settings,
+      pendingLocalSettings.map((row) => row.payload_json),
+    )
     this.db.prepare(`
       INSERT INTO app_meta(key, value_json, updated_at)
       VALUES ('shop_settings', ?, ?)

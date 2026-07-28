@@ -19,6 +19,30 @@ function sanitizeCodeAttr(value: string): string {
 }
 
 /**
+ * Reads one black/white value per CODE128 module from the high-resolution
+ * probe. The resulting pattern is safe to embed in HTML and lets the desktop
+ * printer paint the exact same bars without Chromium anti-aliasing.
+ */
+function readBinaryPattern(canvas: HTMLCanvasElement, modules: number, moduleScale: number): string {
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context || modules <= 0 || canvas.width <= 0 || canvas.height <= 0) return ''
+
+  const y = Math.max(0, Math.min(canvas.height - 1, Math.floor(canvas.height / 2)))
+  const pixels = context.getImageData(0, y, canvas.width, 1).data
+  let pattern = ''
+  for (let moduleIndex = 0; moduleIndex < modules; moduleIndex += 1) {
+    const x = Math.max(
+      0,
+      Math.min(canvas.width - 1, Math.floor((moduleIndex + 0.5) * moduleScale)),
+    )
+    const offset = x * 4
+    const luma = 0.114 * pixels[offset + 2] + 0.587 * pixels[offset + 1] + 0.299 * pixels[offset]
+    pattern += luma < 128 ? '1' : '0'
+  }
+  return pattern
+}
+
+/**
  * Creates a high-resolution raster barcode synchronously before print.
  *
  * Important: when targetWidth is passed, the barcode is rendered at that exact
@@ -48,6 +72,7 @@ export function renderBarcodeSvg(value: string, options: BarcodeSvgOptions = {})
     })
 
     const modules = Math.max(1, Math.round(probe.width / scale))
+    const pattern = readBinaryPattern(probe, modules, scale)
     const displayTargetWidth = hasTargetWidth ? Math.max(1, Math.round(targetWidth)) : null
     const quietZone = displayTargetWidth
       ? Math.max(4, Math.min(18, Math.round(Number(options.quietZone) || displayTargetWidth * 0.07)))
@@ -72,11 +97,14 @@ export function renderBarcodeSvg(value: string, options: BarcodeSvgOptions = {})
       lineColor: '#000000',
     })
 
-    const naturalWidth = Math.max(1, Math.round(canvas.width / scale))
+    const naturalWidthExact = Math.max(1, canvas.width / scale)
+    const naturalWidth = Math.max(1, Math.round(naturalWidthExact))
     const displayWidth = displayTargetWidth ?? naturalWidth
     const displayHeight = Math.max(1, Math.round(canvas.height / scale))
-    const codeAttr = isAsciiBarcode(normalized)
-      ? ` data-code="${sanitizeCodeAttr(normalized)}" data-modules="${modules}" data-quiet-zone="${quietZone}" data-natural-width="${naturalWidth}"`
+    const displayedQuietZone = quietZone * (displayWidth / naturalWidthExact)
+    const quietRatio = displayedQuietZone / displayWidth
+    const codeAttr = isAsciiBarcode(normalized) && pattern.length === modules
+      ? ` data-code="${sanitizeCodeAttr(normalized)}" data-pattern="${pattern}" data-modules="${modules}" data-quiet-zone="${displayedQuietZone}" data-quiet-ratio="${quietRatio}" data-natural-width="${naturalWidth}"`
       : ''
     return `<img class="barcode-raster"${codeAttr} src="${canvas.toDataURL('image/png')}" width="${displayWidth}" height="${displayHeight}" alt="">`
   } catch (error) {

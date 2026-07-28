@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { app, BrowserWindow, screen } from 'electron'
+import { calculateBarcodeCanvasGeometry } from './tsplBarcodeRaster'
 
 // Прямий друк етикеток мовою TSPL (термопринтери типу PS-HL80, Xprinter тощо).
 //
@@ -25,13 +26,20 @@ export interface TsplPrintOptions {
 }
 
 interface BarcodeMeta {
+  id: string
   code: string
-  modules: number
-  quietZone: number
-  x: number
-  y: number
+  pattern: string
+  quietRatio: number
   width: number
   height: number
+}
+
+interface BarcodeCanvasSpec {
+  id: string
+  pattern: string
+  widthDots: number
+  heightDots: number
+  quietZoneDots: number
 }
 
 interface PageMeta {
@@ -262,60 +270,128 @@ async function waitMs(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function clampDot(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min
-  return Math.max(min, Math.min(max, Math.round(value)))
-}
-
-function tsplString(value: string): string {
-  return String(value ?? '').replace(/"/g, '')
-}
-
-function buildBarcodeCommands(page: PageMeta, widthDots: number, heightDots: number): Buffer[] {
+function buildBarcodeCanvasSpecs(
+  page: PageMeta,
+  widthDots: number,
+  heightDots: number,
+): BarcodeCanvasSpec[] {
   if (!Array.isArray(page.barcodes) || page.barcodes.length === 0) return []
+
   const pageWidth = Number(page.width) || widthDots
   const pageHeight = Number(page.height) || heightDots
   const scaleX = widthDots / Math.max(1, pageWidth)
   const scaleY = heightDots / Math.max(1, pageHeight)
-  const chunks: Buffer[] = []
 
-  for (const barcode of page.barcodes) {
-    const code = tsplString(barcode.code)
-    if (!code) continue
+  return page.barcodes.map((barcode) => {
+    const geometry = calculateBarcodeCanvasGeometry({
+      pattern: barcode.pattern,
+      rectWidth: barcode.width,
+      rectHeight: barcode.height,
+      quietRatio: barcode.quietRatio,
+      scaleX,
+      scaleY,
+    })
+    if (!geometry.ok) {
+      if (geometry.reason === 'too-narrow') {
+        const code = barcode.code ? ` «${barcode.code}»` : ''
+        throw new Error(
+          `TSPL_BARCODE_TOO_NARROW|Штрих-код${code} занадто вузький для надійного друку. `
+          + `Збільште його ширину в дизайнері етикетки щонайменше до ${geometry.requiredWidthDots} точок.`,
+        )
+      }
+      throw new Error('TSPL_BARCODE_PATTERN_INVALID')
+    }
 
-    const x = clampDot(Number(barcode.x) * scaleX, 0, widthDots - 1)
-    const y = clampDot(Number(barcode.y) * scaleY, 0, heightDots - 1)
-    const boxWidth = clampDot(Number(barcode.width) * scaleX, 1, Math.max(1, widthDots - x))
-    const barHeight = clampDot(Number(barcode.height) * scaleY, 12, Math.max(12, heightDots - y))
-    const quietZone = clampDot(Number(barcode.quietZone) * scaleX, 0, Math.max(0, Math.floor(boxWidth / 4)))
-    const modules = Math.max(1, Math.round(Number(barcode.modules) || 1))
-    const barsWidth = Math.max(1, boxWidth - quietZone * 2)
-    const moduleDotWidth = barsWidth / modules
-    const narrow = Math.max(1, Math.min(4, Math.floor(moduleDotWidth)))
-    const wide = Math.max(narrow + 1, Math.min(8, narrow * 2))
-    const commandX = clampDot(x + quietZone, 0, widthDots - 1)
+    return {
+      id: barcode.id,
+      pattern: barcode.pattern,
+      widthDots: geometry.widthDots,
+      heightDots: geometry.heightDots,
+      quietZoneDots: geometry.quietZoneDots,
+    }
+  })
+}
 
-    chunks.push(Buffer.from(`BARCODE ${commandX},${y},"128",${barHeight},0,0,${narrow},${wide},"${code}"\r\n`, 'ascii'))
-  }
+function buildPreparePageScript(pageIndex: number, specs: BarcodeCanvasSpec[]): string {
+  return `
+    (() => {
+      const labelPages = Array.from(document.querySelectorAll('.label-page'))
+      labelPages.forEach((candidate, index) => {
+        candidate.style.display = index === ${pageIndex} ? 'block' : 'none'
+      })
 
-  return chunks
+      const specs = ${JSON.stringify(specs)}
+      const images = Array.from(document.querySelectorAll('img.barcode-raster[data-print-barcode-id]'))
+      for (const spec of specs) {
+        const image = images.find((candidate) => candidate.getAttribute('data-print-barcode-id') === spec.id)
+        if (!image) throw new Error('TSPL_BARCODE_IMAGE_NOT_FOUND')
+
+        const rect = image.getBoundingClientRect()
+        const computed = window.getComputedStyle(image)
+        const canvas = document.createElement('canvas')
+        for (const attribute of Array.from(image.attributes)) {
+          if (attribute.name === 'src' || attribute.name === 'width' || attribute.name === 'height') continue
+          canvas.setAttribute(attribute.name, attribute.value)
+        }
+        canvas.width = spec.widthDots
+        canvas.height = spec.heightDots
+        canvas.style.width = rect.width + 'px'
+        canvas.style.height = rect.height + 'px'
+        canvas.style.maxWidth = 'none'
+        canvas.style.maxHeight = 'none'
+        canvas.style.display = computed.display === 'inline' ? 'inline-block' : computed.display
+        canvas.style.flex = computed.flex
+        canvas.style.margin = computed.margin
+        canvas.style.verticalAlign = computed.verticalAlign
+        canvas.style.boxSizing = 'border-box'
+        canvas.style.imageRendering = 'pixelated'
+
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('TSPL_BARCODE_CANVAS_UNAVAILABLE')
+        context.imageSmoothingEnabled = false
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, spec.widthDots, spec.heightDots)
+        context.fillStyle = '#000000'
+        const barsWidth = spec.widthDots - spec.quietZoneDots * 2
+        for (let moduleIndex = 0; moduleIndex < spec.pattern.length; moduleIndex += 1) {
+          if (spec.pattern[moduleIndex] !== '1') continue
+          const xStart = Math.round(spec.quietZoneDots + moduleIndex * barsWidth / spec.pattern.length)
+          const xEnd = Math.round(spec.quietZoneDots + (moduleIndex + 1) * barsWidth / spec.pattern.length)
+          context.fillRect(xStart, 0, xEnd - xStart, spec.heightDots)
+        }
+
+        image.replaceWith(canvas)
+      }
+      window.scrollTo(0, 0)
+      return true
+    })()
+  `
 }
 
 const COLLECT_PAGES_SCRIPT = `
 (() => Array.from(document.querySelectorAll('.label-page')).map((page, index) => {
   const pageRect = page.getBoundingClientRect()
-  const barcodes = Array.from(page.querySelectorAll('img.barcode-raster[data-code]')).map((image) => {
+  const barcodes = Array.from(page.querySelectorAll('img.barcode-raster[data-pattern]')).map((image, barcodeIndex) => {
     const rect = image.getBoundingClientRect()
+    const id = index + ':' + barcodeIndex
+    const declaredWidth = Number(image.getAttribute('width')) || rect.width
+    const quietZone = Number(image.getAttribute('data-quiet-zone')) || 0
+    const storedQuietRatio = image.hasAttribute('data-quiet-ratio')
+      ? Number(image.getAttribute('data-quiet-ratio'))
+      : Number.NaN
+    const quietRatio = Number.isFinite(storedQuietRatio)
+      ? storedQuietRatio
+      : quietZone / Math.max(1, declaredWidth)
+    image.setAttribute('data-print-barcode-id', id)
     return {
+      id,
       code: image.getAttribute('data-code') || '',
-      modules: Number(image.getAttribute('data-modules')) || 0,
-      quietZone: Number(image.getAttribute('data-quiet-zone')) || 0,
-      x: rect.left - pageRect.left,
-      y: rect.top - pageRect.top,
+      pattern: image.getAttribute('data-pattern') || '',
+      quietRatio,
       width: rect.width,
       height: rect.height
     }
-  }).filter((item) => item.code && item.width > 0 && item.height > 0)
+  })
   return { index, width: pageRect.width, height: pageRect.height, barcodes }
 }))()
 `
@@ -381,18 +457,9 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
     const chunks: Buffer[] = []
 
     for (const page of pages) {
+      const barcodeSpecs = buildBarcodeCanvasSpecs(page, widthDots, heightDots)
       await renderWindow.webContents.executeJavaScript(
-        `(() => {
-          const labelPages = Array.from(document.querySelectorAll('.label-page'))
-          labelPages.forEach((candidate, index) => {
-            candidate.style.display = index === ${page.index} ? 'block' : 'none'
-          })
-          document.querySelectorAll('img.barcode-raster[data-code]').forEach((image) => {
-            image.style.visibility = 'hidden'
-          })
-          window.scrollTo(0, 0)
-          return true
-        })()`,
+        buildPreparePageScript(page.index, barcodeSpecs),
         true,
       )
       await waitMs(60)
@@ -418,7 +485,6 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
       chunks.push(Buffer.from(`BITMAP 0,0,${bytesPerRow},${heightDots},0,`, 'ascii'))
       chunks.push(bitmap.subarray(0, bytesPerRow * heightDots))
       chunks.push(Buffer.from('\r\n', 'ascii'))
-      chunks.push(...buildBarcodeCommands(page, widthDots, heightDots))
 
       chunks.push(Buffer.from('PRINT 1,1\r\n', 'ascii'))
     }

@@ -52,6 +52,9 @@ function labelProductMatchesQuery(item: Pick<Product, 'name' | 'sku' | 'barcode'
   return tokens.length === 0 || tokens.every((token) => text.includes(token))
 }
 export interface LabelSettings {
+  // Час останнього збереження спільного макета. Потрібен, щоб стара
+  // офлайн-копія не перезаписала новіший макет з іншого пристрою.
+  sync_updated_at?: string
   width_mm: number
   height_mm: number
   padding_mm: number
@@ -161,6 +164,40 @@ export const QUICK_PRODUCT_LABEL_4025: LabelSettings = {
 }
 
 const LABEL_SETTINGS_CACHE_KEY = 'forsage_label_settings_v1'
+
+export function labelSettingsSyncTimestamp(settings: Partial<LabelSettings> | null | undefined): number | null {
+  const value = settings?.sync_updated_at
+  if (typeof value !== 'string' || value.trim().length === 0) return null
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return null
+  return timestamp > Date.now() + 5 * 60_000 ? null : timestamp
+}
+
+export function isOlderSharedLabelSettings(
+  incoming: Partial<LabelSettings> | null | undefined,
+  appliedTimestamp: number | null,
+): boolean {
+  if (appliedTimestamp === null) return false
+  const incomingTimestamp = labelSettingsSyncTimestamp(incoming)
+  return incomingTimestamp === null || incomingTimestamp < appliedTimestamp
+}
+
+function stableLabelSettingsValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableLabelSettingsValue)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key, nested]) => key !== 'sync_updated_at' && nested !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, stableLabelSettingsValue(nested)]),
+  )
+}
+
+export function labelSettingsContentSignature(
+  settings: Partial<LabelSettings> | null | undefined,
+): string {
+  return JSON.stringify(stableLabelSettingsValue(normalizeProductLabelSettings(settings)))
+}
 
 export function normalizeProductLabelSettings(savedSettings: Partial<LabelSettings> | null | undefined): LabelSettings {
   const savedBin = savedSettings?.bin_settings
@@ -921,6 +958,18 @@ function labelPrintErrorMessage(error: unknown): string {
   if (raw.includes('RAW_PRINT_OPEN_FAILED')) return 'Не вдалося відкрити вибраний принтер етикеток.'
   if (raw.includes('RAW_PRINT_WRITE_FAILED') || raw.includes('RAW_PRINT_INCOMPLETE')) return 'Принтер прийняв етикетки не повністю.'
   if (raw.includes('TSPL_NO_LABELS')) return 'У документі немає етикеток для друку.'
+  if (raw.includes('TSPL_BARCODE_TOO_NARROW')) {
+    return 'Штрих-код занадто вузький для надійного друку. Збільште його ширину в дизайнері етикетки.'
+  }
+  if (raw.includes('TSPL_BARCODE_PATTERN_INVALID')) {
+    return 'Не вдалося підготувати штрих-код. Збережіть його налаштування в дизайнері ще раз.'
+  }
+  if (raw.includes('TSPL_BARCODE_IMAGE_NOT_FOUND')) {
+    return 'Не вдалося знайти штрих-код у макеті етикетки. Збережіть дизайн і повторіть друк.'
+  }
+  if (raw.includes('TSPL_BARCODE_CANVAS_UNAVAILABLE')) {
+    return 'Не вдалося підготувати чіткий штрих-код для друку. Перезапустіть програму та повторіть.'
+  }
   if (raw.includes('TSPL_QUEUE_STUCK')) {
     return 'У черзі друку залипло старе завдання, і Windows не дає його прибрати. '
       + 'Перезапустіть службу «Диспетчер друку» (Спулер) або комп’ютер, потім спробуйте ще раз.'
@@ -989,6 +1038,12 @@ export default function LabelDesigner() {
   const [confirmPrinting, setConfirmPrinting] = useState(false)
   const [productSettings, setProductSettings] = useState<LabelSettings>(DEFAULT_LABEL)
   const [binSettings, setBinSettings] = useState<LabelSettings>(DEFAULT_BIN_LABEL)
+  const settingsDirtyRef = useRef(false)
+  const settingsEditRevisionRef = useRef(0)
+  const labelSettingsRefreshSequenceRef = useRef(0)
+  const labelSettingsSaveInFlightRef = useRef(false)
+  const appliedLabelSettingsSignatureRef = useRef('')
+  const appliedLabelSettingsTimestampRef = useRef<number | null>(null)
   const settings = binMode ? binSettings : productSettings
 
   // Прямий TSPL-друк (лише desktop-каса)
@@ -1125,34 +1180,98 @@ export default function LabelDesigner() {
 
 
 
-  // Завантажуємо налаштування, категорії та бренди
-  useEffect(() => {
-    adminApi.getSettings()
-      .then((res) => {
-        if (res.data.label_settings) {
-          const loaded = normalizeProductLabelSettings(res.data.label_settings)
-          cacheProductLabelSettings(res.data.label_settings)
-          setProductSettings(loaded)
-          if (loaded.bin_settings) {
-            setBinSettings({ ...DEFAULT_BIN_LABEL, ...loaded.bin_settings })
-          } else {
-            setBinSettings(DEFAULT_BIN_LABEL)
-          }
-        } else {
-          const cached = readCachedProductLabelSettings()
-          if (cached) {
-            setProductSettings(cached)
-            setBinSettings(cached.bin_settings ? { ...DEFAULT_BIN_LABEL, ...cached.bin_settings } : DEFAULT_BIN_LABEL)
-          }
-        }
-      })
-      .catch(() => toast.error('Помилка завантаження налаштувань'))
-      .finally(() => setLoading(false))
-
-    adminApi.listCategories().then((res) => setCategories(res.data)).catch(() => {})
-    adminApi.listBrands().then((res) => setBrands(res.data)).catch(() => {})
+  const markSettingsEdited = useCallback(() => {
+    settingsDirtyRef.current = true
+    settingsEditRevisionRef.current += 1
   }, [])
 
+  const storeSharedLabelSettings = useCallback((
+    saved: Partial<LabelSettings>,
+    applyToEditor: boolean,
+  ) => {
+    if (isOlderSharedLabelSettings(saved, appliedLabelSettingsTimestampRef.current)) return false
+
+    const loaded = normalizeProductLabelSettings(saved)
+    const signature = JSON.stringify(loaded)
+    const shouldUpdateEditor = signature !== appliedLabelSettingsSignatureRef.current
+    const incomingTimestamp = labelSettingsSyncTimestamp(saved)
+    cacheProductLabelSettings(saved)
+    if (incomingTimestamp !== null) appliedLabelSettingsTimestampRef.current = incomingTimestamp
+    appliedLabelSettingsSignatureRef.current = signature
+
+    if (applyToEditor && shouldUpdateEditor) {
+      setProductSettings(loaded)
+      setBinSettings(loaded.bin_settings ? { ...DEFAULT_BIN_LABEL, ...loaded.bin_settings } : DEFAULT_BIN_LABEL)
+    }
+    return true
+  }, [])
+
+  const applySharedLabelSettings = useCallback((saved: Partial<LabelSettings>, force = false) => {
+    if (!force && (settingsDirtyRef.current || labelSettingsSaveInFlightRef.current)) return false
+    return storeSharedLabelSettings(saved, true)
+  }, [storeSharedLabelSettings])
+
+  const refreshSharedLabelSettings = useCallback(async (force = false, showError = false) => {
+    if (labelSettingsSaveInFlightRef.current) return
+    const requestSequence = ++labelSettingsRefreshSequenceRef.current
+    const canApplyResponse = () => (
+      requestSequence === labelSettingsRefreshSequenceRef.current
+      && !labelSettingsSaveInFlightRef.current
+    )
+
+    try {
+      const res = await adminApi.getSettings()
+      if (!canApplyResponse()) return
+      if (res.data.label_settings) {
+        applySharedLabelSettings(res.data.label_settings, force)
+        return
+      }
+      const cached = readCachedProductLabelSettings()
+      if (cached) applySharedLabelSettings(cached, force)
+    } catch {
+      if (!canApplyResponse()) return
+      const cached = readCachedProductLabelSettings()
+      if (cached) applySharedLabelSettings(cached, force)
+      else if (showError) toast.error('Помилка завантаження налаштувань')
+    }
+  }, [applySharedLabelSettings])
+  // Серверний shop_settings.label_settings — єдиний макет для web і desktop.
+  // Відкрита сторінка підхоплює його після desktop-sync, при поверненні у вкладку
+  // та раз на 10 секунд. Незбережене локальне редагування не перезаписуємо.
+  useEffect(() => {
+    void refreshSharedLabelSettings(true, true).finally(() => setLoading(false))
+    adminApi.listCategories().then((res) => setCategories(res.data)).catch(() => {})
+    adminApi.listBrands().then((res) => setBrands(res.data)).catch(() => {})
+  }, [refreshSharedLabelSettings])
+
+  useEffect(() => {
+    const refresh = () => { void refreshSharedLabelSettings(false, false) }
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== LABEL_SETTINGS_CACHE_KEY || !event.newValue || settingsDirtyRef.current) return
+      try {
+        const parsed = JSON.parse(event.newValue)
+        if (parsed && typeof parsed === 'object') applySharedLabelSettings(parsed)
+      } catch {
+        // Пошкоджений кеш ігноруємо; наступний серверний pull його виправить.
+      }
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+
+    window.addEventListener('forsage:label-settings-synced', refresh)
+    window.addEventListener('focus', refresh)
+    window.addEventListener('storage', handleStorage)
+    document.addEventListener('visibilitychange', handleVisibility)
+    const timer = window.setInterval(refresh, 10_000)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('forsage:label-settings-synced', refresh)
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('storage', handleStorage)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [applySharedLabelSettings, refreshSharedLabelSettings])
   // Пошук товарів
   useEffect(() => {
     const query = searchQuery.trim()
@@ -1176,22 +1295,28 @@ export default function LabelDesigner() {
   }, [searchQuery, binMode])
 
   const updateSetting = useCallback(<K extends keyof LabelSettings>(key: K, value: LabelSettings[K]) => {
+    markSettingsEdited()
     if (binMode) {
       setBinSettings((prev) => ({ ...prev, [key]: value }))
     } else {
       setProductSettings((prev) => ({ ...prev, [key]: value }))
     }
-  }, [binMode])
+  }, [binMode, markSettingsEdited])
 
   const handlePosChange = useCallback((key: PosKey, pos: { x: number; y: number }) => {
+    markSettingsEdited()
     if (binMode) {
       setBinSettings((prev) => ({ ...prev, [key]: pos }))
     } else {
       setProductSettings((prev) => ({ ...prev, [key]: pos }))
     }
-  }, [binMode])
+  }, [binMode, markSettingsEdited])
 
   async function handleSave() {
+    if (labelSettingsSaveInFlightRef.current) return
+    const saveRevision = settingsEditRevisionRef.current
+    labelSettingsSaveInFlightRef.current = true
+    labelSettingsRefreshSequenceRef.current += 1
     setSaving(true)
     try {
       const sanitizedProduct = {
@@ -1228,16 +1353,42 @@ export default function LabelDesigner() {
       }
       const payload = {
         ...sanitizedProduct,
-        bin_settings: sanitizedBin
+        bin_settings: sanitizedBin,
+        sync_updated_at: new Date().toISOString(),
       }
-      await adminApi.updateSettings({ label_settings: payload as any }, { silent: true })
-      cacheProductLabelSettings(payload as LabelSettings)
-      setProductSettings(normalizeProductLabelSettings(sanitizedProduct))
-      setBinSettings(sanitizedBin)
-      toast.success('Налаштування етикеток збережено')
+      const response = await adminApi.updateSettings({ label_settings: payload as any }, { silent: true })
+      const shared = response.data.label_settings ?? payload
+      const contentConfirmed = labelSettingsContentSignature(shared) === labelSettingsContentSignature(payload)
+      const changedWhileSaving = settingsEditRevisionRef.current !== saveRevision
+
+      if (!contentConfirmed) {
+        const remembered = storeSharedLabelSettings(shared, false)
+        settingsDirtyRef.current = true
+        if (remembered) {
+          window.dispatchEvent(new CustomEvent('forsage:label-settings-synced', { detail: shared }))
+        }
+        toast.error('Макет уже змінено на іншому пристрої. Ваші правки не втрачено — перевірте їх і натисніть «Зберегти налаштування» ще раз.')
+      } else if (changedWhileSaving) {
+        const remembered = storeSharedLabelSettings(shared, false)
+        settingsDirtyRef.current = true
+        if (remembered) {
+          window.dispatchEvent(new CustomEvent('forsage:label-settings-synced', { detail: shared }))
+          toast.success('Попередню версію макета збережено. Нові зміни ще не збережені — натисніть «Зберегти налаштування» ще раз.')
+        } else {
+          toast.error('Сервер повернув старішу версію макета. Нові зміни не втрачено — збережіть їх ще раз.')
+        }
+      } else if (applySharedLabelSettings(shared, true)) {
+        settingsDirtyRef.current = false
+        window.dispatchEvent(new CustomEvent('forsage:label-settings-synced', { detail: shared }))
+        toast.success('Макет етикетки збережено та синхронізується')
+      } else {
+        settingsDirtyRef.current = true
+        toast.error('Сервер не підтвердив нову версію макета. Зміни не втрачено — збережіть їх ще раз.')
+      }
     } catch {
       toast.error('Не вдалося зберегти налаштування. Спробуйте ще раз.')
     } finally {
+      labelSettingsSaveInFlightRef.current = false
       setSaving(false)
     }
   }
@@ -1484,6 +1635,7 @@ export default function LabelDesigner() {
                     onChange={(e) => {
                       const key = e.target.value
                       if (key && LABEL_PRESETS[key]) {
+                        markSettingsEdited()
                         if (binMode) {
                           setBinSettings((prev) => ({ ...prev, ...LABEL_PRESETS[key] }))
                         } else {

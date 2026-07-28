@@ -17,6 +17,7 @@ import {
   sanitizeCommercialFieldsForRole,
   sanitizeShopSettingsForRole,
 } from './syncRolePolicy.js'
+import { nextSettingsRowUpdatedAt, prepareLabelSettingsUpdate } from './labelSettingsConflict.js'
 
 const PAGE_SIZE = 1000
 // Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
@@ -2755,15 +2756,70 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
 }
 
 async function applySettingsUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  const updates = pickShopSettingsPayload(operation.payload ?? {})
-  if (Object.keys(updates).length === 0) return
-  const { error } = await db
-    .from('shop_settings')
-    .update({ ...updates, updated_at: operation.created_at })
-    .eq('tenant_id', tenantId)
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-}
+  const requestedUpdates = pickShopSettingsPayload(operation.payload ?? {})
+  const hasLabelSettings = requestedUpdates.label_settings !== undefined
+  const maxAttempts = hasLabelSettings ? 3 : 1
+  const originalOperationCreatedAt = typeof operation.payload?.created_at === 'string'
+    ? operation.payload.created_at
+    : operation.created_at
+  const serverReceivedAt = new Date().toISOString()
 
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const updates = { ...requestedUpdates }
+    let expectedUpdatedAt: string | null | undefined
+
+    if (hasLabelSettings) {
+      const { data: current, error: currentError } = await db
+        .from('shop_settings')
+        .select('label_settings,updated_at')
+        .eq('tenant_id', tenantId)
+        .maybeSingle()
+      if (currentError) throw new AppError('DB_ERROR', currentError.message, 500)
+
+      expectedUpdatedAt = current?.updated_at
+      const prepared = prepareLabelSettingsUpdate({
+        incoming: requestedUpdates.label_settings,
+        // pushLocalOperations records the server apply time in operation.created_at,
+        // while payload.created_at preserves when the offline edit was actually made.
+        incomingFallbackUpdatedAt: originalOperationCreatedAt,
+        current: current?.label_settings,
+        currentRowUpdatedAt: current?.updated_at,
+        serverReceivedAt,
+      })
+      if (prepared.shouldApply && prepared.normalizedIncoming) {
+        updates.label_settings = prepared.normalizedIncoming
+      } else {
+        delete updates.label_settings
+      }
+    }
+
+    if (Object.keys(updates).length === 0) return
+    let query = db
+      .from('shop_settings')
+      // Час рядка — момент застосування на сервері. Старий offline created_at не
+      // повинен відкотити sync-cursor назад і приховати зміни від інших пристроїв.
+      .update({
+        ...updates,
+        updated_at: nextSettingsRowUpdatedAt(expectedUpdatedAt, new Date(serverReceivedAt)),
+      })
+      .eq('tenant_id', tenantId)
+    if (hasLabelSettings) {
+      query = expectedUpdatedAt == null
+        ? query.is('updated_at', null)
+        : query.eq('updated_at', expectedUpdatedAt)
+    }
+    const { data, error } = await query.select('tenant_id').maybeSingle()
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    if (data) return
+    // Інший пристрій встиг зберегти налаштування: перечитуємо і порівнюємо знову.
+  }
+
+  throw new AppError(
+    'SETTINGS_CONFLICT',
+    'Макет етикетки одночасно змінено на іншому пристрої. Синхронізацію буде повторено.',
+    409,
+  )
+}
 
 async function applyCategoryUpsert(tenantId: string, operation: SyncOutboxOperation, role: string): Promise<void> {
   const payload = operation.payload ?? {}
