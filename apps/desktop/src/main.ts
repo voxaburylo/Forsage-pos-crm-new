@@ -816,6 +816,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:sync:get-pull-state', () =>
     requireLocalSync().getPullState(),
   )
+  ipcMain.handle('desktop:sync:status', () =>
+    requireLocalSync().getSyncStatus(),
+  )
   ipcMain.handle('desktop:sync:apply-pull-changes', (_event, changes: LocalSyncPullChanges) =>
     requireLocalSync().applyPullChanges(changes),
   )

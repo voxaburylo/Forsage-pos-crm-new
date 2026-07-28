@@ -211,6 +211,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:sync:list-pending', limit),
     getPullState: () =>
       ipcRenderer.invoke('desktop:sync:get-pull-state'),
+    status: () =>
+      ipcRenderer.invoke('desktop:sync:status'),
     applyPullChanges: (changes: unknown) =>
       ipcRenderer.invoke('desktop:sync:apply-pull-changes', changes),
     markPullFailed: (error: string) =>

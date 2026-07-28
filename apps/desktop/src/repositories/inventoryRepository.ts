@@ -290,8 +290,6 @@ export class LocalInventoryRepository {
         const prevQty = num(prevRow?.qty_on_hand ?? 0)
         this.db.prepare('UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
           .run(counted, timestamp, timestamp, item.product_id, tenantId)
-        const productPayload = this.productOutboxPayload(item.product_id, tenantId)
-        if (productPayload) this.addOutbox(tenantId, 'product', item.product_id, 'product.upsert', productPayload, timestamp)
         // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,
         // і списання ревізією було невидиме в історії товару).
         const delta = counted - prevQty

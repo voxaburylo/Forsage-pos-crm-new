@@ -285,10 +285,6 @@ export class LocalWarehouseRepository {
           numberValue(item.product.purchase_price), input.notes ?? input.reason,
           timestamp, timestamp, timestamp,
         )
-        this.addOutbox(tenantId, 'product', item.product.id, 'product.upsert', {
-          id: item.product.id,
-          qty_on_hand: nextQty,
-        }, timestamp)
       }
       this.addOutbox(tenantId, 'writeoff', id, 'writeoff.created', {
         id,

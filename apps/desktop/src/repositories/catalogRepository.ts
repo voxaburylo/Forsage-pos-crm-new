@@ -192,9 +192,13 @@ export class LocalCatalogRepository {
       }
     }
 
-    const product = this.upsertProduct(input)
+    // Product details must not overwrite stock changed by sales, supply or inventory.
+    const safeInput = storedById && input.stock_correction !== true
+      ? { ...input, qty_on_hand: Number(storedById.qty_on_hand ?? 0) }
+      : input
+    const product = this.upsertProduct(safeInput)
     this.addProductOutbox('product.upsert', product.id, {
-      ...input,
+      ...safeInput,
       brand_id: product.brand_id ?? null,
       category_id: product.category_id ?? null,
     })

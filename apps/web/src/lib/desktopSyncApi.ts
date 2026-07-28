@@ -6,6 +6,7 @@ import {
   type DesktopSyncPullChanges,
   type DesktopSyncPullResult,
   type DesktopSyncPushResult,
+  type DesktopSyncStatus,
 } from '@/lib/desktopBridge'
 
 const REFERENCE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -117,6 +118,17 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
     throw error
   } finally {
     pullInProgress = false
+  }
+}
+
+export async function getDesktopSyncStatus(): Promise<DesktopSyncStatus | null> {
+  if (!isDesktopRuntime()) return null
+  const desktop = desktopBridge()
+  if (!desktop?.sync.status) return null
+  try {
+    return await desktop.sync.status()
+  } catch {
+    return null
   }
 }
 

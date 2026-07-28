@@ -90,6 +90,60 @@ export class LocalSyncRepository {
     }
   }
 
+  /**
+   * Здоров'я синхронізації для індикатора в UI:
+   *  - pending  — щойно створені, ще не відправлені;
+   *  - retrying — впали, але ще будуть повторені (attempts < MAX);
+   *  - stuck    — вичерпали спроби (attempts >= MAX): самі вже не поїдуть,
+   *               потрібна увага людини. Саме їх треба підсвічувати.
+   */
+  getSyncStatus(): {
+    pending: number
+    retrying: number
+    stuck: number
+    total: number
+    oldest_created_at: string | null
+    last_error: string | null
+    pull_last_success_at: string | null
+    pull_last_error: string | null
+  } {
+    const counts = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN status = 'failed' AND attempts < ${MAX_OUTBOX_ATTEMPTS} THEN 1 ELSE 0 END) AS retrying,
+        SUM(CASE WHEN status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS} THEN 1 ELSE 0 END) AS stuck,
+        MIN(created_at) AS oldest_created_at
+      FROM sync_outbox
+      WHERE status IN ('pending', 'failed')
+    `).get() as {
+      pending: number | null
+      retrying: number | null
+      stuck: number | null
+      oldest_created_at: string | null
+    } | undefined
+
+    const lastError = this.db.prepare(`
+      SELECT last_error FROM sync_outbox
+      WHERE status = 'failed' AND last_error IS NOT NULL
+      ORDER BY sequence DESC LIMIT 1
+    `).get() as { last_error: string | null } | undefined
+
+    const pull = this.getPullState()
+    const pending = counts?.pending ?? 0
+    const retrying = counts?.retrying ?? 0
+    const stuck = counts?.stuck ?? 0
+    return {
+      pending,
+      retrying,
+      stuck,
+      total: pending + retrying + stuck,
+      oldest_created_at: counts?.oldest_created_at ?? null,
+      last_error: lastError?.last_error ?? null,
+      pull_last_success_at: pull.last_success_at,
+      pull_last_error: pull.last_error,
+    }
+  }
+
   applyPullChanges(changes: LocalSyncPullChanges): LocalSyncPullResult {
     if (!changes.cursor) throw new Error('LOCAL_PULL_CURSOR_REQUIRED')
     const timestamp = nowIso()

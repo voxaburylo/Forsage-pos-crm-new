@@ -1937,26 +1937,47 @@ async function applyWriteoffCreated(tenantId: string, userId: string, operation:
   const items = Array.isArray(payload.items) ? payload.items : []
   if (!isUuid(writeoffId) || items.length === 0) throw new AppError('SYNC_WRITEOFF_INVALID', 'Некоректне списання', 400)
   await runTransaction(async (client) => {
-    const existing = await client.query('SELECT id FROM inventory_writeoffs WHERE id = $1 AND tenant_id = $2', [writeoffId, tenantId])
-    if (existing.rowCount) return
-    await client.query(
+    const claim = await client.query(
       `INSERT INTO inventory_writeoffs (id, tenant_id, reason, notes, created_by, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
       [writeoffId, tenantId, payload.reason ?? 'other', payload.notes ?? null, userId, operation.created_at],
     )
+    if (!claim.rowCount) {
+      const existing = await client.query(
+        'SELECT id FROM inventory_writeoffs WHERE id = $1 AND tenant_id = $2',
+        [writeoffId, tenantId],
+      )
+      if (existing.rowCount) return
+      throw new AppError('SYNC_WRITEOFF_TENANT_CONFLICT', 'Акт списання належить іншому магазину', 409)
+    }
     for (const item of items) {
       if (!isUuid(item?.product_id) || Number(item?.qty ?? 0) <= 0) continue
       const product = await client.query(
-        'SELECT purchase_price FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL',
+        `SELECT purchase_price, COALESCE(qty_on_hand, 0) AS qty_on_hand
+         FROM products
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         FOR UPDATE`,
         [item.product_id, tenantId],
       )
       if (!product.rowCount) throw new AppError('SYNC_PRODUCT_NOT_FOUND', 'Товар списання не знайдено', 404)
       const qty = Number(item.qty)
+      const available = Number(product.rows[0]?.qty_on_hand ?? 0)
+      if (qty > available) {
+        throw new AppError('INSUFFICIENT_STOCK', `Недостатньо товару для списання: є ${available}, потрібно ${qty}`, 409)
+      }
       await client.query(
         `INSERT INTO inventory_writeoff_items (
           id, writeoff_id, product_id, qty, cost_kopecks, created_at
         ) VALUES ($1,$2,$3,$4,$5,$6)`,
         [randomUUID(), writeoffId, item.product_id, qty, Math.round(Number(product.rows[0]?.purchase_price ?? 0) * qty), operation.created_at],
+      )
+      await client.query(
+        `UPDATE products
+         SET qty_on_hand = qty_on_hand - $1, updated_at = $2
+         WHERE id = $3 AND tenant_id = $4`,
+        [qty, operation.created_at, item.product_id, tenantId],
       )
     }
   })
@@ -3025,13 +3046,15 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       fromPayload('specs', existing?.specs ?? {}),
       JSON.stringify(additionalBarcodes),
       updatedAt,
+      payload.stock_correction === true,
     ]
 
     if (existing) {
       await client.query(
         `UPDATE products SET
           sku = $3, name = $4, barcode = $5, brand_id = $6, category_id = $7,
-          unit = $8, purchase_price = $9, retail_price = $10, qty_on_hand = $11,
+          unit = $8, purchase_price = $9, retail_price = $10,
+          qty_on_hand = CASE WHEN $24::boolean THEN $11 ELSE products.qty_on_hand END,
           reorder_point = $12, notes = $13, is_active = $14, is_service = $15,
           requires_core_return = $16, core_deposit_amount = $17,
           storage_bin = $18, is_favorite = $19, photo_url = $20, specs = $21,
@@ -3049,7 +3072,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
           created_at, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13,
+          $9, $10, CASE WHEN $24::boolean THEN $11 ELSE $11 END, $12, $13,
           $14, $15, $16, $17,
           $18, $19, $20, $21, $22::jsonb,
           $23, $23
@@ -3167,23 +3190,23 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
   const name = String(payload.name ?? `Локальна ревізія ${sessionId.slice(0, 8)}`).trim() || 'Локальна ревізія'
 
   await runTransaction(async (client) => {
-    const alreadyCompleted = await client.query(
-      "SELECT id FROM inventory_sessions WHERE id = $1 AND tenant_id = $2 AND status = 'completed' LIMIT 1",
-      [sessionId, tenantId],
-    )
-    if (alreadyCompleted.rowCount) return
-
     await client.query(
       `INSERT INTO inventory_sessions (
         id, tenant_id, name, status, created_by, started_by, started_at, completed_at, created_at
       ) VALUES (
-        $1, $2, $3, 'completed', $4, $4, $5, $6, $5
+        $1, $2, $3, 'in_progress', $4, $4, $5, NULL, $5
       )
-      ON CONFLICT (id) DO UPDATE SET
-        status = 'completed',
-        completed_at = EXCLUDED.completed_at`,
-      [sessionId, tenantId, name, createdBy, createdAt, completedAt],
+      ON CONFLICT (id) DO NOTHING`,
+      [sessionId, tenantId, name, createdBy, createdAt],
     )
+    const sessionState = await client.query(
+      'SELECT status FROM inventory_sessions WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      [sessionId, tenantId],
+    )
+    if (!sessionState.rowCount) {
+      throw new AppError('SYNC_INVENTORY_TENANT_CONFLICT', 'Ревізія належить іншому магазину', 409)
+    }
+    if (sessionState.rows[0]?.status === 'completed') return
 
     for (const item of items) {
       const productId = String(item?.product_id ?? '')
@@ -3192,7 +3215,7 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
       if (!Number.isFinite(countedStock) || countedStock < 0) continue
 
       const product = await client.query(
-        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
         [productId, tenantId],
       )
       if (!product.rowCount) {
@@ -3234,6 +3257,12 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
         [countedStock, completedAt, productId, tenantId],
       )
     }
+    await client.query(
+      `UPDATE inventory_sessions
+       SET status = 'completed', completed_at = $3, name = $4
+       WHERE id = $1 AND tenant_id = $2`,
+      [sessionId, tenantId, completedAt, name],
+    )
   })
 }
 

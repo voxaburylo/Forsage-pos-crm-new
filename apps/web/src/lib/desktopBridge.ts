@@ -228,6 +228,20 @@ export interface DesktopSyncPullResult {
   counts: Record<string, number>
 }
 
+export interface DesktopSyncStatus {
+  /** Щойно створені, ще не відправлені. */
+  pending: number
+  /** Впали, але ще будуть повторені автоматично. */
+  retrying: number
+  /** Вичерпали спроби — самі вже не поїдуть, потрібна увага. */
+  stuck: number
+  total: number
+  oldest_created_at: string | null
+  last_error: string | null
+  pull_last_success_at: string | null
+  pull_last_error: string | null
+}
+
 export interface DesktopFiscalConfig {
   enabled: boolean
   cashalotDir: string
@@ -400,6 +414,7 @@ interface ForsageDesktopBridge {
       is_favorite?: boolean
       barcode?: string | null
       additional_barcodes?: string[]
+      stock_correction?: boolean
       cross_numbers?: string[]
       storage_bin?: string | null
       photo_url?: string | null
@@ -424,6 +439,7 @@ interface ForsageDesktopBridge {
       is_favorite?: boolean
       barcode?: string | null
       additional_barcodes?: string[]
+      stock_correction?: boolean
       cross_numbers?: string[]
       storage_bin?: string | null
       photo_url?: string | null
@@ -566,6 +582,7 @@ interface ForsageDesktopBridge {
   sync: {
     listPending: (limit?: number) => Promise<DesktopSyncOutboxOperation[]>
     getPullState: () => Promise<DesktopSyncPullState>
+    status?: () => Promise<DesktopSyncStatus>
     applyPullChanges: (changes: DesktopSyncPullChanges) => Promise<DesktopSyncPullResult>
     markPullFailed: (error: string) => Promise<void>
     applyPushResults: (results: DesktopSyncPushResult[]) => Promise<void>

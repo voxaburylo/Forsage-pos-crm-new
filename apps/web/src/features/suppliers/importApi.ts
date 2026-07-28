@@ -311,6 +311,7 @@ Promise<{ data: SupplyInvoice | { created: number; updated: number; errors: numb
         purchase_price: item.price,
         retail_price: body.update_retail === false ? product.retail_price : retail,
         qty_on_hand: nextQty,
+        stock_correction: true,
         storage_bin: item.storage_bin || product.storage_bin,
       }))
       products.set(product.id, product)

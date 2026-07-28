@@ -1,6 +1,7 @@
 import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { useDesktopOutboxSync } from '@/hooks/useDesktopOutboxSync'
 import { useServerStatus } from '@/hooks/useServerStatus'
+import { SyncStatusIndicator } from '@/components/SyncStatusIndicator'
 
 /**
  * Один фоновий синхронізатор для всієї програми.
@@ -10,5 +11,5 @@ export function LocalSyncAgent() {
   const serverOnline = useServerStatus()
   useOfflineSync(serverOnline)
   useDesktopOutboxSync(serverOnline)
-  return null
+  return <SyncStatusIndicator />
 }

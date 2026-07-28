@@ -48,6 +48,8 @@ export interface LocalProductUpsert {
   photo_url?: string | null
   specs?: Record<string, string>
   additional_barcodes?: string[]
+  /** Explicit stock correction; ordinary product edits must not change stock. */
+  stock_correction?: boolean
   /** Крос-номери/аналоги (повний список). undefined = не чіпати; [] = очистити. */
   cross_numbers?: string[]
 }
