@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { Plus, X } from 'lucide-react'
 import { writeoffApi } from './writeoffApi'
 import { REASON_LABEL, REASON_COLOR } from '@/types/writeoff'
 import type { Writeoff } from '@/types/writeoff'
 import { Layout } from '@/components/Layout'
-import { Badge, Card } from '@/components/ui'
+import { Badge, Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatDate, formatMoney } from '@/lib/utils'
 
@@ -31,6 +32,16 @@ export default function WriteoffDetailPage() {
     <Layout
       title={'Акт списання — ' + formatDate(writeoff.created_at)}
       onBack={() => navigate('/inventory/writeoffs')}
+      actions={
+        <div className="flex items-center gap-2">
+          <Button variant="outline" icon={<X size={15} />} onClick={() => navigate('/inventory/writeoffs')}>
+            Закрити
+          </Button>
+          <Button icon={<Plus size={15} />} onClick={() => navigate('/inventory/writeoffs/new')}>
+            Новий акт
+          </Button>
+        </div>
+      }
     >
       <Card className="mb-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">

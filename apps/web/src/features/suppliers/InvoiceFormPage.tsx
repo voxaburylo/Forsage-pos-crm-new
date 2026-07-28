@@ -858,7 +858,7 @@ export default function InvoiceFormPage() {
       delete next[key]
       return next
     })
-    if (field === 'purchase_price' && !isEdit) {
+    if (field === 'purchase_price') {
       const draftValue = moneyDrafts[key]
       const purchaseForRecalc = draftValue !== undefined ? parseMoneyToKopecks(draftValue) : items[index]?.purchase_price
       void recalcRetail(index, false, purchaseForRecalc)
@@ -878,6 +878,13 @@ export default function InvoiceFormPage() {
       invoiceDraftReadyRef.current = false
       supplierApi.getInvoice(id).then((res) => {
         const inv = res.data
+        if (inv.status !== 'draft') {
+          invoiceDraftPersistenceDisabledRef.current = true
+          clearSupplyInvoiceDraft(invoiceDraftKey)
+          toast.warning('Цю накладну вже не можна редагувати напряму — відкриваю копію для проведення')
+          navigate(`/suppliers/invoices/new?clone=${id}`, { replace: true })
+          return
+        }
         const serverDraft = draftFromServerInvoice(inv)
         const localDraft = loadSupplyInvoiceDraft(invoiceDraftKey)
         const draft = newestSupplyInvoiceDraft(localDraft, serverDraft)
@@ -912,19 +919,19 @@ export default function InvoiceFormPage() {
       const inv = res.data
       const serverDraft = draftFromServerInvoice(inv)
       const loadedItems = serverDraft?.items ?? invoiceItemsToLineItems(inv)
-      const draft = loadSupplyInvoiceDraft(invoiceDraftKey)
-      if (draft) {
-        applySupplyInvoiceDraft(draft, inv.supplier_id ?? '')
-        toast.success('Чернетку накладної відновлено')
-      } else {
-        serverDraftIdRef.current = null
-        setServerDraftId(null)
-        setSupplierId(inv.supplier_id ?? '')
-        setInvoiceNumber('')
-        setNotes('')
-        setItems(loadedItems.map((item) => ({ ...item, client_key: makeLineKey() })))
-        toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
-      }
+      clearSupplyInvoiceDraft(invoiceDraftKey)
+      invoiceDraftPersistenceDisabledRef.current = false
+      serverDraftIdRef.current = null
+      setServerDraftId(null)
+      setSupplierId(inv.supplier_id ?? '')
+      setInvoiceNumber('')
+      setNotes('')
+      setPaidAmount('')
+      setPaymentMethod('cash')
+      setFundSource('cashbox')
+      setPostImmediately(true)
+      setItems(loadedItems.map((item) => ({ ...item, client_key: makeLineKey() })))
+      toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
     }).catch(() => toast.error('Не вдалось завантажити накладну для копіювання'))
       .finally(() => {
         setLoading(false)
@@ -1374,15 +1381,15 @@ export default function InvoiceFormPage() {
     if (!clipboardText.trim() || resolvingImportedProducts) return
     const lines = clipboardText.split('\n').filter(line => line.trim())
     const newItems: LineItem[] = []
-    
+
     lines.forEach(line => {
       const cols = line.split('\t')
       if (cols.length < 2) return
-      
+
       const sku = cols[0]?.trim() || ''
       const name = cols[1]?.trim() || ''
       if (!sku && !name) return
-      
+
       const qty = parseQty(cols[2], 1)
       const purchase = parseMoneyToKopecks(cols[3])
       const retail = parseMoneyToKopecks(cols[4])
@@ -1403,7 +1410,7 @@ export default function InvoiceFormPage() {
         is_new: true,
       })
     })
-    
+
     if (newItems.length > 0) {
       setResolvingImportedProducts(true)
       try {
@@ -1781,7 +1788,7 @@ export default function InvoiceFormPage() {
       // Зберігаємо відредаговані дані карток ДО створення накладної. Так помилка
       // артикула/штрихкоду не губиться після створення документа і касир може
       // одразу виправити або замінити саме проблемний рядок без дубля накладної.
-      if (!isEdit) {
+      if (resolvedItems.length > 0) {
         const productUpdateResults = await Promise.allSettled(
           resolvedItems.map(async (item) => {
             const patch: Partial<ProductFormData> = {
@@ -1917,7 +1924,7 @@ export default function InvoiceFormPage() {
                 <div className="flex gap-2">
                   <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}
                     className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                    disabled={isEdit}>
+                    >
                     <option value="">— Оберіть —</option>
                     {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
@@ -2073,11 +2080,11 @@ export default function InvoiceFormPage() {
                     </button>
                   </div>
                 )}
-                
+
               </div>
             )}
             {isEdit && (
-              <span className="text-xs text-gray-400 italic">Позиції не змінюються при редагуванні</span>
+              <span className="text-xs text-green-600 font-semibold">Редагуєте чернетку: ціни, кількість і дані рядків можна змінювати.</span>
             )}
           </div>
 
@@ -2127,7 +2134,7 @@ export default function InvoiceFormPage() {
                       type="checkbox"
                       checked={selectedLineKeys.includes(item.client_key)}
                       onChange={(e) => toggleLineSelection(item.client_key, e.target.checked)}
-                      disabled={isEdit}
+
                       className="w-4 h-4 accent-yellow-400"
                     />
                   </td>
@@ -2144,7 +2151,7 @@ export default function InvoiceFormPage() {
                     <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
-                      disabled={isEdit}
+
                       placeholder="Назва товару"
                       className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-medium outline-none hover:border-gray-200 focus:border-yellow-400 focus:bg-white focus:ring-2 focus:ring-yellow-100 disabled:bg-gray-50 disabled:text-gray-400" />
                     {problemLineKey === item.client_key && (
@@ -2157,7 +2164,7 @@ export default function InvoiceFormPage() {
                       <input ref={(el) => { skuRefs.current[i] = el }} type="text" value={item.sku}
                         onChange={(e) => updateItem(i, 'sku', e.target.value)}
                         onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'sku')}
-                        disabled={isEdit}
+
                         placeholder="Артикул"
                         className="w-32 border border-transparent hover:border-gray-200 focus:border-yellow-400 rounded px-1.5 py-0.5 text-xs bg-transparent focus:bg-white font-mono" />
                     </div>
@@ -2173,7 +2180,7 @@ export default function InvoiceFormPage() {
                     <select
                       value={item.category_id ?? ''}
                       onChange={(e) => updateItem(i, 'category_id', e.target.value)}
-                      disabled={isEdit}
+
                       title="Папка/категорія товару"
                       className="w-40 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
@@ -2189,11 +2196,11 @@ export default function InvoiceFormPage() {
                         onChange={(e) => handleBarcodeInputChange(i, e.target.value)}
                         onBlur={(e) => { void bindRowToExistingProductByBarcode(item.client_key, e.currentTarget.value, false) }}
                         onKeyDown={(e) => scanGuide ? onBarcodeKeyDown(e, i) : handleRowFieldKeyDown(e, i, 'barcode')}
-                        disabled={isEdit}
+
                         placeholder="скан / ввід"
                         autoComplete="off"
                         className={`w-28 border rounded px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
-                      <button type="button" disabled={isEdit} onClick={() => generateBarcodeForRow(i)}
+                      <button type="button"  onClick={() => generateBarcodeForRow(i)}
                         title="Згенерувати штрихкод"
                         className="shrink-0 p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40">
                         <Barcode size={14} />
@@ -2203,7 +2210,7 @@ export default function InvoiceFormPage() {
                   <td className="px-2 py-2">
                     <input type="text" value={item.storage_bin ?? ''}
                       onChange={(e) => updateItem(i, 'storage_bin', e.target.value)}
-                      disabled={isEdit}
+
                       placeholder="Немає"
                       className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
@@ -2211,14 +2218,14 @@ export default function InvoiceFormPage() {
                     <input ref={(el) => { qtyRefs.current[i] = el }} type="number" step="1" min="0" value={item.qty}
                       onChange={(e) => updateItem(i, 'qty', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'qty')}
-                      disabled={isEdit}
+
                       className="w-full min-w-[72px] text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
                     <select
                       value={normalizeInvoiceUnit(item.unit)}
                       onChange={(e) => updateItem(i, 'unit', e.target.value)}
-                      disabled={isEdit}
+
                       className="w-20 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
                       <option value="шт">шт</option>
@@ -2236,7 +2243,7 @@ export default function InvoiceFormPage() {
                       onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'purchase')}
                       onBlur={() => finishMoneyEdit(i, 'purchase_price')}
-                      disabled={isEdit}
+
                       className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
@@ -2250,7 +2257,7 @@ export default function InvoiceFormPage() {
                           const retail = Math.round(item.purchase_price * (1 + pct / 100))
                           updateItem(i, 'retail_price', retail)
                         }}
-                        disabled={isEdit || item.purchase_price <= 0}
+                        disabled={item.purchase_price <= 0}
                         placeholder="0"
                         className="w-16 text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                       />
@@ -2266,7 +2273,7 @@ export default function InvoiceFormPage() {
                         onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
                         onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'retail')}
                         onBlur={() => finishMoneyEdit(i, 'retail_price')}
-                        disabled={isEdit}
+
                         className="w-full min-w-[80px] text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
                       {!isEdit && (
                         <select
@@ -2324,7 +2331,7 @@ export default function InvoiceFormPage() {
                     type="checkbox"
                     checked={selectedLineKeys.includes(item.client_key)}
                     onChange={(e) => toggleLineSelection(item.client_key, e.target.checked)}
-                    disabled={isEdit}
+
                     className="mt-3 w-4 h-4 accent-yellow-400"
                   />
                   <RowPhotoCell
@@ -2338,7 +2345,7 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Назва</label>
                     <input type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
-                      disabled={isEdit}
+
                       placeholder="Назва товару"
                       className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                     {problemLineKey === item.client_key && (
@@ -2358,7 +2365,7 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Артикул</label>
                     <input type="text" value={item.sku}
                       onChange={(e) => updateItem(i, 'sku', e.target.value)}
-                      disabled={isEdit}
+
                       placeholder="Артикул"
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </div>
@@ -2367,7 +2374,7 @@ export default function InvoiceFormPage() {
                     <select
                       value={item.category_id ?? ''}
                       onChange={(e) => updateItem(i, 'category_id', e.target.value)}
-                      disabled={isEdit}
+
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
                       <option value="">Без папки</option>
@@ -2379,7 +2386,7 @@ export default function InvoiceFormPage() {
                     <select
                       value={normalizeInvoiceUnit(item.unit)}
                       onChange={(e) => updateItem(i, 'unit', e.target.value)}
-                      disabled={isEdit}
+
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
                       <option value="шт">шт</option>
@@ -2395,11 +2402,11 @@ export default function InvoiceFormPage() {
                       <input type="text" value={item.barcode ?? ''}
                         onChange={(e) => handleBarcodeInputChange(i, e.target.value)}
                         onBlur={(e) => { void bindRowToExistingProductByBarcode(item.client_key, e.currentTarget.value, false) }}
-                        disabled={isEdit}
+
                         placeholder="Сканувати або вписати"
                         autoComplete="off"
                         className={`flex-1 min-w-0 border rounded-lg px-2.5 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${item.barcode ? 'border-gray-200' : 'border-orange-300 bg-orange-50'}`} />
-                      <button type="button" disabled={isEdit} onClick={() => generateBarcodeForRow(i)}
+                      <button type="button"  onClick={() => generateBarcodeForRow(i)}
                         title="Згенерувати штрихкод"
                         className="shrink-0 px-3 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 disabled:opacity-40">
                         <Barcode size={15} />
@@ -2412,14 +2419,14 @@ export default function InvoiceFormPage() {
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">К-сть</label>
                     <div className="flex items-center gap-1">
-                      <button type="button" disabled={isEdit || item.qty <= 1}
+                      <button type="button" disabled={item.qty <= 1}
                         onClick={() => updateItem(i, 'qty', Math.max(1, item.qty - 1))}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
                       <input type="number" step="1" min="0" value={item.qty}
                         onChange={(e) => updateItem(i, 'qty', e.target.value)}
-                        disabled={isEdit}
+
                         className="w-full min-w-[64px] text-center border border-gray-200 rounded-lg px-2 py-2 text-base focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
-                      <button type="button" disabled={isEdit}
+                      <button type="button"
                         onClick={() => updateItem(i, 'qty', item.qty + 1)}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
                     </div>
@@ -2433,7 +2440,7 @@ export default function InvoiceFormPage() {
                         const retail = Math.round(item.purchase_price * (1 + pct / 100))
                         updateItem(i, 'retail_price', retail)
                       }}
-                      disabled={isEdit || item.purchase_price <= 0}
+                      disabled={item.purchase_price <= 0}
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                 </div>
@@ -2447,7 +2454,7 @@ export default function InvoiceFormPage() {
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'purchase_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
                       onBlur={() => finishMoneyEdit(i, 'purchase_price')}
-                      disabled={isEdit}
+
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                   <div>
@@ -2458,7 +2465,7 @@ export default function InvoiceFormPage() {
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
                       onBlur={() => finishMoneyEdit(i, 'retail_price')}
-                      disabled={isEdit}
+
                       className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                   </div>
                 </div>

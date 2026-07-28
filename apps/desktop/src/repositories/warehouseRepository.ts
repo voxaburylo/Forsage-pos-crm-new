@@ -196,27 +196,20 @@ export class LocalWarehouseRepository {
       .all(...params, perPage, (page - 1) * perPage) as any[]
     const total = numberValue(count.count)
     return {
-      data: rows,
+      data: rows.map((row) => ({ ...row, items: this.listWriteoffItems(row.id, tenantId) })),
       pagination: { page, per_page: perPage, total, total_pages: Math.max(1, Math.ceil(total / perPage)) },
     }
   }
 
-  getWriteoff(id: string, tenantId = DEFAULT_TENANT_ID): any {
-    const row = this.db.prepare(`
-      SELECT id, tenant_id, reason, notes, created_by, created_at
-      FROM writeoffs
-      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
-      LIMIT 1
-    `).get(id, tenantId) as any
-    if (!row) throw new Error('Списання не знайдено')
-    row.items = this.db.prepare(`
+  private listWriteoffItems(writeoffId: string, tenantId: string): any[] {
+    return this.db.prepare(`
       SELECT i.id, i.writeoff_id, i.product_id, i.qty, i.cost_kopecks, i.created_at,
              p.sku AS product_sku, p.name AS product_name, p.unit AS product_unit
       FROM writeoff_items i
       JOIN products p ON p.id = i.product_id
       WHERE i.writeoff_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
       ORDER BY i.created_at
-    `).all(id, tenantId).map((item: any) => ({
+    `).all(writeoffId, tenantId).map((item: any) => ({
       id: item.id,
       writeoff_id: item.writeoff_id,
       product_id: item.product_id,
@@ -230,6 +223,17 @@ export class LocalWarehouseRepository {
         unit: item.product_unit,
       },
     }))
+  }
+
+  getWriteoff(id: string, tenantId = DEFAULT_TENANT_ID): any {
+    const row = this.db.prepare(`
+      SELECT id, tenant_id, reason, notes, created_by, created_at
+      FROM writeoffs
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(id, tenantId) as any
+    if (!row) throw new Error('Списання не знайдено')
+    row.items = this.listWriteoffItems(id, tenantId)
     return row
   }
 

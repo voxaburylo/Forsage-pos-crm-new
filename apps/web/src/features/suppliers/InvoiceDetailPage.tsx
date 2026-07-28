@@ -172,17 +172,24 @@ export default function InvoiceDetailPage() {
                 Друк етикеток
               </Button>
               <Button variant="outline" onClick={handleEditPosted} disabled={actionLoading}>
-                Редагувати
+                Скасувати і редагувати копію
               </Button>
               <Button variant="danger-outline" onClick={handleCancel} disabled={actionLoading}>
                 {actionLoading ? '...' : 'Скасувати'}
               </Button>
             </>
           )}
-          {invoice.status === 'cancelled' && canDelete && (
-            <Button variant="danger" icon={<Trash2 size={15} />} onClick={handleDelete} disabled={actionLoading}>
-              {actionLoading ? '...' : 'Видалити'}
-            </Button>
+          {invoice.status === 'cancelled' && (
+            <>
+              <Button onClick={() => navigate(`/suppliers/invoices/new?clone=${id}`)} disabled={actionLoading}>
+                Провести заново
+              </Button>
+              {canDelete && (
+                <Button variant="danger" icon={<Trash2 size={15} />} onClick={handleDelete} disabled={actionLoading}>
+                  {actionLoading ? '...' : 'Видалити'}
+                </Button>
+              )}
+            </>
           )}
         </div>
       }
