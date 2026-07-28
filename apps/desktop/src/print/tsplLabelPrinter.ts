@@ -24,8 +24,21 @@ export interface TsplPrintOptions {
   rotate180?: boolean
 }
 
+interface BarcodeMeta {
+  code: string
+  modules: number
+  quietZone: number
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 interface PageMeta {
   index: number
+  width: number
+  height: number
+  barcodes: BarcodeMeta[]
 }
 
 /** TSPL для 203 dpi: рівно 8 крапок на мм. */
@@ -249,8 +262,62 @@ async function waitMs(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function clampDot(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.max(min, Math.min(max, Math.round(value)))
+}
+
+function tsplString(value: string): string {
+  return String(value ?? '').replace(/"/g, '')
+}
+
+function buildBarcodeCommands(page: PageMeta, widthDots: number, heightDots: number): Buffer[] {
+  if (!Array.isArray(page.barcodes) || page.barcodes.length === 0) return []
+  const pageWidth = Number(page.width) || widthDots
+  const pageHeight = Number(page.height) || heightDots
+  const scaleX = widthDots / Math.max(1, pageWidth)
+  const scaleY = heightDots / Math.max(1, pageHeight)
+  const chunks: Buffer[] = []
+
+  for (const barcode of page.barcodes) {
+    const code = tsplString(barcode.code)
+    if (!code) continue
+
+    const x = clampDot(Number(barcode.x) * scaleX, 0, widthDots - 1)
+    const y = clampDot(Number(barcode.y) * scaleY, 0, heightDots - 1)
+    const boxWidth = clampDot(Number(barcode.width) * scaleX, 1, Math.max(1, widthDots - x))
+    const barHeight = clampDot(Number(barcode.height) * scaleY, 12, Math.max(12, heightDots - y))
+    const quietZone = clampDot(Number(barcode.quietZone) * scaleX, 0, Math.max(0, Math.floor(boxWidth / 4)))
+    const modules = Math.max(1, Math.round(Number(barcode.modules) || 1))
+    const barsWidth = Math.max(1, boxWidth - quietZone * 2)
+    const moduleDotWidth = barsWidth / modules
+    const narrow = Math.max(1, Math.min(4, Math.floor(moduleDotWidth)))
+    const wide = Math.max(narrow + 1, Math.min(8, narrow * 2))
+    const commandX = clampDot(x + quietZone, 0, widthDots - 1)
+
+    chunks.push(Buffer.from(`BARCODE ${commandX},${y},"128",${barHeight},0,0,${narrow},${wide},"${code}"\r\n`, 'ascii'))
+  }
+
+  return chunks
+}
+
 const COLLECT_PAGES_SCRIPT = `
-(() => Array.from(document.querySelectorAll('.label-page')).map((_page, index) => ({ index })))()
+(() => Array.from(document.querySelectorAll('.label-page')).map((page, index) => {
+  const pageRect = page.getBoundingClientRect()
+  const barcodes = Array.from(page.querySelectorAll('img.barcode-raster[data-code]')).map((image) => {
+    const rect = image.getBoundingClientRect()
+    return {
+      code: image.getAttribute('data-code') || '',
+      modules: Number(image.getAttribute('data-modules')) || 0,
+      quietZone: Number(image.getAttribute('data-quiet-zone')) || 0,
+      x: rect.left - pageRect.left,
+      y: rect.top - pageRect.top,
+      width: rect.width,
+      height: rect.height
+    }
+  }).filter((item) => item.code && item.width > 0 && item.height > 0)
+  return { index, width: pageRect.width, height: pageRect.height, barcodes }
+}))()
 `
 
 // ────────────────────────── Основний потік друку ──────────────────────────
@@ -320,6 +387,9 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
           labelPages.forEach((candidate, index) => {
             candidate.style.display = index === ${page.index} ? 'block' : 'none'
           })
+          document.querySelectorAll('img.barcode-raster[data-code]').forEach((image) => {
+            image.style.visibility = 'hidden'
+          })
           window.scrollTo(0, 0)
           return true
         })()`,
@@ -348,7 +418,7 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
       chunks.push(Buffer.from(`BITMAP 0,0,${bytesPerRow},${heightDots},0,`, 'ascii'))
       chunks.push(bitmap.subarray(0, bytesPerRow * heightDots))
       chunks.push(Buffer.from('\r\n', 'ascii'))
-
+      chunks.push(...buildBarcodeCommands(page, widthDots, heightDots))
 
       chunks.push(Buffer.from('PRINT 1,1\r\n', 'ascii'))
     }
