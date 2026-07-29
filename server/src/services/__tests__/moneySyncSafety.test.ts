@@ -45,6 +45,7 @@ describe('money synchronization safety', () => {
     expect(salaryRouteSource).toContain('SELECT cash_operation_id FROM salary_payments')
     expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, NOW())")
     expect(deletionMigration).toContain('CREATE TABLE IF NOT EXISTS sync_deletions')
+    expect(deletionMigration).toContain('TO authenticated')
   })
   it('syncs staff PINs only as tenant-scoped protected hashes', () => {
     const start = syncSource.indexOf('async function applyStaffPinUpdated')

@@ -15,15 +15,19 @@ ALTER TABLE sync_deletions ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS sync_deletions_tenant_select ON sync_deletions;
 CREATE POLICY sync_deletions_tenant_select ON sync_deletions
-  FOR SELECT USING (tenant_id = app.user_tenant_id());
+  FOR SELECT
+  TO authenticated
+  USING (tenant_id = (SELECT app.user_tenant_id()));
 
 DROP POLICY IF EXISTS sync_deletions_staff_write ON sync_deletions;
 CREATE POLICY sync_deletions_staff_write ON sync_deletions
-  FOR ALL USING (
-    tenant_id = app.user_tenant_id()
-    AND app.has_role(ARRAY['owner', 'admin'])
+  FOR ALL
+  TO authenticated
+  USING (
+    tenant_id = (SELECT app.user_tenant_id())
+    AND (SELECT app.has_role(ARRAY['owner', 'admin']))
   )
   WITH CHECK (
-    tenant_id = app.user_tenant_id()
-    AND app.has_role(ARRAY['owner', 'admin'])
+    tenant_id = (SELECT app.user_tenant_id())
+    AND (SELECT app.has_role(ARRAY['owner', 'admin']))
   );
