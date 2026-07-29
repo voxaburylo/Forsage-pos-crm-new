@@ -992,7 +992,16 @@ export class LocalCatalogRepository {
 
   updateSettings(input: any, tenantId = DEFAULT_TENANT_ID): any {
     const timestamp = nowIso()
-    const settings = { ...this.getSettings(), ...input, id: 'local-shop' }
+    const transientKeys = new Set([
+      'price_tier_upserts',
+      'price_tier_deleted_ids',
+      'category_markup_upserts',
+      'category_markup_deleted_ids',
+    ])
+    const persistentInput = Object.fromEntries(
+      Object.entries(input ?? {}).filter(([key]) => !transientKeys.has(key)),
+    )
+    const settings = { ...this.getSettings(), ...persistentInput, id: 'local-shop' }
     this.db.prepare(`
       INSERT INTO app_meta(key, value_json, updated_at)
       VALUES ('shop_settings', ?, ?)

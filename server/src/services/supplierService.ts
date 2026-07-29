@@ -155,6 +155,14 @@ export async function mergeSuppliers(primaryId: string, duplicateId: string, ten
     for (const row of rows) {
       const table = String(row.table_name)
       if (!/^[a-z_][a-z0-9_]*$/.test(table)) continue // захист від некоректних імен
+      if (table === 'supply_invoices' || table === 'supplier_payments') {
+        await client.query(
+          `UPDATE public.${table} SET supplier_id = $1, updated_at = NOW()
+           WHERE supplier_id = $2 AND tenant_id = $3`,
+          [primaryId, duplicateId, tenantId]
+        )
+        continue
+      }
       await client.query(
         `UPDATE public.${table} SET supplier_id = $1 WHERE supplier_id = $2`,
         [primaryId, duplicateId]

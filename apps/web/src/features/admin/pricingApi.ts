@@ -80,7 +80,7 @@ export const pricingApi = {
         created_at: new Date().toISOString(),
       }
       const updated = body.is_default ? tiers.map((tier) => ({ ...tier, is_default: false })).concat(next) : tiers.concat(next)
-      await saveLocalSettings({ price_tiers: updated })
+      await saveLocalSettings({ price_tiers: updated, price_tier_upserts: [next] })
       return { data: next }
     }
     return api.post<{ data: PriceTier }>('/api/v1/pricing/tiers', body)
@@ -92,8 +92,10 @@ export const pricingApi = {
       const tiers = Array.isArray(settings.price_tiers) ? settings.price_tiers as PriceTier[] : defaultTiers()
       let updated = tiers.map((tier) => tier.id === id ? { ...tier, ...body } : tier)
       if (body.is_default === true) updated = updated.map((tier) => ({ ...tier, is_default: tier.id === id }))
-      await saveLocalSettings({ price_tiers: updated })
-      return { data: updated.find((tier) => tier.id === id) ?? updated[0] }
+      const changed = updated.find((tier) => tier.id === id)
+      if (!changed) throw new Error('Рівень ціни не знайдено')
+      await saveLocalSettings({ price_tiers: updated, price_tier_upserts: [changed] })
+      return { data: changed }
     }
     return api.put<{ data: PriceTier }>('/api/v1/pricing/tiers/' + id, body)
   },
@@ -101,8 +103,13 @@ export const pricingApi = {
   deleteTier: async (id: string) => {
     if (desktopBridge()) {
       const settings = await localSettings()
-      const tiers = (Array.isArray(settings.price_tiers) ? settings.price_tiers as PriceTier[] : defaultTiers()).filter((tier) => tier.id !== id || tier.is_default)
-      await saveLocalSettings({ price_tiers: tiers.length ? tiers : defaultTiers() })
+      const before = Array.isArray(settings.price_tiers) ? settings.price_tiers as PriceTier[] : defaultTiers()
+      const removable = before.find((tier) => tier.id === id && !tier.is_default)
+      const tiers = before.filter((tier) => tier.id !== id || tier.is_default)
+      await saveLocalSettings({
+        price_tiers: tiers.length ? tiers : defaultTiers(),
+        price_tier_deleted_ids: removable ? [id] : [],
+      })
       return undefined as void
     }
     return api.delete<void>('/api/v1/pricing/tiers/' + id)
@@ -127,7 +134,7 @@ export const pricingApi = {
       const updated = rows.some((row) => row.category_id === categoryId)
         ? rows.map((row) => row.category_id === categoryId ? next : row)
         : rows.concat(next)
-      await saveLocalSettings({ category_markups: updated })
+      await saveLocalSettings({ category_markups: updated, category_markup_upserts: [next] })
       return { data: (await localMarkups()).find((row) => row.category_id === categoryId) ?? next }
     }
     return api.put<{ data: CategoryMarkup }>('/api/v1/pricing/markups/' + categoryId, body)
@@ -137,7 +144,10 @@ export const pricingApi = {
     if (desktopBridge()) {
       const settings = await localSettings()
       const rows = Array.isArray(settings.category_markups) ? settings.category_markups as CategoryMarkup[] : []
-      await saveLocalSettings({ category_markups: rows.filter((row) => row.category_id !== categoryId) })
+      await saveLocalSettings({
+        category_markups: rows.filter((row) => row.category_id !== categoryId),
+        category_markup_deleted_ids: [categoryId],
+      })
       return undefined as void
     }
     return api.delete<void>('/api/v1/pricing/markups/' + categoryId)

@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { findMarkupPct, roundToStep, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 
@@ -64,13 +65,26 @@ export async function updatePriceTier(id: string, input: {
 }
 
 export async function deletePriceTier(id: string, tenantId: string) {
-  const { error } = await db
-    .from('price_tiers')
-    .delete()
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  await runTransaction(async (client) => {
+    const tier = await client.query(
+      'SELECT id, is_default FROM price_tiers WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      [id, tenantId],
+    )
+    if (!tier.rowCount) throw new AppError('NOT_FOUND', 'Рівень не знайдено', 404)
+    if (tier.rows[0].is_default) {
+      throw new AppError('DEFAULT_PRICE_TIER', 'Основний рівень ціни не можна видалити', 409)
+    }
+    const timestamp = new Date().toISOString()
+    await client.query(
+      'UPDATE customers SET price_tier_id = NULL, updated_at = $3 WHERE tenant_id = $1 AND price_tier_id = $2',
+      [tenantId, id, timestamp],
+    )
+    await client.query(
+      'UPDATE volume_discounts SET price_tier_id = NULL WHERE tenant_id = $1 AND price_tier_id = $2',
+      [tenantId, id],
+    )
+    await client.query('DELETE FROM price_tiers WHERE id = $1 AND tenant_id = $2', [id, tenantId])
+  })
 }
 
 // ── Наценки по категоріях ─────────────────────────────────

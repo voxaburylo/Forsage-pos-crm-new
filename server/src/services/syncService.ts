@@ -83,13 +83,25 @@ function pickShopSettingsPayload(payload: Record<string, any> | null | undefined
 }
 
 async function fetchShopSettings(tenantId: string, role: string): Promise<Record<string, any> | null> {
-  const { data, error } = await db
-    .from('shop_settings')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .maybeSingle()
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return sanitizeShopSettingsForRole(data as Record<string, any> | null, role)
+  const [settingsResult, tiersResult, markupsResult] = await Promise.all([
+    db.from('shop_settings').select('*').eq('tenant_id', tenantId).maybeSingle(),
+    db.from('price_tiers').select('id,name,discount_pct,is_default,sort_order,created_at')
+      .eq('tenant_id', tenantId).order('sort_order', { ascending: true }),
+    role === 'cashier'
+      ? Promise.resolve({ data: [], error: null })
+      : db.from('category_markups').select('id,category_id,markup_pct,min_markup_pct,created_at')
+          .eq('tenant_id', tenantId),
+  ])
+  if (settingsResult.error) throw new AppError('DB_ERROR', settingsResult.error.message, 500)
+  if (tiersResult.error) throw new AppError('DB_ERROR', tiersResult.error.message, 500)
+  if (markupsResult.error) throw new AppError('DB_ERROR', markupsResult.error.message, 500)
+  const safe = sanitizeShopSettingsForRole(settingsResult.data as Record<string, any> | null, role)
+  if (!safe) return null
+  return {
+    ...safe,
+    price_tiers: tiersResult.data ?? [],
+    ...(role === 'cashier' ? {} : { category_markups: markupsResult.data ?? [] }),
+  }
 }
 
 async function loadAvailability(productIds: string[]): Promise<Map<string, { qty_reserved: number; qty_available: number }>> {
@@ -577,8 +589,8 @@ export async function getSyncChanges({
             .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
             .eq('invoice.tenant_id', tenantId)
             .is('invoice.deleted_at', null)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
+            .order('updated_at', { ascending: true })
+          if (since) query = query.gt('updated_at', since)
           return query.range(from, to)
         })
       : Promise.resolve([]),
@@ -1484,7 +1496,10 @@ async function applySupplierMerged(tenantId: string, operation: SyncOutboxOperat
     const primary = await client.query('SELECT id FROM suppliers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL', [primaryId, tenantId])
     if (!primary.rowCount) throw new AppError('SYNC_SUPPLIER_NOT_FOUND', 'Основного постачальника не знайдено', 404)
     await client.query('UPDATE supply_invoices SET supplier_id = $1, updated_at = $3 WHERE supplier_id = $2 AND tenant_id = $4', [primaryId, duplicateId, operation.created_at, tenantId])
-    await client.query('UPDATE supplier_payments SET supplier_id = $1 WHERE supplier_id = $2 AND tenant_id = $3', [primaryId, duplicateId, tenantId])
+    await client.query(
+      'UPDATE supplier_payments SET supplier_id = $1, updated_at = $4 WHERE supplier_id = $2 AND tenant_id = $3',
+      [primaryId, duplicateId, tenantId, operation.created_at],
+    )
     await client.query('UPDATE suppliers SET deleted_at = $3, is_active = false, updated_at = $3 WHERE id = $1 AND tenant_id = $2', [duplicateId, tenantId, operation.created_at])
   })
 }
@@ -2931,7 +2946,94 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
   })
 }
 
+async function applyPricingSettingsOperations(
+  tenantId: string,
+  operation: SyncOutboxOperation,
+): Promise<void> {
+  const payload = operation.payload ?? {}
+  const tierUpserts = Array.isArray(payload.price_tier_upserts) ? payload.price_tier_upserts : []
+  const tierDeletedIds = Array.isArray(payload.price_tier_deleted_ids) ? payload.price_tier_deleted_ids : []
+  const markupUpserts = Array.isArray(payload.category_markup_upserts) ? payload.category_markup_upserts : []
+  const markupDeletedIds = Array.isArray(payload.category_markup_deleted_ids) ? payload.category_markup_deleted_ids : []
+  if (tierUpserts.length + tierDeletedIds.length + markupUpserts.length + markupDeletedIds.length === 0) return
+
+  await runTransaction(async (client) => {
+    for (const value of tierUpserts) {
+      const row = value && typeof value === 'object' ? value as Record<string, any> : {}
+      let id = String(row.id ?? '')
+      const name = String(row.name ?? '').trim()
+      const discountPct = Number(row.discount_pct ?? 0)
+      const sortOrder = Math.trunc(Number(row.sort_order ?? 0))
+      if (id === 'default') {
+        const defaultTier = await client.query(
+          'SELECT id FROM price_tiers WHERE tenant_id = $1 AND is_default = true ORDER BY sort_order ASC LIMIT 1',
+          [tenantId],
+        )
+        id = defaultTier.rows[0]?.id ?? randomUUID()
+      }
+      if (!isUuid(id) || !name || !Number.isFinite(discountPct) || discountPct < 0 || discountPct > 100) {
+        throw new AppError('SYNC_PRICE_TIER_INVALID', 'Некоректний рівень ціни', 400)
+      }
+      if (row.is_default === true) {
+        await client.query('UPDATE price_tiers SET is_default = false WHERE tenant_id = $1', [tenantId])
+      }
+      await client.query(
+        `INSERT INTO price_tiers (id, tenant_id, name, discount_pct, is_default, sort_order, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           discount_pct = EXCLUDED.discount_pct,
+           is_default = EXCLUDED.is_default,
+           sort_order = EXCLUDED.sort_order
+         WHERE price_tiers.tenant_id = EXCLUDED.tenant_id`,
+        [id, tenantId, name, discountPct, row.is_default === true, sortOrder, row.created_at ?? operation.created_at],
+      )
+    }
+
+    for (const value of tierDeletedIds) {
+      const id = String(value ?? '')
+      if (!isUuid(id)) throw new AppError('SYNC_PRICE_TIER_INVALID', 'Некоректний рівень ціни', 400)
+      await client.query(
+        'UPDATE customers SET price_tier_id = NULL, updated_at = $3 WHERE tenant_id = $1 AND price_tier_id = $2',
+        [tenantId, id, operation.created_at],
+      )
+      await client.query(
+        'UPDATE volume_discounts SET price_tier_id = NULL WHERE tenant_id = $1 AND price_tier_id = $2',
+        [tenantId, id],
+      )
+      await client.query('DELETE FROM price_tiers WHERE id = $1 AND tenant_id = $2 AND is_default = false', [id, tenantId])
+    }
+
+    for (const value of markupUpserts) {
+      const row = value && typeof value === 'object' ? value as Record<string, any> : {}
+      const categoryId = String(row.category_id ?? '')
+      const markupPct = Number(row.markup_pct ?? 0)
+      const minMarkupPct = Number(row.min_markup_pct ?? 0)
+      if (!isUuid(categoryId) || !Number.isFinite(markupPct) || markupPct < 0 || markupPct > 10000
+        || !Number.isFinite(minMarkupPct) || minMarkupPct < 0 || minMarkupPct > 10000) {
+        throw new AppError('SYNC_CATEGORY_MARKUP_INVALID', 'Некоректна націнка категорії', 400)
+      }
+      const category = await client.query('SELECT id FROM categories WHERE id = $1 AND tenant_id = $2', [categoryId, tenantId])
+      if (!category.rowCount) throw new AppError('SYNC_CATEGORY_NOT_FOUND', 'Категорію для націнки не знайдено', 404)
+      await client.query(
+        `INSERT INTO category_markups (id, tenant_id, category_id, markup_pct, min_markup_pct, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id, category_id) DO UPDATE SET
+           markup_pct = EXCLUDED.markup_pct,
+           min_markup_pct = EXCLUDED.min_markup_pct`,
+        [isUuid(row.id) ? row.id : randomUUID(), tenantId, categoryId, markupPct, minMarkupPct, row.created_at ?? operation.created_at],
+      )
+    }
+
+    for (const value of markupDeletedIds) {
+      const categoryId = String(value ?? '')
+      if (!isUuid(categoryId)) throw new AppError('SYNC_CATEGORY_MARKUP_INVALID', 'Некоректна націнка категорії', 400)
+      await client.query('DELETE FROM category_markups WHERE tenant_id = $1 AND category_id = $2', [tenantId, categoryId])
+    }
+  })
+}
 async function applySettingsUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  await applyPricingSettingsOperations(tenantId, operation)
   const requestedUpdates = pickShopSettingsPayload(operation.payload ?? {})
   const hasLabelSettings = requestedUpdates.label_settings !== undefined
   const maxAttempts = hasLabelSettings ? 3 : 1
