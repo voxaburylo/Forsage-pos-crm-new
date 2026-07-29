@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const customerSource = readFileSync(new URL('../customerService.ts', import.meta.url), 'utf8')
 const salaryRouteSource = readFileSync(new URL('../../routes/salary.ts', import.meta.url), 'utf8')
+const authRouteSource = readFileSync(new URL('../../routes/auth.ts', import.meta.url), 'utf8')
 const deletionMigration = readFileSync(
   new URL('../../../../supabase/migrations/20260729090000_sync_deletion_log.sql', import.meta.url),
   'utf8',
@@ -44,6 +45,20 @@ describe('money synchronization safety', () => {
     expect(salaryRouteSource).toContain('SELECT cash_operation_id FROM salary_payments')
     expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, NOW())")
     expect(deletionMigration).toContain('CREATE TABLE IF NOT EXISTS sync_deletions')
+  })
+  it('syncs staff PINs only as tenant-scoped protected hashes', () => {
+    const start = syncSource.indexOf('async function applyStaffPinUpdated')
+    const end = syncSource.indexOf('async function applyStaffUserUpsert', start)
+    const block = syncSource.slice(start, end)
+    expect(block).toContain('/^[0-9a-f]{128}$/i.test(pinHash)')
+    expect(block).toContain('getUserById(userId)')
+    expect(block).toContain("existing.user.app_metadata?.tenant_id !== tenantId")
+    expect(syncSource).toContain(".from('staff_pins')")
+    expect(syncSource).toContain("staffPins.push({ user_id: row.user_id, pin_hash: pinHash")
+    expect(authRouteSource).toContain("regex(/^\\d{4}$/")
+    expect(authRouteSource).toContain('getUserById(targetUserId)')
+    expect(authRouteSource).toContain("targetUser.user.app_metadata?.tenant_id !== req.user!.tenant_id")
+    expect(authRouteSource).toContain("if (pinError) throw new AppError('DB_ERROR'")
   })
   it('updates web manual bonuses atomically under a customer row lock', () => {
     const start = customerSource.indexOf('export async function manualBonus')

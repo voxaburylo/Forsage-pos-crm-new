@@ -144,7 +144,7 @@ router.post('/verify-pin', requireAuth, async (req, res, next) => {
 router.post('/set-pin', requireAuth, async (req, res, next) => {
   try {
     const schema = z.object({
-      pin: z.string().length(4, 'PIN має містити рівно 4 цифри'),
+      pin: z.string().regex(/^\d{4}$/, 'PIN має містити рівно 4 цифри'),
       user_id: z.string().uuid().optional(),
     })
     const parsed = schema.safeParse(req.body)
@@ -155,11 +155,20 @@ router.post('/set-pin', requireAuth, async (req, res, next) => {
       throw new AppError('FORBIDDEN', 'Недостатньо прав', 403)
     }
 
-    await db.from('staff_pins').upsert({
+    const { data: targetUser, error: targetError } = await supabase.auth.admin.getUserById(targetUserId)
+    if (targetError || !targetUser.user) {
+      throw new AppError('STAFF_NOT_FOUND', 'Співробітника не знайдено', 404)
+    }
+    if (targetUser.user.app_metadata?.tenant_id !== req.user!.tenant_id) {
+      throw new AppError('FORBIDDEN', 'Співробітник належить іншому магазину', 403)
+    }
+
+    const { error: pinError } = await db.from('staff_pins').upsert({
       user_id: targetUserId,
       pin_code: hashPin(parsed.data.pin, targetUserId),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' })
+    if (pinError) throw new AppError('DB_ERROR', pinError.message, 500)
 
     res.json({ data: { success: true } })
   } catch (err) { next(err) }

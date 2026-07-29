@@ -39,6 +39,7 @@ export class LocalBootstrapRepository {
     const appliedAt = nowIso()
     const counts = {
       staff: 0,
+      staff_pins: 0,
       products: 0,
       deleted_products: 0,
       customers: 0,
@@ -336,6 +337,7 @@ export class LocalBootstrapRepository {
     const tenantId = snapshot.tenant_id
     const counts = {
       staff: 0,
+      staff_pins: 0,
       categories: 0,
       brands: 0,
       suppliers: 0,

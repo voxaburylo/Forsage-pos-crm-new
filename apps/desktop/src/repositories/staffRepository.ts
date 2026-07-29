@@ -220,13 +220,20 @@ export class LocalStaffRepository {
     this.requireUser(userId, tenantId)
     if (!/^\d{4}$/.test(pin)) throw new Error('PIN-код має складатися з 4 цифр')
     const timestamp = nowIso()
-    this.db.prepare(`
-      UPDATE staff_users SET pin_hash = ?, dirty_at = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `).run(hashSecret(pin, userId), timestamp, timestamp, userId, tenantId)
-    return { success: true }
+    const pinHash = hashSecret(pin, userId)
+    return this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE staff_users SET pin_hash = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(pinHash, timestamp, userId, tenantId)
+      this.addOutbox(tenantId, 'staff_pin', userId, 'staff_pin.updated', {
+        user_id: userId,
+        pin_hash: pinHash,
+        updated_at: timestamp,
+      }, timestamp)
+      return { success: true }
+    })
   }
-
   verifyPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { valid: boolean; error?: string } {
     if (!/^\d{4}$/.test(pin)) return { valid: false }
     const row = this.db.prepare(`

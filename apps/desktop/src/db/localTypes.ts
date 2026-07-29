@@ -190,6 +190,7 @@ export interface LocalBootstrapSnapshot {
   exported_at: string
   tenant_id: string
   staff?: any[]
+  staff_pins?: any[]
   categories?: any[]
   brands?: any[]
   suppliers?: any[]
@@ -236,6 +237,7 @@ export interface LocalBootstrapImportResult {
   tenant_id: string
   counts: {
     staff: number
+    staff_pins: number
     deleted_staff: number
     categories: number
     deleted_categories: number
@@ -314,6 +316,7 @@ export interface LocalSyncPullChanges {
   tenant_id?: string
   cursor: string
   staff?: any[]
+  staff_pins?: any[]
   products?: any[]
   deleted_product_ids?: string[]
   customers?: any[]
@@ -368,6 +371,7 @@ export interface LocalSyncPullResult {
   cursor: string
   counts: {
     staff: number
+    staff_pins: number
     products: number
     deleted_products: number
     customers: number

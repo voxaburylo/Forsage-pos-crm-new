@@ -1,3 +1,4 @@
+import { pbkdf2Sync, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -5,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../src/db/localTypes'
 import { LocalStaffRepository } from '../src/repositories/staffRepository'
+import { LocalSyncRepository } from '../src/repositories/syncRepository'
 
 describe('LocalStaffRepository server-first credentials', () => {
   let root = ''
@@ -90,5 +92,43 @@ describe('LocalStaffRepository server-first credentials', () => {
 
     expect(() => repository.loginWithPassword('+380673334455', 'old-pass')).toThrow()
     expect(repository.loginWithPassword('+380673334455', 'new-pass').id).toBe('server-user-3')
+  })
+
+  it('synchronizes only the protected PIN hash and preserves a pending local change', () => {
+    const userId = randomUUID()
+    repository.saveServerUser({
+      id: userId,
+      phone: '+380674445566',
+      full_name: 'Касир з PIN',
+      role: 'cashier',
+    }, 'password')
+    repository.setPin(userId, '1234')
+
+    const sync = new LocalSyncRepository(db)
+    const operation = sync.listPending(10).find((item) => item.operation_type === 'staff_pin.updated')
+    expect(operation).toBeTruthy()
+    expect(operation!.payload.pin_hash).toMatch(/^[0-9a-f]{128}$/)
+    expect(JSON.stringify(operation!.payload)).not.toContain('1234')
+    expect(repository.verifyPin(userId, '1234')).toEqual({ valid: true })
+
+    const remoteHash = pbkdf2Sync('5678', userId, 10_000, 64, 'sha512').toString('hex')
+    sync.applyPullChanges({
+      cursor: '2026-07-29T10:00:00.000Z',
+      staff_pins: [{ user_id: userId, pin_hash: remoteHash }],
+    })
+    expect(repository.verifyPin(userId, '1234')).toEqual({ valid: true })
+
+    sync.applyPushResults([{
+      sequence: operation!.sequence,
+      operation_id: operation!.operation_id,
+      aggregate_id: operation!.aggregate_id,
+      status: 'synced',
+    }])
+    sync.applyPullChanges({
+      cursor: '2026-07-29T10:00:01.000Z',
+      staff_pins: [{ user_id: userId, pin_hash: remoteHash }],
+    })
+    expect(repository.verifyPin(userId, '5678')).toEqual({ valid: true })
+    expect(repository.verifyPin(userId, '1234')).toEqual({ valid: false })
   })
 })

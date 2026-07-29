@@ -35,6 +35,7 @@ router.get('/changes', async (req, res, next) => {
     const data = await getSyncChanges({
       since: parsed.data.since,
       tenantId: req.user!.tenant_id,
+      userId: req.user!.id,
       role: req.user!.role,
       includeReferences: parsed.data.include_references,
     })

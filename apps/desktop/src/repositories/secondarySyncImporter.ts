@@ -9,6 +9,7 @@ type SnapshotOptions = {
 }
 
 export type SecondarySyncCounts = {
+  staff_pins: number
   deleted_categories: number
   deleted_brands: number
   deleted_staff: number
@@ -55,6 +56,7 @@ export class LocalSecondarySyncImporter {
 
   apply(tenantId: string, source: Record<string, any>, importedAt: string, snapshots: SnapshotOptions = {}): SecondarySyncCounts {
     const counts: SecondarySyncCounts = {
+      staff_pins: 0,
       deleted_categories: 0,
       deleted_brands: 0,
       deleted_staff: 0,
@@ -81,6 +83,9 @@ export class LocalSecondarySyncImporter {
     }
     if (snapshots.staff) {
       counts.deleted_staff = this.pruneCleanMissing('staff_users', tenantId, source.staff, importedAt, true)
+    }
+    for (const pin of source.staff_pins ?? []) {
+      if (this.upsertStaffPin(tenantId, pin)) counts.staff_pins++
     }
 
     for (const rule of source.commission_rules ?? []) {
@@ -164,6 +169,26 @@ export class LocalSecondarySyncImporter {
     )
 
     return counts
+  }
+
+  private upsertStaffPin(tenantId: string, pin: any): boolean {
+    const userId = asText(pin?.user_id)
+    const pinHash = asText(pin?.pin_hash)
+    if (!userId || !pinHash || !/^[0-9a-f]{128}$/i.test(pinHash)) return false
+    if (!this.exists('staff_users', tenantId, userId)) return false
+    const pending = this.db.prepare(`
+      SELECT 1 FROM sync_outbox
+      WHERE tenant_id = ? AND aggregate_type = 'staff_pin' AND aggregate_id = ?
+        AND operation_type = 'staff_pin.updated' AND status IN ('pending', 'failed', 'sending')
+      LIMIT 1
+    `).get(tenantId, userId)
+    if (pending) return false
+    const result = this.db.prepare(`
+      UPDATE staff_users
+      SET pin_hash = ?
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+    `).run(pinHash, userId, tenantId)
+    return Number(result.changes) > 0
   }
 
   private markDeletedIds(

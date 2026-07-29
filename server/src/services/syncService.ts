@@ -1,4 +1,4 @@
-﻿import { randomUUID } from 'node:crypto'
+﻿import { pbkdf2Sync, randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
@@ -115,6 +115,7 @@ async function loadAvailability(productIds: string[]): Promise<Map<string, { qty
 export interface SyncChangesInput {
   since?: string
   tenantId: string
+  userId: string
   role: string
   includeReferences?: boolean
 }
@@ -148,10 +149,11 @@ function assertSyncOperationAllowed(role: string, operationType: string): void {
 async function fetchSecondarySyncData(params: {
   since?: string
   tenantId: string
+  userId?: string
   role: string
   fullSnapshots: boolean
 }) {
-  const { since, tenantId, role, fullSnapshots } = params
+  const { since, tenantId, userId, role, fullSnapshots } = params
   const canPullPayroll = role === 'owner' || role === 'admin'
   const canPullCash = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReturns = ['owner', 'admin', 'manager', 'cashier'].includes(role)
@@ -320,8 +322,29 @@ async function fetchSecondarySyncData(params: {
       : Promise.resolve([]),
   ])
 
+  const pinUserIds = (canPullPayroll ? staff.map((user: any) => String(user.id)) : [String(userId ?? '')])
+    .filter((id: string) => isUuid(id))
+  const staffPins: any[] = []
+  for (let index = 0; index < pinUserIds.length; index += IN_FILTER_CHUNK) {
+    const ids = pinUserIds.slice(index, index + IN_FILTER_CHUNK)
+    const { data, error } = await db
+      .from('staff_pins')
+      .select('user_id,pin_code,updated_at')
+      .in('user_id', ids)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    for (const row of data ?? []) {
+      const stored = String(row.pin_code ?? '')
+      const pinHash = stored.length === 4
+        ? pbkdf2Sync(stored, row.user_id, 10_000, 64, 'sha512').toString('hex')
+        : stored
+      if (/^[0-9a-f]{128}$/i.test(pinHash)) {
+        staffPins.push({ user_id: row.user_id, pin_hash: pinHash, updated_at: row.updated_at })
+      }
+    }
+  }
   return {
     staff,
+    staff_pins: staffPins,
     commission_rules: commissionRules,
     salary_payments: salaryPayments,
     deleted_salary_payment_ids: deletedSalaryPayments.map((row) => row.entity_id),
@@ -352,6 +375,7 @@ async function fetchSecondarySyncData(params: {
 export async function getSyncChanges({
   since,
   tenantId,
+  userId,
   role,
   includeReferences = false,
 }: SyncChangesInput) {
@@ -600,7 +624,7 @@ export async function getSyncChanges({
         })
       : Promise.resolve([]),
     fetchShopSettings(tenantId, role),
-    fetchSecondarySyncData({ since, tenantId, role, fullSnapshots: referencesIncluded }),
+    fetchSecondarySyncData({ since, tenantId, userId, role, fullSnapshots: referencesIncluded }),
   ])
 
   const deletedProductIds = productRows.filter((row) => row.deleted_at).map((row) => row.id)
@@ -892,6 +916,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     ...secondary,
     counts: {
       staff: staff.length,
+      staff_pins: secondary.staff_pins.length,
       categories: categories.length,
       brands: brands.length,
       suppliers: suppliers.length,
@@ -1165,6 +1190,10 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'staff_pin.updated') {
+    await applyStaffPinUpdated(tenantId, operation)
+    return
+  }
   if (operation.operation_type === 'staff_user.created' || operation.operation_type === 'staff_user.updated') {
     await applyStaffUserUpsert(tenantId, operation)
     return
@@ -1731,6 +1760,31 @@ async function applyOrderCanceled(
   })
 }
 
+async function applyStaffPinUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const userId = String(payload.user_id ?? operation.aggregate_id)
+  const pinHash = String(payload.pin_hash ?? '')
+  if (!isUuid(userId) || !/^[0-9a-f]{128}$/i.test(pinHash)) {
+    throw new AppError('SYNC_STAFF_PIN_INVALID', 'Некоректний захищений PIN співробітника', 400)
+  }
+
+  const { data: existing, error } = await supabaseAdmin.auth.admin.getUserById(userId)
+  if (error || !existing.user) throw new AppError('SYNC_STAFF_NOT_FOUND', 'Співробітника не знайдено', 404)
+  if (existing.user.app_metadata?.tenant_id !== tenantId) {
+    throw new AppError('SYNC_TENANT_MISMATCH', 'Співробітник належить іншому магазину', 403)
+  }
+
+  await runTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO staff_pins (user_id, pin_code, updated_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET
+         pin_code = EXCLUDED.pin_code,
+         updated_at = EXCLUDED.updated_at`,
+      [userId, pinHash, payload.updated_at ?? operation.created_at],
+    )
+  })
+}
 async function applyStaffUserUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const userId = String(payload.id ?? operation.aggregate_id)

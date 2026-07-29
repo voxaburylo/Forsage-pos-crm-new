@@ -571,6 +571,9 @@ export class LocalSyncRepository {
       return
     }
 
+    if (operation.operation_type === 'staff_pin.updated') {
+      return
+    }
     if (operation.operation_type.startsWith('staff_user.')) {
       clearRow('staff_users', operation.aggregate_id)
       return
