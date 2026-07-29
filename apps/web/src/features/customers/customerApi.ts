@@ -80,6 +80,19 @@ export const customerApi = {
     return api.put<{ data: Customer }>(`/api/v1/customers/${id}`, body)
   },
 
+  adjustBonus: async (id: string, amount: number, description?: string | null) => {
+    const bridge = desktopBridge()?.pos
+    if (bridge?.getCustomer && bridge.saveCustomer) {
+      const current = await bridge.getCustomer(id) as Customer
+      const targetBalance = Number(current.bonus_balance ?? 0) + amount
+      if (targetBalance < 0) throw new Error('Недостатньо бонусів у клієнта')
+      const userId = useAuthStore.getState().session?.user?.id ?? null
+      const result = await bridge.saveCustomer({ bonus_balance: targetBalance, user_id: userId }, id)
+      window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
+      return { data: result.data as Customer }
+    }
+    return api.post<{ data: Customer }>(`/api/v1/customers/${id}/bonuses`, { amount, description: description ?? null })
+  },
   delete: async (id: string) => {
     const local = desktopBridge()?.pos.deleteCustomer
     if (local) {

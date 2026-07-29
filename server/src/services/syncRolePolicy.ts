@@ -25,7 +25,7 @@ const MANAGER_SYNC_OPERATIONS = new Set([
   'shift.opened', 'shift.closed', 'sale.completed', 'sale.suspended',
   'sale.suspended_resumed', 'sale.suspended_deleted', 'product.upsert',
   'category.upsert', 'brand.upsert', 'order.payment_added', 'order.completed',
-  'customer.debt_paid', 'customer.deposit_changed', 'supplier_invoice.created',
+  'customer.debt_paid', 'customer.deposit_changed', 'customer.bonus_adjusted', 'supplier_invoice.created',
   'supplier_invoice.updated', 'supplier_invoice.posted', 'supplier_invoice.payment_added',
   'customer.created', 'customer.updated', 'customer_vehicle.created',
   'customer_vehicle.updated', 'customer_vehicle.deleted', 'supplier.created',

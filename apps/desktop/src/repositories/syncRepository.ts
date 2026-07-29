@@ -412,14 +412,22 @@ export class LocalSyncRepository {
     if (operation.operation_type === 'customer.debt_paid' || operation.operation_type === 'customer.deposit_changed') {
       clearRow('customers', operation.aggregate_id)
       clearRow('customer_deposit_transactions', payload?.transaction_id)
-      this.db.prepare(`
-        UPDATE cash_operations
-        SET dirty_at = NULL
-        WHERE dirty_at = ? AND type = 'cash_in'
-      `).run(operation.created_at)
+      if (typeof payload?.cash_operation_id === 'string' && payload.cash_operation_id) {
+        clearRow('cash_operations', payload.cash_operation_id)
+      } else {
+        this.db.prepare(`
+          UPDATE cash_operations
+          SET dirty_at = NULL
+          WHERE dirty_at = ? AND type = 'cash_in'
+        `).run(operation.created_at)
+      }
       return
     }
-
+    if (operation.operation_type === 'customer.bonus_adjusted') {
+      clearRow('customers', operation.aggregate_id)
+      clearRow('bonus_transactions', payload?.transaction_id)
+      return
+    }
     if (operation.operation_type === 'supplier_catalog.item_upserted'
       || operation.operation_type === 'supplier_catalog.item_deleted') {
       clearRow('supplier_price_items', operation.aggregate_id)

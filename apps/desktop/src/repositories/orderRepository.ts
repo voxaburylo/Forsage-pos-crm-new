@@ -436,7 +436,7 @@ export class LocalOrderRepository {
     if (input.method === 'account' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата з рахунку неможлива')
 
     const shiftId = input.shift_id ?? null
-    if (input.method === 'cash' && !shiftId) throw new Error('Спочатку відкрийте касову зміну')
+    if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
     if (shiftId) {
       const openShift = this.db.prepare(`
         SELECT id FROM shifts

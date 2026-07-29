@@ -819,7 +819,9 @@ export class LocalPosRepository {
 
     const id = customerId ?? randomUUID()
     if (customerId) {
-      this.getCustomer(customerId, tenantId)
+      const current = this.getCustomer(customerId, tenantId)
+      const requestedBonus = input.bonus_balance !== undefined ? money(input.bonus_balance) : null
+      if (requestedBonus !== null && requestedBonus < 0) throw new Error('Баланс бонусів не може бути від’ємним')
       const values: Record<string, any> = {
         phone: input.phone,
         full_name: input.full_name,
@@ -831,29 +833,55 @@ export class LocalPosRepository {
         vip_level: input.vip_level,
         risk_profile: input.risk_profile,
         discount_pct: input.discount_pct,
-        bonus_balance: input.bonus_balance !== undefined ? money(input.bonus_balance) : undefined,
         loyalty_mode: input.loyalty_mode === 'cashback' ? 'cashback' : input.loyalty_mode === 'discount' ? 'discount' : undefined,
         client_status: input.client_status,
         card_barcode: input.card_barcode,
       }
       const entries = Object.entries(values).filter(([, value]) => value !== undefined)
-      if (entries.length) {
-        const sets = entries.map(([key]) => `${key} = ?`)
-        this.db.prepare(`
-          UPDATE customers
-          SET ${sets.join(', ')}, dirty_at = ?, updated_at = ?
-          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
-        `).run(...entries.map(([, value]) => value), timestamp, timestamp, id, tenantId)
-      }
-      const updated = this.getCustomer(id, tenantId)
-      const syncPatch = Object.fromEntries(entries.map(([key, value]) => [
-        key === 'tags_json' ? 'tags' : key,
-        key === 'tags_json' ? JSON.parse(String(value)) : value,
-      ]))
-      this.addOutbox(tenantId, 'customer', id, 'customer.updated', { id, ...syncPatch, updated_at: timestamp }, timestamp)
-      return { data: updated }
+      return this.db.transaction(() => {
+        if (entries.length) {
+          const sets = entries.map(([key]) => `${key} = ?`)
+          this.db.prepare(`
+            UPDATE customers
+            SET ${sets.join(', ')}, dirty_at = ?, updated_at = ?
+            WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+          `).run(...entries.map(([, value]) => value), timestamp, timestamp, id, tenantId)
+          const syncPatch = Object.fromEntries(entries.map(([key, value]) => [
+            key === 'tags_json' ? 'tags' : key,
+            key === 'tags_json' ? JSON.parse(String(value)) : value,
+          ]))
+          this.addOutbox(tenantId, 'customer', id, 'customer.updated', { id, ...syncPatch, updated_at: timestamp }, timestamp)
+        }
+        if (requestedBonus !== null && requestedBonus !== Number(current.bonus_balance ?? 0)) {
+          const bonusAmount = requestedBonus - Number(current.bonus_balance ?? 0)
+          const transactionId = randomUUID()
+          const description = bonusAmount > 0 ? 'Ручне нарахування' : 'Ручне списання'
+          this.db.prepare(`
+            UPDATE customers
+            SET bonus_balance = ?, dirty_at = ?, updated_at = ?
+            WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+          `).run(requestedBonus, timestamp, timestamp, id, tenantId)
+          this.db.prepare(`
+            INSERT INTO bonus_transactions (
+              id, tenant_id, customer_id, amount, transaction_type, description,
+              created_by, dirty_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)
+          `).run(
+            transactionId, tenantId, id, bonusAmount, description,
+            input.user_id ?? null, timestamp, timestamp, timestamp,
+          )
+          this.addOutbox(tenantId, 'customer', id, 'customer.bonus_adjusted', {
+            customer_id: id,
+            transaction_id: transactionId,
+            amount: bonusAmount,
+            description,
+            created_by: input.user_id ?? null,
+            created_at: timestamp,
+          }, timestamp)
+        }
+        return { data: this.getCustomer(id, tenantId) }
+      })
     }
-
     this.db.transaction(() => {
       this.db.prepare(`
         INSERT INTO customers (
@@ -1007,8 +1035,9 @@ export class LocalPosRepository {
         WHERE id = ? AND tenant_id = ?
       `).run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
 
-      if (input.method === 'cash' && input.shift_id) {
-        this.addCashOperation(tenantId, input.shift_id, input.user_id ?? null, 'cash_in', amount, `Оплата боргу: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`, timestamp)
+      const cashOperationId = input.method === 'cash' && input.shift_id ? randomUUID() : null
+      if (cashOperationId) {
+        this.addCashOperation(tenantId, input.shift_id!, input.user_id ?? null, 'cash_in', amount, `Оплата боргу: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`, timestamp, cashOperationId)
       }
 
       this.addOutbox(tenantId, 'customer', customer.id, 'customer.debt_paid', {
@@ -1016,6 +1045,7 @@ export class LocalPosRepository {
         amount,
         method: input.method,
         shift_id: input.shift_id ?? null,
+        cash_operation_id: cashOperationId,
         notes: input.notes ?? null,
         created_by: input.user_id ?? null,
         created_at: timestamp,
@@ -1054,8 +1084,9 @@ export class LocalPosRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(transactionId, tenantId, customer.id, amount, balanceAfter, input.method, input.shift_id ?? null, input.notes ?? 'Поповнення рахунку на касі', input.user_id ?? null, timestamp, timestamp, timestamp)
 
-      if (input.method === 'cash' && input.shift_id) {
-        this.addCashOperation(tenantId, input.shift_id, input.user_id ?? null, 'cash_in', amount, `Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`, timestamp)
+      const cashOperationId = input.method === 'cash' && input.shift_id ? randomUUID() : null
+      if (cashOperationId) {
+        this.addCashOperation(tenantId, input.shift_id!, input.user_id ?? null, 'cash_in', amount, `Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`, timestamp, cashOperationId)
       }
 
       this.addOutbox(tenantId, 'customer', customer.id, 'customer.deposit_changed', {
@@ -1064,6 +1095,7 @@ export class LocalPosRepository {
         amount,
         method: input.method,
         shift_id: input.shift_id ?? null,
+        cash_operation_id: cashOperationId,
         notes: input.notes ?? 'Поповнення рахунку на касі',
         created_by: input.user_id ?? null,
         created_at: timestamp,

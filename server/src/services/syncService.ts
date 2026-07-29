@@ -1036,6 +1036,10 @@ async function applyLocalOperation(params: {
     await applyCustomerDepositChanged(tenantId, userId, operation)
     return
   }
+  if (operation.operation_type === 'customer.bonus_adjusted') {
+    await applyCustomerBonusAdjusted(tenantId, userId, operation)
+    return
+  }
   if (operation.operation_type === 'supplier_catalog.item_upserted') {
     await applySupplierCatalogItemUpsert(tenantId, operation)
     return
@@ -1217,9 +1221,7 @@ async function applyCustomerUpsert(tenantId: string, operation: SyncOutboxOperat
         ...incomingPayload,
         debt_balance: existing.debt_balance,
         deposit_balance: existing.deposit_balance,
-        bonus_balance: Object.prototype.hasOwnProperty.call(incomingPayload, 'bonus_balance')
-          ? incomingPayload.bonus_balance
-          : existing.bonus_balance,
+        bonus_balance: existing.bonus_balance,
       }
     }
 
@@ -3327,10 +3329,12 @@ async function applyCustomerDebtPaid(tenantId: string, userId: string, operation
       [customerId, tenantId, balanceAfter, payload.created_at ?? operation.created_at],
     )
     if (method === 'cash' && payload.shift_id) {
+      const cashOperationId = isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id
       await client.query(
-        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, created_at)
-         VALUES ($1, $2, 'in', $3, $4, $5, $6)`,
-        [tenantId, payload.shift_id, paid, payload.notes ?? (`Оплата боргу: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at)
+         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [cashOperationId, tenantId, payload.shift_id, paid, payload.notes ?? (`Оплата боргу: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
       )
     }
   })
@@ -3349,8 +3353,13 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
   }
 
   await runTransaction(async (client) => {
-    const existing = await client.query('SELECT id FROM customer_deposit_transactions WHERE id = $1 LIMIT 1', [transactionId])
-    if (existing.rowCount && existing.rowCount > 0) return
+    const existing = await client.query('SELECT id, tenant_id FROM customer_deposit_transactions WHERE id = $1 LIMIT 1', [transactionId])
+    if (existing.rowCount && existing.rowCount > 0) {
+      if (existing.rows[0].tenant_id !== tenantId) {
+        throw new AppError('SYNC_DEPOSIT_TENANT_CONFLICT', 'Операція рахунку належить іншому магазину', 409)
+      }
+      return
+    }
 
     const customerResult = await client.query(
       'SELECT id, full_name, phone, COALESCE(deposit_balance, 0) AS deposit_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
@@ -3374,12 +3383,52 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
     )
 
     if (amount > 0 && method === 'cash' && payload.shift_id) {
+      const cashOperationId = isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id
       await client.query(
-        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, created_at)
-         VALUES ($1, $2, 'in', $3, $4, $5, $6)`,
-        [tenantId, payload.shift_id, amount, payload.notes ?? (`Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at)
+         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [cashOperationId, tenantId, payload.shift_id, amount, payload.notes ?? (`Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
       )
     }
+  })
+}
+
+async function applyCustomerBonusAdjusted(tenantId: string, _userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const customerId = String(payload.customer_id ?? operation.aggregate_id)
+  const transactionId = String(payload.transaction_id ?? operation.operation_id)
+  const amount = Number(payload.amount ?? 0)
+  if (!isUuid(customerId) || !isUuid(transactionId) || !Number.isFinite(amount) || amount === 0) {
+    throw new AppError('SYNC_CUSTOMER_BONUS_INVALID', 'Некоректна зміна бонусів клієнта', 400)
+  }
+
+  await runTransaction(async (client) => {
+    const existing = await client.query('SELECT id, tenant_id FROM bonus_transactions WHERE id = $1 LIMIT 1', [transactionId])
+    if (existing.rowCount && existing.rowCount > 0) {
+      if (existing.rows[0].tenant_id !== tenantId) {
+        throw new AppError('SYNC_BONUS_TENANT_CONFLICT', 'Бонусна операція належить іншому магазину', 409)
+      }
+      return
+    }
+
+    const updated = await client.query(
+      `UPDATE customers
+       SET bonus_balance = COALESCE(bonus_balance, 0) + $1, updated_at = $2
+       WHERE id = $3 AND tenant_id = $4 AND deleted_at IS NULL
+         AND COALESCE(bonus_balance, 0) + $1 >= 0
+       RETURNING bonus_balance`,
+      [amount, payload.created_at ?? operation.created_at, customerId, tenantId],
+    )
+    if (!updated.rowCount) {
+      throw new AppError('SYNC_CUSTOMER_BONUS_REJECTED', 'Клієнта не знайдено або недостатньо бонусів', 409)
+    }
+    await client.query(
+      `INSERT INTO bonus_transactions (
+        id, tenant_id, customer_id, amount, transaction_type, description, created_at
+      ) VALUES ($1, $2, $3, $4, 'manual', $5, $6)`,
+      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_at ?? operation.created_at],
+    )
   })
 }
 async function applyOrderPaymentAdded(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {

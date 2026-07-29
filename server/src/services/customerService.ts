@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizePhone } from '../validators/customerSchema.js'
 import type {
@@ -355,35 +356,35 @@ export async function deleteCustomerVehicle(vehicleId: string, tenantId: string)
 
 // ===================== BONUSES =====================
 
-export async function manualBonus(customerId: string, amount: number, description: string | null, userId: string, tenantId: string) {
-  const { data: customer, error: getErr } = await db
-    .from('customers')
-    .select('id, bonus_balance, tenant_id')
-    .eq('id', customerId)
-    .eq('tenant_id', tenantId)
-    .single()
+export async function manualBonus(customerId: string, amount: number, description: string | null, _userId: string, tenantId: string) {
+  return runTransaction(async (client) => {
+    const customerResult = await client.query(
+      `SELECT id, COALESCE(bonus_balance, 0) AS bonus_balance
+       FROM customers
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [customerId, tenantId],
+    )
+    if (!customerResult.rowCount) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
 
-  if (getErr || !customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+    const newBalance = Number(customerResult.rows[0].bonus_balance ?? 0) + amount
+    if (newBalance < 0) throw new AppError('INSUFFICIENT_BONUS', 'Недостатньо бонусів у клієнта', 409)
 
-  const newBalance = (customer.bonus_balance ?? 0) + amount
-
-  const { error: updErr } = await db
-    .from('customers')
-    .update({ bonus_balance: Math.max(0, newBalance) })
-    .eq('id', customerId)
-    .eq('tenant_id', tenantId)
-
-  if (updErr) throw new AppError('DB_ERROR', updErr.message, 500)
-
-  await db.from('bonus_transactions').insert({
-    tenant_id:        tenantId,
-    customer_id:      customerId,
-    amount:           amount,
-    transaction_type: 'manual',
-    description:      description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'),
-    created_by:       userId,
+    const updated = await client.query(
+      `UPDATE customers
+       SET bonus_balance = $1, updated_at = NOW()
+       WHERE id = $2 AND tenant_id = $3
+       RETURNING *`,
+      [newBalance, customerId, tenantId],
+    )
+    if (amount !== 0) {
+      await client.query(
+        `INSERT INTO bonus_transactions (
+          tenant_id, customer_id, amount, transaction_type, description
+        ) VALUES ($1, $2, $3, 'manual', $4)`,
+        [tenantId, customerId, amount, description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання')],
+      )
+    }
+    return updated.rows[0]
   })
-
-  const { data: updated } = await db.from('customers').select('*').eq('id', customerId).eq('tenant_id', tenantId).single()
-  return updated
 }

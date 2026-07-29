@@ -95,10 +95,14 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
         phone:form.phone.trim(), full_name:form.full_name.trim(), email:form.email.trim(), birth_date:form.birth_date || null,
         card_barcode:form.card_barcode.replace(/\s/g, '') || null, notes:form.notes.trim(),
       }, {
-        discount_pct:discount, bonus_balance:bonus, client_status:form.client_status,
+        discount_pct:discount, client_status:form.client_status,
         loyalty_mode:form.loyalty_mode, price_tier_id:form.price_tier_id || null,
       })
-      const { data } = await customerApi.update(current.id, update)
+      const profileResult = await customerApi.update(current.id, update)
+      const bonusAdjustment = canManageFinancials ? bonus - Number(current.bonus_balance ?? 0) : 0
+      const data = bonusAdjustment === 0
+        ? profileResult.data
+        : (await customerApi.adjustBonus(current.id, bonusAdjustment, 'Ручне коригування у картці клієнта')).data
       onSaved(data)
       toast.success('Картку клієнта збережено')
       onClose()
