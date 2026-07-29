@@ -247,6 +247,37 @@ export class LocalBootstrapRepository {
         counts.deleted_supply_invoices++
       }
 
+      // Для кожної зміненої накладної сервер повертає повний актуальний список
+      // рядків. Прибираємо відсутні чисті рядки, але не чіпаємо локальні правки,
+      // які ще очікують відправлення в outbox.
+      const remoteSupplyItemIdsByInvoice = new Map<string, string[]>()
+      for (const item of changes.supply_invoice_items ?? []) {
+        if (!item?.invoice_id || !item?.id) continue
+        const ids = remoteSupplyItemIdsByInvoice.get(item.invoice_id) ?? []
+        ids.push(item.id)
+        remoteSupplyItemIdsByInvoice.set(item.invoice_id, ids)
+      }
+      for (const invoice of changes.supply_invoices ?? []) {
+        const localInvoice = this.db.prepare(`
+          SELECT dirty_at FROM supply_invoices WHERE id = ? AND tenant_id = ? LIMIT 1
+        `).get(invoice.id, tenantId) as { dirty_at: string | null } | undefined
+        if (localInvoice?.dirty_at) continue
+        const remoteItemIds = remoteSupplyItemIdsByInvoice.get(invoice.id) ?? []
+        if (remoteItemIds.length === 0) {
+          this.db.prepare(`
+            DELETE FROM supply_invoice_items
+            WHERE invoice_id = ? AND tenant_id = ? AND dirty_at IS NULL
+          `).run(invoice.id, tenantId)
+          continue
+        }
+        const placeholders = remoteItemIds.map(() => '?').join(', ')
+        this.db.prepare(`
+          DELETE FROM supply_invoice_items
+          WHERE invoice_id = ? AND tenant_id = ? AND dirty_at IS NULL
+            AND id NOT IN (${placeholders})
+        `).run(invoice.id, tenantId, ...remoteItemIds)
+      }
+
       for (const item of changes.supply_invoice_items ?? []) {
         if (!this.refExists('supply_invoices', tenantId, item.invoice_id)) continue
         if (!this.refExists('products', tenantId, item.product_id)) continue

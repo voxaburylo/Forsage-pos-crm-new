@@ -500,7 +500,8 @@ export async function getSyncChanges({
             .select('*,supplier:suppliers(id,name)')
             .eq('tenant_id', tenantId)
             .order('updated_at', { ascending: true })
-          if (since) query = query.gt('updated_at', since)
+          query = withChangedSince(query, since)
+          if (!since) query = query.is('deleted_at', null)
           return query.range(from, to)
         })
       : Promise.resolve([]),
@@ -508,10 +509,11 @@ export async function getSyncChanges({
       ? fetchAll((from, to) => {
           let query = db
             .from('supply_invoice_items')
-            .select('*,invoice:supply_invoices!inner(tenant_id)')
+            .select('*,invoice:supply_invoices!inner(tenant_id,updated_at,deleted_at)')
             .eq('invoice.tenant_id', tenantId)
+            .is('invoice.deleted_at', null)
             .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
+          if (since) query = query.gt('invoice.updated_at', since)
           return query.range(from, to)
         })
       : Promise.resolve([]),
@@ -519,8 +521,9 @@ export async function getSyncChanges({
       ? fetchAll((from, to) => {
           let query = db
             .from('supplier_payments')
-            .select('*,invoice:supply_invoices!inner(tenant_id)')
+            .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
             .eq('invoice.tenant_id', tenantId)
+            .is('invoice.deleted_at', null)
             .order('created_at', { ascending: true })
           if (since) query = query.gt('created_at', since)
           return query.range(from, to)
@@ -614,6 +617,8 @@ export async function getSyncChanges({
     saleItems.map((row) => ({ ...row, sale: undefined })),
     role,
   )
+  const deletedSupplyInvoiceIds = supplyInvoices.filter((row) => row.deleted_at).map((row) => row.id)
+  const activeSupplyInvoices = supplyInvoices.filter((row) => !row.deleted_at)
   const activeSupplyInvoiceItems = supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined }))
   const activeSupplierPayments = supplierPayments.map((row) => ({ ...row, invoice: undefined }))
   const activeInventoryItems = inventoryItems.map((row) => ({ ...row, product: undefined }))
@@ -640,8 +645,8 @@ export async function getSyncChanges({
     deleted_customer_order_ids: deletedCustomerOrderIds,
     customer_order_items: activeCustomerOrderItems,
     order_payments: activeOrderPayments,
-    supply_invoices: supplyInvoices,
-    deleted_supply_invoice_ids: [],
+    supply_invoices: activeSupplyInvoices,
+    deleted_supply_invoice_ids: deletedSupplyInvoiceIds,
     supply_invoice_items: activeSupplyInvoiceItems,
     supplier_payments: activeSupplierPayments,
     supplier_price_items: supplierPriceItems,
@@ -784,17 +789,20 @@ export async function getBootstrapSnapshot(tenantId: string) {
       .from('supply_invoices')
       .select('*,supplier:suppliers(id,name)')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .range(from, to)),
     fetchAll((from, to) => db
       .from('supply_invoice_items')
-      .select('*,invoice:supply_invoices!inner(tenant_id)')
+      .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
       .eq('invoice.tenant_id', tenantId)
+      .is('invoice.deleted_at', null)
       .order('created_at', { ascending: true })
       .range(from, to)),
     fetchAll((from, to) => db
       .from('supplier_payments')
-      .select('*,invoice:supply_invoices!inner(tenant_id)')
+      .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
       .eq('invoice.tenant_id', tenantId)
+      .is('invoice.deleted_at', null)
       .order('created_at', { ascending: true })
       .range(from, to)),
     fetchAll((from, to) => db
@@ -1536,6 +1544,12 @@ async function applyOrderDeleted(tenantId: string, userId: string, operation: Sy
     await client.query(
       'UPDATE customer_orders SET deleted_at = $3, deleted_by = $4, updated_at = $3 WHERE id = $1 AND tenant_id = $2',
       [operation.aggregate_id, tenantId, operation.created_at, userId],
+    )
+    await client.query(
+      `UPDATE inventory_reserves
+       SET released_at = COALESCE(released_at, $3)
+       WHERE order_id = $1 AND tenant_id = $2 AND released_at IS NULL`,
+      [operation.aggregate_id, tenantId, operation.created_at],
     )
   })
 }
@@ -2436,7 +2450,7 @@ async function applySupplierInvoiceUpdated(tenantId: string, operation: SyncOutb
 
   await runTransaction(async (client) => {
     const invoice = await client.query(
-      'SELECT status, supplier_id, invoice_number, notes, total FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      'SELECT status, supplier_id, invoice_number, notes, total FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE',
       [operation.aggregate_id, tenantId],
     )
     if (!invoice.rowCount) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
@@ -2487,6 +2501,7 @@ async function applySupplierInvoicePosted(tenantId: string, userId: string, oper
     .select('id,status')
     .eq('id', operation.aggregate_id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .single()
   if (!invoice) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
   if (invoice.status === 'posted') return
@@ -2507,7 +2522,7 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
     if (existing.rowCount && existing.rowCount > 0) return
     const invoiceResult = await client.query(
       `SELECT id, supplier_id, total, COALESCE(paid_amount, 0) AS paid_amount
-       FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+       FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
       [operation.aggregate_id, tenantId],
     )
     const invoice = invoiceResult.rows[0]
@@ -2542,6 +2557,7 @@ async function applySupplierInvoiceCancelled(tenantId: string, operation: SyncOu
     .select('id,status')
     .eq('id', operation.aggregate_id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .single()
   if (!invoice) return
   if (invoice.status === 'cancelled') return
@@ -2551,13 +2567,16 @@ async function applySupplierInvoiceCancelled(tenantId: string, operation: SyncOu
 
 async function applySupplierInvoiceDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
-    const invoiceResult = await client.query('SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [operation.aggregate_id, tenantId])
+    const invoiceResult = await client.query('SELECT status, deleted_at FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE', [operation.aggregate_id, tenantId])
     const invoice = invoiceResult.rows[0]
-    if (!invoice) return
+    if (!invoice || invoice.deleted_at) return
     if (invoice.status === 'posted') throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну', 400)
-    await client.query('DELETE FROM supplier_payments WHERE invoice_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
-    await client.query('DELETE FROM supply_invoice_items WHERE invoice_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
-    await client.query('DELETE FROM supply_invoices WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+    await client.query(
+      `UPDATE supply_invoices
+       SET deleted_at = $3, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2`,
+      [operation.aggregate_id, tenantId, operation.created_at],
+    )
   })
 }
 async function applyShiftOpened(tenantId: string, operation: SyncOutboxOperation): Promise<void> {

@@ -191,6 +191,7 @@ export async function listSupplyInvoices(query: SupplyInvoiceListQuery, tenantId
     .from(INVOICE_TABLE)
     .select('*, supplier:suppliers(id,name)', { count: 'exact' })
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false })
     .range(offset, offset + per_page - 1)
 
@@ -212,6 +213,7 @@ export async function getSupplyInvoice(id: string, tenantId: string) {
     .select('*, supplier:suppliers(id,name), items:supply_invoice_items(*, product:products(id,sku,name,unit,purchase_price,retail_price,barcode,storage_bin,category_id,photo_url)), payments:supplier_payments(*)')
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .single()
 
   if (error || !data) throw new AppError('NOT_FOUND', 'Накладну не знайдено', 404)
@@ -224,6 +226,7 @@ export async function getLatestSupplyInvoiceDraft(tenantId: string) {
     .select('*, supplier:suppliers(id,name)')
     .eq('tenant_id', tenantId)
     .eq('status', 'draft')
+    .is('deleted_at', null)
     .not('draft_payload', 'is', null)
     .order('draft_saved_at', { ascending: false, nullsFirst: false })
     .limit(1)
@@ -391,7 +394,7 @@ export async function updateSupplyInvoice(id: string, input: UpdateSupplyInvoice
 
   await runTransaction(async (client) => {
     const invoiceResult = await client.query(
-      `SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      `SELECT status FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
       [id, tenantId],
     )
     const invoice = invoiceResult.rows[0]
@@ -493,7 +496,7 @@ export async function addInvoicePayment(
   await runTransaction(async (client) => {
     const invoiceResult = await client.query(
       `SELECT id, supplier_id, total, COALESCE(paid_amount, 0) AS paid_amount
-       FROM supply_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+       FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
       [id, tenantId],
     )
     const invoice = invoiceResult.rows[0]
@@ -536,6 +539,7 @@ export async function getSupplierDebts(tenantId: string) {
     .select('supplier_id, total, paid_amount, supplier:suppliers(id, name, phone)')
     .eq('tenant_id', tenantId)
     .eq('status', 'posted')
+    .is('deleted_at', null)
     .limit(5000)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -569,19 +573,13 @@ export async function deleteSupplyInvoice(id: string, tenantId: string) {
     throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну. Спочатку скасуйте її.', 400)
   }
 
-  const { error: delItemsError } = await db
-    .from(ITEM_TABLE)
-    .delete()
-    .eq('invoice_id', id)
-    .eq('tenant_id', tenantId)
-
-  if (delItemsError) throw new AppError('DB_ERROR', delItemsError.message, 500)
-
+  const deletedAt = new Date().toISOString()
   const { error: delError } = await db
     .from(INVOICE_TABLE)
-    .delete()
+    .update({ deleted_at: deletedAt, updated_at: deletedAt })
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
 
   if (delError) throw new AppError('DB_ERROR', delError.message, 500)
 }
