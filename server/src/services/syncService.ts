@@ -164,6 +164,8 @@ async function fetchSecondarySyncData(params: {
     commissionRules,
     salaryPayments,
     cashOperations,
+    deletedSalaryPayments,
+    deletedCashOperations,
     customerReturns,
     customerReturnItems,
     stockReserves,
@@ -201,6 +203,30 @@ async function fetchSecondarySyncData(params: {
             .eq('tenant_id', tenantId)
             .order('created_at', { ascending: true })
           if (since) query = query.gt('created_at', since)
+          return query.range(from, to)
+        })
+      : Promise.resolve([]),
+    canPullPayroll
+      ? fetchAll((from, to) => {
+          let query = db
+            .from('sync_deletions')
+            .select('entity_id,deleted_at')
+            .eq('tenant_id', tenantId)
+            .eq('entity_type', 'salary_payment')
+            .order('deleted_at', { ascending: true })
+          if (since) query = query.gt('deleted_at', since)
+          return query.range(from, to)
+        })
+      : Promise.resolve([]),
+    canPullCash
+      ? fetchAll((from, to) => {
+          let query = db
+            .from('sync_deletions')
+            .select('entity_id,deleted_at')
+            .eq('tenant_id', tenantId)
+            .eq('entity_type', 'cash_operation')
+            .order('deleted_at', { ascending: true })
+          if (since) query = query.gt('deleted_at', since)
           return query.range(from, to)
         })
       : Promise.resolve([]),
@@ -298,7 +324,9 @@ async function fetchSecondarySyncData(params: {
     staff,
     commission_rules: commissionRules,
     salary_payments: salaryPayments,
+    deleted_salary_payment_ids: deletedSalaryPayments.map((row) => row.entity_id),
     cash_operations: cashOperations,
+    deleted_cash_operation_ids: deletedCashOperations.map((row) => row.entity_id),
     customer_returns: customerReturns,
     customer_return_items: customerReturnItems.map((row) => ({ ...row, parent: undefined })),
     stock_reserves: stockReserves,
@@ -1847,10 +1875,27 @@ async function applySalaryPaymentDeleted(tenantId: string, operation: SyncOutbox
       'SELECT cash_operation_id FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
       [operation.aggregate_id, tenantId],
     )
-    await client.query('DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
     const cashOperationId = payment.rows[0]?.cash_operation_id
+    await client.query('DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
     if (cashOperationId) {
       await client.query('DELETE FROM cash_operations WHERE id = $1 AND tenant_id = $2', [cashOperationId, tenantId])
+    }
+    const deletedAt = operation.applied_at ?? operation.created_at
+    await client.query(
+      `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
+       VALUES ($1, 'salary_payment', $2, $3)
+       ON CONFLICT (tenant_id, entity_type, entity_id)
+       DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+      [tenantId, operation.aggregate_id, deletedAt],
+    )
+    if (cashOperationId) {
+      await client.query(
+        `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
+         VALUES ($1, 'cash_operation', $2, $3)
+         ON CONFLICT (tenant_id, entity_type, entity_id)
+         DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+        [tenantId, cashOperationId, deletedAt],
+      )
     }
   })
 }

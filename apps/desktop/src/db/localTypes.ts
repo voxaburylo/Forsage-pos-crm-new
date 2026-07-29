@@ -208,7 +208,9 @@ export interface LocalBootstrapSnapshot {
   sale_items?: any[]
   commission_rules?: any[]
   salary_payments?: any[]
+  deleted_salary_payment_ids?: string[]
   cash_operations?: any[]
+  deleted_cash_operation_ids?: string[]
   customer_returns?: any[]
   customer_return_items?: any[]
   stock_reserves?: any[]
@@ -258,6 +260,7 @@ export interface LocalBootstrapImportResult {
     salary_payments: number
     deleted_salary_payments: number
     cash_operations: number
+    deleted_cash_operations: number
     customer_returns: number
     customer_return_items: number
     stock_reserves: number
@@ -332,7 +335,9 @@ export interface LocalSyncPullChanges {
   sale_items?: any[]
   commission_rules?: any[]
   salary_payments?: any[]
+  deleted_salary_payment_ids?: string[]
   cash_operations?: any[]
+  deleted_cash_operation_ids?: string[]
   customer_returns?: any[]
   customer_return_items?: any[]
   stock_reserves?: any[]
@@ -385,6 +390,7 @@ export interface LocalSyncPullResult {
     salary_payments: number
     deleted_salary_payments: number
     cash_operations: number
+    deleted_cash_operations: number
     customer_returns: number
     customer_return_items: number
     stock_reserves: number

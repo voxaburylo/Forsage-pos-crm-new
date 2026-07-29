@@ -100,6 +100,42 @@ describe('local money synchronization safety', () => {
     expect(db.prepare('SELECT dirty_at FROM bonus_transactions WHERE id = ?').get(transactionId)).toEqual({ dirty_at: null })
   })
 
+  it('applies salary and cash deletion tombstones from another device', () => {
+    const staffId = randomUUID()
+    const paymentId = randomUUID()
+    const cashOperationId = randomUUID()
+    const timestamp = new Date(Date.now() - 1_000).toISOString()
+    db.prepare(`
+      INSERT INTO staff_users (
+        id, tenant_id, full_name, role, is_active, created_at, updated_at
+      ) VALUES (?, ?, 'Employee', 'cashier', 1, ?, ?)
+    `).run(staffId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO cash_operations (
+        id, tenant_id, shift_id, user_id, type, source, amount, notes,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'salary_payout', 'cashbox', 900, 'Salary', ?, ?)
+    `).run(cashOperationId, DEFAULT_TENANT_ID, shiftId, cashierId, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO salary_payments (
+        id, tenant_id, employee_id, employee_name, amount, type, method,
+        period, work_date, source, cash_operation_id, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Employee', 900, 'advance', 'cash', '2026-07', '2026-07-29',
+        'manual', ?, ?, ?)
+    `).run(paymentId, DEFAULT_TENANT_ID, staffId, cashOperationId, timestamp, timestamp)
+
+    const result = sync.applyPullChanges({
+      tenant_id: DEFAULT_TENANT_ID,
+      cursor: new Date().toISOString(),
+      deleted_salary_payment_ids: [paymentId],
+      deleted_cash_operation_ids: [cashOperationId],
+    })
+
+    expect((db.prepare('SELECT deleted_at FROM salary_payments WHERE id = ?').get(paymentId) as { deleted_at: string }).deleted_at).toBeTruthy()
+    expect((db.prepare('SELECT deleted_at FROM cash_operations WHERE id = ?').get(cashOperationId) as { deleted_at: string }).deleted_at).toBeTruthy()
+    expect(result.counts.deleted_salary_payments).toBe(1)
+    expect(result.counts.deleted_cash_operations).toBe(1)
+  })
   it('requires an open cash shift for every order payment method', () => {
     const order = orders.saveOrder({ manager_id: cashierId, items: [] })
     expect(() => orders.addPayment(order.id, {

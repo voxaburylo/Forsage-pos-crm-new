@@ -17,6 +17,7 @@ export type SecondarySyncCounts = {
   salary_payments: number
   deleted_salary_payments: number
   cash_operations: number
+  deleted_cash_operations: number
   customer_returns: number
   customer_return_items: number
   stock_reserves: number
@@ -62,6 +63,7 @@ export class LocalSecondarySyncImporter {
       salary_payments: 0,
       deleted_salary_payments: 0,
       cash_operations: 0,
+      deleted_cash_operations: 0,
       customer_returns: 0,
       customer_return_items: 0,
       stock_reserves: 0,
@@ -92,7 +94,10 @@ export class LocalSecondarySyncImporter {
 
     for (const operation of source.cash_operations ?? []) {
       if (this.upsertCashOperation(tenantId, operation, importedAt)) counts.cash_operations++
-    }
+    }    counts.deleted_cash_operations += this.markDeletedIds(
+      'cash_operations', tenantId, source.deleted_cash_operation_ids, importedAt,
+    )
+
 
     const cleanReturnIds = new Set<string>()
     for (const customerReturn of source.customer_returns ?? []) {
@@ -150,14 +155,38 @@ export class LocalSecondarySyncImporter {
       if (this.upsertSalaryPayment(tenantId, payment, importedAt)) counts.salary_payments++
     }
     if (snapshots.salaryPayments) {
-      counts.deleted_salary_payments = this.pruneCleanMissing(
+      counts.deleted_salary_payments += this.pruneCleanMissing(
         'salary_payments', tenantId, source.salary_payments, importedAt,
       )
     }
+    counts.deleted_salary_payments += this.markDeletedIds(
+      'salary_payments', tenantId, source.deleted_salary_payment_ids, importedAt,
+    )
 
     return counts
   }
 
+  private markDeletedIds(
+    table: 'salary_payments' | 'cash_operations',
+    tenantId: string,
+    ids: unknown,
+    importedAt: string,
+  ): number {
+    if (!Array.isArray(ids)) return 0
+    let deleted = 0
+    for (const value of ids) {
+      const id = asText(value)
+      if (!id) continue
+      const result = this.db.prepare(`
+        UPDATE ${table}
+        SET deleted_at = ?, updated_at = ?, remote_updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND dirty_at IS NULL
+          AND (deleted_at IS NULL OR deleted_at < ?)
+      `).run(importedAt, importedAt, importedAt, id, tenantId, importedAt)
+      deleted += Number(result.changes)
+    }
+    return deleted
+  }
   private pruneCleanMissing(
     table: 'categories' | 'brands' | 'staff_users' | 'commission_rules' | 'salary_payments' | 'stock_reserves',
     tenantId: string,

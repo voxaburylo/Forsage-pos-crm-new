@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest'
 
 const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const customerSource = readFileSync(new URL('../customerService.ts', import.meta.url), 'utf8')
+const salaryRouteSource = readFileSync(new URL('../../routes/salary.ts', import.meta.url), 'utf8')
+const deletionMigration = readFileSync(
+  new URL('../../../../supabase/migrations/20260729090000_sync_deletion_log.sql', import.meta.url),
+  'utf8',
+)
 
 describe('money synchronization safety', () => {
   it('uses deterministic cash operation ids for debt and deposit sync', () => {
@@ -30,6 +35,16 @@ describe('money synchronization safety', () => {
     expect(block).toContain("SYNC_BONUS_TENANT_CONFLICT")
   })
 
+  it('publishes salary and cash deletion tombstones to every local device', () => {
+    expect(syncSource).toContain(".from('sync_deletions')")
+    expect(syncSource).toContain('deleted_salary_payment_ids: deletedSalaryPayments.map')
+    expect(syncSource).toContain('deleted_cash_operation_ids: deletedCashOperations.map')
+    expect(syncSource).toContain("VALUES ($1, 'salary_payment', $2, $3)")
+    expect(syncSource).toContain("VALUES ($1, 'cash_operation', $2, $3)")
+    expect(salaryRouteSource).toContain('SELECT cash_operation_id FROM salary_payments')
+    expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, NOW())")
+    expect(deletionMigration).toContain('CREATE TABLE IF NOT EXISTS sync_deletions')
+  })
   it('updates web manual bonuses atomically under a customer row lock', () => {
     const start = customerSource.indexOf('export async function manualBonus')
     const block = customerSource.slice(start)

@@ -1,4 +1,4 @@
-﻿import { Router } from 'express'
+import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -319,15 +319,40 @@ router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res
 // DELETE /api/v1/salary/:id — видалити запис
 router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const { error } = await db
-      .from('salary_payments')
-      .delete()
-      .eq('id', req.params.id)
-      .eq('tenant_id', req.user!.tenant_id)
-
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    await runTransaction(async (client) => {
+      const payment = await client.query(
+        'SELECT cash_operation_id FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        [req.params.id, req.user!.tenant_id],
+      )
+      const cashOperationId = payment.rows[0]?.cash_operation_id ?? null
+      await client.query(
+        'DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2',
+        [req.params.id, req.user!.tenant_id],
+      )
+      if (cashOperationId) {
+        await client.query(
+          'DELETE FROM cash_operations WHERE id = $1 AND tenant_id = $2',
+          [cashOperationId, req.user!.tenant_id],
+        )
+      }
+      await client.query(
+        `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
+         VALUES ($1, 'salary_payment', $2, NOW())
+         ON CONFLICT (tenant_id, entity_type, entity_id)
+         DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+        [req.user!.tenant_id, req.params.id],
+      )
+      if (cashOperationId) {
+        await client.query(
+          `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
+           VALUES ($1, 'cash_operation', $2, NOW())
+           ON CONFLICT (tenant_id, entity_type, entity_id)
+           DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+          [req.user!.tenant_id, cashOperationId],
+        )
+      }
+    })
     res.json({ data: { success: true } })
   } catch (err) { next(err) }
 })
-
 export default router
