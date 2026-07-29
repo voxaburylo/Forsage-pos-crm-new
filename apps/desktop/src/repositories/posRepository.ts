@@ -1589,6 +1589,7 @@ export class LocalPosRepository {
       if (input.is_fiscal === true && clientOperationId) {
         this.assertFiscalIntentCanCheckout(clientOperationId, checkoutHash, input.fiscal_number)
       }
+      this.assertSaleStockAvailable(input.items, tenantId)
       const timestamp = nowIso()
       const saleId = randomUUID()
       const shiftId = input.shift_id ?? this.findOpenShift(input.cashier_id, tenantId)
@@ -2497,6 +2498,57 @@ export class LocalPosRepository {
     return payloadHash(this.checkoutIdentity(input, tenantId))
   }
 
+  private allowsNegativeStock(): boolean {
+    const row = this.db.prepare(
+      "SELECT value_json FROM app_meta WHERE key = 'shop_settings' LIMIT 1",
+    ).get() as { value_json: string } | undefined
+    if (!row?.value_json) return false
+    try {
+      return JSON.parse(row.value_json)?.allow_negative_qty === true
+    } catch {
+      return false
+    }
+  }
+
+  private assertSaleStockAvailable(items: LocalSaleCheckoutInput['items'], tenantId: string): void {
+    if (this.allowsNegativeStock()) return
+    const requestedByProduct = new Map<string, number>()
+    for (const item of items) {
+      if (!item.product_id) continue
+      requestedByProduct.set(
+        item.product_id,
+        (requestedByProduct.get(item.product_id) ?? 0) + Number(item.qty ?? 0),
+      )
+    }
+
+    for (const [productId, requestedQty] of requestedByProduct) {
+      const product = this.db.prepare(`
+        SELECT id, name, qty_on_hand, is_service
+        FROM products
+        WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+        LIMIT 1
+      `).get(productId, tenantId) as {
+        id: string
+        name: string
+        qty_on_hand: number
+        is_service: number
+      } | undefined
+      if (!product) throw new Error('LOCAL_PRODUCT_NOT_FOUND')
+      if (product.is_service === 1) continue
+
+      const reserve = this.db.prepare(`
+        SELECT COALESCE(SUM(qty), 0) AS qty
+        FROM stock_reserves
+        WHERE tenant_id = ? AND product_id = ?
+          AND released_at IS NULL AND deleted_at IS NULL
+          AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+      `).get(tenantId, productId) as { qty: number } | undefined
+      const available = Number(product.qty_on_hand ?? 0) - Number(reserve?.qty ?? 0)
+      if (requestedQty > available) {
+        throw new Error(`Недостатньо товару «${product.name}». Доступно: ${available}, потрібно: ${requestedQty}`)
+      }
+    }
+  }
   private assertCheckoutReady(input: LocalSaleCheckoutInput): {
     shift_id: string
     subtotal: number
@@ -2533,6 +2585,7 @@ export class LocalPosRepository {
       itemDiscountTotal += itemDiscount
     }
 
+    this.assertSaleStockAvailable(input.items, tenantId)
     const bonusesSpent = money(input.bonuses_spent ?? 0)
     if (bonusesSpent > 0 && !input.customer_id) {
       throw new Error('Для списання бонусів виберіть клієнта')

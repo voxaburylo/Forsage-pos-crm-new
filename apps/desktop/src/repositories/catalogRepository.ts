@@ -8,6 +8,15 @@ function nowIso(): string {
 
 const PRODUCT_SEARCH_REPAIR_KEY = 'product_search_index_repair_version'
 const PRODUCT_SEARCH_REPAIR_VERSION = 2
+const MAX_MONEY_VALUE = 2_147_483_647
+
+function validMoney(value: number | undefined, field: string): number {
+  const normalized = Number(value ?? 0)
+  if (!Number.isFinite(normalized) || normalized < 0 || normalized > MAX_MONEY_VALUE) {
+    throw new Error(`${field} має містити коректну суму`)
+  }
+  return Math.round(normalized)
+}
 
 export function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? '')
@@ -184,7 +193,7 @@ export class LocalCatalogRepository {
             const activeReplacement = this.findActiveReplacement(input, storedBySku, tenantId)
             if (activeReplacement) return activeReplacement
           }
-          return this.restoreStoredProduct(storedBySku, tenantId)
+          return this.restoreStoredProduct(storedBySku, input, tenantId)
         }
         const existing = this.findById(storedBySku.id, tenantId)
         if (existing && options.reuseExistingSku) return existing
@@ -234,8 +243,15 @@ export class LocalCatalogRepository {
   upsertProduct(input: LocalProductUpsert): LocalProduct {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     input = this.normalizeProductReferences(input, tenantId)
+    input = {
+      ...input,
+      purchase_price: validMoney(input.purchase_price, 'Ціна закупівлі'),
+      retail_price: validMoney(input.retail_price, 'Ціна продажу'),
+      core_deposit_amount: validMoney(input.core_deposit_amount, 'Застава'),
+    }
     const timestamp = nowIso()
     const searchText = productSearchText(input)
+    const stockBefore = this.findStoredProductById(input.id, tenantId)
 
     this.db.transaction(() => {
       this.db.prepare(`
@@ -336,6 +352,24 @@ export class LocalCatalogRepository {
           const label = duplicateFromProduct.name || duplicateFromProduct.sku || 'іншого товару'
           throw new Error(`Штрихкод "${barcode}" вже у товару "${label}"`)
         }
+      }
+
+      const stockAfter = Number(input.qty_on_hand ?? 0)
+      const stockBeforeValue = stockBefore ? Number(stockBefore.qty_on_hand ?? 0) : 0
+      if (stockAfter !== stockBeforeValue) {
+        this.db.prepare(`
+          INSERT INTO inventory_movements (
+            id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+            unit_cost, notes, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          randomUUID(), tenantId, input.id,
+          stockBefore ? 'product_correction' : 'opening_balance',
+          input.id, stockAfter - stockBeforeValue, stockAfter,
+          input.purchase_price ?? 0,
+          stockBefore ? 'Ручне коригування залишку в картці товару' : 'Початковий залишок товару',
+          timestamp, timestamp, timestamp,
+        )
       }
 
       if (replacesAdditionalBarcodes) {
@@ -514,22 +548,16 @@ export class LocalCatalogRepository {
 
   private restoreStoredProduct(
     stored: LocalProduct & { deleted_at: string | null },
+    input: LocalProductUpsert,
     tenantId: string,
   ): LocalProduct {
-    const timestamp = nowIso()
-    const searchText = normalizeSearchText([
-      stored.sku,
-      stored.name,
-      stored.barcode,
-      stored.storage_bin,
-    ].filter(Boolean).join(' '))
-    this.db.prepare(`
-      UPDATE products
-      SET deleted_at = NULL, is_active = 1, search_text = ?, dirty_at = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `).run(searchText, timestamp, timestamp, stored.id, tenantId)
-
-    const restored = this.findById(stored.id, tenantId)
+    const restored = this.upsertProduct({
+      ...input,
+      id: stored.id,
+      tenant_id: tenantId,
+      is_active: true,
+      qty_on_hand: Number(input.qty_on_hand ?? 0),
+    })
     if (!restored) throw new Error('LOCAL_PRODUCT_RESTORE_FAILED')
     this.addProductOutbox('product.upsert', restored.id, {
       id: restored.id,
@@ -1164,6 +1192,26 @@ export class LocalCatalogRepository {
   private addProductOutbox(operationType: 'product.upsert' | 'product.deleted', productId: string, payload: LocalProductUpsert): void {
     const timestamp = nowIso()
     const tenantId = payload.tenant_id ?? DEFAULT_TENANT_ID
+    if (operationType === 'product.upsert' && payload.stock_correction !== true) {
+      const existing = this.db.prepare(`
+        SELECT sequence FROM sync_outbox
+        WHERE tenant_id = ? AND aggregate_type = 'product' AND aggregate_id = ?
+          AND operation_type = 'product.upsert'
+          AND status IN ('pending', 'failed')
+          AND COALESCE(json_extract(payload_json, '$.stock_correction'), 0) <> 1
+        ORDER BY sequence DESC LIMIT 1
+      `).get(tenantId, productId) as { sequence: number } | undefined
+      if (existing) {
+        this.db.prepare(`
+          UPDATE sync_outbox
+          SET payload_json = ?, status = 'pending', attempts = 0,
+              next_attempt_at = NULL, last_error = NULL, created_at = ?
+          WHERE sequence = ?
+        `).run(JSON.stringify(payload), timestamp, existing.sequence)
+        return
+      }
+    }
+
     this.db.prepare(`
       INSERT INTO sync_outbox (
         operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
@@ -1171,16 +1219,8 @@ export class LocalCatalogRepository {
       )
       VALUES (?, ?, ?, 'product', ?, ?, ?, 'pending', ?)
     `).run(
-      randomUUID(),
-      tenantId,
-      this.db.deviceId,
-      productId,
-      operationType,
-      JSON.stringify(payload),
-      timestamp,
+      randomUUID(), tenantId, this.db.deviceId, productId,
+      operationType, JSON.stringify(payload), timestamp,
     )
   }
 }
-
-
-

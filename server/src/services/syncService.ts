@@ -1,4 +1,4 @@
-﻿import { pbkdf2Sync, randomUUID } from 'node:crypto'
+import { pbkdf2Sync, randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
@@ -565,7 +565,7 @@ export async function getSyncChanges({
             .select('*,supplier:suppliers(id,name)')
             .eq('tenant_id', tenantId)
             .order('updated_at', { ascending: true })
-          query = withChangedSince(query, since)
+          query = withChangedSince(query, includeReferences ? undefined : since)
           if (!since) query = query.is('deleted_at', null)
           return query.range(from, to)
         })
@@ -578,7 +578,7 @@ export async function getSyncChanges({
             .eq('invoice.tenant_id', tenantId)
             .is('invoice.deleted_at', null)
             .order('created_at', { ascending: true })
-          if (since) query = query.gt('invoice.updated_at', since)
+          if (since && !includeReferences) query = query.gt('invoice.updated_at', since)
           return query.range(from, to)
         })
       : Promise.resolve([]),
@@ -3135,7 +3135,7 @@ async function applyCategoryDeleted(tenantId: string, operation: SyncOutboxOpera
     await client.query(
       `UPDATE products
        SET category_id = NULL, updated_at = $3
-       WHERE tenant_id = $1 AND category_id = $2 AND deleted_at IS NULL`,
+       WHERE tenant_id = $1 AND category_id = $2`,
       [tenantId, operation.aggregate_id, operation.created_at],
     )
     await client.query(
@@ -3239,6 +3239,13 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       const parsed = Number(value)
       return Number.isFinite(parsed) ? parsed : fallback
     }
+    const toMoney = (value: any, fallback: number, field: string): number => {
+      const parsed = Math.round(toNumber(value, fallback))
+      if (parsed < 0 || parsed > 2_147_483_647) {
+        throw new AppError('SYNC_PRODUCT_PRICE_INVALID', `${field} має містити коректну суму`, 422)
+      }
+      return parsed
+    }
 
     const sku = String(fromPayload('sku', existing?.sku ?? '') ?? '').trim()
     const name = String(fromPayload('name', existing?.name ?? '') ?? '').trim()
@@ -3288,15 +3295,15 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       fromPayload('brand_id', existing?.brand_id ?? null) || null,
       fromPayload('category_id', existing?.category_id ?? null) || null,
       String(fromPayload('unit', existing?.unit ?? 'шт') ?? 'шт'),
-      toNumber(fromPayload('purchase_price', existing?.purchase_price ?? 0)),
-      toNumber(fromPayload('retail_price', existing?.retail_price ?? 0)),
+      toMoney(fromPayload('purchase_price', existing?.purchase_price ?? 0), Number(existing?.purchase_price ?? 0), 'Ціна закупівлі'),
+      toMoney(fromPayload('retail_price', existing?.retail_price ?? 0), Number(existing?.retail_price ?? 0), 'Ціна продажу'),
       toNumber(fromPayload('qty_on_hand', existing?.qty_on_hand ?? 0)),
       toNumber(fromPayload('reorder_point', existing?.reorder_point ?? 0)),
       fromPayload('notes', existing?.notes ?? null),
       fromPayload('is_active', existing?.is_active ?? true) !== false,
       fromPayload('is_service', existing?.is_service ?? false) === true,
       fromPayload('requires_core_return', existing?.requires_core_return ?? false) === true,
-      Math.max(0, Math.round(toNumber(fromPayload('core_deposit_amount', existing?.core_deposit_amount ?? 0)))),
+      toMoney(fromPayload('core_deposit_amount', existing?.core_deposit_amount ?? 0), Number(existing?.core_deposit_amount ?? 0), 'Застава'),
       fromPayload('storage_bin', existing?.storage_bin ?? null),
       fromPayload('is_favorite', existing?.is_favorite ?? false) === true,
       photoUrl,

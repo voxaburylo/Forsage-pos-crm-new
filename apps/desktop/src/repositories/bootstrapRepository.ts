@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import type { LocalBootstrapImportResult, LocalBootstrapSnapshot, LocalSyncPullChanges, LocalSyncPullResult } from '../db/localTypes'
 import { normalizeSearchText } from './catalogRepository'
@@ -283,7 +284,7 @@ export class LocalBootstrapRepository {
 
       for (const item of changes.supply_invoice_items ?? []) {
         if (!this.refExists('supply_invoices', tenantId, item.invoice_id)) continue
-        if (!this.refExists('products', tenantId, item.product_id)) continue
+        if (!this.refExistsIncludingDeleted('products', tenantId, item.product_id)) continue
         this.upsertSupplyInvoiceItem(tenantId, item, appliedAt)
         counts.supply_invoice_items++
       }
@@ -485,7 +486,7 @@ export class LocalBootstrapRepository {
 
       for (const item of snapshot.supply_invoice_items ?? []) {
         if (!this.refExists('supply_invoices', tenantId, item.invoice_id)) continue
-        if (!this.refExists('products', tenantId, item.product_id)) continue
+        if (!this.refExistsIncludingDeleted('products', tenantId, item.product_id)) continue
         this.upsertSupplyInvoiceItem(tenantId, item, importedAt)
         counts.supply_invoice_items++
       }
@@ -719,6 +720,21 @@ export class LocalBootstrapRepository {
       SELECT deleted_at FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1
     `).get(id, tenantId) as { deleted_at: string | null } | undefined
 
+    if (existing?.deleted_at && !pendingDelete) {
+      const timestamp = existing.deleted_at
+      this.db.prepare(`
+        INSERT INTO sync_outbox (
+          operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
+          operation_type, payload_json, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).run(
+        randomUUID(), tenantId, this.db.deviceId, aggregateType, id,
+        `${aggregateType}.deleted`, JSON.stringify({ id, tenant_id: tenantId }), timestamp,
+      )
+      this.db.prepare(`UPDATE ${table} SET dirty_at = ? WHERE id = ? AND tenant_id = ?`)
+        .run(timestamp, id, tenantId)
+      return true
+    }
     if (pendingDelete && !existing?.deleted_at) {
       this.db.prepare(`
         UPDATE ${table}
@@ -786,6 +802,8 @@ export class LocalBootstrapRepository {
     const categoryId = incomingCategoryId && this.refExists('categories', tenantId, incomingCategoryId)
       ? incomingCategoryId
       : null
+    const stockBefore = this.db.prepare(`SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ? LIMIT 1`)
+      .get(product.id, tenantId) as { qty_on_hand: number } | undefined
     const searchText = normalizeSearchText([
       product.sku,
       product.name,
@@ -862,6 +880,23 @@ export class LocalBootstrapRepository {
       hasCoreReturn ? 1 : 0,
       hasCoreDeposit ? 1 : 0,
     )
+
+    const stockAfter = this.db.prepare(`SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ? LIMIT 1`)
+      .get(product.id, tenantId) as { qty_on_hand: number } | undefined
+    const beforeQty = Number(stockBefore?.qty_on_hand ?? 0)
+    const afterQty = Number(stockAfter?.qty_on_hand ?? 0)
+    if (afterQty !== beforeQty) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO inventory_movements (
+          id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+          unit_cost, notes, remote_updated_at, dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'sync_reconcile', ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+      `).run(
+        `sync-reconcile-${product.id}-${updatedAt}`, tenantId, product.id, product.id,
+        afterQty - beforeQty, afterQty, Number(product.purchase_price ?? 0),
+        'Синхронізація складського залишку із сервером', updatedAt, updatedAt, updatedAt,
+      )
+    }
   }
 
   private upsertProductBarcode(tenantId: string, barcode: any, importedAt: string): void {
@@ -1593,6 +1628,14 @@ export class LocalBootstrapRepository {
     `).run(tenantId, tenantId)
   }
 
+  private refExistsIncludingDeleted(table: 'products', tenantId: string, id: string): boolean {
+    const row = this.db.prepare(`
+      SELECT id FROM ${table}
+      WHERE id = ? AND tenant_id = ?
+      LIMIT 1
+    `).get(id, tenantId)
+    return Boolean(row)
+  }
   private refExists(table: 'brands' | 'categories' | 'products' | 'customers' | 'customer_orders' | 'supply_invoices' | 'inventory_sessions' | 'sales' | 'shifts', tenantId: string, id: string): boolean {
     const row = this.db.prepare(`
       SELECT id

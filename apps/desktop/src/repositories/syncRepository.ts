@@ -63,6 +63,7 @@ function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
 
 export class LocalSyncRepository {
   constructor(private readonly db: LocalDatabase) {
+    this.coalesceSupersededProductOperations()
     this.recoverMissingCustomerVehicleOutbox()
   }
 
@@ -686,6 +687,55 @@ export class LocalSyncRepository {
     })
   }
 
+  private coalesceSupersededProductOperations(): void {
+    const rows = this.db.prepare(`
+      SELECT sequence, aggregate_id, operation_type, payload_json
+      FROM sync_outbox
+      WHERE aggregate_type = 'product'
+        AND operation_type IN ('product.upsert', 'product.deleted')
+        AND status IN ('pending', 'failed')
+      ORDER BY aggregate_id, sequence DESC
+    `).all() as Array<{
+      sequence: number
+      aggregate_id: string
+      operation_type: 'product.upsert' | 'product.deleted'
+      payload_json: string
+    }>
+    if (rows.length < 2) return
+
+    const superseded: number[] = []
+    for (const aggregateId of new Set(rows.map((row) => row.aggregate_id))) {
+      const operations = rows.filter((row) => row.aggregate_id === aggregateId)
+      const newest = operations[0]
+      const keep = new Set<number>([newest.sequence])
+      if (newest.operation_type === 'product.upsert') {
+        const latestCorrection = operations.find((row) => {
+          if (row.operation_type !== 'product.upsert') return false
+          try {
+            return JSON.parse(row.payload_json)?.stock_correction === true
+          } catch {
+            return false
+          }
+        })
+        if (latestCorrection) keep.add(latestCorrection.sequence)
+      }
+      for (const row of operations) {
+        if (!keep.has(row.sequence)) superseded.push(row.sequence)
+      }
+    }
+    if (superseded.length === 0) return
+
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      const update = this.db.prepare(`
+        UPDATE sync_outbox
+        SET status = 'synced', synced_at = ?, next_attempt_at = NULL,
+            last_error = 'Замінено новішою версією товару'
+        WHERE sequence = ? AND status IN ('pending', 'failed')
+      `)
+      for (const sequence of superseded) update.run(timestamp, sequence)
+    })
+  }
   private retryDelayMs(sequence: number): number {
     const row = this.db.prepare('SELECT attempts FROM sync_outbox WHERE sequence = ?').get(sequence) as { attempts: number } | undefined
     const attempts = Math.max(0, row?.attempts ?? 0)

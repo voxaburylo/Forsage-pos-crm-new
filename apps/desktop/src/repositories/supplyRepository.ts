@@ -410,18 +410,27 @@ export class LocalSupplyRepository {
 
   postInvoice(id: string, input: { tenant_id?: string; user_id?: string | null } = {}): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const invoice = this.getInvoice(id, tenantId)
-    if (invoice.status !== 'draft') throw new Error('Накладну вже проведено або скасовано')
     const timestamp = nowIso()
     this.db.transaction(() => {
-      this.db.prepare(`
-        UPDATE supply_invoices
-        SET status = 'posted', posted_by = ?, posted_at = ?, dirty_at = ?, updated_at = ?
-        WHERE id = ? AND tenant_id = ?
-      `).run(input.user_id ?? null, timestamp, timestamp, timestamp, id, tenantId)
-      for (const item of invoice.items ?? []) {
+      const invoice = this.getInvoice(id, tenantId)
+      if (invoice.status !== 'draft') throw new Error('Накладну вже проведено або скасовано')
+      const items = this.db.prepare(`
+        SELECT ii.id, ii.product_id, ii.qty, ii.purchase_price, ii.total,
+               p.id AS product_exists, p.name AS product_name, p.deleted_at AS product_deleted_at
+        FROM supply_invoice_items ii
+        LEFT JOIN products p ON p.id = ii.product_id AND p.tenant_id = ii.tenant_id
+        WHERE ii.invoice_id = ? AND ii.tenant_id = ? AND ii.deleted_at IS NULL
+        ORDER BY ii.created_at ASC
+      `).all(id, tenantId) as any[]
+      if (items.length === 0) throw new Error('Додайте хоча б один товар у накладну')
+      const missing = items.find((item) => !item.product_exists || item.product_deleted_at)
+      if (missing) {
+        throw new Error(`Неможливо провести накладну: товар ${missing.product_name || missing.product_id} відсутній або видалений`)
+      }
+
+      for (const item of items) {
         const product = this.findProduct(item.product_id, tenantId)
-        if (!product) continue
+        if (!product) throw new Error(`Товар ${item.product_id} не знайдено в локальній базі`)
         const newQty = Number(product.qty_on_hand ?? 0) + Number(item.qty ?? 0)
         this.db.prepare(`
           UPDATE products
@@ -434,28 +443,26 @@ export class LocalSupplyRepository {
             unit_cost, notes, dirty_at, created_at, updated_at
           ) VALUES (?, ?, ?, 'supply_invoice', ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          randomUUID(),
-          tenantId,
-          item.product_id,
-          id,
-          item.qty,
-          newQty,
-          item.purchase_price ?? 0,
-          `Прихідна накладна ${invoice.invoice_number ?? id}`,
-          timestamp,
-          timestamp,
-          timestamp,
+          randomUUID(), tenantId, item.product_id, id, item.qty, newQty,
+          item.purchase_price ?? 0, `Прихідна накладна ${invoice.invoice_number ?? id}`,
+          timestamp, timestamp, timestamp,
         )
       }
+
+      const total = items.reduce((sum, item) => sum + Number(item.total ?? 0), 0)
+      this.db.prepare(`
+        UPDATE supply_invoices
+        SET status = 'posted', total = ?, posted_by = ?, posted_at = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(total, input.user_id ?? null, timestamp, timestamp, timestamp, id, tenantId)
       this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.posted', {
         id,
         user_id: input.user_id ?? null,
-        items: (invoice.items ?? []).map((item: any) => ({ product_id: item.product_id, qty: item.qty, purchase_price: item.purchase_price })),
+        items: items.map((item: any) => ({ product_id: item.product_id, qty: item.qty, purchase_price: item.purchase_price })),
       }, timestamp)
     })
     return this.getInvoice(id, tenantId)
   }
-
   payInvoice(id: string, input: PaymentInput): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const invoice = this.getInvoice(id, tenantId)
@@ -488,19 +495,49 @@ export class LocalSupplyRepository {
   }
 
   cancelInvoice(id: string, tenantId = DEFAULT_TENANT_ID): any {
-    const invoice = this.getInvoice(id, tenantId)
-    if (invoice.status === 'cancelled') return invoice
     const timestamp = nowIso()
     this.db.transaction(() => {
+      const invoice = this.getInvoice(id, tenantId)
+      if (invoice.status === 'cancelled') return
+      const items = this.db.prepare(`
+        SELECT ii.product_id, ii.qty, ii.purchase_price,
+               p.id AS product_exists, p.name AS product_name, p.qty_on_hand, p.deleted_at AS product_deleted_at
+        FROM supply_invoice_items ii
+        LEFT JOIN products p ON p.id = ii.product_id AND p.tenant_id = ii.tenant_id
+        WHERE ii.invoice_id = ? AND ii.tenant_id = ? AND ii.deleted_at IS NULL
+        ORDER BY ii.created_at ASC
+      `).all(id, tenantId) as any[]
       if (invoice.status === 'posted') {
-        for (const item of invoice.items ?? []) {
-          const product = this.findProduct(item.product_id, tenantId)
-          if (!product) continue
-          const newQty = Math.max(0, Number(product.qty_on_hand ?? 0) - Number(item.qty ?? 0))
+        const requiredByProduct = new Map<string, number>()
+        for (const item of items) {
+          if (!item.product_exists || item.product_deleted_at) {
+            throw new Error(`Неможливо скасувати накладну: товар ${item.product_name || item.product_id} відсутній або видалений`)
+          }
+          requiredByProduct.set(item.product_id, (requiredByProduct.get(item.product_id) ?? 0) + Number(item.qty ?? 0))
+        }
+        for (const [productId, requiredQty] of requiredByProduct) {
+          const product = this.findProduct(productId, tenantId)
+          if (!product || Number(product.qty_on_hand ?? 0) < requiredQty) {
+            throw new Error('Неможливо скасувати накладну: частину товару вже продано або списано')
+          }
+        }
+        for (const item of items) {
+          const product = this.findProduct(item.product_id, tenantId)!
+          const newQty = Number(product.qty_on_hand ?? 0) - Number(item.qty ?? 0)
           this.db.prepare(`
             UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
           `).run(newQty, timestamp, timestamp, item.product_id, tenantId)
+          this.db.prepare(`
+            INSERT INTO inventory_movements (
+              id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+              unit_cost, notes, dirty_at, created_at, updated_at
+            ) VALUES (?, ?, ?, 'supply_invoice_cancel', ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            randomUUID(), tenantId, item.product_id, id, -Number(item.qty ?? 0), newQty,
+            item.purchase_price ?? 0, `Скасування приходної накладної ${invoice.invoice_number ?? id}`,
+            timestamp, timestamp, timestamp,
+          )
         }
       }
       this.db.prepare(`
@@ -512,7 +549,6 @@ export class LocalSupplyRepository {
     })
     return this.getInvoice(id, tenantId)
   }
-
   deleteInvoice(id: string, tenantId = DEFAULT_TENANT_ID): void {
     const invoice = this.getInvoice(id, tenantId)
     if (invoice.status === 'posted') throw new Error('Не можна видалити проведену накладну. Спочатку скасуйте її.')

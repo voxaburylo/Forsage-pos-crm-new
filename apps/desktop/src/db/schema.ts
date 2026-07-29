@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 14
+export const LOCAL_SCHEMA_VERSION = 15
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1033,6 +1033,97 @@ const MIGRATION_013_FISCAL_RETURN_INTENTS_SQL = `
     ON fiscal_sale_intents(tenant_id, operation_kind, state, updated_at DESC);
 `
 const MIGRATION_014_SUPPLIER_CATALOG_SQL = SUPPLIER_CATALOG_SCHEMA_SQL
+const MIGRATION_015_STOCK_INTEGRITY_SQL = `
+  CREATE INDEX IF NOT EXISTS idx_inventory_movements_source
+    ON inventory_movements(tenant_id, source_type, source_id, product_id);
+
+  INSERT INTO inventory_movements (
+    id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+    unit_cost, notes, remote_updated_at, dirty_at, created_at, updated_at
+  )
+  SELECT
+    'legacy-deleted-cleanup-' || p.id,
+    p.tenant_id,
+    p.id,
+    'legacy_deleted_cleanup',
+    p.id,
+    -p.qty_on_hand,
+    0,
+    p.purchase_price,
+    'Очищення старого залишку видаленого товару',
+    NULL,
+    NULL,
+    COALESCE(p.deleted_at, p.updated_at),
+    COALESCE(p.deleted_at, p.updated_at)
+  FROM products p
+  WHERE p.deleted_at IS NOT NULL
+    AND p.qty_on_hand <> 0
+    AND NOT EXISTS (
+      SELECT 1 FROM inventory_movements m
+      WHERE m.id = 'legacy-deleted-cleanup-' || p.id
+    );
+
+  UPDATE products
+  SET qty_on_hand = 0
+  WHERE deleted_at IS NOT NULL AND qty_on_hand <> 0;
+
+  INSERT INTO inventory_movements (
+    id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+    unit_cost, notes, remote_updated_at, dirty_at, created_at, updated_at
+  )
+  SELECT
+    'stock-rebase-' || p.id,
+    p.tenant_id,
+    p.id,
+    'stock_rebase',
+    p.id,
+    p.qty_on_hand - COALESCE((
+      SELECT m.qty_after FROM inventory_movements m
+      WHERE m.tenant_id = p.tenant_id AND m.product_id = p.id AND m.deleted_at IS NULL
+      ORDER BY datetime(m.created_at) DESC, m.rowid DESC LIMIT 1
+    ), 0),
+    p.qty_on_hand,
+    p.purchase_price,
+    'Звірка журналу рухів із поточним залишком',
+    NULL,
+    NULL,
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  FROM products p
+  WHERE p.deleted_at IS NULL
+    AND p.qty_on_hand <> COALESCE((
+      SELECT m.qty_after FROM inventory_movements m
+      WHERE m.tenant_id = p.tenant_id AND m.product_id = p.id AND m.deleted_at IS NULL
+      ORDER BY datetime(m.created_at) DESC, m.rowid DESC LIMIT 1
+    ), 0)
+    AND NOT EXISTS (
+      SELECT 1 FROM inventory_movements m WHERE m.id = 'stock-rebase-' || p.id
+    );
+
+  INSERT INTO inventory_count_entries (
+    id, tenant_id, session_id, inventory_item_id, product_id,
+    counted_by, qty, price_checked, observed_retail_price, created_at
+  )
+  SELECT
+    'legacy-count-' || i.id,
+    i.tenant_id,
+    i.session_id,
+    i.id,
+    i.product_id,
+    COALESCE(i.last_counted_by, s.started_by, 'legacy-import'),
+    i.counted_stock,
+    i.price_checked,
+    i.observed_retail_price,
+    i.updated_at
+  FROM inventory_items i
+  JOIN inventory_sessions s ON s.id = i.session_id AND s.tenant_id = i.tenant_id
+  WHERE i.was_counted = 1
+    AND i.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM inventory_count_entries e
+      WHERE e.inventory_item_id = i.id AND e.deleted_at IS NULL
+    );
+`
 
 export interface LocalMigration {
   version: number
@@ -1054,4 +1145,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 12, sql: MIGRATION_012_FISCAL_SALE_INTENTS_SQL },
   { version: 13, sql: MIGRATION_013_FISCAL_RETURN_INTENTS_SQL },
   { version: 14, sql: MIGRATION_014_SUPPLIER_CATALOG_SQL },
+  { version: 15, sql: MIGRATION_015_STOCK_INTEGRITY_SQL },
 ]
