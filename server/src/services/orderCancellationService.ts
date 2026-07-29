@@ -103,7 +103,6 @@ export async function cancelOrderSafely(input: CancelOrderInput): Promise<Cancel
        FROM customer_orders o
        WHERE i.order_id = $1
          AND i.order_id = o.id
-         AND i.tenant_id = o.tenant_id
          AND o.tenant_id = $2
          AND i.item_status <> 'handed'`,
       [input.order_id, input.tenant_id],

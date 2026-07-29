@@ -187,6 +187,12 @@ router.post('/:type/:itemId/status', async (req, res, next) => {
       }
 
       const item = updateRes.rows[0]
+      if (type === 'order') {
+        await pgClient.query(
+          'UPDATE customer_orders SET updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
+          [item.order_id, tenantId]
+        )
+      }
       const coreDepositAmount = parseInt(item.core_deposit_amount, 10) || 0
       const customerId: string | null = item.customer_id || null
 

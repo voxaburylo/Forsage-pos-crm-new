@@ -25,11 +25,8 @@ export async function markOrderItemsArrived(input: {
     const found = await client.query<ArrivedOrderItem>(
       `SELECT i.id, i.order_id, i.product_id
        FROM customer_order_items i
-       JOIN customer_orders o
-         ON o.id = i.order_id
-        AND o.tenant_id = i.tenant_id
+       JOIN customer_orders o ON o.id = i.order_id
        WHERE i.id = ANY($1::uuid[])
-         AND i.deleted_at IS NULL
          AND o.tenant_id = $2
          AND o.deleted_at IS NULL
        FOR UPDATE OF i`,
@@ -46,12 +43,10 @@ export async function markOrderItemsArrived(input: {
 
     const updated = await client.query<ArrivedOrderItem>(
       `UPDATE customer_order_items i
-       SET item_status = 'arrived', updated_at = NOW()
+       SET item_status = 'arrived'
        FROM customer_orders o
        WHERE i.id = ANY($1::uuid[])
          AND i.order_id = o.id
-         AND i.tenant_id = o.tenant_id
-         AND i.deleted_at IS NULL
          AND o.tenant_id = $2
          AND o.deleted_at IS NULL
        RETURNING i.id, i.order_id, i.product_id`,
@@ -61,6 +56,13 @@ export async function markOrderItemsArrived(input: {
     if (updated.rowCount !== itemIds.length) {
       throw new AppError('DB_ERROR', 'Не вдалося прийняти всі вибрані позиції', 500)
     }
+    const orderIds = [...new Set(updated.rows.map((item) => item.order_id))]
+    await client.query(
+      `UPDATE customer_orders
+       SET updated_at = NOW()
+       WHERE tenant_id = $2 AND id = ANY($1::uuid[])`,
+      [orderIds, input.tenant_id],
+    )
     return updated.rows
   })
 }

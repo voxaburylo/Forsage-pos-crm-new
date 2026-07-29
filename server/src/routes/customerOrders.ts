@@ -817,7 +817,14 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
   else if (hasPending) newStatus = 'new'
   else newStatus = 'new'
 
-  if (currentOrder.status === newStatus) return
+  if (currentOrder.status === newStatus) {
+    const { error: touchError } = await db.from('customer_orders')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', orderId)
+      .eq('tenant_id', tenantId)
+    if (touchError) throw new AppError('DB_ERROR', touchError.message, 500)
+    return
+  }
 
   // Встановлюємо дедлайн при переході в ready
   if (newStatus === 'ready') {

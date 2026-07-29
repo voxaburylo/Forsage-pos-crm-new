@@ -8,6 +8,7 @@ import { markOrderItemsArrived } from '../orderBulkArrivalService.js'
 
 function installTransaction(rows: Array<{ id: string; order_id: string; product_id: string | null }>) {
   let updated = false
+  let parentTouched = false
   const query = vi.fn(async (sqlValue: string) => {
     const sql = String(sqlValue).replace(/\s+/g, ' ').trim()
     if (sql.startsWith('SELECT i.id')) return { rowCount: rows.length, rows }
@@ -15,12 +16,16 @@ function installTransaction(rows: Array<{ id: string; order_id: string; product_
       updated = true
       return { rowCount: rows.length, rows }
     }
+    if (sql.startsWith('UPDATE customer_orders')) {
+      parentTouched = true
+      return { rowCount: new Set(rows.map((row) => row.order_id)).size, rows: [] }
+    }
     throw new Error(`Unexpected SQL: ${sql}`)
   })
   pgMock.runTransaction.mockImplementation(async (callback: (client: { query: typeof query }) => unknown) =>
     callback({ query }),
   )
-  return { query, wasUpdated: () => updated }
+  return { query, wasUpdated: () => updated, wasParentTouched: () => parentTouched }
 }
 
 describe('markOrderItemsArrived tenant isolation', () => {
@@ -38,6 +43,7 @@ describe('markOrderItemsArrived tenant isolation', () => {
       item_ids: rows.map((row) => row.id),
     })).resolves.toEqual(rows)
     expect(transaction.wasUpdated()).toBe(true)
+    expect(transaction.wasParentTouched()).toBe(true)
   })
 
   it('rejects a mixed-tenant or missing id before the update', async () => {

@@ -2353,7 +2353,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
          HAVING COALESCE(SUM(returned.qty), 0) >= SUM(si.qty)
        )
        UPDATE customer_order_items coi
-       SET item_status = 'returned', updated_at = $3
+       SET item_status = 'returned'
        WHERE coi.order_id = (
          SELECT id FROM customer_orders
          WHERE sale_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
@@ -2362,7 +2362,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
          AND coi.product_id IN (SELECT product_id FROM fully_returned_products)
          AND coi.item_status <> 'returned'
        RETURNING coi.id, coi.product_id`,
-      [saleId, tenantId, createdAt],
+      [saleId, tenantId],
     )
     if (returnedOrderItems.rowCount) {
       const orderResult = await client.query(
@@ -2371,6 +2371,10 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       )
       const orderId = orderResult.rows[0]?.id
       if (orderId) {
+        await client.query(
+          'UPDATE customer_orders SET updated_at = $3 WHERE id = $1 AND tenant_id = $2',
+          [orderId, tenantId, createdAt],
+        )
         await client.query(
           `INSERT INTO order_activity_log (order_id, user_id, action, details)
            VALUES ($1,$2,'items_returned',$3::jsonb)`,

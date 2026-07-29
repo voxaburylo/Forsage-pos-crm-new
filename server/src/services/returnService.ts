@@ -540,6 +540,12 @@ export async function createReturn(
           .eq('order_id', order.id)
           .in('product_id', fullyReturnedProductIds)
         if (orderItemsError) throw orderItemsError
+        const { error: orderTouchError } = await db
+          .from('customer_orders')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', order.id)
+          .eq('tenant_id', tenantId)
+        if (orderTouchError) throw orderTouchError
 
         await db.from('order_activity_log').insert({
           order_id: order.id,
