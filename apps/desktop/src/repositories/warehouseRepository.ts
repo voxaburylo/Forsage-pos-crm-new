@@ -246,6 +246,8 @@ export class LocalWarehouseRepository {
   }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     if (!Array.isArray(input.items) || input.items.length === 0) throw new Error('Додайте товари для списання')
+    const uniqueProducts = new Set(input.items.map((item) => item.product_id))
+    if (uniqueProducts.size !== input.items.length) throw new Error('Один товар не можна додавати до акта списання кілька разів')
     const prepared = input.items.map((item) => {
       const product = this.product(item.product_id, tenantId)
       const qty = numberValue(item.qty)

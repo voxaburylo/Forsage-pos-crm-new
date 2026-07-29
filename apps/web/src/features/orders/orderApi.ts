@@ -38,6 +38,7 @@ export interface CustomerOrder {
   total_paid: number
   discount_amount: number
   sale_id: string | null
+  exchange_source_order_id?: string | null
   pickup_deadline_at: string | null
   pickup_cell: string | null
   comment: string | null
@@ -76,6 +77,7 @@ export interface CreateOrderPayload {
   prepayment_method?: 'cash' | 'card' | 'transfer' | null
   prepayment_is_fiscal?: boolean
   parent_draft_id?: string | null
+  exchange_source_order_id?: string | null
   items: CreateOrderItemPayload[]
 }
 
@@ -121,6 +123,29 @@ export const orderApi = {
     return api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
   },
 
+  createExchange: async (sourceOrder: CustomerOrder, opts: OrderRequestOptions = {}) => {
+    return orderApi.create({
+      customer_id: sourceOrder.customer_id,
+      vehicle_info: sourceOrder.vehicle_info,
+      source: 'walk_in',
+      exchange_source_order_id: sourceOrder.id,
+      comment: `Обмін до замовлення ${sourceOrder.order_number ? '#' + sourceOrder.order_number : sourceOrder.id.slice(0, 8)}`,
+      items: (sourceOrder.items ?? [])
+        .filter((item) => item.item_status !== 'canceled')
+        .map((item) => ({
+          name: item.name,
+          sku: item.sku,
+          product_id: item.product_id,
+          supplier_id: item.supplier_id,
+          source_type: item.source_type,
+          item_type: item.item_type,
+          buy_price: item.buy_price,
+          sell_price: item.sell_price,
+          qty: item.qty,
+          expected_date: item.expected_date,
+        })),
+    }, opts)
+  },
   update: async (id: string, body: CreateOrderPayload, opts: OrderRequestOptions = {}) => {
     const local = desktopBridge()?.orders?.save
     if (local) {

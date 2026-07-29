@@ -554,7 +554,9 @@ export class LocalSupplyRepository {
   }
   deleteInvoice(id: string, tenantId = DEFAULT_TENANT_ID): void {
     const invoice = this.getInvoice(id, tenantId)
-    if (invoice.status === 'posted') throw new Error('Не можна видалити проведену накладну. Спочатку скасуйте її.')
+    if (invoice.status !== 'draft' || Number(invoice.paid_amount ?? 0) > 0) {
+      throw new Error('Видалити можна лише неоплачену чернетку накладної. Проведені, скасовані та оплачені документи залишаються в історії.')
+    }
     const timestamp = nowIso()
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM supplier_payments WHERE invoice_id = ? AND tenant_id = ?').run(id, tenantId)

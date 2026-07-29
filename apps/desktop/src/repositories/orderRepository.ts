@@ -13,6 +13,9 @@ function parseJson(value: string | null): any { if (!value) return null; try { r
 
 const ACTIVE_STATUSES = ['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']
 const NON_ISSUEABLE = new Set(['canceled', 'archived'])
+const TERMINAL_STATUSES = new Set(['completed', 'canceled', 'archived'])
+const MANUAL_ORDER_STATUSES = new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'])
+const MANUAL_ITEM_STATUSES = new Set(['pending', 'ordered', 'arrived', 'canceled'])
 
 type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
 
@@ -58,8 +61,23 @@ export class LocalOrderRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = nowIso()
     const id = orderId ?? randomUUID()
+    if (!orderId && input.exchange_source_order_id) {
+      const prior = this.db.prepare(`
+        SELECT id FROM customer_orders
+        WHERE tenant_id = ? AND exchange_source_order_id = ? AND deleted_at IS NULL
+        LIMIT 1
+      `).get(tenantId, input.exchange_source_order_id) as { id: string } | undefined
+      if (prior) return this.getOrder(prior.id, tenantId)
+      const source = this.getOrder(input.exchange_source_order_id, tenantId)
+      if (!source || source.status !== 'completed' || !source.sale_id) {
+        throw new Error('Обмін можна створити тільки для виданого замовлення з чеком')
+      }
+    }
     const existing = orderId ? this.getOrder(orderId, tenantId) : null
     if (orderId && !existing) throw new Error('Замовлення не знайдено')
+    if (existing && TERMINAL_STATUSES.has(String(existing.status))) {
+      throw new Error('Завершене, скасоване або архівне замовлення не можна редагувати')
+    }
     const rawItems = Array.isArray(input.items) ? input.items : existing?.items ?? []
     const items = rawItems.map((item: any) => {
       const product = item.product_id ? this.db.prepare(`
@@ -71,6 +89,10 @@ export class LocalOrderRepository {
         requires_core_return: number
         core_deposit_amount: number
       } | undefined : undefined
+      const itemStatus = String(item.item_status ?? 'pending')
+      if (!MANUAL_ITEM_STATUSES.has(itemStatus)) {
+        throw new Error('Видача або повернення позиції виконується тільки через касу')
+      }
       const savedCoreDeposit = Math.max(0, Math.round(num(item.core_deposit_amount)))
       const coreDepositAmount = savedCoreDeposit > 0
         ? savedCoreDeposit
@@ -79,6 +101,7 @@ export class LocalOrderRepository {
           : 0
       return {
         ...item,
+        item_status: itemStatus,
         core_deposit_amount: coreDepositAmount,
         core_return_status: item.core_return_status
           ?? (coreDepositAmount > 0 ? 'pending' : 'none'),
@@ -92,8 +115,9 @@ export class LocalOrderRepository {
     }, 0)
     const orderNumber = existing?.order_number ?? this.nextOrderNumber(tenantId, timestamp)
     const status = existing?.status ?? 'lead'
-    const totalPaid = existing?.total_paid ?? num(input.prepayment)
-    const prepayment = existing?.prepayment ?? num(input.prepayment)
+    // Payment totals are a ledger projection and may only be changed by POS operations.
+    const totalPaid = existing?.total_paid ?? 0
+    const prepayment = existing?.prepayment ?? 0
 
     this.db.transaction(() => {
       this.db.prepare(`
@@ -101,8 +125,8 @@ export class LocalOrderRepository {
           id, tenant_id, order_number, kp_number, customer_id, chat_id, manager_id,
           vehicle_info_json, status, prepayment, prepayment_method,
           prepayment_is_fiscal, total_amount, total_paid, discount_amount,
-          pickup_deadline_at, pickup_cell, comment, source, dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          pickup_deadline_at, pickup_cell, comment, source, exchange_source_order_id, dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           customer_id = excluded.customer_id,
           chat_id = excluded.chat_id,
@@ -126,14 +150,15 @@ export class LocalOrderRepository {
         input.chat_id !== undefined ? input.chat_id : existing?.chat_id ?? null,
         input.manager_id ?? existing?.manager_id ?? 'local',
         JSON.stringify(input.vehicle_info !== undefined ? input.vehicle_info : existing?.vehicle_info ?? null),
-        status, num(input.prepayment ?? prepayment),
+        status, prepayment,
         input.prepayment_method !== undefined ? input.prepayment_method : existing?.prepayment_method ?? null,
         input.prepayment_is_fiscal === true ? 1 : existing?.prepayment_is_fiscal ? 1 : 0,
-        totalAmount, num(input.prepayment ?? totalPaid), existing?.discount_amount ?? 0,
+        totalAmount, totalPaid, existing?.discount_amount ?? 0,
         input.pickup_deadline_at ?? existing?.pickup_deadline_at ?? null,
         input.pickup_cell ?? existing?.pickup_cell ?? null,
         input.comment !== undefined ? input.comment : existing?.comment ?? null,
         input.source ?? existing?.source ?? 'walk_in',
+        input.exchange_source_order_id ?? existing?.exchange_source_order_id ?? null,
         timestamp, existing?.created_at ?? timestamp, timestamp,
       )
 
@@ -196,7 +221,21 @@ export class LocalOrderRepository {
 
   deleteOrder(orderId: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
     const timestamp = nowIso()
-    if (!this.getOrder(orderId, tenantId)) throw new Error('Замовлення не знайдено')
+    const order = this.getOrder(orderId, tenantId)
+    if (!order) throw new Error('Замовлення не знайдено')
+    const ledger = this.db.prepare(`
+      SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS paid
+      FROM order_payments
+      WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
+    `).get(tenantId, orderId) as { count: number; paid: number } | undefined
+    if (!['lead', 'quoted', 'new'].includes(String(order.status))
+      || num(order.prepayment) !== 0
+      || num(order.total_paid) !== 0
+      || num(ledger?.count) > 0
+      || num(ledger?.paid) !== 0
+      || order.sale_id) {
+      throw new Error('Видалити можна лише неоплачений чернетковий заказ. Інший заказ можна скасувати або архівувати.')
+    }
     this.db.transaction(() => {
       this.db.prepare(`
         UPDATE customer_orders SET deleted_at = ?, dirty_at = ?, updated_at = ?
@@ -217,7 +256,14 @@ export class LocalOrderRepository {
 
   updateOrderStatus(orderId: string, status: string, tenantId = DEFAULT_TENANT_ID): any {
     const timestamp = nowIso()
-    if (!this.getOrder(orderId, tenantId)) throw new Error('Замовлення не знайдено')
+    const order = this.getOrder(orderId, tenantId)
+    if (!order) throw new Error('Замовлення не знайдено')
+    if (TERMINAL_STATUSES.has(String(order.status))) {
+      throw new Error('Статус завершеного, скасованого або архівного замовлення змінювати не можна')
+    }
+    if (!MANUAL_ORDER_STATUSES.has(status)) {
+      throw new Error('Видача та скасування замовлення виконуються тільки окремою безпечною дією в касі')
+    }
     this.db.prepare(`
       UPDATE customer_orders SET status = ?, dirty_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
@@ -228,6 +274,14 @@ export class LocalOrderRepository {
 
   updateOrderItemStatus(orderId: string, itemId: string, itemStatus: string, tenantId = DEFAULT_TENANT_ID): any {
     const timestamp = nowIso()
+    const order = this.getOrder(orderId, tenantId)
+    if (!order) throw new Error('Замовлення не знайдено')
+    if (TERMINAL_STATUSES.has(String(order.status))) {
+      throw new Error('Позиції завершеного, скасованого або архівного замовлення змінювати не можна')
+    }
+    if (!MANUAL_ITEM_STATUSES.has(itemStatus)) {
+      throw new Error('Видача або повернення позиції виконується тільки через касу')
+    }
     const result = this.db.prepare(`
       UPDATE customer_order_items SET item_status = ?, dirty_at = ?, updated_at = ?
       WHERE id = ? AND order_id = ? AND tenant_id = ? AND deleted_at IS NULL

@@ -132,6 +132,7 @@ const createOrderSchema = z.object({
   prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
   prepayment_is_fiscal:  z.boolean().default(false),
   parent_draft_id:       z.string().uuid().optional().nullable(),
+  exchange_source_order_id: z.string().uuid().optional().nullable(),
   items: z.array(z.object({
     sku:          z.string().max(100).optional().nullable(),
     name:         z.string().min(1).max(500),
@@ -183,6 +184,28 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
         .eq('id', input.parent_draft_id).eq('tenant_id', req.user!.tenant_id).maybeSingle()
       if (!data) throw new AppError('ORDER_NOT_FOUND', 'Батьківську чернетку не знайдено', 404)
     }
+    if (input.exchange_source_order_id) {
+      const { data: priorExchange, error: priorError } = await db.from('customer_orders')
+        .select('*, items:customer_order_items(*)')
+        .eq('tenant_id', req.user!.tenant_id)
+        .eq('exchange_source_order_id', input.exchange_source_order_id)
+        .is('deleted_at', null)
+        .maybeSingle()
+      if (priorError) throw new AppError('DB_ERROR', priorError.message, 500)
+      if (priorExchange) {
+        res.status(200).json({ data: priorExchange, replayed: true })
+        return
+      }
+      const { data: sourceOrder } = await db.from('customer_orders')
+        .select('id,status,sale_id')
+        .eq('id', input.exchange_source_order_id)
+        .eq('tenant_id', req.user!.tenant_id)
+        .is('deleted_at', null)
+        .maybeSingle()
+      if (!sourceOrder || sourceOrder.status !== 'completed' || !sourceOrder.sale_id) {
+        throw new AppError('EXCHANGE_SOURCE_INVALID', 'Обмін можна створити тільки для виданого замовлення з чеком', 409)
+      }
+    }
 
     const supplierIds = [...new Set(input.items.map((item) => item.supplier_id).filter(Boolean) as string[])]
     if (supplierIds.length > 0) {
@@ -227,6 +250,7 @@ router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next
         comment: input.comment ?? null,
         source: input.source,
         parent_draft_id: input.parent_draft_id ?? null,
+        exchange_source_order_id: input.exchange_source_order_id ?? null,
         discount_amount: 0,
       })
       .select()
@@ -897,19 +921,23 @@ export async function updateOrderStatus(orderId: string, tenantId: string, userI
 router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
   try {
     const schema = z.object({
-      item_status: z.enum(['pending', 'ordered', 'arrived', 'handed', 'canceled']),
+      item_status: z.enum(['pending', 'ordered', 'arrived', 'canceled']),
       supplier_expected_date: z.string().optional().nullable(),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний статус', 422)
     const { data: oldItem, error: oldItemError } = await db.from('customer_order_items')
-      .select('*, order:customer_orders!inner(tenant_id)')
+      .select('*, order:customer_orders!inner(tenant_id,status)')
       .eq('id', req.params.itemId)
       .eq('order_id', req.params.id)
       .eq('order.tenant_id', req.user!.tenant_id)
       .maybeSingle()
     if (oldItemError) throw new AppError('DB_ERROR', oldItemError.message, 500)
     if (!oldItem) throw new AppError('ITEM_NOT_FOUND', 'Позицію замовлення не знайдено', 404)
+    const parentOrder = Array.isArray((oldItem as any).order) ? (oldItem as any).order[0] : (oldItem as any).order
+    if (['completed', 'canceled', 'archived'].includes(String(parentOrder?.status ?? ''))) {
+      throw new AppError('ORDER_IMMUTABLE', 'Позиції завершеного, скасованого або архівного замовлення змінювати не можна', 409)
+    }
 
     const updateData: Record<string, unknown> = {
       item_status: parsed.data.item_status,
@@ -1004,8 +1032,7 @@ router.patch('/:id/items/:itemId/status', requireRole('owner', 'admin', 'manager
 router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const schema = z.object({
-      status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'canceled', 'archived']),
-      callback_at: z.string().optional().nullable(),
+      status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірний статус', 422)
@@ -1016,7 +1043,11 @@ router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req
       .select('status')
       .eq('id', req.params.id)
       .eq('tenant_id', req.user!.tenant_id)
-      .single()
+      .maybeSingle()
+    if (!oldOrder) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
+    if (['completed', 'canceled', 'archived'].includes(oldOrder.status)) {
+      throw new AppError('ORDER_IMMUTABLE', 'Статус завершеного, скасованого або архівного замовлення змінювати не можна', 409)
+    }
 
     const { data: order, error } = await db.rpc('update_customer_order_status', {
       p_tenant_id: req.user!.tenant_id,
@@ -1039,14 +1070,13 @@ router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req
       order_id: req.params.id,
       user_id: req.user!.id,
       action: 'status_changed',
-      details: { new_status: parsed.data.status, callback_at: parsed.data.callback_at ?? null },
+      details: { new_status: parsed.data.status },
     })
 
     await auditOrder(req, 'order_status_changed', String(req.params.id), {
       status: oldOrder?.status,
     }, {
       status: parsed.data.status,
-      callback_at: parsed.data.callback_at ?? null,
     })
 
     // Сповіщення в Telegram при зміні статусу менеджером
@@ -1293,7 +1323,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
         supplier_id:    z.string().uuid().optional().nullable(),
         source_type:    z.enum(['warehouse', 'supplier']).default('supplier'),
         item_type:      z.enum(['product', 'service']).default('product'),
-        item_status:    z.enum(['pending', 'ordered', 'arrived', 'handed', 'canceled', 'returned']).optional(),
+        item_status:    z.enum(['pending', 'ordered', 'arrived', 'canceled']).optional(),
         buy_price:      z.number().int().min(0).default(0),
         sell_price:     z.number().int().min(0).default(0),
         qty:            z.number().min(0.001).default(1),
@@ -1315,7 +1345,9 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       .maybeSingle()
     if (orderError) throw new AppError('DB_ERROR', orderError.message, 500)
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
-    if (order.status === 'completed') throw new AppError('ALREADY_COMPLETED', 'Завершене замовлення не можна редагувати', 400)
+    if (['completed', 'canceled', 'archived'].includes(order.status)) {
+      throw new AppError('ORDER_IMMUTABLE', 'Завершене, скасоване або архівне замовлення не можна редагувати', 409)
+    }
 
     // Оновлюємо основні поля
     const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -1484,6 +1516,22 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
       .is('deleted_at', null)
       .single()
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
+
+    const { data: payments, error: paymentsError } = await db.from('order_payments')
+      .select('id,amount')
+      .eq('tenant_id', req.user!.tenant_id)
+      .eq('order_id', orderId)
+      .is('deleted_at', null)
+    if (paymentsError) throw new AppError('DB_ERROR', paymentsError.message, 500)
+    const paidInLedger = (payments ?? []).reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0)
+    if (!['lead', 'quoted', 'new'].includes(order.status)
+      || Number(order.prepayment ?? 0) !== 0
+      || Number(order.total_paid ?? 0) !== 0
+      || paidInLedger !== 0
+      || (payments?.length ?? 0) > 0
+      || order.sale_id) {
+      throw new AppError('ORDER_DELETE_FORBIDDEN', 'Видалити можна лише неоплачений чернетковий заказ. Інший заказ можна скасувати або архівувати.', 409)
+    }
 
     const deletedAt = new Date().toISOString()
     const { error } = await db.from('customer_orders').update({

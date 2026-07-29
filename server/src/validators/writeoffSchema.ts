@@ -9,7 +9,15 @@ export const createWriteoffSchema = z.object({
   items:  z.array(z.object({
     product_id: z.string().uuid(),
     qty:        z.number().positive(),
-  })).min(1),
+  })).min(1).superRefine((items, ctx) => {
+    const seen = new Set<string>()
+    items.forEach((item, index) => {
+      if (seen.has(item.product_id)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'product_id'], message: 'Товар уже додано до акта списання' })
+      }
+      seen.add(item.product_id)
+    })
+  }),
 })
 
 export const writeoffListSchema = z.object({

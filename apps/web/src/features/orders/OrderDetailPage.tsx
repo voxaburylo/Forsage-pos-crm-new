@@ -105,7 +105,7 @@ function itemStatusLabel(item: CustomerOrder['items'][number]): string {
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: string; icon: string }>> = {
   pending:  [{ status: 'ordered', label: 'Замовити постачальнику', icon: '📥' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
   ordered:  [{ status: 'arrived', label: 'Приїхало', icon: '📦' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
-  arrived:  [{ status: 'handed',  label: 'Видано',   icon: '✅' }],
+  // Issuing stock is intentionally absent here: it must create a receipt in POS.
 }
 
 export default function OrderDetailPage() {
@@ -287,7 +287,7 @@ export default function OrderDetailPage() {
   const isDraft     = order.status === 'lead' && ['walk_in', 'mobile_draft'].includes(order.source)
   // Звичайне (не чернетка, не завершене/скасоване) замовлення можна редагувати
   // напряму — раніше кнопки редагування тут не було взагалі
-  const canEdit     = !isDraft && !['completed', 'canceled'].includes(order.status)
+  const canEdit     = !isDraft && !['completed', 'canceled', 'archived'].includes(order.status)
   const hasPendingWarehouseItems = order.items.some((i) => i.source_type === 'warehouse' && i.item_status === 'pending')
 
   return (

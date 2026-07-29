@@ -297,6 +297,7 @@ export class LocalInventoryRepository {
     const session = this.requireActiveSession(sessionId, tenantId)
     const timestamp = nowIso()
     const items = this.listCountedItems(sessionId, tenantId, -1)
+    if (items.length === 0) throw new Error('Неможливо завершити порожню ревізію. Спочатку додайте хоча б один порахований товар.')
     let updated = 0
     this.db.transaction(() => {
       for (const item of items) {
@@ -334,7 +335,11 @@ export class LocalInventoryRepository {
         created_by: session.created_by ?? input.user_id ?? null,
         created_at: session.created_at,
         completed_at: timestamp,
-        items: items.map((item) => ({ product_id: item.product_id, counted_stock: num(item.counted_stock) })),
+        items: items.map((item) => ({
+          product_id: item.product_id,
+          expected_stock: num(item.expected_stock),
+          counted_stock: num(item.counted_stock),
+        })),
       }, timestamp)
     })
     return { items_updated: updated }

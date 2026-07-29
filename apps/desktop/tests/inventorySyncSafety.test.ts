@@ -41,6 +41,14 @@ describe('local inventory synchronization safety', () => {
     expect(inventory.listSessions()).toEqual([])
   })
 
+  it('rejects completing an empty inventory session', () => {
+    const userId = randomUUID()
+    const session = inventory.createSession({ name: 'Порожня ревізія', created_by: userId })
+    inventory.startSession(session.id, { user_id: userId })
+
+    expect(() => inventory.complete(session.id, { user_id: userId })).toThrow('Неможливо завершити порожню ревізію')
+    expect(inventory.getSessionData(session.id).status).toBe('in_progress')
+  })
   it('removes a remotely deleted session and stale local lifecycle operations', () => {
     const sessionId = randomUUID()
     const userId = randomUUID()

@@ -31,7 +31,6 @@ import {
 } from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { orderApi } from '@/features/orders/orderApi'
-import { startRepeatOrder } from '@/features/orders/orderActions'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
 const METHODS = Object.entries(REFUND_METHOD_LABELS) as [RefundMethod, string][]
@@ -577,7 +576,8 @@ export default function ReturnForm() {
     if (!exchangeOrderId) return
     try {
       const { data: order } = await orderApi.get(exchangeOrderId, { silent: true })
-      startRepeatOrder(order, navigate)
+      const { data: exchangeOrder } = await orderApi.createExchange(order, { silent: true })
+      navigate('/orders/' + exchangeOrder.id)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося створити замовлення на заміну')
     }

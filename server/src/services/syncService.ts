@@ -1520,20 +1520,37 @@ async function applyOrderUpsert(tenantId: string, userId: string, operation: Syn
       [orderId, tenantId],
     )
     const existing = existingResult.rows[0] ?? null
+    // A delayed editor snapshot must never reopen or rewrite a terminal order.
+    if (existing && ['completed', 'canceled', 'archived'].includes(String(existing.status))) return
     const owns = (key: string): boolean => Object.prototype.hasOwnProperty.call(payload, key)
     const fromPayload = (key: string, fallback: any): any => owns(key) ? payload[key] : fallback
     const managerId = uuidOr(fromPayload('manager_id', existing?.manager_id), userId)
     const orderNumberValue = fromPayload('order_number', existing?.order_number ?? null)
     const orderNumber = Number.isFinite(Number(orderNumberValue)) ? Number(orderNumberValue) : null
+    const requestedStatus = String(fromPayload('status', existing?.status ?? 'lead'))
+    if (!new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']).has(requestedStatus)) {
+      throw new AppError('SYNC_ORDER_STATUS_INVALID', 'Закриття замовлення виконується тільки окремою безпечною операцією', 409)
+    }
+    const exchangeSourceId = isUuid(fromPayload('exchange_source_order_id', existing?.exchange_source_order_id))
+      ? String(fromPayload('exchange_source_order_id', existing?.exchange_source_order_id))
+      : null
+    if (!existing && exchangeSourceId) {
+      const source = await client.query(
+        `SELECT id FROM customer_orders
+         WHERE id = $1 AND tenant_id = $2 AND status = 'completed' AND sale_id IS NOT NULL AND deleted_at IS NULL`,
+        [exchangeSourceId, tenantId],
+      )
+      if (!source.rowCount) throw new AppError('SYNC_EXCHANGE_SOURCE_INVALID', 'Обмін можна створити тільки для виданого замовлення з чеком', 409)
+    }
 
     await client.query(
       `INSERT INTO customer_orders (
         id, tenant_id, order_number, customer_id, chat_id, manager_id, vehicle_info,
         status, prepayment, prepayment_method, prepayment_is_fiscal, total_amount,
         total_paid, discount_amount, pickup_deadline_at, pickup_cell, comment, source,
-        created_at, updated_at, deleted_at
+        exchange_source_order_id, created_at, updated_at, deleted_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14,$15,$16,$17,$18,$19,NULL
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14,$15,$16,$17,$18,$19,$20,NULL
       )
       ON CONFLICT (id) DO UPDATE SET
         order_number = EXCLUDED.order_number,
@@ -1563,16 +1580,17 @@ async function applyOrderUpsert(tenantId: string, userId: string, operation: Syn
         isUuid(fromPayload('chat_id', existing?.chat_id)) ? fromPayload('chat_id', existing?.chat_id) : null,
         managerId,
         fromPayload('vehicle_info', existing?.vehicle_info ?? null),
-        fromPayload('status', existing?.status ?? 'lead'),
-        Number(fromPayload('prepayment', existing?.prepayment ?? 0)),
+        requestedStatus,
+        Number(existing?.prepayment ?? 0),
         fromPayload('prepayment_method', existing?.prepayment_method ?? null),
         fromPayload('prepayment_is_fiscal', existing?.prepayment_is_fiscal ?? false) === true,
         Number(fromPayload('total_amount', existing?.total_amount ?? 0)),
-        Number(fromPayload('total_paid', existing?.total_paid ?? fromPayload('prepayment', 0))),
+        Number(existing?.total_paid ?? 0),
         fromPayload('pickup_deadline_at', existing?.pickup_deadline_at ?? null),
         fromPayload('pickup_cell', existing?.pickup_cell ?? null),
         fromPayload('comment', existing?.comment ?? null),
         fromPayload('source', existing?.source ?? 'walk_in'),
+        exchangeSourceId,
         existing?.created_at ?? payload.created_at ?? timestamp,
         timestamp,
       ],
@@ -1583,6 +1601,10 @@ async function applyOrderUpsert(tenantId: string, userId: string, operation: Syn
     const incomingIds: string[] = []
     for (const item of items) {
       const itemId = isUuid(item?.id) ? item.id : randomUUID()
+      const requestedItemStatus = String(item?.item_status ?? 'pending')
+      if (!new Set(['pending', 'ordered', 'arrived', 'canceled']).has(requestedItemStatus)) {
+        throw new AppError('SYNC_ORDER_ITEM_STATUS_INVALID', 'Видача або повернення позиції виконується тільки через касу', 409)
+      }
       incomingIds.push(itemId)
       await client.query(
         `INSERT INTO customer_order_items (
@@ -1614,7 +1636,7 @@ async function applyOrderUpsert(tenantId: string, userId: string, operation: Syn
           isUuid(item?.supplier_id) ? item.supplier_id : null,
           item?.source_type === 'warehouse' ? 'warehouse' : 'supplier',
           item?.item_type === 'service' ? 'service' : 'product',
-          item?.item_status ?? 'pending',
+          requestedItemStatus,
           Number(item?.buy_price ?? 0),
           Number(item?.sell_price ?? 0),
           Number(item?.qty ?? 1),
@@ -1639,6 +1661,28 @@ async function applyOrderUpsert(tenantId: string, userId: string, operation: Syn
 
 async function applyOrderDeleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
+    const order = await client.query(
+      `SELECT o.status, o.prepayment, o.total_paid, o.sale_id,
+              COUNT(p.id)::integer AS payment_count,
+              COALESCE(SUM(p.amount), 0)::bigint AS ledger_paid
+       FROM customer_orders o
+       LEFT JOIN order_payments p
+         ON p.order_id = o.id AND p.tenant_id = o.tenant_id AND p.deleted_at IS NULL
+       WHERE o.id = $1 AND o.tenant_id = $2 AND o.deleted_at IS NULL
+       GROUP BY o.id
+       FOR UPDATE OF o`,
+      [operation.aggregate_id, tenantId],
+    )
+    if (!order.rowCount) return
+    const row = order.rows[0]
+    if (!['lead', 'quoted', 'new'].includes(String(row.status))
+      || Number(row.prepayment ?? 0) !== 0
+      || Number(row.total_paid ?? 0) !== 0
+      || Number(row.payment_count ?? 0) !== 0
+      || Number(row.ledger_paid ?? 0) !== 0
+      || row.sale_id) {
+      throw new AppError('SYNC_ORDER_DELETE_FORBIDDEN', 'Видалити можна лише неоплачений чернетковий заказ', 409)
+    }
     await client.query(
       'UPDATE customer_orders SET deleted_at = $3, deleted_by = $4, updated_at = $3 WHERE id = $1 AND tenant_id = $2',
       [operation.aggregate_id, tenantId, operation.created_at, userId],
@@ -1654,30 +1698,39 @@ async function applyOrderDeleted(tenantId: string, userId: string, operation: Sy
 
 async function applyOrderStatusUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const status = String(operation.payload?.status ?? '')
-  const allowed = new Set(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready', 'completed', 'canceled', 'archived'])
-  if (!allowed.has(status)) throw new AppError('SYNC_ORDER_STATUS_INVALID', 'Некоректний статус замовлення', 400)
+  const allowed = new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'])
+  if (!allowed.has(status)) {
+    throw new AppError('SYNC_ORDER_STATUS_INVALID', 'Видача та скасування замовлення виконуються окремою безпечною операцією', 409)
+  }
   await runTransaction(async (client) => {
     const result = await client.query(
-      'UPDATE customer_orders SET status = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL',
+      `UPDATE customer_orders SET status = $3, updated_at = $4
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         AND status NOT IN ('completed', 'canceled', 'archived')`,
       [operation.aggregate_id, tenantId, status, operation.created_at],
     )
-    if (!result.rowCount) throw new AppError('SYNC_ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
+    if (!result.rowCount) throw new AppError('SYNC_ORDER_IMMUTABLE', 'Замовлення не знайдено або його вже закрито', 409)
   })
 }
 
 async function applyOrderItemStatusUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   if (!isUuid(payload.item_id)) throw new AppError('SYNC_ORDER_ITEM_INVALID', 'Некоректна позиція замовлення', 400)
+  const itemStatus = String(payload.item_status ?? '')
+  if (!new Set(['pending', 'ordered', 'arrived', 'canceled']).has(itemStatus)) {
+    throw new AppError('SYNC_ORDER_ITEM_STATUS_INVALID', 'Видача або повернення позиції виконується тільки через касу', 409)
+  }
   await runTransaction(async (client) => {
     const result = await client.query(
       `UPDATE customer_order_items i
        SET item_status = $3
        FROM customer_orders o
        WHERE i.id = $1 AND i.order_id = o.id AND o.tenant_id = $2 AND o.deleted_at IS NULL
+         AND o.status NOT IN ('completed', 'canceled', 'archived')
        RETURNING i.order_id`,
-      [payload.item_id, tenantId, payload.item_status ?? 'pending'],
+      [payload.item_id, tenantId, itemStatus],
     )
-    if (!result.rowCount) throw new AppError('SYNC_ORDER_ITEM_NOT_FOUND', 'Позицію замовлення не знайдено', 404)
+    if (!result.rowCount) throw new AppError('SYNC_ORDER_ITEM_IMMUTABLE', 'Позицію не знайдено або замовлення вже закрито', 409)
     await client.query(
       'UPDATE customer_orders SET updated_at = $3 WHERE id = $1 AND tenant_id = $2',
       [result.rows[0].order_id, tenantId, operation.applied_at ?? operation.created_at],
@@ -1696,6 +1749,7 @@ async function applyOrderItemsArrived(tenantId: string, operation: SyncOutboxOpe
        WHERE i.id = ANY($1::uuid[])
          AND o.tenant_id = $2
          AND o.deleted_at IS NULL
+         AND o.status NOT IN ('completed', 'canceled', 'archived')
        FOR UPDATE OF i`,
       [ids, tenantId],
     )
@@ -1737,8 +1791,8 @@ async function applyOrderCanceled(
     )
     if (!orderResult.rowCount) throw new AppError('SYNC_ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
     const order = orderResult.rows[0]
-    if (order.status === 'completed') {
-      throw new AppError('SYNC_ORDER_COMPLETED', 'Завершене замовлення не можна скасувати', 409)
+    if (order.status === 'completed' || order.status === 'archived') {
+      throw new AppError('SYNC_ORDER_COMPLETED', 'Завершене або архівне замовлення не можна скасувати', 409)
     }
     if (order.status === 'canceled') return
 
@@ -1753,7 +1807,7 @@ async function applyOrderCanceled(
       Number(order.prepayment ?? 0),
       Number(payments.rows[0]?.paid_amount ?? 0),
     )
-    if (paidAmount > 0 && (payload.refund_prepayment === true || payload.keep_as_credit === true)) {
+    if (paidAmount > 0) {
       throw new AppError(
         'SYNC_FINANCIAL_CANCEL_REJECTED',
         'Повернення оплати скасованого замовлення потрібно підтвердити через касу',
@@ -2097,6 +2151,12 @@ async function applyWriteoffCreated(tenantId: string, userId: string, operation:
   const writeoffId = String(payload.id ?? operation.aggregate_id)
   const items = Array.isArray(payload.items) ? payload.items : []
   if (!isUuid(writeoffId) || items.length === 0) throw new AppError('SYNC_WRITEOFF_INVALID', 'Некоректне списання', 400)
+  if (items.some((item: any) => !isUuid(item?.product_id) || !Number.isFinite(Number(item?.qty)) || Number(item.qty) <= 0)) {
+    throw new AppError('SYNC_WRITEOFF_INVALID', 'Некоректна позиція списання', 422)
+  }
+  if (new Set(items.map((item: any) => item.product_id)).size !== items.length) {
+    throw new AppError('SYNC_WRITEOFF_DUPLICATE', 'Один товар не можна списувати двома рядками', 422)
+  }
   await runTransaction(async (client) => {
     const claim = await client.query(
       `INSERT INTO inventory_writeoffs (id, tenant_id, reason, notes, created_by, created_at)
@@ -2113,8 +2173,9 @@ async function applyWriteoffCreated(tenantId: string, userId: string, operation:
       if (existing.rowCount) return
       throw new AppError('SYNC_WRITEOFF_TENANT_CONFLICT', 'Акт списання належить іншому магазину', 409)
     }
+    await client.query(`SELECT set_config('app.stock_source_type', 'writeoff', true)`)
+    await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [writeoffId])
     for (const item of items) {
-      if (!isUuid(item?.product_id) || Number(item?.qty ?? 0) <= 0) continue
       const product = await client.query(
         `SELECT purchase_price, COALESCE(qty_on_hand, 0) AS qty_on_hand
          FROM products
@@ -2164,7 +2225,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
     ? requestedRefundMethod
     : 'cash'
   const createdAt = payload.created_at ?? operation.created_at
-  const returnShiftId = isUuid(payload.shift_id) ? payload.shift_id : null
+  let returnShiftId = isUuid(payload.shift_id) ? payload.shift_id : null
 
   await runTransaction(async (client) => {
     await client.query("SELECT set_config('app.sync_mode', 'true', true)")
@@ -2175,7 +2236,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
     if (existing.rowCount) return
 
     const saleResult = await client.query(
-      `SELECT id, sale_number, customer_id, shift_id, cashier_id
+      `SELECT id, sale_number, customer_id, shift_id, cashier_id, completed_at, payment_method, cash_amount, total
        FROM sales
        WHERE id = $1 AND tenant_id = $2 AND status IN ('completed', 'returned')
        FOR UPDATE`,
@@ -2227,20 +2288,29 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       if (quantity > available) {
         throw new AppError('SYNC_RETURN_QTY_INVALID', `Для товару доступно до повернення: ${Math.max(0, available)}`, 422)
       }
-      const unitPrice = Math.round(Number(item?.unit_price ?? saleItem.unit_price ?? 0))
+      const unitPrice = Math.round(Number(saleItem.unit_price ?? 0))
+      const alreadyPrepared = preparedItems.find((prepared) => prepared.saleItemId === saleItem.id)
+      if (alreadyPrepared) {
+        if (alreadyPrepared.quantity + quantity > available) {
+          throw new AppError('SYNC_RETURN_QTY_INVALID', 'Для товару доступно до повернення: ' + Math.max(0, available), 422)
+        }
+        alreadyPrepared.quantity += quantity
+        alreadyPrepared.total = Math.round(alreadyPrepared.quantity * alreadyPrepared.unitPrice)
+        continue
+      }
       preparedItems.push({
         id: isUuid(item?.id) ? item.id : randomUUID(),
         saleItemId: saleItem.id,
         productId,
         quantity,
         unitPrice,
-        total: Math.max(0, Math.round(Number(item?.total ?? quantity * unitPrice))),
+        total: Math.max(0, Math.round(quantity * unitPrice)),
         condition: allowedConditions.has(String(item?.condition)) ? String(item.condition) : 'good',
       })
     }
 
     const calculatedRefund = preparedItems.reduce((sum, item) => sum + item.total, 0)
-    const refund = Math.max(0, Math.round(Number(payload.refund_kopecks ?? calculatedRefund)))
+    const refund = calculatedRefund
     await client.query(
       `INSERT INTO returns (
         id, tenant_id, sale_id, customer_id, return_type, reason, reason_text,
@@ -2266,6 +2336,8 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       ],
     )
 
+    await client.query(`SELECT set_config('app.stock_source_type', 'return', true)`)
+    await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [returnId])
     for (const item of preparedItems) {
       await client.query(
         `INSERT INTO return_items (
@@ -2286,19 +2358,64 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
     }
 
     if (refundMethod === 'cash' && refund > 0) {
-      if (!returnShiftId) {
-        throw new AppError('SYNC_RETURN_SHIFT_REQUIRED', 'Для повернення готівки не вказано касову зміну', 400)
-      }
-      const returnShift = await client.query(
+      returnShiftId = returnShiftId ?? (isUuid(sale.shift_id) ? String(sale.shift_id) : null)
+      let validShift: { rowCount: number | null; rows: Array<Record<string, any>> } = returnShiftId ? await client.query(
         `SELECT id FROM shifts
          WHERE id = $1 AND tenant_id = $2
            AND opened_at <= $3
            AND (closed_at IS NULL OR closed_at >= $3)
-         LIMIT 1`,
+         LIMIT 1
+         FOR UPDATE`,
         [returnShiftId, tenantId, createdAt],
+      ) : { rowCount: 0, rows: [] }
+
+      // Older desktop builds could keep selling after a locally open shift had already
+      // closed on the server. Move that sale into a clearly marked reconciliation
+      // shift instead of appending cash to a closed historical shift.
+      if (!validShift.rowCount) {
+        const reconciliationShiftId = randomUUID()
+        const saleCash = sale.payment_method === 'cash'
+          ? Math.max(0, Number(sale.cash_amount ?? sale.total ?? 0))
+          : Math.max(0, Number(sale.cash_amount ?? 0))
+        const openingCash = Math.max(0, refund - saleCash)
+        const expectedCash = Math.max(0, openingCash + saleCash - refund)
+        await client.query(
+          `INSERT INTO shifts (
+             id, tenant_id, cashier_id, status, opening_cash, closing_cash,
+             expected_cash, cash_variance, opened_at, closed_at, notes, created_at
+           ) VALUES ($1,$2,$3,'closed',$4,$5,$5,0,LEAST($6::timestamptz,$7::timestamptz),$7,$8,LEAST($6::timestamptz,$7::timestamptz))`,
+          [
+            reconciliationShiftId, tenantId, uuidOr(sale.cashier_id, userId),
+            openingCash, expectedCash, sale.completed_at ?? createdAt, createdAt,
+            'Автоматична звірка офлайн-продажу та повернення після закриття старої зміни',
+          ],
+        )
+        await client.query(
+          'UPDATE sales SET shift_id = $1 WHERE id = $2 AND tenant_id = $3',
+          [reconciliationShiftId, saleId, tenantId],
+        )
+        returnShiftId = reconciliationShiftId
+        validShift = { rowCount: 1, rows: [{ id: reconciliationShiftId }] }
+      }
+
+      const cashBalance = await client.query(
+        `SELECT GREATEST(0,
+           COALESCE(s.opening_cash, 0)
+           + COALESCE((SELECT SUM(CASE
+               WHEN sale.payment_method = 'cash' THEN COALESCE(NULLIF(sale.cash_amount, 0), sale.total)
+               ELSE COALESCE(sale.cash_amount, 0)
+             END)
+             FROM sales sale
+             WHERE sale.tenant_id = $2 AND sale.shift_id = s.id AND sale.status IN ('completed','returned')), 0)
+           + COALESCE((SELECT SUM(CASE WHEN op.type = 'in' THEN op.amount ELSE -op.amount END)
+             FROM cash_operations op WHERE op.tenant_id = $2 AND op.shift_id = s.id), 0)
+         )::bigint AS available
+         FROM shifts s WHERE s.id = $1 AND s.tenant_id = $2`,
+        [returnShiftId, tenantId],
       )
-      if (!returnShift.rowCount) {
-        throw new AppError('SYNC_RETURN_SHIFT_INVALID', 'Касову зміну повернення не знайдено', 400)
+      const availableCash = Number(cashBalance.rows[0]?.available ?? 0)
+      if (availableCash < refund) {
+        throw new AppError('CASHBOX_INSUFFICIENT_FUNDS', `У касі недостатньо готівки: доступно ${(availableCash / 100).toFixed(2)} грн`, 409)
       }
       await client.query(
         `INSERT INTO cash_operations (
@@ -2527,10 +2644,52 @@ async function applySuspendedSaleClosed(tenantId: string, operation: SyncOutboxO
 function invoiceLineTotal(item: any): number {
   const itemQty = Number(item?.qty ?? 0)
   const purchasePrice = Number(item?.purchase_price ?? 0)
-  const total = Number(item?.total ?? itemQty * purchasePrice)
-  return Math.max(0, Math.round(total))
+  if (!Number.isFinite(itemQty) || itemQty <= 0 || !Number.isFinite(purchasePrice) || purchasePrice < 0) {
+    throw new AppError('SYNC_INVOICE_ITEM_INVALID', 'Некоректна кількість або закупівельна ціна у накладній', 422)
+  }
+  return Math.max(0, Math.round(itemQty * purchasePrice))
 }
 
+async function assertSyncCashboxHasFunds(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }> },
+  tenantId: string,
+  shiftId: string,
+  amount: number,
+): Promise<void> {
+  const shift = await client.query(
+    `SELECT id, opening_cash FROM shifts
+     WHERE id = $1 AND tenant_id = $2 AND status = 'open'
+     FOR UPDATE`,
+    [shiftId, tenantId],
+  )
+  if (!shift.rowCount) throw new AppError('SHIFT_REQUIRED', 'Касова зміна не знайдена або вже закрита', 409)
+  const balance = await client.query(
+    `SELECT GREATEST(0,
+       COALESCE($3::bigint, 0)
+       + COALESCE((SELECT SUM(CASE
+           WHEN sale.payment_method = 'cash' THEN COALESCE(NULLIF(sale.cash_amount, 0), sale.total)
+           ELSE COALESCE(sale.cash_amount, 0)
+         END)
+         FROM sales sale
+         WHERE sale.shift_id = $1 AND sale.tenant_id = $2 AND sale.status = 'completed'
+           AND NOT EXISTS (
+             SELECT 1 FROM customer_orders order_row
+             WHERE order_row.tenant_id = $2 AND order_row.sale_id = sale.id
+           )), 0)
+       + COALESCE((SELECT SUM(CASE WHEN op.type = 'in' THEN op.amount ELSE -op.amount END)
+         FROM cash_operations op WHERE op.shift_id = $1 AND op.tenant_id = $2), 0)
+     )::bigint AS available`,
+    [shiftId, tenantId, Number(shift.rows[0].opening_cash ?? 0)],
+  )
+  const available = Number(balance.rows[0]?.available ?? 0)
+  if (available < amount) {
+    throw new AppError(
+      'CASHBOX_INSUFFICIENT_FUNDS',
+      `У касі недостатньо грошей. Доступно ${(available / 100).toFixed(2)} грн, потрібно ${(amount / 100).toFixed(2)} грн.`,
+      409,
+    )
+  }
+}
 async function applySupplierInvoiceCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const invoiceId = String(payload.id || operation.aggregate_id)
@@ -2565,6 +2724,10 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
       const paymentId = payload.payment_id ?? randomUUID()
       const method = payload.payment_method ?? 'cash'
       const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
+      if (fundSource === 'cashbox') {
+        if (!isUuid(payload.shift_id)) throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 409)
+        await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, paidAmount)
+      }
       await client.query(
         `INSERT INTO supplier_payments
          (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by, created_at)
@@ -2574,9 +2737,10 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
       )
       if (fundSource === 'cashbox') {
         await client.query(
-          `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, source, created_by, created_at)
-           VALUES ($1,$2,'out',$3,$4,'cashbox',$5,$6)`,
-          [tenantId, payload.shift_id ?? null, paidAmount, 'Оплата постачальнику під час створення накладної', userId, timestamp],
+          `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, source, created_by, created_at)
+           VALUES ($1,$2,$3,'out',$4,$5,'cashbox',$6,$7)
+           ON CONFLICT (id) DO NOTHING`,
+          [paymentId, tenantId, payload.shift_id, paidAmount, 'Оплата постачальнику під час створення накладної', userId, timestamp],
         )
       }
     }
@@ -2677,17 +2841,9 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
     const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
     if (fundSource === 'cashbox') {
       if (!isUuid(payload.shift_id)) {
-        throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 400)
+        throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 409)
       }
-      const shiftResult = await client.query(
-        `SELECT id FROM shifts
-         WHERE id = $1 AND tenant_id = $2 AND status = 'open'
-         FOR UPDATE`,
-        [payload.shift_id, tenantId],
-      )
-      if (!shiftResult.rowCount) {
-        throw new AppError('SHIFT_REQUIRED', 'Касова зміна не знайдена або вже закрита', 400)
-      }
+      await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, amount)
     }
     await client.query(
       `INSERT INTO supplier_payments
@@ -2701,9 +2857,10 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
     )
     if (fundSource === 'cashbox') {
       await client.query(
-        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, source)
-         VALUES ($1,$2,'out',$3,$4,$5,'cashbox')`,
-        [tenantId, payload.shift_id ?? null, amount, payload.note || 'Оплата постачальнику', userId],
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, source)
+         VALUES ($1,$2,$3,'out',$4,$5,$6,'cashbox')
+         ON CONFLICT (id) DO NOTHING`,
+        [paymentId, tenantId, payload.shift_id, amount, payload.note || 'Оплата постачальнику', userId],
       )
     }
   })
@@ -2728,10 +2885,12 @@ async function applySupplierInvoiceCancelled(tenantId: string, operation: SyncOu
 
 async function applySupplierInvoiceDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
-    const invoiceResult = await client.query('SELECT status, deleted_at FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE', [operation.aggregate_id, tenantId])
+    const invoiceResult = await client.query('SELECT status, paid_amount, deleted_at FROM supply_invoices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE', [operation.aggregate_id, tenantId])
     const invoice = invoiceResult.rows[0]
     if (!invoice || invoice.deleted_at) return
-    if (invoice.status === 'posted') throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну', 400)
+    if (invoice.status !== 'draft' || Number(invoice.paid_amount ?? 0) > 0) {
+      throw new AppError('INVOICE_DELETE_FORBIDDEN', 'Видалити можна лише неоплачену чернетку накладної', 409)
+    }
     await client.query(
       `UPDATE supply_invoices
        SET deleted_at = $3, updated_at = $3
@@ -2801,27 +2960,46 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
     )
     if (existing.rowCount) return
 
-    const shiftId = payload.shift_id
+    const payments = Array.isArray(payload.payments) ? payload.payments : []
+    const cashAmount = sumPayments(payments, 'cash')
+    const cardAmount = sumPayments(payments, 'card')
+    const transferAmount = sumPayments(payments, 'transfer')
+    const debtAmount = sumPayments(payments, 'debt')
+    const paymentMethod = normalizePaymentMethod(payload.payment_method)
+    const completedAt = payload.completed_at ?? operation.created_at
+    let shiftId = isUuid(payload.shift_id) ? String(payload.shift_id) : null
+    if (!shiftId) throw new AppError('SYNC_SALE_SHIFT_REQUIRED', 'Для продажу не вказано касову зміну', 422)
     const shift = await client.query(
-      'SELECT id FROM shifts WHERE id = $1 AND tenant_id = $2',
+      'SELECT id, status, opened_at, closed_at FROM shifts WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
       [shiftId, tenantId],
     )
     if (!shift.rowCount) {
       await client.query(
         `INSERT INTO shifts (
           id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at
-        )
-        VALUES ($1, $2, $3, 'open', 0, $4, $5, $4)`,
-        [shiftId, tenantId, payload.cashier_id ?? userId, payload.completed_at ?? operation.created_at, 'Створено під час офлайн-синхронізації'],
+        ) VALUES ($1, $2, $3, 'open', 0, $4, $5, $4)`,
+        [shiftId, tenantId, uuidOr(payload.cashier_id, userId), completedAt, 'Створено під час офлайн-синхронізації'],
       )
+    } else {
+      const row = shift.rows[0]
+      const completedTime = new Date(completedAt).getTime()
+      const outsideInterval = completedTime < new Date(row.opened_at).getTime()
+        || (row.closed_at && completedTime > new Date(row.closed_at).getTime())
+      if (outsideInterval) {
+        shiftId = randomUUID()
+        const expectedCash = Math.max(0, cashAmount)
+        await client.query(
+          `INSERT INTO shifts (
+             id, tenant_id, cashier_id, status, opening_cash, closing_cash,
+             expected_cash, cash_variance, opened_at, closed_at, notes, created_at
+           ) VALUES ($1,$2,$3,'closed',0,$4,$4,0,$5,$5,$6,$5)`,
+          [
+            shiftId, tenantId, uuidOr(payload.cashier_id, userId), expectedCash, completedAt,
+            'Автоматична звірка офлайн-продажу після закриття старої зміни',
+          ],
+        )
+      }
     }
-
-    const payments = Array.isArray(payload.payments) ? payload.payments : []
-    const cashAmount = sumPayments(payments, 'cash')
-    const cardAmount = sumPayments(payments, 'card')
-    const debtAmount = sumPayments(payments, 'debt')
-    const paymentMethod = normalizePaymentMethod(payload.payment_method)
-    const completedAt = payload.completed_at ?? operation.created_at
     const appliedAt = operation.applied_at ?? operation.created_at
     const bonusesSpent = Math.max(0, Math.round(Number(payload.bonuses_spent ?? 0)))
     const fiscalNumber = payload.fiscal_number
@@ -2833,14 +3011,14 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
       `INSERT INTO sales (
         id, tenant_id, sale_number, customer_id, cashier_id, shift_id, status,
         subtotal, discount, total, payment_method, is_debt, notes, manager_id,
-        cash_amount, card_amount, bonuses_spent, is_fiscal, fiscal_number, fiscal_qr_url,
+        cash_amount, card_amount, transfer_amount, bonuses_spent, is_fiscal, fiscal_number, fiscal_qr_url,
         completed_at, created_at, updated_at
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, 'completed',
         $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18, $19,
-        $20, $20, $21
+        $14, $15, $16, $17, $18, $19, $20,
+        $21, $21, $22
       )`,
       [
         saleId,
@@ -2858,6 +3036,7 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
         uuidOr(payload.manager_id ?? payload.cashier_id, userId),
         cashAmount,
         cardAmount,
+        transferAmount,
         bonusesSpent,
         isFiscal,
         fiscalNumber,
@@ -2867,6 +3046,8 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
       ],
     )
 
+    await client.query(`SELECT set_config('app.stock_source_type', 'sale', true)`)
+    await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [saleId])
     for (const item of payload.items ?? []) {
       const productId = item.product_id ?? await ensureFreeAmountProduct(client, tenantId)
       const product = await client.query(
@@ -2881,9 +3062,10 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
       }
 
       const qty = Number(item.qty ?? 0)
-      const unitPrice = Number(item.unit_price ?? 0)
-      const discount = Number(item.discount ?? 0)
-      const total = Number(item.total ?? Math.max(0, qty * unitPrice - discount))
+      if (!Number.isFinite(qty) || qty <= 0) throw new AppError('SYNC_SALE_QTY_INVALID', 'Кількість товару у чеку має бути більше нуля', 422)
+      const unitPrice = Math.max(0, Math.round(Number(item.unit_price ?? 0)))
+      const discount = Math.max(0, Math.round(Number(item.discount ?? 0)))
+      const total = Math.max(0, Math.round(qty * unitPrice - discount))
       const isService = product.rows[0].is_service === true
       const costPrice = Number(item.purchase_price ?? product.rows[0].purchase_price ?? 0)
       const coreDepositAmount = product.rows[0].requires_core_return === true
@@ -3567,6 +3749,9 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
       const countedStock = Number(item?.counted_stock ?? 0)
       return Boolean(item?.product_id) && Number.isFinite(countedStock) && countedStock >= 0
     })
+  if (items.length === 0) {
+    throw new AppError('SYNC_INVENTORY_EMPTY', 'Неможливо завершити порожню ревізію', 422)
+  }
   const createdBy = payload.created_by ?? userId
   const createdAt = payload.created_at ?? operation.created_at
   const completedAt = payload.completed_at ?? operation.created_at
@@ -3590,6 +3775,8 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
       throw new AppError('SYNC_INVENTORY_TENANT_CONFLICT', 'Ревізія належить іншому магазину', 409)
     }
     if (sessionState.rows[0]?.status === 'completed') return
+    await client.query(`SELECT set_config('app.stock_source_type', 'inventory', true)`)
+    await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [sessionId])
 
     for (const item of items) {
       const productId = String(item?.product_id ?? '')
@@ -3598,11 +3785,20 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
       if (!Number.isFinite(countedStock) || countedStock < 0) continue
 
       const product = await client.query(
-        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
+        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand, updated_at FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
         [productId, tenantId],
       )
       if (!product.rowCount) {
         throw new AppError('SYNC_PRODUCT_NOT_FOUND', `Товар ревізії не знайдено: ${productId}`, 404)
+      }
+
+      const expectedStock = Number(item?.expected_stock)
+      const serverStock = Number(product.rows[0].qty_on_hand ?? 0)
+      if (!Number.isFinite(expectedStock)) {
+        throw new AppError('SYNC_INVENTORY_BASE_MISSING', 'Стара ревізія не містить базового залишку. Відкрийте її та перерахуйте товар.', 409)
+      }
+      if (serverStock !== expectedStock && serverStock !== countedStock) {
+        throw new AppError('SYNC_INVENTORY_CONFLICT', 'Залишок товару змінився після початку ревізії: було ' + expectedStock + ', зараз ' + serverStock + '. Оновіть ревізію і перерахуйте позицію.', 409)
       }
 
       const itemResult = await client.query(
@@ -3619,7 +3815,7 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
           last_counted_by = EXCLUDED.last_counted_by,
           updated_at = EXCLUDED.updated_at
         RETURNING id`,
-        [sessionId, productId, Number(product.rows[0].qty_on_hand ?? 0), countedStock, createdBy, completedAt],
+        [sessionId, productId, expectedStock, countedStock, createdBy, completedAt],
       )
 
       const inventoryItemId = itemResult.rows[0]?.id
@@ -3879,10 +4075,28 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       throw new AppError('SYNC_ORDER_INVALID_STATUS', 'Скасоване або архівне замовлення не можна видати', 409)
     }
 
-    const totalPaid = Math.max(Number(order.total_paid ?? 0), Number(order.prepayment ?? 0))
-    const remaining = Number(order.total_amount ?? 0) - Number(order.discount_amount ?? 0) - totalPaid
-    if (remaining > 0) {
-      throw new AppError('SYNC_ORDER_INCOMPLETE_PAYMENT', 'Не всі оплати проведено', 400)
+    const paymentResult = await client.query(
+      `SELECT method, COALESCE(SUM(amount), 0)::bigint AS amount
+       FROM order_payments
+       WHERE order_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       GROUP BY method`,
+      [orderId, tenantId],
+    )
+    const paymentTotals = { cash: 0, card: 0, transfer: 0 }
+    for (const payment of paymentResult.rows) {
+      const amount = Math.max(0, Math.round(Number(payment.amount ?? 0)))
+      if (payment.method === 'card') paymentTotals.card += amount
+      else if (payment.method === 'transfer' || payment.method === 'account') paymentTotals.transfer += amount
+      else paymentTotals.cash += amount
+    }
+    const authoritativePaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
+    const amountDue = Math.max(0, Number(order.total_amount ?? 0) - Number(order.discount_amount ?? 0))
+    if (authoritativePaid !== amountDue) {
+      const code = authoritativePaid > amountDue ? 'SYNC_ORDER_OVERPAID' : 'SYNC_ORDER_INCOMPLETE_PAYMENT'
+      const message = authoritativePaid > amountDue
+        ? 'Оплата перевищує суму замовлення. Спочатку поверніть або зарахуйте надлишок.'
+        : 'Не всі оплати проведено через касу'
+      throw new AppError(code, message, 409)
     }
 
     const itemResult = await client.query(
@@ -4084,15 +4298,20 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       saleNumber = String(sequence.rows[0].sale_number)
     }
 
-    const paymentMethod = payload.payment_method === 'card'
-      || payload.payment_method === 'mixed'
-      || payload.payment_method === 'transfer'
-      ? payload.payment_method
-      : 'cash'
-    const cashAmount = Math.max(0, Math.round(Number(payload.cash_amount ?? payload.sale?.cash_amount ?? 0)))
-    const cardAmount = Math.max(0, Math.round(Number(payload.card_amount ?? payload.sale?.card_amount ?? 0)))
+    const usedPaymentMethods = [
+      paymentTotals.cash > 0 ? 'cash' : null,
+      paymentTotals.card > 0 ? 'card' : null,
+      paymentTotals.transfer > 0 ? 'transfer' : null,
+    ].filter(Boolean)
+    const paymentMethod = usedPaymentMethods.length > 1 ? 'mixed' : String(usedPaymentMethods[0] ?? 'cash')
+    const cashAmount = paymentTotals.cash
+    const cardAmount = paymentTotals.card
+    const transferAmount = paymentTotals.transfer
     const discount = Math.max(0, Math.round(Number(order.discount_amount ?? payload.discount ?? 0)))
     const total = Math.max(0, subtotal - discount)
+    if (total !== amountDue) {
+      throw new AppError('SYNC_ORDER_TOTAL_CONFLICT', 'Сума позицій замовлення змінилася. Оновіть заказ і повторіть оплату.', 409)
+    }
     const completedAt = payload.completed_at ?? operation.created_at
     const appliedAt = operation.applied_at ?? operation.created_at
     const managerId = uuidOr(payload.manager_id ?? order.manager_id ?? payload.cashier_id, userId)
@@ -4102,11 +4321,11 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       `INSERT INTO sales (
         id, tenant_id, sale_number, customer_id, cashier_id, shift_id, status,
         subtotal, discount, total, payment_method, is_debt, notes, manager_id,
-        cash_amount, card_amount, is_fiscal, completed_at, created_at, updated_at, pickup_cell
+        cash_amount, card_amount, transfer_amount, is_fiscal, completed_at, created_at, updated_at, pickup_cell
       ) VALUES (
         $1, $2, $3, $4, $5, $6, 'completed',
         $7, $8, $9, $10, false, $11, $12,
-        $13, $14, $15, $16, $16, $17, $18
+        $13, $14, $15, $16, $17, $17, $18, $19
       )`,
       [
         saleId,
@@ -4123,6 +4342,7 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
         managerId,
         cashAmount,
         cardAmount,
+        transferAmount,
         payload.is_fiscal === true,
         completedAt,
         appliedAt,

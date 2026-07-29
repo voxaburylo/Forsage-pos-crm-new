@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 16
+export const LOCAL_SCHEMA_VERSION = 17
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1141,6 +1141,58 @@ const MIGRATION_016_FINANCIAL_INTEGRITY_SQL = `
     updated_at = excluded.updated_at;
 `
 
+const MIGRATION_017_DOCUMENT_INTEGRITY_SQL = `
+  ALTER TABLE customer_orders ADD COLUMN exchange_source_order_id TEXT REFERENCES customer_orders(id) ON DELETE RESTRICT;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_orders_exchange_source
+    ON customer_orders(tenant_id, exchange_source_order_id)
+    WHERE exchange_source_order_id IS NOT NULL AND deleted_at IS NULL;
+
+  DELETE FROM inventory_sessions
+  WHERE status = 'completed'
+    AND NOT EXISTS (SELECT 1 FROM inventory_items i WHERE i.session_id = inventory_sessions.id)
+    AND NOT EXISTS (SELECT 1 FROM inventory_count_entries e WHERE e.session_id = inventory_sessions.id);
+
+  DELETE FROM writeoffs
+  WHERE NOT EXISTS (SELECT 1 FROM writeoff_items i WHERE i.writeoff_id = writeoffs.id);
+
+  UPDATE customer_orders
+  SET status = 'archived',
+      comment = CASE
+        WHEN COALESCE(comment, '') = '' THEN 'Автоматично архівовано: стара версія завершила заказ без чека.'
+        ELSE comment || char(10) || 'Автоматично архівовано: стара версія завершила заказ без чека.'
+      END,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE status = 'completed' AND sale_id IS NULL;
+
+  UPDATE stock_reserves
+  SET released_at = COALESCE(released_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  WHERE released_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM customer_orders o
+      WHERE o.id = stock_reserves.order_id
+        AND o.tenant_id = stock_reserves.tenant_id
+        AND o.status = 'archived'
+    );
+
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE status = 'failed'
+    AND (
+      (operation_type = 'category.deleted' AND last_error LIKE '%FOREIGN KEY%')
+      OR operation_type IN ('staff_user.created', 'staff_user.updated')
+    );
+
+  UPDATE shifts
+  SET dirty_at = NULL
+  WHERE dirty_at IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM sync_outbox o
+      WHERE o.tenant_id = shifts.tenant_id
+        AND o.aggregate_type = 'shift'
+        AND o.aggregate_id = shifts.id
+        AND o.status IN ('pending', 'sending', 'failed')
+    );
+`
 export interface LocalMigration {
   version: number
   sql: string
@@ -1163,4 +1215,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 14, sql: MIGRATION_014_SUPPLIER_CATALOG_SQL },
   { version: 15, sql: MIGRATION_015_STOCK_INTEGRITY_SQL },
   { version: 16, sql: MIGRATION_016_FINANCIAL_INTEGRITY_SQL },
+  { version: 17, sql: MIGRATION_017_DOCUMENT_INTEGRITY_SQL },
 ]

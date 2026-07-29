@@ -64,6 +64,7 @@ function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
 export class LocalSyncRepository {
   constructor(private readonly db: LocalDatabase) {
     this.coalesceSupersededProductOperations()
+    this.recoverLegacyReturnOutbox()
     this.recoverMissingCustomerVehicleOutbox()
   }
 
@@ -638,6 +639,23 @@ export class LocalSyncRepository {
   }
 
 
+  private recoverLegacyReturnOutbox(): void {
+    // Builds before the shift-reconciliation fix permanently exhausted retries for
+    // otherwise valid cash returns. Give only those known shift failures one retry
+    // cycle; all other failed operations keep their normal safety limit.
+    this.db.prepare(`
+      UPDATE sync_outbox
+      SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+      WHERE operation_type = 'return.created'
+        AND status = 'failed'
+        AND (
+          last_error LIKE '%кассов%смен%'
+          OR last_error LIKE '%касов%змін%'
+          OR last_error LIKE '%SHIFT_REQUIRED%'
+          OR last_error LIKE '%SHIFT_INVALID%'
+        )
+    `).run()
+  }
   private recoverMissingCustomerVehicleOutbox(): void {
     const rows = this.db.prepare(`
       SELECT v.id, v.tenant_id, v.customer_id, v.brand, v.model, v.year, v.vin,

@@ -519,6 +519,14 @@ router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, nex
   try {
     const sessionId = String(req.params.id)
     const session = await requireInventorySession(sessionId, req.user!.tenant_id, true)
+    const { count: countedItems, error: countedError } = await db.from('inventory_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sessionId)
+      .eq('was_counted', true)
+    if (countedError) throw new AppError('DB_ERROR', countedError.message, 500)
+    if (!countedItems) {
+      throw new AppError('INVENTORY_EMPTY', 'Неможливо завершити порожню ревізію. Спочатку порахуйте хоча б один товар.', 422)
+    }
 
     const { data, error } = await db.rpc('complete_inventory_session', {
       p_session_id: sessionId,

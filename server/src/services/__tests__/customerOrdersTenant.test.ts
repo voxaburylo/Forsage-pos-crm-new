@@ -51,7 +51,10 @@ describe('customer order tenant isolation regressions', () => {
 
   it('keeps order completion receipt-only and replay-safe', () => {
     const status = section("router.patch('/:id/status'", "router.post('/:id/complete'")
-    expect(status).not.toContain("'completed', 'canceled'")
+    expect(status).toContain(
+      "status: z.enum(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'])",
+    )
+    expect(status).toContain("['completed', 'canceled', 'archived'].includes(oldOrder.status)")
 
     const completion = section("router.post('/:id/complete'", "router.get('/pending-items'")
     expect(completion).toContain("requireRole('owner', 'admin', 'cashier')")

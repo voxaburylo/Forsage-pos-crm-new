@@ -587,8 +587,8 @@ export async function getSupplierDebts(tenantId: string) {
 
 export async function deleteSupplyInvoice(id: string, tenantId: string) {
   const invoice = await getSupplyInvoice(id, tenantId)
-  if (invoice.status === 'posted') {
-    throw new AppError('INVOICE_POSTED', 'Не можна видалити проведену накладну. Спочатку скасуйте її.', 400)
+  if (invoice.status !== 'draft' || Number(invoice.paid_amount ?? 0) > 0) {
+    throw new AppError('INVOICE_DELETE_FORBIDDEN', 'Видалити можна лише неоплачену чернетку накладної. Проведені, скасовані та оплачені документи залишаються в історії.', 409)
   }
 
   const deletedAt = new Date().toISOString()

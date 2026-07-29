@@ -78,7 +78,7 @@ describe('LocalOrderRepository.completeOrder', () => {
         buy_price: 200,
         sell_price: input.unitPrice,
         qty: input.qty,
-        item_status: input.itemStatus ?? 'ready',
+        item_status: input.itemStatus ?? 'arrived',
       }],
     })
     repository.addPayment(order.id, {
@@ -97,8 +97,10 @@ describe('LocalOrderRepository.completeOrder', () => {
       productId,
       qty: 2,
       unitPrice: 500,
-      itemStatus: 'handed',
+      itemStatus: 'arrived',
     })
+
+    db.prepare('UPDATE customer_order_items SET item_status = ? WHERE id = ?').run('handed', itemId)
 
     const savedOrder = repository.getOrder(orderId, DEFAULT_TENANT_ID)
     expect(savedOrder.total_amount).toBe(1_200)
@@ -138,6 +140,8 @@ describe('LocalOrderRepository.completeOrder', () => {
       WHERE source_type = 'order' AND source_id = ?
     `).get(orderId)).toEqual({ count: 1 })
     expect(db.prepare('SELECT COUNT(*) AS count FROM cash_operations').get()).toEqual({ count: 1 })
+    expect(() => repository.saveOrder({ tenant_id: DEFAULT_TENANT_ID, items: [] }, orderId)).toThrow('не можна редагувати')
+    expect(() => repository.updateOrderStatus(orderId, 'ready')).toThrow('змінювати не можна')
   })
 
   it('marks a fully returned issued order item and restores stock', () => {
@@ -146,7 +150,7 @@ describe('LocalOrderRepository.completeOrder', () => {
       productId,
       qty: 1,
       unitPrice: 500,
-      itemStatus: 'ready',
+      itemStatus: 'arrived',
     })
     const completed = repository.completeOrder(orderId, {
       tenant_id: DEFAULT_TENANT_ID,
@@ -183,7 +187,7 @@ describe('LocalOrderRepository.completeOrder', () => {
       productId,
       qty: 1,
       unitPrice: 250,
-      itemStatus: 'handed',
+      itemStatus: 'arrived',
     })
     db.prepare(`
       UPDATE customer_orders SET status = 'completed', sale_id = NULL
