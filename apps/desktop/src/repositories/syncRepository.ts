@@ -501,6 +501,14 @@ export class LocalSyncRepository {
       return
     }
 
+    if (operation.operation_type === 'inventory.created' || operation.operation_type === 'inventory.started') {
+      clearRow('inventory_sessions', operation.aggregate_id)
+      return
+    }
+    if (operation.operation_type === 'inventory.deleted') {
+      return
+    }
+
     if (operation.operation_type === 'inventory.completed') {
       clearRow('inventory_sessions', operation.aggregate_id)
       clearChildren('inventory_movements', 'source_id', operation.aggregate_id)

@@ -42,29 +42,42 @@ export class LocalInventoryRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = input.created_at || nowIso()
     const id = randomUUID()
-    this.db.prepare(`
-      INSERT INTO inventory_sessions (
-        id, tenant_id, session_name, status, started_by, dirty_at, created_at, updated_at
-      ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)
-    `).run(id, tenantId, input.name.trim(), input.created_by ?? null, timestamp, timestamp, timestamp)
-    return this.getSessionRow(id, tenantId)
+    return this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO inventory_sessions (
+          id, tenant_id, session_name, status, started_by, dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)
+      `).run(id, tenantId, input.name.trim(), input.created_by ?? null, timestamp, timestamp, timestamp)
+      this.addOutbox(tenantId, 'inventory_session', id, 'inventory.created', {
+        id,
+        name: input.name.trim(),
+        created_by: input.created_by ?? null,
+        created_at: timestamp,
+      }, timestamp)
+      return this.getSessionRow(id, tenantId)
+    })
   }
-
   startSession(sessionId: string, input: { tenant_id?: string; user_id?: string | null } = {}): { total_products: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = nowIso()
     const row = this.getSessionRow(sessionId, tenantId)
     if (!row) throw new Error('Ревізію не знайдено')
     if (row.status === 'completed') throw new Error('Ревізію вже завершено')
-    this.db.prepare(`
-      UPDATE inventory_sessions
-      SET status = 'in_progress', started_by = COALESCE(started_by, ?), started_at = COALESCE(started_at, ?),
-          dirty_at = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `).run(input.user_id ?? null, timestamp, timestamp, timestamp, sessionId, tenantId)
-    return { total_products: this.totalProducts(tenantId) }
+    return this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE inventory_sessions
+        SET status = 'in_progress', started_by = COALESCE(started_by, ?), started_at = COALESCE(started_at, ?),
+            dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(input.user_id ?? null, timestamp, timestamp, timestamp, sessionId, tenantId)
+      this.addOutbox(tenantId, 'inventory_session', sessionId, 'inventory.started', {
+        id: sessionId,
+        started_by: input.user_id ?? row.created_by ?? null,
+        started_at: timestamp,
+      }, timestamp)
+      return { total_products: this.totalProducts(tenantId) }
+    })
   }
-
   deleteEmptySession(sessionId: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
     const row = this.getSessionRow(sessionId, tenantId)
     if (!row) return { ok: true }
@@ -80,14 +93,18 @@ export class LocalInventoryRepository {
     if (num(counted.count) > 0 || num(entries.count) > 0) {
       throw new Error('Видаляти можна тільки порожні незавершені ревізії')
     }
+    const timestamp = nowIso()
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM inventory_count_entries WHERE session_id = ? AND tenant_id = ?').run(sessionId, tenantId)
       this.db.prepare('DELETE FROM inventory_items WHERE session_id = ? AND tenant_id = ?').run(sessionId, tenantId)
       this.db.prepare('DELETE FROM inventory_sessions WHERE id = ? AND tenant_id = ?').run(sessionId, tenantId)
+      this.addOutbox(tenantId, 'inventory_session', sessionId, 'inventory.deleted', {
+        id: sessionId,
+        deleted_at: timestamp,
+      }, timestamp)
     })
     return { ok: true }
   }
-
   getSessionData(sessionId: string, tenantId = DEFAULT_TENANT_ID, userId = ''): any {
     const session = this.getSessionRow(sessionId, tenantId)
     if (!session) throw new Error('Ревізію не знайдено')

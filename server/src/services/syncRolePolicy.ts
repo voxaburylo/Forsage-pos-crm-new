@@ -45,6 +45,7 @@ const STOREKEEPER_SYNC_OPERATIONS = new Set([
   'product.upsert', 'category.upsert', 'brand.upsert', 'supplier_invoice.created',
   'supplier_invoice.posted', 'order.item_status_updated', 'order.items_arrived',
   'reserve.created', 'reserve.released', 'warehouse_movement.created', 'writeoff.created',
+  'inventory.created', 'inventory.started', 'inventory.deleted',
 ])
 
 export function isSyncOperationAllowed(role: string, operationType: string): boolean {

@@ -24,6 +24,14 @@ describe('sync role policy', () => {
     expect(isSyncOperationAllowed('cashier', 'sale.completed')).toBe(true)
     expect(isSyncOperationAllowed('storekeeper', 'product.upsert')).toBe(true)
   })
+  it('allows storekeepers to synchronize inventory drafts and empty-session deletion', () => {
+    for (const operation of ['inventory.created', 'inventory.started', 'inventory.deleted']) {
+      expect(isSyncOperationAllowed('storekeeper', operation)).toBe(true)
+      expect(isSyncOperationAllowed('cashier', operation)).toBe(false)
+    }
+    expect(isSyncOperationAllowed('storekeeper', 'inventory.completed')).toBe(false)
+    expect(isSyncOperationAllowed('owner', 'inventory.completed')).toBe(true)
+  })
   it('does not expose supply documents to cashier roles', () => {
     expect(canPullSupplyData('cashier')).toBe(false)
     expect(canPullSupplyData('sto_viewer')).toBe(false)

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 import { logAction } from '../services/auditService.js'
 
 const router = Router()
@@ -137,37 +138,50 @@ router.post('/', requireRole(...MANAGER_ROLES), async (req, res, next) => {
 
 router.delete('/:id', requireRole(...MANAGER_ROLES), async (req, res, next) => {
   try {
-    const sessionId = String(req.params.id)
-    const session = await requireInventorySession(sessionId, req.user!.tenant_id)
-    if (session.status === 'completed') {
-      throw new AppError('INVENTORY_COMPLETED', 'Завершену ревізію видаляти не можна', 400)
-    }
+    const parsedId = z.string().uuid().safeParse(req.params.id)
+    if (!parsedId.success) throw new AppError('VALIDATION_ERROR', 'Некоректний ідентифікатор ревізії', 422)
+    const sessionId = parsedId.data
+    await runTransaction(async (client) => {
+      const session = await client.query(
+        'SELECT status FROM inventory_sessions WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        [sessionId, req.user!.tenant_id],
+      )
+      if (!session.rowCount) throw new AppError('NOT_FOUND', 'Сесію не знайдено', 404)
+      if (session.rows[0].status === 'completed') {
+        throw new AppError('INVENTORY_COMPLETED', 'Завершену ревізію видаляти не можна', 400)
+      }
 
-    const counted = await db.from('inventory_items')
-      .select('id', { count: 'exact', head: true })
-      .eq('session_id', sessionId)
-      .eq('was_counted', true)
-    if (counted.error) throw new AppError('DB_ERROR', counted.error.message, 500)
+      const content = await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM inventory_items WHERE session_id = $1 AND was_counted = true) AS counted,
+           EXISTS(SELECT 1 FROM inventory_count_entries WHERE session_id = $1) AS entries`,
+        [sessionId],
+      )
+      if (content.rows[0]?.counted || content.rows[0]?.entries) {
+        throw new AppError(
+          'INVENTORY_NOT_EMPTY',
+          'Ревізія вже має пораховані товари — видаляти можна тільки порожні незавершені ревізії',
+          400,
+        )
+      }
 
-    const entries = await db.from('inventory_count_entries')
-      .select('id', { count: 'exact', head: true })
-      .eq('session_id', sessionId)
-    if (entries.error) throw new AppError('DB_ERROR', entries.error.message, 500)
-
-    if ((counted.count ?? 0) > 0 || (entries.count ?? 0) > 0) {
-      throw new AppError('INVENTORY_NOT_EMPTY', 'Ревізія вже має пораховані товари — видаляти можна тільки порожні незавершені ревізії', 400)
-    }
-
-    const { error } = await db.from('inventory_sessions')
-      .delete()
-      .eq('id', sessionId)
-      .eq('tenant_id', req.user!.tenant_id)
-      .neq('status', 'completed')
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+      await client.query(
+        'DELETE FROM inventory_sessions WHERE id = $1 AND tenant_id = $2',
+        [sessionId, req.user!.tenant_id],
+      )
+      await client.query(
+        `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
+         VALUES ($1, 'inventory_session', $2, NOW())
+         ON CONFLICT (tenant_id, entity_type, entity_id)
+         DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+        [req.user!.tenant_id, sessionId],
+      )
+    })
 
     res.json({ data: { ok: true } })
   } catch (error) { next(error) }
 })
+
 router.get('/:id', requireRole(...COUNTER_ROLES), async (req, res, next) => {
   try {
     res.json({ data: await loadSessionData(String(req.params.id), req.user!.tenant_id, req.user!.id) })

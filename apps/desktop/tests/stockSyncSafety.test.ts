@@ -87,7 +87,8 @@ describe('local stock sync safety', () => {
     inventory.countProduct(session.id, { product_id: stored.id, qty: 3 })
     inventory.complete(session.id)
 
-    expect(outboxTypes()).toEqual(['inventory.completed'])
+    expect(outboxTypes()).toEqual(['inventory.created', 'inventory.started', 'inventory.completed'])
+    expect(outboxTypes()).not.toContain('product.upsert')
     expect(catalog.findById(stored.id)?.qty_on_hand).toBe(3)
   })
 

@@ -406,6 +406,7 @@ export async function getSyncChanges({
     supplierPayments,
     inventorySessions,
     inventoryItems,
+    deletedInventorySessions,
     supplierPriceItems,
     supplierPriceImports,
     shopSettings,
@@ -600,6 +601,16 @@ export async function getSyncChanges({
       if (since && !referencesIncluded) query = query.gt('updated_at', since)
       return query.range(from, to)
     }),
+    fetchAll((from, to) => {
+      let query = db
+        .from('sync_deletions')
+        .select('entity_id,deleted_at')
+        .eq('tenant_id', tenantId)
+        .eq('entity_type', 'inventory_session')
+        .order('deleted_at', { ascending: true })
+      if (since) query = query.gt('deleted_at', since)
+      return query.range(from, to)
+    }),
     canPullSupplierCatalog
       ? fetchAll((from, to) => {
           let query = db
@@ -704,6 +715,7 @@ export async function getSyncChanges({
     supplier_price_items: supplierPriceItems,
     supplier_price_imports: supplierPriceImports,
     inventory_sessions: inventorySessions,
+    deleted_inventory_session_ids: deletedInventorySessions.map((row) => row.entity_id),
     inventory_items: activeInventoryItems,
     shop_settings: shopSettings,
     ...secondary,
@@ -1065,6 +1077,18 @@ async function applyLocalOperation(params: {
     return
   }
 
+  if (operation.operation_type === 'inventory.created') {
+    await applyInventoryCreated(tenantId, userId, operation)
+    return
+  }
+  if (operation.operation_type === 'inventory.started') {
+    await applyInventoryStarted(tenantId, userId, operation)
+    return
+  }
+  if (operation.operation_type === 'inventory.deleted') {
+    await applyInventoryDeleted(tenantId, operation)
+    return
+  }
   if (operation.operation_type === 'inventory.completed') {
     await applyInventoryCompleted(tenantId, userId, operation)
     return
@@ -3303,6 +3327,108 @@ async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperat
     )
   })
 }
+
+async function applyInventoryCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const sessionId = String(payload.id ?? operation.aggregate_id)
+  if (!isUuid(sessionId)) throw new AppError('SYNC_INVENTORY_INVALID', 'Некоректна ревізія', 400)
+  const name = String(payload.name ?? `Локальна ревізія ${sessionId.slice(0, 8)}`).trim().slice(0, 200)
+    || 'Локальна ревізія'
+  const createdBy = isUuid(payload.created_by) ? payload.created_by : userId
+  const createdAt = payload.created_at ?? operation.created_at
+
+  await runTransaction(async (client) => {
+    const tombstone = await client.query(
+      `SELECT 1 FROM sync_deletions
+       WHERE tenant_id = $1 AND entity_type = 'inventory_session' AND entity_id = $2
+       LIMIT 1`,
+      [tenantId, sessionId],
+    )
+    if (tombstone.rowCount) return
+    await client.query(
+      `INSERT INTO inventory_sessions (id, tenant_id, name, status, created_by, created_at)
+       VALUES ($1, $2, $3, 'draft', $4, $5)
+       ON CONFLICT (id) DO NOTHING`,
+      [sessionId, tenantId, name, createdBy, createdAt],
+    )
+    const session = await client.query(
+      'SELECT tenant_id FROM inventory_sessions WHERE id = $1 LIMIT 1',
+      [sessionId],
+    )
+    if (!session.rowCount || session.rows[0].tenant_id !== tenantId) {
+      throw new AppError('SYNC_INVENTORY_TENANT_CONFLICT', 'Ревізія належить іншому магазину', 409)
+    }
+  })
+}
+
+async function applyInventoryStarted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const sessionId = String(payload.id ?? operation.aggregate_id)
+  if (!isUuid(sessionId)) throw new AppError('SYNC_INVENTORY_INVALID', 'Некоректна ревізія', 400)
+  const startedBy = isUuid(payload.started_by) ? payload.started_by : userId
+  const startedAt = payload.started_at ?? operation.created_at
+
+  await runTransaction(async (client) => {
+    const session = await client.query(
+      'SELECT status FROM inventory_sessions WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      [sessionId, tenantId],
+    )
+    if (!session.rowCount) {
+      const tombstone = await client.query(
+        `SELECT 1 FROM sync_deletions
+         WHERE tenant_id = $1 AND entity_type = 'inventory_session' AND entity_id = $2
+         LIMIT 1`,
+        [tenantId, sessionId],
+      )
+      if (tombstone.rowCount) return
+      throw new AppError('SYNC_INVENTORY_NOT_FOUND', 'Ревізію не знайдено', 404)
+    }
+    if (session.rows[0].status === 'completed') return
+    await client.query(
+      `UPDATE inventory_sessions
+       SET status = 'in_progress', started_by = COALESCE(started_by, $3),
+           started_at = COALESCE(started_at, $4)
+       WHERE id = $1 AND tenant_id = $2`,
+      [sessionId, tenantId, startedBy, startedAt],
+    )
+  })
+}
+
+async function applyInventoryDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const sessionId = String(operation.payload?.id ?? operation.aggregate_id)
+  if (!isUuid(sessionId)) throw new AppError('SYNC_INVENTORY_INVALID', 'Некоректна ревізія', 400)
+  const deletedAt = operation.payload?.deleted_at ?? operation.created_at
+
+  await runTransaction(async (client) => {
+    const session = await client.query(
+      'SELECT status FROM inventory_sessions WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      [sessionId, tenantId],
+    )
+    if (session.rows[0]?.status === 'completed') {
+      throw new AppError('INVENTORY_COMPLETED', 'Завершену ревізію видаляти не можна', 400)
+    }
+    if (session.rowCount) {
+      const content = await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM inventory_items WHERE session_id = $1 AND was_counted = true) AS counted,
+           EXISTS(SELECT 1 FROM inventory_count_entries WHERE session_id = $1) AS entries`,
+        [sessionId],
+      )
+      if (content.rows[0]?.counted || content.rows[0]?.entries) {
+        throw new AppError('INVENTORY_NOT_EMPTY', 'Видаляти можна тільки порожні незавершені ревізії', 400)
+      }
+      await client.query('DELETE FROM inventory_sessions WHERE id = $1 AND tenant_id = $2', [sessionId, tenantId])
+    }
+    await client.query(
+      `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
+       VALUES ($1, 'inventory_session', $2, $3)
+       ON CONFLICT (tenant_id, entity_type, entity_id)
+       DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
+      [tenantId, sessionId, deletedAt],
+    )
+  })
+}
+
 async function applyInventoryCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const sessionId = String(payload.id ?? operation.aggregate_id)

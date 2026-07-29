@@ -227,6 +227,7 @@ export interface LocalBootstrapSnapshot {
   supplier_price_items?: any[]
   supplier_price_imports?: any[]
   inventory_sessions?: any[]
+  deleted_inventory_session_ids?: string[]
   inventory_items?: any[]
   shop_settings?: any
   counts?: Record<string, number>
@@ -277,6 +278,7 @@ export interface LocalBootstrapImportResult {
     supply_invoice_items: number
     supplier_payments: number
     inventory_sessions: number
+    deleted_inventory_sessions: number
     inventory_items: number
     supplier_price_items: number
     supplier_price_imports: number
@@ -356,6 +358,7 @@ export interface LocalSyncPullChanges {
   supplier_price_items?: any[]
   supplier_price_imports?: any[]
   inventory_sessions?: any[]
+  deleted_inventory_session_ids?: string[]
   inventory_items?: any[]
   shop_settings?: any
   references_included?: boolean
@@ -414,6 +417,7 @@ export interface LocalSyncPullResult {
     deleted_brands: number
     deleted_staff: number
     inventory_sessions: number
+    deleted_inventory_sessions: number
     inventory_items: number
     supplier_price_items: number
     supplier_price_imports: number

@@ -64,6 +64,7 @@ export class LocalBootstrapRepository {
       categories: 0,
       brands: 0,
       inventory_sessions: 0,
+      deleted_inventory_sessions: 0,
       inventory_items: 0,
       supplier_price_items: 0,
       supplier_price_imports: 0,
@@ -310,6 +311,9 @@ export class LocalBootstrapRepository {
         this.upsertInventoryItem(tenantId, item, appliedAt)
         counts.inventory_items++
       }
+      for (const sessionId of changes.deleted_inventory_session_ids ?? []) {
+        if (this.deleteInventorySessionFromRemote(tenantId, sessionId)) counts.deleted_inventory_sessions++
+      }
 
       const supplierCatalog = new LocalSupplierCatalogRepository(this.db)
       for (const item of changes.supplier_price_items ?? []) {
@@ -359,6 +363,7 @@ export class LocalBootstrapRepository {
       supply_invoice_items: 0,
       supplier_payments: 0,
       inventory_sessions: 0,
+      deleted_inventory_sessions: 0,
       inventory_items: 0,
       supplier_price_items: 0,
       supplier_price_imports: 0,
@@ -501,6 +506,9 @@ export class LocalBootstrapRepository {
         if (!this.refExists('products', tenantId, item.product_id)) continue
         this.upsertInventoryItem(tenantId, item, importedAt)
         counts.inventory_items++
+      }
+      for (const sessionId of snapshot.deleted_inventory_session_ids ?? []) {
+        if (this.deleteInventorySessionFromRemote(tenantId, sessionId)) counts.deleted_inventory_sessions++
       }
 
       const supplierCatalog = new LocalSupplierCatalogRepository(this.db)
@@ -1475,6 +1483,19 @@ export class LocalBootstrapRepository {
     )
   }
 
+  private deleteInventorySessionFromRemote(tenantId: string, sessionId: unknown): boolean {
+    const id = text(sessionId)
+    if (!id) return false
+    this.db.prepare(`
+      DELETE FROM sync_outbox
+      WHERE tenant_id = ? AND aggregate_type = 'inventory_session' AND aggregate_id = ?
+        AND status IN ('pending', 'failed', 'sending')
+    `).run(tenantId, id)
+    this.db.prepare('DELETE FROM inventory_count_entries WHERE tenant_id = ? AND session_id = ?').run(tenantId, id)
+    this.db.prepare('DELETE FROM inventory_items WHERE tenant_id = ? AND session_id = ?').run(tenantId, id)
+    const result = this.db.prepare('DELETE FROM inventory_sessions WHERE tenant_id = ? AND id = ?').run(tenantId, id)
+    return Number(result.changes) > 0
+  }
   private upsertInventorySession(tenantId: string, session: any, importedAt: string): void {
     const updatedAt = timestamp(session, importedAt)
     this.db.prepare(`
