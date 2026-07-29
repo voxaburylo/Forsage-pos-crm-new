@@ -9,7 +9,10 @@ import {
   type DesktopSyncStatus,
 } from '@/lib/desktopBridge'
 
-const REFERENCE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000
+// Штрихкоди, крос-номери й інші довідники зберігаються окремо від product.
+// Шість годин робили веб- і локальний пошук помітно різними. Перевіряємо
+// повний довідник раз на хвилину, а звичайні зміни як і раніше тягнемо кожні 10 с.
+export const REFERENCE_REFRESH_INTERVAL_MS = 60 * 1000
 const DESKTOP_PUSH_BATCH_SIZE = 10
 
 interface DesktopSyncOptions {
@@ -102,7 +105,7 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
     params.set('since', state.cursor)
     const referencesAreDue = !state.last_reference_sync_at
       || Date.now() - new Date(state.last_reference_sync_at).getTime() >= REFERENCE_REFRESH_INTERVAL_MS
-    const shouldIncludeReferences = options.includeReferences === true && referencesAreDue
+    const shouldIncludeReferences = options.includeReferences === true || referencesAreDue
     if (shouldIncludeReferences) params.set('include_references', 'true')
 
     const query = params.size > 0 ? `?${params.toString()}` : ''

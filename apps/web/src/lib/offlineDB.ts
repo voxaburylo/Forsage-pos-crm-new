@@ -59,7 +59,7 @@ function compactOfflineLookupCode(raw: string): string {
   return raw.replace(/[\s\-._/]+/g, '').trim().toLocaleLowerCase('uk-UA')
 }
 
-function offlineProductMatchesQuery(product: any, rawQuery: string): boolean {
+export function offlineProductMatchesQuery(product: any, rawQuery: string): boolean {
   const query = String(rawQuery ?? '').trim()
   if (!query) return true
   const queryLower = query.toLocaleLowerCase('uk-UA')
@@ -67,10 +67,15 @@ function offlineProductMatchesQuery(product: any, rawQuery: string): boolean {
   const barcodes = [product.barcode, ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : [])]
     .filter(Boolean)
     .map((value) => String(value))
+  const referenceValues = [
+    ...barcodes,
+    ...(Array.isArray(product.aliases) ? product.aliases : []),
+    ...(Array.isArray(product.cross_numbers) ? product.cross_numbers : []),
+  ].filter(Boolean).map((value) => String(value))
   const sku = String(product.sku ?? '')
   const compactSku = compactOfflineLookupCode(sku)
   if (compactSku && compactSku.includes(compactQuery)) return true
-  if (barcodes.some((barcode) => {
+  if (referenceValues.some((barcode) => {
     const value = String(barcode).toLocaleLowerCase('uk-UA')
     return value === queryLower || compactOfflineLookupCode(value).includes(compactQuery)
   })) return true
@@ -80,6 +85,8 @@ function offlineProductMatchesQuery(product: any, rawQuery: string): boolean {
     product.barcode,
     product.storage_bin,
     ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+    ...(Array.isArray(product.aliases) ? product.aliases : []),
+    ...(Array.isArray(product.cross_numbers) ? product.cross_numbers : []),
   ].filter(Boolean).join(' '))
   if (!searchText) return false
   const needles = offlineProductSearchNeedles(query)
@@ -625,6 +632,58 @@ export interface SyncChanges {
   references_included: boolean
 }
 
+function uniqueReferenceValues(values: unknown[]): string[] {
+  return [...new Set(values
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean))]
+}
+
+export function attachProductReferences(
+  products: any[],
+  productBarcodes: any[] = [],
+  productAliases: any[] = [],
+  productCrossNumbers: any[] = [],
+): any[] {
+  const barcodesByProduct = new Map<string, string[]>()
+  const aliasesByProduct = new Map<string, string[]>()
+  const crossNumbersByProduct = new Map<string, string[]>()
+
+  for (const row of productBarcodes) {
+    if (!row?.product_id || !row?.barcode) continue
+    const values = barcodesByProduct.get(row.product_id) ?? []
+    values.push(String(row.barcode))
+    barcodesByProduct.set(row.product_id, values)
+  }
+  for (const row of productAliases) {
+    if (!row?.product_id || !row?.alias) continue
+    const values = aliasesByProduct.get(row.product_id) ?? []
+    values.push(String(row.alias))
+    aliasesByProduct.set(row.product_id, values)
+  }
+  for (const row of productCrossNumbers) {
+    if (!row?.product_id || !row?.number) continue
+    const values = crossNumbersByProduct.get(row.product_id) ?? []
+    values.push(String(row.number))
+    crossNumbersByProduct.set(row.product_id, values)
+  }
+
+  return products.map((product) => ({
+    ...product,
+    additional_barcodes: uniqueReferenceValues([
+      ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
+      ...(barcodesByProduct.get(product.id) ?? []),
+    ]).filter((barcode) => barcode !== String(product.barcode ?? '').trim()),
+    aliases: uniqueReferenceValues([
+      ...(Array.isArray(product.aliases) ? product.aliases : []),
+      ...(aliasesByProduct.get(product.id) ?? []),
+    ]),
+    cross_numbers: uniqueReferenceValues([
+      ...(Array.isArray(product.cross_numbers) ? product.cross_numbers : []),
+      ...(crossNumbersByProduct.get(product.id) ?? []),
+    ]),
+  }))
+}
+
 export interface LocalSyncState {
   cursor: string | null
   last_success_at: number | null
@@ -794,7 +853,16 @@ export async function applySyncChanges(
       brandsStore.clear()
     }
 
-    for (const product of changes.products ?? []) {
+    const productsWithReferences = changes.references_included
+      ? attachProductReferences(
+          changes.products ?? [],
+          changes.product_barcodes,
+          changes.product_aliases,
+          changes.product_cross_numbers,
+        )
+      : changes.products ?? []
+
+    for (const product of productsWithReferences) {
       const queuedQty = pendingQty.get(product.id) ?? 0
       productsStore.put({
         ...product,

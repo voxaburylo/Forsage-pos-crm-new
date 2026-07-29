@@ -17,6 +17,10 @@ const TABLE = 'products'
 
 // Кеш пошукових запитів (30 сек TTL) — для POS касира
 const searchCache = new SimpleCache<string, any>(30_000)
+
+export async function clearProductSearchCache(): Promise<void> {
+  await searchCache.clear()
+}
 function cleanProductSearchTerm(value: string): string {
   return value.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim()
 }

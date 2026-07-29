@@ -18,6 +18,7 @@ import {
   sanitizeShopSettingsForRole,
 } from './syncRolePolicy.js'
 import { nextSettingsRowUpdatedAt, prepareLabelSettingsUpdate } from './labelSettingsConflict.js'
+import { clearProductSearchCache } from './productService.js'
 
 const PAGE_SIZE = 1000
 // Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
@@ -420,18 +421,22 @@ export async function getSyncChanges({
       else if (initialHistorySince) query = query.gte('sale.completed_at', initialHistorySince)
       return query.range(from, to)
     }),
-    fetchAll((from, to) => db
-      .from('categories')
-      .select('id,parent_id,name,sort_order,created_at')
-      .eq('tenant_id', tenantId)
-      .order('sort_order', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
-      .from('brands')
-      .select('id,name,country,created_at')
-      .eq('tenant_id', tenantId)
-      .order('name', { ascending: true })
-      .range(from, to)),
+    referencesIncluded
+      ? fetchAll((from, to) => db
+          .from('categories')
+          .select('id,parent_id,name,sort_order,created_at')
+          .eq('tenant_id', tenantId)
+          .order('sort_order', { ascending: true })
+          .range(from, to))
+      : Promise.resolve([]),
+    referencesIncluded
+      ? fetchAll((from, to) => db
+          .from('brands')
+          .select('id,name,country,created_at')
+          .eq('tenant_id', tenantId)
+          .order('name', { ascending: true })
+          .range(from, to))
+      : Promise.resolve([]),
     referencesIncluded
       ? fetchAll((from, to) => db
           .from('product_barcodes')
@@ -646,7 +651,7 @@ export async function getSyncChanges({
     shop_settings: shopSettings,
     ...secondary,
     references_included: referencesIncluded,
-    catalog_structure_snapshot_included: true,
+    catalog_structure_snapshot_included: referencesIncluded,
   }
 }
 
@@ -964,11 +969,13 @@ async function applyLocalOperation(params: {
 
   if (operation.operation_type === 'product.upsert') {
     await applyProductUpsert(tenantId, operation)
+    await clearProductSearchCache()
     return
   }
 
   if (operation.operation_type === 'product.deleted') {
     await applyProductDeleted(tenantId, operation)
+    await clearProductSearchCache()
     return
   }
 

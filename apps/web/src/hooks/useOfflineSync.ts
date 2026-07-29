@@ -21,7 +21,7 @@ export const LOCAL_SYNC_IDLE_INTERVAL_MS = 30 * 1000
 export const LOCAL_SYNC_PENDING_INTERVAL_MS = 5 * 1000
 export const LOCAL_SYNC_RETRY_MIN_MS = 15 * 1000
 export const LOCAL_SYNC_RETRY_MAX_MS = 5 * 60 * 1000
-export const REFERENCE_REFRESH_INTERVAL_MS = 15 * 60 * 1000
+export const REFERENCE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 let globalSyncInProgress = false
 
 export function useOfflineSync(serverOnline: boolean) {
