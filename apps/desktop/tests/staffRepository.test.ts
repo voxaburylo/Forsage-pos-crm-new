@@ -131,4 +131,60 @@ describe('LocalStaffRepository server-first credentials', () => {
     expect(repository.verifyPin(userId, '5678')).toEqual({ valid: true })
     expect(repository.verifyPin(userId, '1234')).toEqual({ valid: false })
   })
+
+  it('records one deterministic negative commission reversal for a local return', () => {
+    const timestamp = '2026-07-29T12:00:00.000Z'
+    const employeeId = randomUUID()
+    const shiftId = randomUUID()
+    const productId = randomUUID()
+    const saleId = randomUUID()
+    const saleItemId = randomUUID()
+    const returnId = randomUUID()
+    db.prepare(`
+      INSERT INTO staff_users (id, tenant_id, full_name, role, phone, is_active, created_at, updated_at)
+      VALUES (?, ?, 'Майстер', 'manager', '+380670000001', 1, ?, ?)
+    `).run(employeeId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO shifts (id, tenant_id, cashier_id, status, opening_cash, opened_at, created_at, updated_at)
+      VALUES (?, ?, ?, 'open', 0, ?, ?, ?)
+    `).run(shiftId, DEFAULT_TENANT_ID, employeeId, timestamp, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO products (id, tenant_id, sku, name, purchase_price, retail_price, qty_on_hand, created_at, updated_at)
+      VALUES (?, ?, 'TEST-COMMISSION', 'Тестовий товар', 6000, 10000, 1, ?, ?)
+    `).run(productId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO sales (id, tenant_id, sale_number, cashier_id, manager_id, shift_id, status, total, completed_at, created_at, updated_at)
+      VALUES (?, ?, 'TEST-RETURN', ?, ?, ?, 'completed', 10000, ?, ?, ?)
+    `).run(saleId, DEFAULT_TENANT_ID, employeeId, employeeId, shiftId, timestamp, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO sale_items (id, tenant_id, sale_id, product_id, qty, unit_price, purchase_price, total, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 10000, 6000, 10000, ?, ?)
+    `).run(saleItemId, DEFAULT_TENANT_ID, saleId, productId, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO customer_returns (id, tenant_id, sale_id, reason, refund_method, refund_kopecks, stock_action, approved_by, created_at, updated_at)
+      VALUES (?, ?, ?, 'other', 'cash', 10000, 'return_to_stock', ?, ?, ?)
+    `).run(returnId, DEFAULT_TENANT_ID, saleId, employeeId, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO commission_rules (id, tenant_id, user_id, pct_from_revenue, pct_from_profit, rule_type, created_at, updated_at)
+      VALUES (?, ?, ?, 10, 0, 'pos_sales', ?, ?)
+    `).run(randomUUID(), DEFAULT_TENANT_ID, employeeId, timestamp, timestamp)
+
+    const first = repository.recordReturnCommissionReversals(returnId, saleId, [{
+      product_id: productId, sale_item_id: saleItemId, quantity: 1,
+    }], DEFAULT_TENANT_ID, employeeId)
+    const second = repository.recordReturnCommissionReversals(returnId, saleId, [{
+      product_id: productId, sale_item_id: saleItemId, quantity: 1,
+    }], DEFAULT_TENANT_ID, employeeId)
+
+    expect(first).toHaveLength(1)
+    expect(second).toHaveLength(0)
+    const payment = db.prepare(`
+      SELECT id, amount, source, commission_source_return_id FROM salary_payments
+      WHERE commission_source_return_id = ?
+    `).get(returnId) as any
+    expect(payment.amount).toBe(-1000)
+    expect(payment.source).toBe('commission_reversal')
+    expect(payment.commission_source_return_id).toBe(returnId)
+    expect(payment.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  })
 })

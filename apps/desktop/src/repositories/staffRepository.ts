@@ -1,4 +1,4 @@
-import { pbkdf2Sync, randomUUID } from 'node:crypto'
+import { createHash, pbkdf2Sync, randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
@@ -6,12 +6,78 @@ type SalaryType = 'salary' | 'bonus' | 'advance' | 'penalty'
 type SalaryMethod = 'cash' | 'card' | 'transfer'
 
 function nowIso(): string { return new Date().toISOString() }
+function commissionReversalId(returnId: string, employeeId: string): string {
+  const hex = createHash('sha256').update(`commission-reversal:${returnId}:${employeeId}`).digest('hex').slice(0, 32)
+  const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
 function currentPeriod(): string { return nowIso().slice(0, 7) }
 function currentDate(): string { return nowIso().slice(0, 10) }
 function money(value: unknown): number {
   const parsed = Math.round(Number(value ?? 0))
   return Number.isFinite(parsed) ? parsed : 0
 }
+
+function localRuleType(rule: any): string {
+  return String(rule?.rule_type || 'personal_sales')
+}
+
+function localBestRule(rules: any[], userId: string, types: string[], item: any): any | null {
+  for (const type of types) {
+    let best: any | null = null
+    let bestScore = -1
+    for (const rule of rules) {
+      if (localRuleType(rule) !== type) continue
+      if (rule.user_id != null && rule.user_id !== userId) continue
+      if (rule.brand_id != null && rule.brand_id !== item.brand_id) continue
+      if (rule.category_id != null && rule.category_id !== item.category_id) continue
+      const score = (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
+      if (score > bestScore) { best = rule; bestScore = score }
+    }
+    if (best) return best
+  }
+  return null
+}
+
+function localCommissionMap(
+  items: any[],
+  rules: any[],
+  activeManagerId: string | null,
+  context: 'pos' | 'order',
+): Map<string, number> {
+  const result = new Map<string, number>()
+  const cashboxUsers = new Set<string>(
+    rules.filter((rule) => localRuleType(rule) === 'total_cashbox' && rule.user_id)
+      .map((rule) => String(rule.user_id)),
+  )
+  const add = (userId: string, rule: any, item: any) => {
+    const revenue = money(item.sell_price) * Number(item.qty)
+    const profit = (money(item.sell_price) - money(item.buy_price)) * Number(item.qty)
+    const amount = Math.round(revenue * Number(rule.pct_from_revenue ?? 0) / 100)
+      + Math.round(profit * Number(rule.pct_from_profit ?? 0) / 100)
+    if (amount !== 0) result.set(userId, (result.get(userId) ?? 0) + amount)
+  }
+  for (const item of items) {
+    if (item.item_status === 'canceled') continue
+    if (activeManagerId) {
+      const isTireService = context === 'pos' && String(item.sku ?? '') === 'POS-TIRE-SERVICE'
+      const types = context === 'order'
+        ? ['order_sales', 'personal_sales']
+        : isTireService
+          ? ['tire_service', 'pos_sales', 'personal_sales']
+          : ['pos_sales', 'personal_sales']
+      const rule = localBestRule(rules, activeManagerId, types, item)
+      if (rule) add(activeManagerId, rule, item)
+    }
+    for (const userId of cashboxUsers) {
+      const rule = localBestRule(rules, userId, ['total_cashbox'], item)
+      if (rule) add(userId, rule, item)
+    }
+  }
+  for (const [userId, amount] of result) if (amount <= 0) result.delete(userId)
+  return result
+}
+
 function hashSecret(secret: string, userId: string): string {
   return pbkdf2Sync(secret, userId, 10_000, 64, 'sha512').toString('hex')
 }
@@ -408,10 +474,13 @@ export class LocalStaffRepository {
 
   deleteSalary(id: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
     const row = this.db.prepare(`
-      SELECT id, cash_operation_id FROM salary_payments
+      SELECT id, cash_operation_id, source FROM salary_payments
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1
-    `).get(id, tenantId) as { id: string; cash_operation_id: string | null } | undefined
+    `).get(id, tenantId) as { id: string; cash_operation_id: string | null; source: string } | undefined
     if (!row) throw new Error('Операцію не знайдено')
+    if (row.source !== 'manual') {
+      throw new Error('Автоматичне нарахування не можна видалити; виправте джерело операції')
+    }
     const timestamp = nowIso()
     this.db.transaction(() => {
       this.db.prepare(`
@@ -433,121 +502,157 @@ export class LocalStaffRepository {
       FROM customer_orders
       WHERE id = ? AND tenant_id = ? AND status = 'completed' AND deleted_at IS NULL
     `).get(orderId, tenantId) as any
-    if (!order?.manager_id) return []
-    const employee = this.db.prepare(`
-      SELECT id, full_name FROM staff_users
-      WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
-    `).get(order.manager_id, tenantId) as any
-    if (!employee) return []
-    const rules = this.listCommissionRules(tenantId).filter((rule) =>
-      (rule.user_id === order.manager_id || rule.user_id === null) &&
-      (!rule.rule_type || rule.rule_type === 'personal_sales' || rule.rule_type === 'order_sales'),
-    )
+    if (!order) return []
+    const rules = this.listCommissionRules(tenantId)
     if (rules.length === 0) return []
     const items = this.db.prepare(`
-      SELECT i.product_id, i.qty, i.sell_price AS unit_price, i.buy_price AS purchase_price,
-             p.brand_id, p.category_id
+      SELECT i.product_id, i.qty, i.sell_price, i.buy_price,
+             i.item_status, p.brand_id, p.category_id, p.sku
       FROM customer_order_items i
       LEFT JOIN products p ON p.id = i.product_id
       WHERE i.order_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
-        AND i.item_status <> 'canceled'
     `).all(orderId, tenantId) as any[]
-    let total = 0
-    for (const item of items) {
-      let best: any = null
-      let score = -1
-      for (const rule of rules) {
-        if (rule.brand_id && rule.brand_id !== item.brand_id) continue
-        if (rule.category_id && rule.category_id !== item.category_id) continue
-        const typeScore = rule.rule_type === 'order_sales' ? 1000 : 0
-        const nextScore = typeScore + (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
-        if (nextScore > score) { score = nextScore; best = rule }
-      }
-      if (!best) continue
-      const revenue = money(item.unit_price) * Number(item.qty)
-      const profit = (money(item.unit_price) - money(item.purchase_price)) * Number(item.qty)
-      total += Math.round(revenue * Number(best.pct_from_revenue ?? 0) / 100)
-        + Math.round(profit * Number(best.pct_from_profit ?? 0) / 100)
-    }
-    if (total <= 0) return []
+    const commissions = localCommissionMap(items, rules, order.manager_id ?? null, 'order')
     const workDate = String(order.updated_at ?? nowIso()).slice(0, 10)
     const timestamp = nowIso()
-    try {
-      return [this.db.transaction(() => this.insertSalary({
-        tenantId, employeeId: employee.id, employeeName: employee.full_name,
-        amount: total, type: 'bonus', method: 'cash', period: workDate.slice(0, 7),
-        workDate, source: 'commission', note: `Комісія за замовлення #${order.order_number ?? order.id.slice(0, 8)}`,
-        shiftId: null, userId: createdBy, timestamp, commissionOrderId: orderId,
-      }))]
-    } catch (error: any) {
-      if (String(error?.message ?? '').includes('UNIQUE constraint failed')) return []
-      throw error
-    }
+    const created: any[] = []
+    this.db.transaction(() => {
+      for (const [employeeId, amount] of commissions) {
+        const employee = this.db.prepare(`
+          SELECT id, full_name FROM staff_users
+          WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
+        `).get(employeeId, tenantId) as any
+        if (!employee) continue
+        const existing = this.db.prepare(`
+          SELECT id FROM salary_payments
+          WHERE tenant_id = ? AND employee_id = ? AND commission_source_order_id = ?
+            AND source = 'commission' AND deleted_at IS NULL LIMIT 1
+        `).get(tenantId, employeeId, orderId)
+        if (existing) continue
+        created.push(this.insertSalary({
+          tenantId, employeeId, employeeName: employee.full_name,
+          amount, type: 'bonus', method: 'cash', period: workDate.slice(0, 7),
+          workDate, source: 'commission',
+          note: `Комісія за замовлення #${order.order_number ?? order.id.slice(0, 8)}`,
+          shiftId: null, userId: createdBy, timestamp, commissionOrderId: orderId,
+        }))
+      }
+    })
+    return created
   }
+
   recordSaleCommissions(saleId: string, tenantId = DEFAULT_TENANT_ID, createdBy: string | null = null): any[] {
     const sale = this.db.prepare(`
       SELECT id, sale_number, manager_id, completed_at
       FROM sales WHERE id = ? AND tenant_id = ? AND status = 'completed' AND deleted_at IS NULL
     `).get(saleId, tenantId) as any
-    if (!sale?.manager_id) return []
-    const employee = this.db.prepare(`
-      SELECT id, full_name FROM staff_users
-      WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
-    `).get(sale.manager_id, tenantId) as any
-    if (!employee) return []
-    const rules = this.listCommissionRules(tenantId).filter((rule) =>
-      (rule.user_id === sale.manager_id || rule.user_id === null) &&
-      (!rule.rule_type || ['personal_sales', 'pos_sales', 'tire_service'].includes(rule.rule_type)),
-    )
+    if (!sale) return []
+    const order = this.db.prepare(`
+      SELECT id, manager_id FROM customer_orders
+      WHERE sale_id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1
+    `).get(saleId, tenantId) as any
+    const managerId = order?.manager_id ?? sale.manager_id ?? null
+    const rules = this.listCommissionRules(tenantId)
     if (rules.length === 0) return []
     const items = this.db.prepare(`
-      SELECT i.product_id, i.qty, i.unit_price, i.purchase_price,
-             p.brand_id, p.category_id, p.sku, p.is_service
+      SELECT i.product_id, i.qty, i.unit_price AS sell_price, i.purchase_price AS buy_price,
+             p.brand_id, p.category_id, p.sku
       FROM sale_items i
       LEFT JOIN products p ON p.id = i.product_id
       WHERE i.sale_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
     `).all(saleId, tenantId) as any[]
-    let total = 0
-    for (const item of items) {
-      let best: any = null
-      let score = -1
-      for (const rule of rules) {
-        const isTireService = String(item.sku ?? '') === 'POS-TIRE-SERVICE'
-        const type = String(rule.rule_type ?? 'personal_sales')
-        if (isTireService ? !['tire_service', 'pos_sales', 'personal_sales'].includes(type) : !['pos_sales', 'personal_sales'].includes(type)) continue
-        if (rule.brand_id && rule.brand_id !== item.brand_id) continue
-        if (rule.category_id && rule.category_id !== item.category_id) continue
-        const typeScore = isTireService ? (type === 'tire_service' ? 1000 : type === 'pos_sales' ? 500 : 0) : (type === 'pos_sales' ? 1000 : 0)
-        const nextScore = typeScore + (rule.user_id ? 100 : 0) + (rule.brand_id ? 10 : 0) + (rule.category_id ? 1 : 0)
-        if (nextScore > score) { score = nextScore; best = rule }
-      }
-      if (!best) continue
-      const revenue = money(item.unit_price) * Number(item.qty)
-      const profit = (money(item.unit_price) - money(item.purchase_price)) * Number(item.qty)
-      total += Math.round(revenue * Number(best.pct_from_revenue ?? 0) / 100)
-        + Math.round(profit * Number(best.pct_from_profit ?? 0) / 100)
-    }
-    if (total <= 0) return []
+    const commissions = localCommissionMap(items, rules, managerId, order ? 'order' : 'pos')
     const workDate = String(sale.completed_at ?? nowIso()).slice(0, 10)
     const timestamp = nowIso()
-    try {
-      return [this.db.transaction(() => this.insertSalary({
-        tenantId, employeeId: employee.id, employeeName: employee.full_name,
-        amount: total, type: 'bonus', method: 'cash', period: workDate.slice(0, 7),
-        workDate, source: 'commission', note: `Комісія за продаж (чек #${sale.sale_number})`,
-        shiftId: null, userId: createdBy, timestamp, commissionSaleId: saleId,
-      }))]
-    } catch (error: any) {
-      if (String(error?.message ?? '').includes('UNIQUE constraint failed')) return []
-      throw error
-    }
+    const created: any[] = []
+    this.db.transaction(() => {
+      for (const [employeeId, amount] of commissions) {
+        const employee = this.db.prepare(`
+          SELECT id, full_name FROM staff_users
+          WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
+        `).get(employeeId, tenantId) as any
+        if (!employee) continue
+        const existing = this.db.prepare(`
+          SELECT id FROM salary_payments
+          WHERE tenant_id = ? AND employee_id = ? AND commission_source_sale_id = ?
+            AND source = 'commission' AND deleted_at IS NULL LIMIT 1
+        `).get(tenantId, employeeId, saleId)
+        if (existing) continue
+        created.push(this.insertSalary({
+          tenantId, employeeId, employeeName: employee.full_name,
+          amount, type: 'bonus', method: 'cash', period: workDate.slice(0, 7),
+          workDate, source: 'commission', note: `Комісія за продаж (чек #${sale.sale_number})`,
+          shiftId: null, userId: createdBy, timestamp, commissionSaleId: saleId,
+          commissionOrderId: order?.id ?? null,
+        }))
+      }
+    })
+    return created
+  }
+
+  recordReturnCommissionReversals(
+    returnId: string,
+    saleId: string,
+    returnedItems: Array<{ product_id: string; sale_item_id: string; quantity: number }>,
+    tenantId = DEFAULT_TENANT_ID,
+    createdBy: string | null = null,
+  ): any[] {
+    const sale = this.db.prepare(`
+      SELECT id, sale_number, manager_id FROM sales
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1
+    `).get(saleId, tenantId) as any
+    if (!sale) return []
+    const order = this.db.prepare(`
+      SELECT id, manager_id FROM customer_orders
+      WHERE sale_id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1
+    `).get(saleId, tenantId) as any
+    const rules = this.listCommissionRules(tenantId)
+    if (rules.length === 0) return []
+    const items = returnedItems.map((returned) => {
+      const saleItem = this.db.prepare(`
+        SELECT i.product_id, i.unit_price AS sell_price, i.purchase_price AS buy_price,
+               p.brand_id, p.category_id, p.sku
+        FROM sale_items i LEFT JOIN products p ON p.id = i.product_id
+        WHERE i.id = ? AND i.sale_id = ? AND i.tenant_id = ? LIMIT 1
+      `).get(returned.sale_item_id, saleId, tenantId) as any
+      return { ...saleItem, product_id: saleItem?.product_id ?? returned.product_id, qty: returned.quantity }
+    })
+    const commissions = localCommissionMap(items, rules, order?.manager_id ?? sale.manager_id ?? null, order ? 'order' : 'pos')
+    const workDate = currentDate()
+    const timestamp = nowIso()
+    const created: any[] = []
+    this.db.transaction(() => {
+      for (const [employeeId, amount] of commissions) {
+        const employee = this.db.prepare(`
+          SELECT id, full_name FROM staff_users
+          WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
+        `).get(employeeId, tenantId) as any
+        if (!employee) continue
+        const existing = this.db.prepare(`
+          SELECT id FROM salary_payments
+          WHERE tenant_id = ? AND employee_id = ? AND commission_source_return_id = ?
+            AND source = 'commission_reversal' AND deleted_at IS NULL LIMIT 1
+        `).get(tenantId, employeeId, returnId)
+        if (existing) continue
+        created.push(this.insertSalary({
+          tenantId, employeeId, employeeName: employee.full_name,
+          amount: -amount, type: 'bonus', method: 'cash', period: workDate.slice(0, 7),
+          workDate, source: 'commission_reversal',
+          note: `Сторно комісії за повернення (чек #${sale.sale_number})`,
+          shiftId: null, userId: createdBy, timestamp, commissionReturnId: returnId,
+          id: commissionReversalId(returnId, employeeId),
+        }))
+      }
+    })
+    return created
   }
 
   private insertSalary(input: {
     tenantId: string; employeeId: string; employeeName: string; amount: number
     type: SalaryType; method: SalaryMethod; period: string; workDate: string; source: string
     note: string | null; shiftId: string | null; userId: string | null; timestamp: string
-    commissionSaleId?: string | null; commissionOrderId?: string | null
+    commissionSaleId?: string | null; commissionOrderId?: string | null; commissionReturnId?: string | null
+    id?: string
   }): any {
     let cashOperationId: string | null = null
     if (input.type === 'advance' && input.method === 'cash') {
@@ -584,18 +689,18 @@ export class LocalStaffRepository {
         employee_id: input.employeeId, source: 'cashbox', note: input.note,
       }, input.timestamp)
     }
-    const id = randomUUID()
+    const id = input.id ?? randomUUID()
     this.db.prepare(`
       INSERT INTO salary_payments (
         id, tenant_id, employee_id, employee_name, amount, type, method, period,
         work_date, source, note, shift_id, cash_operation_id, commission_source_sale_id, commission_source_order_id,
-        created_by, dirty_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        commission_source_return_id, created_by, dirty_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.tenantId, input.employeeId, input.employeeName, input.amount, input.type,
       input.method, input.period, input.workDate, input.source, input.note, input.shiftId,
-      cashOperationId, input.commissionSaleId ?? null, input.commissionOrderId ?? null, input.userId, input.timestamp,
-      input.timestamp, input.timestamp,
+      cashOperationId, input.commissionSaleId ?? null, input.commissionOrderId ?? null, input.commissionReturnId ?? null,
+      input.userId, input.timestamp, input.timestamp, input.timestamp,
     )
     const result = this.listSalary({ tenant_id: input.tenantId }).find((item) => item.id === id)
     this.addOutbox(input.tenantId, 'salary_payment', id, 'salary_payment.created', result, input.timestamp)

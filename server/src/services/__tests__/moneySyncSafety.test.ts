@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const customerSource = readFileSync(new URL('../customerService.ts', import.meta.url), 'utf8')
+const saleSource = readFileSync(new URL('../saleService.ts', import.meta.url), 'utf8')
+const commissionSource = readFileSync(new URL('../commissionService.ts', import.meta.url), 'utf8')
 const salaryRouteSource = readFileSync(new URL('../../routes/salary.ts', import.meta.url), 'utf8')
 const authRouteSource = readFileSync(new URL('../../routes/auth.ts', import.meta.url), 'utf8')
 const deletionMigration = readFileSync(
@@ -42,7 +44,8 @@ describe('money synchronization safety', () => {
     expect(syncSource).toContain('deleted_cash_operation_ids: deletedCashOperations.map')
     expect(syncSource).toContain("VALUES ($1, 'salary_payment', $2, $3)")
     expect(syncSource).toContain("VALUES ($1, 'cash_operation', $2, $3)")
-    expect(salaryRouteSource).toContain('SELECT cash_operation_id FROM salary_payments')
+    expect(salaryRouteSource).toContain('SELECT cash_operation_id, source FROM salary_payments')
+    expect(salaryRouteSource).toContain('AUTOMATIC_SALARY_IMMUTABLE')
     expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, NOW())")
     expect(deletionMigration).toContain('CREATE TABLE IF NOT EXISTS sync_deletions')
     expect(deletionMigration).toContain('TO authenticated')
@@ -68,4 +71,30 @@ describe('money synchronization safety', () => {
     expect(block).toContain("throw new AppError('INSUFFICIENT_BONUS'")
     expect(block).toContain('INSERT INTO bonus_transactions')
   })
+  it('keeps customer cash, balance and audit writes in one database transaction', () => {
+    const debtStart = customerSource.indexOf('export async function payDebt')
+    const depositStart = customerSource.indexOf('export async function topUpDeposit')
+    const vehicleStart = customerSource.indexOf('// ===================== VEHICLES', depositStart)
+    const debtBlock = customerSource.slice(debtStart, depositStart)
+    const depositBlock = customerSource.slice(depositStart, vehicleStart)
+    for (const block of [debtBlock, depositBlock]) {
+      expect(block).toContain('return runTransaction')
+      expect(block).toContain('INSERT INTO cash_operations')
+      expect(block).toContain('INSERT INTO audit_log')
+      expect(block).toContain('user_name')
+      expect(block).not.toContain('entity_id, details')
+    }
+  })
+
+  it('records sale commission atomically and gives return reversals deterministic ids', () => {
+    expect(saleSource).toContain('const useBonusAtomic = true')
+    expect(saleSource).toContain('computeCommissionMap(')
+    expect(saleSource).toContain('INSERT INTO salary_payments')
+    expect(commissionSource).toContain("update(`commission-reversal:${returnId}:${employeeId}`)")
+    expect(commissionSource).toContain('commission_source_return_id: returnId')
+    const salaryStart = syncSource.indexOf('async function applySalaryPaymentCreated')
+    const salaryEnd = syncSource.indexOf('async function applySalaryPaymentDeleted', salaryStart)
+    expect(syncSource.slice(salaryStart, salaryEnd)).toContain('ON CONFLICT DO NOTHING')
+  })
+
 })

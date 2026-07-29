@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -15,6 +16,12 @@ export interface CreateCommissionRuleInput {
 }
 
 const TABLE = 'commission_rules'
+
+function commissionReversalId(returnId: string, employeeId: string): string {
+  const hex = createHash('sha256').update(`commission-reversal:${returnId}:${employeeId}`).digest('hex').slice(0, 32)
+  const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
 
 // List all commission rules for a tenant
 export async function listCommissionRules(tenantId: string) {
@@ -136,6 +143,7 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
  * Щоб менеджеру не лишалась зарплата за товар, який клієнт повернув.
  */
 export async function reverseCommissionForReturn(
+  returnId: string,
   saleId: string,
   returnedItems: Array<{ product_id: string; quantity: number; sale_item_id: string }>,
   tenantId: string,
@@ -171,15 +179,17 @@ export async function reverseCommissionForReturn(
     if (amount <= 0) continue
     const isManager = candidateId === activeManagerId
     const name = await resolveEmployeeName(candidateId, isManager)
-    try {
-      await db.from('salary_payments').insert({
-        tenant_id: tenantId, employee_id: candidateId, employee_name: name,
-        amount: -amount, type: 'bonus', method: 'cash', period,
-        source: 'commission_reversal', work_date: workDate,
-        note: `Сторно комісії за повернення (чек #${sale.sale_number})`,
-        created_by: createdBy,
-      })
-    } catch (err: any) { logger.error({ saleId, candidateId, err: err.message }, 'Exception while reversing commission') }
+    const { error } = await db.from('salary_payments').insert({
+      id: commissionReversalId(returnId, candidateId),
+      tenant_id: tenantId, employee_id: candidateId, employee_name: name,
+      amount: -amount, type: 'bonus', method: 'cash', period,
+      source: 'commission_reversal', work_date: workDate,
+      note: `Сторно комісії за повернення (чек #${sale.sale_number})`,
+      created_by: createdBy, commission_source_return_id: returnId,
+    })
+    if (error && error.code !== '23505') {
+      throw new AppError('COMMISSION_REVERSAL_FAILED', 'Не вдалося сторнувати комісію повернення', 500, error)
+    }
   }
 }
 

@@ -1389,10 +1389,31 @@ async function applyCustomerUpsert(tenantId: string, operation: SyncOutboxOperat
 
 async function applyCustomerDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
-    await client.query(
-      'DELETE FROM customer_cars WHERE customer_id = $1 AND tenant_id = $2',
+    const customer = await client.query(
+      `SELECT COALESCE(debt_balance, 0) AS debt_balance,
+              COALESCE(deposit_balance, 0) AS deposit_balance,
+              COALESCE(bonus_balance, 0) AS bonus_balance
+       FROM customers
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1 FOR UPDATE`,
       [operation.aggregate_id, tenantId],
     )
+    if (!customer.rowCount) return
+    const row = customer.rows[0]
+    if (Number(row.debt_balance) !== 0 || Number(row.deposit_balance) !== 0 || Number(row.bonus_balance) !== 0) {
+      throw new AppError('SYNC_CUSTOMER_HAS_BALANCE', 'Клієнта не можна видалити, доки є борг, передплата або бонуси', 409)
+    }
+    const activeOrder = await client.query(
+      `SELECT 1 FROM customer_orders
+       WHERE customer_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         AND status NOT IN ('completed', 'cancelled', 'canceled', 'archived')
+       LIMIT 1`,
+      [operation.aggregate_id, tenantId],
+    )
+    if (activeOrder.rowCount) {
+      throw new AppError('SYNC_CUSTOMER_HAS_ACTIVE_ORDERS', 'У клієнта є незавершені замовлення або чернетки', 409)
+    }
+    await client.query('DELETE FROM customer_cars WHERE customer_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
     await client.query(
       'UPDATE customers SET deleted_at = $3, updated_at = $3 WHERE id = $1 AND tenant_id = $2',
       [operation.aggregate_id, tenantId, operation.created_at],
@@ -1986,29 +2007,36 @@ async function applySalaryPaymentCreated(tenantId: string, userId: string, opera
   if (!isUuid(id) || !isUuid(payload.employee_id)) {
     throw new AppError('SYNC_SALARY_INVALID', 'Некоректне нарахування зарплати', 400)
   }
+  const source = String(payload.source ?? 'manual')
+  const rawAmount = Math.round(Number(payload.amount ?? 0))
+  if (!Number.isFinite(rawAmount) || rawAmount === 0 || (source === 'commission_reversal' ? rawAmount >= 0 : rawAmount < 0)) {
+    throw new AppError('SYNC_SALARY_AMOUNT_INVALID', 'Некоректна сума нарахування зарплати', 400)
+  }
+  const amount = rawAmount
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO salary_payments (
         id, tenant_id, employee_id, employee_name, amount, type, method, period,
         work_date, source, note, cash_operation_id, commission_source_sale_id,
-        commission_source_order_id, created_by, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-      ON CONFLICT (id) DO NOTHING`,
+        commission_source_order_id, commission_source_return_id, created_by, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+      ON CONFLICT DO NOTHING`,
       [
         id,
         tenantId,
         payload.employee_id,
         payload.employee_name ?? 'Співробітник',
-        Math.max(0, Math.round(Number(payload.amount ?? 0))),
+        amount,
         payload.type ?? 'salary',
         payload.method ?? 'cash',
         payload.period ?? String(operation.created_at).slice(0, 7),
         payload.work_date ?? String(operation.created_at).slice(0, 10),
-        payload.source ?? 'manual',
+        source,
         payload.note ?? null,
         isUuid(payload.cash_operation_id) ? payload.cash_operation_id : null,
         isUuid(payload.commission_source_sale_id) ? payload.commission_source_sale_id : null,
         isUuid(payload.commission_source_order_id) ? payload.commission_source_order_id : null,
+        isUuid(payload.commission_source_return_id) ? payload.commission_source_return_id : null,
         uuidOr(payload.created_by, userId),
         payload.created_at ?? operation.created_at,
       ],
@@ -2019,9 +2047,13 @@ async function applySalaryPaymentCreated(tenantId: string, userId: string, opera
 async function applySalaryPaymentDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
     const payment = await client.query(
-      'SELECT cash_operation_id FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      'SELECT cash_operation_id, source FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
       [operation.aggregate_id, tenantId],
     )
+    if (!payment.rowCount) return
+    if (payment.rows[0].source !== 'manual') {
+      throw new AppError('SYNC_AUTOMATIC_SALARY_IMMUTABLE', 'Автоматичне нарахування зарплати не можна видалити', 409)
+    }
     const cashOperationId = payment.rows[0]?.cash_operation_id
     await client.query('DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
     if (cashOperationId) {
@@ -2538,6 +2570,27 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       )
     }
   })
+
+  const { data: storedReturnItems, error: storedReturnItemsError } = await db
+    .from('return_items')
+    .select('product_id, quantity, sale_item_id')
+    .eq('return_id', returnId)
+    .eq('tenant_id', tenantId)
+  if (storedReturnItemsError) {
+    throw new AppError('SYNC_RETURN_COMMISSION_ITEMS_FAILED', 'Не вдалося прочитати позиції повернення для сторно комісії', 500)
+  }
+  const { reverseCommissionForReturn } = await import('./commissionService.js')
+  await reverseCommissionForReturn(
+    returnId,
+    saleId,
+    (storedReturnItems ?? []).map((item) => ({
+      product_id: item.product_id,
+      quantity: Number(item.quantity),
+      sale_item_id: item.sale_item_id,
+    })),
+    tenantId,
+    userId,
+  )
 }
 
 async function applySuspendedSale(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
@@ -3867,7 +3920,7 @@ async function applyCustomerDebtPaid(tenantId: string, userId: string, operation
     if (!claim.rowCount) return
 
     const customerResult = await client.query(
-      'SELECT id, full_name, phone, COALESCE(debt_balance, 0) AS debt_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+      'SELECT id, full_name, phone, COALESCE(debt_balance, 0) AS debt_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
       [customerId, tenantId],
     )
     if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
@@ -3913,7 +3966,7 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
     }
 
     const customerResult = await client.query(
-      'SELECT id, full_name, phone, COALESCE(deposit_balance, 0) AS deposit_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+      'SELECT id, full_name, phone, COALESCE(deposit_balance, 0) AS deposit_balance FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
       [customerId, tenantId],
     )
     if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
@@ -3945,7 +3998,7 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
   })
 }
 
-async function applyCustomerBonusAdjusted(tenantId: string, _userId: string, operation: SyncOutboxOperation): Promise<void> {
+async function applyCustomerBonusAdjusted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const customerId = String(payload.customer_id ?? operation.aggregate_id)
   const transactionId = String(payload.transaction_id ?? operation.operation_id)
@@ -3976,9 +4029,9 @@ async function applyCustomerBonusAdjusted(tenantId: string, _userId: string, ope
     }
     await client.query(
       `INSERT INTO bonus_transactions (
-        id, tenant_id, customer_id, amount, transaction_type, description, created_at
-      ) VALUES ($1, $2, $3, $4, 'manual', $5, $6)`,
-      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_at ?? operation.created_at],
+        id, tenant_id, customer_id, amount, transaction_type, description, created_by, created_at
+      ) VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7)`,
+      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
     )
   })
 }

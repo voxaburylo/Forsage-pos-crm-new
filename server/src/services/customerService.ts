@@ -212,14 +212,41 @@ export async function updateCustomer(id: string, input: UpdateCustomerInput, ten
 }
 
 export async function deleteCustomer(id: string, tenantId: string) {
-  await getCustomer(id, tenantId)
-  const { error } = await db
-    .from(TABLE)
-    .update({ deleted_at: new Date().toISOString() })
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  await runTransaction(async (client) => {
+    const customer = await client.query(
+      `SELECT id, COALESCE(debt_balance, 0) AS debt_balance,
+              COALESCE(deposit_balance, 0) AS deposit_balance,
+              COALESCE(bonus_balance, 0) AS bonus_balance
+       FROM customers
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [id, tenantId],
+    )
+    if (!customer.rowCount) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+    const row = customer.rows[0]
+    if (Number(row.debt_balance) !== 0 || Number(row.deposit_balance) !== 0 || Number(row.bonus_balance) !== 0) {
+      throw new AppError(
+        'CUSTOMER_HAS_BALANCE',
+        'Клієнта не можна видалити, доки є борг, передплата або бонуси',
+        409,
+      )
+    }
+    const activeOrders = await client.query(
+      `SELECT 1
+       FROM customer_orders
+       WHERE customer_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         AND status NOT IN ('completed', 'cancelled', 'canceled', 'archived')
+       LIMIT 1`,
+      [id, tenantId],
+    )
+    if (activeOrders.rowCount) {
+      throw new AppError('CUSTOMER_HAS_ACTIVE_ORDERS', 'У клієнта є незавершені замовлення або чернетки', 409)
+    }
+    await client.query(
+      'UPDATE customers SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
+      [id, tenantId],
+    )
+  })
 }
 
 export async function getCustomerSales(customerId: string, tenantId: string) {
@@ -254,28 +281,124 @@ export async function getCustomerDebts(customerId: string, tenantId: string) {
   return data ?? []
 }
 
-export async function payDebt(customerId: string, input: PayDebtInput, tenantId: string) {
-  const customer = await getCustomer(customerId, tenantId)
+export async function payDebt(
+  customerId: string,
+  input: PayDebtInput,
+  userId: string,
+  tenantId: string,
+) {
+  return runTransaction(async (client) => {
+    const customerResult = await client.query(
+      `SELECT *
+       FROM customers
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [customerId, tenantId],
+    )
+    if (!customerResult.rowCount) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+    const customer = customerResult.rows[0]
+    const debtBalance = Number(customer.debt_balance ?? 0)
+    if (debtBalance <= 0) throw new AppError('NO_DEBT', 'У клієнта немає боргу', 400)
+    if (input.amount > debtBalance) {
+      throw new AppError('AMOUNT_EXCEEDS_DEBT', 'Сума перевищує борг клієнта', 400)
+    }
+    if (input.method === 'cash') {
+      if (!input.shift_id) throw new AppError('SHIFT_REQUIRED', 'Для оплати готівкою потрібна відкрита касова зміна', 422)
+      const shift = await client.query(
+        `SELECT id FROM shifts WHERE id = $1 AND tenant_id = $2 AND status = 'open' LIMIT 1 FOR UPDATE`,
+        [input.shift_id, tenantId],
+      )
+      if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+    }
+    const newBalance = debtBalance - input.amount
+    const updated = await client.query(
+      `UPDATE customers SET debt_balance = $1, updated_at = NOW()
+       WHERE id = $2 AND tenant_id = $3 RETURNING *`,
+      [newBalance, customerId, tenantId],
+    )
+    if (input.method === 'cash') {
+      await client.query(
+        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, source)
+         VALUES ($1, $2, 'in', $3, $4, $5, 'cashbox')`,
+        [tenantId, input.shift_id, input.amount,
+          `Оплата боргу: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`, userId],
+      )
+    }
+    await client.query(
+      `INSERT INTO audit_log (
+         tenant_id, user_id, user_name, action, entity_type, entity_id,
+         entity_label, old_value, new_value, note
+       ) SELECT $1, $2,
+           COALESCE((SELECT raw_user_meta_data->>'full_name' FROM auth.users WHERE id = $2), 'Користувач'),
+           'DEBT_PAYMENT', 'customers', $3, $4, $5::jsonb, $6::jsonb, $7`,
+      [
+        tenantId, userId, customerId, customer.full_name ?? customer.phone ?? customerId.slice(0, 8),
+        JSON.stringify({ debt_balance: debtBalance }), JSON.stringify({ debt_balance: newBalance }),
+        `Оплата боргу: ${(input.amount / 100).toFixed(2)} грн (${input.method})`,
+      ],
+    )
+    return updated.rows[0]
+  })
+}
 
-  if (customer.debt_balance <= 0) {
-    throw new AppError('NO_DEBT', 'У клієнта немає боргу', 400)
-  }
-  if (input.amount > customer.debt_balance) {
-    throw new AppError('AMOUNT_EXCEEDS_DEBT', 'Сума перевищує борг клієнта', 400)
-  }
-
-  const newBalance = customer.debt_balance - input.amount
-
-  const { data, error } = await db
-    .from(TABLE)
-    .update({ debt_balance: newBalance, updated_at: new Date().toISOString() })
-    .eq('id', customerId)
-    .eq('tenant_id', tenantId)
-    .select('*')
-    .single()
-
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data
+export async function topUpDeposit(
+  customerId: string,
+  input: { amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; notes?: string | null },
+  userId: string,
+  tenantId: string,
+) {
+  return runTransaction(async (client) => {
+    const customerResult = await client.query(
+      `SELECT id, full_name, phone, COALESCE(deposit_balance, 0) AS deposit_balance
+       FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE`,
+      [customerId, tenantId],
+    )
+    if (!customerResult.rowCount) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+    const customer = customerResult.rows[0]
+    if (input.method === 'cash') {
+      if (!input.shift_id) throw new AppError('SHIFT_REQUIRED', 'Для поповнення готівкою потрібна відкрита касова зміна', 422)
+      const shift = await client.query(
+        `SELECT id FROM shifts WHERE id = $1 AND tenant_id = $2 AND status = 'open' LIMIT 1 FOR UPDATE`,
+        [input.shift_id, tenantId],
+      )
+      if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+    }
+    const balance = Number(customer.deposit_balance ?? 0) + input.amount
+    await client.query(
+      'UPDATE customers SET deposit_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+      [balance, customerId, tenantId],
+    )
+    await client.query(
+      `INSERT INTO customer_deposit_transactions
+        (tenant_id, customer_id, amount, balance_after, method, shift_id, notes, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [tenantId, customerId, input.amount, balance, input.method, input.shift_id ?? null,
+        input.notes ?? 'Поповнення рахунку на касі', userId],
+    )
+    if (input.method === 'cash') {
+      await client.query(
+        `INSERT INTO cash_operations (tenant_id, shift_id, type, amount, note, created_by, source)
+         VALUES ($1, $2, 'in', $3, $4, $5, 'cashbox')`,
+        [tenantId, input.shift_id, input.amount,
+          `Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`, userId],
+      )
+    }
+    await client.query(
+      `INSERT INTO audit_log (
+         tenant_id, user_id, user_name, action, entity_type, entity_id,
+         entity_label, old_value, new_value, note
+       ) SELECT $1, $2,
+           COALESCE((SELECT raw_user_meta_data->>'full_name' FROM auth.users WHERE id = $2), 'Користувач'),
+           'DEPOSIT_TOPUP', 'customers', $3, $4, $5::jsonb, $6::jsonb, $7`,
+      [
+        tenantId, userId, customerId, customer.full_name ?? customer.phone ?? customerId.slice(0, 8),
+        JSON.stringify({ deposit_balance: Number(customer.deposit_balance ?? 0) }),
+        JSON.stringify({ deposit_balance: balance }),
+        `Поповнення рахунку: ${(input.amount / 100).toFixed(2)} грн (${input.method})`,
+      ],
+    )
+    return { balance }
+  })
 }
 
 // ===================== VEHICLES =====================
@@ -356,7 +479,7 @@ export async function deleteCustomerVehicle(vehicleId: string, tenantId: string)
 
 // ===================== BONUSES =====================
 
-export async function manualBonus(customerId: string, amount: number, description: string | null, _userId: string, tenantId: string) {
+export async function manualBonus(customerId: string, amount: number, description: string | null, userId: string, tenantId: string) {
   return runTransaction(async (client) => {
     const customerResult = await client.query(
       `SELECT id, COALESCE(bonus_balance, 0) AS bonus_balance
@@ -380,9 +503,9 @@ export async function manualBonus(customerId: string, amount: number, descriptio
     if (amount !== 0) {
       await client.query(
         `INSERT INTO bonus_transactions (
-          tenant_id, customer_id, amount, transaction_type, description
-        ) VALUES ($1, $2, $3, 'manual', $4)`,
-        [tenantId, customerId, amount, description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання')],
+          tenant_id, customer_id, amount, transaction_type, description, created_by
+        ) VALUES ($1, $2, $3, 'manual', $4, $5)`,
+        [tenantId, customerId, amount, description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), userId],
       )
     }
     return updated.rows[0]

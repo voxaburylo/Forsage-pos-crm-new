@@ -653,9 +653,12 @@ async function main() {
     items: [{ product_id: product.id, qty: 2 }],
     payments: [{ method: 'cash', amount: saleAmount }],
   });
-  const recordedCommissions = staff.recordSaleCommissions(sale.sale_id, DEFAULT_TENANT_ID, 'smoke-cashier');
+  const recordedCommissions = db.prepare(`
+    SELECT amount FROM salary_payments
+    WHERE commission_source_sale_id = ? AND employee_id = ? AND source = 'commission'
+  `).all(sale.sale_id, 'smoke-cashier');
   if (recordedCommissions.length !== 1 || recordedCommissions[0].amount !== 2500) {
-    throw new Error('Local sale commission was not calculated');
+    throw new Error('Local sale commission was not calculated atomically during checkout');
   }
   const orderSaleAmount = product.retail_price + serviceProduct.retail_price;
   const draftOrder = orders.saveOrder({

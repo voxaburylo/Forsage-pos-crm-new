@@ -55,11 +55,11 @@ router.get('/customer/:id/max-redeem', async (req, res, next) => {
 })
 
 // POST /api/v1/loyalty/customer/:id/redeem
-router.post('/customer/:id/redeem', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+router.post('/customer/:id/redeem', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const schema = z.object({
       amount:  z.number().int().positive(),
-      sale_id: z.string().uuid().optional(),
+      sale_id: z.string().uuid(),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())

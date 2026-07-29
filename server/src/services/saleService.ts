@@ -7,6 +7,7 @@ import { logger } from '../lib/logger.js'
 import type { CreateSaleInput, CalculatePriceInput, SaleListQuery } from '../validators/saleSchema.js'
 import { getTerminalAdapter, getFiscalAdapter, TerminalAdapter } from './integrations/adapterFactory.js'
 import { calculateSaleAmounts, saleRequestHash } from './salePayment.js'
+import { computeCommissionMap, type CommissionItem, type ProductsMap } from './commissionCalculator.js'
 
 const TABLE = 'sales'
 
@@ -379,6 +380,7 @@ async function executeSaleTransaction(
   input: CreateSaleInput,
   useBonusAtomic: boolean,
   bonusesEarned: number,
+  bonusExpiresAt: string | null,
   cashAmount: number,
   cardAmount: number,
   transferAmount: number,
@@ -408,7 +410,7 @@ async function executeSaleTransaction(
 
       // Select and lock row
       const prodRes = await client.query(
-        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price, requires_core_return, core_deposit_amount FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE',
+        'SELECT qty_on_hand, is_service, COALESCE(purchase_price, 0) as cost_price, requires_core_return, core_deposit_amount, brand_id, category_id, sku FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE',
         [item.product_id, tenantId]
       )
       if (prodRes.rowCount === 0) {
@@ -431,7 +433,10 @@ async function executeSaleTransaction(
         is_service: isService,
         cost_price: costPrice,
         requires_core_return: requiresCoreReturn,
-        core_deposit_amount: coreDepositAmount
+        core_deposit_amount: coreDepositAmount,
+        brand_id: product.brand_id ?? null,
+        category_id: product.category_id ?? null,
+        sku: product.sku ?? null,
       })
 
       if (!isService) {
@@ -453,33 +458,69 @@ async function executeSaleTransaction(
       }
     }
 
-    // 4. Verify client bonus balance
+    // 4. Lock customer, apply expired bonuses and verify the usable balance.
     const bonusesSpent = input.bonuses_spent ?? 0
-    if (useBonusAtomic && bonusesSpent > 0 && input.customer_id) {
+    let customerInfo: any | null = null
+    let cashbackPct = 0
+    if (input.customer_id) {
       const custRes = await client.query(
-        'SELECT COALESCE(bonus_balance, 0) as bonus_balance FROM customers WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
-        [input.customer_id, tenantId]
-      )
-      if (custRes.rowCount === 0) {
-        throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
-      }
-      const bonusBalance = custRes.rows[0].bonus_balance
-      if (bonusBalance < bonusesSpent) {
-        throw new AppError(
-          'INSUFFICIENT_BONUS',
-          `Недостатньо бонусів. Є: ${bonusBalance}, потрібно: ${bonusesSpent}`,
-          400
-        )
-      }
-    }
-
-    if (input.customer_id && !(useBonusAtomic && bonusesSpent > 0)) {
-      const customerRes = await client.query(
-        'SELECT id FROM customers WHERE id = $1 AND tenant_id = $2 FOR SHARE',
+        `SELECT id, COALESCE(bonus_balance, 0) AS bonus_balance,
+                COALESCE(deposit_balance, 0) AS deposit_balance,
+                loyalty_mode, COALESCE(discount_pct, 0) AS discount_pct, price_tier_id
+         FROM customers
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         LIMIT 1 FOR UPDATE`,
         [input.customer_id, tenantId],
       )
-      if (customerRes.rowCount === 0) {
-        throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+      if (!custRes.rowCount) throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+      customerInfo = custRes.rows[0]
+
+      const expiryTotals = await client.query(
+        `SELECT
+           COALESCE(SUM(amount) FILTER (
+             WHERE transaction_type = 'earn' AND amount > 0
+               AND expires_at IS NOT NULL AND expires_at <= NOW()
+           ), 0)::bigint AS expired_earned,
+           COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'spend' AND amount < 0), 0)::bigint AS spent,
+           COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'manual' AND amount < 0), 0)::bigint AS manual_spent,
+           COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'expire' AND amount < 0), 0)::bigint AS already_expired
+         FROM bonus_transactions
+         WHERE customer_id = $1 AND tenant_id = $2`,
+        [input.customer_id, tenantId],
+      )
+      const expiry = expiryTotals.rows[0] ?? {}
+      const expiredAmount = Math.min(Number(customerInfo.bonus_balance ?? 0), Math.max(0,
+        Number(expiry.expired_earned ?? 0)
+        - Number(expiry.spent ?? 0)
+        - Number(expiry.manual_spent ?? 0)
+        - Number(expiry.already_expired ?? 0),
+      ))
+      if (expiredAmount > 0) {
+        customerInfo.bonus_balance = Number(customerInfo.bonus_balance ?? 0) - expiredAmount
+        await client.query(
+          'UPDATE customers SET bonus_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          [customerInfo.bonus_balance, input.customer_id, tenantId],
+        )
+        await client.query(
+          `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, description)
+           VALUES ($1, $2, $3, 'expire', 'Закінчився строк дії бонусів')`,
+          [tenantId, input.customer_id, -expiredAmount],
+        )
+      }
+      if (useBonusAtomic && bonusesSpent > Number(customerInfo.bonus_balance ?? 0)) {
+        throw new AppError(
+          'INSUFFICIENT_BONUS',
+          `Недостатньо бонусів. Є: ${customerInfo.bonus_balance}, потрібно: ${bonusesSpent}`,
+          400,
+        )
+      }
+      cashbackPct = Number(customerInfo.discount_pct ?? 0)
+      if (customerInfo.price_tier_id) {
+        const tier = await client.query(
+          'SELECT COALESCE(discount_pct, 0) AS discount_pct FROM price_tiers WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+          [customerInfo.price_tier_id, tenantId],
+        )
+        if (tier.rowCount) cashbackPct = Number(tier.rows[0].discount_pct ?? cashbackPct)
       }
     }
 
@@ -570,9 +611,9 @@ async function executeSaleTransaction(
       )
 
       await client.query(
-        `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description)
-         VALUES ($1, $2, $3, 'spend', $4, 'Списано при покупці')`,
-        [tenantId, input.customer_id, -bonusesSpent, sale.id]
+        `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description, created_by)
+         VALUES ($1, $2, $3, 'spend', $4, 'Списано при покупці', $5)`,
+        [tenantId, input.customer_id, -bonusesSpent, sale.id, cashierId]
       )
     }
 
@@ -584,22 +625,54 @@ async function executeSaleTransaction(
       )
 
       await client.query(
-        `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description)
-         VALUES ($1, $2, $3, 'earn', $4, 'Нараховано за покупку')`,
-        [tenantId, input.customer_id, bonusesEarned, sale.id]
+        `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description, created_by, expires_at)
+         VALUES ($1, $2, $3, 'earn', $4, 'Нараховано за покупку', $5, $6)`,
+        [tenantId, input.customer_id, bonusesEarned, sale.id, cashierId, bonusExpiresAt]
       )
     }
 
+    // Cashback is part of the sale transaction, so a completed sale can never
+    // exist without the matching customer-account movement.
+    if (
+      input.customer_id
+      && customerInfo?.loyalty_mode === 'cashback'
+      && input.payment_method !== 'debt'
+      && cashbackPct > 0
+    ) {
+      const cashbackBase = Math.max(0,
+        input.items.reduce((sum, item) => sum + item.unit_price * item.qty, 0) - input.discount,
+      )
+      const cashback = Math.round(cashbackBase * cashbackPct / 100)
+      if (cashback > 0) {
+        const balanceAfter = Number(customerInfo.deposit_balance ?? 0) + cashback
+        await client.query(
+          'UPDATE customers SET deposit_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          [balanceAfter, input.customer_id, tenantId],
+        )
+        await client.query(
+          `INSERT INTO customer_deposit_transactions
+            (tenant_id, customer_id, amount, balance_after, method, sale_id, shift_id, notes, created_by)
+           VALUES ($1, $2, $3, $4, 'cashback', $5, $6, $7, $8)`,
+          [tenantId, input.customer_id, cashback, balanceAfter, sale.id, input.shift_id,
+            `Накопичення ${cashbackPct}% з чека #${sale.sale_number ?? ''}`, cashierId],
+        )
+        customerInfo.deposit_balance = balanceAfter
+      }
+    }
+
     // 10. Link and complete customer order if customer_order_id is provided
+    let commissionManagerId: string | null = input.manager_id ?? cashierId
+    const commissionContext = input.customer_order_id ? 'order' : 'pos'
     if (input.customer_order_id) {
       const orderRes = await client.query(
-        'SELECT id, status, sale_id FROM customer_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        'SELECT id, status, sale_id, manager_id FROM customer_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
         [input.customer_order_id, tenantId]
       )
       if (!orderRes.rows || orderRes.rows.length === 0) {
         throw new AppError('ORDER_NOT_FOUND', 'Замовлення не знайдено', 404)
       }
       const order = orderRes.rows[0]
+      commissionManagerId = order.manager_id ?? commissionManagerId
       if (order.status === 'completed' && order.sale_id) {
         throw new AppError('ORDER_ALREADY_COMPLETED', 'Замовлення вже завершено', 409)
       }
@@ -632,6 +705,71 @@ async function executeSaleTransaction(
           JSON.stringify({ sale_id: sale.id, method: input.payment_method, note: 'Видано через касу (POS)' })
         ]
       )
+    }
+
+    // Salary commission is committed together with the sale. This also keeps
+    // desktop/server behavior identical for personal and whole-cashbox rules.
+    const rulesResult = await client.query(
+      'SELECT * FROM commission_rules WHERE tenant_id = $1',
+      [tenantId],
+    )
+    if (rulesResult.rowCount) {
+      const productsMap: ProductsMap = {}
+      const commissionItems: CommissionItem[] = input.items.map((item) => {
+        const product = productsInfo.get(item.product_id)
+        productsMap[item.product_id] = {
+          brand_id: product?.brand_id ?? null,
+          category_id: product?.category_id ?? null,
+          sku: product?.sku ?? null,
+        }
+        return {
+          product_id: item.product_id,
+          sell_price: item.unit_price,
+          buy_price: product?.cost_price ?? 0,
+          qty: Number(item.qty),
+        }
+      })
+      const commissions = computeCommissionMap(
+        commissionItems,
+        productsMap,
+        rulesResult.rows,
+        commissionManagerId,
+        commissionContext,
+      )
+      for (const [employeeId, amount] of commissions) {
+        const employee = await client.query(
+          `SELECT COALESCE(raw_user_meta_data->>'full_name', email, 'Співробітник') AS full_name
+           FROM auth.users WHERE id = $1 LIMIT 1`,
+          [employeeId],
+        )
+        const employeeName = employee.rows[0]?.full_name
+          ?? (employeeId === commissionManagerId ? 'Менеджер' : 'Співробітник')
+        await client.query(
+          `INSERT INTO salary_payments (
+             tenant_id, employee_id, employee_name, amount, type, method, period,
+             work_date, source, note, created_by, commission_source_sale_id,
+             commission_source_order_id
+           ) VALUES (
+             $1, $2, $3, $4, 'bonus', 'cash',
+             to_char(NOW() AT TIME ZONE 'Europe/Kyiv', 'YYYY-MM'),
+             (NOW() AT TIME ZONE 'Europe/Kyiv')::date,
+             'commission', $5, $6, $7, $8
+           )
+           ON CONFLICT DO NOTHING`,
+          [
+            tenantId,
+            employeeId,
+            employeeName,
+            amount,
+            input.customer_order_id
+              ? `Комісія за замовлення #${sale.sale_number}`
+              : `Комісія за продаж (чек #${sale.sale_number})`,
+            cashierId,
+            sale.id,
+            input.customer_order_id ?? null,
+          ],
+        )
+      }
     }
 
     if (idempotencyKey) {
@@ -777,7 +915,8 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     if (cachedResponse) return cachedResponse
   }
 
-  const useBonusAtomic = process.env.USE_BONUS_ATOMIC_SALE !== 'false'
+  // Bonus and sale balances must always be committed together.
+  const useBonusAtomic = true
   let isCharged = false
   let activeTerminalAdapter: TerminalAdapter | null = null
   let bankAuthCode: string | null = null
@@ -812,6 +951,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     const paymentTotal = discountedTotal + coreDepositTotal
 
     let { cashAmount, cardAmount, transferAmount, bonusesEarned } = calculateSaleAmounts(input, paymentTotal)
+    let bonusExpiresAt: string | null = null
     cardChargeAmount = cardAmount
 
     if (useBonusAtomic && input.customer_id && input.payment_method !== 'debt') {
@@ -819,6 +959,9 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       const loyaltySettings = await getSettings(tenantId)
       if (loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
         bonusesEarned = Math.round(discountedTotal * ((loyaltySettings.accrual_pct ?? 0) / 100))
+        bonusExpiresAt = loyaltySettings.expiry_days
+          ? new Date(Date.now() + Number(loyaltySettings.expiry_days) * 86400000).toISOString()
+          : null
       }
     }
 
@@ -830,7 +973,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     terminalPaymentRef = termResult.paymentRef
 
     const sale = await executeSaleTransaction(
-      cashierId, tenantId, input, useBonusAtomic, bonusesEarned,
+      cashierId, tenantId, input, useBonusAtomic, bonusesEarned, bonusExpiresAt,
       cashAmount, cardAmount, transferAmount, idempotencyKey, requestHash,
     )
     committedSale = sale
@@ -883,59 +1026,12 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       await processLegacyBonuses(sale, input)
     }
 
-    // Кешбек: клієнт у режимі «накопичення» — відсоток його цінової групи не
-    // знижує чек (каса ставить знижку 0), а нараховується грошима на рахунок.
-    // База — сума чека без застави за обмінні деталі.
-    if (input.customer_id && input.payment_method !== 'debt') {
-      try {
-        const { data: cust } = await db.from('customers')
-          .select('id, loyalty_mode, discount_pct, full_name, phone, price_tier:price_tiers(discount_pct)')
-          .eq('id', input.customer_id).eq('tenant_id', tenantId).maybeSingle()
-        const pct = Number((cust as any)?.price_tier?.discount_pct ?? (cust as any)?.discount_pct ?? 0)
-        if ((cust as any)?.loyalty_mode === 'cashback' && pct > 0) {
-          const cashback = Math.round(discountedTotal * pct / 100)
-          if (cashback > 0) {
-            const { error: cbErr } = await db.rpc('customer_deposit_change', {
-              p_tenant_id:   tenantId,
-              p_customer_id: input.customer_id,
-              p_amount:      cashback,
-              p_method:      'cashback',
-              p_sale_id:     sale.id,
-              p_shift_id:    input.shift_id ?? null,
-              p_notes:       `Накопичення ${pct}% з чека #${sale.sale_number ?? ''}`,
-              p_created_by:  cashierId,
-            })
-            if (cbErr) logger.warn({ err: cbErr.message, saleId: sale.id }, '[cashback] нарахування не вдалося')
-            else logger.info({ saleId: sale.id, cashback, pct }, '[cashback] нараховано на рахунок клієнта')
-          }
-        }
-      } catch (e: any) {
-        logger.warn({ err: e?.message, saleId: sale.id }, '[cashback] помилка нарахування')
-      }
-    }
-
-
     if (input.customer_order_id) {
-      try {
-        const { calculateAndRecordCommission } = await import('./commissionService.js')
-        await calculateAndRecordCommission(input.customer_order_id, tenantId, cashierId)
-      } catch (commErr: any) {
-        logger.error({ orderId: input.customer_order_id, error: commErr?.message || String(commErr) }, 'Failed to calculate manager commission')
-      }
-
       try {
         const { notifyStatusUpdate } = await import('./telegramBot.js')
         notifyStatusUpdate(input.customer_order_id, 'completed', tenantId).catch(() => {})
       } catch (notifyErr: any) {
         logger.error({ orderId: input.customer_order_id, error: notifyErr?.message || String(notifyErr) }, 'Failed to send completion notification')
-      }
-    } else {
-      // Прямий продаж на касі (без замовлення) — комісія за категоріями продавцям
-      try {
-        const { calculateSaleCommission } = await import('./commissionService.js')
-        await calculateSaleCommission(sale.id, tenantId, cashierId)
-      } catch (commErr: any) {
-        logger.error({ saleId: sale.id, error: commErr?.message || String(commErr) }, 'Failed to calculate sale commission')
       }
     }
 

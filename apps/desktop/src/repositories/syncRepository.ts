@@ -650,7 +650,9 @@ export class LocalSyncRepository {
         AND status = 'failed'
         AND (
           last_error LIKE '%кассов%смен%'
+          OR last_error LIKE '%Кассов%смен%'
           OR last_error LIKE '%касов%змін%'
+          OR last_error LIKE '%Касов%змін%'
           OR last_error LIKE '%SHIFT_REQUIRED%'
           OR last_error LIKE '%SHIFT_INVALID%'
         )

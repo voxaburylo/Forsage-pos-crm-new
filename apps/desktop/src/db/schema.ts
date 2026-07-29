@@ -1193,6 +1193,35 @@ const MIGRATION_017_DOCUMENT_INTEGRITY_SQL = `
         AND o.status IN ('pending', 'sending', 'failed')
     );
 `
+
+const MIGRATION_018_CUSTOMER_LOYALTY_SALARY_INTEGRITY_SQL = `
+  ALTER TABLE salary_payments
+    ADD COLUMN commission_source_return_id TEXT REFERENCES customer_returns(id) ON DELETE SET NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_salary_return_commission_once
+    ON salary_payments(tenant_id, employee_id, commission_source_return_id)
+    WHERE commission_source_return_id IS NOT NULL
+      AND source = 'commission_reversal' AND deleted_at IS NULL;
+
+  UPDATE customers
+  SET deleted_at = NULL,
+      dirty_at = NULL,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE deleted_at IS NOT NULL
+    AND (COALESCE(debt_balance, 0) <> 0
+      OR COALESCE(deposit_balance, 0) <> 0
+      OR COALESCE(bonus_balance, 0) <> 0);
+
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE operation_type = 'return.created' AND status = 'failed'
+    AND (
+      last_error LIKE '%Касов%змін%'
+      OR last_error LIKE '%касов%змін%'
+      OR last_error LIKE '%SHIFT_REQUIRED%'
+      OR last_error LIKE '%SHIFT_INVALID%'
+    );
+`;
+
 export interface LocalMigration {
   version: number
   sql: string
@@ -1216,4 +1245,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 15, sql: MIGRATION_015_STOCK_INTEGRITY_SQL },
   { version: 16, sql: MIGRATION_016_FINANCIAL_INTEGRITY_SQL },
   { version: 17, sql: MIGRATION_017_DOCUMENT_INTEGRITY_SQL },
+  { version: 18, sql: MIGRATION_018_CUSTOMER_LOYALTY_SALARY_INTEGRITY_SQL },
 ]

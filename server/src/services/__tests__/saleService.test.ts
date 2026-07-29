@@ -107,7 +107,7 @@ describe('sale transaction tenant isolation regressions', () => {
       'UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1 WHERE id = $2 AND tenant_id = $3',
     )
     expect(source).toContain(
-      'SELECT id, status, sale_id FROM customer_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+      'SELECT id, status, sale_id, manager_id FROM customer_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
     )
     expect(source).toContain(
       'UPDATE inventory_reserves SET released_at = NOW() WHERE order_id = $1 AND tenant_id = $2 AND released_at IS NULL',
@@ -123,9 +123,9 @@ describe('sale transaction tenant isolation regressions', () => {
   })
 
   it('validates a selected customer in the current tenant even without bonus spending', () => {
-    expect(source).toContain(
-      'SELECT id FROM customers WHERE id = $1 AND tenant_id = $2 FOR SHARE',
-    )
+    expect(source).toContain('FROM customers')
+    expect(source).toContain('WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL')
+    expect(source).toContain('FOR UPDATE')
   })
 
   it('commits sale and idempotency result in the same transaction', () => {

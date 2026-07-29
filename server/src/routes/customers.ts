@@ -88,24 +88,12 @@ router.post('/:id/pay-debt', requireRole('owner', 'admin', 'manager', 'cashier')
   try {
     const parsed = payDebtSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть коректну суму', 422, parsed.error.flatten())
-    const customer = await customerService.payDebt(String(req.params.id), parsed.data, req.user!.tenant_id)
-
-    // Cash operation для готівки
-    if (parsed.data.method === 'cash' && parsed.data.shift_id) {
-      await db.from('cash_operations').insert({
-        tenant_id: req.user!.tenant_id, shift_id: parsed.data.shift_id,
-        type: 'in', amount: parsed.data.amount,
-        created_by: req.user!.id,
-        note: `Оплата боргу: ${customer.full_name ?? customer.phone}`,
-      })
-    }
-
-    // Audit log
-    await db.from('audit_log').insert({
-      tenant_id: req.user!.tenant_id, user_id: req.user!.id,
-      action: 'DEBT_PAYMENT', entity_type: 'customers', entity_id: customer.id,
-      details: { amount: parsed.data.amount, method: parsed.data.method, debt_after: customer.debt_balance },
-    })
+    const customer = await customerService.payDebt(
+      String(req.params.id),
+      parsed.data,
+      req.user!.id,
+      req.user!.tenant_id,
+    )
 
     res.json({ data: customer })
   } catch (err) { next(err) }
@@ -140,35 +128,13 @@ router.post('/:id/deposit', requireRole('owner', 'admin', 'manager', 'cashier'),
     }).safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть коректну суму', 422, parsed.error.flatten())
 
-    const customer = await customerService.getCustomer(String(req.params.id), req.user!.tenant_id)
-    const { data: newBalance, error } = await db.rpc('customer_deposit_change', {
-      p_tenant_id:   req.user!.tenant_id,
-      p_customer_id: customer.id,
-      p_amount:      parsed.data.amount,
-      p_method:      parsed.data.method,
-      p_shift_id:    parsed.data.shift_id ?? null,
-      p_notes:       parsed.data.notes ?? 'Поповнення рахунку на касі',
-      p_created_by:  req.user!.id,
-    })
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
-
-    // Готівка проходить через касу зміни — каса має зійтись при звірці
-    if (parsed.data.method === 'cash' && parsed.data.shift_id) {
-      await db.from('cash_operations').insert({
-        tenant_id: req.user!.tenant_id, shift_id: parsed.data.shift_id,
-        type: 'in', amount: parsed.data.amount,
-        created_by: req.user!.id,
-        note: `Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone}`,
-      })
-    }
-
-    await db.from('audit_log').insert({
-      tenant_id: req.user!.tenant_id, user_id: req.user!.id,
-      action: 'DEPOSIT_TOPUP', entity_type: 'customers', entity_id: customer.id,
-      details: { amount: parsed.data.amount, method: parsed.data.method, balance_after: newBalance },
-    })
-
-    res.json({ data: { balance: newBalance } })
+    const result = await customerService.topUpDeposit(
+      String(req.params.id),
+      parsed.data,
+      req.user!.id,
+      req.user!.tenant_id,
+    )
+    res.json({ data: result })
   } catch (err) { next(err) }
 })
 

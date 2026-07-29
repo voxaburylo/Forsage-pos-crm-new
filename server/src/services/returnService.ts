@@ -495,7 +495,11 @@ export async function createReturn(
   if (!returnRecord || typeof returnRecord !== 'object' || typeof returnRecord.id !== 'string') {
     throw new AppError('DB_ERROR', 'Не вдалося отримати результат оформлення повернення', 500)
   }
-  if (returnRecord._replayed === true) return getReturn(returnRecord.id, tenantId)
+  if (returnRecord._replayed === true) {
+    const { reverseCommissionForReturn } = await import('./commissionService.js')
+    await reverseCommissionForReturn(returnRecord.id, input.sale_id, resolvedItems, tenantId, userId)
+    return getReturn(returnRecord.id, tenantId)
+  }
 
 
   // ==================================================================
@@ -580,20 +584,17 @@ export async function createReturn(
   }
 
   // ==================================================================
-  // 5.6. Сторно комісії за повернені позиції (щоб менеджеру не лишалась
-  //      зарплата за товар, який клієнт повернув)
+  // 5.6. Сторно комісії за повернені позиції.
+  // Повторний виклик безпечний: return_id + employee_id унікальні.
   // ==================================================================
-  try {
-    const { reverseCommissionForReturn } = await import('./commissionService.js')
-    await reverseCommissionForReturn(
-      input.sale_id,
-      resolvedItems,
-      tenantId,
-      userId,
-    )
-  } catch (err) {
-    logger.error({ error: err instanceof Error ? err.message : err, saleId: input.sale_id }, 'Failed to reverse commission on return')
-  }
+  const { reverseCommissionForReturn } = await import('./commissionService.js')
+  await reverseCommissionForReturn(
+    returnRecord.id,
+    input.sale_id,
+    resolvedItems,
+    tenantId,
+    userId,
+  )
 
   // ==================================================================
   // 6. Аудит (await — гарантуємо запис)

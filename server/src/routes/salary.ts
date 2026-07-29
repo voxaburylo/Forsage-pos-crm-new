@@ -21,6 +21,44 @@ const createSchema = z.object({
   work_date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 })
 
+
+async function assertCashAvailable(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null; rows: any[] }> },
+  shiftId: string,
+  tenantId: string,
+  amount: number,
+): Promise<void> {
+  const shift = await client.query(
+    `SELECT id FROM shifts
+     WHERE id = $1 AND tenant_id = $2 AND status = 'open'
+     LIMIT 1 FOR UPDATE`,
+    [shiftId, tenantId],
+  )
+  if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+  const cash = await client.query(
+    `SELECT GREATEST(0,
+       COALESCE(s.opening_cash, 0)
+       + COALESCE((SELECT SUM(COALESCE(sale.cash_amount, 0))
+         FROM sales sale
+         WHERE sale.shift_id = s.id AND sale.tenant_id = s.tenant_id
+           AND sale.status IN ('completed', 'returned')), 0)
+       + COALESCE((SELECT SUM(CASE WHEN operation.type = 'in' THEN operation.amount ELSE -operation.amount END)
+         FROM cash_operations operation
+         WHERE operation.shift_id = s.id AND operation.tenant_id = s.tenant_id), 0)
+     )::bigint AS available
+     FROM shifts s WHERE s.id = $1 AND s.tenant_id = $2`,
+    [shiftId, tenantId],
+  )
+  const available = Number(cash.rows[0]?.available ?? 0)
+  if (amount > available) {
+    throw new AppError(
+      'CASHBOX_INSUFFICIENT_FUNDS',
+      `У касі недостатньо готівки: доступно ${(available / 100).toFixed(2)} грн`,
+      409,
+    )
+  }
+}
+
 const dailyPayoutSchema = z.object({
   employee_id:   z.string().uuid(),
   employee_name: z.string().min(1).max(200),
@@ -149,14 +187,6 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
     const period = input.work_date.slice(0, 7)
 
     const result = await runTransaction(async (client) => {
-      if (input.shift_id) {
-        const shift = await client.query(
-          `SELECT id FROM shifts WHERE id=$1 AND tenant_id=$2 AND status='open'`,
-          [input.shift_id, req.user!.tenant_id],
-        )
-        if (shift.rowCount === 0) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
-      }
-
       if (dailyRate > 0) {
         await client.query(
           `INSERT INTO salary_payments
@@ -184,6 +214,7 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
 
       let cashOperationId: string | null = null
       if (input.method === 'cash') {
+        await assertCashAvailable(client, input.shift_id!, req.user!.tenant_id, amount)
         const cash = await client.query(
           `INSERT INTO cash_operations
            (tenant_id, shift_id, type, amount, note, created_by, source)
@@ -215,6 +246,12 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
     const parsed = createSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
+    const { data: authData } = await supabaseAdmin.auth.admin.getUserById(parsed.data.employee_id)
+    const employee = authData.user
+    if (!employee || employee.app_metadata?.tenant_id !== req.user!.tenant_id) {
+      throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
+    }
+
     const period = parsed.data.period ?? new Date().toISOString().slice(0, 7)
 
     if (parsed.data.type === 'advance' && parsed.data.method === 'cash' && !parsed.data.shift_id) {
@@ -224,11 +261,7 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
     const data = await runTransaction(async (client) => {
       let cashOperationId: string | null = null
       if (parsed.data.type === 'advance' && parsed.data.method === 'cash') {
-        const shift = await client.query(
-          `SELECT id FROM shifts WHERE id=$1 AND tenant_id=$2 AND status='open'`,
-          [parsed.data.shift_id, req.user!.tenant_id],
-        )
-        if (shift.rowCount === 0) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+        await assertCashAvailable(client, parsed.data.shift_id!, req.user!.tenant_id, parsed.data.amount)
         const cash = await client.query(
           `INSERT INTO cash_operations
            (tenant_id, shift_id, type, amount, note, created_by, source)
@@ -321,9 +354,13 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     await runTransaction(async (client) => {
       const payment = await client.query(
-        'SELECT cash_operation_id FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        'SELECT cash_operation_id, source FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
         [req.params.id, req.user!.tenant_id],
       )
+      if (!payment.rowCount) throw new AppError('NOT_FOUND', 'Запис не знайдено', 404)
+      if (payment.rows[0].source !== 'manual') {
+        throw new AppError('AUTOMATIC_SALARY_IMMUTABLE', 'Автоматичне нарахування не можна видалити; виправте джерело операції', 409)
+      }
       const cashOperationId = payment.rows[0]?.cash_operation_id ?? null
       await client.query(
         'DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2',

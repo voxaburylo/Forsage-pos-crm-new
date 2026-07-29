@@ -636,6 +636,9 @@ export class LocalSecondarySyncImporter {
     const orderId = payment.commission_source_order_id && this.exists('customer_orders', tenantId, payment.commission_source_order_id)
       ? payment.commission_source_order_id
       : null
+    const returnId = payment.commission_source_return_id && this.exists('customer_returns', tenantId, payment.commission_source_return_id)
+      ? payment.commission_source_return_id
+      : null
     const type = ['salary', 'bonus', 'advance', 'penalty'].includes(String(payment.type))
       ? String(payment.type)
       : 'salary'
@@ -646,9 +649,9 @@ export class LocalSecondarySyncImporter {
       INSERT INTO salary_payments (
         id, tenant_id, employee_id, employee_name, amount, type, method, period,
         work_date, source, note, shift_id, cash_operation_id,
-        commission_source_sale_id, commission_source_order_id, created_by,
+        commission_source_sale_id, commission_source_order_id, commission_source_return_id, created_by,
         remote_updated_at, created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       ON CONFLICT(id) DO UPDATE SET
         employee_id = excluded.employee_id,
         employee_name = excluded.employee_name,
@@ -663,6 +666,7 @@ export class LocalSecondarySyncImporter {
         cash_operation_id = excluded.cash_operation_id,
         commission_source_sale_id = excluded.commission_source_sale_id,
         commission_source_order_id = excluded.commission_source_order_id,
+        commission_source_return_id = excluded.commission_source_return_id,
         created_by = excluded.created_by,
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
@@ -672,7 +676,7 @@ export class LocalSecondarySyncImporter {
       id, tenantId, payment.employee_id, payment.employee_name ?? payment.employee_id,
       Math.round(asNumber(payment.amount)), type, method, period, workDate,
       payment.source ?? 'manual', payment.note ?? null, shiftId, cashOperationId,
-      saleId, orderId, payment.created_by ?? null, createdAt, createdAt, createdAt,
+      saleId, orderId, returnId, payment.created_by ?? null, createdAt, createdAt, createdAt,
     )
     if (cashOperationId) {
       this.db.prepare(`

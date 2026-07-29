@@ -1,8 +1,57 @@
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 
 // No fallback TENANT_ID
 const SETTINGS_TABLE = 'loyalty_settings'
+
+async function expireBonuses(customerId: string, tenantId: string): Promise<number> {
+  return runTransaction(async (client) => {
+    const customer = await client.query(
+      `SELECT COALESCE(bonus_balance, 0) AS bonus_balance
+       FROM customers
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [customerId, tenantId],
+    )
+    if (!customer.rowCount) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+    const balance = Number(customer.rows[0].bonus_balance ?? 0)
+    if (balance <= 0) return 0
+    const totals = await client.query(
+      `SELECT
+         COALESCE(SUM(amount) FILTER (
+           WHERE transaction_type = 'earn' AND amount > 0
+             AND expires_at IS NOT NULL AND expires_at <= NOW()
+         ), 0)::bigint AS expired_earned,
+         COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'spend' AND amount < 0), 0)::bigint AS spent,
+         COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'manual' AND amount < 0), 0)::bigint AS manual_spent,
+         COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'expire' AND amount < 0), 0)::bigint AS already_expired
+       FROM bonus_transactions
+       WHERE customer_id = $1 AND tenant_id = $2`,
+      [customerId, tenantId],
+    )
+    const row = totals.rows[0] ?? {}
+    const amount = Math.min(balance, Math.max(0,
+      Number(row.expired_earned ?? 0)
+      - Number(row.spent ?? 0)
+      - Number(row.manual_spent ?? 0)
+      - Number(row.already_expired ?? 0),
+    ))
+    if (amount <= 0) return 0
+    await client.query(
+      'UPDATE customers SET bonus_balance = bonus_balance - $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+      [amount, customerId, tenantId],
+    )
+    await client.query(
+      `INSERT INTO bonus_transactions
+        (tenant_id, customer_id, amount, transaction_type, description)
+       VALUES ($1, $2, $3, 'expire', 'Закінчився строк дії бонусів')`,
+      [tenantId, customerId, -amount],
+    )
+    return amount
+  })
+}
+
 
 // ── Налаштування ─────────────────────────────────────────
 
@@ -61,6 +110,7 @@ export async function updateSettings(input: {
 // ── Баланс клієнта ────────────────────────────────────────
 
 export async function getBalance(customerId: string, tenantId: string): Promise<number> {
+  await expireBonuses(customerId, tenantId)
   const { data, error } = await db
     .from('customers')
     .select('bonus_balance')
@@ -73,6 +123,7 @@ export async function getBalance(customerId: string, tenantId: string): Promise<
 }
 
 export async function getTransactions(customerId: string, tenantId: string) {
+  await expireBonuses(customerId, tenantId)
   const { data, error } = await db
     .from('bonus_transactions')
     .select('*')
@@ -161,7 +212,7 @@ export async function accrueBonus(params: {
 export async function redeemBonus(params: {
   customerId: string
   amount:     number
-  saleId?:    string
+  saleId:     string
   userId:     string
   tenantId:   string
 }): Promise<void> {
@@ -183,11 +234,22 @@ export async function redeemBonus(params: {
     throw new AppError('INSUFFICIENT_BONUS', 'Недостатньо бонусів', 400)
   }
 
-  const saleId = params.saleId ?? null
-  if (saleId) {
-    const { data: sale } = await db.from('sales').select('id')
-      .eq('id', saleId).eq('tenant_id', params.tenantId).maybeSingle()
-    if (!sale) throw new AppError('NOT_FOUND', 'Продаж не знайдено', 404)
+  const saleId = params.saleId
+  const { data: sale } = await db.from('sales')
+    .select('id, customer_id, total, bonuses_spent, status')
+    .eq('id', saleId)
+    .eq('tenant_id', params.tenantId)
+    .maybeSingle()
+  if (!sale) throw new AppError('NOT_FOUND', 'Продаж не знайдено', 404)
+  if (sale.customer_id !== params.customerId) {
+    throw new AppError('CUSTOMER_MISMATCH', 'Продаж належить іншому клієнту', 409)
+  }
+  if (Number(sale.bonuses_spent ?? 0) > 0) {
+    throw new AppError('BONUS_ALREADY_REDEEMED', 'Бонуси для цього продажу вже списані', 409)
+  }
+  const maxAllowed = await maxRedeem(Number(sale.total ?? 0), params.tenantId)
+  if (params.amount > maxAllowed) {
+    throw new AppError('BONUS_LIMIT_EXCEEDED', 'Сума бонусів перевищує дозволений відсоток чека', 409)
   }
 
   const { error } = await db.rpc('process_bonus_spend', {

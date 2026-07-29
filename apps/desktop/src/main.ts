@@ -767,9 +767,7 @@ app.whenReady().then(async () => {
     requireLocalPos().getOpenShift(cashierId),
   )
   ipcMain.handle('desktop:pos:checkout', (_event, input: LocalSaleCheckoutInput) => {
-    const result = requireLocalPos().checkout(input)
-    requireLocalStaff().recordSaleCommissions(result.sale_id, undefined, input.cashier_id)
-    return result
+    return requireLocalPos().checkout(input)
   })
   ipcMain.handle('desktop:pos:list-sales', (_event, input) =>
     requireLocalPos().listSales(input),

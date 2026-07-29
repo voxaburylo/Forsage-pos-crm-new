@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
+import { LocalStaffRepository } from './staffRepository'
 import {
   DEFAULT_TENANT_ID,
   type LocalFiscalIntentResolution,
@@ -908,7 +909,17 @@ export class LocalPosRepository {
 
   deleteCustomer(customerId: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
     const timestamp = nowIso()
-    this.getCustomer(customerId, tenantId)
+    const customer = this.getCustomerForMoney(customerId, tenantId)
+    if (Number(customer.debt_balance ?? 0) !== 0 || Number(customer.deposit_balance ?? 0) !== 0 || Number((customer as any).bonus_balance ?? 0) !== 0) {
+      throw new Error('Клієнта не можна видалити, доки є борг, передплата або бонуси')
+    }
+    const activeOrder = this.db.prepare(`
+      SELECT id FROM customer_orders
+      WHERE customer_id = ? AND tenant_id = ? AND deleted_at IS NULL
+        AND status NOT IN ('completed', 'cancelled', 'canceled', 'archived')
+      LIMIT 1
+    `).get(customerId, tenantId)
+    if (activeOrder) throw new Error('У клієнта є незавершені замовлення або чернетки')
     this.db.transaction(() => {
       this.db.prepare(`
         UPDATE customers SET deleted_at = ?, dirty_at = ?, updated_at = ?
@@ -1023,6 +1034,9 @@ export class LocalPosRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть коректну суму')
+    if (input.method === 'cash' && !input.shift_id) {
+      throw new Error('Для оплати готівкою потрібна відкрита касова зміна')
+    }
     return this.db.transaction(() => {
       const customer = this.getCustomerForMoney(input.customer_id, tenantId)
       if (customer.debt_balance <= 0) throw new Error('У клієнта немає боргу')
@@ -1067,6 +1081,9 @@ export class LocalPosRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть коректну суму')
+    if (input.method === 'cash' && !input.shift_id) {
+      throw new Error('Для поповнення готівкою потрібна відкрита касова зміна')
+    }
     return this.db.transaction(() => {
       const customer = this.getCustomerForMoney(input.customer_id, tenantId)
       const timestamp = nowIso()
@@ -1893,6 +1910,8 @@ export class LocalPosRepository {
         timestamp,
       )
 
+      new LocalStaffRepository(this.db).recordSaleCommissions(saleId, tenantId, input.cashier_id)
+
       const checkoutResult: LocalSaleCheckoutResult = {
         sale_id: saleId,
         sale_number: saleNumber,
@@ -2276,6 +2295,10 @@ export class LocalPosRepository {
         sale_id: ready.sale.id,
         refund_kopecks: ready.refund,
       }, timestamp)
+
+      new LocalStaffRepository(this.db).recordReturnCommissionReversals(
+        returnId, ready.sale.id, normalized, tenantId, ready.approved_by,
+      )
 
       const result = this.getReturn(returnId, tenantId)
       if (input.is_fiscal === true && clientOperationId) {
