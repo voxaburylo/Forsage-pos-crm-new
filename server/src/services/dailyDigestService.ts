@@ -13,6 +13,7 @@ export interface DailyControl {
   avg_receipt: number
   cash: number             // готівкою
   card: number             // карткою
+  transfer: number         // банківський переказ
   debt_sales: number       // продано в борг (сума)
   discounts: number        // сума знижок за день
   returns_count: number
@@ -31,7 +32,7 @@ export async function buildDailyControl(tenantId: string, date: string): Promise
 
   const [salesQ, returnsQ, reconQ, negQ, nopriceQ] = await Promise.all([
     db.from('sales')
-      .select('total, discount, payment_method, is_debt, cash_amount, card_amount')
+      .select('total, discount, payment_method, is_debt, cash_amount, card_amount, transfer_amount')
       .eq('tenant_id', tenantId).eq('status', 'completed')
       .gte('completed_at', from).lte('completed_at', to),
     db.from('returns')
@@ -54,12 +55,13 @@ export async function buildDailyControl(tenantId: string, date: string): Promise
   const revenue = sales.reduce((s, x) => s + (x.total ?? 0), 0)
   const receipts = sales.length
   const discounts = sales.reduce((s, x) => s + (x.discount ?? 0), 0)
-  let cash = 0, card = 0, debtSales = 0
+  let cash = 0, card = 0, transfer = 0, debtSales = 0
   for (const s of sales) {
     if (s.is_debt) { debtSales += s.total ?? 0; continue }
-    if (s.payment_method === 'card') card += s.total ?? 0
+    if (s.payment_method === 'card') card += s.card_amount || s.total || 0
     else if (s.payment_method === 'mixed') { cash += s.cash_amount ?? 0; card += s.card_amount ?? 0 }
-    else cash += s.total ?? 0
+    else if (s.payment_method === 'transfer') transfer += s.transfer_amount || s.total || 0
+    else if (s.payment_method === 'cash') cash += s.cash_amount || s.total || 0
   }
 
   const returns = returnsQ.data ?? []
@@ -78,6 +80,7 @@ export async function buildDailyControl(tenantId: string, date: string): Promise
     avg_receipt: receipts > 0 ? Math.round(revenue / receipts) : 0,
     cash,
     card,
+    transfer,
     debt_sales: debtSales,
     discounts,
     returns_count: returns.length,
@@ -96,7 +99,7 @@ export function formatDigestText(c: DailyControl): string {
   lines.push(`📊 *Підсумок дня ${c.date.split('-').reverse().join('.')}*`)
   lines.push('')
   lines.push(`💰 Виторг: *${uah(c.revenue)}*  (${c.receipts} чеків, середній ${uah(c.avg_receipt)})`)
-  lines.push(`   готівка ${uah(c.cash)} · картка ${uah(c.card)}${c.debt_sales > 0 ? ` · в борг ${uah(c.debt_sales)}` : ''}`)
+  lines.push(`   готівка ${uah(c.cash)} · картка ${uah(c.card)}${c.transfer > 0 ? ` · переказ ${uah(c.transfer)}` : ``}${c.debt_sales > 0 ? ` · в борг ${uah(c.debt_sales)}` : ''}`)
   if (c.discounts > 0) lines.push(`🏷 Знижок за день: ${uah(c.discounts)}`)
   lines.push('')
   if (c.returns_count > 0) {

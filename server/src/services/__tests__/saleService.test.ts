@@ -1,52 +1,69 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { calculateSaleAmounts, saleRequestHash } from '../salePayment.js'
 
 describe('calculateSaleAmounts', () => {
-  const calculateSaleAmounts = (input: any, discountedTotal: number) => {
-    let cashAmount = 0
-    let cardAmount = 0
-    if (input.payment_method === 'mixed') {
-      cashAmount = input.cash_amount ?? 0
-      cardAmount = input.card_amount ?? 0
-    } else if (input.payment_method === 'cash') {
-      cashAmount = discountedTotal
-    } else if (input.payment_method === 'card') {
-      cardAmount = discountedTotal
-    }
-    let bonusesEarned = 0
-    return { cashAmount, cardAmount, bonusesEarned }
-  }
-
   it('should assign full amount to cash for cash payment', () => {
-    const result = calculateSaleAmounts({ payment_method: 'cash' }, 10000)
+    const result = calculateSaleAmounts({ payment_method: 'cash' } as any, 10000)
     expect(result.cashAmount).toBe(10000)
     expect(result.cardAmount).toBe(0)
   })
 
   it('should assign full amount to card for card payment', () => {
-    const result = calculateSaleAmounts({ payment_method: 'card' }, 5000)
+    const result = calculateSaleAmounts({ payment_method: 'card' } as any, 5000)
     expect(result.cashAmount).toBe(0)
     expect(result.cardAmount).toBe(5000)
   })
 
   it('should split amounts for mixed payment', () => {
     const result = calculateSaleAmounts(
-      { payment_method: 'mixed', cash_amount: 3000, card_amount: 7000 },
+      { payment_method: 'mixed', cash_amount: 3000, card_amount: 7000 } as any,
       10000
     )
     expect(result.cashAmount).toBe(3000)
     expect(result.cardAmount).toBe(7000)
   })
 
+  it('rejects a mixed split that does not equal the receipt total', () => {
+    expect(() => calculateSaleAmounts(
+      { payment_method: 'mixed', cash_amount: 3000, card_amount: 6000 } as any,
+      10000,
+    )).toThrow(/має дорівнювати сумі чека/)
+  })
+
+  it('assigns the full receipt to bank transfer', () => {
+    const result = calculateSaleAmounts({ payment_method: 'transfer' } as any, 4200)
+    expect(result.transferAmount).toBe(4200)
+    expect(result.cashAmount).toBe(0)
+    expect(result.cardAmount).toBe(0)
+  })
+
   it('should assign zero for debt payment', () => {
-    const result = calculateSaleAmounts({ payment_method: 'debt' }, 10000)
+    const result = calculateSaleAmounts({ payment_method: 'debt' } as any, 10000)
     expect(result.cashAmount).toBe(0)
     expect(result.cardAmount).toBe(0)
   })
 
   it('should always initialize bonusesEarned to 0', () => {
-    const result = calculateSaleAmounts({ payment_method: 'cash' }, 10000)
+    const result = calculateSaleAmounts({ payment_method: 'cash' } as any, 10000)
     expect(result.bonusesEarned).toBe(0)
+  })
+})
+
+describe('sale idempotency payload', () => {
+  it('is stable across object key order and changes when payment data changes', () => {
+    const first = {
+      shift_id: '00000000-0000-0000-0000-000000000001',
+      items: [{ product_id: '00000000-0000-0000-0000-000000000002', qty: 1, unit_price: 1000, discount: 0 }],
+      payment_method: 'cash', discount: 0, cash_amount: 0, card_amount: 0,
+      is_fiscal: false, bonuses_spent: 0,
+    } as any
+    const reordered = {
+      bonuses_spent: 0, is_fiscal: false, card_amount: 0, cash_amount: 0,
+      discount: 0, payment_method: 'cash', items: first.items, shift_id: first.shift_id,
+    } as any
+    expect(saleRequestHash(first)).toBe(saleRequestHash(reordered))
+    expect(saleRequestHash(first)).not.toBe(saleRequestHash({ ...first, discount: 1 }))
   })
 })
 
@@ -109,5 +126,15 @@ describe('sale transaction tenant isolation regressions', () => {
     expect(source).toContain(
       'SELECT id FROM customers WHERE id = $1 AND tenant_id = $2 FOR SHARE',
     )
+  })
+
+  it('commits sale and idempotency result in the same transaction', () => {
+    expect(source).toContain('client_operation_id')
+    expect(source).toContain("status = 'completed', response = $1::jsonb, request_hash = $2")
+  })
+
+  it('does not mark a failed fiscal attempt as fiscalized', () => {
+    expect(source).toContain("extraData.fiscal_status = fiscalNumber ? 'completed' : 'failed'")
+    expect(source).not.toContain('if (input.is_fiscal) extraData.is_fiscal = true')
   })
 })

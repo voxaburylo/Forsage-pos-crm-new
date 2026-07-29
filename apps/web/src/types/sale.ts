@@ -28,6 +28,9 @@ export interface Sale {
   is_fiscal: boolean
   fiscal_number: string | null
   fiscal_qr_url?: string | null
+  fiscal_status?: 'not_requested' | 'pending' | 'completed' | 'failed'
+  fiscal_error?: string | null
+  post_processing_warning?: string | null
   bank_auth_code: string | null
   cash_amount: number
   card_amount: number

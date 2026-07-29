@@ -2675,6 +2675,20 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
     if (amount > remaining) throw new AppError('PAYMENT_TOO_LARGE', 'Сума перевищує борг за накладною', 422)
     const method = payload.payment_method ?? 'cash'
     const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
+    if (fundSource === 'cashbox') {
+      if (!isUuid(payload.shift_id)) {
+        throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 400)
+      }
+      const shiftResult = await client.query(
+        `SELECT id FROM shifts
+         WHERE id = $1 AND tenant_id = $2 AND status = 'open'
+         FOR UPDATE`,
+        [payload.shift_id, tenantId],
+      )
+      if (!shiftResult.rowCount) {
+        throw new AppError('SHIFT_REQUIRED', 'Касова зміна не знайдена або вже закрита', 400)
+      }
+    }
     await client.query(
       `INSERT INTO supplier_payments
        (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by)
@@ -2698,13 +2712,16 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
 async function applySupplierInvoiceCancelled(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const { data: invoice } = await db
     .from('supply_invoices')
-    .select('id,status')
+    .select('id,status,paid_amount')
     .eq('id', operation.aggregate_id)
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .single()
   if (!invoice) return
   if (invoice.status === 'cancelled') return
+  if (Number(invoice.paid_amount ?? 0) > 0) {
+    throw new AppError('PAID_INVOICE_CANNOT_BE_CANCELLED', 'Не можна скасувати оплачену накладну', 409)
+  }
   const { error } = await db.rpc('cancel_supply_invoice', { p_invoice_id: operation.aggregate_id })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }

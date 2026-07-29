@@ -73,4 +73,19 @@ describe('local supply stock safety', () => {
       WHERE source_type = 'supply_invoice_cancel' AND source_id = ?
     `).get(invoice.id)).toEqual({ qty_delta: -3, qty_after: 1 })
   })
+  it('does not cancel an invoice that already has a payment', () => {
+    const stored = product()
+    const invoice = supply.createInvoice({
+      items: [{ product_id: stored.id, qty: 2, purchase_price: 100 }],
+    })
+    supply.postInvoice(invoice.id)
+    supply.payInvoice(invoice.id, {
+      amount: 100,
+      payment_method: 'cash',
+      fund_source: 'owner_funds',
+    })
+
+    expect(() => supply.cancelInvoice(invoice.id)).toThrow(/Не можна скасувати оплачену накладну/)
+    expect(supply.getInvoice(invoice.id).status).toBe('posted')
+  })
 })

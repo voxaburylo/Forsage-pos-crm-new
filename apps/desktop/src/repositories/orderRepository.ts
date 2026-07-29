@@ -603,12 +603,12 @@ export class LocalOrderRepository {
       const settingsRow = this.db.prepare(
         "SELECT value_json FROM app_meta WHERE key = 'shop_settings' LIMIT 1",
       ).get() as { value_json: string } | undefined
-      let allowNegativeQty = true
+      let allowNegativeQty = false
       if (settingsRow?.value_json) {
         try {
           allowNegativeQty = JSON.parse(settingsRow.value_json)?.allow_negative_qty !== false
         } catch {
-          allowNegativeQty = true
+          allowNegativeQty = false
         }
       }
 
@@ -672,6 +672,14 @@ export class LocalOrderRepository {
 
       const discount = Math.max(0, Math.round(num(order.discount_amount)))
       const total = Math.max(0, subtotal - discount)
+      const paidForOrder = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
+      if (paidForOrder !== total) {
+        const difference = Math.abs(paidForOrder - total)
+        if (paidForOrder > total) {
+          throw new Error(`Передоплата перевищує суму замовлення на ${(difference / 100).toFixed(2)} грн. Поверніть надлишок або зарахуйте його на рахунок клієнта.`)
+        }
+        throw new Error(`Не всі оплати проведено. Залишилось ${(difference / 100).toFixed(2)} грн.`)
+      }
       const saleNumber = this.nextSaleNumber(tenantId, timestamp)
       const notes = `Видача замовлення #${order.order_number ?? order.id.slice(0, 8)}`
 

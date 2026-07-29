@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 15
+export const LOCAL_SCHEMA_VERSION = 16
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1125,6 +1125,22 @@ const MIGRATION_015_STOCK_INTEGRITY_SQL = `
     );
 `
 
+const MIGRATION_016_FINANCIAL_INTEGRITY_SQL = `
+  INSERT INTO app_meta(key, value_json, updated_at)
+  VALUES (
+    'shop_settings',
+    '{"allow_negative_qty":false}',
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  )
+  ON CONFLICT(key) DO UPDATE SET
+    value_json = CASE
+      WHEN json_valid(app_meta.value_json)
+      THEN json_set(app_meta.value_json, '$.allow_negative_qty', json('false'))
+      ELSE '{"allow_negative_qty":false}'
+    END,
+    updated_at = excluded.updated_at;
+`
+
 export interface LocalMigration {
   version: number
   sql: string
@@ -1146,4 +1162,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 13, sql: MIGRATION_013_FISCAL_RETURN_INTENTS_SQL },
   { version: 14, sql: MIGRATION_014_SUPPLIER_CATALOG_SQL },
   { version: 15, sql: MIGRATION_015_STOCK_INTEGRITY_SQL },
+  { version: 16, sql: MIGRATION_016_FINANCIAL_INTEGRITY_SQL },
 ]

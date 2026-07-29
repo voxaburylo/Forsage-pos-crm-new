@@ -473,8 +473,15 @@ export async function postSupplyInvoice(id: string, userId: string, tenantId: st
 }
 
 export async function cancelSupplyInvoice(id: string, tenantId: string) {
-  // Ensure the invoice belongs to the tenant
-  await getSupplyInvoice(id, tenantId)
+  // Ensure the invoice belongs to the tenant and has no irreversible payment.
+  const invoice = await getSupplyInvoice(id, tenantId)
+  if (Number(invoice.paid_amount ?? 0) > 0) {
+    throw new AppError(
+      'PAID_INVOICE_CANNOT_BE_CANCELLED',
+      'Не можна скасувати оплачену накладну. Спочатку оформіть повернення або перенесення оплати.',
+      409,
+    )
+  }
 
   const { error } = await db.rpc('cancel_supply_invoice', {
     p_invoice_id: id
@@ -483,6 +490,9 @@ export async function cancelSupplyInvoice(id: string, tenantId: string) {
   if (error) {
     if (error.message.includes('NOT_FOUND')) {
       throw new AppError('NOT_FOUND', error.message, 404)
+    }
+    if (error.message.includes('PAID_INVOICE_CANNOT_BE_CANCELLED')) {
+      throw new AppError('PAID_INVOICE_CANNOT_BE_CANCELLED', 'Не можна скасувати оплачену накладну', 409)
     }
     if (error.message.includes('ALREADY_CANCELLED')) {
       throw new AppError('ALREADY_CANCELLED', error.message, 400)

@@ -499,6 +499,9 @@ export class LocalSupplyRepository {
     this.db.transaction(() => {
       const invoice = this.getInvoice(id, tenantId)
       if (invoice.status === 'cancelled') return
+      if (Number(invoice.paid_amount ?? 0) > 0) {
+        throw new Error('Не можна скасувати оплачену накладну. Спочатку оформіть повернення або перенесення оплати.')
+      }
       const items = this.db.prepare(`
         SELECT ii.product_id, ii.qty, ii.purchase_price,
                p.id AS product_exists, p.name AS product_name, p.qty_on_hand, p.deleted_at AS product_deleted_at

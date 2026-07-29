@@ -2706,6 +2706,10 @@ export class LocalPosRepository {
         LIMIT 1
       `).get(shiftId, tenantId, approvedBy)
       if (!openShift) throw new Error('Касова зміна для повернення вже закрита')
+      const expectedCash = this.getExpectedCash(approvedBy, tenantId)?.expected_amount ?? 0
+      if (expectedCash < refund) {
+        throw new Error(`У касі недостатньо готівки. Доступно ${(expectedCash / 100).toFixed(2)} грн, потрібно ${(refund / 100).toFixed(2)} грн`)
+      }
     }
     return {
       tenant_id: tenantId,

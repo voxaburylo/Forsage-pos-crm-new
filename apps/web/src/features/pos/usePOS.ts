@@ -317,7 +317,13 @@ export function usePOS() {
 
       localStorage.removeItem(PAYMENT_ATTEMPT_KEY)
       store.clearReceipt()
-      toast.success('Продаж #' + sale.sale_number + ' оформлено')
+      if (sale.fiscal_status === 'failed') {
+        toast.warning(`Продаж #${sale.sale_number} збережено, але чек не фіскалізовано: ${sale.fiscal_error ?? 'перевірте ПРРО'}`)
+      } else if (sale.post_processing_warning) {
+        toast.warning(`Продаж #${sale.sale_number} збережено. Потрібна перевірка: ${sale.post_processing_warning}`)
+      } else {
+        toast.success('Продаж #' + sale.sale_number + ' оформлено')
+      }
       return sale
     } catch (e) {
       // Мережева помилка не означає, що продаж не пройшов: POSPage збереже

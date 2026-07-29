@@ -210,4 +210,23 @@ describe('LocalOrderRepository.completeOrder', () => {
     `).get(orderId)).toEqual({ count: 1 })
     expect(db.prepare('SELECT COUNT(*) AS count FROM cash_operations').get()).toEqual({ count: 1 })
   })
+  it('blocks issuing an order whose prepayment is greater than its final total', () => {
+    const productId = insertProduct({ qty: 3, price: 500 })
+    const { orderId } = createPaidOrder({ productId, qty: 1, unitPrice: 500 })
+    db.prepare("UPDATE customer_orders SET status = 'lead' WHERE id = ?").run(orderId)
+    repository.addPayment(orderId, {
+      tenant_id: DEFAULT_TENANT_ID,
+      user_id: cashierId,
+      shift_id: shiftId,
+      amount: 100,
+      method: 'cash',
+    })
+
+    expect(() => repository.completeOrder(orderId, {
+      tenant_id: DEFAULT_TENANT_ID,
+      user_id: cashierId,
+      shift_id: shiftId,
+    })).toThrow(/Передоплата перевищує суму замовлення/)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sales').get()).toEqual({ count: 0 })
+  })
 })

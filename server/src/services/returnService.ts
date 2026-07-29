@@ -5,6 +5,7 @@ import { logAction } from './auditService.js'
 import { allocateReturnableLineTotals } from './returnAllocation.js'
 import type { CreateReturnInput, ReturnListQuery } from '../validators/returnSchema.js'
 import { CONDITION_ALLOWED_ACTIONS } from '../validators/returnSchema.js'
+import { getCurrentShift } from './shiftService.js'
 
 const MAX_RETURN_DAYS = 14
 
@@ -398,6 +399,15 @@ export async function createReturn(
   // ==================================================================
   // 4. Викликаємо атомарну RPC
   // ==================================================================
+  let cashShiftId: string | null = null
+  if (input.refund_method === 'cash') {
+    const shift = await getCurrentShift(userId, tenantId)
+    if (!shift) {
+      throw new AppError('OPEN_SHIFT_REQUIRED', 'Спочатку відкрийте касову зміну', 400)
+    }
+    cashShiftId = shift.id
+  }
+
   const itemsPayload = resolvedItems.map((item) => ({
     sale_item_id: item.sale_item_id,
     product_id: item.product_id,
@@ -405,13 +415,14 @@ export async function createReturn(
     condition: item.condition,
   }))
 
-  const { data, error: rpcError } = await db.rpc('process_return_v2', {
+  const { data, error: rpcError } = await db.rpc('process_return_v3', {
     p_tenant_id:     tenantId,
     p_user_id:       userId,
     p_sale_id:       input.sale_id,
     p_customer_id:   sale.customer_id ?? null,
     p_reason:        input.reason,
     p_operation_id: operationId,
+    p_shift_id:     cashShiftId,
     p_reason_note:   input.reason_note ?? null,
     p_refund_method: input.refund_method,
     p_stock_action:  stockAction,
@@ -465,6 +476,12 @@ export async function createReturn(
     }
     if (msg.includes('OPEN_SHIFT_REQUIRED')) {
       throw new AppError('OPEN_SHIFT_REQUIRED', 'Спочатку відкрийте касову зміну', 400)
+    }
+    if (msg.includes('CASHBOX_INSUFFICIENT_FUNDS')) {
+      throw new AppError('CASHBOX_INSUFFICIENT_FUNDS', 'У касі недостатньо готівки для цього повернення', 422)
+    }
+    if (msg.includes('RETURN_CASH_OPERATION_CONFLICT')) {
+      throw new AppError('RETURN_CASH_OPERATION_CONFLICT', 'Касове повернення вже записане з іншими даними', 409)
     }
     logger.error({ error: msg, saleId: input.sale_id }, 'process_return_v2 RPC failed')
     throw new AppError('DB_ERROR', 'Не вдалося оформити повернення', 500)

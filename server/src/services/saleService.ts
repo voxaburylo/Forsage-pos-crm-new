@@ -6,6 +6,7 @@ import { logAction } from './auditService.js'
 import { logger } from '../lib/logger.js'
 import type { CreateSaleInput, CalculatePriceInput, SaleListQuery } from '../validators/saleSchema.js'
 import { getTerminalAdapter, getFiscalAdapter, TerminalAdapter } from './integrations/adapterFactory.js'
+import { calculateSaleAmounts, saleRequestHash } from './salePayment.js'
 
 const TABLE = 'sales'
 
@@ -236,19 +237,26 @@ async function recordReconciliation(params: {
   }
 }
 
-async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): Promise<any> {
+async function checkIdempotencyLock(idempotencyKey: string, tenantId: string, requestHash: string): Promise<any> {
   // Скільки часу «processing»-лок вважається живим. Якщо сервер упав/зник струм
   // між блокуванням і завершенням — старий лок інакше блокував би цю вкладку НАЗАВЖДИ.
   const PROCESSING_TTL_MS = 2 * 60 * 1000
 
   const { data: cached } = await db
     .from('idempotency_keys')
-    .select('status, response, created_at')
+    .select('status, response, created_at, request_hash')
     .eq('key', idempotencyKey)
     .eq('tenant_id', tenantId)
     .maybeSingle()
 
   if (cached) {
+    if (cached.request_hash && cached.request_hash !== requestHash) {
+      throw new AppError(
+        'IDEMPOTENCY_CONFLICT',
+        'Цей номер операції вже використано для іншого продажу',
+        409,
+      )
+    }
     if (cached.status === 'completed') {
       logger.info({ idempotencyKey }, 'Idempotency hit (completed) — повертаємо кешовану відповідь')
       return cached.response as any
@@ -259,13 +267,34 @@ async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): P
         logger.warn({ idempotencyKey }, 'Idempotency hit (processing) — паралельний запит відхилено')
         throw new AppError('PAYMENT_PROCESSING', 'Запит на оплату вже обробляється. Будь ласка, зачекайте.', 409)
       }
-      // Лок «завис» (попередній запит не завершився через збій/струм) — прибираємо й пробуємо знову
+      const { data: committedSale } = await db
+        .from('sales')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('client_operation_id', idempotencyKey)
+        .maybeSingle()
+      if (committedSale) {
+        await db.from('idempotency_keys').update({
+          status: 'completed',
+          response: committedSale,
+          request_hash: requestHash,
+        }).eq('key', idempotencyKey).eq('tenant_id', tenantId)
+        return committedSale
+      }
+      // Лок «завис» до створення продажу — прибираємо й пробуємо знову.
       logger.warn({ idempotencyKey, ageMs }, 'Idempotency stale processing lock — очищаємо застряглий лок')
       try {
         await db.from('idempotency_keys').delete().eq('key', idempotencyKey).eq('tenant_id', tenantId)
       } catch {}
     }
     if (cached.status === 'failed') {
+      if ((cached.response as any)?.retry_blocked === true) {
+        throw new AppError(
+          'PAYMENT_RECONCILIATION_REQUIRED',
+          'Повтор оплати заблоковано: спочатку звірте операцію на банківському терміналі',
+          409,
+        )
+      }
       try {
         await db.from('idempotency_keys').delete().eq('key', idempotencyKey).eq('tenant_id', tenantId)
       } catch {}
@@ -277,7 +306,8 @@ async function checkIdempotencyLock(idempotencyKey: string, tenantId: string): P
     key: idempotencyKey,
     tenant_id: tenantId,
     status: 'processing',
-    response: null
+    response: null,
+    request_hash: requestHash,
   })
 
   if (insertErr) {
@@ -291,22 +321,6 @@ async function verifyActiveShift(cashierId: string, shiftId: string, tenantId: s
   if (!shift) throw new AppError('NO_OPEN_SHIFT', 'Спочатку відкрийте зміну', 400)
   if (shift.id !== shiftId) throw new AppError('WRONG_SHIFT', 'Невірна зміна', 400)
   return shift
-}
-
-function calculateSaleAmounts(input: CreateSaleInput, discountedTotal: number): { cashAmount: number; cardAmount: number; bonusesEarned: number } {
-  let cashAmount = 0
-  let cardAmount = 0
-  if (input.payment_method === 'mixed') {
-    cashAmount = input.cash_amount ?? 0
-    cardAmount = input.card_amount ?? 0
-  } else if (input.payment_method === 'cash') {
-    cashAmount = discountedTotal
-  } else if (input.payment_method === 'card') {
-    cardAmount = discountedTotal
-  }
-
-  let bonusesEarned = 0
-  return { cashAmount, cardAmount, bonusesEarned }
 }
 
 async function processTerminalPayment(input: CreateSaleInput, cardAmount: number, tenantId: string): Promise<TerminalResult> {
@@ -366,7 +380,10 @@ async function executeSaleTransaction(
   useBonusAtomic: boolean,
   bonusesEarned: number,
   cashAmount: number,
-  cardAmount: number
+  cardAmount: number,
+  transferAmount: number,
+  idempotencyKey: string | undefined,
+  requestHash: string,
 ): Promise<any> {
   return runTransaction(async (client) => {
     // Set local lock timeout to 2 seconds to prevent indefinitely hanging transaction locks
@@ -377,7 +394,7 @@ async function executeSaleTransaction(
       'SELECT allow_negative_qty FROM shop_settings WHERE tenant_id = $1 LIMIT 1',
       [tenantId]
     )
-    const allowNeg = settingsRes.rows[0]?.allow_negative_qty ?? true
+    const allowNeg = settingsRes.rows[0]?.allow_negative_qty ?? false
 
     // 2. Generate next sale number without colliding with imported/restored data
     const saleNumber = await allocateSaleNumber(client, tenantId)
@@ -474,8 +491,9 @@ async function executeSaleTransaction(
         tenant_id, sale_number, customer_id, cashier_id, shift_id,
         status, subtotal, discount, total, payment_method,
         is_debt, notes, manager_id, cash_amount, card_amount,
-        bonuses_spent, bonuses_earned
-      ) VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        bonuses_spent, bonuses_earned, transfer_amount, client_operation_id,
+        client_payload_hash, fiscal_status
+      ) VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       RETURNING *`,
       [
         tenantId,
@@ -493,7 +511,11 @@ async function executeSaleTransaction(
         cashAmount,
         cardAmount,
         useBonusAtomic ? bonusesSpent : 0,
-        useBonusAtomic ? bonusesEarned : 0
+        useBonusAtomic ? bonusesEarned : 0,
+        transferAmount,
+        idempotencyKey ?? null,
+        idempotencyKey ? requestHash : null,
+        input.is_fiscal ? 'pending' : 'not_requested',
       ]
     )
     const sale = saleInsertRes.rows[0]
@@ -612,13 +634,26 @@ async function executeSaleTransaction(
       )
     }
 
+    if (idempotencyKey) {
+      const completed = await client.query(
+        `UPDATE idempotency_keys
+         SET status = 'completed', response = $1::jsonb, request_hash = $2
+         WHERE key = $3 AND tenant_id = $4`,
+        [JSON.stringify(sale), requestHash, idempotencyKey, tenantId],
+      )
+      if (completed.rowCount !== 1) {
+        throw new AppError('IDEMPOTENCY_LOST', 'Не вдалося зафіксувати захист від повторного продажу', 500)
+      }
+    }
+
     return sale
   })
 }
 
-async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fiscalNumber: string | null; fiscalQrUrl: string | null }> {
+async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fiscalNumber: string | null; fiscalQrUrl: string | null; error: string | null }> {
   let fiscalNumber: string | null = null
   let fiscalQrUrl:  string | null = null
+  let fiscalError: string | null = null
 
   if (input.is_fiscal) {
     const settings = await (await import('./adminService.js')).getSettings(sale.tenant_id)
@@ -686,14 +721,16 @@ async function fiscalizeSale(sale: any, input: CreateSaleInput): Promise<{ fisca
         fiscalNumber = fiscalResult.fiscal_number
         fiscalQrUrl  = fiscalResult.qr_url
       } else {
+        fiscalError = fiscalResult.error ?? 'ПРРО не повернув фіскальний номер'
         logger.warn({ error: fiscalResult.error }, 'Фіскалізація: не вдалось фіскалізувати')
       }
     } catch (err: any) {
+      fiscalError = err.message ?? 'Помилка зв’язку з ПРРО'
       logger.error({ error: err.message }, 'Фіскалізація: помилка інтеграції')
     }
   }
 
-  return { fiscalNumber, fiscalQrUrl }
+  return { fiscalNumber, fiscalQrUrl, error: fiscalError }
 }
 
 async function processLegacyBonuses(sale: any, input: CreateSaleInput): Promise<void> {
@@ -734,8 +771,9 @@ async function processLegacyBonuses(sale: any, input: CreateSaleInput): Promise<
 }
 
 export async function createSale(cashierId: string, tenantId: string, input: CreateSaleInput, idempotencyKey?: string) {
+  const requestHash = saleRequestHash(input)
   if (idempotencyKey) {
-    const cachedResponse = await checkIdempotencyLock(idempotencyKey, tenantId)
+    const cachedResponse = await checkIdempotencyLock(idempotencyKey, tenantId, requestHash)
     if (cachedResponse) return cachedResponse
   }
 
@@ -746,6 +784,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   let terminalRrn:  string | null = null
   let terminalPaymentRef: string | null = null
   let cardChargeAmount = 0   // сума картки — для запису звірки при невдалому відкаті
+  let committedSale: any | null = null
 
   try {
     await verifyActiveShift(cashierId, input.shift_id, tenantId)
@@ -772,7 +811,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     }
     const paymentTotal = discountedTotal + coreDepositTotal
 
-    let { cashAmount, cardAmount, bonusesEarned } = calculateSaleAmounts(input, paymentTotal)
+    let { cashAmount, cardAmount, transferAmount, bonusesEarned } = calculateSaleAmounts(input, paymentTotal)
     cardChargeAmount = cardAmount
 
     if (useBonusAtomic && input.customer_id && input.payment_method !== 'debt') {
@@ -790,12 +829,20 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     isCharged = termResult.isCharged
     terminalPaymentRef = termResult.paymentRef
 
-    const sale = await executeSaleTransaction(cashierId, tenantId, input, useBonusAtomic, bonusesEarned, cashAmount, cardAmount)
+    const sale = await executeSaleTransaction(
+      cashierId, tenantId, input, useBonusAtomic, bonusesEarned,
+      cashAmount, cardAmount, transferAmount, idempotencyKey, requestHash,
+    )
+    committedSale = sale
 
-    const { fiscalNumber, fiscalQrUrl } = await fiscalizeSale(sale, input)
+    const { fiscalNumber, fiscalQrUrl, error: fiscalError } = await fiscalizeSale(sale, input)
 
     const extraData: Record<string, unknown> = {}
-    if (input.is_fiscal) extraData.is_fiscal = true
+    if (input.is_fiscal) {
+      extraData.is_fiscal = Boolean(fiscalNumber)
+      extraData.fiscal_status = fiscalNumber ? 'completed' : 'failed'
+      extraData.fiscal_error = fiscalNumber ? null : fiscalError ?? 'Не вдалося фіскалізувати чек'
+    }
     if (fiscalNumber)    extraData.fiscal_number = fiscalNumber
     if (fiscalQrUrl)     extraData.fiscal_qr_url  = fiscalQrUrl
     if (bankAuthCode)    extraData.bank_auth_code  = bankAuthCode
@@ -804,6 +851,11 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     if (Object.keys(extraData).length > 0) {
       await db.from('sales').update(extraData).eq('id', sale.id).eq('tenant_id', tenantId)
       Object.assign(sale, extraData)
+    }
+
+    if (idempotencyKey) {
+      await db.from('idempotency_keys').update({ response: sale, request_hash: requestHash })
+        .eq('key', idempotencyKey).eq('tenant_id', tenantId).eq('status', 'completed')
     }
 
     await logAction({
@@ -862,15 +914,6 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
       }
     }
 
-    if (idempotencyKey) {
-      await db.from('idempotency_keys')
-        .update({
-          status: 'completed',
-          response: sale,
-        })
-        .eq('key', idempotencyKey)
-        .eq('tenant_id', tenantId)
-    }
 
     if (input.customer_order_id) {
       try {
@@ -900,6 +943,13 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
   } catch (err: any) {
     logger.error({ error: err.message, idempotencyKey }, 'Помилка в createSale. Запускаємо відкат...')
 
+    if (committedSale) {
+      logger.error({ saleId: committedSale.id, error: err.message }, 'Продаж вже зафіксовано; повторну оплату та відкат термінала заборонено')
+      committedSale.post_processing_warning = err.message
+      return committedSale
+    }
+
+    let retryBlocked = err?.code === 'TERMINAL_UNKNOWN'
     if (isCharged && activeTerminalAdapter) {
       try {
         logger.info({ terminalRrn, bankAuthCode }, 'Спроба скасування транзакції на терміналі...')
@@ -907,6 +957,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
         if (cancelled) {
           logger.info('Транзакцію успішно скасовано.')
         } else {
+          retryBlocked = true
           logger.error('КРИТИЧНО: Не вдалося автоматично скасувати транзакцію на терміналі! Потрібне ручне втручання.')
           await recordReconciliation({
             tenantId, paymentRef: terminalPaymentRef, amountKopecks: cardChargeAmount,
@@ -915,6 +966,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
           })
         }
       } catch (cancelErr: any) {
+        retryBlocked = true
         logger.error({ cancelError: cancelErr.message }, 'КРИТИЧНО: Помилка при спробі скасування транзакції на терміналі!')
         await recordReconciliation({
           tenantId, paymentRef: terminalPaymentRef, amountKopecks: cardChargeAmount,
@@ -925,18 +977,25 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     }
 
     if (idempotencyKey) {
-      try {
-        await db.from('idempotency_keys')
-          .update({ status: 'failed' })
-          .eq('key', idempotencyKey)
-          .eq('tenant_id', tenantId)
-      } catch {}
-      try {
-        await db.from('idempotency_keys')
-          .delete()
-          .eq('key', idempotencyKey)
-          .eq('tenant_id', tenantId)
-      } catch {}
+      if (retryBlocked) {
+        try {
+          await db.from('idempotency_keys')
+            .update({
+              status: 'failed',
+              response: { retry_blocked: true, reason: err.message },
+              request_hash: requestHash,
+            })
+            .eq('key', idempotencyKey)
+            .eq('tenant_id', tenantId)
+        } catch {}
+      } else {
+        try {
+          await db.from('idempotency_keys')
+            .delete()
+            .eq('key', idempotencyKey)
+            .eq('tenant_id', tenantId)
+        } catch {}
+      }
     }
 
     throw err

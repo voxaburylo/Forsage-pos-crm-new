@@ -66,7 +66,7 @@ export default function DailyReport() {
   // «Контроль дня» — метрики для власника (повернення, знижки, недостачі, мінуси)
   interface DailyControl {
     revenue: number; receipts: number; avg_receipt: number
-    cash: number; card: number; debt_sales: number; discounts: number
+    cash: number; card: number; transfer: number; debt_sales: number; discounts: number
     returns_count: number; returns_sum: number
     returns_reasons: Array<{ reason: string; count: number }>
     recon_diffs: Array<{ difference: number; comment: string | null }>

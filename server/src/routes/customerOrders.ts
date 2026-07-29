@@ -1088,6 +1088,13 @@ router.post('/:id/complete', requireRole('owner', 'admin', 'cashier'), async (re
     if (remaining > 0) {
       throw new AppError('INCOMPLETE_PAYMENT', 'Не всі оплати проведено. Використайте POST /:id/payments для внесення платежів', 400)
     }
+    if (remaining < 0) {
+      throw new AppError(
+        'ORDER_OVERPAID',
+        `Передоплата перевищує суму замовлення на ${(Math.abs(remaining) / 100).toFixed(2)} грн. Поверніть надлишок або зарахуйте його на рахунок клієнта.`,
+        409,
+      )
+    }
 
     // E-3: атомарне завершення з створенням sale-запису
     const { data: completionData, error: completionErr } = await db.rpc('complete_customer_order', {
