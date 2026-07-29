@@ -1,4 +1,5 @@
-import { pbkdf2Sync, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
+import { hashSecret, isSupportedSecretHash, secretHashNeedsUpgrade } from '../lib/secretHash.js'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
@@ -346,10 +347,8 @@ async function fetchSecondarySyncData(params: {
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     for (const row of data ?? []) {
       const stored = String(row.pin_code ?? '')
-      const pinHash = stored.length === 4
-        ? pbkdf2Sync(stored, row.user_id, 10_000, 64, 'sha512').toString('hex')
-        : stored
-      if (/^[0-9a-f]{128}$/i.test(pinHash)) {
+      const pinHash = stored.length === 4 ? hashSecret(stored) : stored
+      if (isSupportedSecretHash(pinHash)) {
         staffPins.push({ user_id: row.user_id, pin_hash: pinHash, updated_at: row.updated_at })
       }
     }
@@ -1878,7 +1877,7 @@ async function applyStaffPinUpdated(tenantId: string, operation: SyncOutboxOpera
   const payload = operation.payload ?? {}
   const userId = String(payload.user_id ?? operation.aggregate_id)
   const pinHash = String(payload.pin_hash ?? '')
-  if (!isUuid(userId) || !/^[0-9a-f]{128}$/i.test(pinHash)) {
+  if (!isUuid(userId) || !isSupportedSecretHash(pinHash) || secretHashNeedsUpgrade(pinHash)) {
     throw new AppError('SYNC_STAFF_PIN_INVALID', 'Некоректний захищений PIN співробітника', 400)
   }
 

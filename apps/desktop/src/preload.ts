@@ -15,6 +15,8 @@ const ipcRenderer = {
 contextBridge.exposeInMainWorld('forsageDesktop', {
   auth: {
     login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
+    loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),
+    logout: () => ipcRenderer.invoke('desktop:auth:logout'),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),

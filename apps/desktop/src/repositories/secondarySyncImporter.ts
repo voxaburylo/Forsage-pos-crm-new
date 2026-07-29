@@ -1,3 +1,4 @@
+import { isSupportedSecretHash } from '../security/secretHash'
 import type { LocalDatabase } from '../db/localDatabase'
 
 type SnapshotOptions = {
@@ -174,7 +175,7 @@ export class LocalSecondarySyncImporter {
   private upsertStaffPin(tenantId: string, pin: any): boolean {
     const userId = asText(pin?.user_id)
     const pinHash = asText(pin?.pin_hash)
-    if (!userId || !pinHash || !/^[0-9a-f]{128}$/i.test(pinHash)) return false
+    if (!userId || !isSupportedSecretHash(pinHash)) return false
     if (!this.exists('staff_users', tenantId, userId)) return false
     const pending = this.db.prepare(`
       SELECT 1 FROM sync_outbox

@@ -370,6 +370,8 @@ export interface DesktopFiscalReturnProcessResult {
 interface ForsageDesktopBridge {
   auth?: {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
+    loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
+    logout: () => Promise<{ success: true }>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   backupNow: () => Promise<string>

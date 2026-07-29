@@ -13,6 +13,11 @@ import { db } from '../../db/supabase.js'
 import jwt from 'jsonwebtoken'
 import { supabaseAdmin } from '../../db/supabaseAdmin.js'
 
+const TEST_JWT_OPTIONS = {
+  audience: 'authenticated',
+  issuer: 'https://test-project.supabase.co/auth/v1',
+} as const
+
 vi.mock('../../db/pg.js', () => ({
   runTransaction: vi.fn(),
 }))
@@ -98,6 +103,7 @@ describe('Multi-Tenant Data Isolation Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     process.env.SUPABASE_JWT_SECRET = 'test-secret'
+    process.env.SUPABASE_URL = 'https://test-project.supabase.co'
     
     // Reset our query chain methods to allow mockReturnThis
     if ((global as any).__mockEq) {
@@ -121,7 +127,8 @@ describe('Multi-Tenant Data Isolation Tests', () => {
             is_active: true
           }
         },
-        'test-secret'
+        'test-secret',
+        TEST_JWT_OPTIONS,
       )
 
       const req = {
@@ -151,7 +158,8 @@ describe('Multi-Tenant Data Isolation Tests', () => {
             // tenant_id is missing
           }
         },
-        'test-secret'
+        'test-secret',
+        TEST_JWT_OPTIONS,
       )
 
       vi.mocked(supabaseAdmin.auth.getUser).mockResolvedValueOnce({
@@ -199,6 +207,7 @@ describe('Multi-Tenant Data Isolation Tests', () => {
           },
         },
         'test-secret',
+        TEST_JWT_OPTIONS,
       )
 
       const req = {

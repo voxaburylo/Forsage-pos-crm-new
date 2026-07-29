@@ -54,7 +54,7 @@ describe('money synchronization safety', () => {
     const start = syncSource.indexOf('async function applyStaffPinUpdated')
     const end = syncSource.indexOf('async function applyStaffUserUpsert', start)
     const block = syncSource.slice(start, end)
-    expect(block).toContain('/^[0-9a-f]{128}$/i.test(pinHash)')
+    expect(block).toContain('isSupportedSecretHash(pinHash) || secretHashNeedsUpgrade(pinHash)')
     expect(block).toContain('getUserById(userId)')
     expect(block).toContain("existing.user.app_metadata?.tenant_id !== tenantId")
     expect(syncSource).toContain(".from('staff_pins')")

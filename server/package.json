@@ -9,6 +9,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "seed": "tsx src/seed.ts",
+    "upgrade:pins": "tsx src/scripts/upgradePinHashes.ts",
+    "verify:security": "tsx src/scripts/verifySecurityState.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:core-returns": "node tests/core_returns.test.mjs",

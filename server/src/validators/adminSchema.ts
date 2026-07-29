@@ -16,7 +16,7 @@ const phoneSchema = z
 
 export const createUserSchema = z.object({
   phone:    phoneSchema,
-  password: z.string().min(6, 'Пароль мінімум 6 символів'),
+  password: z.string().min(8, 'Пароль мінімум 8 символів'),
   full_name: z.string().min(1).max(200),
   role:     z.enum(['owner','admin','manager','cashier','storekeeper','sto_viewer','tire_worker']),
   base_rate: z.number().int().min(0).optional(),

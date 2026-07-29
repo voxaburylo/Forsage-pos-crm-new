@@ -94,6 +94,32 @@ describe('LocalStaffRepository server-first credentials', () => {
     expect(repository.loginWithPassword('+380673334455', 'new-pass').id).toBe('server-user-3')
   })
 
+  it('provisions a missing local password only for the matching server identity', () => {
+    const timestamp = '2026-07-29T11:00:00.000Z'
+    db.prepare(`
+      INSERT INTO staff_users (id, tenant_id, full_name, role, phone, is_active, created_at, updated_at)
+      VALUES ('server-owner-1', ?, 'Власник', 'owner', '+380675556677', 1, ?, ?)
+    `).run(DEFAULT_TENANT_ID, timestamp, timestamp)
+
+    expect(() => repository.loginWithPassword('+380675556677', 'server-pass')).toThrow()
+    expect(() => repository.adoptServerAuthenticatedPassword(
+      'different-server-id', '+380675556677', 'server-pass',
+    )).toThrow('не відповідає локальному')
+    expect(() => repository.adoptServerAuthenticatedPassword(
+      'server-owner-1', '+380679999999', 'server-pass',
+    )).toThrow('не відповідає локальному')
+
+    const user = repository.adoptServerAuthenticatedPassword(
+      'server-owner-1', '+380675556677', 'server-pass',
+    )
+    expect(user.id).toBe('server-owner-1')
+    expect(repository.loginWithPassword('+380675556677', 'server-pass').role).toBe('owner')
+    const stored = db.prepare(
+      'SELECT password_hash FROM staff_users WHERE id = ?',
+    ).get('server-owner-1') as { password_hash: string }
+    expect(stored.password_hash).toMatch(/^pbkdf2-sha512\$210000\$/)
+    expect(stored.password_hash).not.toContain('server-pass')
+  })
   it('synchronizes only the protected PIN hash and preserves a pending local change', () => {
     const userId = randomUUID()
     repository.saveServerUser({
@@ -107,7 +133,7 @@ describe('LocalStaffRepository server-first credentials', () => {
     const sync = new LocalSyncRepository(db)
     const operation = sync.listPending(10).find((item) => item.operation_type === 'staff_pin.updated')
     expect(operation).toBeTruthy()
-    expect(operation!.payload.pin_hash).toMatch(/^[0-9a-f]{128}$/)
+    expect(operation!.payload.pin_hash).toMatch(/^pbkdf2-sha512\$210000\$/)
     expect(JSON.stringify(operation!.payload)).not.toContain('1234')
     expect(repository.verifyPin(userId, '1234')).toEqual({ valid: true })
 

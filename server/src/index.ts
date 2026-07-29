@@ -73,13 +73,10 @@ const allowedOrigins = new Set<string>([
 ])
 
 app.use(cors({
-  // Дозволяємо локалхост, явні домени та БУДЬ-ЯКИЙ *.vercel.app (прод + прев'ю),
-  // щоб зміна домену Vercel не ламала CORS. Запити без Origin (health/curl) — теж.
+  // Дозволяємо лише явно налаштовані адреси. Запити без Origin (health/curl) — теж.
   origin: (origin, cb) => {
     if (!origin) return cb(null, true)
-    let host = ''
-    try { host = new URL(origin).hostname } catch { /* ignore */ }
-    if (allowedOrigins.has(origin) || host.endsWith('.vercel.app')) return cb(null, true)
+    if (allowedOrigins.has(origin)) return cb(null, true)
     return cb(null, false)
   },
   credentials: true,

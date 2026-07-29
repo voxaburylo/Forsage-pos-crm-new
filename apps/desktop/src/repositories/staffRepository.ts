@@ -1,4 +1,5 @@
-import { createHash, pbkdf2Sync, randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { hashSecret, secretHashNeedsUpgrade, verifySecret } from '../security/secretHash'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
@@ -78,9 +79,6 @@ function localCommissionMap(
   return result
 }
 
-function hashSecret(secret: string, userId: string): string {
-  return pbkdf2Sync(secret, userId, 10_000, 64, 'sha512').toString('hex')
-}
 
 function normalizePhone(value: string): string {
   const digits = String(value ?? '').replace(/\D/g, '')
@@ -95,6 +93,9 @@ function phoneToEmail(phone: string): string {
   return `${digits || 'local'}@forsage.local`
 }
 export class LocalStaffRepository {
+  private readonly pinAttempts = new Map<string, { failures: number; blockedUntil: number }>()
+  private readonly passwordAttempts = new Map<string, { failures: number; blockedUntil: number }>()
+
   constructor(private readonly db: LocalDatabase) {}
 
   listUsers(tenantId = DEFAULT_TENANT_ID): any[] {
@@ -130,7 +131,7 @@ export class LocalStaffRepository {
     if (!id) throw new Error('Сервер не повернув ідентифікатор співробітника')
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
     if (!phone) throw new Error('Вкажіть телефон співробітника')
-    if (String(password).length < 6) throw new Error('Пароль має містити щонайменше 6 символів')
+    if (String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
 
     const timestamp = nowIso()
     const createdAt = input.created_at || timestamp
@@ -186,7 +187,7 @@ export class LocalStaffRepository {
         input.is_active === false ? 0 : 1,
         money(input.base_rate),
         input.rate_period === 'month' ? 'month' : 'day',
-        hashSecret(password, id),
+        hashSecret(password),
         updatedAt,
         createdAt,
         updatedAt,
@@ -203,11 +204,11 @@ export class LocalStaffRepository {
 
   saveServerPassword(id: string, password: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
     this.requireUser(id, tenantId)
-    if (String(password).length < 6) throw new Error('Пароль має містити щонайменше 6 символів')
+    if (String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
     this.db.prepare(`
       UPDATE staff_users SET password_hash = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
-    `).run(hashSecret(password, id), nowIso(), id, tenantId)
+    `).run(hashSecret(password), nowIso(), id, tenantId)
     return { success: true }
   }
 
@@ -256,9 +257,41 @@ export class LocalStaffRepository {
     return { ok: true }
   }
 
+  adoptServerAuthenticatedPassword(
+    serverUserId: string,
+    phone: string,
+    password: string,
+    tenantId = DEFAULT_TENANT_ID,
+  ): any {
+    const normalizedPhone = normalizePhone(phone)
+    const row = this.db.prepare(`
+      SELECT id, phone, is_active
+      FROM staff_users
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(serverUserId, tenantId) as { id: string; phone: string | null; is_active: number } | undefined
+
+    if (!row || Number(row.is_active) !== 1 || normalizePhone(row.phone ?? '') !== normalizedPhone) {
+      throw new Error('Обліковий запис сервера не відповідає локальному співробітнику')
+    }
+    if (!password) throw new Error('Пароль не може бути порожнім')
+
+    this.db.prepare(`
+      UPDATE staff_users SET password_hash = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+    `).run(hashSecret(password), nowIso(), row.id, tenantId)
+
+    return this.loginWithPassword(phone, password, tenantId)
+  }
 
   loginWithPassword(phone: string, password: string, tenantId = DEFAULT_TENANT_ID): any {
     const normalizedPhone = normalizePhone(phone)
+    const attemptKey = `${tenantId}:${normalizedPhone}`
+    const attempt = this.passwordAttempts.get(attemptKey)
+    if (attempt && attempt.blockedUntil > Date.now()) {
+      throw new Error('Забагато спроб входу. Спробуйте через 15 хвилин')
+    }
+
     const row = (this.db.prepare(`
       SELECT id, tenant_id, full_name, role, phone, password_hash, is_active, created_at, updated_at
       FROM staff_users
@@ -266,9 +299,30 @@ export class LocalStaffRepository {
       ORDER BY is_active DESC, updated_at DESC
     `).all(tenantId) as any[]).find((candidate) => normalizePhone(candidate.phone) === normalizedPhone)
 
-    if (!row || Number(row.is_active) !== 1) throw new Error('Невірний номер телефону або пароль')
-    if (!row.password_hash) throw new Error('Для цього співробітника локальний пароль ще не налаштовано')
-    if (row.password_hash !== hashSecret(password, row.id)) throw new Error('Невірний номер телефону або пароль')
+    const valid = Boolean(
+      row
+      && Number(row.is_active) === 1
+      && row.password_hash
+      && verifySecret(row.password_hash, password, row.id),
+    )
+    if (!valid) {
+      const failures = (attempt?.failures ?? 0) + 1
+      this.passwordAttempts.set(attemptKey, {
+        failures: failures >= 10 ? 0 : failures,
+        blockedUntil: failures >= 10 ? Date.now() + 15 * 60_000 : 0,
+      })
+      throw new Error(failures >= 10
+        ? 'Забагато спроб входу. Спробуйте через 15 хвилин'
+        : 'Невірний номер телефону або пароль')
+    }
+
+    this.passwordAttempts.delete(attemptKey)
+    if (secretHashNeedsUpgrade(row.password_hash)) {
+      this.db.prepare(`
+        UPDATE staff_users SET password_hash = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      `).run(hashSecret(password), nowIso(), row.id, tenantId)
+    }
 
     return {
       id: row.id,
@@ -281,12 +335,11 @@ export class LocalStaffRepository {
       created_at: row.created_at,
     }
   }
-
   setPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
     this.requireUser(userId, tenantId)
     if (!/^\d{4}$/.test(pin)) throw new Error('PIN-код має складатися з 4 цифр')
     const timestamp = nowIso()
-    const pinHash = hashSecret(pin, userId)
+    const pinHash = hashSecret(pin)
     return this.db.transaction(() => {
       this.db.prepare(`
         UPDATE staff_users SET pin_hash = ?, updated_at = ?
@@ -302,15 +355,36 @@ export class LocalStaffRepository {
   }
   verifyPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { valid: boolean; error?: string } {
     if (!/^\d{4}$/.test(pin)) return { valid: false }
+    const attemptKey = `${tenantId}:${userId}`
+    const attempt = this.pinAttempts.get(attemptKey)
+    if (attempt && attempt.blockedUntil > Date.now()) {
+      return { valid: false, error: 'Забагато спроб. Спробуйте через 5 хвилин' }
+    }
+
     const row = this.db.prepare(`
       SELECT pin_hash FROM staff_users
       WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL LIMIT 1
     `).get(userId, tenantId) as { pin_hash: string | null } | undefined
     if (!row) return { valid: false, error: 'Співробітника не знайдено' }
     if (!row.pin_hash) return { valid: false, error: 'PIN-код не налаштовано' }
-    return { valid: row.pin_hash === hashSecret(pin, userId) }
-  }
 
+    const valid = verifySecret(row.pin_hash, pin, userId)
+    if (valid) {
+      this.pinAttempts.delete(attemptKey)
+      if (secretHashNeedsUpgrade(row.pin_hash)) this.setPin(userId, pin, tenantId)
+      return { valid: true }
+    }
+
+    const failures = (attempt?.failures ?? 0) + 1
+    this.pinAttempts.set(attemptKey, {
+      failures: failures >= 5 ? 0 : failures,
+      blockedUntil: failures >= 5 ? Date.now() + 5 * 60_000 : 0,
+    })
+    return {
+      valid: false,
+      ...(failures >= 5 ? { error: 'Забагато спроб. Спробуйте через 5 хвилин' } : {}),
+    }
+  }
   listCommissionRules(tenantId = DEFAULT_TENANT_ID): any[] {
     return this.db.prepare(`
       SELECT id, tenant_id, user_id, brand_id, category_id, pct_from_revenue,

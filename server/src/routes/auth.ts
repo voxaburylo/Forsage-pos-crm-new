@@ -6,7 +6,8 @@ import { requireAuth } from '../middleware/auth.js'
 import { db } from '../db/supabase.js'
 import { loginSchema } from '../validators/authSchema.js'
 import { logger } from '../lib/logger.js'
-import crypto from 'crypto'
+import { rateLimit } from 'express-rate-limit'
+import { hashSecret, secretHashNeedsUpgrade, verifySecret } from '../lib/secretHash.js'
 
 const router = Router()
 
@@ -15,7 +16,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!,
   { auth: { persistSession: false } },
 )
-
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'LOGIN_RATE_LIMIT', message: 'Забагато спроб входу. Спробуйте через 15 хвилин.', status: 429 } },
+})
 // Телефон → внутрішній email (те саме що на фронтенді)
 function phoneToEmail(phone: string): string {
   const digits = phone.replace(/\D/g, '')
@@ -23,7 +30,7 @@ function phoneToEmail(phone: string): string {
 }
 
 // POST /api/v1/auth/login — вхід по телефону + паролю
-router.post('/login', async (req, res, next) => {
+router.post('/login', loginLimiter, async (req, res, next) => {
   try {
     const parsed = loginSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -75,23 +82,29 @@ router.post('/refresh', async (req, res, next) => {
 // POST /api/v1/auth/logout — вихід
 router.post('/logout', requireAuth, async (req, res, next) => {
   try {
+    const token = req.headers.authorization!.slice(7)
+    const { error } = await supabase.auth.admin.signOut(token, 'global')
+    if (error) throw new AppError('AUTH_ERROR', 'Не вдалося завершити сесію', 500)
     logger.info({ userId: req.user?.id }, 'User logged out')
     res.status(204).send()
   } catch (err) { next(err) }
 })
-
 // GET /api/v1/auth/me — поточний користувач
 router.get('/me', requireAuth, (req, res) => {
   res.json({ data: req.user })
 })
 
 
-function hashPin(pin: string, userId: string): string {
-  return crypto.pbkdf2Sync(pin, userId, 10000, 64, 'sha512').toString('hex');
-}
+const pinLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'PIN_RATE_LIMIT', message: 'Забагато спроб PIN. Спробуйте через 10 хвилин.', status: 429 } },
+})
 
 // POST /api/v1/auth/verify-pin — перевірка PIN-коду
-router.post('/verify-pin', requireAuth, async (req, res, next) => {
+router.post('/verify-pin', requireAuth, pinLimiter, async (req, res, next) => {
   try {
     const schema = z.object({ pin: z.string().min(4).max(4) })
     const parsed = schema.safeParse(req.body)
@@ -113,29 +126,22 @@ router.post('/verify-pin', requireAuth, async (req, res, next) => {
       return res.json({ data: { valid: false, error: 'PIN-код не налаштовано' } })
     }
 
-    let valid = false;
-    if (stored.pin_code.length === 4) {
-      // Plaintext fallback
-      valid = stored.pin_code === parsed.data.pin;
-      if (valid) {
-        // Upgrade to hash on successful verification
-        try {
-          const hashed = hashPin(parsed.data.pin, req.user!.id);
-          await db.from('staff_pins').upsert({
-            user_id: req.user!.id,
-            pin_code: hashed,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: 'user_id' });
-          logger.info({ userId: req.user!.id }, 'verify-pin: PIN upgraded to secure hash');
-        } catch (e: any) {
-          logger.error({ error: e.message, userId: req.user!.id }, 'verify-pin: failed to upgrade PIN to hash');
-        }
-      }
+    let valid = false
+    const storedPin = String(stored.pin_code ?? '')
+    if (/^\d{4}$/.test(storedPin)) {
+      valid = storedPin === parsed.data.pin
     } else {
-      // Hashed comparison
-      valid = stored.pin_code === hashPin(parsed.data.pin, req.user!.id);
+      valid = verifySecret(storedPin, parsed.data.pin, req.user!.id)
     }
 
+    if (valid && (storedPin.length === 4 || secretHashNeedsUpgrade(storedPin))) {
+      const { error: upgradeError } = await db.from('staff_pins').upsert({
+        user_id: req.user!.id,
+        pin_code: hashSecret(parsed.data.pin),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id' })
+      if (upgradeError) logger.error({ error: upgradeError.message, userId: req.user!.id }, 'verify-pin: failed to upgrade PIN hash')
+    }
     res.json({ data: { valid } })
   } catch (err) { next(err) }
 })
@@ -165,7 +171,7 @@ router.post('/set-pin', requireAuth, async (req, res, next) => {
 
     const { error: pinError } = await db.from('staff_pins').upsert({
       user_id: targetUserId,
-      pin_code: hashPin(parsed.data.pin, targetUserId),
+      pin_code: hashSecret(parsed.data.pin),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' })
     if (pinError) throw new AppError('DB_ERROR', pinError.message, 500)
@@ -179,7 +185,7 @@ router.post('/change-password', requireAuth, async (req, res, next) => {
   try {
     const schema = z.object({
       user_id:  z.string().uuid().optional(),  // чий пароль міняємо (опціонально — свій)
-      password: z.string().min(4, 'Мінімум 4 символи'),
+      password: z.string().min(8, 'Мінімум 8 символів'),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
@@ -191,6 +197,12 @@ router.post('/change-password', requireAuth, async (req, res, next) => {
       throw new AppError('FORBIDDEN', 'Тільки адмін може змінювати паролі іншим', 403)
     }
 
+    if (targetUserId !== req.user!.id) {
+      const { data: targetUser, error: targetError } = await supabase.auth.admin.getUserById(targetUserId)
+      if (targetError || !targetUser.user || targetUser.user.app_metadata?.tenant_id !== req.user!.tenant_id) {
+        throw new AppError('STAFF_NOT_FOUND', 'Співробітника не знайдено', 404)
+      }
+    }
     const { error } = await supabase.auth.admin.updateUserById(targetUserId, {
       password: parsed.data.password,
     })

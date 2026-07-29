@@ -1,7 +1,6 @@
 import { supabase } from './supabase'
 import type { Session } from '@supabase/supabase-js'
 import { desktopBridge, isDesktopRuntime } from './desktopBridge'
-import { cacheCredential, verifyOfflineCredential, hasAnyOfflineCredential, saveLocalDesktopSession, clearLocalDesktopSession } from './offlineAuth'
 import { useAuthStore } from '@/stores/authStore'
 
 function phoneToEmail(phone: string): string {
@@ -17,8 +16,7 @@ function normalizePhone(raw: string): string {
   return raw
 }
 
-// Розрізняємо «нема мережі» від «невірний пароль»: у офлайн-вхід пускаємо ТІЛЬКИ
-// коли це мережева проблема, а не помилкові дані.
+// Відрізняємо тимчасову мережеву помилку від помилки облікових даних.
 function isNetworkFailure(err: unknown): boolean {
   if (!err) return false
   const anyErr = err as { name?: string; status?: number; message?: string }
@@ -35,27 +33,9 @@ function isNetworkFailure(err: unknown): boolean {
   )
 }
 
-const OFFLINE_NO_CACHE_MSG =
-  'Немає зв\'язку з сервером і немає збереженого входу на цьому ПК. Один раз увійдіть онлайн — далі працюватиме офлайн.'
-
-async function tryOfflineLogin(email: string, password: string): Promise<import('@supabase/supabase-js').Session> {
-  const cached = await verifyOfflineCredential(email, password)
-  if (cached) {
-    useAuthStore.getState().setOfflineSession(cached)
-    return cached
-  }
-  // Кеш є, але пароль інший → це саме невірний пароль, а не відсутність кешу
-  throw new Error(
-    hasAnyOfflineCredential()
-      ? 'Невірний номер телефону або пароль'
-      : OFFLINE_NO_CACHE_MSG,
-  )
-}
-
 const ONLINE_LOGIN_TIMEOUT_MS = 8_000
 
 const DESKTOP_SERVER_RETRY_MS = [5_000, 15_000, 60_000]
-const DESKTOP_SERVER_RETRY_INTERVAL_MS = 5 * 60_000
 let desktopServerLoginGeneration = 0
 
 async function connectDesktopToServer(
@@ -67,7 +47,8 @@ async function connectDesktopToServer(
   if (generation !== desktopServerLoginGeneration) return
 
   const retry = () => {
-    const delay = DESKTOP_SERVER_RETRY_MS[attempt] ?? DESKTOP_SERVER_RETRY_INTERVAL_MS
+    if (attempt >= DESKTOP_SERVER_RETRY_MS.length) return
+    const delay = DESKTOP_SERVER_RETRY_MS[attempt]
     window.setTimeout(() => {
       void connectDesktopToServer(email, password, attempt + 1, generation)
     }, delay)
@@ -78,8 +59,7 @@ async function connectDesktopToServer(
     if (generation !== desktopServerLoginGeneration) return
     if (error) { if (isNetworkFailure(error)) retry(); return }
     if (!data.session) { retry(); return }
-    await cacheCredential(email, password, data.session).catch(() => {})
-    saveLocalDesktopSession(data.session)
+    useAuthStore.getState().setSession(data.session)
   } catch {
     // Локальний вхід уже успішний: повторюємо серверний вхід у фоні,
     // не блокуючи касу через нестабільну мережу.
@@ -98,8 +78,8 @@ function createDesktopSession(user: { id: string; email: string; phone?: string 
     access_token: `local-desktop-${user.id}-${now}`,
     refresh_token: `local-desktop-refresh-${user.id}`,
     token_type: 'bearer',
-    expires_in: 60 * 60 * 24 * 365,
-    expires_at: now + 60 * 60 * 24 * 365,
+    expires_in: 60 * 60 * 12,
+    expires_at: now + 60 * 60 * 12,
     user: {
       id: user.id,
       app_metadata: {
@@ -137,42 +117,55 @@ function createDesktopSession(user: { id: string; email: string; phone?: string 
     },
   } as unknown as Session
 }
-// Вхід: онлайн через Supabase, а якщо мережі нема — офлайн за збереженим кешем (desktop).
+// Desktop завжди перевіряє пароль у локальній базі; веб — через Supabase.
 export async function signIn(phone: string, password: string) {
   const normalized = normalizePhone(phone)
   const email = phoneToEmail(normalized)
 
   if (isDesktopRuntime()) {
-    const localLogin = desktopBridge()?.auth?.login
+    const desktopAuth = desktopBridge()?.auth
+    const localLogin = desktopAuth?.login
     if (localLogin) {
       try {
         const localUser = await localLogin(normalized, password)
         const session = createDesktopSession(localUser)
-        saveLocalDesktopSession(session)
         useAuthStore.getState().setOfflineSession(session)
         // Локальний пароль перевірено — відкриваємо програму одразу. Паралельно
         // отримуємо справжню Supabase-сесію для синхронізації та веб-розділів.
         startDesktopServerConnection(email, password)
         return session
       } catch (localError) {
-        const cached = await verifyOfflineCredential(email, password)
-        if (cached) {
-          useAuthStore.getState().setOfflineSession(cached)
-          return cached
+        const message = localError instanceof Error ? localError.message : ''
+        if (message.includes('Забагато спроб') || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+          throw localError
         }
-        if (typeof navigator === 'undefined' || navigator.onLine === false) throw localError
+
+        // У старій локальній базі пароль міг бути відсутнім. Один раз підтверджуємо
+        // його через зафіксований у збірці Supabase-проєкт, після чого зберігаємо
+        // тільки захищений хеш і наступні входи знову працюють повністю офлайн.
+        const onlineLogin = desktopAuth?.loginOnline
+        if (!onlineLogin) throw localError
+        const provisioned = await onlineLogin(normalized, password)
+        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+          access_token: provisioned.access_token,
+          refresh_token: provisioned.refresh_token,
+        })
+        if (sessionError || !sessionData.session) {
+          const session = createDesktopSession(provisioned.user)
+          useAuthStore.getState().setOfflineSession(session)
+          startDesktopServerConnection(email, password)
+          return session
+        }
+        useAuthStore.getState().setSession(sessionData.session)
+        return sessionData.session
       }
     }
-  }
-  // Мережі явно нема (немає інтерфейсу) → одразу офлайн-вхід, без очікування таймауту.
-  if (isDesktopRuntime() && typeof navigator !== 'undefined' && navigator.onLine === false) {
-    return tryOfflineLogin(email, password)
   }
 
   let data: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['data'] | null = null
   let error: unknown = null
   try {
-    // Таймаут, щоб під час поганого зв'язку не «висіти», а швидко перейти в офлайн.
+    // Таймаут не дає веб-входу зависнути при поганому зв'язку.
     const result = await Promise.race([
       supabase.auth.signInWithPassword({ email, password }),
       new Promise<never>((_, reject) =>
@@ -187,25 +180,15 @@ export async function signIn(phone: string, password: string) {
 
   if (error) {
     const msg = (error as { message?: string }).message ?? ''
-    // Явно невірні дані — не пускаємо в офлайн навіть якщо є кеш
+    // Показуємо понятную ошибку вместо ответа Supabase.
     if (msg.includes('Invalid login credentials') || msg.includes('Email not confirmed')) {
       throw new Error('Невірний номер телефону або пароль')
-    }
-    if (isDesktopRuntime() && isNetworkFailure(error)) {
-      return tryOfflineLogin(email, password)
     }
     throw new Error(msg || 'Помилка входу')
   }
 
-  if (!data?.session) {
-    if (isDesktopRuntime()) return tryOfflineLogin(email, password)
-    throw new Error('Помилка входу')
-  }
+  if (!data?.session) throw new Error('Помилка входу')
 
-  // Успішний онлайн-вхід → кешуємо для майбутньої роботи офлайн (лише desktop)
-  if (isDesktopRuntime()) {
-    await cacheCredential(email, password, data.session).catch(() => {})
-  }
   return data.session
 }
 
@@ -213,7 +196,8 @@ export async function signOut() {
   // Відкладена спроба від попереднього локального входу не повинна знову
   // авторизувати користувача після виходу або зміни касира.
   desktopServerLoginGeneration += 1
-  clearLocalDesktopSession()
+  const localLogout = desktopBridge()?.auth?.logout
+  if (localLogout) await localLogout().catch(() => {})
   await supabase.auth.signOut()
 }
 

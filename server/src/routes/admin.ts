@@ -52,7 +52,7 @@ router.delete('/users/:id', requireRole('owner', 'admin'), async (req, res, next
 // PUT /api/v1/admin/users/:id/password — скидання пароля адміном
 router.put('/users/:id/password', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const schema = z.object({ password: z.string().min(6, 'Пароль мінімум 6 символів') })
+    const schema = z.object({ password: z.string().min(8, 'Пароль мінімум 8 символів') })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
     await adminService.resetPassword(String(req.params.id), parsed.data.password, req.user!.tenant_id)

@@ -33,7 +33,12 @@ export async function requireAuth(
   const usesSharedSecret = tokenHeader?.alg?.startsWith('HS') ?? false
   if (jwtSecret && usesSharedSecret) {
     try {
-      const decoded = jwt.verify(token, jwtSecret) as SupabaseJwtPayload
+      const issuer = `${String(process.env.SUPABASE_URL ?? '').replace(/\/$/, '')}/auth/v1`
+      const decoded = jwt.verify(token, jwtSecret, {
+        algorithms: ['HS256', 'HS384', 'HS512'],
+        audience: 'authenticated',
+        issuer,
+      }) as SupabaseJwtPayload
       const trustedMeta = decoded.app_metadata
       if (trustedMeta?.tenant_id) {
         userPayload = {
