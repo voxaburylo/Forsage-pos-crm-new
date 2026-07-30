@@ -267,7 +267,7 @@ export default function ActiveSession() {
     applyNewPrice: true,
   })
 
-  async function trackRowWrite(work: Function) {
+  async function trackRowWrite(work: () => Promise<void>): Promise<void> {
     pendingRowWritesRef.current += 1
     setPendingRowWrites(pendingRowWritesRef.current)
     try {
@@ -278,11 +278,13 @@ export default function ActiveSession() {
     }
   }
 
-  async function waitForPendingRowWrites() {
-    let attempts = 0
-    while (pendingRowWritesRef.current !== 0 && attempts !== 100) {
-      attempts += 1
-      await new Promise(function (resolve) { window.setTimeout(resolve, 50) })
+  async function waitForPendingRowWrites(): Promise<void> {
+    const deadline = Date.now() + INVENTORY_WRITE_TIMEOUT_MS
+    while (pendingRowWritesRef.current !== 0) {
+      if (Date.now() >= deadline) {
+        throw new Error('Не всі зміни кількості встигли зберегтися. Перевірте рядки та повторіть завершення ревізії.')
+      }
+      await new Promise<void>((resolve) => { window.setTimeout(resolve, 50) })
     }
   }
 
