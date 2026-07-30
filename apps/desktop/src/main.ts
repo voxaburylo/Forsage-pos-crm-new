@@ -966,6 +966,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:list-customers', (_event, input) =>
     requireLocalPos().listCustomers(input),
   )
+  handleDesktopIpc('desktop:pos:find-customer-by-barcode', (_event, barcode: string) =>
+    requireLocalPos().findCustomerByBarcode(barcode),
+  )
   handleDesktopIpc('desktop:pos:get-customer', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getCustomer(id, tenantId),
   )

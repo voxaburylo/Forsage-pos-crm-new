@@ -21,6 +21,19 @@ describe('POS barcode source priority', () => {
     expect(scanner.slice(0, offlineBranch)).not.toContain('findProductByScanOffline')
   })
 
+  it('checks the indexed local product before the exact local customer card', () => {
+    const scanner = source.slice(
+      source.indexOf('async function handleBarcodeScan'),
+      source.indexOf('async function fetchAnalogs'),
+    )
+    const productLookup = scanner.indexOf('catalog.findByBarcode')
+    const customerLookup = scanner.indexOf('findCustomerByBarcode')
+
+    expect(productLookup).toBeGreaterThanOrEqual(0)
+    expect(customerLookup).toBeGreaterThan(productLookup)
+    expect(scanner).not.toContain('listCustomers({ search: normalizedCode')
+  })
+
   it('never falls back to a stale cached product after an online lookup error', () => {
     const scanner = source.slice(
       source.indexOf('async function handleBarcodeScan'),

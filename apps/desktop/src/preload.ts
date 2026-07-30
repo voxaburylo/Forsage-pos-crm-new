@@ -188,6 +188,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listDebtors: (limit?: number) => ipcRenderer.invoke('desktop:pos:list-debtors', limit),
     searchCustomers: (input?: unknown) => ipcRenderer.invoke('desktop:pos:search-customers', input),
     listCustomers: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-customers', input),
+    findCustomerByBarcode: (barcode: string) =>
+      ipcRenderer.invoke('desktop:pos:find-customer-by-barcode', barcode),
     getCustomer: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer', id, tenantId),
     getCustomerSales: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer-sales', id, tenantId),
     saveCustomer: (input: unknown, id?: string) => ipcRenderer.invoke('desktop:pos:save-customer', input, id),

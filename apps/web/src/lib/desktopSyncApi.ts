@@ -9,14 +9,13 @@ import {
   type DesktopSyncStatus,
 } from '@/lib/desktopBridge'
 
-// Штрихкоди, крос-номери й інші довідники зберігаються окремо від product.
-// Шість годин робили веб- і локальний пошук помітно різними. Перевіряємо
-// повний довідник раз на хвилину, а звичайні зміни як і раніше тягнемо кожні 10 с.
-export const REFERENCE_REFRESH_INTERVAL_MS = 60 * 1000
 const DESKTOP_PUSH_BATCH_SIZE = 10
 
 interface DesktopSyncOptions {
   includeReferences?: boolean
+  // Поки касир сканує/натискає кнопки, відповідь можна не застосовувати:
+  // курсор не рухається, і та сама дельта безпечно прийде наступним циклом.
+  canApplyPull?: () => boolean
 }
 
 interface PushResponse {
@@ -82,6 +81,7 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
           silent: true,
           timeoutMs: 180_000,
         })
+        if (options.canApplyPull && !options.canApplyPull()) return null
         const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
         return {
           applied_at: imported.imported_at,
@@ -97,22 +97,23 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
           silent: true,
           timeoutMs: 180_000,
         })
+        if (options.canApplyPull && !options.canApplyPull()) return null
         return desktop.sync.applyPullChanges(initialResponse.data)
       }
     }
 
     const params = new URLSearchParams()
     params.set('since', state.cursor)
-    const referencesAreDue = !state.last_reference_sync_at
-      || Date.now() - new Date(state.last_reference_sync_at).getTime() >= REFERENCE_REFRESH_INTERVAL_MS
-    const shouldIncludeReferences = options.includeReferences === true || referencesAreDue
-    if (shouldIncludeReferences) params.set('include_references', 'true')
+    // Повні довідники великі й блокують синхронний SQLite. У видимому вікні
+    // тягнемо лише дельту; повний контрольний знімок запускає hook при згортанні.
+    if (options.includeReferences === true) params.set('include_references', 'true')
 
     const query = params.size > 0 ? `?${params.toString()}` : ''
     const response = await api.get<PullResponse>(`/api/v1/sync/changes${query}`, {
       silent: true,
       timeoutMs: 120_000,
     })
+    if (options.canApplyPull && !options.canApplyPull()) return null
     return desktop.sync.applyPullChanges(response.data)
   } catch (error) {
     await desktop.sync.markPullFailed(

@@ -563,6 +563,7 @@ interface ForsageDesktopBridge {
     listDebtors: (limit?: number) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
     searchCustomers?: (input?: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number }) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
     listCustomers?: (input?: any) => Promise<any>
+    findCustomerByBarcode?: (barcode: string) => Promise<any | null>
     getCustomer?: (id: string, tenantId?: string) => Promise<any>
     getCustomerSales?: (id: string, tenantId?: string) => Promise<any[]>
     saveCustomer?: (input: any, id?: string) => Promise<any>

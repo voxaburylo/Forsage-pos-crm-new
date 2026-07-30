@@ -916,6 +916,11 @@ export default function POSPage() {
                   title="Продаж за довільною сумою без товару в каталозі">
                   <CircleDollarSign size={16} /> Вільна сума
                 </button>
+                <button onClick={() => setDebtPayOpen(true)}
+                  className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-red-700/50 bg-red-900/30 px-4 text-sm font-bold text-red-300 hover:bg-red-900/50"
+                  title="Знайти клієнта та прийняти повну або часткову оплату боргу">
+                  <CircleDollarSign size={16} /> Оплата боргу
+                </button>
                 <button onClick={() => setQuickOpen(true)}
                   className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-300 hover:bg-gray-700">
                   <LayoutGrid size={16} /> Товари швидкого доступу

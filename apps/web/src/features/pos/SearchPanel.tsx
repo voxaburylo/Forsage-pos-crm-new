@@ -332,17 +332,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     // Сканер і видимий пошук — незалежні канали. Тут навмисно не змінюємо
     // query/loading/results і не скасовуємо ручний текстовий пошук.
 
-    // У desktop-касі картка клієнта живе в локальній SQLite. Перевіряємо її
-    // до товарів і до серверного barcode-search, інакше локальний клієнт не
-    // підтягнеться, коли інтернет/сервер не встиг синхронізувати card_barcode.
-    const localCustomerList = desktopBridge()?.pos?.listCustomers
-    if (localCustomerList) {
-      const localCustomers = await localCustomerList({ search: normalizedCode, per_page: 5 }).catch(() => null) as any
-      const exactCustomer = (localCustomers?.data ?? []).find((customer: any) =>
-        normalizeScanCode(String(customer.card_barcode ?? '')) === normalizedCode
-      )
-      if (exactCustomer && attachCustomerToReceipt(exactCustomer, normalizedCode)) return
-    }
     // Короткий кеш поточної зміни містить лише товари, які вже були перевірені
     // цим самим шляхом сканування. Старий IndexedDB-кеш тут навмисно не читаємо:
     // у веб-касі він міг на секунду показати застарілу ціну/залишок і сканер
@@ -364,6 +353,16 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       saveRecentItem('recent_scans', normalizedCode)
       reportScannerStage('added', normalizedCode, product.name)
       return
+    }
+
+    // Переважна більшість сканів у касі — товари, тому точний індексований
+    // пошук товару виконується першим. Картку клієнта перевіряємо лише якщо
+    // товару з таким кодом немає; це прибирає важкий пошук списку клієнтів
+    // перед кожним товаром і не залежить від сервера.
+    const localCustomerLookup = desktopBridge()?.pos?.findCustomerByBarcode
+    if (localCustomerLookup) {
+      const exactCustomer = await localCustomerLookup(normalizedCode).catch(() => null)
+      if (exactCustomer && attachCustomerToReceipt(exactCustomer, normalizedCode)) return
     }
 
     if (desktopRuntime || !serverReachable) {

@@ -8,6 +8,8 @@ const PENDING_INTERVAL_MS = 10_000
 const RETRY_MIN_MS = 15_000
 const RETRY_MAX_MS = 5 * 60_000
 const STARTUP_DELAY_MS = 1_500
+const FOREGROUND_QUIET_MS = 1_800
+const IMMEDIATE_SYNC_DELAY_MS = 2_000
 
 const PERIODIC_SNAPSHOT_COUNTS = new Set([
   'staff',
@@ -33,13 +35,20 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
   const [syncing, setSyncing] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
   const retryAttemptRef = useRef(0)
+  const lastUserActivityAtRef = useRef(0)
+
+  const canApplyPull = useCallback(() => (
+    document.visibilityState !== 'visible'
+    || Date.now() - lastUserActivityAtRef.current >= FOREGROUND_QUIET_MS
+  ), [])
 
   const syncNow = useCallback(async (includeReferences = false) => {
     if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }
+    if (!canApplyPull()) return { pushed: 0, failed: 0, pending: 0 }
 
     setSyncing(true)
     try {
-      const result = await syncDesktopNow({ includeReferences })
+      const result = await syncDesktopNow({ includeReferences, canApplyPull })
       retryAttemptRef.current = result.failed > 0 ? retryAttemptRef.current + 1 : 0
       setLastError(result.failed > 0 ? `Не синхронізовано desktop-операцій: ${result.failed}` : null)
       if (hasMeaningfulDesktopSyncChanges(result)) {
@@ -56,7 +65,23 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
     } finally {
       setSyncing(false)
     }
-  }, [serverOnline, userId, offlineMode])
+  }, [serverOnline, userId, offlineMode, canApplyPull])
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return
+    const markActivity = () => { lastUserActivityAtRef.current = Date.now() }
+    markActivity()
+    window.addEventListener('keydown', markActivity, true)
+    window.addEventListener('pointerdown', markActivity, true)
+    window.addEventListener('input', markActivity, true)
+    window.addEventListener('forsage:pos-scanner-stage', markActivity)
+    return () => {
+      window.removeEventListener('keydown', markActivity, true)
+      window.removeEventListener('pointerdown', markActivity, true)
+      window.removeEventListener('input', markActivity, true)
+      window.removeEventListener('forsage:pos-scanner-stage', markActivity)
+    }
+  }, [])
 
   useEffect(() => {
     if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return
@@ -82,9 +107,10 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
       }, delay)
     }
 
-    const requestImmediateSync = () => schedule(0)
+    const requestImmediateSync = () => schedule(IMMEDIATE_SYNC_DELAY_MS)
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
+        lastUserActivityAtRef.current = Date.now()
         requestImmediateSync()
       } else {
         // Повні довідники (штрихкоди, категорії тощо) важкі для SQLite.

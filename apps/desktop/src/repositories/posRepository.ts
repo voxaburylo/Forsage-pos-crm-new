@@ -774,6 +774,25 @@ export class LocalPosRepository {
     }
   }
 
+  findCustomerByBarcode(barcode: string, tenantId = DEFAULT_TENANT_ID): any | null {
+    const normalized = String(barcode ?? '').trim()
+    if (!normalized) return null
+    const row = this.db.prepare(`
+      SELECT c.*,
+        (SELECT v.vin FROM customer_vehicles v
+         WHERE v.customer_id = c.id AND v.tenant_id = c.tenant_id AND v.deleted_at IS NULL
+         ORDER BY v.created_at ASC LIMIT 1) AS primary_vin,
+        (SELECT COUNT(*) FROM customer_vehicles v
+         WHERE v.customer_id = c.id AND v.tenant_id = c.tenant_id AND v.deleted_at IS NULL) AS car_count
+      FROM customers c
+      WHERE c.tenant_id = ?
+        AND c.card_barcode = ?
+        AND c.deleted_at IS NULL
+      LIMIT 1
+    `).get(tenantId, normalized) as any
+    return row ? this.decorateCustomer(row) : null
+  }
+
   getCustomer(customerId: string, tenantId = DEFAULT_TENANT_ID): any {
     const row = this.db.prepare(`
       SELECT c.*,
