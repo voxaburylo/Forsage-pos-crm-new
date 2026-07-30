@@ -2,7 +2,7 @@ import path from 'node:path'
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, net, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -38,6 +38,35 @@ import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
+
+// Electron does not provide the usual browser text menu automatically.
+// Install it for every current and future BrowserWindow (main UI, print preview,
+// and any auxiliary window), so text fields behave consistently everywhere.
+app.on('browser-window-created', (_event, window) => {
+  window.webContents.on('context-menu', (_contextEvent, params) => {
+    const hasSelection = params.selectionText.trim().length > 0
+    if (!params.isEditable && !hasSelection) return
+
+    const template: MenuItemConstructorOptions[] = params.isEditable
+      ? [
+          { label: 'Скасувати', role: 'undo', enabled: params.editFlags.canUndo },
+          { label: 'Повторити', role: 'redo', enabled: params.editFlags.canRedo },
+          { type: 'separator' },
+          { label: 'Вирізати', role: 'cut', enabled: params.editFlags.canCut },
+          { label: 'Копіювати', role: 'copy', enabled: params.editFlags.canCopy || hasSelection },
+          { label: 'Вставити', role: 'paste', enabled: params.editFlags.canPaste },
+          { type: 'separator' },
+          { label: 'Виділити все', role: 'selectAll', enabled: params.editFlags.canSelectAll },
+        ]
+      : [
+          { label: 'Копіювати', role: 'copy', enabled: hasSelection },
+          { type: 'separator' },
+          { label: 'Виділити все', role: 'selectAll' },
+        ]
+
+    Menu.buildFromTemplate(template).popup({ window })
+  })
+})
 
 let mainWindow: BrowserWindow | null = null
 let localDatabase: LocalDatabase | null = null

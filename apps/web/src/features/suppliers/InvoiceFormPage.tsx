@@ -18,6 +18,7 @@ import { formatMoney } from '@/lib/utils'
 import { parseLocaleNumber } from '@/lib/parseDecimal'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
+import { resolveActiveLinkedInvoiceProduct } from './invoiceProductLink'
 
 interface LineItem {
   product_id?: string
@@ -1771,9 +1772,20 @@ export default function InvoiceFormPage() {
           continue
         }
 
+        // A draft may have been saved on another device while its linked
+        // product was already soft-deleted. Never trust that stale id: a posted
+        // invoice referencing a hidden product loses the received stock during
+        // reconciliation. Re-check the card and recreate/restore it below when
+        // it is missing.
         if (item.product_id && !item.is_new) {
-          resolvedItems.push(item)
-          continue
+          const linkedProduct = await resolveActiveLinkedInvoiceProduct(
+            item.product_id,
+            async (productId) => (await productApi.get(productId)).data,
+          )
+          if (linkedProduct) {
+            resolvedItems.push(item)
+            continue
+          }
         }
 
         let cached: Product | null = null
