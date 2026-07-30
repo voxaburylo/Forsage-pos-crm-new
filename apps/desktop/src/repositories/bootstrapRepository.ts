@@ -716,11 +716,16 @@ export class LocalBootstrapRepository {
       LIMIT 1
     `).get(tenantId, aggregateType, id, `${aggregateType}.deleted`) as Record<string, unknown> | undefined
 
+    // dirty_at distinguishes a user deletion made on this desktop from a clean
+    // tombstone that was previously pulled from the server. A clean remote
+    // tombstone must be allowed to come back when another device restores the
+    // record; otherwise this desktop recreates a delete operation and removes
+    // the restored card from every device again.
     const existing = this.db.prepare(`
-      SELECT deleted_at FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1
-    `).get(id, tenantId) as { deleted_at: string | null } | undefined
+      SELECT deleted_at, dirty_at FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).get(id, tenantId) as { deleted_at: string | null; dirty_at: string | null } | undefined
 
-    if (existing?.deleted_at && !pendingDelete) {
+    if (existing?.deleted_at && existing.dirty_at && !pendingDelete) {
       const timestamp = existing.deleted_at
       this.db.prepare(`
         INSERT INTO sync_outbox (
@@ -743,7 +748,7 @@ export class LocalBootstrapRepository {
       `).run(importedAt, importedAt, id, tenantId)
     }
 
-    return Boolean(existing?.deleted_at || pendingDelete)
+    return Boolean(pendingDelete || (existing?.deleted_at && existing.dirty_at))
   }
   private updateCategoryParent(tenantId: string, category: any, importedAt: string): void {
     this.db.prepare(`
