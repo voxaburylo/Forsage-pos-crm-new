@@ -321,7 +321,7 @@ function buildPreparePageScript(pageIndex: number, specs: BarcodeCanvasSpec[]): 
       })
 
       const specs = ${JSON.stringify(specs)}
-      const images = Array.from(document.querySelectorAll('img.barcode-raster[data-print-barcode-id]'))
+      const images = Array.from(document.querySelectorAll('img.barcode-raster[data-print-barcode-id], svg.barcode-vector[data-print-barcode-id]'))
       for (const spec of specs) {
         const image = images.find((candidate) => candidate.getAttribute('data-print-barcode-id') === spec.id)
         if (!image) throw new Error('TSPL_BARCODE_IMAGE_NOT_FOUND')
@@ -371,7 +371,7 @@ function buildPreparePageScript(pageIndex: number, specs: BarcodeCanvasSpec[]): 
 const COLLECT_PAGES_SCRIPT = `
 (() => Array.from(document.querySelectorAll('.label-page')).map((page, index) => {
   const pageRect = page.getBoundingClientRect()
-  const barcodes = Array.from(page.querySelectorAll('img.barcode-raster[data-pattern]')).map((image, barcodeIndex) => {
+  const barcodes = Array.from(page.querySelectorAll('img.barcode-raster[data-pattern], svg.barcode-vector[data-pattern]')).map((image, barcodeIndex) => {
     const rect = image.getBoundingClientRect()
     const id = index + ':' + barcodeIndex
     const declaredWidth = Number(image.getAttribute('width')) || rect.width

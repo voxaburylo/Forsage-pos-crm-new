@@ -50,20 +50,6 @@ function normalizeScanCode(value: string): string {
     .trim()
 }
 
-function findExactScannedProduct(products: any[], code: string): Product | undefined {
-  const normalized = code.toLocaleLowerCase('uk-UA').replace(/[\s\-./_]/g, '')
-  return products.find((product) => {
-    const barcodes = [
-      product.barcode,
-      ...(Array.isArray(product.additional_barcodes) ? product.additional_barcodes : []),
-    ].filter(Boolean).map(String)
-    const normalizedSku = String(product.sku ?? '')
-      .toLocaleLowerCase('uk-UA')
-      .replace(/[\s\-./_]/g, '')
-    return barcodes.includes(code) || normalizedSku === normalized
-  }) as Product | undefined
-}
-
 function addProductToScanIndex(index: Map<string, Product>, product: Product) {
   const barcodes = [
     product.barcode,
@@ -357,19 +343,19 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       )
       if (exactCustomer && attachCustomerToReceipt(exactCustomer, normalizedCode)) return
     }
-    // Звичайні товари беремо з локального індексу PWA за кілька мілісекунд.
-    // Мережа потрібна лише для нового/не кешованого коду або картки клієнта.
+    // Короткий кеш поточної зміни містить лише товари, які вже були перевірені
+    // цим самим шляхом сканування. Старий IndexedDB-кеш тут навмисно не читаємо:
+    // у веб-касі він міг на секунду показати застарілу ціну/залишок і сканер
+    // додавав саме цю картку раніше, ніж приходила актуальна відповідь сервера.
     const memoryProduct = findProductInScanIndex(scanProductIndex.current, normalizedCode)
-    const cachedProduct = memoryProduct
-      ?? await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
-    if (cachedProduct) {
-      addProductToScanIndex(scanProductIndex.current, cachedProduct as Product)
-      addToReceipt(cachedProduct as Product)
+    if (memoryProduct) {
+      addToReceipt(memoryProduct)
       saveRecentItem('recent_scans', normalizedCode)
-      reportScannerStage('added', normalizedCode, (cachedProduct as Product).name)
+      reportScannerStage('added', normalizedCode, memoryProduct.name)
       return
     }
 
+    // Desktop завжди довіряє локальній SQLite, а не браузерному IndexedDB.
     const desktopProduct = await desktopBridge()?.catalog.findByBarcode(normalizedCode).catch(() => null)
     if (desktopProduct) {
       const product = desktopProductToProduct(desktopProduct)
@@ -381,6 +367,18 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     }
 
     if (desktopRuntime || !serverReachable) {
+      // Лише справжній офлайн-браузер використовує IndexedDB. Онлайн веб-каса
+      // переходить нижче до точного серверного endpoint і не бере стару картку.
+      const cachedProduct = desktopRuntime
+        ? null
+        : await findProductByScanOffline(normalizedCode, scopeKey).catch(() => null)
+      if (cachedProduct) {
+        addProductToScanIndex(scanProductIndex.current, cachedProduct as Product)
+        addToReceipt(cachedProduct as Product)
+        saveRecentItem('recent_scans', normalizedCode)
+        reportScannerStage('added', normalizedCode, (cachedProduct as Product).name)
+        return
+      }
       const customers = await searchCustomersOffline(normalizedCode, 1, scopeKey)
       const customer = customers[0]
       if (customer) {
@@ -459,21 +457,14 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         reportScannerStage('failed', normalizedCode)
       }
     } catch {
-      const offlineResults = await searchProductsOffline(normalizedCode, 20, scopeKey).catch(() => [])
-      // Штрихкод має збігатися точно. Ніколи не додаємо перший текстовий
-      // результат: при швидкому скануванні це збільшувало кількість попереднього товару.
-      const fallback = findExactScannedProduct(offlineResults, normalizedCode)
-      if (fallback) {
-        addToReceipt(fallback as Product)
-        reportScannerStage('added', normalizedCode, fallback.name)
-      } else {
-        playErrorTone()
-        toast.error('Товар або клієнт не знайдено')
-        reportScannerStage('failed', normalizedCode)
-      }
+      // Сервер вважався доступним, тому не підміняємо його помилку старою
+      // IndexedDB-карткою з іншою ціною/залишком. Краще не додати товар, ніж
+      // непомітно продати не ту позицію. Офлайн-шлях оброблено вище.
+      playErrorTone()
+      toast.error('Не вдалося перевірити актуальний товар за штрихкодом. Повторіть сканування.')
+      reportScannerStage('failed', normalizedCode)
     }
   }
-
   async function fetchAnalogs(productId: string) {
     if (analogs[productId]) return
     setAnalogsLoading(productId)

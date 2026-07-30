@@ -4,6 +4,7 @@ import { hasMeaningfulDesktopSyncChanges } from './useDesktopOutboxSync'
 
 const syncApiSource = readFileSync(new URL('../lib/desktopSyncApi.ts', import.meta.url), 'utf8')
 const localSyncAgentSource = readFileSync(new URL('../components/LocalSyncAgent.tsx', import.meta.url), 'utf8')
+const posPageSource = readFileSync(new URL('../features/pos/POSPage.tsx', import.meta.url), 'utf8')
 
 describe('desktop sync UI notifications', () => {
   it('does not reload visible lists for unchanged periodic snapshots', () => {
@@ -52,5 +53,8 @@ describe('desktop sync UI notifications', () => {
     expect(localSyncAgentSource).toContain('useDesktopOutboxSync(serverOnline)')
     expect(localSyncAgentSource).toContain('return null')
     expect(localSyncAgentSource).not.toContain('SyncStatusIndicator')
+    expect(posPageSource).not.toContain('Синхронізація офлайн-продажів')
+    expect(posPageSource).not.toContain('Є несинхронізовані офлайн-чеки')
+    expect(posPageSource).toContain('ОФЛАЙН — продажі зберігаються локально')
   })
 })

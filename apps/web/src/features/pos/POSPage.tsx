@@ -779,33 +779,7 @@ export default function POSPage() {
           </button>
         </div>
       )}
-      {!desktopRuntime && serverOnline && syncing && (
-        <div className="shrink-0 bg-blue-900/60 border-b border-blue-500 px-4 py-1.5 flex items-center gap-2 text-blue-200 text-xs">
-          <span className="w-1.5 h-1.5 rounded-full bg-blue-300 animate-pulse inline-block" />
-          Синхронізація офлайн-продажів...
-        </div>
-      )}
-      {!desktopRuntime && serverOnline && !syncing && pendingCount > 0 && (
-        <div className="shrink-0 bg-amber-900/60 border-b border-amber-500 px-4 py-1.5 flex items-center justify-between gap-3 text-amber-100 text-xs">
-          <span>Є несинхронізовані офлайн-чеки: {pendingCount}</span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setOfflineSalesOpen(true)}
-              className="rounded-lg bg-amber-800 px-3 py-1 font-bold text-amber-100 hover:bg-amber-700"
-            >
-              Журнал
-            </button>
-            <button
-              type="button"
-              onClick={syncPendingSales}
-              className="rounded-lg bg-amber-500 px-3 py-1 font-bold text-black hover:bg-amber-400"
-            >
-              Синхронізувати зараз
-            </button>
-          </div>
-        </div>
-      )}
+
 
       {/* Crash Recovery — знайдено продаж після можливого краша */}
       {crashSale && (

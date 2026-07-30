@@ -18,7 +18,8 @@ const writeoffSource = source.slice(
 describe('offline stock sync safety', () => {
   it('preserves server stock on ordinary product edits', () => {
     expect(productSource).toContain('payload.stock_correction === true')
-    expect(productSource).toContain('CASE WHEN $24::boolean THEN $11 ELSE products.qty_on_hand END')
+    expect(productSource).toContain('CASE WHEN $24::boolean THEN $11::numeric ELSE products.qty_on_hand END')
+    expect(productSource).toContain('$11::numeric, $12, $13')
   })
 
   it('applies a writeoff as one idempotent atomic stock operation', () => {

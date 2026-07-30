@@ -42,16 +42,19 @@ function normalizedPhoneEmail(value: unknown): string {
   return `${digits || randomUUID()}@forsage.internal`
 }
 
-async function fetchAll(buildQuery: (from: number, to: number) => any): Promise<any[]> {
+async function fetchAll(
+  buildQuery: (from: number, to: number) => any,
+  tieBreaker = 'id',
+): Promise<any[]> {
   const rows: any[] = []
   let from = 0
 
   while (true) {
     // range() without a stable order can skip or duplicate rows between pages.
-    // Every table used by this sync helper has an id, so it is also the final
-    // deterministic tie-breaker for queries already ordered by time/name.
+    // Most tables use `id`; composite-key journals explicitly pass their own
+    // stable tie-breaker.
     const query = buildQuery(from, from + PAGE_SIZE - 1)
-    const { data, error } = await query.order('id', { ascending: true })
+    const { data, error } = await query.order(tieBreaker, { ascending: true })
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     const page = data ?? []
     rows.push(...page)
@@ -231,7 +234,7 @@ async function fetchSecondarySyncData(params: {
             .order('deleted_at', { ascending: true })
           if (since) query = query.gt('deleted_at', since)
           return query.range(from, to)
-        })
+        }, 'entity_id')
       : Promise.resolve([]),
     canPullCash
       ? fetchAll((from, to) => {
@@ -243,7 +246,7 @@ async function fetchSecondarySyncData(params: {
             .order('deleted_at', { ascending: true })
           if (since) query = query.gt('deleted_at', since)
           return query.range(from, to)
-        })
+        }, 'entity_id')
       : Promise.resolve([]),
     canPullReturns
       ? fetchAll((from, to) => {
@@ -621,7 +624,7 @@ export async function getSyncChanges({
         .order('deleted_at', { ascending: true })
       if (since) query = query.gt('deleted_at', since)
       return query.range(from, to)
-    }),
+    }, 'entity_id'),
     canPullSupplierCatalog
       ? fetchAll((from, to) => {
           let query = db
@@ -3569,7 +3572,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
         `UPDATE products SET
           sku = $3, name = $4, barcode = $5, brand_id = $6, category_id = $7,
           unit = $8, purchase_price = $9, retail_price = $10,
-          qty_on_hand = CASE WHEN $24::boolean THEN $11 ELSE products.qty_on_hand END,
+          qty_on_hand = CASE WHEN $24::boolean THEN $11::numeric ELSE products.qty_on_hand END,
           reorder_point = $12, notes = $13, is_active = $14, is_service = $15,
           requires_core_return = $16, core_deposit_amount = $17,
           storage_bin = $18, is_favorite = $19, photo_url = $20, specs = $21,
@@ -3587,7 +3590,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
           created_at, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, CASE WHEN $24::boolean THEN $11 ELSE $11 END, $12, $13,
+          $9, $10, $11::numeric, $12, $13,
           $14, $15, $16, $17,
           $18, $19, $20, $21, $22::jsonb,
           $23, $23

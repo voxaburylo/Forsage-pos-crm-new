@@ -1222,6 +1222,13 @@ const MIGRATION_018_CUSTOMER_LOYALTY_SALARY_INTEGRITY_SQL = `
     );
 `;
 
+const MIGRATION_019_RETRY_PRODUCT_NUMERIC_SYNC_SQL = `
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE operation_type = 'product.upsert'
+    AND status = 'failed'
+    AND last_error LIKE '%qty_on_hand%numeric%text%';
+`;
 export interface LocalMigration {
   version: number
   sql: string
@@ -1246,4 +1253,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 16, sql: MIGRATION_016_FINANCIAL_INTEGRITY_SQL },
   { version: 17, sql: MIGRATION_017_DOCUMENT_INTEGRITY_SQL },
   { version: 18, sql: MIGRATION_018_CUSTOMER_LOYALTY_SALARY_INTEGRITY_SQL },
+  { version: 19, sql: MIGRATION_019_RETRY_PRODUCT_NUMERIC_SYNC_SQL },
 ]

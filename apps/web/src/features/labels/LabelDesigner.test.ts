@@ -10,6 +10,7 @@ import {
 
 vi.mock('@/lib/barcodeSvg', () => ({
   renderBarcodeSvg: () => '<img class="barcode-raster" src="data:image/png;base64,test" alt="">',
+  renderBarcodePrintSvg: () => '<svg class="barcode-vector" data-pattern="101"></svg>',
 }))
 
 function product(name = 'Тестовий товар') {
@@ -54,6 +55,8 @@ describe('label print document', () => {
     expect(document.html).toContain('overflow:hidden')
     expect(document.html).not.toContain('left:0%;top:42%;width:100%')
     expect(document.html).toContain('height: 31px')
+    expect(document.html).toContain('class="barcode-vector"')
+    expect(document.html).not.toContain('class="barcode-raster"')
     expect(document.html).toContain('font-size: 9pt')
     expect(document.html).not.toContain('Форсаж')
     expect(document.html).not.toContain('SKU-1')

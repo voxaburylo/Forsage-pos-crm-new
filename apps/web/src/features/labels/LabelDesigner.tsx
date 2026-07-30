@@ -10,7 +10,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { PrintService } from '@/lib/printService'
-import { renderBarcodeSvg } from '@/lib/barcodeSvg'
+import { renderBarcodePrintSvg, renderBarcodeSvg } from '@/lib/barcodeSvg'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { loadTsplSettings, saveTsplSettings, pickLabelPrinter, type TsplLabelPrintSettings } from './tsplPrintSettings'
@@ -819,8 +819,8 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
         const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
         const targetWidthPx = barcodeTargetWidthPx(barcodeBlockWidth)
-        const barcode = renderBarcodeSvg(binLabel, { width: barcodeWidth * 1.2, targetWidth: targetWidthPx, quietZone: barcodeQuietZonePx(targetWidthPx), height: barcodeHeight })
-        if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
+        const barcode = renderBarcodePrintSvg(binLabel, { width: barcodeWidth * 1.2, targetWidth: targetWidthPx, quietZone: barcodeQuietZonePx(targetWidthPx), height: barcodeHeight })
+        if (!barcode.includes('barcode-vector')) throw new Error(`Не вдалося створити штрихкод ${binLabel}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:hidden;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(binLabel)}</span>` : ''}</div></div>`
       }
     } else if (product) {
@@ -833,8 +833,8 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
         const barcodeBlockWidth = labelBarcodeWidthPct(settings, pBc)
         const barcodeLeft = Math.max(0, Math.min(95, Number(pBc.x) || 0))
         const targetWidthPx = barcodeTargetWidthPx(barcodeBlockWidth)
-        const barcode = renderBarcodeSvg(product.barcode, { width: barcodeWidth * 1.2, targetWidth: targetWidthPx, quietZone: barcodeQuietZonePx(targetWidthPx), height: barcodeHeight })
-        if (!barcode.includes('barcode-raster')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
+        const barcode = renderBarcodePrintSvg(product.barcode, { width: barcodeWidth * 1.2, targetWidth: targetWidthPx, quietZone: barcodeQuietZonePx(targetWidthPx), height: barcodeHeight })
+        if (!barcode.includes('barcode-vector')) throw new Error(`Не вдалося створити штрихкод ${product.barcode}`)
         body += `<div class="barcode" style="position:absolute;left:${barcodeLeft}%;top:${pBc.y}%;width:${barcodeBlockWidth}%;display:block;overflow:hidden;"><div class="barcode-inner">${barcode}${(settings.show_barcode_text ?? true) ? `<span>${esc(product.barcode)}</span>` : ''}</div></div>`
       }
       if (settings.show_sku || (settings.show_storage_bin && (product as any).storage_bin)) {
@@ -925,7 +925,7 @@ export function buildLabelPrintDocument(settings: LabelSettings, items: Array<Pr
     overflow: hidden;
     object-fit: contain;
     shape-rendering: crispEdges;
-    image-rendering: pixelated;
+    image-rendering: auto;
   }
   @media print {
     html, body { width: ${w}mm !important; min-width: ${w}mm !important; }

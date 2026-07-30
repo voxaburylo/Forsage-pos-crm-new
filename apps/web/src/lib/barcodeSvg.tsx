@@ -15,7 +15,11 @@ function isAsciiBarcode(value: string): boolean {
 }
 
 function sanitizeCodeAttr(value: string): string {
-  return value.replace(/"/g, '')
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 /**
@@ -109,6 +113,63 @@ export function renderBarcodeSvg(value: string, options: BarcodeSvgOptions = {})
     return `<img class="barcode-raster"${codeAttr} src="${canvas.toDataURL('image/png')}" width="${displayWidth}" height="${displayHeight}" alt="">`
   } catch (error) {
     console.error('Failed to generate barcode image', error)
+    return ''
+  }
+}
+/**
+ * Vector CODE128 for browser/driver printing. Chromium sends the bars to the
+ * printer as geometry instead of resampling a screen-density PNG, so every
+ * vertical edge stays straight on computers with a different DPI/driver.
+ * The module pattern metadata is also consumed by the desktop TSPL renderer.
+ */
+export function renderBarcodePrintSvg(value: string, options: BarcodeSvgOptions = {}): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized || typeof document === 'undefined') return ''
+
+  try {
+    const probeScale = 8
+    const requestedHeight = Math.max(8, Number(options.height) || 28)
+    const targetWidth = Math.max(1, Math.round(Number(options.targetWidth) || 120))
+    const quietZonePx = Math.max(
+      4,
+      Math.min(18, Math.round(Number(options.quietZone) || targetWidth * 0.07)),
+    )
+
+    const probe = document.createElement('canvas')
+    JsBarcode(probe, normalized, {
+      format: 'CODE128',
+      width: probeScale,
+      height: requestedHeight * probeScale,
+      margin: 0,
+      displayValue: false,
+      background: '#ffffff',
+      lineColor: '#000000',
+    })
+
+    const modules = Math.max(1, Math.round(probe.width / probeScale))
+    const pattern = readBinaryPattern(probe, modules, probeScale)
+    if (pattern.length !== modules) return ''
+
+    const barsWidthPx = Math.max(1, targetWidth - quietZonePx * 2)
+    const quietUnits = modules * quietZonePx / barsWidthPx
+    const viewBoxWidth = modules + quietUnits * 2
+    const quietRatio = quietUnits / viewBoxWidth
+    const rects: string[] = []
+    let start = -1
+    for (let index = 0; index <= pattern.length; index += 1) {
+      if (pattern[index] === '1' && start < 0) start = index
+      if (pattern[index] !== '1' && start >= 0) {
+        rects.push(`<rect x="${quietUnits + start}" y="0" width="${index - start}" height="${requestedHeight}"/>`)
+        start = -1
+      }
+    }
+
+    const codeAttr = isAsciiBarcode(normalized)
+      ? ` data-code="${sanitizeCodeAttr(normalized)}" data-pattern="${pattern}" data-modules="${modules}" data-quiet-zone="${quietZonePx}" data-quiet-ratio="${quietRatio}" data-natural-width="${targetWidth}"`
+      : ''
+    return `<svg class="barcode-vector"${codeAttr} width="${targetWidth}" height="${requestedHeight}" viewBox="0 0 ${viewBoxWidth} ${requestedHeight}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Штрихкод ${sanitizeCodeAttr(normalized)}" shape-rendering="crispEdges"><rect width="${viewBoxWidth}" height="${requestedHeight}" fill="#fff"/><g fill="#000">${rects.join('')}</g></svg>`
+  } catch (error) {
+    console.error('Failed to generate vector barcode', error)
     return ''
   }
 }

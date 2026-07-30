@@ -4,15 +4,16 @@ import { describe, expect, it } from 'vitest'
 const source = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 
 describe('desktop sync cursor safety', () => {
-  it('uses id as a deterministic final order for every paged query', () => {
+  it('uses a deterministic final order and supports composite-key journals', () => {
     const fetchAllSource = source.slice(
       source.indexOf('async function fetchAll'),
       source.indexOf('function withChangedSince'),
     )
 
-    expect(fetchAllSource).toContain("query.order('id', { ascending: true })")
+    expect(fetchAllSource).toContain("tieBreaker = 'id'")
+    expect(fetchAllSource).toContain("query.order(tieBreaker, { ascending: true })")
+    expect(source.match(/}, 'entity_id'\)/g)).toHaveLength(3)
   })
-
   it('captures the bootstrap cursor before reading the snapshot', () => {
     const bootstrapSource = source.slice(
       source.indexOf('export async function getBootstrapSnapshot'),

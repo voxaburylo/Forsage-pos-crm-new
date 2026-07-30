@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { readFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, net, shell, type IpcMainInvokeEvent } from 'electron'
@@ -53,8 +53,29 @@ let localSync: LocalSyncRepository | null = null
 let localSupplierCatalog: LocalSupplierCatalogRepository | null = null
 let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
+let rendererCrashTimes: number[] = []
 let desktopAuthSession: { id: string; tenant_id: string; role: string } | null = null
 
+function diagnosticValue(value: unknown): string {
+  if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ''}`
+  try { return JSON.stringify(value) } catch { return String(value) }
+}
+
+function writeDesktopDiagnostic(event: string, details: unknown): void {
+  try {
+    const dataRoot = desktopDataRoot
+      ?? (process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Forsage') : app.getPath('userData'))
+    const logDir = path.join(dataRoot, 'logs')
+    mkdirSync(logDir, { recursive: true })
+    appendFileSync(
+      path.join(logDir, 'desktop-errors.log'),
+      `[${new Date().toISOString()}] ${event}\n${diagnosticValue(details)}\n\n`,
+      'utf8',
+    )
+  } catch {
+    // Діагностика не повинна сама зупиняти касу.
+  }
+}
 interface DesktopPrintOptions {
   title?: string
   widthMm?: number
@@ -425,7 +446,27 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) desktopAuthSession = null
   })
-  mainWindow.webContents.on('render-process-gone', () => { desktopAuthSession = null })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    desktopAuthSession = null
+    writeDesktopDiagnostic('renderer-process-gone', details)
+    if (details.reason === 'clean-exit' || details.reason === 'killed') return
+
+    const now = Date.now()
+    rendererCrashTimes = rendererCrashTimes.filter((time) => now - time < 60_000)
+    rendererCrashTimes.push(now)
+    if (rendererCrashTimes.length > 2) {
+      dialog.showErrorBox(
+        'Forsage не вдалося відновити',
+        'Інтерфейс аварійно завершився кілька разів. Причину записано у журнал. Перезапустіть програму.',
+      )
+      app.quit()
+      return
+    }
+
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload()
+    }, 300)
+  })
   mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
     let allowed = false
     try {
@@ -1149,8 +1190,26 @@ app.whenReady().then(async () => {
 
   await createWindow()
 }).catch((error: unknown) => {
+  writeDesktopDiagnostic('startup-failed', error)
   console.error('Forsage desktop startup failed', error)
+  dialog.showErrorBox(
+    'Forsage не запустився',
+    'Причину записано у локальний журнал помилок. Дані магазину не видалено.',
+  )
   app.exit(1)
+})
+
+process.on('uncaughtException', (error) => {
+  writeDesktopDiagnostic('uncaught-exception', error)
+  app.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  writeDesktopDiagnostic('unhandled-rejection', reason)
+})
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason !== 'clean-exit' && details.reason !== 'killed') {
+    writeDesktopDiagnostic('child-process-gone', details)
+  }
 })
 
 app.on('window-all-closed', () => app.quit())
