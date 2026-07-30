@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { hasMeaningfulDesktopSyncChanges } from './useDesktopOutboxSync'
 
 const syncApiSource = readFileSync(new URL('../lib/desktopSyncApi.ts', import.meta.url), 'utf8')
+const localSyncAgentSource = readFileSync(new URL('../components/LocalSyncAgent.tsx', import.meta.url), 'utf8')
 
 describe('desktop sync UI notifications', () => {
   it('does not reload visible lists for unchanged periodic snapshots', () => {
@@ -44,5 +45,12 @@ describe('desktop sync UI notifications', () => {
 
     expect(push).toBeGreaterThanOrEqual(0)
     expect(pull).toBeGreaterThan(push)
+  })
+
+  it('keeps synchronization in the background without a floating panel', () => {
+    expect(localSyncAgentSource).toContain('useOfflineSync(serverOnline)')
+    expect(localSyncAgentSource).toContain('useDesktopOutboxSync(serverOnline)')
+    expect(localSyncAgentSource).toContain('return null')
+    expect(localSyncAgentSource).not.toContain('SyncStatusIndicator')
   })
 })
