@@ -11,15 +11,15 @@ export interface ReceiptPrinterSettings {
 }
 
 const STORAGE_KEY = 'forsage_receipt_printer_v1'
-const LABEL_PRINTER_RE = /hl80|hilabel|label|xprinter|tspl|3\s*inch|80\s*mm|80мм/i
-const RECEIPT_PRINTER_RE = /pos-?58|58\s*mm|58мм|receipt|чек/i
+const LABEL_PRINTER_RE = /hl[- _]?80|hilabel|label|tspl|3\s*inch|80\s*mm|80мм|(?:^|[^0-9])(?:pos|xp)?[- _]?80(?:[^0-9]|$)/i
+const RECEIPT_PRINTER_RE = /(?:^|[^0-9])(?:pos|xp)?[- _]?58(?:[^0-9]|$)|58\s*mm|58мм|receipt|чек/i
 
 function isLabelPrinterName(name: string): boolean {
   return LABEL_PRINTER_RE.test(name) && !RECEIPT_PRINTER_RE.test(name)
 }
 
 function isReceiptPrinterName(name: string): boolean {
-  return RECEIPT_PRINTER_RE.test(name) && !isLabelPrinterName(name)
+  return RECEIPT_PRINTER_RE.test(name)
 }
 
 export const DEFAULT_RECEIPT_PRINTER_SETTINGS: ReceiptPrinterSettings = {

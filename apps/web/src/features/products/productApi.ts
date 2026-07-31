@@ -212,7 +212,7 @@ function desktopUpdatePayload(id: string, existing: DesktopProduct, form: Partia
   } as DesktopProductSavePayload
 }
 export const productApi = {
-  list: async (filters: ProductFilters = {}) => {
+  list: async (filters: ProductFilters = {}): Promise<PaginatedProducts> => {
     const local = desktopBridge()?.catalog.listProducts
     if (local) {
       const page = Math.max(1, filters.page ?? 1)
@@ -242,9 +242,9 @@ export const productApi = {
       return await api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`)
     } catch (err: any) {
       if (err?.status === 416 || /Requested range not satisfiable/i.test(String(err?.message ?? ''))) {
-        const page = Math.max(1, filters.page ?? 1)
+        if (Math.max(1, filters.page ?? 1) > 1) return productApi.list({ ...filters, page: 1 })
         const perPage = Math.max(1, Math.min(500, filters.per_page ?? 50))
-        return { data: [], pagination: { page, per_page: perPage, total: 0, total_pages: 1 } }
+        return { data: [], pagination: { page: 1, per_page: perPage, total: 0, total_pages: 1 } }
       }
       throw err
     }

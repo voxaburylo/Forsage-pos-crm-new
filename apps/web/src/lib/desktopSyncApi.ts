@@ -104,9 +104,17 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
 
     const params = new URLSearchParams()
     params.set('since', state.cursor)
-    // Повні довідники великі й блокують синхронний SQLite. У видимому вікні
-    // тягнемо лише дельту; повний контрольний знімок запускає hook при згортанні.
-    if (options.includeReferences === true) params.set('include_references', 'true')
+    const lastReferenceSyncAt = state.last_reference_sync_at
+      ? Date.parse(state.last_reference_sync_at)
+      : Number.NaN
+    const referencesAreStale = !Number.isFinite(lastReferenceSyncAt)
+      || Date.now() - lastReferenceSyncAt >= 30 * 60_000
+    // A periodic canonical snapshot heals a missed update even when the user
+    // never minimizes the desktop window. It still runs only after the activity
+    // guard has confirmed that the cashier is idle.
+    if (options.includeReferences === true || referencesAreStale) {
+      params.set('include_references', 'true')
+    }
 
     const query = params.size > 0 ? `?${params.toString()}` : ''
     const response = await api.get<PullResponse>(`/api/v1/sync/changes${query}`, {

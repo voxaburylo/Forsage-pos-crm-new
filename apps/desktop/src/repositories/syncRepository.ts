@@ -66,6 +66,7 @@ export class LocalSyncRepository {
     this.coalesceSupersededProductOperations()
     this.recoverLegacyReturnOutbox()
     this.recoverMissingCustomerVehicleOutbox()
+    this.recoverOrphanProductDirtyFlags()
   }
 
   getPullState(): LocalSyncPullState {
@@ -655,9 +656,36 @@ export class LocalSyncRepository {
           OR last_error LIKE '%Касов%змін%'
           OR last_error LIKE '%SHIFT_REQUIRED%'
           OR last_error LIKE '%SHIFT_INVALID%'
+          OR last_error LIKE '%сторнувати комісі%'
+          OR last_error LIKE '%COMMISSION_REVERSAL_FAILED%'
         )
     `).run()
   }
+
+  private recoverOrphanProductDirtyFlags(): void {
+    // A row must stay dirty only while it still has work in the outbox. Older
+    // builds could leave dirty_at behind after the last product operation had
+    // already been acknowledged. Such a row then rejected every newer server
+    // stock value forever. Clear only proven orphans and request a canonical
+    // reference snapshot on the next pull.
+    const result = this.db.prepare(`
+      UPDATE products
+      SET dirty_at = NULL
+      WHERE dirty_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sync_outbox o
+          WHERE o.tenant_id = products.tenant_id
+            AND o.aggregate_type = 'product'
+            AND o.aggregate_id = products.id
+            AND o.status <> 'synced'
+        )
+    `).run()
+    if (result.changes > 0) {
+      this.db.prepare('DELETE FROM app_meta WHERE key = ?').run(LAST_REFERENCE_SYNC_KEY)
+    }
+  }
+
   private recoverMissingCustomerVehicleOutbox(): void {
     const rows = this.db.prepare(`
       SELECT v.id, v.tenant_id, v.customer_id, v.brand, v.model, v.year, v.vin,

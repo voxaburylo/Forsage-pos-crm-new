@@ -25,8 +25,8 @@ export const DEFAULT_TSPL_SETTINGS: TsplLabelPrintSettings = {
   rotate180: false,
 }
 
-const RECEIPT_PRINTER_RE = /pos-?58|58\s*mm|58мм|receipt|чек/i
-const LABEL_PRINTER_RE = /hl80|hilabel|label|xprinter|tspl|3\s*inch|80\s*mm|80мм/i
+const RECEIPT_PRINTER_RE = /(?:^|[^0-9])(?:pos|xp)?[- _]?58(?:[^0-9]|$)|58\s*mm|58мм|receipt|чек/i
+const LABEL_PRINTER_RE = /hl[- _]?80|hilabel|label|tspl|3\s*inch|80\s*mm|80мм|(?:^|[^0-9])(?:pos|xp)?[- _]?80(?:[^0-9]|$)/i
 
 export function isReceiptPrinterName(name: string): boolean {
   return RECEIPT_PRINTER_RE.test(name)
@@ -34,6 +34,10 @@ export function isReceiptPrinterName(name: string): boolean {
 
 export function isLabelPrinterName(name: string): boolean {
   return LABEL_PRINTER_RE.test(name) && !isReceiptPrinterName(name)
+}
+
+function isValidSavedLabelPrinter(name: string): boolean {
+  return name.trim().length > 0 && !isReceiptPrinterName(name)
 }
 
 /** Впізнаємо принтер етикеток за назвою (HL80, HiLabel, Xprinter, 80мм тощо). */
@@ -49,7 +53,7 @@ export function loadTsplSettings(): TsplLabelPrintSettings {
     const parsed = JSON.parse(raw) as Partial<TsplLabelPrintSettings>
     return {
       enabled: parsed.enabled !== false,
-      printerName: typeof parsed.printerName === 'string' && isLabelPrinterName(parsed.printerName) ? parsed.printerName : '',
+      printerName: typeof parsed.printerName === 'string' && isValidSavedLabelPrinter(parsed.printerName) ? parsed.printerName : '',
       gapMm: Number.isFinite(Number(parsed.gapMm)) ? Math.max(0, Math.min(10, Number(parsed.gapMm))) : 2,
       density: Number.isFinite(Number(parsed.density)) ? Math.max(0, Math.min(15, Math.round(Number(parsed.density)))) : 8,
       rotate180: parsed.rotate180 === true,

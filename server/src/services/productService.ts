@@ -293,17 +293,18 @@ export async function listProducts(query: ProductListQuery, tenantId: string) {
     const status = Number((error as any).status ?? 0)
     const message = String((error as any).message ?? '')
     if (status === 416 || /Requested range not satisfiable/i.test(message)) {
-      const emptyResult = {
+      if (page > 1) {
+        return listProducts({ ...query, page: 1 }, tenantId)
+      }
+      return {
         data: [],
         pagination: {
-          page,
+          page: 1,
           per_page,
           total: 0,
           total_pages: 1,
         },
       }
-      if (cacheKey) await searchCache.set(cacheKey, emptyResult)
-      return emptyResult
     }
     throw new AppError('DB_ERROR', error.message, 500)
   }

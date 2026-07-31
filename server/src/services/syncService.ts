@@ -400,7 +400,8 @@ export async function getSyncChanges({
   const referencesIncluded = !since || includeReferences
   const canPullSupply = canPullSupplyData(role)
   const canPullSupplierCatalog = role === 'owner' || role === 'admin'
-  const initialHistorySince = since ? null : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const historySince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const snapshotSince = referencesIncluded ? undefined : since
 
   const [
     productRows,
@@ -435,7 +436,7 @@ export async function getSyncChanges({
         .select('*,brand:brands(id,name),category:categories(id,name)')
         .eq('tenant_id', tenantId)
         .order('updated_at', { ascending: true })
-      query = withChangedSince(query, since)
+      query = withChangedSince(query, snapshotSince)
       if (!since) query = query.is('deleted_at', null)
       return query.range(from, to)
     }),
@@ -445,7 +446,7 @@ export async function getSyncChanges({
         .select('*,price_tier:price_tiers(id,name,discount_pct),customer_cars(vin)')
         .eq('tenant_id', tenantId)
         .order('updated_at', { ascending: true })
-      query = withChangedSince(query, since)
+      query = withChangedSince(query, snapshotSince)
       if (!since) query = query.is('deleted_at', null)
       return query.range(from, to)
     }),
@@ -456,7 +457,7 @@ export async function getSyncChanges({
             .select('id,tenant_id,name,phone,email,contact_name,notes,is_active,created_at,updated_at,deleted_at')
             .eq('tenant_id', tenantId)
             .order('updated_at', { ascending: true })
-          query = withChangedSince(query, since)
+          query = withChangedSince(query, snapshotSince)
           if (!since) query = query.is('deleted_at', null)
           return query.range(from, to)
         })
@@ -467,8 +468,8 @@ export async function getSyncChanges({
         .select('*')
         .eq('tenant_id', tenantId)
         .order('created_at', { ascending: true })
-      if (since) query = query.or(`closed_at.gt.${since},opened_at.gt.${since},created_at.gt.${since}`)
-      else if (initialHistorySince) query = query.or(`status.eq.open,opened_at.gte.${initialHistorySince}`)
+      if (since && !referencesIncluded) query = query.or(`closed_at.gt.${since},opened_at.gt.${since},created_at.gt.${since}`)
+      else query = query.or(`status.eq.open,opened_at.gte.${historySince}`)
       return query.range(from, to)
     }),
     fetchAll((from, to) => {
@@ -477,8 +478,8 @@ export async function getSyncChanges({
         .select('*')
         .eq('tenant_id', tenantId)
         .order('updated_at', { ascending: true })
-      if (since) query = query.gt('updated_at', since)
-      else if (initialHistorySince) query = query.gte('completed_at', initialHistorySince)
+      if (since && !referencesIncluded) query = query.gt('updated_at', since)
+      else query = query.gte('completed_at', historySince)
       return query.range(from, to)
     }),
     fetchAll((from, to) => {
@@ -487,8 +488,8 @@ export async function getSyncChanges({
         .select('*,sale:sales!inner(tenant_id,updated_at,completed_at),product:products(id,sku,name)')
         .eq('sale.tenant_id', tenantId)
         .order('created_at', { ascending: true })
-      if (since) query = query.gt('sale.updated_at', since)
-      else if (initialHistorySince) query = query.gte('sale.completed_at', initialHistorySince)
+      if (since && !referencesIncluded) query = query.gt('sale.updated_at', since)
+      else query = query.gte('sale.completed_at', historySince)
       return query.range(from, to)
     }),
     referencesIncluded
@@ -541,7 +542,7 @@ export async function getSyncChanges({
         .select('*,customer:customers(id,phone,full_name,card_barcode)')
         .eq('tenant_id', tenantId)
         .order('updated_at', { ascending: true })
-      query = withChangedSince(query, since)
+      query = withChangedSince(query, snapshotSince)
       if (!since) query = query.is('deleted_at', null)
       return query.range(from, to)
     }),
@@ -551,7 +552,7 @@ export async function getSyncChanges({
         .select('*,order:customer_orders!inner(tenant_id,updated_at)')
         .eq('order.tenant_id', tenantId)
         .order('created_at', { ascending: true })
-      if (since) query = query.gt('order.updated_at', since)
+      if (since && !referencesIncluded) query = query.gt('order.updated_at', since)
       return query.range(from, to)
     }),
     fetchAll((from, to) => {
@@ -560,7 +561,7 @@ export async function getSyncChanges({
         .select('*,order:customer_orders!inner(tenant_id)')
         .eq('order.tenant_id', tenantId)
         .order('created_at', { ascending: true })
-      if (since) query = query.gt('created_at', since)
+      if (since && !referencesIncluded) query = query.gt('created_at', since)
       return query.range(from, to)
     }),
     canPullSupply
@@ -595,7 +596,7 @@ export async function getSyncChanges({
             .eq('invoice.tenant_id', tenantId)
             .is('invoice.deleted_at', null)
             .order('updated_at', { ascending: true })
-          if (since) query = query.gt('updated_at', since)
+          if (since && !referencesIncluded) query = query.gt('updated_at', since)
           return query.range(from, to)
         })
       : Promise.resolve([]),

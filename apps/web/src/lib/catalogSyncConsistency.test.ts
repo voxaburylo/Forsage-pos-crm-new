@@ -26,9 +26,10 @@ describe('catalog synchronization consistency', () => {
     expect(offlineProductMatchesQuery(product, 'OEM77')).toBe(true)
   })
 
-  it('does not apply full desktop reference snapshots while the cashier is active', () => {
-    expect(desktopSyncSource).toContain("if (options.includeReferences === true) params.set('include_references', 'true')")
-    expect(desktopSyncSource).not.toContain('referencesAreDue')
+  it('periodically heals missed desktop changes only after the cashier is idle', () => {
+    expect(desktopSyncSource).toContain('const referencesAreStale =')
+    expect(desktopSyncSource).toContain('options.includeReferences === true || referencesAreStale')
+    expect(desktopSyncSource).toContain('Date.now() - lastReferenceSyncAt >= 30 * 60_000')
     expect(desktopSyncSource).toContain('options.canApplyPull && !options.canApplyPull()')
   })
 
