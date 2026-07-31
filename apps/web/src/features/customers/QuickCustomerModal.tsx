@@ -15,6 +15,7 @@ interface Props {
   onClose: () => void
   onCreated: (customer: Customer) => void
   onEdit?: (customer: Customer) => void
+  onPayDebt?: (customer: Customer) => void
 }
 
 type Mode = 'search' | 'create'
@@ -40,7 +41,7 @@ function getRecentItems(key: string): string[] {
   }
 }
 
-export function QuickCustomerModal({ open, offline = false, onClose, onCreated, onEdit }: Props) {
+export function QuickCustomerModal({ open, offline = false, onClose, onCreated, onEdit, onPayDebt }: Props) {
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
@@ -272,15 +273,29 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated, 
                       </div>
                     </div>
                   </button>
-                  {onEdit && !offline && (
-                    <button
-                      type="button"
-                      onClick={() => editCustomer(c)}
-                      className="shrink-0 border-l border-gray-100 px-3 text-xs font-bold text-blue-600 hover:bg-blue-50"
-                      title="Редагувати картку клієнта"
-                    >
-                      Ред.
-                    </button>
+                  {((onEdit && !offline) || (onPayDebt && c.debt_balance > 0)) && (
+                    <div className="flex shrink-0 border-l border-gray-100">
+                      {onPayDebt && c.debt_balance > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => onPayDebt(c)}
+                          className="border-r border-gray-100 px-3 text-xs font-bold text-red-600 hover:bg-red-50"
+                          title="Прийняти повну або часткову оплату боргу"
+                        >
+                          Сплатити борг
+                        </button>
+                      )}
+                      {onEdit && !offline && (
+                        <button
+                          type="button"
+                          onClick={() => editCustomer(c)}
+                          className="px-3 text-xs font-bold text-blue-600 hover:bg-blue-50"
+                          title="Редагувати картку клієнта"
+                        >
+                          Ред.
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               ))}

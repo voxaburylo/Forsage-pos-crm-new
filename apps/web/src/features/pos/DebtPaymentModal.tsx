@@ -5,7 +5,7 @@ import { toast } from '@/components/ui/Toast'
 import { usePOSStore } from '@/stores/posStore'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 
-interface Customer {
+interface MoneyCustomer {
   id: string
   full_name: string | null
   phone: string | null
@@ -17,16 +17,17 @@ interface Props {
   open: boolean
   onClose: () => void
   onPaid: () => void
+  initialCustomer?: MoneyCustomer | null
 }
 
 // Дві грошові операції з клієнтом на касі: погашення боргу і поповнення
 // рахунку (передплата). З рахунку потім оплачуються замовлення.
-export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
+export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null }: Props) {
   const [mode, setMode] = useState<'debt' | 'deposit'>('debt')
   const [search, setSearch] = useState('')
-  const [customers, setCustomers] = useState<Customer[]>([])
+  const [customers, setCustomers] = useState<MoneyCustomer[]>([])
   const [loading, setLoading] = useState(false)
-  const [selected, setSelected] = useState<Customer | null>(null)
+  const [selected, setSelected] = useState<MoneyCustomer | null>(null)
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
   const [saving, setSaving] = useState(false)
@@ -37,7 +38,11 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
       setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([]); setMode('debt')
       return
     }
-  }, [open])
+    if (initialCustomer) {
+      setSelected(initialCustomer)
+      setAmount(initialCustomer.debt_balance > 0 ? (initialCustomer.debt_balance / 100).toFixed(2) : '')
+    }
+  }, [open, initialCustomer])
 
   // Скан картки клієнта при відкритій модалці — одразу вибирає клієнта тут,
   // а не чіпляє його до чека
@@ -64,8 +69,15 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
   // Початковий список: для боргу — боржники, для рахунку — нічого (тільки пошук)
   useEffect(() => {
     if (!open) return
-    setSelected(null)
-    setAmount('')
+    if (initialCustomer) {
+      setSelected(initialCustomer)
+      setAmount(mode === 'debt' && initialCustomer.debt_balance > 0
+        ? (initialCustomer.debt_balance / 100).toFixed(2)
+        : '')
+    } else {
+      setSelected(null)
+      setAmount('')
+    }
     if (mode === 'debt') {
       setLoading(true)
       posCustomerMoneyApi.listDebtors(100)
@@ -75,7 +87,7 @@ export function DebtPaymentModal({ open, onClose, onPaid }: Props) {
     } else {
       setCustomers([])
     }
-  }, [open, mode])
+  }, [open, mode, initialCustomer])
 
   useEffect(() => {
     if (!open || search.length < 2) return

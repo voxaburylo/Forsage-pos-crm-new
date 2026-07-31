@@ -241,6 +241,7 @@ export default function POSPage() {
   const [cashOpen, setCashOpen]         = useState(false)
   const [reconcileOpen, setReconcileOpen] = useState(false)
   const [debtPayOpen, setDebtPayOpen] = useState(false)
+  const [debtCustomer, setDebtCustomer] = useState<Customer | null>(null)
   const [suspendOpen, setSuspendOpen]   = useState(false)
   const [suspendedOpen, setSuspendedOpen] = useState(false)
   const [, setSuspendedCount] = useState(0)
@@ -916,11 +917,6 @@ export default function POSPage() {
                   title="Продаж за довільною сумою без товару в каталозі">
                   <CircleDollarSign size={16} /> Вільна сума
                 </button>
-                <button onClick={() => setDebtPayOpen(true)}
-                  className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-red-700/50 bg-red-900/30 px-4 text-sm font-bold text-red-300 hover:bg-red-900/50"
-                  title="Знайти клієнта та прийняти повну або часткову оплату боргу">
-                  <CircleDollarSign size={16} /> Оплата боргу
-                </button>
                 <button onClick={() => setQuickOpen(true)}
                   className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-300 hover:bg-gray-700">
                   <LayoutGrid size={16} /> Товари швидкого доступу
@@ -1088,6 +1084,11 @@ export default function POSPage() {
         offline={!effectiveOnline}
         onClose={() => setCustomerOpen(false)}
         onEdit={handleEditCustomerFromSearch}
+        onPayDebt={(c) => {
+          setCustomerOpen(false)
+          setDebtCustomer(c)
+          setDebtPayOpen(true)
+        }}
         onCreated={(c: Customer) => {
           const posCustomer = posCustomerFromCustomer(c)
           store.setCustomer(posCustomer)
@@ -1121,7 +1122,11 @@ export default function POSPage() {
       />
       <DebtPaymentModal
         open={debtPayOpen}
-        onClose={() => setDebtPayOpen(false)}
+        initialCustomer={debtCustomer}
+        onClose={() => {
+          setDebtPayOpen(false)
+          setDebtCustomer(null)
+        }}
         onPaid={() => {}}
       />
 
