@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
+import { kyivDateKey, kyivDateRange } from '../lib/businessDate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -14,9 +15,9 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/
 router.get('/dashboard', async (req, res, next) => {
   try {
     const tenantId = req.user!.tenant_id
-    const now = new Date()
-    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
-    const defaultEnd = now.toISOString().split('T')[0]
+    const today = kyivDateKey()
+    const defaultStart = `${today.slice(0, 8)}01`
+    const defaultEnd = today
 
     const schema = z.object({
       startDate: z.string().regex(dateRegex).default(defaultStart),
@@ -26,8 +27,7 @@ router.get('/dashboard', async (req, res, next) => {
     if (!q.success) throw new AppError('VALIDATION_ERROR', 'Невірний формат дати', 400)
 
     const { startDate, endDate } = q.data
-    const dateFrom = startDate + 'T00:00:00.000Z'
-    const dateTo   = endDate   + 'T23:59:59.999Z'
+    const { from: dateFrom, toExclusive: dateTo } = kyivDateRange(startDate, endDate)
 
     // 1. Продажі за період (завершені)
     const { data: sales } = await db
@@ -36,7 +36,7 @@ router.get('/dashboard', async (req, res, next) => {
       .eq('tenant_id', tenantId)
       .eq('status', 'completed')
       .gte('completed_at', dateFrom)
-      .lte('completed_at', dateTo)
+      .lt('completed_at', dateTo)
 
     const saleIds = (sales ?? []).map((s) => s.id)
     const totalRevenue = (sales ?? []).reduce((s, x) => s + x.total, 0)
@@ -68,13 +68,13 @@ router.get('/dashboard', async (req, res, next) => {
       .eq('tenant_id', tenantId)
       .eq('status', 'completed')
       .gte('completed_at', dateFrom)
-      .lte('completed_at', dateTo)
+      .lt('completed_at', dateTo)
       .order('completed_at', { ascending: true })
 
     // Групуємо по днях
     const dailyMap = new Map<string, { revenue: number; count: number }>()
     for (const s of dailySales ?? []) {
-      const date = s.completed_at.split('T')[0]
+      const date = kyivDateKey(new Date(s.completed_at))
       const existing = dailyMap.get(date) ?? { revenue: 0, count: 0 }
       existing.revenue += s.total
       existing.count++
@@ -103,7 +103,7 @@ router.get('/dashboard', async (req, res, next) => {
       .eq('type', 'out')
       .not('expense_category_id', 'is', null)
       .gte('created_at', dateFrom)
-      .lte('created_at', dateTo)
+      .lt('created_at', dateTo)
 
     const totalExpenses = (expenses ?? []).reduce((s, x) => s + x.amount, 0)
     const netProfit = grossProfit - totalExpenses

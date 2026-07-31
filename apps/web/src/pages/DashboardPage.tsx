@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { orderApi } from '@/features/orders/orderApi'
 import { Layout } from '@/components/Layout'
 import { Card, Button } from '@/components/ui'
-import { formatMoney, localDateKey } from '@/lib/utils'
+import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 
@@ -28,21 +28,35 @@ interface Analytics {
 interface ForecastItem { month: string; projected: number }
 interface Anomaly { type: string; message: string; severity: 'warning' | 'critical' }
 
-type Period = 'today' | 'week' | 'month'
+type Period = 'today' | 'week' | 'month' | 'date'
+type QuickPeriod = Exclude<Period, 'date'>
 
-function getRange(period: Period): { startDate: string; endDate: string } {
-  const now = new Date()
-  const end = localDateKey(now)
-  if (period === 'today') return { startDate: end, endDate: end }
-  if (period === 'week') {
-    const start = new Date(now); start.setDate(start.getDate() - 6)
-    return { startDate: localDateKey(start), endDate: end }
-  }
-  const start = new Date(now.getFullYear(), now.getMonth(), 1)
-  return { startDate: localDateKey(start), endDate: end }
+const BUSINESS_DATE_FORMATTER = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Europe/Kyiv',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+function businessDateKey(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return BUSINESS_DATE_FORMATTER.format(date)
 }
 
-const PERIOD_LABELS: Record<Period, string> = { today: 'Сьогодні', week: '7 днів', month: 'Цей місяць' }
+function getRange(period: Period, selectedDate: string): { startDate: string; endDate: string } {
+  if (period === 'date') return { startDate: selectedDate, endDate: selectedDate }
+  const end = businessDateKey(new Date())
+  if (period === 'today') return { startDate: end, endDate: end }
+  if (period === 'week') {
+    const start = new Date(`${end}T12:00:00.000Z`)
+    start.setUTCDate(start.getUTCDate() - 6)
+    return { startDate: start.toISOString().slice(0, 10), endDate: end }
+  }
+  return { startDate: `${end.slice(0, 8)}01`, endDate: end }
+}
+
+const PERIOD_LABELS: Record<QuickPeriod, string> = { today: 'Сьогодні', week: '7 днів', month: 'Цей місяць' }
 
 export default function DashboardPage() {
   const navigate = useNavigate()
@@ -50,6 +64,7 @@ export default function DashboardPage() {
   const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canSeeProfit = ['owner', 'admin'].includes(role)
   const [period, setPeriod] = useState<Period>('month')
+  const [selectedDate, setSelectedDate] = useState(() => businessDateKey(new Date()))
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [lowStock, setLowStock] = useState(0)
   const [totals, setTotals] = useState({ products: 0, customers: 0, suppliers: 0, openOrders: 0 })
@@ -59,7 +74,7 @@ export default function DashboardPage() {
   const [debt, setDebt] = useState({ count: 0, total: 0 })
   const [loading, setLoading] = useState(true)
 
-  const range = useMemo(() => getRange(period), [period])
+  const range = useMemo(() => getRange(period, selectedDate), [period, selectedDate])
 
   useEffect(() => {
     async function load() {
@@ -87,7 +102,7 @@ export default function DashboardPage() {
           } while (salesPage <= salesPages)
 
           const rangeSales = allSales.filter((sale) => {
-            const key = String(sale.completed_at ?? '').slice(0, 10)
+            const key = businessDateKey(String(sale.completed_at ?? ''))
             return sale.status === 'completed' && key >= range.startDate && key <= range.endDate
           })
           const totalRevenue = rangeSales.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0)
@@ -97,7 +112,7 @@ export default function DashboardPage() {
           ), 0)
           const dailyMap = new Map<string, DailyData>()
           for (const sale of rangeSales) {
-            const date = String(sale.completed_at ?? '').slice(0, 10)
+            const date = businessDateKey(String(sale.completed_at ?? ''))
             const current = dailyMap.get(date) ?? { date, revenue: 0, profit: 0 }
             const saleCogs = (sale.sale_items ?? []).reduce(
               (sum: number, item: any) => sum + Number(item.purchase_price ?? 0) * Number(item.qty ?? 0),
@@ -190,7 +205,7 @@ export default function DashboardPage() {
     }>
       {/* Period selector */}
       <div className="flex gap-2 mb-6 flex-wrap">
-        {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
+        {(Object.keys(PERIOD_LABELS) as QuickPeriod[]).map((p) => (
           <button key={p} onClick={() => setPeriod(p)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               period === p ? 'bg-yellow-400 text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
@@ -198,15 +213,41 @@ export default function DashboardPage() {
             {PERIOD_LABELS[p]}
           </button>
         ))}
+        <label className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium ${
+          period === 'date' ? 'border-yellow-400 bg-yellow-50 text-black' : 'border-gray-200 bg-white text-gray-600'
+        }`}>
+          <span className="whitespace-nowrap">За день</span>
+          <input
+            type="date"
+            aria-label="Дата продажів"
+            value={selectedDate}
+            max={businessDateKey(new Date())}
+            onChange={(event) => {
+              if (!event.target.value) return
+              setSelectedDate(event.target.value)
+              setPeriod('date')
+            }}
+            className="min-w-0 bg-transparent font-semibold text-gray-900 outline-none"
+          />
+        </label>
         <span className="text-xs text-gray-400 self-center ml-auto hidden sm:block whitespace-nowrap">
           {range.startDate} — {range.endDate}
         </span>
       </div>
 
+      {period === 'date' && (
+        <div className="mb-6 flex flex-col gap-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-sm font-semibold text-emerald-900">
+            Загальна сума продажів за {new Date(`${selectedDate}T12:00:00`).toLocaleDateString('uk-UA')}
+          </span>
+          <strong className="text-2xl text-emerald-800">{loading ? '—' : formatMoney(d?.total_revenue ?? 0)}</strong>
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
         {[
-          { label: 'Виторг',          value: d?.total_revenue  ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
+          { label: period === 'date' ? 'Продажі за день' : 'Виторг', value: d?.total_revenue ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
           ...(canSeeProfit ? [{ label: 'Валовий прибуток', value: d?.gross_profit ?? 0, color: 'bg-blue-50 border-blue-200', iconColor: 'text-blue-600', icon: TrendingUp }] : []),
           { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200',   iconColor: 'text-purple-600',  icon: ClipboardList, raw: true },
           { label: 'Середній чек',    value: d?.average_receipt ?? 0, color: 'bg-amber-50 border-amber-200',   iconColor: 'text-amber-600',   icon: Receipt },
