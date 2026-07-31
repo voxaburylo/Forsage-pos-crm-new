@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 20
+export const LOCAL_SCHEMA_VERSION = 21
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1310,6 +1310,31 @@ const MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL = `
         AND operation.status IN ('pending', 'sending', 'failed')
     );
 `;
+const MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL = `
+  -- Revisions created by legacy builds did not record expected_stock. Applying
+  -- them now could overwrite balances changed by newer sales or revisions.
+  UPDATE sync_outbox
+  SET status = 'synced',
+      synced_at = COALESCE(synced_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      next_attempt_at = NULL,
+      last_error = 'Застарілу ревізію без базового залишку пропущено без повторного застосування'
+  WHERE operation_type = 'inventory.completed'
+    AND status IN ('pending', 'failed')
+    AND json_valid(payload_json)
+    AND EXISTS (
+      SELECT 1
+      FROM json_each(json_extract(sync_outbox.payload_json, '$.items')) item
+      WHERE json_type(item.value, '$.expected_stock') IS NULL
+    );
+
+  -- The return can be replayed safely after the server-side commission fix.
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE operation_type = 'return.created'
+    AND status = 'failed'
+    AND last_error LIKE '%сторнувати комісію%';
+`;
+
 export interface LocalMigration {
   version: number
   sql: string
@@ -1336,4 +1361,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 18, sql: MIGRATION_018_CUSTOMER_LOYALTY_SALARY_INTEGRITY_SQL },
   { version: 19, sql: MIGRATION_019_RETRY_PRODUCT_NUMERIC_SYNC_SQL },
   { version: 20, sql: MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL },
+  { version: 21, sql: MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL },
 ]
