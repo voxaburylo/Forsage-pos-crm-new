@@ -20,6 +20,9 @@ import {
 } from './syncRolePolicy.js'
 import { nextSettingsRowUpdatedAt, prepareLabelSettingsUpdate } from './labelSettingsConflict.js'
 import { clearProductSearchCache } from './productService.js'
+import { processSyncBatch } from './syncBatch.js'
+import { buildProductSyncQueryValues } from './syncProductValues.js'
+import { checkedSyncMoney } from './syncMoney.js'
 
 const PAGE_SIZE = 1000
 // Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
@@ -976,59 +979,38 @@ export async function pushLocalOperations(params: {
   role: string
   operations: SyncOutboxOperation[]
 }): Promise<{ results: SyncPushResult[] }> {
-  const results: SyncPushResult[] = []
-
-  for (const operation of params.operations) {
-    try {
-      if (operation.tenant_id !== params.tenantId) {
-        throw new AppError('SYNC_TENANT_MISMATCH', 'Операція належить іншому магазину', 403)
-      }
-
-      assertSyncOperationAllowed(params.role, operation.operation_type)
-      const restrictedCustomerWrite = ['customer.created', 'customer.updated'].includes(operation.operation_type)
-        && !['owner', 'admin', 'manager'].includes(params.role)
-      const rawPayload = { ...(operation.payload ?? {}) }
-      const originalPayload = restrictedCustomerWrite
-        ? Object.fromEntries(Object.entries(rawPayload).filter(([key]) => [
-            'id', 'phone', 'full_name', 'email', 'notes', 'card_barcode', 'birth_date', 'created_at',
-          ].includes(key)))
-        : rawPayload
-      if (originalPayload.created_at === undefined) originalPayload.created_at = operation.created_at
-      const appliedAt = new Date().toISOString()
-      const operationForApply: SyncOutboxOperation = {
-        ...operation,
-        created_at: appliedAt,
-        applied_at: appliedAt,
-        payload: originalPayload,
-      }
-
-      await applyLocalOperation({
-        tenantId: params.tenantId,
-        userId: params.userId,
-        role: params.role,
-        operation: operationForApply,
-      })
-
-      results.push({
-        sequence: operation.sequence,
-        operation_id: operation.operation_id,
-        aggregate_id: operation.aggregate_id,
-        status: 'synced',
-      })
-    } catch (error: any) {
-      results.push({
-        sequence: operation.sequence,
-        operation_id: operation.operation_id,
-        aggregate_id: operation.aggregate_id,
-        status: 'failed',
-        error: error?.message ?? 'Помилка синхронізації',
-      })
-      // Зберігаємо причинний порядок: пізніші операції не можуть обігнати невдалу.
-      break
+  const results = await processSyncBatch(params.operations, async (operation) => {
+    if (operation.tenant_id !== params.tenantId) {
+      throw new AppError('SYNC_TENANT_MISMATCH', 'Операція належить іншому магазину', 403)
     }
-  }
 
-  return { results }
+    assertSyncOperationAllowed(params.role, operation.operation_type)
+    const restrictedCustomerWrite = ['customer.created', 'customer.updated'].includes(operation.operation_type)
+      && !['owner', 'admin', 'manager'].includes(params.role)
+    const rawPayload = { ...(operation.payload ?? {}) }
+    const originalPayload = restrictedCustomerWrite
+      ? Object.fromEntries(Object.entries(rawPayload).filter(([key]) => [
+          'id', 'phone', 'full_name', 'email', 'notes', 'card_barcode', 'birth_date', 'created_at',
+        ].includes(key)))
+      : rawPayload
+    if (originalPayload.created_at === undefined) originalPayload.created_at = operation.created_at
+    const appliedAt = new Date().toISOString()
+    const operationForApply: SyncOutboxOperation = {
+      ...operation,
+      created_at: appliedAt,
+      applied_at: appliedAt,
+      payload: originalPayload,
+    }
+
+    await applyLocalOperation({
+      tenantId: params.tenantId,
+      userId: params.userId,
+      role: params.role,
+      operation: operationForApply,
+    })
+  })
+
+  return { results: results as SyncPushResult[] }
 }
 
 async function applyLocalOperation(params: {
@@ -2698,11 +2680,15 @@ async function applySuspendedSaleClosed(tenantId: string, operation: SyncOutboxO
 
 function invoiceLineTotal(item: any): number {
   const itemQty = Number(item?.qty ?? 0)
-  const purchasePrice = Number(item?.purchase_price ?? 0)
-  if (!Number.isFinite(itemQty) || itemQty <= 0 || !Number.isFinite(purchasePrice) || purchasePrice < 0) {
-    throw new AppError('SYNC_INVOICE_ITEM_INVALID', 'Некоректна кількість або закупівельна ціна у накладній', 422)
+  if (!Number.isFinite(itemQty) || itemQty <= 0) {
+    throw new AppError('SYNC_INVOICE_ITEM_INVALID', 'Некоректна кількість у накладній', 422)
   }
-  return Math.max(0, Math.round(itemQty * purchasePrice))
+  try {
+    const purchasePrice = checkedSyncMoney(item?.purchase_price ?? 0, 'Ціна закупівлі')
+    return checkedSyncMoney(itemQty * purchasePrice, 'Сума позиції накладної')
+  } catch (error: any) {
+    throw new AppError('SYNC_INVOICE_ITEM_INVALID', error?.message ?? 'Некоректна ціна у накладній', 422)
+  }
 }
 
 async function assertSyncCashboxHasFunds(
@@ -2710,14 +2696,19 @@ async function assertSyncCashboxHasFunds(
   tenantId: string,
   shiftId: string,
   amount: number,
+  occurredAt: string,
 ): Promise<void> {
   const shift = await client.query(
-    `SELECT id, opening_cash FROM shifts
-     WHERE id = $1 AND tenant_id = $2 AND status = 'open'
+    `SELECT id, opening_cash, status, opened_at, closed_at FROM shifts
+     WHERE id = $1 AND tenant_id = $2
+       AND opened_at <= $3::timestamptz
+       AND (closed_at IS NULL OR closed_at >= $3::timestamptz)
      FOR UPDATE`,
-    [shiftId, tenantId],
+    [shiftId, tenantId, occurredAt],
   )
-  if (!shift.rowCount) throw new AppError('SHIFT_REQUIRED', 'Касова зміна не знайдена або вже закрита', 409)
+  if (!shift.rowCount) {
+    throw new AppError('SHIFT_REQUIRED', 'Касова зміна не знайдена або оплата не належить до часу її роботи', 409)
+  }
   const balance = await client.query(
     `SELECT GREATEST(0,
        COALESCE($3::bigint, 0)
@@ -2750,9 +2741,19 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
   const invoiceId = String(payload.id || operation.aggregate_id)
   const items = Array.isArray(payload.items) ? payload.items : []
   if (items.length === 0) throw new AppError('SYNC_INVOICE_EMPTY', 'У накладній немає товарів', 422)
-  const total = items.reduce((sum: number, item: any) => sum + invoiceLineTotal(item), 0)
-  const paidAmount = Math.max(0, Math.min(Number(payload.paid_amount ?? 0), total))
-  const timestamp = operation.created_at || new Date().toISOString()
+  let total: number
+  let requestedPaidAmount: number
+  try {
+    total = checkedSyncMoney(
+      items.reduce((sum: number, item: any) => sum + invoiceLineTotal(item), 0),
+      'Сума накладної',
+    )
+    requestedPaidAmount = checkedSyncMoney(payload.paid_amount ?? 0, 'Сума оплати')
+  } catch (error: any) {
+    throw new AppError('SYNC_INVOICE_AMOUNT_INVALID', error?.message ?? 'Некоректна сума накладної', 422)
+  }
+  const paidAmount = Math.min(requestedPaidAmount, total)
+  const timestamp = payload.created_at ?? operation.created_at ?? new Date().toISOString()
 
   await runTransaction(async (client) => {
     const existing = await client.query('SELECT id FROM supply_invoices WHERE id = $1 AND tenant_id = $2 LIMIT 1', [invoiceId, tenantId])
@@ -2781,7 +2782,7 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
       const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
       if (fundSource === 'cashbox') {
         if (!isUuid(payload.shift_id)) throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 409)
-        await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, paidAmount)
+        await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, paidAmount, timestamp)
       }
       await client.query(
         `INSERT INTO supplier_payments
@@ -2878,7 +2879,12 @@ async function applySupplierInvoicePosted(tenantId: string, userId: string, oper
 async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const paymentId = String(payload.payment_id || operation.operation_id)
-  const amount = Math.round(Number(payload.amount ?? 0))
+  let amount: number
+  try {
+    amount = checkedSyncMoney(payload.amount ?? 0, 'Сума оплати')
+  } catch (error: any) {
+    throw new AppError('INVALID_AMOUNT', error?.message ?? 'Некоректна сума оплати', 422)
+  }
   if (amount <= 0) throw new AppError('INVALID_AMOUNT', 'Сума оплати має бути більше нуля', 422)
   await runTransaction(async (client) => {
     const existing = await client.query('SELECT id FROM supplier_payments WHERE id = $1 LIMIT 1', [paymentId])
@@ -2898,7 +2904,7 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
       if (!isUuid(payload.shift_id)) {
         throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 409)
       }
-      await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, amount)
+      await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, amount, payload.created_at ?? operation.created_at)
     }
     await client.query(
       `INSERT INTO supplier_payments
@@ -3540,7 +3546,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       : requestedPhotoUrl
 
     const updatedAt = operation.applied_at ?? operation.created_at
-    const values = [
+    const productValues = [
       productId,
       tenantId,
       sku,
@@ -3564,8 +3570,11 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       fromPayload('specs', existing?.specs ?? {}),
       JSON.stringify(additionalBarcodes),
       updatedAt,
-      payload.stock_correction === true,
     ]
+    const { insertValues, updateValues } = buildProductSyncQueryValues(
+      productValues,
+      payload.stock_correction === true,
+    )
 
     if (existing) {
       await client.query(
@@ -3578,7 +3587,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
           storage_bin = $18, is_favorite = $19, photo_url = $20, specs = $21,
           additional_barcodes = $22::jsonb, deleted_at = NULL, updated_at = $23
         WHERE id = $1 AND tenant_id = $2`,
-        values,
+        updateValues,
       )
     } else {
       await client.query(
@@ -3595,7 +3604,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
           $18, $19, $20, $21, $22::jsonb,
           $23, $23
         )`,
-        values,
+        insertValues,
       )
     }
 

@@ -6,9 +6,20 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+const MAX_DATABASE_MONEY = 2_147_483_647
+
 function money(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.round(value)
+}
+
+function checkedMoney(value: number, label: string): number {
+  const normalized = money(value)
+  if (normalized < 0) throw new Error(`${label} не може бути від’ємною`)
+  if (normalized > MAX_DATABASE_MONEY) {
+    throw new Error(`${label} надто велика. Перевірте, чи штрихкод випадково не потрапив у поле ціни.`)
+  }
+  return normalized
 }
 
 function qty(value: number): number {
@@ -287,17 +298,20 @@ export class LocalSupplyRepository {
       if (!product) throw new Error('Товар у накладній не знайдено в локальній базі')
       const itemQty = qty(item.qty)
       if (itemQty <= 0) throw new Error('Кількість у накладній має бути більше нуля')
-      const purchasePrice = money(item.purchase_price)
+      const purchasePrice = checkedMoney(item.purchase_price, 'Ціна закупівлі')
       return {
         id: item.id ?? randomUUID(),
         product_id: item.product_id,
         qty: itemQty,
         purchase_price: purchasePrice,
-        total: money(item.total ?? itemQty * purchasePrice),
+        total: checkedMoney(item.total ?? itemQty * purchasePrice, 'Сума позиції'),
       }
     })
-    const total = normalizedItems.reduce((sum, item) => sum + item.total, 0)
-    const paidAmount = Math.max(0, Math.min(money(input.paid_amount ?? 0), total))
+    const total = checkedMoney(
+      normalizedItems.reduce((sum, item) => sum + item.total, 0),
+      'Сума накладної',
+    )
+    const paidAmount = Math.min(checkedMoney(input.paid_amount ?? 0, 'Сума оплати'), total)
     const paymentMethod = paidAmount > 0 ? (input.payment_method ?? 'cash') : null
     const fundSource = input.fund_source ?? (paymentMethod === 'cash' ? 'cashbox' : 'bank_account')
     const userId = input.user_id ?? null
@@ -365,19 +379,22 @@ export class LocalSupplyRepository {
       if (!product) throw new Error('Товар у накладній не знайдено в локальній базі')
       const itemQty = qty(item.qty)
       if (itemQty <= 0) throw new Error('Кількість у накладній має бути більше нуля')
-      const purchasePrice = money(item.purchase_price)
+      const purchasePrice = checkedMoney(item.purchase_price, 'Ціна закупівлі')
       return {
         id: item.id ?? randomUUID(),
         product_id: item.product_id,
         qty: itemQty,
         purchase_price: purchasePrice,
-        total: money(item.total ?? itemQty * purchasePrice),
+        total: checkedMoney(item.total ?? itemQty * purchasePrice, 'Сума позиції'),
       }
     })
     if (normalizedItems && normalizedItems.length === 0) throw new Error('Додайте хоча б один товар у накладну')
-    const total = normalizedItems
-      ? normalizedItems.reduce((sum, item) => sum + item.total, 0)
-      : Number(invoice.total ?? 0)
+    const total = checkedMoney(
+      normalizedItems
+        ? normalizedItems.reduce((sum, item) => sum + item.total, 0)
+        : Number(invoice.total ?? 0),
+      'Сума накладної',
+    )
     const supplierId = input.supplier_id !== undefined ? input.supplier_id : invoice.supplier_id ?? null
     const invoiceNumber = input.invoice_number !== undefined ? text(input.invoice_number) : invoice.invoice_number ?? null
     const notes = input.notes !== undefined ? input.notes ?? null : invoice.notes ?? null
@@ -468,7 +485,7 @@ export class LocalSupplyRepository {
     const invoice = this.getInvoice(id, tenantId)
     if (invoice.status === 'cancelled') throw new Error('Не можна оплатити скасовану накладну')
     const remaining = Number(invoice.total ?? 0) - Number(invoice.paid_amount ?? 0)
-    const amount = money(input.amount)
+    const amount = checkedMoney(input.amount, 'Сума оплати')
     if (amount <= 0) throw new Error('Сума оплати має бути більше нуля')
     if (amount > remaining) throw new Error('Сума перевищує борг за накладною')
     const timestamp = nowIso()
@@ -668,7 +685,7 @@ export class LocalSupplyRepository {
 
   private insertPayment(invoiceId: string, tenantId: string, input: PaymentInput & { payment_id?: string }, supplierId: string | null, timestamp: string): string {
     const paymentId = input.payment_id ?? randomUUID()
-    const amount = money(input.amount)
+    const amount = checkedMoney(input.amount, 'Сума оплати')
     this.ensureCashboxPaymentAllowed(tenantId, input, amount)
     this.db.prepare(`
       INSERT INTO supplier_payments (

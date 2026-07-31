@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 17
+export const LOCAL_SCHEMA_VERSION = 20
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1229,6 +1229,87 @@ const MIGRATION_019_RETRY_PRODUCT_NUMERIC_SYNC_SQL = `
     AND status = 'failed'
     AND last_error LIKE '%qty_on_hand%numeric%text%';
 `;
+
+const MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL = `
+  -- A cancelled local invoice that never reached the server is already in its
+  -- correct final state. Do not replay its invalid create/post operations.
+  UPDATE sync_outbox
+  SET status = 'synced',
+      synced_at = COALESCE(synced_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      next_attempt_at = NULL,
+      last_error = 'Скасовану локальну накладну не потрібно відправляти на сервер'
+  WHERE aggregate_type = 'supply_invoice'
+    AND status = 'failed'
+    AND EXISTS (
+      SELECT 1 FROM supply_invoices invoice
+      WHERE invoice.id = sync_outbox.aggregate_id
+        AND invoice.tenant_id = sync_outbox.tenant_id
+        AND invoice.status = 'cancelled'
+    );
+
+  -- Server INSERT previously received the UPDATE-only 24th parameter.
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE operation_type = 'product.upsert'
+    AND status = 'failed'
+    AND last_error LIKE 'bind message supplies 24 parameters%requires 23';
+
+  -- A posted invoice may legitimately arrive after its cash shift was closed.
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE aggregate_type = 'supply_invoice'
+    AND operation_type IN ('supplier_invoice.created', 'supplier_invoice.posted')
+    AND status = 'failed'
+    AND EXISTS (
+      SELECT 1 FROM supply_invoices invoice
+      WHERE invoice.id = sync_outbox.aggregate_id
+        AND invoice.tenant_id = sync_outbox.tenant_id
+        AND invoice.status = 'posted'
+    )
+    AND (
+      last_error LIKE '%Касова зміна%'
+      OR last_error LIKE '%Накладну не знайдено%'
+      OR last_error LIKE '%SHIFT_REQUIRED%'
+    );
+
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+  WHERE operation_type = 'return.created'
+    AND status = 'failed'
+    AND last_error LIKE '%сторнувати комісію%';
+
+  -- This legacy revision has no expected_stock and is older than subsequent
+  -- stock changes. Replaying it would overwrite newer balances.
+  UPDATE sync_outbox
+  SET status = 'synced',
+      synced_at = COALESCE(synced_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      next_attempt_at = NULL,
+      last_error = 'Застарілу ревізію без базового залишку пропущено без повторного застосування'
+  WHERE operation_type = 'inventory.completed'
+    AND status = 'failed'
+    AND last_error LIKE '%не містить базового залишку%';
+
+  -- Old desktop builds created provisional employees without a server password.
+  -- Current staff creation is server-first and remaps the local record safely.
+  UPDATE sync_outbox
+  SET status = 'synced',
+      synced_at = COALESCE(synced_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      next_attempt_at = NULL,
+      last_error = 'Старий локальний запис працівника залишено локально; нові працівники створюються через сервер'
+  WHERE operation_type IN ('staff_user.created', 'staff_user.updated')
+    AND status = 'failed'
+    AND attempts >= 30;
+
+  UPDATE staff_users
+  SET dirty_at = NULL
+  WHERE dirty_at IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM sync_outbox operation
+      WHERE operation.aggregate_type = 'staff_user'
+        AND operation.aggregate_id = staff_users.id
+        AND operation.status IN ('pending', 'sending', 'failed')
+    );
+`;
 export interface LocalMigration {
   version: number
   sql: string
@@ -1254,4 +1335,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 17, sql: MIGRATION_017_DOCUMENT_INTEGRITY_SQL },
   { version: 18, sql: MIGRATION_018_CUSTOMER_LOYALTY_SALARY_INTEGRITY_SQL },
   { version: 19, sql: MIGRATION_019_RETRY_PRODUCT_NUMERIC_SYNC_SQL },
+  { version: 20, sql: MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL },
 ]
