@@ -9,6 +9,7 @@ import { Card, Button } from '@/components/ui'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 
 interface DailyData {
   date: string
@@ -30,19 +31,6 @@ interface Anomaly { type: string; message: string; severity: 'warning' | 'critic
 
 type Period = 'today' | 'week' | 'month' | 'date'
 type QuickPeriod = Exclude<Period, 'date'>
-
-const BUSINESS_DATE_FORMATTER = new Intl.DateTimeFormat('sv-SE', {
-  timeZone: 'Europe/Kyiv',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-})
-
-function businessDateKey(value: string | Date): string {
-  const date = value instanceof Date ? value : new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return BUSINESS_DATE_FORMATTER.format(date)
-}
 
 function getRange(period: Period, selectedDate: string): { startDate: string; endDate: string } {
   if (period === 'date') return { startDate: selectedDate, endDate: selectedDate }
@@ -94,8 +82,9 @@ export default function DashboardPage() {
           const allSales: any[] = []
           let salesPage = 1
           let salesPages = 1
+          const saleDateRange = businessDateRangeUtc(range.startDate, range.endDate)
           do {
-            const response = await desktop.pos.listSales({ page: salesPage, per_page: 200 })
+            const response = await desktop.pos.listSales({ status: 'completed', date_from: saleDateRange.from, date_to: saleDateRange.to, page: salesPage, per_page: 200 })
             allSales.push(...(response.data ?? []))
             salesPages = response.pagination?.total_pages ?? 1
             salesPage++
@@ -103,7 +92,7 @@ export default function DashboardPage() {
 
           const rangeSales = allSales.filter((sale) => {
             const key = businessDateKey(String(sale.completed_at ?? ''))
-            return sale.status === 'completed' && key >= range.startDate && key <= range.endDate
+            return key >= range.startDate && key <= range.endDate
           })
           const totalRevenue = rangeSales.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0)
           const cogs = rangeSales.reduce((sum, sale) => sum + (sale.sale_items ?? []).reduce(

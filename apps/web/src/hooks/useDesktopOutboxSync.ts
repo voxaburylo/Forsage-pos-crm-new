@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { isDesktopRuntime, type DesktopSyncPullChanges } from '@/lib/desktopBridge'
 import { syncDesktopNow } from '@/lib/desktopSyncApi'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -10,6 +10,7 @@ const RETRY_MAX_MS = 5 * 60_000
 const STARTUP_DELAY_MS = 1_500
 const FOREGROUND_QUIET_MS = 1_800
 const IMMEDIATE_SYNC_DELAY_MS = 2_000
+const MAX_FOREGROUND_PULL_ROWS = 250
 
 const PERIODIC_SNAPSHOT_COUNTS = new Set([
   'staff',
@@ -29,6 +30,13 @@ export function hasMeaningfulDesktopSyncChanges(result: {
   )
 }
 
+export function desktopPullRowCount(changes: DesktopSyncPullChanges): number {
+  return Object.values(changes).reduce(
+    (count, value) => count + (Array.isArray(value) ? value.length : 0),
+    0,
+  )
+}
+
 export function useDesktopOutboxSync(serverOnline: boolean) {
   const userId = useAuthStore((state) => state.session?.user?.id ?? '')
   const offlineMode = useAuthStore((state) => state.offlineMode)
@@ -37,10 +45,14 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
   const retryAttemptRef = useRef(0)
   const lastUserActivityAtRef = useRef(0)
 
-  const canApplyPull = useCallback(() => (
-    document.visibilityState !== 'visible'
-    || Date.now() - lastUserActivityAtRef.current >= FOREGROUND_QUIET_MS
-  ), [])
+  const canApplyPull = useCallback((changes?: DesktopSyncPullChanges) => {
+    if (document.visibilityState !== 'visible') return true
+    if (Date.now() - lastUserActivityAtRef.current < FOREGROUND_QUIET_MS) return false
+    // Невелика дельта швидко оновлює касу. Великий пакет не застосовуємо у
+    // видимому вікні: курсор не зміниться, і пакет безпечно дочекається, доки
+    // користувач згорне програму.
+    return !changes || desktopPullRowCount(changes) <= MAX_FOREGROUND_PULL_ROWS
+  }, [])
 
   const syncNow = useCallback(async (includeReferences = false) => {
     if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }

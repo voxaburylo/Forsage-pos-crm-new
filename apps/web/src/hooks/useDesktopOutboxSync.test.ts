@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { hasMeaningfulDesktopSyncChanges } from './useDesktopOutboxSync'
+import { desktopPullRowCount, hasMeaningfulDesktopSyncChanges } from './useDesktopOutboxSync'
 
 const syncApiSource = readFileSync(new URL('../lib/desktopSyncApi.ts', import.meta.url), 'utf8')
 const localSyncAgentSource = readFileSync(new URL('../components/LocalSyncAgent.tsx', import.meta.url), 'utf8')
@@ -46,6 +46,25 @@ describe('desktop sync UI notifications', () => {
 
     expect(push).toBeGreaterThanOrEqual(0)
     expect(pull).toBeGreaterThan(push)
+  })
+
+  it('never starts a full reference refresh in a visible working window', () => {
+    const pullSource = syncApiSource.slice(
+      syncApiSource.indexOf('export async function pullDesktopChanges'),
+      syncApiSource.indexOf('export async function getDesktopSyncStatus'),
+    )
+    expect(pullSource).toContain("if (options.includeReferences === true)")
+    expect(pullSource).not.toContain('referencesAreStale')
+  })
+
+  it('counts a large pull before applying it to the visible desktop window', () => {
+    expect(desktopPullRowCount({
+      cursor: '2026-07-31T00:00:00.000Z',
+      tenant_id: 'tenant-1',
+      products: [{ id: 'p1' }, { id: 'p2' }],
+      product_barcodes: [{ product_id: 'p1', barcode: '111' }],
+    } as any)).toBe(3)
+    expect(syncApiSource).toContain('canApplyPull(response.data)')
   })
 
   it('keeps synchronization in the background without a floating panel', () => {

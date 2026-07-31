@@ -361,6 +361,7 @@ function handleDesktopIpc(
   listener: (event: IpcMainInvokeEvent, ...args: any[]) => unknown,
 ): void {
   ipcMain.handle(channel, async (event, ...args) => {
+    const startedAt = Date.now()
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
       throw new Error('Неприпустиме джерело локальної команди')
     }
@@ -377,7 +378,14 @@ function handleDesktopIpc(
         }
       }
     }
-    return listener(event, ...args)
+    try {
+      return await listener(event, ...args)
+    } finally {
+      const durationMs = Date.now() - startedAt
+      if (durationMs >= 2_000) {
+        writeDesktopDiagnostic('slow-desktop-command', { channel, duration_ms: durationMs })
+      }
+    }
   })
 }
 
@@ -474,6 +482,16 @@ async function createWindow(): Promise<void> {
 
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) desktopAuthSession = null
+  })
+  let unresponsiveAt: number | null = null
+  mainWindow.on('unresponsive', () => {
+    unresponsiveAt = Date.now()
+    writeDesktopDiagnostic('window-unresponsive', { route: mainWindow?.webContents.getURL() ?? null })
+  })
+  mainWindow.on('responsive', () => {
+    if (unresponsiveAt === null) return
+    writeDesktopDiagnostic('window-responsive', { duration_ms: Date.now() - unresponsiveAt })
+    unresponsiveAt = null
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     desktopAuthSession = null

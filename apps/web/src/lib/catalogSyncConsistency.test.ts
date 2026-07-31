@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { attachProductReferences, offlineProductMatchesQuery } from './offlineDB'
 
 const desktopSyncSource = readFileSync(new URL('./desktopSyncApi.ts', import.meta.url), 'utf8')
+const desktopSyncAgentSource = readFileSync(new URL('../hooks/useDesktopOutboxSync.ts', import.meta.url), 'utf8')
 const serverSyncSource = readFileSync(
   new URL('../../../../server/src/services/syncService.ts', import.meta.url),
   'utf8',
@@ -26,11 +27,12 @@ describe('catalog synchronization consistency', () => {
     expect(offlineProductMatchesQuery(product, 'OEM77')).toBe(true)
   })
 
-  it('periodically heals missed desktop changes only after the cashier is idle', () => {
-    expect(desktopSyncSource).toContain('const referencesAreStale =')
-    expect(desktopSyncSource).toContain('options.includeReferences === true || referencesAreStale')
-    expect(desktopSyncSource).toContain('Date.now() - lastReferenceSyncAt >= 30 * 60_000')
+  it('heals missed desktop changes only while the working window is hidden', () => {
+    expect(desktopSyncSource).not.toContain('referencesAreStale')
+    expect(desktopSyncSource).toContain('options.includeReferences === true')
     expect(desktopSyncSource).toContain('options.canApplyPull && !options.canApplyPull()')
+    expect(desktopSyncAgentSource).toContain('document.visibilityState !== \'visible\'')
+    expect(desktopSyncAgentSource).toContain('schedule(1_000, true)')
   })
 
   it('marks category snapshots only when a complete reference snapshot is returned', () => {

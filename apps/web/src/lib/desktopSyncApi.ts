@@ -15,7 +15,7 @@ interface DesktopSyncOptions {
   includeReferences?: boolean
   // Поки касир сканує/натискає кнопки, відповідь можна не застосовувати:
   // курсор не рухається, і та сама дельта безпечно прийде наступним циклом.
-  canApplyPull?: () => boolean
+  canApplyPull?: (changes?: DesktopSyncPullChanges) => boolean
 }
 
 interface PushResponse {
@@ -97,22 +97,18 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
           silent: true,
           timeoutMs: 180_000,
         })
-        if (options.canApplyPull && !options.canApplyPull()) return null
+        if (options.canApplyPull && !options.canApplyPull(initialResponse.data)) return null
         return desktop.sync.applyPullChanges(initialResponse.data)
       }
     }
 
     const params = new URLSearchParams()
     params.set('since', state.cursor)
-    const lastReferenceSyncAt = state.last_reference_sync_at
-      ? Date.parse(state.last_reference_sync_at)
-      : Number.NaN
-    const referencesAreStale = !Number.isFinite(lastReferenceSyncAt)
-      || Date.now() - lastReferenceSyncAt >= 30 * 60_000
-    // A periodic canonical snapshot heals a missed update even when the user
-    // never minimizes the desktop window. It still runs only after the activity
-    // guard has confirmed that the cashier is idle.
-    if (options.includeReferences === true || referencesAreStale) {
+    // Повні довідники містять десятки тисяч товарів і штрихкодів. Їхнє
+    // застосування в SQLite блокує головний Electron-процес, тому запускаємо
+    // таке відновлення лише явно — коли useDesktopOutboxSync бачить, що вікно
+    // згорнуте. Звичайні дельти продовжують надходити кожні кілька секунд.
+    if (options.includeReferences === true) {
       params.set('include_references', 'true')
     }
 
@@ -121,7 +117,7 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
       silent: true,
       timeoutMs: 120_000,
     })
-    if (options.canApplyPull && !options.canApplyPull()) return null
+    if (options.canApplyPull && !options.canApplyPull(response.data)) return null
     return desktop.sync.applyPullChanges(response.data)
   } catch (error) {
     await desktop.sync.markPullFailed(
