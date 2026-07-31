@@ -105,9 +105,9 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
     const params = new URLSearchParams()
     params.set('since', state.cursor)
     // Повні довідники містять десятки тисяч товарів і штрихкодів. Їхнє
-    // застосування в SQLite блокує головний Electron-процес, тому запускаємо
-    // таке відновлення лише явно — коли useDesktopOutboxSync бачить, що вікно
-    // згорнуте. Звичайні дельти продовжують надходити кожні кілька секунд.
+    // застосування в SQLite блокує головний Electron-процес. Автоматичний агент
+    // ніколи не просить такий пакет; прапорець залишено тільки для окремого
+    // контрольованого відновлення. Дельти надходять кожні кілька секунд.
     if (options.includeReferences === true) {
       params.set('include_references', 'true')
     }

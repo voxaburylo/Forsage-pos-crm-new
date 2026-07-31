@@ -27,12 +27,13 @@ describe('catalog synchronization consistency', () => {
     expect(offlineProductMatchesQuery(product, 'OEM77')).toBe(true)
   })
 
-  it('heals missed desktop changes only while the working window is hidden', () => {
+  it('never starts a blocking full catalog refresh from the automatic agent', () => {
     expect(desktopSyncSource).not.toContain('referencesAreStale')
     expect(desktopSyncSource).toContain('options.includeReferences === true')
     expect(desktopSyncSource).toContain('options.canApplyPull && !options.canApplyPull()')
     expect(desktopSyncAgentSource).toContain('document.visibilityState !== \'visible\'')
-    expect(desktopSyncAgentSource).toContain('schedule(1_000, true)')
+    expect(desktopSyncAgentSource).not.toContain('schedule(1_000, true)')
+    expect(desktopSyncAgentSource).toContain('schedule(1_000)')
   })
 
   it('marks category snapshots only when a complete reference snapshot is returned', () => {

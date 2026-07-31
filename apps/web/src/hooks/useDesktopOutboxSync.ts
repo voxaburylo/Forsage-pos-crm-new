@@ -101,11 +101,11 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
     let cancelled = false
     let timer: number | null = null
 
-    const schedule = (delay: number, includeReferences = false) => {
+    const schedule = (delay: number) => {
       if (cancelled) return
       if (timer !== null) window.clearTimeout(timer)
       timer = window.setTimeout(async () => {
-        const result = await syncNow(includeReferences)
+        const result = await syncNow(false)
         const retryDelay = Math.min(
           RETRY_MAX_MS,
           RETRY_MIN_MS * (2 ** Math.max(0, retryAttemptRef.current - 1)),
@@ -125,9 +125,10 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
         lastUserActivityAtRef.current = Date.now()
         requestImmediateSync()
       } else {
-        // Повні довідники (штрихкоди, категорії тощо) важкі для SQLite.
-        // Оновлюємо їх лише коли користувач згорнув програму.
-        schedule(1_000, true)
+        // Втрата видимості трапляється і при звичайному Alt+Tab. Повний
+        // довідник на десятки тисяч товарів тут запускав 70–80 секунд
+        // блокування Electron. У фоні продовжуємо лише легку дельта-синхронізацію.
+        schedule(1_000)
       }
     }
 
