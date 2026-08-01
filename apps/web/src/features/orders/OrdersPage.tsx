@@ -9,6 +9,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
+import { canDeleteDraftOrder, isCompletedOrderStatus, isTerminalOrderStatus } from './orderStatus'
 import { startRepeatOrder, formatOrderNo } from './orderActions'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
@@ -49,6 +50,7 @@ type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 
 const STATUS_CONFIG: Record<string, { label: string; color: BadgeColor; hint?: string }> = {
   lead:       { label: 'Лід',         color: 'blue',   hint: 'Запит із чату чи дзвінка — ще не оформлене замовлення' },
+  quoted:     { label: 'Чернетка',    color: 'gray',   hint: 'Неоформлене замовлення' },
   new:        { label: 'Нове',         color: 'gray',   hint: 'Нове замовлення, ще не опрацьоване менеджером' },
   in_progress:{ label: 'В роботі',     color: 'yellow', hint: 'Замовлення в роботі' },
   ordered:    { label: 'Замовлено',    color: 'yellow', hint: 'Замовлено в постачальника — очікуємо надходження' },
@@ -58,6 +60,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: BadgeColor; hint?: s
   ready:      { label: 'До видачі',    color: 'green',  hint: 'Готове до видачі клієнту' },
   completed:  { label: 'Видано',       color: 'green',  hint: 'Видано клієнту — угоду закрито' },
   canceled:   { label: 'Скасовано',    color: 'red',    hint: 'Замовлення скасовано' },
+  archived:   { label: 'Архів',       color: 'gray',   hint: 'Закрита історична версія замовлення' },
 }
 
 // Кольорові статуси позицій замовлення (ORD-18)
@@ -173,7 +176,7 @@ function chatLabel(chat: Chat): string {
 // нотатки-чернетки. Замовлення з форми (source='walk_in') — це відкрите замовлення,
 // що очікує відповідь клієнта, а НЕ чернетка.
 function isDraft(o: CustomerOrder) {
-  return o.status === 'lead' && (o.source === 'mobile_draft' || o.items.some((i) => (i as { is_draft_note?: boolean }).is_draft_note))
+  return o.status === 'quoted' || (o.status === 'lead' && (o.source === 'mobile_draft' || o.items.some((i) => (i as { is_draft_note?: boolean }).is_draft_note)))
 }
 function isLead(o: CustomerOrder) {
   return o.status === 'lead' && !isDraft(o)
@@ -1125,7 +1128,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                     )}
                     <Button variant="secondary" size="sm" icon={<Copy size={13} />} title="Повторити" onClick={() => startRepeatOrder(o, navigate)} />
                     <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
-                    {canDelete && (
+                    {canDelete && canDeleteDraftOrder(o) && (
                       <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} title="Видалити замовлення" onClick={() => onDelete(o)} />
                     )}
                   </div>
@@ -1302,7 +1305,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                           <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>
                             Відкрити
                           </Button>
-                          {canDelete && (
+                          {canDelete && canDeleteDraftOrder(o) && (
                             <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} title="Видалити замовлення" onClick={() => onDelete(o)} />
                           )}
                         </div>
@@ -1452,7 +1455,7 @@ export default function OrdersPage() {
       if (tab === 'all') {
         orderCacheRef.current.set(`active:${offset}`, next.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)))
         orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => o.status === 'ready'))
-        orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => o.status === 'completed'))
+        orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => isCompletedOrderStatus(o.status)))
         orderCacheRef.current.set(`canceled:${offset}`, next.filter((o) => o.status === 'canceled'))
         orderCacheRef.current.set(`drafts:${offset}`, next.filter(isDraft))
       }
@@ -1538,12 +1541,12 @@ export default function OrdersPage() {
       // «Список замовлень» → «Усі активні»: усі відкриті замовлення, включно з
       // відкритими лідами (щоб збережені «Зберегти»-замовлення не губились —
       // окремої вкладки «Ліди» більше немає). Ховаємо лише рукописні чернетки.
-      if (tab === 'all')       return !['completed', 'canceled'].includes(o.status) && !isDraft(o)
+      if (tab === 'all')       return !isTerminalOrderStatus(o.status) && !isDraft(o)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
       if (tab === 'active')    return ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
       if (tab === 'ready')     return o.status === 'ready'
-      if (tab === 'completed') return o.status === 'completed'
+      if (tab === 'completed') return isCompletedOrderStatus(o.status)
       if (tab === 'canceled')  return o.status === 'canceled'
       return true
     })
@@ -1586,7 +1589,7 @@ export default function OrdersPage() {
     drafts:    orders.filter(isDraft).length,
     active:    orders.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)).length,
     ready:     orders.filter((o) => o.status === 'ready').length,
-    completed: orders.filter((o) => ['completed', 'canceled'].includes(o.status)).length,
+    completed: orders.filter((o) => isCompletedOrderStatus(o.status)).length,
   }), [orders, chats])
 
   const TABS: Array<{ id: Tab; label: string; count: number; accent?: boolean }> = chatMode
@@ -1641,12 +1644,19 @@ export default function OrdersPage() {
       return
     }
 
+    const previousOrders = orders
+    orderCacheRef.current.clear()
+    setOrders((current) => current.map((order) => order.id === orderId ? { ...order, status } : order))
     try {
-      await orderApi.updateStatus(orderId, status as any, callbackAt, { silent: true })
+      const response = await orderApi.updateStatus(orderId, status as any, callbackAt, { silent: true })
+      setOrders((current) => current.map((order) => order.id === orderId ? { ...order, ...response.data } : order))
       toast.success('Статус змінено')
       setCallbackModal(null)
-      loadOrders()
-    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося змінити статус')) }
+      await loadOrders(false)
+    } catch (error) {
+      setOrders(previousOrders)
+      toast.error(getErrorMessage(error, 'Не вдалося змінити статус'))
+    }
   }
 
   function handleConfirmCallback() {
@@ -2172,8 +2182,9 @@ function OrderInlineView({
   const remaining = order.status === 'canceled' ? 0 : order.total_amount - totalPaid
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled'].includes(i.item_status))
   const allHanded = order.items.every((i) => ['handed', 'canceled'].includes(i.item_status))
-  const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
-  const canCancel = !['completed', 'canceled'].includes(order.status)
+  const terminal = isTerminalOrderStatus(order.status)
+  const canComplete = allArrived && !allHanded && !terminal
+  const canCancel = !terminal
   const overdue = order.pickup_deadline_at && new Date(order.pickup_deadline_at) < now
   const coreDepositTotal = order.items
     .filter((i) => i.item_status !== 'canceled')

@@ -17,6 +17,7 @@ import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
+import { isTerminalOrderStatus } from './orderStatus'
 
 interface Payment {
   id: string
@@ -67,6 +68,7 @@ type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 
 const STATUS_CONFIG: Record<CustomerOrderStatus, { label: string; color: BadgeColor }> = {
   lead:       { label: 'Лід',        color: 'blue'   },
+  quoted:     { label: 'Чернетка',   color: 'gray'   },
   new:        { label: 'Нове',       color: 'gray'   },
   in_progress:{ label: 'В роботі',   color: 'yellow' },
   ordered:    { label: 'Замовлено',  color: 'yellow' },
@@ -76,6 +78,7 @@ const STATUS_CONFIG: Record<CustomerOrderStatus, { label: string; color: BadgeCo
   ready:      { label: 'До видачі',  color: 'green'  },
   completed:  { label: 'Видано',     color: 'green'  },
   canceled:   { label: 'Скасовано',  color: 'red'    },
+  archived:   { label: 'Архів',      color: 'gray'   },
 }
 
 const ITEM_STATUS_LABEL: Record<ItemStatus, string> = {
@@ -181,12 +184,15 @@ export default function OrderDetailPage() {
   }
 
   async function handleOrderStatus(status: CustomerOrderStatus) {
-    if (!id) return
+    if (!id || !order) return
+    const previousOrder = order
+    setOrder({ ...order, status })
     try {
       await orderApi.updateStatus(id, status, undefined, { silent: true })
       toast.success('Статус замовлення оновлено')
-      load()
+      await load()
     } catch (error) {
+      setOrder(previousOrder)
       toast.error(getErrorMessage(error, 'Не вдалося змінити статус'))
     }
   }
@@ -282,12 +288,13 @@ export default function OrderDetailPage() {
   const remaining = order.status === 'canceled' ? 0 : order.total_amount - totalPaid
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled', 'returned'].includes(i.item_status))
   const allHanded  = order.items.every((i) => ['handed', 'canceled', 'returned'].includes(i.item_status))
-  const canComplete = allArrived && !allHanded && !['completed', 'canceled'].includes(order.status)
-  const canCancel   = !['completed', 'canceled'].includes(order.status)
-  const isDraft     = order.status === 'lead' && ['walk_in', 'mobile_draft'].includes(order.source)
+  const terminal    = isTerminalOrderStatus(order.status)
+  const canComplete = allArrived && !allHanded && !terminal
+  const canCancel   = !terminal
+  const isDraft     = order.status === 'quoted' || (order.status === 'lead' && (order.source === 'mobile_draft' || order.items.some((item) => (item as { is_draft_note?: boolean }).is_draft_note)))
   // Звичайне (не чернетка, не завершене/скасоване) замовлення можна редагувати
   // напряму — раніше кнопки редагування тут не було взагалі
-  const canEdit     = !isDraft && !['completed', 'canceled', 'archived'].includes(order.status)
+  const canEdit     = !isDraft && !terminal
   const hasPendingWarehouseItems = order.items.some((i) => i.source_type === 'warehouse' && i.item_status === 'pending')
 
   return (
@@ -321,7 +328,7 @@ export default function OrderDetailPage() {
               {remaining > 0 ? <>💰<span className="hidden sm:inline">&nbsp;Оплата / видача в касі</span></> : <>📦<span className="hidden sm:inline">&nbsp;Видати товар</span></>}
             </Button>
           )}
-          {hasPendingWarehouseItems && !['completed', 'canceled'].includes(order.status) && (
+          {hasPendingWarehouseItems && !terminal && (
             <Button className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold" onClick={() => navigate(`/inventory/picking?orderId=${id}`)}>
               📦<span className="hidden sm:inline">&nbsp;Зібрати</span>
             </Button>
@@ -471,7 +478,7 @@ export default function OrderDetailPage() {
                     className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-yellow-400"
                     aria-label="Загальний статус замовлення"
                   >
-                    {(['new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'] as CustomerOrderStatus[]).map((status) => (
+                    {(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'] as CustomerOrderStatus[]).map((status) => (
                       <option key={status} value={status}>{STATUS_CONFIG[status]?.label ?? status}</option>
                     ))}
                   </select>
@@ -611,13 +618,13 @@ export default function OrderDetailPage() {
         <Card>
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-800">Оплати</h3>
-            {!['completed', 'canceled'].includes(order.status) && (
+            {!terminal && (
               <Button size="sm" variant="secondary" onClick={openOrderPaymentInPos}>
                 {canComplete && remaining <= 0 ? 'Видати товар через касу' : 'Оплата / видача через касу'}
               </Button>
             )}
           </div>
-          {!['completed', 'canceled'].includes(order.status) && (
+          {!terminal && (
             <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               Гроші за замовлення приймаються тільки в касі, а видача товару закривається там же: так оплата потрапляє у зміну, ПРРО, журнал і зарплатні нарахування менеджера.
             </div>

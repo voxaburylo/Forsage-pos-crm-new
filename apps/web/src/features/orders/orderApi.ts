@@ -3,7 +3,7 @@ import { desktopBridge } from '@/lib/desktopBridge'
 
 // ---------- Типи ----------
 
-export type CustomerOrderStatus = 'lead' | 'new' | 'in_progress' | 'ordered' | 'arrived' | 'called' | 'no_answer' | 'ready' | 'completed' | 'canceled'
+export type CustomerOrderStatus = 'lead' | 'quoted' | 'new' | 'in_progress' | 'ordered' | 'arrived' | 'called' | 'no_answer' | 'ready' | 'completed' | 'canceled' | 'archived'
 export type ItemStatus = 'pending' | 'ordered' | 'arrived' | 'handed' | 'canceled' | 'returned'
 export type OrderSource = 'walk_in' | 'phone' | 'messenger' | 'telegram_bot' | 'mobile_draft'
 
