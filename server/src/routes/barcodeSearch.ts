@@ -37,6 +37,7 @@ router.get('/barcode/:code', async (req, res, next) => {
         .select('product_id')
         .eq('tenant_id', req.user!.tenant_id)
         .eq('barcode', code)
+        .is('deleted_at', null)
         .limit(1)
       if (barcodeError) throw new AppError('DB_ERROR', barcodeError.message, 500)
 

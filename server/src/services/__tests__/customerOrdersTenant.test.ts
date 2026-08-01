@@ -68,4 +68,14 @@ describe('customer order tenant isolation regressions', () => {
     expect(list).toContain("replace(/^(ORD-?|#)/i, '')")
     expect(list).not.toContain('const search = String(req.query.search')
   })
+  it('does not query a non-existent order_payments.deleted_at column when deleting a draft', () => {
+    const deletion = source.slice(source.indexOf("router.delete('/:id'"))
+    expect(deletion).toContain('await runTransaction(async (client) =>')
+    expect(deletion).toContain('FOR UPDATE')
+    const paymentQuery = deletion.slice(deletion.indexOf('SELECT COUNT'), deletion.indexOf('`, [tenantId, orderId]'))
+    expect(paymentQuery).toContain('FROM order_payments')
+    expect(paymentQuery).not.toContain('deleted_at')
+    expect(deletion).toContain('SELECT clock_timestamp() AS at')
+  })
+
 })

@@ -1,6 +1,8 @@
 import { api, type RequestOptions } from '@/lib/api'
 import type { Sale, PriceCalculation } from '@/types/sale'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { getLocalSyncState } from '@/lib/offlineDB'
+import { useAuthStore } from '@/stores/authStore'
 
 interface CreateSaleBody {
   shift_id: string
@@ -23,8 +25,15 @@ const SALE_READ_TIMEOUT_MS = 10_000
 const SALE_WRITE_TIMEOUT_MS = 20_000
 
 export const saleApi = {
-  create: (body: CreateSaleBody, idempotencyKey?: string) => {
-    const headers = idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : undefined
+  create: async (body: CreateSaleBody, idempotencyKey?: string) => {
+    const scopeKey = useAuthStore.getState().session?.user?.id ?? ''
+    const resetGeneration = scopeKey
+      ? (await getLocalSyncState(scopeKey)).reset_generation
+      : 0
+    const headers: Record<string, string> = {
+      'X-Sync-Reset-Generation': String(resetGeneration),
+      ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
+    }
     // Таймаут, щоб вікно оплати не зависало назавжди. Достатньо для інтегрованого
     // терміналу (агент чекає до ~2 хв) + запас. Повтор безпечний завдяки idempotency key.
     const timeoutMs = body.payment_method === 'card' || body.payment_method === 'mixed'
@@ -62,14 +71,19 @@ export const saleApi = {
     items: Array<{ product_id: string; qty: number; unit_price: number; discount: number }>
     payment_method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
     notes?: string; pickup_cell?: string | null; expires_at?: string
-  }, opts: SaleRequestOptions = {}) => {
+  }, idempotencyKey: string, opts: SaleRequestOptions = {}) => {
     const local = desktopBridge()?.pos.suspendSale
     if (local) {
       const result = await local(body)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return result as { data: Sale }
     }
-    return api.post<{ data: Sale }>('/api/v1/sales/suspend', body, undefined, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts })
+    return api.post<{ data: Sale }>(
+      '/api/v1/sales/suspend',
+      body,
+      { 'X-Idempotency-Key': idempotencyKey },
+      { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts },
+    )
   },
 
   listSuspended: async (opts: SaleRequestOptions = {}) => {

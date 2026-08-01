@@ -2,30 +2,78 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const source = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
+const keysetSource = readFileSync(new URL('../syncKeyset.ts', import.meta.url), 'utf8')
 
 describe('desktop sync cursor safety', () => {
-  it('uses a deterministic final order and supports composite-key journals', () => {
-    const fetchAllSource = source.slice(
-      source.indexOf('async function fetchAll'),
-      source.indexOf('function withChangedSince'),
-    )
+  it('uses database time for one immutable request upper bound', () => {
+    expect(source).toContain('async function captureSyncState')
+    expect(source).toContain('clock_timestamp() AS server_now')
+    expect(source).not.toContain("(error as { code?: string } | null)?.code === '42P01'")
+    expect(source).not.toContain('Date.now() - CURSOR_OVERLAP_MS')
 
-    expect(fetchAllSource).toContain("tieBreaker = 'id'")
-    expect(fetchAllSource).toContain("query.order(tieBreaker, { ascending: true })")
-    expect(source.match(/}, 'entity_id'\)/g)).toHaveLength(3)
+    const pull = source.slice(
+      source.indexOf('export async function getSyncChanges'),
+      source.indexOf('export async function getBootstrapSnapshot'),
+    )
+    expect(pull.indexOf('const syncState = await captureSyncState')).toBeLessThan(pull.indexOf('await Promise.all'))
+    expect(pull).toContain('upperBound: nextCursor')
   })
-  it('captures the bootstrap cursor before reading the snapshot', () => {
-    const bootstrapSource = source.slice(
+
+  it('pages by timestamp and id without OFFSET drift', () => {
+    expect(keysetSource).toContain('buildTimestampKeysetFilter')
+    expect(keysetSource).toContain('`${timestampColumn}.gt.${timestamp},and(')
+    expect(keysetSource).toContain('.lte(options.timestampColumn, options.upperBound)')
+    expect(keysetSource).toContain('.order(options.timestampColumn, { ascending: true })')
+    expect(keysetSource).toContain('.order(tieBreaker, { ascending: true })')
+
+    const pullAndBootstrap = source.slice(
+      source.indexOf('export async function getSyncChanges'),
+      source.indexOf('export async function pushLocalOperations'),
+    )
+    expect(pullAndBootstrap).not.toContain('.range(')
+    expect(pullAndBootstrap).toContain('fetchAllByTimestamp')
+    expect(pullAndBootstrap).toContain('fetchAllById')
+  })
+
+  it('does not truncate full salary and reserve snapshots to the incremental cursor', () => {
+    const secondary = source.slice(
+      source.indexOf('async function fetchSecondarySyncData'),
+      source.indexOf('export async function getSyncChanges'),
+    )
+    expect(secondary).toContain('const changed = (buildQuery: () => any, fullSnapshot = false)')
+    expect(secondary).toContain('lowerBound: fullSnapshot ? undefined : since')
+    expect(secondary).toMatch(/salary_payments[\s\S]*?fullSnapshots,/)
+    expect(secondary).toMatch(/inventory_reserves[\s\S]*?fullSnapshots,/)
+    expect(secondary).not.toContain('fullSnapshots ? undefined : since')
+    expect(secondary).toContain("if (historySince) query = query.gte('created_at', historySince)")
+    expect(secondary).toContain('}, Boolean(historySince))')
+  })
+
+  it('restamps every product and counted row at the end of a large inventory transaction', () => {
+    const inventory = source.slice(
+      source.indexOf('async function applyInventoryCompleted'),
+      source.indexOf('async function applyCustomerDebtPaid'),
+    )
+    const loop = inventory.indexOf('for (const item of items)')
+    const productTouch = inventory.indexOf('UPDATE products SET updated_at = clock_timestamp()')
+    const itemTouch = inventory.indexOf('UPDATE inventory_items SET updated_at = clock_timestamp()')
+    const completed = inventory.indexOf('UPDATE inventory_sessions', itemTouch)
+    expect(loop).toBeGreaterThanOrEqual(0)
+    expect(productTouch).toBeGreaterThan(loop)
+    expect(itemTouch).toBeGreaterThan(productTouch)
+    expect(completed).toBeGreaterThan(itemTouch)
+  })
+
+  it('captures the bounded bootstrap cursor before reading the snapshot', () => {
+    const bootstrap = source.slice(
       source.indexOf('export async function getBootstrapSnapshot'),
       source.indexOf('export async function pushLocalOperations'),
     )
-    const cursor = bootstrapSource.indexOf('const snapshotCursor')
-    const queries = bootstrapSource.indexOf('await Promise.all')
-    const returnedCursor = bootstrapSource.indexOf('exported_at: snapshotCursor')
-
+    const cursor = bootstrap.indexOf('const snapshotCursor = syncState.cursor')
+    const queries = bootstrap.indexOf('await Promise.all')
     expect(cursor).toBeGreaterThanOrEqual(0)
     expect(cursor).toBeLessThan(queries)
-    expect(returnedCursor).toBeGreaterThan(queries)
-    expect(bootstrapSource).not.toContain('exported_at: new Date().toISOString()')
+    expect(bootstrap).toContain('upperBound: snapshotCursor')
+    expect(bootstrap).toContain('exported_at: snapshotCursor')
   })
 })

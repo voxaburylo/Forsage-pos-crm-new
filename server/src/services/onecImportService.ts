@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Сервіс імпорту номенклатури з 1С (Excel/CSV)
  *
  * Підтримувані формати виводу з 1С:
@@ -189,6 +189,7 @@ export async function runOnecImport(
     .from('categories')
     .select('id, name')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
 
   if (catFetchErr) {
     logger.error({ error: catFetchErr.message }, '1С імпорт: помилка завантаження категорій')
@@ -212,6 +213,7 @@ export async function runOnecImport(
       tenant_id: tenantId,
       name: name.trim(),
       sort_order: 0,
+      deleted_at: null,
     }))
 
     const { data: createdCats, error: insertErr } = await db
@@ -226,10 +228,27 @@ export async function runOnecImport(
         try {
           const { data: created, error: singleErr } = await db
             .from('categories')
-            .insert({ tenant_id: tenantId, name: catName.trim(), sort_order: 0 })
+            .insert({
+              tenant_id: tenantId,
+              name: catName.trim(),
+              sort_order: 0,
+              deleted_at: null,
+            })
             .select('id')
             .single()
           if (singleErr) {
+            const { data: concurrentCategory } = await db
+              .from('categories')
+              .select('id')
+              .eq('tenant_id', tenantId)
+              .eq('name', catName.trim())
+              .is('deleted_at', null)
+              .limit(1)
+              .maybeSingle()
+            if (concurrentCategory) {
+              categoryMap.set(catName.toLowerCase().trim(), concurrentCategory.id)
+              continue
+            }
             logger.warn({ catName, error: singleErr.message }, '1С імпорт: помилка створення одиничної категорії')
           } else if (created) {
             categoryMap.set(catName.toLowerCase().trim(), created.id)

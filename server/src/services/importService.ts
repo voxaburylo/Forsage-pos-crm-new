@@ -664,6 +664,7 @@ async function resolveImportCategories(items: ParsedItem[], tenantId: string): P
     .from('categories')
     .select('id, name')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
   if (fetchError) throw new AppError('DB_ERROR', 'Не вдалося завантажити категорії: ' + fetchError.message, 500)
 
   const categoryMap = new Map<string, string>()
@@ -673,7 +674,12 @@ async function resolveImportCategories(items: ParsedItem[], tenantId: string): P
 
   const missing = [...requested.entries()]
     .filter(([key]) => !categoryMap.has(key))
-    .map(([, name]) => ({ tenant_id: tenantId, name, sort_order: 0 }))
+    .map(([, name]) => ({
+      tenant_id: tenantId,
+      name,
+      sort_order: 0,
+      deleted_at: null,
+    }))
 
   if (missing.length > 0) {
     const { data: created, error: createError } = await db
@@ -681,10 +687,42 @@ async function resolveImportCategories(items: ParsedItem[], tenantId: string): P
       .insert(missing)
       .select('id, name')
     if (createError) {
-      throw new AppError('DB_ERROR', 'Не вдалося створити категорії з файлу: ' + createError.message, 500)
-    }
-    for (const category of created ?? []) {
-      categoryMap.set(normalizeCategoryName(category.name), category.id)
+      // A concurrent import may have created one of the same active categories.
+      // Resolve each row separately and re-read the active winner after a conflict.
+      for (const category of missing) {
+        const findActive = () => db
+          .from('categories')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('name', category.name)
+          .is('deleted_at', null)
+          .limit(1)
+          .maybeSingle()
+        const { data: activeCategory } = await findActive()
+        if (activeCategory) {
+          categoryMap.set(normalizeCategoryName(category.name), activeCategory.id)
+          continue
+        }
+
+        const { data: createdCategory, error: singleError } = await db
+          .from('categories')
+          .insert(category)
+          .select('id')
+          .single()
+        if (singleError) {
+          const { data: concurrentCategory } = await findActive()
+          if (!concurrentCategory) {
+            throw new AppError('DB_ERROR', 'Не вдалося створити категорії з файлу: ' + singleError.message, 500)
+          }
+          categoryMap.set(normalizeCategoryName(category.name), concurrentCategory.id)
+          continue
+        }
+        categoryMap.set(normalizeCategoryName(category.name), createdCategory.id)
+      }
+    } else {
+      for (const category of created ?? []) {
+        categoryMap.set(normalizeCategoryName(category.name), category.id)
+      }
     }
   }
 

@@ -5,22 +5,27 @@ import {
   type DesktopBootstrapSnapshot,
   type DesktopSyncPullChanges,
   type DesktopSyncPullResult,
+  type DesktopSyncPullState,
   type DesktopSyncPushResult,
   type DesktopSyncStatus,
 } from '@/lib/desktopBridge'
 
 const DESKTOP_PUSH_BATCH_SIZE = 10
+const OUTBOX_HEARTBEAT_MS = 10_000
 
 interface DesktopSyncOptions {
   includeReferences?: boolean
-  // Поки касир сканує/натискає кнопки, відповідь можна не застосовувати:
-  // курсор не рухається, і та сама дельта безпечно прийде наступним циклом.
-  canApplyPull?: (changes?: DesktopSyncPullChanges) => boolean
+  // Обмежуємо лише початок pull. Outbox push завжди виконується, а вже
+  // завантажена відповідь застосовується порціями без повторного HTTP-запиту.
+  canStartPull?: () => boolean
 }
 
 interface PushResponse {
   data: {
     results: DesktopSyncPushResult[]
+    reset_required?: boolean
+    reset_generation?: number
+    reset_at?: string | null
   }
 }
 
@@ -28,42 +33,133 @@ interface PullResponse {
   data: DesktopSyncPullChanges
 }
 
-let pushInProgress = false
-let pullInProgress = false
-
-export async function pushDesktopOutbox(limit = 50): Promise<{
+type DesktopPushResult = {
   pushed: number
   failed: number
   pending: number
-}> {
-  if (!isDesktopRuntime() || pushInProgress) return { pushed: 0, failed: 0, pending: 0 }
+  resetRequired: boolean
+}
+let pushExecutionActive = false
+let pushInProgress: Promise<DesktopPushResult> | null = null
+let pullInProgress = false
+type DesktopSyncCycleResult = {
+  pushed: number
+  failed: number
+  pending: number
+  pulled: DesktopSyncPullResult | null
+  resetRequired: boolean
+}
+let syncCycleInProgress: Promise<DesktopSyncCycleResult> | null = null
+
+async function executeDesktopOutboxPush(limit = 50): Promise<DesktopPushResult> {
+  if (!isDesktopRuntime() || pushExecutionActive) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
   const desktop = desktopBridge()
-  if (!desktop) return { pushed: 0, failed: 0, pending: 0 }
+  if (!desktop) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
 
-  const operations = await desktop.sync.listPending(limit)
-  if (operations.length === 0) return { pushed: 0, failed: 0, pending: 0 }
-
-  pushInProgress = true
+  pushExecutionActive = true
   try {
-    const response = await api.post<PushResponse>('/api/v1/sync/push', { operations }, undefined, {
-      silent: true,
-      timeoutMs: 60_000,
-    })
-    const results = response.data.results ?? []
-    await desktop.sync.applyPushResults(results)
-    return {
-      pushed: results.filter((result) => result.status === 'synced').length,
-      failed: results.filter((result) => result.status === 'failed').length,
-      pending: Math.max(0, operations.length - results.length),
+    const [operations, state] = await Promise.all([
+      desktop.sync.listPending(limit),
+      desktop.sync.getPullState(),
+    ])
+    if (operations.length === 0) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
+    try {
+      const response = await api.post<PushResponse>('/api/v1/sync/push', {
+        reset_generation: state.reset_generation,
+        operations,
+      }, undefined, {
+        silent: true,
+        timeoutMs: 60_000,
+      })
+      const results = response.data.results ?? []
+      await desktop.sync.applyPushResults(results)
+      return {
+        pushed: results.filter((result) => result.status === 'synced').length,
+        failed: results.filter((result) => result.status === 'failed').length,
+        pending: Math.max(0, operations.length - results.length),
+        resetRequired: response.data.reset_required === true || results.some((result) => result.status === 'discarded'),
+      }
+    } catch (error) {
+      await desktop.sync.markBatchFailed(
+        operations.map((operation) => operation.sequence),
+        error instanceof Error ? error.message : 'Помилка синхронізації desktop outbox',
+      )
+      throw error
     }
-  } catch (error) {
-    await desktop.sync.markBatchFailed(
-      operations.map((operation) => operation.sequence),
-      error instanceof Error ? error.message : 'Помилка синхронізації desktop outbox',
-    )
-    throw error
   } finally {
-    pushInProgress = false
+    pushExecutionActive = false
+  }
+}
+
+export function pushDesktopOutbox(limit = 50): Promise<DesktopPushResult> {
+  if (pushInProgress) return pushInProgress
+  const operation = executeDesktopOutboxPush(limit)
+  pushInProgress = operation
+  const release = () => {
+    if (pushInProgress === operation) pushInProgress = null
+  }
+  operation.then(release, release)
+  return operation
+}
+
+type DesktopRuntimeApi = NonNullable<ReturnType<typeof desktopBridge>>
+
+async function resetDesktopGenerationIfNeeded(
+  desktop: DesktopRuntimeApi,
+  state: DesktopSyncPullState,
+  payload: DesktopBootstrapSnapshot | DesktopSyncPullChanges,
+): Promise<void> {
+  if (!Number.isSafeInteger(payload.reset_generation)) return
+  const generation = Number(payload.reset_generation)
+  if (generation === state.reset_generation) return
+  const cursor = 'exported_at' in payload ? payload.exported_at : payload.cursor
+  await desktop.sync.applyPullChanges({
+    tenant_id: payload.tenant_id,
+    cursor,
+    reset_required: true,
+    reset_generation: generation,
+    reset_at: payload.reset_at,
+  })
+}
+
+async function loadInitialDesktopData(
+  desktop: DesktopRuntimeApi,
+  state: DesktopSyncPullState,
+): Promise<DesktopSyncPullResult> {
+  try {
+    const snapshotResponse = await api.get<{ data: DesktopBootstrapSnapshot }>('/api/v1/sync/bootstrap', {
+      silent: true,
+      timeoutMs: 180_000,
+    })
+    await resetDesktopGenerationIfNeeded(desktop, state, snapshotResponse.data)
+    const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
+    return {
+      applied_at: imported.imported_at,
+      cursor: snapshotResponse.data.exported_at,
+      counts: imported.counts,
+    }
+  } catch (bootstrapError) {
+    if ((bootstrapError as { status?: number })?.status !== 403) throw bootstrapError
+    // Restricted roles receive the role-filtered full snapshot.
+    const fetchInitial = (generation: number) => api.get<PullResponse>(
+      `/api/v1/sync/changes?include_references=true&reset_generation=${generation}`,
+      {
+        silent: true,
+        timeoutMs: 180_000,
+      },
+    )
+    let currentState = state
+    let initialResponse = await fetchInitial(currentState.reset_generation)
+    if (initialResponse.data.reset_required === true) {
+      await desktop.sync.applyPullChanges(initialResponse.data)
+      currentState = await desktop.sync.getPullState()
+      initialResponse = await fetchInitial(currentState.reset_generation)
+      if (initialResponse.data.reset_required === true) {
+        throw new Error('DESKTOP_SYNC_RESET_LOOP')
+      }
+    }
+    await resetDesktopGenerationIfNeeded(desktop, currentState, initialResponse.data)
+    return desktop.sync.applyPullChanges(initialResponse.data)
   }
 }
 
@@ -71,43 +167,21 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
   if (!isDesktopRuntime() || pullInProgress) return null
   const desktop = desktopBridge()
   if (!desktop) return null
+  if (options.canStartPull && !options.canStartPull()) return null
 
   pullInProgress = true
   try {
     const state = await desktop.sync.getPullState()
     if (!state.cursor) {
-      try {
-        const snapshotResponse = await api.get<{ data: DesktopBootstrapSnapshot }>('/api/v1/sync/bootstrap', {
-          silent: true,
-          timeoutMs: 180_000,
-        })
-        if (options.canApplyPull && !options.canApplyPull()) return null
-        const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
-        return {
-          applied_at: imported.imported_at,
-          cursor: snapshotResponse.data.exported_at,
-          counts: imported.counts,
-        }
-      } catch (bootstrapError) {
-        if ((bootstrapError as { status?: number })?.status !== 403) throw bootstrapError
-        // Касир/менеджер/комірник не мають доступу до повного bootstrap із
-        // зарплатами й закупочними даними. Для порожньої БД використовуємо
-        // звичайний role-filtered pull із повними безпечними довідниками.
-        const initialResponse = await api.get<PullResponse>('/api/v1/sync/changes?include_references=true', {
-          silent: true,
-          timeoutMs: 180_000,
-        })
-        if (options.canApplyPull && !options.canApplyPull(initialResponse.data)) return null
-        return desktop.sync.applyPullChanges(initialResponse.data)
-      }
+      return loadInitialDesktopData(desktop, state)
     }
 
     const params = new URLSearchParams()
     params.set('since', state.cursor)
-    // Повні довідники містять десятки тисяч товарів і штрихкодів. Їхнє
-    // застосування в SQLite блокує головний Electron-процес. Автоматичний агент
-    // ніколи не просить такий пакет; прапорець залишено тільки для окремого
-    // контрольованого відновлення. Дельти надходять кожні кілька секунд.
+    params.set('reset_generation', String(state.reset_generation))
+    // Повний довідник тепер застосовується в Electron порціями. Прапорець
+    // залишається явним, доки сервер не почне віддавати звичайні дельти
+    // довідників разом із tombstone-ідентифікаторами.
     if (options.includeReferences === true) {
       params.set('include_references', 'true')
     }
@@ -117,7 +191,11 @@ export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Prom
       silent: true,
       timeoutMs: 120_000,
     })
-    if (options.canApplyPull && !options.canApplyPull(response.data)) return null
+    if (response.data.reset_required === true) {
+      await desktop.sync.applyPullChanges(response.data)
+      const resetState = await desktop.sync.getPullState()
+      return loadInitialDesktopData(desktop, resetState)
+    }
     return desktop.sync.applyPullChanges(response.data)
   } catch (error) {
     await desktop.sync.markPullFailed(
@@ -140,16 +218,43 @@ export async function getDesktopSyncStatus(): Promise<DesktopSyncStatus | null> 
   }
 }
 
-export async function syncDesktopNow(options: DesktopSyncOptions = {}): Promise<{
-  pushed: number
-  failed: number
-  pending: number
-  pulled: DesktopSyncPullResult | null
-}> {
+async function executeDesktopSyncCycle(options: DesktopSyncOptions): Promise<DesktopSyncCycleResult> {
   // Локальна база є джерелом робочих змін. Спочатку підтверджуємо outbox,
   // а вже потім рухаємо pull-cursor: інакше втрачена HTTP-відповідь могла
   // залишити dirty-рядок локально та назавжди перескочити серверний результат.
   const pushed = await pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE)
-  const pulled = await pullDesktopChanges(options)
-  return { ...pushed, pulled }
+  const includeReferences = options.includeReferences === true
+    ? (await desktopBridge()?.sync.listPending(1))?.length === 0
+    : false
+  const pullOptions = { ...options, includeReferences }
+
+  // Великий bootstrap може застосовуватися хвилину, хоча Electron уже не
+  // зависає між порціями. Нові продажі в цей час усе одно відправляємо кожні
+  // десять секунд, не чекаючи фінального pull-cursor.
+  const heartbeat = globalThis.setInterval(() => {
+    void pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE).catch(() => undefined)
+  }, OUTBOX_HEARTBEAT_MS)
+  try {
+    const pulled = await pullDesktopChanges(pushed.resetRequired
+      ? { ...pullOptions, canStartPull: undefined }
+      : pullOptions)
+    return { ...pushed, pulled }
+  } finally {
+    globalThis.clearInterval(heartbeat)
+  }
+}
+
+export function syncDesktopNow(options: DesktopSyncOptions = {}): Promise<DesktopSyncCycleResult> {
+  // Timers, visibility events and explicit UI requests may fire together.
+  // Every caller joins the same complete push-then-pull cycle; a second pull
+  // can therefore never overtake an outbox push that is still being applied.
+  if (syncCycleInProgress) return syncCycleInProgress
+
+  const cycle = executeDesktopSyncCycle(options)
+  syncCycleInProgress = cycle
+  const release = () => {
+    if (syncCycleInProgress === cycle) syncCycleInProgress = null
+  }
+  cycle.then(release, release)
+  return cycle
 }

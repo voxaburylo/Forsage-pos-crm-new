@@ -11,6 +11,8 @@ export interface PrintOptions {
   useDriverPaper?: boolean;
   /** Явний принтер Windows (desktop). Без нього друк іде на «за замовчуванням». */
   deviceName?: string;
+  /** Фізична роль пристрою: POS-58 лише чек, POS-80 лише етикетка. */
+  printerRole?: "receipt" | "label";
   /** Для етикеток: не скидати точний розмір сторінки у fallback-спробах драйвера. */
   strictPageSize?: boolean;
   cleanupDelayMs?: number;
@@ -19,9 +21,6 @@ export interface PrintOptions {
 
 export class PrintService {
   private static printInProgress = false;
-  private static safetyTimer: number | null = null;
-  private static printStartedAt = 0;
-  private static readonly PRINT_LOCK_TIMEOUT_MS = 30000;
 
   /**
    * Escape HTML special characters to prevent XSS
@@ -41,27 +40,13 @@ export class PrintService {
    */
   private static beginPrint(): void {
     if (PrintService.printInProgress) {
-      const age = Date.now() - PrintService.printStartedAt;
-      if (age < PrintService.PRINT_LOCK_TIMEOUT_MS) {
-        throw new Error("Попереднє вікно друку ще відкрите. Закрийте його перед повторним друком.");
-      }
-      // Деякі драйвери/діалоги Windows не повертають afterprint. Не тримаємо
-      // всю касу заблокованою назавжди: стару блокировку скидаємо.
-      PrintService.endPrint();
+      throw new Error("Попереднє вікно друку ще відкрите. Закрийте його перед повторним друком.");
     }
     PrintService.printInProgress = true;
-    PrintService.printStartedAt = Date.now();
-    if (PrintService.safetyTimer !== null) window.clearTimeout(PrintService.safetyTimer);
-    PrintService.safetyTimer = window.setTimeout(() => PrintService.endPrint(), PrintService.PRINT_LOCK_TIMEOUT_MS);
   }
 
   private static endPrint(): void {
     PrintService.printInProgress = false;
-    PrintService.printStartedAt = 0;
-    if (PrintService.safetyTimer !== null) {
-      window.clearTimeout(PrintService.safetyTimer);
-      PrintService.safetyTimer = null;
-    }
   }
 
   private static notifyPrintError(error: unknown, fallbackMessage = "Помилка друку"): void {
@@ -100,7 +85,15 @@ export class PrintService {
       }
 
       if (typeof image.decode === "function") {
-        await image.decode();
+        await Promise.race([
+          image.decode(),
+          new Promise<never>((_resolve, reject) => {
+            window.setTimeout(
+              () => reject(new Error("Зображення штрихкоду не декодувалося вчасно.")),
+              timeoutMs,
+            );
+          }),
+        ]);
       }
       if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
         throw new Error("Зображення штрихкоду порожнє.");
@@ -146,12 +139,15 @@ export class PrintService {
     if (options.preferDesktopNative && pageSizeMm && desktopPrint) {
       PrintService.beginPrint();
       try {
+        const printerRole = options.printerRole
+          ?? (options.strictPageSize ? "label" : options.useDriverPaper ? "receipt" : undefined);
         await desktopPrint.html(htmlContent, {
           title: options.title,
           widthMm: pageSizeMm.width,
           heightMm: pageSizeMm.height,
           silent: false,
           deviceName: options.deviceName,
+          printerRole,
           showPreviewWindow: options.showDesktopPreview ?? false,
           useDriverPaper: options.useDriverPaper ?? false,
           strictPageSize: options.strictPageSize ?? false,
@@ -173,6 +169,8 @@ export class PrintService {
       pageSizeMm,
       preferDesktopNative = false,
       showDesktopPreview = false,
+      deviceName,
+      printerRole,
       useDriverPaper = false,
       strictPageSize = false,
       cleanupDelayMs = 30000,
@@ -181,12 +179,16 @@ export class PrintService {
 
     const desktopPrint = typeof window !== "undefined" ? window.forsageDesktop?.print : undefined;
     if (preferDesktopNative && pageSizeMm && desktopPrint) {
+      const resolvedPrinterRole = printerRole
+        ?? (strictPageSize ? "label" : useDriverPaper ? "receipt" : undefined);
       PrintService.beginPrint();
       desktopPrint.html(htmlContent, {
         title: options.title,
         widthMm: pageSizeMm.width,
         heightMm: pageSizeMm.height,
         silent: false,
+        deviceName,
+        printerRole: resolvedPrinterRole,
         showPreviewWindow: showDesktopPreview,
         useDriverPaper,
         strictPageSize,

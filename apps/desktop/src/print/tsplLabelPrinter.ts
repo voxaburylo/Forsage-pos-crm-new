@@ -1,8 +1,12 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, screen } from 'electron'
 import { calculateBarcodeCanvasGeometry } from './tsplBarcodeRaster'
+import { enqueuePrinterJob } from './printerJobQueue'
+import { assertPrinterRole } from './printerRole'
+import { withPrintTimeout } from './printTimeout'
 
 // Прямий друк етикеток мовою TSPL (термопринтери типу PS-HL80, Xprinter тощо).
 //
@@ -62,9 +66,6 @@ function sanitizeMm(value: unknown, fallback: number, min: number, max: number):
 
 // ────────────────────────── RAW у спулер Windows ──────────────────────────
 
-/** Назва документа у спулері — за нею впізнаємо власні завдання в черзі. */
-const RAW_DOC_NAME = 'Forsage labels (TSPL)'
-
 // Статуси спулера, за яких завдання нікуди не поїде: принтер відвалився по USB,
 // скінчились етикетки, відкрита кришка. Windows не прибирає такі завдання сам —
 // вони лишаються Retained і мовчки блокують ВСІ наступні друки.
@@ -79,10 +80,10 @@ const IN_FLIGHT_JOB_PATTERN = 'Printing|Retained|Deleting|Spooling'
 const STALE_JOB_SECONDS = 90
 
 const RAW_PRINT_SCRIPT = String.raw`
-param([string]$PrinterName)
+param([string]$PrinterName, [string]$DocumentName)
 $ErrorActionPreference = 'Stop'
 
-$docName = '${RAW_DOC_NAME}'
+$docName = $DocumentName
 $fatalPattern = '${FATAL_JOB_PATTERN}'
 $inFlightPattern = 'Blocked|${IN_FLIGHT_JOB_PATTERN}'
 $staleSeconds = ${STALE_JOB_SECONDS}
@@ -198,7 +199,8 @@ try {
     }
   }
   if ($failure) {
-    Get-StuckJobs | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
+    Get-StuckJobs | Where-Object { $_.DocumentName -eq $docName } |
+      Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
     throw "TSPL_PRINT_NOT_CONFIRMED: $failure"
   }
 } catch [System.Management.Automation.CommandNotFoundException] {
@@ -208,38 +210,72 @@ try {
 [Console]::Out.Write('RAW_PRINT_OK')
 `
 
-function sendRawToPrinter(printerName: string, data: Buffer): Promise<void> {
+function sendRawToPrinter(printerName: string, data: Buffer, signal: AbortSignal): Promise<void> {
   const scriptPath = path.join(app.getPath('userData'), 'raw-print.ps1')
   fs.writeFileSync(scriptPath, RAW_PRINT_SCRIPT, 'utf8')
+  const documentName = `Forsage-label-${randomUUID().slice(0, 8)}`
 
   return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('TSPL_PRINT_ABORTED'))
+      return
+    }
+
     const ps = spawn('powershell.exe', [
       '-NoProfile', '-NoLogo', '-NonInteractive',
       '-ExecutionPolicy', 'Bypass',
       '-File', scriptPath,
       '-PrinterName', printerName,
+      '-DocumentName', documentName,
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
 
     let stdout = ''
     let stderr = ''
+    let settled = false
+    let timeout: NodeJS.Timeout | null = null
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout)
+      signal.removeEventListener('abort', abort)
+    }
+    const succeed = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }
+    const fail = (error: unknown) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error instanceof Error ? error : new Error(String(error)))
+    }
+    const abort = () => {
+      try { ps.kill() } catch { /* already stopped */ }
+      fail(new Error('TSPL_PRINT_ABORTED'))
+    }
+
     ps.stdout.on('data', (chunk) => { stdout += String(chunk) })
     ps.stderr.on('data', (chunk) => { stderr += String(chunk) })
-    ps.on('error', reject)
+    ps.on('error', fail)
+    ps.stdin.on('error', fail)
+    signal.addEventListener('abort', abort, { once: true })
 
     // Із запасом на preflight (~1.5с) і очікування підтвердження друку (до 15с).
-    const timeout = setTimeout(() => {
-      ps.kill()
-      reject(new Error('RAW_PRINT_TIMEOUT'))
-    }, 60000)
+    timeout = setTimeout(() => {
+      try { ps.kill() } catch { /* already stopped */ }
+      fail(new Error('RAW_PRINT_TIMEOUT'))
+    }, 60_000)
 
     ps.on('close', (exitCode) => {
-      clearTimeout(timeout)
-      if (exitCode === 0 && stdout.includes('RAW_PRINT_OK')) resolve()
-      else reject(new Error(stderr.trim() || stdout.trim() || `RAW_PRINT_EXIT_${exitCode}`))
+      if (exitCode === 0 && stdout.includes('RAW_PRINT_OK')) succeed()
+      else fail(new Error(stderr.trim() || stdout.trim() || `RAW_PRINT_EXIT_${exitCode}`))
     })
 
-    ps.stdin.write(data.toString('base64'))
-    ps.stdin.end()
+    try {
+      ps.stdin.end(data.toString('base64'))
+    } catch (error) {
+      fail(error)
+    }
   })
 }
 
@@ -251,7 +287,13 @@ function sendRawToPrinter(printerName: string, data: Buffer): Promise<void> {
  * фон — чисто білим, жодного «зерна». strideWidth — фактична ширина кадру,
  * width/height — скільки крапок вирізати під етикетку.
  */
-function toMonochrome(bgra: Buffer, strideWidth: number, width: number, height: number): Buffer {
+async function toMonochrome(
+  bgra: Buffer,
+  strideWidth: number,
+  width: number,
+  height: number,
+  signal: AbortSignal,
+): Promise<Buffer> {
   const bytesPerRow = Math.ceil(width / 8)
   const bits = Buffer.alloc(bytesPerRow * height, 0xff)
   for (let y = 0; y < height; y++) {
@@ -259,8 +301,14 @@ function toMonochrome(bgra: Buffer, strideWidth: number, width: number, height: 
     const outOffset = y * bytesPerRow
     for (let x = 0; x < width; x++) {
       const i = rowOffset + x * 4
-      const luma = 0.114 * bgra[i] + 0.587 * bgra[i + 1] + 0.299 * bgra[i + 2]
-      if (luma < 160) bits[outOffset + (x >> 3)] &= ~(0x80 >> (x & 7))
+      const luma256 = 29 * bgra[i] + 150 * bgra[i + 1] + 77 * bgra[i + 2]
+      if (luma256 < 160 * 256) bits[outOffset + (x >> 3)] &= ~(0x80 >> (x & 7))
+    }
+    // Велика партія не повинна блокувати Electron main thread. Віддаємо цикл
+    // подій після невеликого шматка рядків, не змінюючи жодного пікселя.
+    if ((y & 31) === 31) {
+      if (signal.aborted) throw new Error('TSPL_PRINT_ABORTED')
+      await new Promise<void>((resolve) => setImmediate(resolve))
     }
   }
   return bits
@@ -399,12 +447,20 @@ const COLLECT_PAGES_SCRIPT = `
 // ────────────────────────── Основний потік друку ──────────────────────────
 
 type TsplPrintResult = { success: true; labels: number }
-let activePrintJob: Promise<TsplPrintResult> | null = null
+const activePrintJobs = new Map<string, Promise<TsplPrintResult>>()
+const TSPL_TOTAL_TIMEOUT_MS = 180_000
+const TSPL_RENDER_TIMEOUT_MS = 15_000
+const TSPL_SCRIPT_TIMEOUT_MS = 10_000
+const TSPL_CAPTURE_TIMEOUT_MS = 10_000
 
-async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
+async function executeLabelsTsplCore(
+  html: string,
+  options: TsplPrintOptions,
+  controller: AbortController,
+): Promise<TsplPrintResult> {
   if (typeof html !== 'string' || html.trim().length === 0) throw new Error('PRINT_HTML_EMPTY')
   const printerName = String(options.printerName ?? '').trim()
-  if (!printerName) throw new Error('TSPL_PRINTER_NOT_SET')
+  assertPrinterRole(printerName, 'label')
 
   const widthMm = sanitizeMm(options.widthMm, 40, 10, 120)
   const heightMm = sanitizeMm(options.heightMm, 30, 10, 120)
@@ -434,42 +490,80 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
       backgroundThrottling: false,
     },
   })
+  const abortRender = () => {
+    if (!renderWindow.isDestroyed()) renderWindow.destroy()
+  }
+  const stage = <T>(operation: Promise<T>, timeoutMs: number, errorCode: string): Promise<T> =>
+    withPrintTimeout(operation, timeoutMs, errorCode, () => controller.abort())
+  controller.signal.addEventListener('abort', abortRender, { once: true })
 
   try {
     renderWindow.webContents.setFrameRate(30)
     renderWindow.webContents.startPainting()
-    await renderWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    const encodedHtml = Buffer.from(html, 'utf8').toString('base64')
+    await stage(
+      renderWindow.loadURL(`data:text/html;charset=utf-8;base64,${encodedHtml}`),
+      TSPL_RENDER_TIMEOUT_MS,
+      'TSPL_RENDER_TIMEOUT',
+    )
     renderWindow.webContents.setZoomFactor(zoom)
     // Скролбар не повинен звужувати фізичний макет етикетки.
-    await renderWindow.webContents.insertCSS(
-      'html::-webkit-scrollbar{display:none} html{scrollbar-width:none} body{overflow:hidden}',
+    await stage(
+      renderWindow.webContents.insertCSS(
+        'html::-webkit-scrollbar{display:none} html{scrollbar-width:none} body{overflow:hidden}',
+      ),
+      TSPL_SCRIPT_TIMEOUT_MS,
+      'TSPL_STYLE_TIMEOUT',
     )
-    await renderWindow.webContents.executeJavaScript(
-      'Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)',
-      true,
+    await stage(
+      renderWindow.webContents.executeJavaScript(
+        'Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)',
+        true,
+      ),
+      TSPL_SCRIPT_TIMEOUT_MS,
+      'TSPL_RESOURCES_TIMEOUT',
     )
     await waitMs(150)
 
-    const pages = await renderWindow.webContents.executeJavaScript(COLLECT_PAGES_SCRIPT, true) as PageMeta[]
+    const pages = await stage(
+      renderWindow.webContents.executeJavaScript(COLLECT_PAGES_SCRIPT, true) as Promise<PageMeta[]>,
+      TSPL_SCRIPT_TIMEOUT_MS,
+      'TSPL_COLLECT_TIMEOUT',
+    )
     if (!Array.isArray(pages) || pages.length === 0) throw new Error('TSPL_NO_LABELS')
 
     const bytesPerRow = Math.ceil(widthDots / 8)
     const chunks: Buffer[] = []
 
     for (const page of pages) {
+      if (controller.signal.aborted) throw new Error('TSPL_PRINT_ABORTED')
       const barcodeSpecs = buildBarcodeCanvasSpecs(page, widthDots, heightDots)
-      await renderWindow.webContents.executeJavaScript(
-        buildPreparePageScript(page.index, barcodeSpecs),
-        true,
+      await stage(
+        renderWindow.webContents.executeJavaScript(
+          buildPreparePageScript(page.index, barcodeSpecs),
+          true,
+        ),
+        TSPL_SCRIPT_TIMEOUT_MS,
+        'TSPL_PREPARE_PAGE_TIMEOUT',
       )
       await waitMs(60)
 
-      const image = await renderWindow.webContents.capturePage()
+      const image = await stage(
+        renderWindow.webContents.capturePage(),
+        TSPL_CAPTURE_TIMEOUT_MS,
+        'TSPL_CAPTURE_TIMEOUT',
+      )
       const size = image.getSize()
       if (size.width < widthDots || size.height < heightDots) {
         throw new Error(`TSPL_CAPTURE_SIZE ${size.width}x${size.height} < ${widthDots}x${heightDots}`)
       }
-      const bitmap = toMonochrome(image.toBitmap(), size.width, widthDots, heightDots)
+      const bitmap = await toMonochrome(
+        image.toBitmap(),
+        size.width,
+        widthDots,
+        heightDots,
+        controller.signal,
+      )
 
       chunks.push(Buffer.from(
         `SIZE ${widthMm} mm,${heightMm} mm\r\n` +
@@ -487,6 +581,7 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
       chunks.push(Buffer.from('\r\n', 'ascii'))
 
       chunks.push(Buffer.from('PRINT 1,1\r\n', 'ascii'))
+      await new Promise<void>((resolve) => setImmediate(resolve))
     }
 
     const job = Buffer.concat(chunks)
@@ -496,25 +591,37 @@ async function executeLabelsTspl(html: string, options: TsplPrintOptions): Promi
       fs.writeFileSync(dryRunPath, job)
       return { success: true, labels: pages.length }
     }
-    await sendRawToPrinter(printerName, job)
+    await stage(sendRawToPrinter(printerName, job, controller.signal), 65_000, 'RAW_PRINT_TIMEOUT')
     return { success: true, labels: pages.length }
   } finally {
+    controller.signal.removeEventListener('abort', abortRender)
     if (!renderWindow.isDestroyed()) renderWindow.destroy()
   }
 }
 
-/**
- * Only one RAW label job may own the hidden renderer and Windows spooler at a
- * time. Concurrent UI clicks share the active job instead of printing a
- * duplicate batch after the first one finishes.
- */
-export function printLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
-  if (activePrintJob) return activePrintJob
+function executeLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
+  const controller = new AbortController()
+  const operation = Promise.resolve().then(() => executeLabelsTsplCore(html, options, controller))
+  return withPrintTimeout(
+    operation,
+    TSPL_TOTAL_TIMEOUT_MS,
+    'TSPL_TOTAL_TIMEOUT',
+    () => controller.abort(),
+  )
+}
 
-  const job = executeLabelsTspl(html, options)
-  activePrintJob = job
+/** One live batch per POS-80; a repeated click shares that exact batch. */
+export function printLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
+  const printerName = String(options.printerName ?? '').trim()
+  assertPrinterRole(printerName, 'label')
+  const key = printerName.toLocaleLowerCase('en-US')
+  const active = activePrintJobs.get(key)
+  if (active) return active
+
+  const job = enqueuePrinterJob(printerName, () => executeLabelsTspl(html, options))
+  activePrintJobs.set(key, job)
   const release = () => {
-    if (activePrintJob === job) activePrintJob = null
+    if (activePrintJobs.get(key) === job) activePrintJobs.delete(key)
   }
   job.then(release, release)
   return job

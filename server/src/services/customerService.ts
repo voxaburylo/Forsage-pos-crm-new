@@ -15,7 +15,7 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
 
   let q = db
     .from(TABLE)
-    .select('*, price_tier:price_tiers(id,name,discount_pct), customer_cars(vin)', { count: 'exact' })
+    .select('*, price_tier:price_tiers(id,name,discount_pct), customer_cars(vin,deleted_at)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .range(offset, offset + per_page - 1)
@@ -36,6 +36,8 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
     const { data: vinMatches } = await db
       .from('customer_cars')
       .select('customer_id')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .ilike('vin', `%${search}%`)
     const vinIds = [...new Set((vinMatches ?? []).map((v: any) => v.customer_id).filter(Boolean))]
     if (vinIds.length > 0) orParts.push(`id.in.(${vinIds.join(',')})`)
@@ -67,12 +69,17 @@ export async function listCustomers(query: CustomerListQuery, tenantId: string) 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
   // Додаємо VIN першого авто до кожного клієнта
-  const enriched = (data ?? []).map((c: any) => ({
-    ...c,
-    primary_vin: c.customer_cars?.find((v: any) => v.vin)?.vin ?? null,
-    car_count: Array.isArray(c.customer_cars) ? c.customer_cars.length : 0,
-    customer_cars: undefined,
-  }))
+  const enriched = (data ?? []).map((c: any) => {
+    const activeCars = Array.isArray(c.customer_cars)
+      ? c.customer_cars.filter((vehicle: any) => !vehicle.deleted_at)
+      : []
+    return {
+      ...c,
+      primary_vin: activeCars.find((vehicle: any) => vehicle.vin)?.vin ?? null,
+      car_count: activeCars.length,
+      customer_cars: undefined,
+    }
+  })
 
   return {
     data: enriched,
@@ -242,9 +249,21 @@ export async function deleteCustomer(id: string, tenantId: string) {
     if (activeOrders.rowCount) {
       throw new AppError('CUSTOMER_HAS_ACTIVE_ORDERS', 'У клієнта є незавершені замовлення або чернетки', 409)
     }
+    const deletedStamp = await client.query<{ deleted_at: Date | string }>(
+      'SELECT clock_timestamp() AS deleted_at',
+    )
+    const deletedAt = deletedStamp.rows[0].deleted_at
+    for (const vehicleTable of ['customer_cars', 'customer_vehicles']) {
+      await client.query(
+        `UPDATE ${vehicleTable}
+         SET deleted_at = $3, updated_at = $3
+         WHERE customer_id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+        [id, tenantId, deletedAt],
+      )
+    }
     await client.query(
-      'UPDATE customers SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
-      [id, tenantId],
+      'UPDATE customers SET deleted_at = $3, updated_at = $3 WHERE id = $1 AND tenant_id = $2',
+      [id, tenantId, deletedAt],
     )
   })
 }
@@ -409,7 +428,7 @@ export async function topUpDeposit(
 // мапиться в поле brand, яке очікує фронт.
 
 const VEHICLE_TABLE = 'customer_cars'
-const VEHICLE_COLUMNS = 'id, customer_id, brand:make, model, year, vin, notes, created_at'
+const VEHICLE_COLUMNS = 'id, customer_id, brand:make, model, year, vin, notes, created_at, updated_at'
 
 export async function listCustomerVehicles(customerId: string, tenantId: string) {
   await getCustomer(customerId, tenantId)
@@ -419,6 +438,7 @@ export async function listCustomerVehicles(customerId: string, tenantId: string)
     .select(VEHICLE_COLUMNS)
     .eq('customer_id', customerId)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -439,7 +459,9 @@ export async function createCustomerVehicle(
     const { data: existing } = await db
       .from(VEHICLE_TABLE)
       .select('id, customer_id')
+      .eq('tenant_id', tenantId)
       .eq('vin', vin)
+      .is('deleted_at', null)
       .maybeSingle()
     if (existing) {
       throw new AppError('VIN_DUPLICATE',
@@ -449,6 +471,7 @@ export async function createCustomerVehicle(
     }
   }
 
+  const updatedAt = new Date().toISOString()
   const { data, error } = await db
     .from(VEHICLE_TABLE)
     .insert({
@@ -459,6 +482,8 @@ export async function createCustomerVehicle(
       year:        input.year ?? null,
       vin,
       notes:       input.notes ?? null,
+      updated_at:  updatedAt,
+      deleted_at:  null,
     })
     .select(VEHICLE_COLUMNS)
     .single()
@@ -468,11 +493,13 @@ export async function createCustomerVehicle(
 }
 
 export async function deleteCustomerVehicle(vehicleId: string, tenantId: string) {
+  const deletedAt = new Date().toISOString()
   const { error } = await db
     .from(VEHICLE_TABLE)
-    .delete()
+    .update({ deleted_at: deletedAt, updated_at: deletedAt })
     .eq('id', vehicleId)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }

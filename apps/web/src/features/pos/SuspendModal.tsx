@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePOSStore } from '@/stores/posStore'
 import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
@@ -16,6 +16,11 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
   const store = usePOSStore()
   const [cell, setCell] = useState('')
   const [saving, setSaving] = useState(false)
+  const operationKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    operationKeyRef.current = open ? crypto.randomUUID() : null
+  }, [open])
 
   if (!open) return null
 
@@ -24,6 +29,8 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
     if (!currentShift || items.length === 0) return
 
     const expiresAt = new Date(Date.now() + SUSPEND_TTL_HOURS * 60 * 60 * 1000).toISOString()
+    const operationKey = operationKeyRef.current ?? crypto.randomUUID()
+    operationKeyRef.current = operationKey
 
     setSaving(true)
     try {
@@ -44,8 +51,10 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
           pickup_cell:    cell.trim() || null,
           expires_at:     expiresAt,
         },
+        `suspend:${operationKey}`,
         { silent: true },
       )
+      operationKeyRef.current = null
       store.clearReceipt()
       toast.success(`Чек відкладено${cell.trim() ? ' у комірку ' + cell.trim() : ''}`)
       onSuspended()

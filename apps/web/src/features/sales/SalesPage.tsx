@@ -9,7 +9,7 @@ import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
 import { getLocalSale, getLocalSales, type LocalSaleRecord } from '@/lib/offlineDB'
-
+import { useAuthStore } from '@/stores/authStore'
 type SaleWithSync = Sale & {
   local_id?: string
   server_id?: string | null
@@ -27,6 +27,7 @@ const PAY_LABEL: Record<string, string> = {
 export default function SalesPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [sales, setSales]     = useState<SaleWithSync[]>([])
   const [search, setSearch]   = useState(() => searchParams.get('search') ?? '')
   const [page, setPage]       = useState(1)
@@ -41,7 +42,7 @@ export default function SalesPage() {
   async function openDetail(id: string) {
     setDetailLoading(true)
     setDetail(null)
-    const local = await getLocalSale(id).catch(() => null)
+    const local = scopeKey ? await getLocalSale(id, scopeKey).catch(() => null) : null
     if (local) {
       setDetail(local as SaleWithSync)
       setDetailLoading(false)
@@ -59,7 +60,7 @@ export default function SalesPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const allLocal = await getLocalSales(5000).catch(() => [])
+    const allLocal = scopeKey ? await getLocalSales(5000, scopeKey).catch(() => []) : []
     const query = search.toLocaleLowerCase('uk-UA').trim()
     const filteredLocal = allLocal.filter((sale) => !query
       || sale.sale_number.toLocaleLowerCase('uk-UA').includes(query)
@@ -91,7 +92,7 @@ export default function SalesPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search])
+  }, [page, search, scopeKey])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setPage(1) }, [search])

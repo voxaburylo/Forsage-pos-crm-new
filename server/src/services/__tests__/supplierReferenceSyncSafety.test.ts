@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const supplierSource = readFileSync(new URL('../supplierService.ts', import.meta.url), 'utf8')
+const keysetSource = readFileSync(new URL('../syncKeyset.ts', import.meta.url), 'utf8')
 const migration = readFileSync(
   new URL('../../../../supabase/migrations/20260729120000_supplier_payment_sync_timestamp.sql', import.meta.url),
   'utf8',
@@ -13,8 +14,9 @@ describe('supplier reference synchronization safety', () => {
     const start = syncSource.indexOf(".from('supplier_payments')")
     const end = syncSource.indexOf(': Promise.resolve([])', start)
     const block = syncSource.slice(start, end)
-    expect(block).toContain(".order('updated_at'")
-    expect(block).toContain("query.gt('updated_at', since)")
+    expect(block).toContain('referencesIncluded ? undefined : since')
+    expect(keysetSource).toContain('if (options.lowerBound) query = query.gt(options.timestampColumn, options.lowerBound)')
+    expect(keysetSource).toContain('.order(options.timestampColumn, { ascending: true })')
   })
 
   it('touches invoices and payments in both supplier merge paths', () => {

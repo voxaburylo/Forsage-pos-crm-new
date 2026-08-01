@@ -16,7 +16,8 @@ const migrationSource = readFileSync(
 describe('document synchronization safety', () => {
   it('returns invoice tombstones and the complete current rows of changed invoices', () => {
     expect(syncSource).toContain('deleted_supply_invoice_ids: deletedSupplyInvoiceIds')
-    expect(syncSource).toContain("query = query.gt('invoice.updated_at', since)")
+    expect(syncSource).toContain('supplyInvoices.filter((row: any) => !row.deleted_at)')
+    expect(syncSource).toContain(".in('invoice_id', ids)")
     expect(syncSource).toContain(".is('invoice.deleted_at', null)")
   })
 
@@ -40,8 +41,8 @@ describe('document synchronization safety', () => {
       expect(syncSource).toContain(`operation.operation_type === '${operation}'`)
     }
     expect(syncSource).toContain('deleted_inventory_session_ids: deletedInventorySessions.map')
-    expect(syncSource).toContain("VALUES ($1, 'inventory_session', $2, $3)")
-    expect(inventoryRouteSource).toContain("VALUES ($1, 'inventory_session', $2, NOW())")
+    expect(syncSource).toContain("VALUES ($1, 'inventory_session', $2, clock_timestamp())")
+    expect(inventoryRouteSource).toContain("VALUES ($1, 'inventory_session', $2, clock_timestamp())")
     expect(inventoryRouteSource).toContain('SELECT status FROM inventory_sessions')
     expect(inventorySyncMigration).toContain("'inventory_session'")
   })

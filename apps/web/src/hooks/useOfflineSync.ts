@@ -21,7 +21,6 @@ export const LOCAL_SYNC_IDLE_INTERVAL_MS = 30 * 1000
 export const LOCAL_SYNC_PENDING_INTERVAL_MS = 5 * 1000
 export const LOCAL_SYNC_RETRY_MIN_MS = 15 * 1000
 export const LOCAL_SYNC_RETRY_MAX_MS = 5 * 60 * 1000
-export const REFERENCE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 let globalSyncInProgress = false
 
 export function useOfflineSync(serverOnline: boolean) {
@@ -35,7 +34,8 @@ export function useOfflineSync(serverOnline: boolean) {
 
   useEffect(() => {
     if (desktopRuntime) return
-    countPendingSales().then(setPendingCount).catch(() => {})
+    if (scopeKey) countPendingSales(scopeKey).then(setPendingCount).catch(() => {})
+    else setPendingCount(0)
     ensurePersistentStorage().catch(() => {})
     if (scopeKey) {
       getLocalSyncState(scopeKey).then((state) => {
@@ -46,7 +46,8 @@ export function useOfflineSync(serverOnline: boolean) {
   }, [desktopRuntime, scopeKey])
 
   const pushPendingSales = useCallback(async () => {
-    const pending = await getPendingSales()
+    const pending = await getPendingSales(scopeKey)
+    const syncState = await getLocalSyncState(scopeKey)
     let successCount = 0
     let failCount = 0
 
@@ -68,55 +69,74 @@ export function useOfflineSync(serverOnline: boolean) {
           card_amount: sale.card_amount,
         }, {
           'X-Idempotency-Key': sale.idempotency_key,
+          'X-Sync-Reset-Generation': String(syncState.reset_generation),
         }, {
           silent: true,
           timeoutMs: 30_000,
         })
 
-        await completePendingSaleSync(sale.offline_id, response.data)
+        await completePendingSaleSync(sale.offline_id, response.data, scopeKey)
         successCount++
       } catch (error) {
         await markPendingSaleFailed(
           sale.offline_id,
           error instanceof Error ? error.message : 'Невідома помилка синхронізації',
+          scopeKey,
         )
         failCount++
       }
     }
 
-    setPendingCount(await countPendingSales())
+    setPendingCount(await countPendingSales(scopeKey))
     return { successCount, failCount }
-  }, [])
+  }, [scopeKey])
 
   const pullChanges = useCallback(async (forceSnapshot = false) => {
     if (!scopeKey || desktopRuntime) return
-    const localState = await getLocalSyncState(scopeKey)
-    const since = forceSnapshot ? null : localState.cursor
-    const includeReferences = !since
-      || !localState.last_reference_sync_at
-      || Date.now() - localState.last_reference_sync_at >= REFERENCE_REFRESH_INTERVAL_MS
-    if (!since) {
-      // Службові позиції мають потрапити вже в перший локальний знімок.
-      await Promise.allSettled([
-        api.post('/api/v1/sales/quick-item', { kind: 'tire_service' }),
-        api.post('/api/v1/sales/quick-item', { kind: 'free_sale' }),
-      ])
-    }
-    const params = new URLSearchParams()
-    if (since) params.set('since', since)
-    if (includeReferences) params.set('include_references', 'true')
-    const query = params.size > 0 ? `?${params.toString()}` : ''
-    const [response, staff] = await Promise.all([
-      api.get<{ data: SyncChanges }>(`/api/v1/sync/changes${query}`, {
+    let localState = await getLocalSyncState(scopeKey)
+    let since = forceSnapshot ? null : localState.cursor
+
+    const requestChanges = async (
+      state: Awaited<ReturnType<typeof getLocalSyncState>>,
+      cursor: string | null,
+    ) => {
+      if (!cursor) {
+        const generationHeader = {
+          'X-Sync-Reset-Generation': String(state.reset_generation),
+        }
+        await Promise.allSettled([
+          api.post('/api/v1/sales/quick-item', { kind: 'tire_service' }, generationHeader),
+          api.post('/api/v1/sales/quick-item', { kind: 'free_sale' }, generationHeader),
+        ])
+      }
+      const params = new URLSearchParams()
+      if (cursor) params.set('since', cursor)
+      if (!cursor) params.set('include_references', 'true')
+      params.set('reset_generation', String(state.reset_generation))
+      return api.get<{ data: SyncChanges }>(`/api/v1/sync/changes?${params.toString()}`, {
         silent: true,
         timeoutMs: 120_000,
-      }),
-      api.get<{ data: any[] }>('/api/v1/admin/staff-options', {
-        silent: true,
-        timeoutMs: 30_000,
-      }).catch(() => null),
-    ])
-    await applySyncChanges(response.data, scopeKey, !since)
+      })
+    }
+
+    const staffPromise = api.get<{ data: any[] }>('/api/v1/admin/staff-options', {
+      silent: true,
+      timeoutMs: 30_000,
+    }).catch(() => null)
+    let response = await requestChanges(localState, since)
+    if (response.data.reset_required === true) {
+      await applySyncChanges(response.data, scopeKey, false)
+      localState = await getLocalSyncState(scopeKey)
+      since = null
+      response = await requestChanges(localState, since)
+      if (response.data.reset_required === true) {
+        throw new Error('WEB_SYNC_RESET_LOOP')
+      }
+      await applySyncChanges(response.data, scopeKey, true)
+    } else {
+      await applySyncChanges(response.data, scopeKey, !since)
+    }
+    const staff = await staffPromise
     if (staff) await cacheStaff(staff.data ?? [], scopeKey)
     const syncedAt = new Date()
     setLastCached(syncedAt)
@@ -133,8 +153,11 @@ export function useOfflineSync(serverOnline: boolean) {
     await markSyncAttempt(scopeKey).catch(() => {})
 
     try {
-      const pushed = await pushPendingSales()
       await pullChanges(options.forceSnapshot)
+      const pushed = await pushPendingSales()
+      if (pushed.successCount > 0) {
+        await pullChanges(false)
+      }
       retryAttemptRef.current = 0
       if (options.notify) {
         toast.success(pushed.successCount > 0
@@ -155,7 +178,7 @@ export function useOfflineSync(serverOnline: boolean) {
     } finally {
       globalSyncInProgress = false
       setSyncing(false)
-      setPendingCount(await countPendingSales().catch(() => 0))
+      setPendingCount(await countPendingSales(scopeKey).catch(() => 0))
     }
   }, [desktopRuntime, serverOnline, scopeKey, pushPendingSales, pullChanges])
 
@@ -170,7 +193,7 @@ export function useOfflineSync(serverOnline: boolean) {
       if (cancelled) return
       if (timer !== null) window.clearTimeout(timer)
 
-      const queued = await countPendingSales().catch(() => 0)
+      const queued = await countPendingSales(scopeKey).catch(() => 0)
       const retryDelay = Math.min(
         LOCAL_SYNC_RETRY_MAX_MS,
         LOCAL_SYNC_RETRY_MIN_MS * (2 ** Math.max(0, retryAttemptRef.current - 1)),

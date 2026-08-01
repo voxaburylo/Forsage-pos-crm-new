@@ -29,84 +29,125 @@ router.get('/dashboard', async (req, res, next) => {
     const { startDate, endDate } = q.data
     const { from: dateFrom, toExclusive: dateTo } = kyivDateRange(startDate, endDate)
 
-    // 1. Продажі за період (завершені)
-    const { data: sales } = await db
-      .from('sales')
-      .select('id, total, completed_at')
-      .eq('tenant_id', tenantId)
-      .eq('status', 'completed')
-      .gte('completed_at', dateFrom)
-      .lt('completed_at', dateTo)
+    const [dailyResult, expensesResult, overviewResult] = await Promise.all([
+      pool.query(`
+        WITH filtered_sales AS (
+          SELECT id, total, completed_at
+          FROM sales
+          WHERE tenant_id = $1
+            AND status = 'completed'
+            AND completed_at >= $2::timestamptz
+            AND completed_at < $3::timestamptz
+        ),
+        sale_costs AS (
+          SELECT
+            si.sale_id,
+            SUM(COALESCE(NULLIF(si.cost_price, 0), p.purchase_price, 0) * si.qty) AS cogs
+          FROM sale_items si
+          JOIN filtered_sales fs ON fs.id = si.sale_id
+          LEFT JOIN products p
+            ON p.id = si.product_id
+           AND p.tenant_id = si.tenant_id
+          WHERE si.tenant_id = $1
+          GROUP BY si.sale_id
+        )
+        SELECT
+          (fs.completed_at AT TIME ZONE 'Europe/Kyiv')::date::text AS date,
+          COALESCE(SUM(fs.total), 0)::double precision AS revenue,
+          COALESCE(SUM(sc.cogs), 0)::double precision AS cogs,
+          COUNT(*)::integer AS receipts
+        FROM filtered_sales fs
+        LEFT JOIN sale_costs sc ON sc.sale_id = fs.id
+        GROUP BY (fs.completed_at AT TIME ZONE 'Europe/Kyiv')::date
+        ORDER BY (fs.completed_at AT TIME ZONE 'Europe/Kyiv')::date
+      `, [tenantId, dateFrom, dateTo]),
+      pool.query(`
+        SELECT COALESCE(SUM(amount), 0)::double precision AS total
+        FROM cash_operations
+        WHERE tenant_id = $1
+          AND type = 'out'
+          AND expense_category_id IS NOT NULL
+          AND created_at >= $2::timestamptz
+          AND created_at < $3::timestamptz
+      `, [tenantId, dateFrom, dateTo]),
+      pool.query(`
+        SELECT
+          (SELECT COUNT(*)::integer
+           FROM products p
+           WHERE p.tenant_id = $1
+             AND p.deleted_at IS NULL
+             AND p.is_active = true) AS products,
+          (SELECT COUNT(*)::integer
+           FROM products p
+           WHERE p.tenant_id = $1
+             AND p.deleted_at IS NULL
+             AND p.is_active = true
+             AND p.qty_on_hand <= p.reorder_point) AS low_stock,
+          (SELECT COUNT(*)::integer
+           FROM customers c
+           WHERE c.tenant_id = $1
+             AND c.deleted_at IS NULL) AS customers,
+          (SELECT COUNT(*)::integer
+           FROM suppliers s
+           WHERE s.tenant_id = $1
+             AND s.deleted_at IS NULL) AS suppliers,
+          (SELECT COUNT(*)::integer
+           FROM customer_orders o
+           WHERE o.tenant_id = $1
+             AND o.deleted_at IS NULL
+             AND o.status NOT IN ('completed', 'canceled', 'cancelled', 'archived')) AS open_orders,
+          (SELECT COUNT(*)::integer
+           FROM customer_orders o
+           WHERE o.tenant_id = $1
+             AND o.deleted_at IS NULL
+             AND o.status NOT IN ('completed', 'canceled', 'cancelled', 'archived')
+             AND o.pickup_deadline_at IS NOT NULL
+             AND o.pickup_deadline_at < NOW()) AS overdue_orders,
+          (SELECT COUNT(*)::integer
+           FROM customers c
+           WHERE c.tenant_id = $1
+             AND c.deleted_at IS NULL
+             AND c.debt_balance > 0) AS debt_customers,
+          (SELECT COALESCE(SUM(c.debt_balance), 0)::double precision
+           FROM customers c
+           WHERE c.tenant_id = $1
+             AND c.deleted_at IS NULL
+             AND c.debt_balance > 0) AS debt_total
+      `, [tenantId]),
+    ])
 
-    const saleIds = (sales ?? []).map((s) => s.id)
-    const totalRevenue = (sales ?? []).reduce((s, x) => s + x.total, 0)
-    const totalReceipts = (sales ?? []).length
-    const averageReceipt = totalReceipts > 0 ? Math.round(totalRevenue / totalReceipts) : 0
-
-    // 2. Собівартість (purchase_price * qty) з sale_items
+    const dailyMap = new Map<string, { revenue: number; cogs: number; receipts: number }>()
+    let totalRevenue = 0
     let cogs = 0
-    if (saleIds.length > 0) {
-      const { data: items } = await db
-        .from('sale_items')
-        .select('qty, unit_price, product:products!inner(purchase_price)')
-        .eq('tenant_id', tenantId)
-        .in('sale_id', saleIds)
-
-      for (const item of items ?? []) {
-        const product = item.product as unknown as { purchase_price: number } | undefined
-        const purchasePrice = product?.purchase_price ?? 0
-        cogs += purchasePrice * item.qty
-      }
+    let totalReceipts = 0
+    for (const row of dailyResult.rows) {
+      const revenue = Number(row.revenue ?? 0)
+      const dayCogs = Number(row.cogs ?? 0)
+      const receipts = Number(row.receipts ?? 0)
+      dailyMap.set(String(row.date), { revenue, cogs: dayCogs, receipts })
+      totalRevenue += revenue
+      cogs += dayCogs
+      totalReceipts += receipts
     }
-
+    const averageReceipt = totalReceipts > 0 ? Math.round(totalRevenue / totalReceipts) : 0
     const grossProfit = totalRevenue - cogs
 
-    // 3. Дані по днях для графіка
-    const { data: dailySales } = await db
-      .from('sales')
-      .select('total, completed_at')
-      .eq('tenant_id', tenantId)
-      .eq('status', 'completed')
-      .gte('completed_at', dateFrom)
-      .lt('completed_at', dateTo)
-      .order('completed_at', { ascending: true })
-
-    // Групуємо по днях
-    const dailyMap = new Map<string, { revenue: number; count: number }>()
-    for (const s of dailySales ?? []) {
-      const date = kyivDateKey(new Date(s.completed_at))
-      const existing = dailyMap.get(date) ?? { revenue: 0, count: 0 }
-      existing.revenue += s.total
-      existing.count++
-      dailyMap.set(date, existing)
-    }
-
-    // Будуємо масив для всіх днів періоду
     const daily: Array<{ date: string; revenue: number; profit: number }> = []
     const start = new Date(startDate)
     const end = new Date(endDate)
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0]
+    for (let date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
+      const dateStr = date.toISOString().slice(0, 10)
       const dayData = dailyMap.get(dateStr)
       daily.push({
         date: dateStr,
         revenue: dayData?.revenue ?? 0,
-        profit: 0, // спрощено — без собівартості по днях
+        profit: dayData ? dayData.revenue - dayData.cogs : 0,
       })
     }
 
-    // 4. Витрати (cash_operations type='out' з категорією)
-    const { data: expenses } = await db
-      .from('cash_operations')
-      .select('amount')
-      .eq('tenant_id', tenantId)
-      .eq('type', 'out')
-      .not('expense_category_id', 'is', null)
-      .gte('created_at', dateFrom)
-      .lt('created_at', dateTo)
-
-    const totalExpenses = (expenses ?? []).reduce((s, x) => s + x.amount, 0)
+    const totalExpenses = Number(expensesResult.rows[0]?.total ?? 0)
     const netProfit = grossProfit - totalExpenses
+    const overview = overviewResult.rows[0] ?? {}
 
     // Прибуток/собівартість — лише власнику й адміну; менеджер бачить виторг/чеки
     const canSeeProfit = ['owner', 'admin'].includes(req.user!.role)
@@ -120,6 +161,18 @@ router.get('/dashboard', async (req, res, next) => {
         total_receipts:  totalReceipts,
         average_receipt: averageReceipt,
         daily,
+        low_stock: Number(overview.low_stock ?? 0),
+        totals: {
+          products: Number(overview.products ?? 0),
+          customers: Number(overview.customers ?? 0),
+          suppliers: Number(overview.suppliers ?? 0),
+          openOrders: Number(overview.open_orders ?? 0),
+        },
+        overdue_count: Number(overview.overdue_orders ?? 0),
+        debt: {
+          count: Number(overview.debt_customers ?? 0),
+          total: Number(overview.debt_total ?? 0),
+        },
       },
     })
   } catch (err) { next(err) }

@@ -3,10 +3,12 @@ import jwt from 'jsonwebtoken'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from './errorHandler.js'
 import { logger } from '../lib/logger.js'
+import { acquireTenantMutationGuard, getTenantSyncGeneration } from '../services/syncGeneration.js'
 
 interface SupabaseJwtPayload {
   sub: string
   email?: string
+  iat?: number
   app_metadata?: {
     is_active?: boolean
     role?: string
@@ -14,9 +16,55 @@ interface SupabaseJwtPayload {
   }
 }
 
+type AuthUserPayload = {
+  id: string
+  email: string
+  role: string
+  tenant_id?: string
+  is_active?: boolean
+  issued_at?: number
+}
+
+function requestPath(req: Request): string {
+  const path = req.originalUrl.split('?', 1)[0]
+  return path.length > 1 ? path.replace(/\/+$/, '') : path
+}
+
+function isMutation(method: string): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
+}
+
+function usesOwnGenerationGuard(req: Request): boolean {
+  const path = requestPath(req)
+  return req.method === 'POST' && (path === '/api/v1/sync/push' || path === '/api/v1/sales')
+}
+
+function isResetRequest(req: Request): boolean {
+  return req.method === 'POST' && requestPath(req) === '/api/v1/admin/reset-all-data'
+}
+
+async function loadRemoteUser(token: string): Promise<AuthUserPayload | null> {
+  const { data, error } = await supabaseAdmin.auth.getUser(token)
+  if (error || !data.user) return null
+  const meta = data.user.app_metadata ?? {}
+  return {
+    id: data.user.id,
+    email: data.user.email ?? '',
+    role: (meta.role as string) ?? 'cashier',
+    tenant_id: meta.tenant_id as string | undefined,
+    is_active: meta.is_active as boolean | undefined,
+  }
+}
+
+function tokenPredatesReset(issuedAt: number | undefined, resetAt: string | null): boolean {
+  if (!resetAt) return false
+  if (!Number.isFinite(issuedAt)) return true
+  return Number(issuedAt) * 1000 <= Date.parse(resetAt)
+}
+
 export async function requireAuth(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction,
 ): Promise<void> {
   const authHeader = req.headers.authorization
@@ -25,9 +73,9 @@ export async function requireAuth(
   }
 
   const token = authHeader.slice(7)
-  let userPayload: { id: string; email: string; role: string; tenant_id?: string; is_active?: boolean } | null = null
+  let userPayload: AuthUserPayload | null = null
+  let locallyVerified = false
 
-  // 1. Спроба локальної валідації JWT підпису для прискорення запитів на 150-300мс
   const jwtSecret = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET
   const tokenHeader = jwt.decode(token, { complete: true })?.header
   const usesSharedSecret = tokenHeader?.alg?.startsWith('HS') ?? false
@@ -41,12 +89,14 @@ export async function requireAuth(
       }) as SupabaseJwtPayload
       const trustedMeta = decoded.app_metadata
       if (trustedMeta?.tenant_id) {
+        locallyVerified = true
         userPayload = {
           id: decoded.sub,
           email: decoded.email ?? '',
           role: trustedMeta.role ?? 'cashier',
           tenant_id: trustedMeta.tenant_id,
           is_active: trustedMeta.is_active,
+          issued_at: decoded.iat,
         }
       }
     } catch (err: any) {
@@ -54,19 +104,34 @@ export async function requireAuth(
     }
   }
 
-  // 2. Фолбек на мережевий запит до Supabase Auth API, якщо секрет не задано або локальна валідація не пройшла
   if (!userPayload) {
-    const { data, error } = await supabaseAdmin.auth.getUser(token)
-    if (error || !data.user) {
-      return next(new AppError('UNAUTHORIZED', 'Недійсний токен', 401))
-    }
-    const meta = data.user.app_metadata ?? {}
-    userPayload = {
-      id: data.user.id,
-      email: data.user.email ?? '',
-      role: (meta.role as string) ?? 'cashier',
-      tenant_id: meta.tenant_id as string | undefined,
-      is_active: meta.is_active as boolean | undefined,
+    userPayload = await loadRemoteUser(token)
+    if (!userPayload) return next(new AppError('UNAUTHORIZED', 'Недійсний токен', 401))
+  }
+
+  let tenantId = userPayload.tenant_id
+  if (!tenantId) {
+    return next(new AppError('FORBIDDEN', 'Не вказано ідентифікатор магазину (tenant_id)', 403))
+  }
+
+  // Після повного скидання локально перевірений старий JWT недостатній: Auth
+  // перечитується примусово, тому видалений або заблокований працівник не може
+  // продовжити роботу до завершення строку токена.
+  if (locallyVerified) {
+    try {
+      const state = await getTenantSyncGeneration(tenantId)
+      if (tokenPredatesReset(userPayload.issued_at, state.resetAt)) {
+        const originalTenantId = tenantId
+        const currentUser = await loadRemoteUser(token)
+        if (!currentUser) return next(new AppError('UNAUTHORIZED', 'Сеанс завершено після скидання даних', 401))
+        if (currentUser.tenant_id !== originalTenantId) {
+          return next(new AppError('FORBIDDEN', 'Акаунт більше не належить цьому магазину', 403))
+        }
+        userPayload = currentUser
+        tenantId = originalTenantId
+      }
+    } catch (error) {
+      return next(error)
     }
   }
 
@@ -74,16 +139,27 @@ export async function requireAuth(
     return next(new AppError('FORBIDDEN', 'Акаунт заблоковано', 403))
   }
 
-  const tenantId = userPayload.tenant_id
-  if (!tenantId) {
-    return next(new AppError('FORBIDDEN', 'Не вказано ідентифікатор магазину (tenant_id)', 403))
+  req.user = {
+    id: userPayload.id,
+    email: userPayload.email,
+    role: userPayload.role,
+    tenant_id: tenantId,
   }
 
-  req.user = {
-    id:        userPayload.id,
-    email:     userPayload.email,
-    role:      userPayload.role,
-    tenant_id: tenantId,
+  if (isMutation(req.method) && !isResetRequest(req) && !usesOwnGenerationGuard(req)) {
+    try {
+      const releaseGuard = await acquireTenantMutationGuard(tenantId)
+      let released = false
+      const release = () => {
+        if (released) return
+        released = true
+        void releaseGuard().catch((error) => logger.error({ error }, 'Failed to release tenant write guard'))
+      }
+      res.once('finish', release)
+      res.once('close', release)
+    } catch (error) {
+      return next(error)
+    }
   }
 
   next()

@@ -367,6 +367,7 @@ async function createLead(chatId: number | string, txt: string, username?: strin
         .eq('id', carId)
         .eq('tenant_id', tenantId)
         .eq('customer_id', customerId)
+        .is('deleted_at', null)
         .maybeSingle()
       if (car) {
         vehicleInfo = { make: car.make, model: car.model, year: car.year, vin: car.vin }
@@ -505,6 +506,7 @@ async function getCustomerCarsList(chatId: number | string): Promise<any[]> {
     if (!cid) return []
     const { data } = await db.from('customer_cars')
       .select('id, make, model, year, vin').eq('customer_id', cid).eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false }).limit(6)
     return data ?? []
   } catch { return [] }
@@ -533,7 +535,8 @@ async function saveVin(chatId: number | string, vin: string): Promise<string | n
 
     // Перевіряємо чи вже є такий VIN у клієнта
     const { data: existing } = await db.from('customer_cars')
-      .select('id').eq('customer_id', cid).eq('tenant_id', tenantId).eq('vin', vin).maybeSingle()
+      .select('id').eq('customer_id', cid).eq('tenant_id', tenantId).eq('vin', vin)
+      .is('deleted_at', null).maybeSingle()
     if (existing) return existing.id
 
     const { data: ins } = await db.from('customer_cars').insert({
@@ -986,7 +989,7 @@ async function showCabinet(chatId: number, send: SendFn, isBiz = false) {
   let carC = 0, ordC = 0
   try {
     const [cr, or] = await Promise.all([
-      db.from('customer_cars').select('id', { count: 'exact', head: true }).eq('customer_id', c.id).eq('tenant_id', tenantId),
+      db.from('customer_cars').select('id', { count: 'exact', head: true }).eq('customer_id', c.id).eq('tenant_id', tenantId).is('deleted_at', null),
       db.from('customer_orders').select('id', { count: 'exact', head: true }).eq('customer_id', c.id).eq('tenant_id', tenantId),
     ])
     carC = cr.count ?? 0; ordC = or.count ?? 0
@@ -1113,7 +1116,8 @@ async function showCars(chatId: number, send: SendFn, isBiz = false) {
   let cars: any[] = []
   try {
     const r = await db.from('customer_cars').select('id, make, model, vin, year, notes')
-      .eq('customer_id', custId).eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(10)
+      .eq('customer_id', custId).eq('tenant_id', tenantId).is('deleted_at', null)
+      .order('created_at', { ascending: false }).limit(10)
     cars = r.data ?? []
   } catch { cars = [] }
   if (cars.length === 0) {
@@ -1139,7 +1143,8 @@ async function showCarDetail(carId: string, chatId: number, send: SendFn) {
     const customerId = await getCustomerId(chatId, tenantId)
     if (!customerId) { await send('❌ Авто не знайдено.'); return }
     const { data: car } = await db.from('customer_cars').select('*')
-      .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', customerId).single()
+      .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', customerId)
+      .is('deleted_at', null).single()
     if (!car) { await send('❌ Авто не знайдено.'); return }
 
     const msg = [
@@ -1171,7 +1176,8 @@ async function confirmDeleteCar(carId: string, chatId: number, send: SendFn) {
     const customerId = await getCustomerId(chatId, tenantId)
     if (!customerId) { await send('❌ Авто не знайдено.'); return }
     const { data: car } = await db.from('customer_cars').select('make, model')
-      .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', customerId).single()
+      .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', customerId)
+      .is('deleted_at', null).single()
     if (!car) { await send('❌ Авто не знайдено.'); return }
     await send(`🗑 *Видалити ${car.make} ${car.model}?*\n\nЦя дія незворотна. Авто буде видалено з вашого гаража.`, {
       parse_mode: 'Markdown',
@@ -1192,8 +1198,11 @@ async function deleteCar(carId: string, chatId: number, send: SendFn) {
     const { tenantId } = await requireMainChannelInfo()
     const customerId = await getCustomerId(chatId, tenantId)
     if (!customerId) { await send('❌ Авто не знайдено.'); return }
-    const { data: deleted } = await db.from('customer_cars').delete()
+    const deletedAt = new Date().toISOString()
+    const { data: deleted } = await db.from('customer_cars')
+      .update({ deleted_at: deletedAt, updated_at: deletedAt })
       .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', customerId)
+      .is('deleted_at', null)
       .select('id').maybeSingle()
     if (!deleted) { await send('❌ Авто не знайдено.'); return }
     await send('✅ Авто видалено з вашого гаража.', { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🚗 До гаража', callback_data: 'cars' }]] } })
@@ -1482,7 +1491,8 @@ export function startBot() {
           const cid = await getCustomerId(chatId, tenantId)
           if (!cid) { await send('❌ Не вдалося знайти авто. Спробуйте ще раз.'); return }
           const { data: car } = await db.from('customer_cars').select('make, model, vin')
-            .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', cid).single()
+            .eq('id', carId).eq('tenant_id', tenantId).eq('customer_id', cid)
+            .is('deleted_at', null).single()
           const label = car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : ''
 
           // Зберігаємо вибір авто в повідомлення для менеджера в CRM
@@ -1530,7 +1540,8 @@ export function startBot() {
           const cid = await getCustomerId(chatId, tenantId)
           if (!cid) { await send('❌ Помилка.'); return }
           const { data: car } = await db.from('customer_cars').select('make, model, vin')
-            .eq('id', id).eq('tenant_id', tenantId).eq('customer_id', cid).single()
+            .eq('id', id).eq('tenant_id', tenantId).eq('customer_id', cid)
+            .is('deleted_at', null).single()
           const label = car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : ''
 
           // Зберігаємо вибір авто в повідомлення для менеджера в CRM

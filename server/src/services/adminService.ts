@@ -1,9 +1,11 @@
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { db } from '../db/supabase.js'
-import { pool } from '../db/pg.js'
+import { pool, runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { CreateUserInput, UpdateUserInput, CategoryInput, BrandInput, SettingsInput } from '../validators/adminSchema.js'
 import { nextSettingsRowUpdatedAt, prepareLabelSettingsUpdate } from './labelSettingsConflict.js'
+import { clearProductSearchCache } from './productService.js'
+import { beginTenantReset, clearTenantResetMarker } from './syncGeneration.js'
 
 interface CacheEntry<T> {
   data: T;
@@ -13,6 +15,46 @@ interface CacheEntry<T> {
 const brandsCache = new Map<string, CacheEntry<any[]>>();
 const categoriesCache = new Map<string, CacheEntry<any[]>>();
 const CACHE_TTL_MS = 60000; // 1 minute
+
+export function clearCatalogReferenceCaches(tenantId: string): void {
+  categoriesCache.delete(tenantId)
+  brandsCache.delete(tenantId)
+}
+
+const PRODUCT_PHOTO_PUBLIC_MARKER = '/storage/v1/object/public/product-photos/'
+
+function productPhotoObjectPath(value: unknown): string | null {
+  const rawUrl = String(value ?? '').trim()
+  if (!rawUrl) return null
+  try {
+    const url = new URL(rawUrl)
+    const storageOrigin = new URL(String(process.env.SUPABASE_URL ?? '')).origin
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+    if (url.origin !== storageOrigin || !url.pathname.startsWith(PRODUCT_PHOTO_PUBLIC_MARKER)) return null
+    const encodedPath = url.pathname.slice(PRODUCT_PHOTO_PUBLIC_MARKER.length)
+    if (!encodedPath) return null
+    const objectPath = decodeURIComponent(encodedPath).replace(/^\/+/, '')
+    if (!objectPath || objectPath.split('/').some((part) => part === '..' || part === '.')) return null
+    return objectPath
+  } catch {
+    return null
+  }
+}
+
+async function removeProductPhotoObjects(urls: string[]): Promise<number> {
+  const objectPaths = [...new Set(urls.map(productPhotoObjectPath).filter((path): path is string => Boolean(path)))]
+  let failed = 0
+  for (let start = 0; start < objectPaths.length; start += 100) {
+    const chunk = objectPaths.slice(start, start + 100)
+    try {
+      const { error } = await supabaseAdmin.storage.from('product-photos').remove(chunk)
+      if (error) failed += chunk.length
+    } catch {
+      failed += chunk.length
+    }
+  }
+  return failed
+}
 
 
 function phoneToEmail(phone: string): string {
@@ -38,11 +80,27 @@ function mapSupabaseUser(u: any) {
   }
 }
 
-export async function listUsers(tenantId: string) {
-  const { data, error } = await supabaseAdmin.auth.admin.listUsers()
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+const AUTH_LIST_PAGE_SIZE = 1000
 
-  return (data.users ?? [])
+async function listAllAuthUsers(): Promise<any[]> {
+  const users: any[] = []
+  for (let page = 1; ; page += 1) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+      page,
+      perPage: AUTH_LIST_PAGE_SIZE,
+    })
+    if (error) throw new AppError('AUTH_ERROR', error.message, 500)
+
+    const batch = data?.users ?? []
+    users.push(...batch)
+    const total = Number((data as { total?: number } | null)?.total ?? 0)
+    if (batch.length < AUTH_LIST_PAGE_SIZE || (total > 0 && users.length >= total)) return users
+  }
+}
+
+export async function listUsers(tenantId: string) {
+  const users = await listAllAuthUsers()
+  return users
     .filter((user) => user.app_metadata?.tenant_id === tenantId)
     .map(mapSupabaseUser)
 }
@@ -50,8 +108,8 @@ export async function listUsers(tenantId: string) {
 export async function createUser(input: CreateUserInput, tenantId: string) {
   const email = phoneToEmail(input.phone)
 
-  const { data: existing } = await supabaseAdmin.auth.admin.listUsers()
-  const dup = existing?.users?.find((u) => u.email === email)
+  const existing = await listAllAuthUsers()
+  const dup = existing.find((u) => u.email === email)
   if (dup) throw new AppError('PHONE_DUPLICATE', `Користувач з телефоном ${input.phone} вже існує`, 409)
 
   const { data, error } = await supabaseAdmin.auth.admin.createUser({
@@ -87,8 +145,8 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
   
   if (input.phone !== undefined && input.phone !== currentUserMeta.phone) {
     const email = phoneToEmail(input.phone)
-    const { data: allUsers } = await supabaseAdmin.auth.admin.listUsers()
-    const dup = allUsers?.users?.find((u) => u.email === email && u.id !== id)
+    const allUsers = await listAllAuthUsers()
+    const dup = allUsers.find((u) => u.email === email && u.id !== id)
     if (dup) throw new AppError('PHONE_DUPLICATE', `Користувач з телефоном ${input.phone} вже існує`, 409)
   }
 
@@ -150,9 +208,15 @@ export async function deleteUser(id: string, tenantId: string) {
   await db.from('warehouse_movements').update({ moved_by: null }).eq('moved_by', id).eq('tenant_id', tenantId)
   await db.from('staff_kpi_targets').delete().eq('user_id', id).eq('tenant_id', tenantId)
 
-  // 2. Delete user from supabase auth
+  // 2. Delete user from Supabase Auth. If deletion fails, revoke the old JWT
+  // immediately through trusted app_metadata before reporting the error.
   const { error } = await supabaseAdmin.auth.admin.deleteUser(id)
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+  if (error) {
+    await supabaseAdmin.auth.admin.updateUserById(id, {
+      app_metadata: { ...existing.user.app_metadata, is_active: false },
+    })
+    throw new AppError('DB_ERROR', error.message, 500)
+  }
 }
 
 
@@ -167,6 +231,7 @@ export async function listCategories(tenantId: string) {
     .from('categories')
     .select('*')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .order('sort_order', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   const result = data ?? []
@@ -176,9 +241,10 @@ export async function listCategories(tenantId: string) {
 
 export async function createCategory(input: CategoryInput, tenantId: string) {
   categoriesCache.delete(tenantId);
+  const updatedAt = new Date().toISOString()
   const { data, error } = await db
     .from('categories')
-    .insert({ ...input, tenant_id: tenantId })
+    .insert({ ...input, tenant_id: tenantId, updated_at: updatedAt, deleted_at: null })
     .select('*')
     .single()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -189,9 +255,10 @@ export async function updateCategory(id: string, input: Partial<CategoryInput>, 
   categoriesCache.delete(tenantId);
   const { data, error } = await db
     .from('categories')
-    .update(input)
+    .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .select('*')
     .single()
   if (error || !data) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
@@ -199,126 +266,72 @@ export async function updateCategory(id: string, input: Partial<CategoryInput>, 
 }
 
 export async function deleteCategory(id: string, tenantId: string) {
-  categoriesCache.delete(tenantId);
+  await runTransaction(async (client) => {
+    await client.query(`SET LOCAL lock_timeout = '5s'`)
+    await client.query(`
+      LOCK TABLE brands, categories, products, category_markups,
+        commission_rules, volume_discounts IN SHARE ROW EXCLUSIVE MODE
+    `)
 
-  // categories не мають soft-delete колонок. Спочатку перевіряємо, що категорія
-  // справді належить поточному магазину, а потім відв'язуємо всі залежності.
-  const { data: category, error: findError } = await db
-    .from('categories')
-    .select('id')
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .maybeSingle()
-  if (findError) throw new AppError('DB_ERROR', findError.message, 500)
-  if (!category) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
+    const category = await client.query<{ id: string }>(`
+      SELECT id FROM categories
+      WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+      FOR UPDATE
+    `, [id, tenantId])
+    if (category.rowCount === 0) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
 
-  const { error: productError } = await db
-    .from('products')
-    .update({ category_id: null, updated_at: new Date().toISOString() })
-    .eq('tenant_id', tenantId)
-    .eq('category_id', id)
-  if (productError) throw new AppError('DB_ERROR', productError.message, 500)
+    const stampResult = await client.query<{ at: Date }>('SELECT clock_timestamp() AS at')
+    const updatedAt = stampResult.rows[0].at
+    await client.query(`UPDATE products SET category_id = NULL, updated_at = $3 WHERE tenant_id = $2 AND category_id = $1`, [id, tenantId, updatedAt])
+    await client.query(`UPDATE categories SET parent_id = NULL, updated_at = $3 WHERE tenant_id = $2 AND parent_id = $1`, [id, tenantId, updatedAt])
+    await client.query(`UPDATE volume_discounts SET category_id = NULL WHERE tenant_id = $2 AND category_id = $1`, [id, tenantId])
+    await client.query(`DELETE FROM category_markups WHERE tenant_id = $2 AND category_id = $1`, [id, tenantId])
+    await client.query(`UPDATE commission_rules SET category_id = NULL, updated_at = $3 WHERE tenant_id = $2 AND category_id = $1`, [id, tenantId, updatedAt])
+    await client.query(`
+      UPDATE categories SET parent_id = NULL, deleted_at = $3, updated_at = $3
+      WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+    `, [id, tenantId, updatedAt])
+  })
 
-  const { error: childError } = await db
-    .from('categories')
-    .update({ parent_id: null })
-    .eq('tenant_id', tenantId)
-    .eq('parent_id', id)
-  if (childError) throw new AppError('DB_ERROR', childError.message, 500)
-
-  // Ці таблиці також можуть посилатися на категорію і блокувати hard-delete.
-  const { error: discountError } = await db
-    .from('volume_discounts')
-    .update({ category_id: null })
-    .eq('tenant_id', tenantId)
-    .eq('category_id', id)
-  if (discountError) throw new AppError('DB_ERROR', discountError.message, 500)
-
-  const { error: markupError } = await db
-    .from('category_markups')
-    .delete()
-    .eq('tenant_id', tenantId)
-    .eq('category_id', id)
-  if (markupError) throw new AppError('DB_ERROR', markupError.message, 500)
-
-  const { error: commissionError } = await db
-    .from('commission_rules')
-    .update({ category_id: null })
-    .eq('tenant_id', tenantId)
-    .eq('category_id', id)
-  if (commissionError) throw new AppError('DB_ERROR', commissionError.message, 500)
-
-  const { data: deleted, error } = await db
-    .from('categories')
-    .delete()
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .select('id')
-    .maybeSingle()
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  if (!deleted) throw new AppError('NOT_FOUND', 'Категорію не знайдено', 404)
+  clearCatalogReferenceCaches(tenantId)
+  await clearProductSearchCache()
 }
-
-// Повне очищення каталогу: soft-delete усіх товарів + hard-delete усіх категорій.
-// Продажі, повернення, рухи складу залишаються цілими (FK на products зберігається,
-// бо товари не видаляються фізично, а лише позначаються deleted_at).
+// Повне очищення каталогу залишає sync-visible tombstone товарів і категорій.
+// Продажі, повернення та рухи складу залишаються цілими, бо каталог не
+// видаляється фізично.
 export async function resetCatalog(tenantId: string) {
-  // 1. Soft-delete усіх активних товарів + обнуляємо category_id (щоб FK не блокував
-  //    видалення категорій). product_id у sale_items залишається.
-  const { data: deletedProducts, error: prodErr } = await db
-    .from('products')
-    .update({ deleted_at: new Date().toISOString(), category_id: null })
-    .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
-    .select('id')
-  if (prodErr) throw new AppError('DB_ERROR', prodErr.message, 500)
+  const result = await runTransaction(async (client) => {
+    await client.query(`SET LOCAL lock_timeout = '5s'`)
+    await client.query(`
+      LOCK TABLE brands, categories, products, category_markups,
+        commission_rules, volume_discounts IN SHARE ROW EXCLUSIVE MODE
+    `)
+    const stampResult = await client.query<{ at: Date }>('SELECT clock_timestamp() AS at')
+    const updatedAt = stampResult.rows[0].at
 
-  // 2. Відв'язуємо всі залежності категорій. Без цього FK може обірвати
-  //    очищення посеред операції й залишити каталог у змішаному стані.
-  const { error: childCategoryErr } = await db
-    .from('categories')
-    .update({ parent_id: null })
-    .eq('tenant_id', tenantId)
-    .not('parent_id', 'is', null)
-  if (childCategoryErr) throw new AppError('DB_ERROR', childCategoryErr.message, 500)
+    const deletedProducts = await client.query(`
+      UPDATE products SET deleted_at = $2, updated_at = $2, category_id = NULL
+      WHERE tenant_id = $1 AND deleted_at IS NULL
+    `, [tenantId, updatedAt])
+    await client.query(`UPDATE categories SET parent_id = NULL, updated_at = $2 WHERE tenant_id = $1 AND parent_id IS NOT NULL`, [tenantId, updatedAt])
+    await client.query(`UPDATE volume_discounts SET category_id = NULL WHERE tenant_id = $1 AND category_id IS NOT NULL`, [tenantId])
+    await client.query('DELETE FROM category_markups WHERE tenant_id = $1', [tenantId])
+    await client.query(`UPDATE commission_rules SET category_id = NULL, updated_at = $2 WHERE tenant_id = $1 AND category_id IS NOT NULL`, [tenantId, updatedAt])
+    const deletedCategories = await client.query(`
+      UPDATE categories SET deleted_at = $2, updated_at = $2
+      WHERE tenant_id = $1 AND deleted_at IS NULL
+    `, [tenantId, updatedAt])
 
-  const { error: volumeDiscountErr } = await db
-    .from('volume_discounts')
-    .update({ category_id: null })
-    .eq('tenant_id', tenantId)
-    .not('category_id', 'is', null)
-  if (volumeDiscountErr) throw new AppError('DB_ERROR', volumeDiscountErr.message, 500)
+    return {
+      products_deleted: deletedProducts.rowCount ?? 0,
+      categories_deleted: deletedCategories.rowCount ?? 0,
+    }
+  })
 
-  const { error: categoryMarkupErr } = await db
-    .from('category_markups')
-    .delete()
-    .eq('tenant_id', tenantId)
-  if (categoryMarkupErr) throw new AppError('DB_ERROR', categoryMarkupErr.message, 500)
-
-  const { error: commissionRuleErr } = await db
-    .from('commission_rules')
-    .update({ category_id: null })
-    .eq('tenant_id', tenantId)
-    .not('category_id', 'is', null)
-  if (commissionRuleErr) throw new AppError('DB_ERROR', commissionRuleErr.message, 500)
-
-  // 3. Тепер hard-delete категорій не порушує зовнішні ключі.
-  const { data: deletedCats, error: catErr } = await db
-    .from('categories')
-    .delete()
-    .eq('tenant_id', tenantId)
-    .select('id')
-  if (catErr) throw new AppError('DB_ERROR', catErr.message, 500)
-
-  categoriesCache.delete(tenantId)
-  brandsCache.delete(tenantId)
-
-  return {
-    products_deleted:   deletedProducts?.length ?? 0,
-    categories_deleted: deletedCats?.length ?? 0,
-  }
+  clearCatalogReferenceCaches(tenantId)
+  await clearProductSearchCache()
+  return result
 }
-
 // ===================== BRANDS =====================
 
 export async function listBrands(tenantId: string) {
@@ -330,6 +343,7 @@ export async function listBrands(tenantId: string) {
     .from('brands')
     .select('*')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .order('name', { ascending: true })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   const result = data ?? []
@@ -339,9 +353,10 @@ export async function listBrands(tenantId: string) {
 
 export async function createBrand(input: BrandInput, tenantId: string) {
   brandsCache.delete(tenantId);
+  const updatedAt = new Date().toISOString()
   const { data, error } = await db
     .from('brands')
-    .insert({ ...input, tenant_id: tenantId })
+    .insert({ ...input, tenant_id: tenantId, updated_at: updatedAt, deleted_at: null })
     .select('*')
     .single()
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -352,9 +367,10 @@ export async function updateBrand(id: string, input: Partial<BrandInput>, tenant
   brandsCache.delete(tenantId);
   const { data, error } = await db
     .from('brands')
-    .update(input)
+    .update({ ...input, updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .select('*')
     .single()
   if (error || !data) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
@@ -362,44 +378,33 @@ export async function updateBrand(id: string, input: Partial<BrandInput>, tenant
 }
 
 export async function deleteBrand(id: string, tenantId: string) {
-  brandsCache.delete(tenantId);
+  await runTransaction(async (client) => {
+    await client.query(`SET LOCAL lock_timeout = '5s'`)
+    await client.query(`
+      LOCK TABLE brands, categories, products, category_markups,
+        commission_rules, volume_discounts IN SHARE ROW EXCLUSIVE MODE
+    `)
 
-  // brands не мають soft-delete колонок, тому видалення фізичне й обов'язково
-  // обмежене tenant_id.
-  const { data: brand, error: findError } = await db
-    .from('brands')
-    .select('id')
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .maybeSingle()
-  if (findError) throw new AppError('DB_ERROR', findError.message, 500)
-  if (!brand) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
+    const brand = await client.query<{ id: string }>(`
+      SELECT id FROM brands
+      WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+      FOR UPDATE
+    `, [id, tenantId])
+    if (brand.rowCount === 0) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
 
-  const { error: productError } = await db
-    .from('products')
-    .update({ brand_id: null, updated_at: new Date().toISOString() })
-    .eq('tenant_id', tenantId)
-    .eq('brand_id', id)
-  if (productError) throw new AppError('DB_ERROR', productError.message, 500)
+    const stampResult = await client.query<{ at: Date }>('SELECT clock_timestamp() AS at')
+    const updatedAt = stampResult.rows[0].at
+    await client.query(`UPDATE products SET brand_id = NULL, updated_at = $3 WHERE tenant_id = $2 AND brand_id = $1`, [id, tenantId, updatedAt])
+    await client.query(`UPDATE commission_rules SET brand_id = NULL, updated_at = $3 WHERE tenant_id = $2 AND brand_id = $1`, [id, tenantId, updatedAt])
+    await client.query(`
+      UPDATE brands SET deleted_at = $3, updated_at = $3
+      WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+    `, [id, tenantId, updatedAt])
+  })
 
-  const { error: commissionError } = await db
-    .from('commission_rules')
-    .update({ brand_id: null })
-    .eq('tenant_id', tenantId)
-    .eq('brand_id', id)
-  if (commissionError) throw new AppError('DB_ERROR', commissionError.message, 500)
-
-  const { data: deleted, error } = await db
-    .from('brands')
-    .delete()
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .select('id')
-    .maybeSingle()
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  if (!deleted) throw new AppError('NOT_FOUND', 'Бренд не знайдено', 404)
+  clearCatalogReferenceCaches(tenantId)
+  await clearProductSearchCache()
 }
-
 // ===================== SETTINGS =====================
 
 export async function getSettings(tenantId: string) {
@@ -499,16 +504,16 @@ export async function updateSettings(input: SettingsInput, tenantId: string) {
 }
 
 export async function resetAllData(tenantId: string, currentUserId: string) {
-  // Спочатку лише читаємо список користувачів. Видаляти Auth-користувачів до
-  // успішного COMMIT не можна: при помилці БД акаунти вже зникнуть, а дані
-  // залишаться.
-  const { data: allUsers, error: listErr } = await supabaseAdmin.auth.admin.listUsers()
-  if (listErr) throw new AppError('AUTH_ERROR', listErr.message, 500)
-
-  const usersToDelete = (allUsers?.users ?? []).filter(
-    (u) => u.app_metadata?.tenant_id === tenantId && u.id !== currentUserId
-  )
-  const userIdsToDelete = usersToDelete.map((user) => user.id)
+  await beginTenantReset(tenantId)
+  try {
+    let productPhotoUrls: string[] = []
+    // Auth Admin повертає сторінки. Збираємо їх усі до фільтра tenant, інакше
+    // працівник з наступної сторінки переживе повне очищення.
+    const allUsers = await listAllAuthUsers()
+    const usersToDelete = allUsers.filter(
+      (user) => user.app_metadata?.tenant_id === tenantId && user.id !== currentUserId,
+    )
+    const userIdsToDelete = usersToDelete.map((user) => user.id)
 
   // Порядок — від дочірніх таблиць до батьківських згідно з реальними FK.
   // Таблиці без tenant_id очищаються через їх батьківську таблицю.
@@ -516,11 +521,16 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     { name: 'in_app_notifications', query: 'DELETE FROM in_app_notifications WHERE tenant_id = $1' },
     { name: 'sys_background_jobs', query: 'DELETE FROM sys_background_jobs WHERE tenant_id = $1' },
     { name: 'idempotency_keys', query: 'DELETE FROM idempotency_keys WHERE tenant_id = $1' },
+    { name: 'payment_reconciliation', query: 'DELETE FROM payment_reconciliation WHERE tenant_id = $1' },
+    { name: 'sync_deletions', query: 'DELETE FROM sync_deletions WHERE tenant_id = $1' },
     { name: 'ai_usage', query: 'DELETE FROM ai_usage WHERE tenant_id = $1' },
     { name: 'audit_log', query: 'DELETE FROM audit_log WHERE tenant_id = $1' },
     { name: 'telegram_messages', query: 'DELETE FROM telegram_messages WHERE tenant_id = $1' },
     { name: 'bonus_transactions', query: 'DELETE FROM bonus_transactions WHERE tenant_id = $1' },
+    { name: 'customer_deposit_transactions', query: 'DELETE FROM customer_deposit_transactions WHERE tenant_id = $1' },
     { name: 'loyalty_transactions', query: 'DELETE FROM loyalty_transactions WHERE tenant_id = $1' },
+
+    { name: 'salary_payments', query: 'DELETE FROM salary_payments WHERE tenant_id = $1' },
 
     { name: 'return_items', query: 'DELETE FROM return_items WHERE tenant_id = $1' },
     { name: 'customer_return_items', query: 'DELETE FROM customer_return_items WHERE tenant_id = $1' },
@@ -529,9 +539,13 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     { name: 'returns', query: 'DELETE FROM returns WHERE tenant_id = $1' },
     { name: 'customer_returns', query: 'DELETE FROM customer_returns WHERE tenant_id = $1' },
 
+
+
+
     { name: 'supplier_purchase_order_items', query: 'DELETE FROM supplier_purchase_order_items WHERE tenant_id = $1' },
     { name: 'supplier_purchase_orders', query: 'DELETE FROM supplier_purchase_orders WHERE tenant_id = $1' },
     { name: 'order_payments', query: 'DELETE FROM order_payments WHERE tenant_id = $1' },
+    { name: 'customer_orders.exchange_source_order_id', query: 'UPDATE customer_orders SET exchange_source_order_id = NULL WHERE tenant_id = $1 AND exchange_source_order_id IS NOT NULL' },
     { name: 'order_activity_log', query: 'DELETE FROM order_activity_log WHERE order_id IN (SELECT id FROM customer_orders WHERE tenant_id = $1)' },
     { name: 'customer_order_items', query: 'DELETE FROM customer_order_items WHERE order_id IN (SELECT id FROM customer_orders WHERE tenant_id = $1)' },
     { name: 'customer_orders', query: 'DELETE FROM customer_orders WHERE tenant_id = $1' },
@@ -561,6 +575,7 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     { name: 'supplier_price_imports', query: 'DELETE FROM supplier_price_imports WHERE tenant_id = $1' },
 
     { name: 'warehouse_movements', query: 'DELETE FROM warehouse_movements WHERE tenant_id = $1' },
+    { name: 'inventory_movements', query: 'DELETE FROM inventory_movements WHERE tenant_id = $1' },
     { name: 'inventory_reserves', query: 'DELETE FROM inventory_reserves WHERE tenant_id = $1' },
     { name: 'auto_purchase_rules', query: 'DELETE FROM auto_purchase_rules WHERE tenant_id = $1' },
 
@@ -581,9 +596,10 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     { name: 'customer_group_members', query: 'DELETE FROM customer_group_members WHERE group_id IN (SELECT id FROM customer_groups WHERE tenant_id = $1)' },
     { name: 'customer_groups', query: 'DELETE FROM customer_groups WHERE tenant_id = $1' },
     { name: 'customer_notification_preferences', query: 'DELETE FROM customer_notification_preferences WHERE tenant_id = $1' },
+    { name: 'customers.balance_reset', query: 'UPDATE customers SET debt_balance = 0, deposit_balance = 0, bonus_balance = 0 WHERE tenant_id = $1' },
     { name: 'customers', query: 'DELETE FROM customers WHERE tenant_id = $1' },
 
-    { name: 'salary_payments', query: 'DELETE FROM salary_payments WHERE tenant_id = $1' },
+
     { name: 'internal_consumptions', query: 'DELETE FROM internal_consumptions WHERE tenant_id = $1' },
     { name: 'cash_reconciliations', query: 'DELETE FROM cash_reconciliations WHERE tenant_id = $1' },
     { name: 'cash_operations', query: 'DELETE FROM cash_operations WHERE tenant_id = $1' },
@@ -605,6 +621,35 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
   try {
     await client.query('BEGIN')
 
+    const photoRows = await client.query<{ url: string | null }>(
+      `SELECT photo_url AS url
+       FROM products
+       WHERE tenant_id = $1 AND photo_url IS NOT NULL
+       UNION
+       SELECT photo.url
+       FROM product_photos AS photo
+       JOIN products AS product ON product.id = photo.product_id
+       WHERE product.tenant_id = $1`,
+      [tenantId],
+    )
+    productPhotoUrls = photoRows.rows
+      .map((row) => row.url)
+      .filter((url): url is string => typeof url === 'string' && url.length > 0)
+
+    // The marker is committed atomically with the destructive reset and is
+    // deliberately not present in tablesToDelete. Other devices must clear
+    // their previous generation instead of trying to infer every hard delete.
+    await client.query(
+      `INSERT INTO sync_tenant_generations (tenant_id, generation, reset_at, updated_at)
+       SELECT $1, 1, stamp.at, stamp.at
+       FROM (SELECT clock_timestamp() AS at) AS stamp
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         generation = sync_tenant_generations.generation + 1,
+         reset_at = EXCLUDED.reset_at,
+         updated_at = EXCLUDED.updated_at`,
+      [tenantId],
+    )
+
     for (const table of tablesToDelete) {
       try {
         await client.query(table.query, [tenantId])
@@ -625,19 +670,46 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     client.release()
   }
 
-  // БД уже успішно очищена — тепер безпечно видаляємо інші Auth-акаунти.
-  const authDeleteErrors: string[] = []
-  for (const user of usersToDelete) {
-    const { error } = await supabaseAdmin.auth.admin.deleteUser(user.id)
-    if (error) authDeleteErrors.push(user.id)
-  }
+    // БД уже успішно очищена — тепер безпечно видаляємо точні Storage-об'єкти
+    // і Auth-акаунти. Скидання лишається в maintenance-режимі до завершення
+    // цього повторного, також пагінованого, читання.
+    const photo_cleanup_failed = await removeProductPhotoObjects(productPhotoUrls)
+    let authRelistFailed = false
+    let usersAfterReset: any[]
+    try {
+      usersAfterReset = await listAllAuthUsers()
+    } catch {
+      authRelistFailed = true
+      usersAfterReset = usersToDelete
+    }
+    const finalUsersToDelete = usersAfterReset.filter(
+      (user) => user.app_metadata?.tenant_id === tenantId && user.id !== currentUserId,
+    )
+    const authDeleteErrors: string[] = []
+    const authRevocationErrors: string[] = []
+    for (const user of finalUsersToDelete) {
+      const { error: deactivateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+        app_metadata: { ...user.app_metadata, is_active: false },
+      })
+      const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(user.id)
+      if (deleteError) {
+        authDeleteErrors.push(user.id)
+        if (deactivateError) authRevocationErrors.push(user.id)
+      }
+    }
 
-  categoriesCache.delete(tenantId)
-  brandsCache.delete(tenantId)
+    clearCatalogReferenceCaches(tenantId)
+    await clearProductSearchCache()
 
-  return {
-    success: true,
-    users_deleted: usersToDelete.length - authDeleteErrors.length,
-    users_failed: authDeleteErrors.length,
+    return {
+      success: authDeleteErrors.length === 0 && !authRelistFailed && photo_cleanup_failed === 0,
+      users_deleted: finalUsersToDelete.length - authDeleteErrors.length,
+      users_failed: authDeleteErrors.length,
+      users_revocation_failed: authRevocationErrors.length,
+      auth_relist_failed: authRelistFailed,
+      photo_cleanup_failed,
+    }
+  } finally {
+    await clearTenantResetMarker(tenantId)
   }
 }

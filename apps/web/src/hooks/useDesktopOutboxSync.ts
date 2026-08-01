@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { isDesktopRuntime, type DesktopSyncPullChanges } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { syncDesktopNow } from '@/lib/desktopSyncApi'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -10,7 +10,19 @@ const RETRY_MAX_MS = 5 * 60_000
 const STARTUP_DELAY_MS = 1_500
 const FOREGROUND_QUIET_MS = 1_800
 const IMMEDIATE_SYNC_DELAY_MS = 2_000
-const MAX_FOREGROUND_PULL_ROWS = 250
+export const DESKTOP_REFERENCE_REPAIR_INTERVAL_MS = 24 * 60 * 60 * 1000
+const REFERENCE_REPAIR_QUIET_MS = 60 * 1000
+
+export function desktopReferencesNeedRepair(
+  lastReferenceSyncAt: string | null,
+  now = Date.now(),
+): boolean {
+  if (!lastReferenceSyncAt) return true
+  const timestamp = Date.parse(lastReferenceSyncAt)
+  return !Number.isFinite(timestamp)
+    || now - timestamp >= DESKTOP_REFERENCE_REPAIR_INTERVAL_MS
+}
+
 
 const PERIODIC_SNAPSHOT_COUNTS = new Set([
   'staff',
@@ -30,13 +42,6 @@ export function hasMeaningfulDesktopSyncChanges(result: {
   )
 }
 
-export function desktopPullRowCount(changes: DesktopSyncPullChanges): number {
-  return Object.values(changes).reduce(
-    (count, value) => count + (Array.isArray(value) ? value.length : 0),
-    0,
-  )
-}
-
 export function useDesktopOutboxSync(serverOnline: boolean) {
   const userId = useAuthStore((state) => state.session?.user?.id ?? '')
   const offlineMode = useAuthStore((state) => state.offlineMode)
@@ -45,22 +50,16 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
   const retryAttemptRef = useRef(0)
   const lastUserActivityAtRef = useRef(0)
 
-  const canApplyPull = useCallback((changes?: DesktopSyncPullChanges) => {
+  const canStartPull = useCallback(() => {
     if (document.visibilityState !== 'visible') return true
-    if (Date.now() - lastUserActivityAtRef.current < FOREGROUND_QUIET_MS) return false
-    // Невелика дельта швидко оновлює касу. Великий пакет не застосовуємо у
-    // видимому вікні: курсор не зміниться, і пакет безпечно дочекається, доки
-    // користувач згорне програму.
-    return !changes || desktopPullRowCount(changes) <= MAX_FOREGROUND_PULL_ROWS
+    return Date.now() - lastUserActivityAtRef.current >= FOREGROUND_QUIET_MS
   }, [])
 
   const syncNow = useCallback(async (includeReferences = false) => {
     if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }
-    if (!canApplyPull()) return { pushed: 0, failed: 0, pending: 0 }
-
     setSyncing(true)
     try {
-      const result = await syncDesktopNow({ includeReferences, canApplyPull })
+      const result = await syncDesktopNow({ includeReferences, canStartPull })
       retryAttemptRef.current = result.failed > 0 ? retryAttemptRef.current + 1 : 0
       setLastError(result.failed > 0 ? `Не синхронізовано desktop-операцій: ${result.failed}` : null)
       if (hasMeaningfulDesktopSyncChanges(result)) {
@@ -77,7 +76,7 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
     } finally {
       setSyncing(false)
     }
-  }, [serverOnline, userId, offlineMode, canApplyPull])
+  }, [serverOnline, userId, offlineMode, canStartPull])
 
   useEffect(() => {
     if (!isDesktopRuntime()) return
@@ -105,7 +104,16 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
       if (cancelled) return
       if (timer !== null) window.clearTimeout(timer)
       timer = window.setTimeout(async () => {
-        const result = await syncNow(false)
+        let includeReferences = false
+        const referenceRepairIsIdle = document.visibilityState !== 'visible'
+          || Date.now() - lastUserActivityAtRef.current >= REFERENCE_REPAIR_QUIET_MS
+        if (referenceRepairIsIdle) {
+          const state = await desktopBridge()?.sync.getPullState().catch(() => null)
+          includeReferences = Boolean(
+            state?.cursor && desktopReferencesNeedRepair(state.last_reference_sync_at),
+          )
+        }
+        const result = await syncNow(includeReferences)
         const retryDelay = Math.min(
           RETRY_MAX_MS,
           RETRY_MIN_MS * (2 ** Math.max(0, retryAttemptRef.current - 1)),

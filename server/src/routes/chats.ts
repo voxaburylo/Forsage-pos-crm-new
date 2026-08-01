@@ -148,6 +148,7 @@ router.patch('/:id/link-customer', requireRole('owner', 'admin', 'manager'), asy
             .eq('customer_id', customerId)
             .eq('vin', vin)
             .eq('tenant_id', req.user!.tenant_id)
+            .is('deleted_at', null)
             .maybeSingle()
           if (existing) continue
 

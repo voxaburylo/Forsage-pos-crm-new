@@ -63,6 +63,7 @@ async function enrichWithAnalogs(results: SearchResult[]): Promise<SearchResult[
       .from('product_cross_numbers')
       .select('product_id')
       .in('product_id', productIds)
+      .is('deleted_at', null)
       .limit(2000),
   ])
 
@@ -220,6 +221,7 @@ async function crossNumberSearch(code: string, limit: number, tenantId: string):
     .from('product_cross_numbers')
     .select('product_id, number')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .ilike('normalized_number', `%${normalized}%`)
     .limit(limit)
 
@@ -391,6 +393,7 @@ async function aliasSearch(terms: string[], originalQ: string, limit: number, te
     .from('product_aliases')
     .select('product_id, alias')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .or(conditions)
     .limit(limit)
 
@@ -436,6 +439,7 @@ async function barcodeSearch(barcode: string, limit: number, tenantId: string): 
     .select('product_id, barcode')
     .eq('tenant_id', tenantId)
     .eq('barcode', barcode)
+    .is('deleted_at', null)
     .limit(limit)
 
   if (bcError) { logger.warn({ error: bcError.message }, '[search] product_barcodes error'); return [] }
@@ -493,6 +497,7 @@ async function vinSearch(vin: string, limit: number, tenantId: string): Promise<
     .from('customer_vehicles')
     .select('brand, model, year')
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .ilike('vin', `${vin}%`)
     .limit(5)
 

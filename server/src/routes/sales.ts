@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto'
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { createSaleSchema, calculatePriceSchema, saleListSchema } from '../validators/saleSchema.js'
 import * as saleService from '../services/saleService.js'
+import { assertTenantSyncGeneration } from '../services/syncGeneration.js'
 import { db } from '../db/supabase.js'
+import { runTransaction } from '../db/pg.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -114,75 +117,191 @@ const suspendSaleSchema = z.object({
   expires_at:     z.string().datetime().optional().nullable(),
 })
 
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalJson(nested)]),
+    )
+  }
+  return value
+}
+
+function suspendedSaleRequestHash(value: z.infer<typeof suspendSaleSchema>): string {
+  return createHash('sha256').update(JSON.stringify(canonicalJson(value))).digest('hex')
+}
+
 router.post('/suspend', async (req, res, next) => {
   try {
     const parsed = suspendSaleSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
 
     const { shift_id, customer_id, manager_id, items, payment_method, notes, pickup_cell, expires_at } = parsed.data
+    const idempotencyKey = String(req.get('X-Idempotency-Key') ?? '').trim()
+    if (idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+      throw new AppError('VALIDATION_ERROR', 'Некоректний X-Idempotency-Key', 400)
+    }
     const tenantId = req.user!.tenant_id
     const cashierId = req.user!.id
-
     const subtotal = items.reduce((s, i) => s + i.unit_price * i.qty, 0)
     const totalDiscount = items.reduce((s, i) => s + i.discount, 0)
     const total = Math.max(0, subtotal - totalDiscount)
-
     const productIds = [...new Set(items.map((item) => item.product_id))]
-    const { data: tenantProducts, error: productErr } = await db
-      .from('products')
-      .select('id')
-      .in('id', productIds)
-      .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-    if (productErr) throw new AppError('DB_ERROR', productErr.message, 500)
-    if ((tenantProducts?.length ?? 0) !== productIds.length) {
-      throw new AppError('PRODUCT_NOT_FOUND', 'Один або кілька товарів не знайдено', 404)
-    }
+    const requestHash = suspendedSaleRequestHash(parsed.data)
 
-    // Унікальний номер через sequence (гарантована унікальність)
-    const { data: seqRow, error: seqErr } = await db.rpc('next_suspend_number' as any)
-    if (seqErr) throw new AppError('DB_ERROR', seqErr.message, 500)
-    const saleNumber: string = seqRow as string
+    const result = await runTransaction(async (client) => {
+      // The idempotency claim, document and child rows commit together. A retry
+      // after a timeout either waits for this transaction or returns its result.
+      const claim = await client.query(
+        `INSERT INTO idempotency_keys (
+           key, tenant_id, status, response, request_hash, created_at
+         ) VALUES ($1, $2, 'processing', NULL, $3, clock_timestamp())
+         ON CONFLICT (key, tenant_id) DO NOTHING
+         RETURNING key`,
+        [idempotencyKey, tenantId, requestHash],
+      )
+      if (claim.rowCount === 0) {
+        const existingResult = await client.query(
+          `SELECT status, response, request_hash
+           FROM idempotency_keys
+           WHERE key = $1 AND tenant_id = $2
+           FOR UPDATE`,
+          [idempotencyKey, tenantId],
+        )
+        const existing = existingResult.rows[0]
+        if (!existing) {
+          throw new AppError('DB_ERROR', 'Не вдалося перевірити повтор запиту', 500)
+        }
+        if (existing.request_hash && existing.request_hash !== requestHash) {
+          throw new AppError(
+            'IDEMPOTENCY_CONFLICT',
+            'Цей номер операції вже використано для іншого відкладеного чека',
+            409,
+          )
+        }
+        if (existing.status === 'completed' && existing.response) {
+          return existing.response
+        }
+        throw new AppError('SALE_PROCESSING', 'Відкладення чека вже обробляється', 409)
+      }
 
-    const { data: sale, error: saleErr } = await db
-      .from('sales')
-      .insert({
-        tenant_id:      tenantId,
-        cashier_id:     cashierId,
-        shift_id,
-        customer_id:    customer_id ?? null,
-        manager_id:     manager_id ?? cashierId,
-        payment_method,
-        status:         'suspended',
-        subtotal,
-        discount:       totalDiscount,
-        total,
-        notes:          notes ?? null,
-        pickup_cell:    pickup_cell ?? null,
-        sale_number:    saleNumber,
-        is_debt:        payment_method === 'debt',
-        completed_at:   new Date().toISOString(),
-        expires_at:     expires_at ?? null,
-      })
-      .select('*, customer:customers(id,phone,full_name)')
-      .single()
+      const shiftResult = await client.query(
+        `SELECT id
+         FROM shifts
+         WHERE id = $1
+           AND tenant_id = $2
+           AND cashier_id = $3
+           AND status = 'open'
+         FOR SHARE`,
+        [shift_id, tenantId, cashierId],
+      )
+      if (shiftResult.rowCount === 0) {
+        throw new AppError('NO_OPEN_SHIFT', 'Активну зміну касира не знайдено', 400)
+      }
 
-    if (saleErr || !sale) throw new AppError('DB_ERROR', saleErr?.message ?? 'Помилка збереження', 500)
+      let customer: Record<string, unknown> | null = null
+      if (customer_id) {
+        const customerResult = await client.query(
+          `SELECT id, phone, full_name
+           FROM customers
+           WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+           FOR SHARE`,
+          [customer_id, tenantId],
+        )
+        if (customerResult.rowCount === 0) {
+          throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+        }
+        customer = customerResult.rows[0]
+      }
 
-    const saleItems = items.map((i) => ({
-      tenant_id:  tenantId,
-      sale_id:    sale.id,
-      product_id: i.product_id,
-      qty:        i.qty,
-      unit_price: i.unit_price,
-      discount:   i.discount,
-      total:      i.unit_price * i.qty - i.discount,
-    }))
+      const productsResult = await client.query(
+        `SELECT id
+         FROM products
+         WHERE tenant_id = $2
+           AND id = ANY($1::uuid[])
+           AND deleted_at IS NULL
+           AND is_active = true
+         FOR SHARE`,
+        [productIds, tenantId],
+      )
+      if (productsResult.rowCount !== productIds.length) {
+        throw new AppError('PRODUCT_NOT_FOUND', 'Один або кілька товарів не знайдено', 404)
+      }
 
-    const { error: itemsErr } = await db.from('sale_items').insert(saleItems)
-    if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+      const numberResult = await client.query<{ sale_number: string }>(
+        'SELECT public.next_suspend_number() AS sale_number',
+      )
+      const saleNumber = numberResult.rows[0]?.sale_number
+      if (!saleNumber) throw new AppError('DB_ERROR', 'Не вдалося створити номер чека', 500)
 
-    res.status(201).json({ data: { ...sale, sale_items: saleItems } })
+      const saleResult = await client.query(
+        `INSERT INTO sales (
+           tenant_id, sale_number, customer_id, cashier_id, shift_id, manager_id,
+           payment_method, status, subtotal, discount, total, notes, pickup_cell,
+           is_debt, completed_at, created_at, updated_at, expires_at,
+           client_operation_id, client_payload_hash
+         )
+         SELECT
+           $1, $2, $3, $4, $5, $6, $7, 'suspended', $8, $9, $10, $11, $12,
+           $13, stamp.at, stamp.at, stamp.at, $14, $15, $16
+         FROM (SELECT clock_timestamp() AS at) AS stamp
+         RETURNING *`,
+        [
+          tenantId, saleNumber, customer_id ?? null, cashierId, shift_id,
+          manager_id ?? cashierId, payment_method, subtotal, totalDiscount, total,
+          notes ?? null, pickup_cell ?? null, payment_method === 'debt',
+          expires_at ?? null, idempotencyKey, requestHash,
+        ],
+      )
+      const sale = saleResult.rows[0]
+      if (!sale) throw new AppError('DB_ERROR', 'Не вдалося зберегти чек', 500)
+
+      const saleItemsResult = await client.query(
+        `INSERT INTO sale_items (
+           tenant_id, sale_id, product_id, qty, unit_price, discount, total, created_at
+         )
+         SELECT $1, $2, item.product_id, item.qty, item.unit_price,
+                item.discount, item.total, clock_timestamp()
+         FROM jsonb_to_recordset($3::jsonb) AS item(
+           product_id UUID, qty NUMERIC, unit_price INTEGER, discount INTEGER, total INTEGER
+         )
+         RETURNING *`,
+        [
+          tenantId,
+          sale.id,
+          JSON.stringify(items.map((item) => ({
+            ...item,
+            total: item.unit_price * item.qty - item.discount,
+          }))),
+        ],
+      )
+
+      // Stamp the parent only after every child exists. Delta pull can now
+      // never observe and permanently cache an incomplete suspended receipt.
+      const finalSaleResult = await client.query(
+        `UPDATE sales
+         SET updated_at = clock_timestamp()
+         WHERE id = $1 AND tenant_id = $2
+         RETURNING *`,
+        [sale.id, tenantId],
+      )
+      const response = {
+        ...finalSaleResult.rows[0],
+        customer,
+        sale_items: saleItemsResult.rows,
+      }
+      await client.query(
+        `UPDATE idempotency_keys
+         SET status = 'completed', response = $3::jsonb, request_hash = $4
+         WHERE key = $1 AND tenant_id = $2`,
+        [idempotencyKey, tenantId, JSON.stringify(response), requestHash],
+      )
+      return response
+    })
+
+    res.status(201).json({ data: result })
   } catch (err) { next(err) }
 })
 
@@ -236,6 +355,13 @@ router.get('/', async (req, res, next) => {
 // POST /api/v1/sales — створити продаж
 router.post('/', async (req, res, next) => {
   try {
+    const rawGeneration = req.get('X-Sync-Reset-Generation')
+    const clientResetGeneration = rawGeneration === undefined ? 0 : Number(rawGeneration)
+    if (!Number.isInteger(clientResetGeneration) || clientResetGeneration < 0) {
+      throw new AppError('VALIDATION_ERROR', 'Некоректне покоління локальної бази', 400)
+    }
+    await assertTenantSyncGeneration(req.user!.tenant_id, clientResetGeneration)
+
     const parsed = createSaleSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані продажу', 422, parsed.error.flatten())
     
@@ -251,7 +377,13 @@ router.post('/', async (req, res, next) => {
       throw new AppError('FORBIDDEN', 'Знижки доступні лише менеджерам та адміністраторам', 403)
     }
 
-    const sale = await saleService.createSale(req.user!.id, req.user!.tenant_id, parsed.data, idempotencyKey)
+    const sale = await saleService.createSale(
+      req.user!.id,
+      req.user!.tenant_id,
+      parsed.data,
+      idempotencyKey,
+      clientResetGeneration,
+    )
     res.status(201).json({ data: sale })
   } catch (err) { next(err) }
 })

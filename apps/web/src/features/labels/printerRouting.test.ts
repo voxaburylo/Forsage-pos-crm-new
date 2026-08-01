@@ -18,4 +18,10 @@ describe('thermal printer routing', () => {
     expect(pickLabelPrinter(printers)).toBe('XPrinter XP-80C')
     expect(pickReceiptPrinter([{ name: 'HiLabel HL-80', isDefault: true }])).toBeNull()
   })
+
+  it('never substitutes a default printer with the wrong physical role', () => {
+    expect(pickReceiptPrinter([{ name: 'Office Laser', isDefault: true }])).toBeNull()
+    expect(pickReceiptPrinter([{ name: 'XPrinter POS-80', isDefault: true }])).toBeNull()
+    expect(pickLabelPrinter([{ name: 'XPrinter POS-58' }])).toBeNull()
+  })
 })

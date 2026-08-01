@@ -171,7 +171,7 @@ router.delete('/:id', requireRole(...MANAGER_ROLES), async (req, res, next) => {
       )
       await client.query(
         `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-         VALUES ($1, 'inventory_session', $2, NOW())
+         VALUES ($1, 'inventory_session', $2, clock_timestamp())
          ON CONFLICT (tenant_id, entity_type, entity_id)
          DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
         [req.user!.tenant_id, sessionId],
@@ -325,6 +325,7 @@ router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) =
         .select('product_id')
         .eq('tenant_id', req.user!.tenant_id)
         .eq('barcode', code)
+        .is('deleted_at', null)
         .maybeSingle()
       if (barcodeRow.error) throw new AppError('DB_ERROR', barcodeRow.error.message, 500)
       if (barcodeRow.data?.product_id) {

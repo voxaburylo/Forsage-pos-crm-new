@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { hashSecret, isSupportedSecretHash, secretHashNeedsUpgrade } from '../lib/secretHash.js'
 import { db } from '../db/supabase.js'
-import { runTransaction } from '../db/pg.js'
+import { pool, runTransaction } from '../db/pg.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeOemValue } from '../validators/productValidator.js'
-import { listUsers } from './adminService.js'
+import { clearCatalogReferenceCaches, listUsers } from './adminService.js'
 import { addOrderPayment } from './orderPaymentService.js'
 import {
   applySupplierCatalogImported,
@@ -23,13 +23,71 @@ import { clearProductSearchCache } from './productService.js'
 import { processSyncBatch } from './syncBatch.js'
 import { buildProductSyncQueryValues } from './syncProductValues.js'
 import { checkedSyncMoney } from './syncMoney.js'
+import { fetchAllById, fetchAllByTimestamp } from './syncKeyset.js'
+import { withTenantSyncGenerationGuard } from './syncGeneration.js'
 
-const PAGE_SIZE = 1000
 // Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
 // такий запит як Bad Request (уся синхронізація падала з DB_ERROR). Ліміт на
 // сторінку вибірки тут не годиться — потрібен окремий, менший крок.
 const IN_FILTER_CHUNK = 200
 const CURSOR_OVERLAP_MS = 5_000
+
+type SyncGenerationState = {
+  cursor: string
+  generation: number
+  resetAt: string | null
+}
+
+function databaseTimestamp(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null
+  const parsed = value instanceof Date ? value : new Date(String(value))
+  if (!Number.isFinite(parsed.getTime())) return null
+  return parsed.toISOString()
+}
+
+// Release order is migration -> server. The generation table and all delta
+// columns must exist before this code is exposed; silently serving a partial
+// schema would make the cursor contract dishonest.
+async function captureSyncState(tenantId: string): Promise<SyncGenerationState> {
+  try {
+    const result = await pool.query<{
+      cursor: Date | string
+      generation: string | number
+      reset_at: Date | string | null
+    }>(
+      `SELECT stamp.server_now - ($1::integer * interval '1 millisecond') AS cursor,
+              COALESCE(state.generation, 0) AS generation,
+              state.reset_at
+       FROM (SELECT clock_timestamp() AS server_now) AS stamp
+       LEFT JOIN sync_tenant_generations AS state ON state.tenant_id = $2`,
+      [CURSOR_OVERLAP_MS, tenantId],
+    )
+    const row = result.rows[0]
+    const cursor = databaseTimestamp(row?.cursor)
+    if (!cursor) throw new Error('database returned an invalid cursor')
+    return {
+      cursor,
+      generation: Number(row?.generation ?? 0),
+      resetAt: databaseTimestamp(row?.reset_at),
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new AppError('DB_ERROR', `Не вдалося отримати стан синхронізації: ${message}`, 500)
+  }
+}
+async function captureDatabaseAppliedAt(): Promise<string> {
+  try {
+    const result = await pool.query<{ applied_at: Date | string }>(
+      'SELECT clock_timestamp() AS applied_at',
+    )
+    const appliedAt = databaseTimestamp(result.rows[0]?.applied_at)
+    if (!appliedAt) throw new Error('database returned an invalid apply timestamp')
+    return appliedAt
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new AppError('DB_ERROR', `Не вдалося отримати час застосування операції: ${message}`, 500)
+  }
+}
 
 function isUuid(value: unknown): value is string {
   return typeof value === 'string'
@@ -43,32 +101,6 @@ function uuidOr(value: unknown, fallback: string): string {
 function normalizedPhoneEmail(value: unknown): string {
   const digits = String(value ?? '').replace(/\D/g, '')
   return `${digits || randomUUID()}@forsage.internal`
-}
-
-async function fetchAll(
-  buildQuery: (from: number, to: number) => any,
-  tieBreaker = 'id',
-): Promise<any[]> {
-  const rows: any[] = []
-  let from = 0
-
-  while (true) {
-    // range() without a stable order can skip or duplicate rows between pages.
-    // Most tables use `id`; composite-key journals explicitly pass their own
-    // stable tie-breaker.
-    const query = buildQuery(from, from + PAGE_SIZE - 1)
-    const { data, error } = await query.order(tieBreaker, { ascending: true })
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
-    const page = data ?? []
-    rows.push(...page)
-    if (page.length < PAGE_SIZE) return rows
-    from += PAGE_SIZE
-  }
-}
-
-function withChangedSince(query: any, since?: string): any {
-  if (!since) return query
-  return query.or(`updated_at.gt.${since},deleted_at.gt.${since}`)
 }
 
 const SHOP_SETTINGS_SYNC_KEYS = [
@@ -137,6 +169,7 @@ export interface SyncChangesInput {
   userId: string
   role: string
   includeReferences?: boolean
+  resetGeneration?: number
 }
 
 export interface SyncOutboxOperation {
@@ -155,9 +188,12 @@ export interface SyncOutboxOperation {
 export interface SyncPushResult {
   sequence: number
   operation_id: string
-  status: 'synced' | 'failed'
+  status: 'synced' | 'failed' | 'discarded'
   aggregate_id?: string
   error?: string
+  error_code?: 'SYNC_RESET_REQUIRED'
+  reset_generation?: number
+  reset_at?: string
 }
 
 function assertSyncOperationAllowed(role: string, operationType: string): void {
@@ -167,18 +203,55 @@ function assertSyncOperationAllowed(role: string, operationType: string): void {
 }
 async function fetchSecondarySyncData(params: {
   since?: string
+  upperBound: string
   tenantId: string
   userId?: string
   role: string
   fullSnapshots: boolean
+  historySince?: string
 }) {
-  const { since, tenantId, userId, role, fullSnapshots } = params
+  const { since, upperBound, tenantId, userId, role, fullSnapshots, historySince } = params
   const canPullPayroll = role === 'owner' || role === 'admin'
   const canPullCash = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReturns = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReserves = ['owner', 'admin', 'manager', 'storekeeper', 'cashier'].includes(role)
   const canPullWarehouse = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
   const canPullCustomerMoney = ['owner', 'admin', 'manager', 'cashier'].includes(role)
+
+  const changed = (buildQuery: () => any, fullSnapshot = false) => fetchAllByTimestamp(buildQuery, {
+    timestampColumn: 'updated_at',
+    lowerBound: fullSnapshot ? undefined : since,
+    upperBound,
+  })
+  const recentChanged = (table: string) => changed(() => {
+    let query = db.from(table).select('*').eq('tenant_id', tenantId)
+    if (historySince) query = query.gte('created_at', historySince)
+    return query
+  }, Boolean(historySince))
+  const deletions = (entityType: string) => fetchAllByTimestamp(
+    () => db
+      .from('sync_deletions')
+      .select('entity_id,deleted_at')
+      .eq('tenant_id', tenantId)
+      .eq('entity_type', entityType),
+    {
+      timestampColumn: 'deleted_at',
+      lowerBound: since,
+      upperBound,
+      tieBreaker: 'entity_id',
+    },
+  )
+  const childrenForParents = async (
+    parentIds: string[],
+    buildQuery: (ids: string[]) => any,
+  ): Promise<any[]> => {
+    const rows: any[] = []
+    for (let start = 0; start < parentIds.length; start += IN_FILTER_CHUNK) {
+      const ids = parentIds.slice(start, start + IN_FILTER_CHUNK)
+      rows.push(...await fetchAllById(() => buildQuery(ids)))
+    }
+    return rows
+  }
 
   const [
     staff,
@@ -188,156 +261,70 @@ async function fetchSecondarySyncData(params: {
     deletedSalaryPayments,
     deletedCashOperations,
     customerReturns,
-    customerReturnItems,
     stockReserves,
     warehouseMovements,
     writeoffs,
-    writeoffItems,
     bonusTransactions,
     customerDepositTransactions,
   ] = await Promise.all([
     canPullPayroll ? listUsers(tenantId) : Promise.resolve([]),
     canPullPayroll
-      ? fetchAll((from, to) => db
-          .from('commission_rules')
-          .select('*')
-          .eq('tenant_id', tenantId)
-          .order('updated_at', { ascending: true })
-          .range(from, to))
+      ? fetchAllById(() => db.from('commission_rules').select('*').eq('tenant_id', tenantId))
       : Promise.resolve([]),
     canPullPayroll
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('salary_payments')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since && !fullSnapshots) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
+      ? changed(
+          () => db.from('salary_payments').select('*').eq('tenant_id', tenantId),
+          fullSnapshots,
+        )
       : Promise.resolve([]),
     canPullCash
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('cash_operations')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
+      ? recentChanged('cash_operations')
       : Promise.resolve([]),
-    canPullPayroll
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('sync_deletions')
-            .select('entity_id,deleted_at')
-            .eq('tenant_id', tenantId)
-            .eq('entity_type', 'salary_payment')
-            .order('deleted_at', { ascending: true })
-          if (since) query = query.gt('deleted_at', since)
-          return query.range(from, to)
-        }, 'entity_id')
-      : Promise.resolve([]),
-    canPullCash
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('sync_deletions')
-            .select('entity_id,deleted_at')
-            .eq('tenant_id', tenantId)
-            .eq('entity_type', 'cash_operation')
-            .order('deleted_at', { ascending: true })
-          if (since) query = query.gt('deleted_at', since)
-          return query.range(from, to)
-        }, 'entity_id')
-      : Promise.resolve([]),
+    canPullPayroll ? deletions('salary_payment') : Promise.resolve([]),
+    canPullCash ? deletions('cash_operation') : Promise.resolve([]),
     canPullReturns
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('customer_returns')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
-      : Promise.resolve([]),
-    canPullReturns
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('customer_return_items')
-            .select('*,parent:customer_returns!inner(tenant_id,created_at)')
-            .eq('parent.tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('parent.created_at', since)
-          return query.range(from, to)
-        })
+      ? recentChanged('customer_returns')
       : Promise.resolve([]),
     canPullReserves
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('inventory_reserves')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since && !fullSnapshots) query = query.or(`created_at.gt.${since},released_at.gt.${since}`)
-          return query.range(from, to)
-        })
+      ? changed(
+          () => db.from('inventory_reserves').select('*').eq('tenant_id', tenantId),
+          fullSnapshots,
+        )
       : Promise.resolve([]),
     canPullWarehouse
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('warehouse_movements')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
+      ? recentChanged('warehouse_movements')
       : Promise.resolve([]),
     canPullWarehouse
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('inventory_writeoffs')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
+      ? recentChanged('inventory_writeoffs')
       : Promise.resolve([]),
-    canPullWarehouse
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('inventory_writeoff_items')
-            .select('*,parent:inventory_writeoffs!inner(tenant_id,created_at)')
+    canPullCustomerMoney
+      ? recentChanged('bonus_transactions')
+      : Promise.resolve([]),
+    canPullCustomerMoney
+      ? recentChanged('customer_deposit_transactions')
+      : Promise.resolve([]),
+  ])
+
+  const [customerReturnItems, writeoffItems] = await Promise.all([
+    canPullReturns
+      ? childrenForParents(
+          customerReturns.map((row: any) => String(row.id)),
+          (ids) => db
+            .from('customer_return_items')
+            .select('*,parent:customer_returns!inner(tenant_id)')
             .eq('parent.tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('parent.created_at', since)
-          return query.range(from, to)
-        })
+            .in('return_id', ids),
+        )
       : Promise.resolve([]),
-    canPullCustomerMoney
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('bonus_transactions')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
-      : Promise.resolve([]),
-    canPullCustomerMoney
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('customer_deposit_transactions')
-            .select('*')
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: true })
-          if (since) query = query.gt('created_at', since)
-          return query.range(from, to)
-        })
+    canPullWarehouse
+      ? childrenForParents(
+          writeoffs.map((row: any) => String(row.id)),
+          (ids) => db
+            .from('inventory_writeoff_items')
+            .select('*,parent:inventory_writeoffs!inner(tenant_id)')
+            .eq('parent.tenant_id', tenantId)
+            .in('writeoff_id', ids),
+        )
       : Promise.resolve([]),
   ])
 
@@ -350,6 +337,7 @@ async function fetchSecondarySyncData(params: {
       .from('staff_pins')
       .select('user_id,pin_code,updated_at')
       .in('user_id', ids)
+      .lte('updated_at', upperBound)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     for (const row of data ?? []) {
       const stored = String(row.pin_code ?? '')
@@ -381,7 +369,6 @@ async function fetchSecondarySyncData(params: {
     stock_reserves_snapshot_included: canPullReserves && fullSnapshots,
   }
 }
-
 /**
  * One consistent local-first pull endpoint.
  *
@@ -395,32 +382,76 @@ export async function getSyncChanges({
   userId,
   role,
   includeReferences = false,
+  resetGeneration = 0,
 }: SyncChangesInput) {
-  const nextCursor = new Date(Date.now() - CURSOR_OVERLAP_MS).toISOString()
+  // Every query is bounded by the same immutable upper timestamp.  Rows written
+  // later are intentionally replayed by the next request.
+  const syncState = await captureSyncState(tenantId)
+  const nextCursor = syncState.cursor
+  const generationMismatch = Boolean(since && resetGeneration !== syncState.generation)
+  const resetRequired = generationMismatch || Boolean(
+    since && syncState.resetAt && Date.parse(since) < Date.parse(syncState.resetAt),
+  )
+  if (resetRequired) {
+    return {
+      tenant_id: tenantId,
+      cursor: nextCursor,
+      reset_required: true,
+      reset_generation: syncState.generation,
+      reset_at: syncState.resetAt,
+      references_included: false,
+      reference_parent_repair_included: false,
+      catalog_structure_snapshot_included: false,
+    }
+  }
   const referencesIncluded = !since || includeReferences
   const canPullSupply = canPullSupplyData(role)
   const canPullSupplierCatalog = role === 'owner' || role === 'admin'
   const historySince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const snapshotSince = referencesIncluded ? undefined : since
 
+  const changed = (
+    buildQuery: () => any,
+    lowerBound = snapshotSince,
+    timestampColumn = 'updated_at',
+    tieBreaker = 'id',
+  ) => fetchAllByTimestamp(buildQuery, {
+    timestampColumn,
+    lowerBound,
+    upperBound: nextCursor,
+    tieBreaker,
+  })
+  const childrenForParents = async (
+    parentIds: string[],
+    buildQuery: (ids: string[]) => any,
+  ): Promise<any[]> => {
+    const rows: any[] = []
+    const uniqueIds = [...new Set(parentIds.filter(isUuid))]
+    for (let start = 0; start < uniqueIds.length; start += IN_FILTER_CHUNK) {
+      const ids = uniqueIds.slice(start, start + IN_FILTER_CHUNK)
+      rows.push(...await fetchAllById(() => buildQuery(ids)))
+    }
+    return rows
+  }
+  const activeReferenceQuery = (query: any): any => referencesIncluded
+    ? query.is('deleted_at', null)
+    : query
+
   const [
-    productRows,
+    initialProductRows,
     customerRows,
     supplierRows,
     shifts,
     sales,
-    saleItems,
-    categories,
-    brands,
-    productBarcodes,
-    productAliases,
-    productCrossNumbers,
-    customerVehicles,
+    categoryRows,
+    brandRows,
+    productBarcodeRows,
+    productAliasRows,
+    productCrossNumberRows,
+    customerVehicleRows,
     customerOrders,
-    customerOrderItems,
     orderPayments,
     supplyInvoices,
-    supplyInvoiceItems,
     supplierPayments,
     inventorySessions,
     inventoryItems,
@@ -430,241 +461,302 @@ export async function getSyncChanges({
     shopSettings,
     secondary,
   ] = await Promise.all([
-    fetchAll((from, to) => {
+    changed(() => {
       let query = db
         .from('products')
         .select('*,brand:brands(id,name),category:categories(id,name)')
         .eq('tenant_id', tenantId)
-        .order('updated_at', { ascending: true })
-      query = withChangedSince(query, snapshotSince)
       if (!since) query = query.is('deleted_at', null)
-      return query.range(from, to)
+      return query
     }),
-    fetchAll((from, to) => {
+    changed(() => {
       let query = db
         .from('customers')
-        .select('*,price_tier:price_tiers(id,name,discount_pct),customer_cars(vin)')
+        .select('*,price_tier:price_tiers(id,name,discount_pct),customer_cars(vin,deleted_at)')
         .eq('tenant_id', tenantId)
-        .order('updated_at', { ascending: true })
-      query = withChangedSince(query, snapshotSince)
       if (!since) query = query.is('deleted_at', null)
-      return query.range(from, to)
+      return query
     }),
     canPullSupply
-      ? fetchAll((from, to) => {
+      ? changed(() => {
           let query = db
             .from('suppliers')
             .select('id,tenant_id,name,phone,email,contact_name,notes,is_active,created_at,updated_at,deleted_at')
             .eq('tenant_id', tenantId)
-            .order('updated_at', { ascending: true })
-          query = withChangedSince(query, snapshotSince)
           if (!since) query = query.is('deleted_at', null)
-          return query.range(from, to)
+          return query
         })
       : Promise.resolve([]),
-    fetchAll((from, to) => {
-      let query = db
-        .from('shifts')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .order('created_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.or(`closed_at.gt.${since},opened_at.gt.${since},created_at.gt.${since}`)
-      else query = query.or(`status.eq.open,opened_at.gte.${historySince}`)
-      return query.range(from, to)
-    }),
-    fetchAll((from, to) => {
-      let query = db
-        .from('sales')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .order('updated_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.gt('updated_at', since)
-      else query = query.gte('completed_at', historySince)
-      return query.range(from, to)
-    }),
-    fetchAll((from, to) => {
-      let query = db
-        .from('sale_items')
-        .select('*,sale:sales!inner(tenant_id,updated_at,completed_at),product:products(id,sku,name)')
-        .eq('sale.tenant_id', tenantId)
-        .order('created_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.gt('sale.updated_at', since)
-      else query = query.gte('sale.completed_at', historySince)
-      return query.range(from, to)
-    }),
-    referencesIncluded
-      ? fetchAll((from, to) => db
-          .from('categories')
-          .select('id,parent_id,name,sort_order,created_at')
-          .eq('tenant_id', tenantId)
-          .order('sort_order', { ascending: true })
-          .range(from, to))
-      : Promise.resolve([]),
-    referencesIncluded
-      ? fetchAll((from, to) => db
-          .from('brands')
-          .select('id,name,country,created_at')
-          .eq('tenant_id', tenantId)
-          .order('name', { ascending: true })
-          .range(from, to))
-      : Promise.resolve([]),
-    referencesIncluded
-      ? fetchAll((from, to) => db
-          .from('product_barcodes')
-          .select('id,tenant_id,product_id,barcode,barcode_type,is_primary,created_at')
-          .eq('tenant_id', tenantId)
-          .range(from, to))
-      : Promise.resolve([]),
-    referencesIncluded
-      ? fetchAll((from, to) => db
-          .from('product_aliases')
-          .select('id,tenant_id,product_id,alias,created_at')
-          .eq('tenant_id', tenantId)
-          .range(from, to))
-      : Promise.resolve([]),
-    referencesIncluded
-      ? fetchAll((from, to) => db
-          .from('product_cross_numbers')
-          .select('id,tenant_id,product_id,number,normalized_number,number_type,brand,source,is_verified,created_at')
-          .eq('tenant_id', tenantId)
-          .range(from, to))
-      : Promise.resolve([]),
-    referencesIncluded
-      ? fetchAll((from, to) => db
-          .from('customer_cars')
-          .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at')
-          .eq('tenant_id', tenantId)
-          .range(from, to))
-      : Promise.resolve([]),
-    fetchAll((from, to) => {
+    changed(
+      () => {
+        let query = db.from('shifts').select('*').eq('tenant_id', tenantId)
+        if (referencesIncluded) query = query.or(`status.eq.open,opened_at.gte.${historySince}`)
+        return query
+      },
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => {
+        let query = db.from('sales').select('*').eq('tenant_id', tenantId)
+        if (referencesIncluded) query = query.gte('completed_at', historySince)
+        return query
+      },
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => activeReferenceQuery(db
+        .from('categories')
+        .select('id,tenant_id,parent_id,name,sort_order,created_at,updated_at,deleted_at')
+        .eq('tenant_id', tenantId)),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => activeReferenceQuery(db
+        .from('brands')
+        .select('id,tenant_id,name,country,tier,created_at,updated_at,deleted_at')
+        .eq('tenant_id', tenantId)),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => activeReferenceQuery(db
+        .from('product_barcodes')
+        .select('id,tenant_id,product_id,barcode,barcode_type,is_primary,created_at,updated_at,deleted_at')
+        .eq('tenant_id', tenantId)),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => activeReferenceQuery(db
+        .from('product_aliases')
+        .select('id,tenant_id,product_id,alias,created_at,updated_at,deleted_at')
+        .eq('tenant_id', tenantId)),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => activeReferenceQuery(db
+        .from('product_cross_numbers')
+        .select('id,tenant_id,product_id,number,normalized_number,number_type,brand,source,is_verified,created_at,updated_at,deleted_at')
+        .eq('tenant_id', tenantId)),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => activeReferenceQuery(db
+        .from('customer_cars')
+        .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at,updated_at,deleted_at')
+        .eq('tenant_id', tenantId)),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(() => {
       let query = db
         .from('customer_orders')
         .select('*,customer:customers(id,phone,full_name,card_barcode)')
         .eq('tenant_id', tenantId)
-        .order('updated_at', { ascending: true })
-      query = withChangedSince(query, snapshotSince)
       if (!since) query = query.is('deleted_at', null)
-      return query.range(from, to)
+      return query
     }),
-    fetchAll((from, to) => {
-      let query = db
-        .from('customer_order_items')
-        .select('*,order:customer_orders!inner(tenant_id,updated_at)')
-        .eq('order.tenant_id', tenantId)
-        .order('created_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.gt('order.updated_at', since)
-      return query.range(from, to)
-    }),
-    fetchAll((from, to) => {
-      let query = db
-        .from('order_payments')
-        .select('*,order:customer_orders!inner(tenant_id)')
-        .eq('order.tenant_id', tenantId)
-        .order('created_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.gt('created_at', since)
-      return query.range(from, to)
-    }),
+    changed(
+      () => db.from('order_payments').select('*').eq('tenant_id', tenantId),
+      referencesIncluded ? undefined : since,
+    ),
     canPullSupply
-      ? fetchAll((from, to) => {
+      ? changed(() => {
           let query = db
             .from('supply_invoices')
             .select('*,supplier:suppliers(id,name)')
             .eq('tenant_id', tenantId)
-            .order('updated_at', { ascending: true })
-          query = withChangedSince(query, includeReferences ? undefined : since)
           if (!since) query = query.is('deleted_at', null)
-          return query.range(from, to)
-        })
+          return query
+        }, includeReferences ? undefined : since)
       : Promise.resolve([]),
     canPullSupply
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('supply_invoice_items')
-            .select('*,invoice:supply_invoices!inner(tenant_id,updated_at,deleted_at)')
-            .eq('invoice.tenant_id', tenantId)
-            .is('invoice.deleted_at', null)
-            .order('created_at', { ascending: true })
-          if (since && !includeReferences) query = query.gt('invoice.updated_at', since)
-          return query.range(from, to)
-        })
-      : Promise.resolve([]),
-    canPullSupply
-      ? fetchAll((from, to) => {
-          let query = db
+      ? changed(
+          () => db
             .from('supplier_payments')
             .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
             .eq('invoice.tenant_id', tenantId)
-            .is('invoice.deleted_at', null)
-            .order('updated_at', { ascending: true })
-          if (since && !referencesIncluded) query = query.gt('updated_at', since)
-          return query.range(from, to)
-        })
+            .is('invoice.deleted_at', null),
+          referencesIncluded ? undefined : since,
+        )
       : Promise.resolve([]),
-    fetchAll((from, to) => {
-      let query = db
+    changed(
+      () => db
         .from('inventory_sessions')
-        .select('id,tenant_id,name,status,created_by,started_by,started_at,completed_at,created_at')
-        .eq('tenant_id', tenantId)
-        .order('created_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.or(`completed_at.gt.${since},started_at.gt.${since},created_at.gt.${since}`)
-      return query.range(from, to)
-    }),
-    fetchAll((from, to) => {
-      let query = db
+        .select('id,tenant_id,name,status,created_by,started_by,started_at,completed_at,created_at,updated_at')
+        .eq('tenant_id', tenantId),
+      referencesIncluded ? undefined : since,
+    ),
+    changed(
+      () => db
         .from('inventory_items')
         .select('id,session_id,product_id,expected_stock,counted_stock,was_counted,price_checked,observed_retail_price,last_counted_by,created_at,updated_at,product:products!inner(tenant_id)')
         .eq('product.tenant_id', tenantId)
-        .eq('was_counted', true)
-        .order('updated_at', { ascending: true })
-      if (since && !referencesIncluded) query = query.gt('updated_at', since)
-      return query.range(from, to)
-    }),
-    fetchAll((from, to) => {
-      let query = db
+        .eq('was_counted', true),
+      referencesIncluded ? undefined : since,
+    ),
+    fetchAllByTimestamp(
+      () => db
         .from('sync_deletions')
         .select('entity_id,deleted_at')
         .eq('tenant_id', tenantId)
-        .eq('entity_type', 'inventory_session')
-        .order('deleted_at', { ascending: true })
-      if (since) query = query.gt('deleted_at', since)
-      return query.range(from, to)
-    }, 'entity_id'),
+        .eq('entity_type', 'inventory_session'),
+      {
+        timestampColumn: 'deleted_at',
+        lowerBound: since,
+        upperBound: nextCursor,
+        tieBreaker: 'entity_id',
+      },
+    ),
     canPullSupplierCatalog
-      ? fetchAll((from, to) => {
-          let query = db
-            .from('supplier_price_items')
-            .select('id,tenant_id,supplier_id,sku,barcode,brand,name,price_kopecks,qty,warehouse_name,created_at,updated_at,deleted_at')
-            .eq('tenant_id', tenantId)
-            .order('updated_at', { ascending: true })
-          query = withChangedSince(query, since)
-          if (!since) query = query.is('deleted_at', null)
-          return query.range(from, to)
-        })
+      ? changed(
+          () => {
+            let query = db
+              .from('supplier_price_items')
+              .select('id,tenant_id,supplier_id,sku,barcode,brand,name,price_kopecks,qty,warehouse_name,created_at,updated_at,deleted_at')
+              .eq('tenant_id', tenantId)
+            if (!since) query = query.is('deleted_at', null)
+            return query
+          },
+          since,
+        )
       : Promise.resolve([]),
     canPullSupplierCatalog
-      ? fetchAll((from, to) => {
-          let query = db
+      ? changed(
+          () => db
             .from('supplier_price_imports')
             .select('id,tenant_id,supplier_id,filename,status,total_rows,processed_rows,errors_log,created_at,updated_at')
-            .eq('tenant_id', tenantId)
-            .order('updated_at', { ascending: true })
-          if (since) query = query.gt('updated_at', since)
-          return query.range(from, to)
-        })
+            .eq('tenant_id', tenantId),
+          since,
+        )
       : Promise.resolve([]),
     fetchShopSettings(tenantId, role),
-    fetchSecondarySyncData({ since, tenantId, userId, role, fullSnapshots: referencesIncluded }),
+    fetchSecondarySyncData({
+      since,
+      upperBound: nextCursor,
+      tenantId,
+      userId,
+      role,
+      fullSnapshots: referencesIncluded,
+    }),
   ])
 
+  const [saleItems, customerOrderItems, supplyInvoiceItems] = await Promise.all([
+    childrenForParents(
+      sales.map((row: any) => String(row.id)),
+      (ids) => db
+        .from('sale_items')
+        .select('*,sale:sales!inner(tenant_id),product:products(id,sku,name)')
+        .eq('sale.tenant_id', tenantId)
+        .in('sale_id', ids),
+    ),
+    childrenForParents(
+      customerOrders.map((row: any) => String(row.id)),
+      (ids) => db
+        .from('customer_order_items')
+        .select('*,order:customer_orders!inner(tenant_id)')
+        .eq('order.tenant_id', tenantId)
+        .in('order_id', ids),
+    ),
+    canPullSupply
+      ? childrenForParents(
+          supplyInvoices.filter((row: any) => !row.deleted_at).map((row: any) => String(row.id)),
+          (ids) => db
+            .from('supply_invoice_items')
+            .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
+            .eq('invoice.tenant_id', tenantId)
+            .is('invoice.deleted_at', null)
+            .in('invoice_id', ids),
+        )
+      : Promise.resolve([]),
+  ])
+
+  // Browser IndexedDB stores reference values inside the product, not by
+  // reference-row id.  Any changed/tombstoned reference therefore repairs its
+  // parent with all currently active values.
+  const referenceProductIds = [...new Set([
+    ...productBarcodeRows,
+    ...productAliasRows,
+    ...productCrossNumberRows,
+  ].map((row: any) => String(row.product_id)).filter(isUuid))]
+  const repairProductRows = referencesIncluded
+    ? []
+    : await childrenForParents(
+        referenceProductIds,
+        (ids) => db
+          .from('products')
+          .select('*,brand:brands(id,name),category:categories(id,name)')
+          .eq('tenant_id', tenantId)
+          .is('deleted_at', null)
+          .in('id', ids),
+      )
+  const productRowsById = new Map<string, any>()
+  for (const row of [...initialProductRows, ...repairProductRows]) productRowsById.set(String(row.id), row)
+  const productRows = [...productRowsById.values()]
   const deletedProductIds = productRows.filter((row) => row.deleted_at).map((row) => row.id)
   const activeProducts = productRows.filter((row) => !row.deleted_at)
+  const repairValueProductIds = referencesIncluded
+    ? activeProducts.map((row) => String(row.id))
+    : referenceProductIds
+
+  const [completeBarcodes, completeAliases, completeCrossNumbers] = await Promise.all([
+    childrenForParents(
+      repairValueProductIds,
+      (ids) => db
+        .from('product_barcodes')
+        .select('id,product_id,barcode,is_primary')
+        .eq('tenant_id', tenantId)
+        .is('deleted_at', null)
+        .in('product_id', ids),
+    ),
+    childrenForParents(
+      repairValueProductIds,
+      (ids) => db
+        .from('product_aliases')
+        .select('id,product_id,alias')
+        .eq('tenant_id', tenantId)
+        .is('deleted_at', null)
+        .in('product_id', ids),
+    ),
+    childrenForParents(
+      repairValueProductIds,
+      (ids) => db
+        .from('product_cross_numbers')
+        .select('id,product_id,number')
+        .eq('tenant_id', tenantId)
+        .is('deleted_at', null)
+        .in('product_id', ids),
+    ),
+  ])
+  const repairSet = new Set(repairValueProductIds)
+  const valuesByProduct = <T>(rows: any[], value: (row: any) => T | null): Map<string, T[]> => {
+    const result = new Map<string, T[]>()
+    for (const row of rows) {
+      const item = value(row)
+      if (item === null) continue
+      const id = String(row.product_id)
+      const values = result.get(id) ?? []
+      if (!values.includes(item)) values.push(item)
+      result.set(id, values)
+    }
+    return result
+  }
+  const additionalBarcodesByProduct = valuesByProduct<string>(
+    completeBarcodes,
+    (row) => row.is_primary === true ? null : String(row.barcode),
+  )
+  const aliasesByProduct = valuesByProduct<string>(completeAliases, (row) => String(row.alias))
+  const crossNumbersByProduct = valuesByProduct<string>(completeCrossNumbers, (row) => String(row.number))
+
   const availability = await loadAvailability(activeProducts.map((row) => row.id))
   const products = activeProducts.map((product) => {
     const available = availability.get(product.id)
-    const result = {
+    const result: Record<string, any> = {
       ...product,
       qty_reserved: available?.qty_reserved ?? 0,
       qty_available: available?.qty_available ?? Number(product.qty_on_hand ?? 0),
+    }
+    if (repairSet.has(String(product.id))) {
+      result.additional_barcodes = additionalBarcodesByProduct.get(String(product.id)) ?? []
+      result.aliases = aliasesByProduct.get(String(product.id)) ?? []
+      result.cross_numbers = crossNumbersByProduct.get(String(product.id)) ?? []
     }
     if (role === 'cashier') {
       delete result.purchase_price
@@ -676,12 +768,17 @@ export async function getSyncChanges({
   const deletedCustomerIds = customerRows.filter((row) => row.deleted_at).map((row) => row.id)
   const customers = customerRows
     .filter((row) => !row.deleted_at)
-    .map((customer) => ({
-      ...customer,
-      primary_vin: customer.customer_cars?.find((car: any) => car.vin)?.vin ?? null,
-      car_count: Array.isArray(customer.customer_cars) ? customer.customer_cars.length : 0,
-      customer_cars: undefined,
-    }))
+    .map((customer) => {
+      const activeCars = Array.isArray(customer.customer_cars)
+        ? customer.customer_cars.filter((car: any) => !car.deleted_at)
+        : []
+      return {
+        ...customer,
+        primary_vin: activeCars.find((car: any) => car.vin)?.vin ?? null,
+        car_count: activeCars.length,
+        customer_cars: undefined,
+      }
+    })
 
   const deletedSupplierIds = supplierRows.filter((row) => row.deleted_at).map((row) => row.id)
   const suppliers = supplierRows.filter((row) => !row.deleted_at)
@@ -693,20 +790,25 @@ export async function getSyncChanges({
       .map((row) => ({ ...row, order: undefined })),
     role,
   )
-  const activeOrderPayments = orderPayments.map((row) => ({ ...row, order: undefined }))
   const activeSaleItems = sanitizeCommercialFieldsForRole(
     saleItems.map((row) => ({ ...row, sale: undefined })),
     role,
   )
   const deletedSupplyInvoiceIds = supplyInvoices.filter((row) => row.deleted_at).map((row) => row.id)
-  const activeSupplyInvoices = supplyInvoices.filter((row) => !row.deleted_at)
-  const activeSupplyInvoiceItems = supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined }))
-  const activeSupplierPayments = supplierPayments.map((row) => ({ ...row, invoice: undefined }))
-  const activeInventoryItems = inventoryItems.map((row) => ({ ...row, product: undefined }))
+
+  const deletedCategoryIds = categoryRows.filter((row) => row.deleted_at).map((row) => row.id)
+  const deletedBrandIds = brandRows.filter((row) => row.deleted_at).map((row) => row.id)
+  const deletedProductBarcodeIds = productBarcodeRows.filter((row) => row.deleted_at).map((row) => row.id)
+  const deletedProductAliasIds = productAliasRows.filter((row) => row.deleted_at).map((row) => row.id)
+  const deletedProductCrossNumberIds = productCrossNumberRows.filter((row) => row.deleted_at).map((row) => row.id)
+  const deletedCustomerVehicleIds = customerVehicleRows.filter((row) => row.deleted_at).map((row) => row.id)
 
   return {
     tenant_id: tenantId,
     cursor: nextCursor,
+    reset_required: false,
+    reset_generation: syncState.generation,
+    reset_at: syncState.resetAt,
     products,
     deleted_product_ids: deletedProductIds,
     customers,
@@ -716,38 +818,54 @@ export async function getSyncChanges({
     shifts,
     sales,
     sale_items: activeSaleItems,
-    categories,
-    brands,
-    product_barcodes: productBarcodes,
-    product_aliases: productAliases,
-    product_cross_numbers: productCrossNumbers,
-    customer_vehicles: customerVehicles,
+    categories: categoryRows.filter((row) => !row.deleted_at),
+    deleted_category_ids: deletedCategoryIds,
+    brands: brandRows.filter((row) => !row.deleted_at),
+    deleted_brand_ids: deletedBrandIds,
+    product_barcodes: productBarcodeRows.filter((row) => !row.deleted_at),
+    deleted_product_barcode_ids: deletedProductBarcodeIds,
+    product_aliases: productAliasRows.filter((row) => !row.deleted_at),
+    deleted_product_alias_ids: deletedProductAliasIds,
+    product_cross_numbers: productCrossNumberRows.filter((row) => !row.deleted_at),
+    deleted_product_cross_number_ids: deletedProductCrossNumberIds,
+    customer_vehicles: customerVehicleRows.filter((row) => !row.deleted_at),
+    deleted_customer_vehicle_ids: deletedCustomerVehicleIds,
     customer_orders: activeCustomerOrders,
     deleted_customer_order_ids: deletedCustomerOrderIds,
     customer_order_items: activeCustomerOrderItems,
-    order_payments: activeOrderPayments,
-    supply_invoices: activeSupplyInvoices,
+    order_payments: orderPayments,
+    supply_invoices: supplyInvoices.filter((row) => !row.deleted_at),
     deleted_supply_invoice_ids: deletedSupplyInvoiceIds,
-    supply_invoice_items: activeSupplyInvoiceItems,
-    supplier_payments: activeSupplierPayments,
+    supply_invoice_items: supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined })),
+    supplier_payments: supplierPayments.map((row) => ({ ...row, invoice: undefined })),
     supplier_price_items: supplierPriceItems,
     supplier_price_imports: supplierPriceImports,
     inventory_sessions: inventorySessions,
     deleted_inventory_session_ids: deletedInventorySessions.map((row) => row.entity_id),
-    inventory_items: activeInventoryItems,
+    inventory_items: inventoryItems.map((row) => ({ ...row, product: undefined })),
     shop_settings: shopSettings,
     ...secondary,
     references_included: referencesIncluded,
+    reference_parent_repair_included: true,
     catalog_structure_snapshot_included: referencesIncluded,
   }
 }
-
 export async function getBootstrapSnapshot(tenantId: string) {
-  // Capture the cursor before any snapshot query starts. Rows changed while
-  // the snapshot is being assembled are then replayed by the first delta pull
-  // instead of falling into a gap between the snapshot and its cursor.
-  const snapshotCursor = new Date(Date.now() - CURSOR_OVERLAP_MS).toISOString()
+  // Capture one immutable upper bound before any query starts. Keyset paging
+  // avoids OFFSET drift and the first delta safely replays later writes.
+  const syncState = await captureSyncState(tenantId)
+  const snapshotCursor = syncState.cursor
   const bootstrapHistorySince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const bounded = (
+    buildQuery: () => any,
+    timestampColumn = 'updated_at',
+    lowerBound?: string,
+  ) => fetchAllByTimestamp(buildQuery, {
+    timestampColumn,
+    lowerBound,
+    upperBound: snapshotCursor,
+  })
+
   const [
     staff,
     categories,
@@ -776,45 +894,40 @@ export async function getBootstrapSnapshot(tenantId: string) {
     secondary,
   ] = await Promise.all([
     listUsers(tenantId),
-    fetchAll((from, to) => db
+    bounded(() => db
       .from('categories')
-      .select('id,tenant_id,parent_id,name,sort_order,created_at')
+      .select('id,tenant_id,parent_id,name,sort_order,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .order('sort_order', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('brands')
-      .select('id,tenant_id,name,country,created_at')
+      .select('id,tenant_id,name,country,tier,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .order('name', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('suppliers')
       .select('id,tenant_id,name,phone,email,contact_name,notes,is_active,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('shifts')
       .select('*')
       .eq('tenant_id', tenantId)
-      .or(`status.eq.open,opened_at.gte.${bootstrapHistorySince}`)
-      .order('created_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .or(`status.eq.open,opened_at.gte.${bootstrapHistorySince}`)),
+    bounded(() => db
       .from('sales')
       .select('*')
       .eq('tenant_id', tenantId)
-      .gte('completed_at', bootstrapHistorySince)
-      .order('updated_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
-      .from('sale_items')
-      .select('*,sale:sales!inner(tenant_id,completed_at),product:products(id,sku,name)')
-      .eq('sale.tenant_id', tenantId)
-      .gte('sale.completed_at', bootstrapHistorySince)
-      .order('created_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .gte('completed_at', bootstrapHistorySince)),
+    bounded(
+      () => db
+        .from('sale_items')
+        .select('*,sale:sales!inner(tenant_id,completed_at),product:products(id,sku,name)')
+        .eq('sale.tenant_id', tenantId)
+        .gte('sale.completed_at', bootstrapHistorySince),
+      'created_at',
+    ),
+    bounded(() => db
       .from('products')
       .select([
         'id', 'tenant_id', 'sku', 'name', 'barcode', 'brand_id', 'category_id',
@@ -824,102 +937,102 @@ export async function getBootstrapSnapshot(tenantId: string) {
         'created_at', 'updated_at', 'deleted_at',
       ].join(','))
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('product_barcodes')
-      .select('id,tenant_id,product_id,barcode,barcode_type,is_primary,created_at')
+      .select('id,tenant_id,product_id,barcode,barcode_type,is_primary,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('product_aliases')
-      .select('id,tenant_id,product_id,alias,created_at')
+      .select('id,tenant_id,product_id,alias,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('product_cross_numbers')
-      .select('id,tenant_id,product_id,number,normalized_number,number_type,brand,source,is_verified,created_at')
+      .select('id,tenant_id,product_id,number,normalized_number,number_type,brand,source,is_verified,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('customers')
       .select('*')
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('customer_cars')
-      .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at')
+      .select('id,tenant_id,customer_id,make,model,year,vin,notes,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('customer_orders')
       .select('*,customer:customers(id,phone,full_name,card_barcode)')
       .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-      .range(from, to)),
-    fetchAll((from, to) => db
-      .from('customer_order_items')
-      .select('*,order:customer_orders!inner(tenant_id)')
-      .eq('order.tenant_id', tenantId)
-      .order('created_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(
+      () => db
+        .from('customer_order_items')
+        .select('*,order:customer_orders!inner(tenant_id,deleted_at)')
+        .eq('order.tenant_id', tenantId)
+        .is('order.deleted_at', null),
+      'created_at',
+    ),
+    bounded(() => db
       .from('order_payments')
       .select('*,order:customer_orders!inner(tenant_id)')
-      .eq('order.tenant_id', tenantId)
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .eq('order.tenant_id', tenantId)),
+    bounded(() => db
       .from('supply_invoices')
       .select('*,supplier:suppliers(id,name)')
       .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-      .range(from, to)),
-    fetchAll((from, to) => db
-      .from('supply_invoice_items')
-      .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
-      .eq('invoice.tenant_id', tenantId)
-      .is('invoice.deleted_at', null)
-      .order('created_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(
+      () => db
+        .from('supply_invoice_items')
+        .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
+        .eq('invoice.tenant_id', tenantId)
+        .is('invoice.deleted_at', null),
+      'created_at',
+    ),
+    bounded(() => db
       .from('supplier_payments')
       .select('*,invoice:supply_invoices!inner(tenant_id,deleted_at)')
       .eq('invoice.tenant_id', tenantId)
-      .is('invoice.deleted_at', null)
-      .order('created_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('invoice.deleted_at', null)),
+    bounded(() => db
       .from('inventory_sessions')
-      .select('id,tenant_id,name,status,created_by,started_by,started_at,completed_at,created_at')
-      .eq('tenant_id', tenantId)
-      .order('created_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .select('id,tenant_id,name,status,created_by,started_by,started_at,completed_at,created_at,updated_at')
+      .eq('tenant_id', tenantId)),
+    bounded(() => db
       .from('inventory_items')
       .select('id,session_id,product_id,expected_stock,counted_stock,was_counted,price_checked,observed_retail_price,last_counted_by,created_at,updated_at,product:products!inner(tenant_id)')
       .eq('product.tenant_id', tenantId)
-      .eq('was_counted', true)
-      .order('updated_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .eq('was_counted', true)),
+    bounded(() => db
       .from('supplier_price_items')
       .select('id,tenant_id,supplier_id,sku,barcode,brand,name,price_kopecks,qty,warehouse_name,created_at,updated_at,deleted_at')
       .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-      .order('updated_at', { ascending: true })
-      .range(from, to)),
-    fetchAll((from, to) => db
+      .is('deleted_at', null)),
+    bounded(() => db
       .from('supplier_price_imports')
       .select('id,tenant_id,supplier_id,filename,status,total_rows,processed_rows,errors_log,created_at,updated_at')
-      .eq('tenant_id', tenantId)
-      .order('updated_at', { ascending: true })
-      .range(from, to)),
+      .eq('tenant_id', tenantId)),
     fetchShopSettings(tenantId, 'owner'),
-    fetchSecondarySyncData({ since: bootstrapHistorySince, tenantId, role: 'owner', fullSnapshots: true }),
+    fetchSecondarySyncData({
+      since: undefined,
+      historySince: bootstrapHistorySince,
+      upperBound: snapshotCursor,
+      tenantId,
+      role: 'owner',
+      fullSnapshots: true,
+    }),
   ])
 
   return {
     exported_at: snapshotCursor,
     tenant_id: tenantId,
+    reset_required: false,
+    reset_generation: syncState.generation,
+    reset_at: syncState.resetAt,
     categories,
     brands,
     suppliers,
@@ -973,47 +1086,92 @@ export async function getBootstrapSnapshot(tenantId: string) {
     },
   }
 }
-
 export async function pushLocalOperations(params: {
   tenantId: string
   userId: string
   role: string
+  resetGeneration: number
   operations: SyncOutboxOperation[]
-}): Promise<{ results: SyncPushResult[] }> {
-  const results = await processSyncBatch(params.operations, async (operation) => {
-    if (operation.tenant_id !== params.tenantId) {
-      throw new AppError('SYNC_TENANT_MISMATCH', 'Операція належить іншому магазину', 403)
+}): Promise<{
+  results: SyncPushResult[]
+  reset_required: boolean
+  reset_generation: number
+  reset_at: string | null
+}> {
+  const guarded = await withTenantSyncGenerationGuard(
+    params.tenantId,
+    params.resetGeneration,
+    async () => processSyncBatch(params.operations, async (operation) => {
+      if (operation.tenant_id !== params.tenantId) {
+        throw new AppError('SYNC_TENANT_MISMATCH', 'Операція належить іншому магазину', 403)
+      }
+
+      assertSyncOperationAllowed(params.role, operation.operation_type)
+      const restrictedCustomerWrite = ['customer.created', 'customer.updated'].includes(operation.operation_type)
+        && !['owner', 'admin', 'manager'].includes(params.role)
+      const rawPayload = { ...(operation.payload ?? {}) }
+      const originalPayload = restrictedCustomerWrite
+        ? Object.fromEntries(Object.entries(rawPayload).filter(([key]) => [
+            'id', 'phone', 'full_name', 'email', 'notes', 'card_barcode', 'birth_date', 'created_at',
+          ].includes(key)))
+        : rawPayload
+      if (originalPayload.created_at === undefined) originalPayload.created_at = operation.created_at
+      // Read DB time immediately before this operation. A single batch timestamp
+      // can fall behind a cursor while later independent transactions are waiting.
+      const appliedAt = await captureDatabaseAppliedAt()
+      const operationForApply: SyncOutboxOperation = {
+        ...operation,
+        created_at: appliedAt,
+        applied_at: appliedAt,
+        payload: originalPayload,
+      }
+
+      await applyLocalOperation({
+        tenantId: params.tenantId,
+        userId: params.userId,
+        role: params.role,
+        operation: operationForApply,
+      })
+    }),
+  )
+
+  if (!guarded.matched) {
+    const results = params.operations.map<SyncPushResult>((operation) => {
+      if (operation.tenant_id !== params.tenantId) {
+        return {
+          sequence: operation.sequence,
+          operation_id: operation.operation_id,
+          aggregate_id: operation.aggregate_id,
+          status: 'failed',
+          error: 'Операція належить іншому магазину',
+        }
+      }
+      return {
+        sequence: operation.sequence,
+        operation_id: operation.operation_id,
+        aggregate_id: operation.aggregate_id,
+        status: 'discarded',
+        error_code: 'SYNC_RESET_REQUIRED',
+        error: 'Локальна копія належить іншому поколінню даних; потрібно виконати повне оновлення',
+        reset_generation: guarded.state.generation,
+        reset_at: guarded.state.resetAt ?? undefined,
+      }
+    }).sort((left, right) => left.sequence - right.sequence)
+    return {
+      results,
+      reset_required: true,
+      reset_generation: guarded.state.generation,
+      reset_at: guarded.state.resetAt,
     }
+  }
 
-    assertSyncOperationAllowed(params.role, operation.operation_type)
-    const restrictedCustomerWrite = ['customer.created', 'customer.updated'].includes(operation.operation_type)
-      && !['owner', 'admin', 'manager'].includes(params.role)
-    const rawPayload = { ...(operation.payload ?? {}) }
-    const originalPayload = restrictedCustomerWrite
-      ? Object.fromEntries(Object.entries(rawPayload).filter(([key]) => [
-          'id', 'phone', 'full_name', 'email', 'notes', 'card_barcode', 'birth_date', 'created_at',
-        ].includes(key)))
-      : rawPayload
-    if (originalPayload.created_at === undefined) originalPayload.created_at = operation.created_at
-    const appliedAt = new Date().toISOString()
-    const operationForApply: SyncOutboxOperation = {
-      ...operation,
-      created_at: appliedAt,
-      applied_at: appliedAt,
-      payload: originalPayload,
-    }
-
-    await applyLocalOperation({
-      tenantId: params.tenantId,
-      userId: params.userId,
-      role: params.role,
-      operation: operationForApply,
-    })
-  })
-
-  return { results: results as SyncPushResult[] }
+  return {
+    results: (guarded.value as SyncPushResult[]).sort((left, right) => left.sequence - right.sequence),
+    reset_required: false,
+    reset_generation: guarded.state.generation,
+    reset_at: guarded.state.resetAt,
+  }
 }
-
 async function applyLocalOperation(params: {
   tenantId: string
   userId: string
@@ -1051,21 +1209,29 @@ async function applyLocalOperation(params: {
 
   if (operation.operation_type === 'category.upsert') {
     await applyCategoryUpsert(tenantId, operation, role)
+    clearCatalogReferenceCaches(tenantId)
+    await clearProductSearchCache()
     return
   }
 
   if (operation.operation_type === 'category.deleted') {
     await applyCategoryDeleted(tenantId, operation)
+    clearCatalogReferenceCaches(tenantId)
+    await clearProductSearchCache()
     return
   }
 
   if (operation.operation_type === 'brand.upsert') {
     await applyBrandUpsert(tenantId, operation, role)
+    clearCatalogReferenceCaches(tenantId)
+    await clearProductSearchCache()
     return
   }
 
   if (operation.operation_type === 'brand.deleted') {
     await applyBrandDeleted(tenantId, operation)
+    clearCatalogReferenceCaches(tenantId)
+    await clearProductSearchCache()
     return
   }
 
@@ -1373,6 +1539,7 @@ async function applyCustomerUpsert(tenantId: string, operation: SyncOutboxOperat
 }
 
 async function applyCustomerDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const customer = await client.query(
       `SELECT COALESCE(debt_balance, 0) AS debt_balance,
@@ -1398,14 +1565,18 @@ async function applyCustomerDeleted(tenantId: string, operation: SyncOutboxOpera
     if (activeOrder.rowCount) {
       throw new AppError('SYNC_CUSTOMER_HAS_ACTIVE_ORDERS', 'У клієнта є незавершені замовлення або чернетки', 409)
     }
-    await client.query('DELETE FROM customer_cars WHERE customer_id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+    await client.query(
+      `UPDATE customer_cars
+       SET deleted_at = $3, updated_at = $3
+       WHERE customer_id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+      [operation.aggregate_id, tenantId, appliedAt],
+    )
     await client.query(
       'UPDATE customers SET deleted_at = $3, updated_at = $3 WHERE id = $1 AND tenant_id = $2',
-      [operation.aggregate_id, tenantId, operation.created_at],
+      [operation.aggregate_id, tenantId, appliedAt],
     )
   })
 }
-
 async function applyCustomerVehicleUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const vehicleId = String(payload.id ?? operation.aggregate_id)
@@ -1413,6 +1584,8 @@ async function applyCustomerVehicleUpsert(tenantId: string, operation: SyncOutbo
   if (!isUuid(vehicleId) || !isUuid(customerId)) {
     throw new AppError('SYNC_CUSTOMER_VEHICLE_INVALID', 'Некоректні дані автомобіля клієнта', 400)
   }
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const customer = await client.query(
       'SELECT id FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
@@ -1421,15 +1594,18 @@ async function applyCustomerVehicleUpsert(tenantId: string, operation: SyncOutbo
     if (!customer.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта автомобіля не знайдено', 404)
     await client.query(
       `INSERT INTO customer_cars (
-        id, tenant_id, customer_id, make, model, year, vin, notes, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        id, tenant_id, customer_id, make, model, year, vin, notes,
+        created_at, updated_at, deleted_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL)
       ON CONFLICT (id) DO UPDATE SET
         customer_id = EXCLUDED.customer_id,
         make = EXCLUDED.make,
         model = EXCLUDED.model,
         year = EXCLUDED.year,
         vin = EXCLUDED.vin,
-        notes = EXCLUDED.notes
+        notes = EXCLUDED.notes,
+        updated_at = EXCLUDED.updated_at,
+        deleted_at = NULL
       WHERE customer_cars.tenant_id = EXCLUDED.tenant_id`,
       [
         vehicleId,
@@ -1440,18 +1616,23 @@ async function applyCustomerVehicleUpsert(tenantId: string, operation: SyncOutbo
         Number.isFinite(Number(payload.year)) ? Number(payload.year) : null,
         payload.vin?.trim()?.toUpperCase() || null,
         payload.notes ?? null,
-        operation.created_at,
+        createdAt,
+        appliedAt,
       ],
     )
   })
 }
-
 async function applyCustomerVehicleDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
-    await client.query('DELETE FROM customer_cars WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
+    await client.query(
+      `UPDATE customer_cars
+       SET deleted_at = $3, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+      [operation.aggregate_id, tenantId, appliedAt],
+    )
   })
 }
-
 async function applySupplierUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const supplierId = String(payload.id ?? operation.aggregate_id)
@@ -1673,7 +1854,7 @@ async function applyOrderDeleted(tenantId: string, userId: string, operation: Sy
               COALESCE(SUM(p.amount), 0)::bigint AS ledger_paid
        FROM customer_orders o
        LEFT JOIN order_payments p
-         ON p.order_id = o.id AND p.tenant_id = o.tenant_id AND p.deleted_at IS NULL
+         ON p.order_id = o.id AND p.tenant_id = o.tenant_id
        WHERE o.id = $1 AND o.tenant_id = $2 AND o.deleted_at IS NULL
        GROUP BY o.id
        FOR UPDATE OF o`,
@@ -1998,13 +2179,15 @@ async function applySalaryPaymentCreated(tenantId: string, userId: string, opera
     throw new AppError('SYNC_SALARY_AMOUNT_INVALID', 'Некоректна сума нарахування зарплати', 400)
   }
   const amount = rawAmount
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO salary_payments (
         id, tenant_id, employee_id, employee_name, amount, type, method, period,
         work_date, source, note, cash_operation_id, commission_source_sale_id,
-        commission_source_order_id, commission_source_return_id, created_by, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        commission_source_order_id, commission_source_return_id, created_by, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       ON CONFLICT DO NOTHING`,
       [
         id,
@@ -2014,8 +2197,8 @@ async function applySalaryPaymentCreated(tenantId: string, userId: string, opera
         amount,
         payload.type ?? 'salary',
         payload.method ?? 'cash',
-        payload.period ?? String(operation.created_at).slice(0, 7),
-        payload.work_date ?? String(operation.created_at).slice(0, 10),
+        payload.period ?? String(createdAt).slice(0, 7),
+        payload.work_date ?? String(createdAt).slice(0, 10),
         source,
         payload.note ?? null,
         isUuid(payload.cash_operation_id) ? payload.cash_operation_id : null,
@@ -2023,7 +2206,8 @@ async function applySalaryPaymentCreated(tenantId: string, userId: string, opera
         isUuid(payload.commission_source_order_id) ? payload.commission_source_order_id : null,
         isUuid(payload.commission_source_return_id) ? payload.commission_source_return_id : null,
         uuidOr(payload.created_by, userId),
-        payload.created_at ?? operation.created_at,
+        createdAt,
+        appliedAt,
       ],
     )
   })
@@ -2044,21 +2228,20 @@ async function applySalaryPaymentDeleted(tenantId: string, operation: SyncOutbox
     if (cashOperationId) {
       await client.query('DELETE FROM cash_operations WHERE id = $1 AND tenant_id = $2', [cashOperationId, tenantId])
     }
-    const deletedAt = operation.applied_at ?? operation.created_at
     await client.query(
       `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-       VALUES ($1, 'salary_payment', $2, $3)
+       VALUES ($1, 'salary_payment', $2, clock_timestamp())
        ON CONFLICT (tenant_id, entity_type, entity_id)
        DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-      [tenantId, operation.aggregate_id, deletedAt],
+      [tenantId, operation.aggregate_id],
     )
     if (cashOperationId) {
       await client.query(
         `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-         VALUES ($1, 'cash_operation', $2, $3)
+         VALUES ($1, 'cash_operation', $2, clock_timestamp())
          ON CONFLICT (tenant_id, entity_type, entity_id)
          DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-        [tenantId, cashOperationId, deletedAt],
+        [tenantId, cashOperationId],
       )
     }
   })
@@ -2072,11 +2255,13 @@ async function applyCashOperationCreated(tenantId: string, userId: string, opera
   const type = payload.type === 'out' || payload.type === 'cash_out' || payload.type === 'salary_payout' || payload.type === 'supplier_payment'
     ? 'out'
     : 'in'
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO cash_operations (
-        id, tenant_id, shift_id, type, amount, note, source, created_by, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        id, tenant_id, shift_id, type, amount, note, source, created_by, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       ON CONFLICT (id) DO NOTHING`,
       [
         id,
@@ -2087,7 +2272,8 @@ async function applyCashOperationCreated(tenantId: string, userId: string, opera
         payload.note ?? payload.notes ?? null,
         payload.source ?? 'cashbox',
         uuidOr(payload.user_id ?? payload.created_by, userId),
-        payload.created_at ?? operation.created_at,
+        createdAt,
+        appliedAt,
       ],
     )
   })
@@ -2100,12 +2286,14 @@ async function applyReserveCreated(tenantId: string, userId: string, operation: 
   if (!isUuid(id) || !isUuid(payload.product_id) || !Number.isFinite(qty) || qty <= 0) {
     throw new AppError('SYNC_RESERVE_INVALID', 'Некоректний резерв товару', 400)
   }
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO inventory_reserves (
         id, tenant_id, product_id, order_id, customer_id, qty, reserved_by,
-        expires_at, released_at, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9)
+        expires_at, released_at, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9,$10)
       ON CONFLICT (id) DO NOTHING`,
       [
         id,
@@ -2116,17 +2304,22 @@ async function applyReserveCreated(tenantId: string, userId: string, operation: 
         qty,
         userId,
         payload.expires_at ?? null,
-        operation.created_at,
+        createdAt,
+        appliedAt,
       ],
     )
   })
 }
 
 async function applyReserveReleased(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const releasedAt = operation.payload?.released_at ?? operation.payload?.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
-      'UPDATE inventory_reserves SET released_at = $3 WHERE id = $1 AND tenant_id = $2 AND released_at IS NULL',
-      [operation.aggregate_id, tenantId, operation.payload?.released_at ?? operation.created_at],
+      `UPDATE inventory_reserves
+       SET released_at = $3, updated_at = $4
+       WHERE id = $1 AND tenant_id = $2 AND released_at IS NULL`,
+      [operation.aggregate_id, tenantId, releasedAt, appliedAt],
     )
   })
 }
@@ -2139,6 +2332,8 @@ async function applyWarehouseMovementCreated(tenantId: string, userId: string, o
   if (!isUuid(id) || !isUuid(payload.product_id) || qty <= 0 || !toBin) {
     throw new AppError('SYNC_WAREHOUSE_MOVEMENT_INVALID', 'Некоректне переміщення товару', 400)
   }
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const existing = await client.query('SELECT id FROM warehouse_movements WHERE id = $1 AND tenant_id = $2', [id, tenantId])
     if (existing.rowCount) return
@@ -2149,16 +2344,16 @@ async function applyWarehouseMovementCreated(tenantId: string, userId: string, o
     if (!product.rowCount) throw new AppError('SYNC_PRODUCT_NOT_FOUND', 'Товар переміщення не знайдено', 404)
     await client.query(
       `INSERT INTO warehouse_movements (
-        id, tenant_id, product_id, from_bin, to_bin, qty, moved_by, note, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        id, tenant_id, product_id, from_bin, to_bin, qty, moved_by, note, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         id, tenantId, payload.product_id, payload.from_bin ?? product.rows[0]?.storage_bin ?? null,
-        toBin, qty, userId, payload.note ?? null, operation.created_at,
+        toBin, qty, userId, payload.note ?? null, createdAt, appliedAt,
       ],
     )
     await client.query(
       'UPDATE products SET storage_bin = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
-      [payload.product_id, tenantId, toBin, operation.created_at],
+      [payload.product_id, tenantId, toBin, appliedAt],
     )
   })
 }
@@ -2174,13 +2369,15 @@ async function applyWriteoffCreated(tenantId: string, userId: string, operation:
   if (new Set(items.map((item: any) => item.product_id)).size !== items.length) {
     throw new AppError('SYNC_WRITEOFF_DUPLICATE', 'Один товар не можна списувати двома рядками', 422)
   }
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const claim = await client.query(
-      `INSERT INTO inventory_writeoffs (id, tenant_id, reason, notes, created_by, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO inventory_writeoffs (id, tenant_id, reason, notes, created_by, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
-      [writeoffId, tenantId, payload.reason ?? 'other', payload.notes ?? null, userId, operation.created_at],
+      [writeoffId, tenantId, payload.reason ?? 'other', payload.notes ?? null, userId, createdAt, appliedAt],
     )
     if (!claim.rowCount) {
       const existing = await client.query(
@@ -2210,13 +2407,13 @@ async function applyWriteoffCreated(tenantId: string, userId: string, operation:
         `INSERT INTO inventory_writeoff_items (
           id, writeoff_id, product_id, qty, cost_kopecks, created_at
         ) VALUES ($1,$2,$3,$4,$5,$6)`,
-        [randomUUID(), writeoffId, item.product_id, qty, Math.round(Number(product.rows[0]?.purchase_price ?? 0) * qty), operation.created_at],
+        [randomUUID(), writeoffId, item.product_id, qty, Math.round(Number(product.rows[0]?.purchase_price ?? 0) * qty), createdAt],
       )
       await client.query(
         `UPDATE products
          SET qty_on_hand = qty_on_hand - $1, updated_at = $2
          WHERE id = $3 AND tenant_id = $4`,
-        [qty, operation.created_at, item.product_id, tenantId],
+        [qty, appliedAt, item.product_id, tenantId],
       )
     }
   })
@@ -2242,6 +2439,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
     ? requestedRefundMethod
     : 'cash'
   const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   let returnShiftId = isUuid(payload.shift_id) ? payload.shift_id : null
 
   await runTransaction(async (client) => {
@@ -2335,7 +2533,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
         status, created_by, approved_by, fiscal_number, created_at, updated_at
       ) VALUES (
         $1,$2,$3,$4,'customer_return',$5,$6,$6,$7,$7,$8,$9,
-        'completed',$10,$10,$11,$12,$12
+        'completed',$10,$10,$11,$12,$13
       )`,
       [
         returnId,
@@ -2350,6 +2548,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
         uuidOr(payload.approved_by, userId),
         payload.fiscal_number ?? null,
         createdAt,
+        appliedAt,
       ],
     )
 
@@ -2369,7 +2568,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       if (stockAction === 'return_to_stock') {
         await client.query(
           'UPDATE products SET qty_on_hand = qty_on_hand + $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-          [item.quantity, createdAt, item.productId, tenantId],
+          [item.quantity, appliedAt, item.productId, tenantId],
         )
       }
     }
@@ -2399,17 +2598,18 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
         await client.query(
           `INSERT INTO shifts (
              id, tenant_id, cashier_id, status, opening_cash, closing_cash,
-             expected_cash, cash_variance, opened_at, closed_at, notes, created_at
-           ) VALUES ($1,$2,$3,'closed',$4,$5,$5,0,LEAST($6::timestamptz,$7::timestamptz),$7,$8,LEAST($6::timestamptz,$7::timestamptz))`,
+             expected_cash, cash_variance, opened_at, closed_at, notes, created_at, updated_at
+           ) VALUES ($1,$2,$3,'closed',$4,$5,$5,0,LEAST($6::timestamptz,$7::timestamptz),$7,$8,LEAST($6::timestamptz,$7::timestamptz),$9)`,
           [
             reconciliationShiftId, tenantId, uuidOr(sale.cashier_id, userId),
             openingCash, expectedCash, sale.completed_at ?? createdAt, createdAt,
             'Автоматична звірка офлайн-продажу та повернення після закриття старої зміни',
+            appliedAt,
           ],
         )
         await client.query(
-          'UPDATE sales SET shift_id = $1 WHERE id = $2 AND tenant_id = $3',
-          [reconciliationShiftId, saleId, tenantId],
+          'UPDATE sales SET shift_id = $1, updated_at = $4 WHERE id = $2 AND tenant_id = $3',
+          [reconciliationShiftId, saleId, tenantId, appliedAt],
         )
         returnShiftId = reconciliationShiftId
         validShift = { rowCount: 1, rows: [{ id: reconciliationShiftId }] }
@@ -2436,8 +2636,8 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       }
       await client.query(
         `INSERT INTO cash_operations (
-          id, tenant_id, shift_id, type, amount, note, source, created_by, created_at
-        ) VALUES ($1,$2,$3,'out',$4,$5,'cashbox',$6,$7)
+          id, tenant_id, shift_id, type, amount, note, source, created_by, created_at, updated_at
+        ) VALUES ($1,$2,$3,'out',$4,$5,'cashbox',$6,$7,$8)
         ON CONFLICT (id) DO NOTHING`,
         [
           returnId,
@@ -2447,6 +2647,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
           `Повернення за чеком ${sale.sale_number ?? saleId.slice(0, 8)}`,
           uuidOr(payload.approved_by, userId),
           createdAt,
+          appliedAt,
         ],
       )
     } else if (sale.customer_id && refundMethod === 'debt_reduction' && refund > 0) {
@@ -2454,7 +2655,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
         `UPDATE customers
          SET debt_balance = GREATEST(0, COALESCE(debt_balance, 0) - $1), updated_at = $2
          WHERE id = $3 AND tenant_id = $4`,
-        [refund, createdAt, sale.customer_id, tenantId],
+        [refund, appliedAt, sale.customer_id, tenantId],
       )
     } else if (sale.customer_id && refundMethod === 'credit' && refund > 0) {
       const customerResult = await client.query(
@@ -2462,14 +2663,14 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
          SET deposit_balance = COALESCE(deposit_balance, 0) + $1, updated_at = $2
          WHERE id = $3 AND tenant_id = $4
          RETURNING deposit_balance`,
-        [refund, createdAt, sale.customer_id, tenantId],
+        [refund, appliedAt, sale.customer_id, tenantId],
       )
       const balanceAfter = Number(customerResult.rows[0]?.deposit_balance ?? 0)
       await client.query(
         `INSERT INTO customer_deposit_transactions (
           id, tenant_id, customer_id, amount, balance_after, method, sale_id,
-          shift_id, notes, created_by, created_at
-        ) VALUES ($1,$2,$3,$4,$5,'return_credit',$6,$7,$8,$9,$10)
+          shift_id, notes, created_by, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,'return_credit',$6,$7,$8,$9,$10,$11)
         ON CONFLICT (id) DO NOTHING`,
         [
           returnId,
@@ -2482,6 +2683,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
           `Повернення за чеком ${sale.sale_number ?? saleId.slice(0, 8)}`,
           uuidOr(payload.approved_by, userId),
           createdAt,
+          appliedAt,
         ],
       )
     }
@@ -2522,7 +2724,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
       if (orderId) {
         await client.query(
           'UPDATE customer_orders SET updated_at = $3 WHERE id = $1 AND tenant_id = $2',
-          [orderId, tenantId, createdAt],
+          [orderId, tenantId, appliedAt],
         )
         await client.query(
           `INSERT INTO order_activity_log (order_id, user_id, action, details)
@@ -2551,7 +2753,7 @@ async function applyReturnCreated(tenantId: string, userId: string, operation: S
     if (Number(remainingResult.rows[0]?.remaining ?? 0) <= 0) {
       await client.query(
         "UPDATE sales SET status = 'returned', updated_at = $3 WHERE id = $1 AND tenant_id = $2",
-        [saleId, tenantId, createdAt],
+        [saleId, tenantId, appliedAt],
       )
     }
   })
@@ -2586,6 +2788,8 @@ async function applySuspendedSale(tenantId: string, userId: string, operation: S
   if (!isUuid(saleId) || !isUuid(shiftId) || items.length === 0) {
     throw new AppError('SYNC_SUSPENDED_SALE_INVALID', 'Некоректний відкладений чек', 400)
   }
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     const existing = await client.query(
@@ -2602,13 +2806,12 @@ async function applySuspendedSale(tenantId: string, userId: string, operation: S
     if (!shift.rowCount) {
       await client.query(
         `INSERT INTO shifts (
-          id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at
-        ) VALUES ($1,$2,$3,'open',0,$4,$5,$4)`,
-        [shiftId, tenantId, cashierId, payload.created_at ?? operation.created_at, 'Створено під час офлайн-синхронізації'],
+          id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at, updated_at
+        ) VALUES ($1,$2,$3,'open',0,$4,$5,$4,$6)`,
+        [shiftId, tenantId, cashierId, createdAt, 'Створено під час офлайн-синхронізації', appliedAt],
       )
     }
 
-    const createdAt = payload.created_at ?? operation.created_at
     const subtotal = Math.max(0, Math.round(Number(payload.subtotal ?? 0)))
     const total = Math.max(0, Math.round(Number(payload.total ?? subtotal)))
     await client.query(
@@ -2619,7 +2822,7 @@ async function applySuspendedSale(tenantId: string, userId: string, operation: S
       ) VALUES (
         $1,$2,$3,$4,$5,$6,'suspended',
         $7,0,$8,$9,false,$10,$11,
-        0,0,$12,$13,$13,$13
+        0,0,$12,$13,$13,$14
       )`,
       [
         saleId,
@@ -2635,6 +2838,7 @@ async function applySuspendedSale(tenantId: string, userId: string, operation: S
         uuidOr(payload.manager_id, cashierId),
         payload.pickup_cell ?? null,
         createdAt,
+        appliedAt,
       ],
     )
 
@@ -2674,7 +2878,7 @@ async function applySuspendedSaleClosed(tenantId: string, operation: SyncOutboxO
   await runTransaction(async (client) => {
     await client.query(
       "UPDATE sales SET status = 'cancelled', updated_at = $3 WHERE id = $1 AND tenant_id = $2 AND status = 'suspended'",
-      [operation.aggregate_id, tenantId, operation.created_at],
+      [operation.aggregate_id, tenantId, operation.applied_at ?? operation.created_at],
     )
   })
 }
@@ -2754,7 +2958,8 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
     throw new AppError('SYNC_INVOICE_AMOUNT_INVALID', error?.message ?? 'Некоректна сума накладної', 422)
   }
   const paidAmount = Math.min(requestedPaidAmount, total)
-  const timestamp = payload.created_at ?? operation.created_at ?? new Date().toISOString()
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     const existing = await client.query('SELECT id FROM supply_invoices WHERE id = $1 AND tenant_id = $2 LIMIT 1', [invoiceId, tenantId])
@@ -2764,8 +2969,8 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
       `INSERT INTO supply_invoices (
         id, tenant_id, supplier_id, invoice_number, status, total, paid_amount,
         payment_method, notes, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$9)`,
-      [invoiceId, tenantId, payload.supplier_id ?? null, payload.invoice_number ?? null, total, paidAmount, paidAmount > 0 ? (payload.payment_method ?? 'cash') : null, payload.notes ?? null, timestamp],
+      ) VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10)`,
+      [invoiceId, tenantId, payload.supplier_id ?? null, payload.invoice_number ?? null, total, paidAmount, paidAmount > 0 ? (payload.payment_method ?? 'cash') : null, payload.notes ?? null, createdAt, appliedAt],
     )
 
     for (const item of items) {
@@ -2773,7 +2978,7 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
         `INSERT INTO supply_invoice_items (id, tenant_id, invoice_id, product_id, qty, purchase_price, total, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (id) DO NOTHING`,
-        [item.id ?? randomUUID(), tenantId, invoiceId, item.product_id, Number(item.qty ?? 0), Number(item.purchase_price ?? 0), invoiceLineTotal(item), timestamp],
+        [item.id ?? randomUUID(), tenantId, invoiceId, item.product_id, Number(item.qty ?? 0), Number(item.purchase_price ?? 0), invoiceLineTotal(item), createdAt],
       )
     }
 
@@ -2783,21 +2988,21 @@ async function applySupplierInvoiceCreated(tenantId: string, userId: string, ope
       const fundSource = payload.fund_source ?? (method === 'cash' ? 'cashbox' : 'bank_account')
       if (fundSource === 'cashbox') {
         if (!isUuid(payload.shift_id)) throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 409)
-        await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, paidAmount, timestamp)
+        await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, paidAmount, createdAt)
       }
       await client.query(
         `INSERT INTO supplier_payments
-         (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          ON CONFLICT (id) DO NOTHING`,
-        [paymentId, tenantId, invoiceId, payload.supplier_id ?? null, paidAmount, method, fundSource, payload.shift_id ?? null, 'Оплата під час створення накладної', userId, timestamp],
+        [paymentId, tenantId, invoiceId, payload.supplier_id ?? null, paidAmount, method, fundSource, payload.shift_id ?? null, 'Оплата під час створення накладної', userId, createdAt, appliedAt],
       )
       if (fundSource === 'cashbox') {
         await client.query(
-          `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, source, created_by, created_at)
-           VALUES ($1,$2,$3,'out',$4,$5,'cashbox',$6,$7)
+          `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, source, created_by, created_at, updated_at)
+           VALUES ($1,$2,$3,'out',$4,$5,'cashbox',$6,$7,$8)
            ON CONFLICT (id) DO NOTHING`,
-          [paymentId, tenantId, payload.shift_id, paidAmount, 'Оплата постачальнику під час створення накладної', userId, timestamp],
+          [paymentId, tenantId, payload.shift_id, paidAmount, 'Оплата постачальнику під час створення накладної', userId, createdAt, appliedAt],
         )
       }
     }
@@ -2887,6 +3092,8 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
     throw new AppError('INVALID_AMOUNT', error?.message ?? 'Некоректна сума оплати', 422)
   }
   if (amount <= 0) throw new AppError('INVALID_AMOUNT', 'Сума оплати має бути більше нуля', 422)
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const existing = await client.query('SELECT id FROM supplier_payments WHERE id = $1 LIMIT 1', [paymentId])
     if (existing.rowCount && existing.rowCount > 0) return
@@ -2905,24 +3112,24 @@ async function applySupplierInvoicePaymentAdded(tenantId: string, userId: string
       if (!isUuid(payload.shift_id)) {
         throw new AppError('SHIFT_REQUIRED', 'Щоб платити з каси, потрібна відкрита касова зміна', 409)
       }
-      await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, amount, payload.created_at ?? operation.created_at)
+      await assertSyncCashboxHasFunds(client, tenantId, payload.shift_id, amount, createdAt)
     }
     await client.query(
       `INSERT INTO supplier_payments
-       (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [paymentId, tenantId, operation.aggregate_id, invoice.supplier_id, amount, method, fundSource, payload.shift_id ?? null, payload.note ?? null, userId],
+       (id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source, shift_id, note, created_by, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [paymentId, tenantId, operation.aggregate_id, invoice.supplier_id, amount, method, fundSource, payload.shift_id ?? null, payload.note ?? null, userId, createdAt, appliedAt],
     )
     await client.query(
-      'UPDATE supply_invoices SET paid_amount = COALESCE(paid_amount, 0) + $1, payment_method = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4',
-      [amount, method, operation.aggregate_id, tenantId],
+      'UPDATE supply_invoices SET paid_amount = COALESCE(paid_amount, 0) + $1, payment_method = $2, updated_at = $5 WHERE id = $3 AND tenant_id = $4',
+      [amount, method, operation.aggregate_id, tenantId, appliedAt],
     )
     if (fundSource === 'cashbox') {
       await client.query(
-        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, source)
-         VALUES ($1,$2,$3,'out',$4,$5,$6,'cashbox')
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, source, created_at, updated_at)
+         VALUES ($1,$2,$3,'out',$4,$5,$6,'cashbox',$7,$8)
          ON CONFLICT (id) DO NOTHING`,
-        [paymentId, tenantId, payload.shift_id, amount, payload.note || 'Оплата постачальнику', userId],
+        [paymentId, tenantId, payload.shift_id, amount, payload.note || 'Оплата постачальнику', userId, createdAt, appliedAt],
       )
     }
   })
@@ -2963,6 +3170,9 @@ async function applySupplierInvoiceDeleted(tenantId: string, operation: SyncOutb
 }
 async function applyShiftOpened(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
+  const createdAt = payload.created_at ?? operation.created_at
+  const openedAt = payload.opened_at ?? createdAt
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const existing = await client.query(
       'SELECT id FROM shifts WHERE id = $1 AND tenant_id = $2',
@@ -2972,16 +3182,18 @@ async function applyShiftOpened(tenantId: string, operation: SyncOutboxOperation
 
     await client.query(
       `INSERT INTO shifts (
-        id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at
+        id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at, updated_at
       )
-      VALUES ($1, $2, $3, 'open', $4, $5, $6, $5)`,
+      VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8)`,
       [
         operation.aggregate_id,
         tenantId,
         payload.cashier_id,
         Number(payload.opening_cash ?? 0),
-        operation.created_at,
+        openedAt,
         payload.notes ?? null,
+        createdAt,
+        appliedAt,
       ],
     )
   })
@@ -2989,11 +3201,13 @@ async function applyShiftOpened(tenantId: string, operation: SyncOutboxOperation
 
 async function applyShiftClosed(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
+  const closedAt = payload.closed_at ?? payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     const result = await client.query(
       `UPDATE shifts
        SET status = 'closed', closing_cash = $3, expected_cash = $4,
-           cash_variance = $5, closed_at = $6, notes = COALESCE($7, notes)
+           cash_variance = $5, closed_at = $6, notes = COALESCE($7, notes), updated_at = $8
        WHERE id = $1 AND tenant_id = $2`,
       [
         operation.aggregate_id,
@@ -3001,8 +3215,9 @@ async function applyShiftClosed(tenantId: string, operation: SyncOutboxOperation
         Number(payload.closing_cash ?? 0),
         Number(payload.expected_cash ?? 0),
         Number(payload.cash_variance ?? 0),
-        operation.applied_at ?? operation.created_at,
+        closedAt,
         payload.notes ?? null,
+        appliedAt,
       ],
     )
     if (!result.rowCount) {
@@ -3029,6 +3244,7 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
     const debtAmount = sumPayments(payments, 'debt')
     const paymentMethod = normalizePaymentMethod(payload.payment_method)
     const completedAt = payload.completed_at ?? operation.created_at
+    const appliedAt = operation.applied_at ?? operation.created_at
     let shiftId = isUuid(payload.shift_id) ? String(payload.shift_id) : null
     if (!shiftId) throw new AppError('SYNC_SALE_SHIFT_REQUIRED', 'Для продажу не вказано касову зміну', 422)
     const shift = await client.query(
@@ -3038,9 +3254,9 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
     if (!shift.rowCount) {
       await client.query(
         `INSERT INTO shifts (
-          id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at
-        ) VALUES ($1, $2, $3, 'open', 0, $4, $5, $4)`,
-        [shiftId, tenantId, uuidOr(payload.cashier_id, userId), completedAt, 'Створено під час офлайн-синхронізації'],
+          id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at, updated_at
+        ) VALUES ($1, $2, $3, 'open', 0, $4, $5, $4, $6)`,
+        [shiftId, tenantId, uuidOr(payload.cashier_id, userId), completedAt, 'Створено під час офлайн-синхронізації', appliedAt],
       )
     } else {
       const row = shift.rows[0]
@@ -3053,16 +3269,16 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
         await client.query(
           `INSERT INTO shifts (
              id, tenant_id, cashier_id, status, opening_cash, closing_cash,
-             expected_cash, cash_variance, opened_at, closed_at, notes, created_at
-           ) VALUES ($1,$2,$3,'closed',0,$4,$4,0,$5,$5,$6,$5)`,
+             expected_cash, cash_variance, opened_at, closed_at, notes, created_at, updated_at
+           ) VALUES ($1,$2,$3,'closed',0,$4,$4,0,$5,$5,$6,$5,$7)`,
           [
             shiftId, tenantId, uuidOr(payload.cashier_id, userId), expectedCash, completedAt,
             'Автоматична звірка офлайн-продажу після закриття старої зміни',
+            appliedAt,
           ],
         )
       }
     }
-    const appliedAt = operation.applied_at ?? operation.created_at
     const bonusesSpent = Math.max(0, Math.round(Number(payload.bonuses_spent ?? 0)))
     const fiscalNumber = payload.fiscal_number
       ?? payments.find((payment: { fiscal_number?: string | null }) => payment?.fiscal_number)?.fiscal_number
@@ -3167,12 +3383,12 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
     if (debtAmount > 0 && customerId) {
       await client.query(
         'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-        [debtAmount, completedAt, customerId, tenantId],
+        [debtAmount, appliedAt, customerId, tenantId],
       )
     } else if (paymentMethod === 'debt' && customerId) {
       await client.query(
         'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-        [Number(payload.total ?? 0), completedAt, customerId, tenantId],
+        [Number(payload.total ?? 0), appliedAt, customerId, tenantId],
       )
     }
 
@@ -3183,7 +3399,7 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
          SET bonus_balance = COALESCE(bonus_balance, 0) - $1, updated_at = $2
          WHERE id = $3 AND tenant_id = $4 AND COALESCE(bonus_balance, 0) >= $1
          RETURNING bonus_balance`,
-        [bonusesSpent, completedAt, customerId, tenantId],
+        [bonusesSpent, appliedAt, customerId, tenantId],
       )
       if (!spent.rowCount) {
         throw new AppError('SYNC_INSUFFICIENT_BONUS', 'На сервері недостатньо бонусів клієнта; спочатку синхронізуйте картку клієнта', 409)
@@ -3191,8 +3407,8 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
       await client.query(
         `INSERT INTO bonus_transactions (
           id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
-          description, created_at
-        ) VALUES ($1,$2,$3,$4,'spend',$5,$6,$7)`,
+          description, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,'spend',$5,$6,$7,$8)`,
         [
           operation.operation_id,
           tenantId,
@@ -3201,6 +3417,7 @@ async function applySaleCompleted(tenantId: string, userId: string, operation: S
           saleId,
           `Списання бонусів за чеком ${payload.sale_number ?? saleId.slice(0, 8)}`,
           completedAt,
+          appliedAt,
         ],
       )
     }
@@ -3368,6 +3585,8 @@ async function applyCategoryUpsert(tenantId: string, operation: SyncOutboxOperat
     throw new AppError('SYNC_CATEGORY_INVALID', 'Категорія має містити коректні id і назву', 400)
   }
   const parentId = isUuid(payload.parent_id) && payload.parent_id !== categoryId ? payload.parent_id : null
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     if (!['owner', 'admin'].includes(role)) {
@@ -3380,28 +3599,33 @@ async function applyCategoryUpsert(tenantId: string, operation: SyncOutboxOperat
       }
     }
     await client.query(
-      `INSERT INTO categories (id, tenant_id, parent_id, name, sort_order, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO categories (
+         id, tenant_id, parent_id, name, sort_order, created_at, updated_at, deleted_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
        ON CONFLICT (id) DO UPDATE SET
          parent_id = EXCLUDED.parent_id,
          name = EXCLUDED.name,
-         sort_order = EXCLUDED.sort_order
+         sort_order = EXCLUDED.sort_order,
+         updated_at = EXCLUDED.updated_at,
+         deleted_at = NULL
        WHERE categories.tenant_id = EXCLUDED.tenant_id`,
-      [categoryId, tenantId, parentId, name, Number(payload.sort_order ?? 0), payload.created_at ?? operation.created_at],
+      [categoryId, tenantId, parentId, name, Number(payload.sort_order ?? 0), createdAt, appliedAt],
     )
   })
 }
 async function applyCategoryDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
       `UPDATE products
        SET category_id = NULL, updated_at = $3
        WHERE tenant_id = $1 AND category_id = $2`,
-      [tenantId, operation.aggregate_id, operation.created_at],
+      [tenantId, operation.aggregate_id, appliedAt],
     )
     await client.query(
-      'UPDATE categories SET parent_id = NULL WHERE tenant_id = $1 AND parent_id = $2',
-      [tenantId, operation.aggregate_id],
+      `UPDATE categories SET parent_id = NULL, updated_at = $3
+       WHERE tenant_id = $1 AND parent_id = $2 AND deleted_at IS NULL`,
+      [tenantId, operation.aggregate_id, appliedAt],
     )
     await client.query(
       'UPDATE volume_discounts SET category_id = NULL WHERE tenant_id = $1 AND category_id = $2',
@@ -3413,15 +3637,16 @@ async function applyCategoryDeleted(tenantId: string, operation: SyncOutboxOpera
     )
     await client.query(
       'UPDATE commission_rules SET category_id = NULL, updated_at = $3 WHERE tenant_id = $1 AND category_id = $2',
-      [tenantId, operation.aggregate_id, operation.created_at],
+      [tenantId, operation.aggregate_id, appliedAt],
     )
     await client.query(
-      'DELETE FROM categories WHERE id = $1 AND tenant_id = $2',
-      [operation.aggregate_id, tenantId],
+      `UPDATE categories
+       SET parent_id = NULL, deleted_at = $3, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+      [operation.aggregate_id, tenantId, appliedAt],
     )
   })
 }
-
 async function applyBrandUpsert(tenantId: string, operation: SyncOutboxOperation, role: string): Promise<void> {
   const payload = operation.payload ?? {}
   const brandId = String(payload.id ?? operation.aggregate_id)
@@ -3432,6 +3657,8 @@ async function applyBrandUpsert(tenantId: string, operation: SyncOutboxOperation
   const tier = ['original', 'premium', 'standard', 'budget'].includes(String(payload.tier))
     ? String(payload.tier)
     : 'standard'
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     if (!['owner', 'admin'].includes(role)) {
@@ -3444,36 +3671,41 @@ async function applyBrandUpsert(tenantId: string, operation: SyncOutboxOperation
       }
     }
     await client.query(
-      `INSERT INTO brands (id, tenant_id, name, country, tier, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO brands (
+         id, tenant_id, name, country, tier, created_at, updated_at, deleted_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          country = EXCLUDED.country,
-         tier = EXCLUDED.tier
+         tier = EXCLUDED.tier,
+         updated_at = EXCLUDED.updated_at,
+         deleted_at = NULL
        WHERE brands.tenant_id = EXCLUDED.tenant_id`,
-      [brandId, tenantId, name, payload.country ?? null, tier, payload.created_at ?? operation.created_at],
+      [brandId, tenantId, name, payload.country ?? null, tier, createdAt, appliedAt],
     )
   })
 }
 async function applyBrandDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const appliedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
       `UPDATE products
        SET brand_id = NULL, updated_at = $3
        WHERE tenant_id = $1 AND brand_id = $2 AND deleted_at IS NULL`,
-      [tenantId, operation.aggregate_id, operation.created_at],
+      [tenantId, operation.aggregate_id, appliedAt],
     )
     await client.query(
       'UPDATE commission_rules SET brand_id = NULL, updated_at = $3 WHERE tenant_id = $1 AND brand_id = $2',
-      [tenantId, operation.aggregate_id, operation.created_at],
+      [tenantId, operation.aggregate_id, appliedAt],
     )
     await client.query(
-      'DELETE FROM brands WHERE id = $1 AND tenant_id = $2',
-      [operation.aggregate_id, tenantId],
+      `UPDATE brands
+       SET deleted_at = $3, updated_at = $3
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+      [operation.aggregate_id, tenantId, appliedAt],
     )
   })
 }
-
 
 async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
@@ -3618,13 +3850,28 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
         const norm = normalizeOemValue(num)
         if (norm) uniqueCross.set(norm, num)
       }
-      await client.query('DELETE FROM product_cross_numbers WHERE product_id = $1 AND tenant_id = $2', [productId, tenantId])
+      const normalizedCrossNumbers = [...uniqueCross.keys()]
+      await client.query(
+        `UPDATE product_cross_numbers
+         SET deleted_at = $4, updated_at = $4
+         WHERE product_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+           AND NOT (normalized_number = ANY($3::text[]))`,
+        [productId, tenantId, normalizedCrossNumbers, updatedAt],
+      )
       for (const [norm, num] of uniqueCross) {
         await client.query(
-          `INSERT INTO product_cross_numbers (tenant_id, product_id, number, normalized_number, number_type, source, is_verified)
-           VALUES ($1, $2, $3, $4, 'cross', 'Картка товару', true)
-           ON CONFLICT (tenant_id, product_id, normalized_number) DO NOTHING`,
-          [tenantId, productId, num, norm],
+          `INSERT INTO product_cross_numbers (
+             tenant_id, product_id, number, normalized_number, number_type,
+             source, is_verified, updated_at, deleted_at
+           ) VALUES ($1, $2, $3, $4, 'cross', 'Картка товару', true, $5, NULL)
+           ON CONFLICT (tenant_id, product_id, normalized_number) DO UPDATE SET
+             number = EXCLUDED.number,
+             number_type = EXCLUDED.number_type,
+             source = EXCLUDED.source,
+             is_verified = EXCLUDED.is_verified,
+             updated_at = EXCLUDED.updated_at,
+             deleted_at = NULL`,
+          [tenantId, productId, num, norm, updatedAt],
         )
       }
     }
@@ -3639,6 +3886,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
          WHERE b.tenant_id = $1
            AND b.barcode = $2
            AND b.product_id <> $3
+           AND b.deleted_at IS NULL
            AND p.deleted_at IS NULL
          LIMIT 1`,
         [tenantId, barcode, productId],
@@ -3666,22 +3914,29 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
     }
 
     await client.query(
-      `DELETE FROM product_barcodes
+      `UPDATE product_barcodes
+       SET deleted_at = $4, updated_at = $4
        WHERE product_id = $1
          AND tenant_id = $2
+         AND deleted_at IS NULL
          AND NOT (barcode = ANY($3::text[]))`,
-      [productId, tenantId, barcodes],
+      [productId, tenantId, barcodes, updatedAt],
     )
 
     for (const barcode of barcodes) {
       await client.query(
         `INSERT INTO product_barcodes (
-          id, tenant_id, product_id, barcode, barcode_type, is_primary, created_at
-        ) VALUES ($1, $2, $3, $4, 'ean13', $5, $6)
+          id, tenant_id, product_id, barcode, barcode_type, is_primary,
+          created_at, updated_at, deleted_at
+        ) VALUES ($1, $2, $3, $4, 'ean13', $5, $6, $6, NULL)
         ON CONFLICT (tenant_id, barcode) DO UPDATE SET
           product_id = EXCLUDED.product_id,
-          is_primary = EXCLUDED.is_primary
-        WHERE product_barcodes.product_id = EXCLUDED.product_id`,
+          barcode_type = EXCLUDED.barcode_type,
+          is_primary = EXCLUDED.is_primary,
+          updated_at = EXCLUDED.updated_at,
+          deleted_at = NULL
+        WHERE product_barcodes.product_id = EXCLUDED.product_id
+           OR product_barcodes.deleted_at IS NOT NULL`,
         [randomUUID(), tenantId, productId, barcode, barcode === primaryBarcode, updatedAt],
       )
     }
@@ -3689,7 +3944,7 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
 }
 
 async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  const deletedAt = operation.created_at
+  const deletedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
     await client.query(
       `UPDATE products
@@ -3697,14 +3952,16 @@ async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperat
        WHERE id = $1 AND tenant_id = $2`,
       [operation.aggregate_id, tenantId, deletedAt],
     )
-    await client.query(
-      `DELETE FROM product_barcodes
-       WHERE product_id = $1 AND tenant_id = $2`,
-      [operation.aggregate_id, tenantId],
-    )
+    for (const table of ['product_barcodes', 'product_aliases', 'product_cross_numbers']) {
+      await client.query(
+        `UPDATE ${table}
+         SET deleted_at = $3, updated_at = $3
+         WHERE product_id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+        [operation.aggregate_id, tenantId, deletedAt],
+      )
+    }
   })
 }
-
 async function applyInventoryCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const sessionId = String(payload.id ?? operation.aggregate_id)
@@ -3713,6 +3970,7 @@ async function applyInventoryCreated(tenantId: string, userId: string, operation
     || 'Локальна ревізія'
   const createdBy = isUuid(payload.created_by) ? payload.created_by : userId
   const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     const tombstone = await client.query(
@@ -3723,10 +3981,10 @@ async function applyInventoryCreated(tenantId: string, userId: string, operation
     )
     if (tombstone.rowCount) return
     await client.query(
-      `INSERT INTO inventory_sessions (id, tenant_id, name, status, created_by, created_at)
-       VALUES ($1, $2, $3, 'draft', $4, $5)
+      `INSERT INTO inventory_sessions (id, tenant_id, name, status, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, 'draft', $4, $5, $6)
        ON CONFLICT (id) DO NOTHING`,
-      [sessionId, tenantId, name, createdBy, createdAt],
+      [sessionId, tenantId, name, createdBy, createdAt, appliedAt],
     )
     const session = await client.query(
       'SELECT tenant_id FROM inventory_sessions WHERE id = $1 LIMIT 1',
@@ -3744,6 +4002,7 @@ async function applyInventoryStarted(tenantId: string, userId: string, operation
   if (!isUuid(sessionId)) throw new AppError('SYNC_INVENTORY_INVALID', 'Некоректна ревізія', 400)
   const startedBy = isUuid(payload.started_by) ? payload.started_by : userId
   const startedAt = payload.started_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     const session = await client.query(
@@ -3764,9 +4023,9 @@ async function applyInventoryStarted(tenantId: string, userId: string, operation
     await client.query(
       `UPDATE inventory_sessions
        SET status = 'in_progress', started_by = COALESCE(started_by, $3),
-           started_at = COALESCE(started_at, $4)
+           started_at = COALESCE(started_at, $4), updated_at = $5
        WHERE id = $1 AND tenant_id = $2`,
-      [sessionId, tenantId, startedBy, startedAt],
+      [sessionId, tenantId, startedBy, startedAt, appliedAt],
     )
   })
 }
@@ -3774,7 +4033,6 @@ async function applyInventoryStarted(tenantId: string, userId: string, operation
 async function applyInventoryDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const sessionId = String(operation.payload?.id ?? operation.aggregate_id)
   if (!isUuid(sessionId)) throw new AppError('SYNC_INVENTORY_INVALID', 'Некоректна ревізія', 400)
-  const deletedAt = operation.payload?.deleted_at ?? operation.created_at
 
   await runTransaction(async (client) => {
     const session = await client.query(
@@ -3798,10 +4056,10 @@ async function applyInventoryDeleted(tenantId: string, operation: SyncOutboxOper
     }
     await client.query(
       `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-       VALUES ($1, 'inventory_session', $2, $3)
+       VALUES ($1, 'inventory_session', $2, clock_timestamp())
        ON CONFLICT (tenant_id, entity_type, entity_id)
        DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-      [tenantId, sessionId, deletedAt],
+      [tenantId, sessionId],
     )
   })
 }
@@ -3820,17 +4078,18 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
   const createdBy = payload.created_by ?? userId
   const createdAt = payload.created_at ?? operation.created_at
   const completedAt = payload.completed_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   const name = String(payload.name ?? `Локальна ревізія ${sessionId.slice(0, 8)}`).trim() || 'Локальна ревізія'
 
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO inventory_sessions (
-        id, tenant_id, name, status, created_by, started_by, started_at, completed_at, created_at
+        id, tenant_id, name, status, created_by, started_by, started_at, completed_at, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, 'in_progress', $4, $4, $5, NULL, $5
+        $1, $2, $3, 'in_progress', $4, $4, $5, NULL, $5, $6
       )
       ON CONFLICT (id) DO NOTHING`,
-      [sessionId, tenantId, name, createdBy, createdAt],
+      [sessionId, tenantId, name, createdBy, createdAt, appliedAt],
     )
     const sessionState = await client.query(
       'SELECT status FROM inventory_sessions WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
@@ -3843,6 +4102,7 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
     await client.query(`SELECT set_config('app.stock_source_type', 'inventory', true)`)
     await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [sessionId])
 
+    const touchedProductIds: string[] = []
     for (const item of items) {
       const productId = String(item?.product_id ?? '')
       if (!productId) continue
@@ -3871,7 +4131,7 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
           session_id, product_id, expected_stock, counted_stock, was_counted,
           price_checked, last_counted_by, created_at, updated_at
         ) VALUES (
-          $1, $2, $3, $4, true, true, $5, $6, $6
+          $1, $2, $3, $4, true, true, $5, $6, $7
         )
         ON CONFLICT (session_id, product_id) DO UPDATE SET
           counted_stock = EXCLUDED.counted_stock,
@@ -3880,7 +4140,7 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
           last_counted_by = EXCLUDED.last_counted_by,
           updated_at = EXCLUDED.updated_at
         RETURNING id`,
-        [sessionId, productId, expectedStock, countedStock, createdBy, completedAt],
+        [sessionId, productId, expectedStock, countedStock, createdBy, completedAt, appliedAt],
       )
 
       const inventoryItemId = itemResult.rows[0]?.id
@@ -3898,14 +4158,25 @@ async function applyInventoryCompleted(tenantId: string, userId: string, operati
 
       await client.query(
         'UPDATE products SET qty_on_hand = $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-        [countedStock, completedAt, productId, tenantId],
+        [countedStock, appliedAt, productId, tenantId],
+      )
+      touchedProductIds.push(productId)
+    }
+    if (touchedProductIds.length > 0) {
+      await client.query(
+        'UPDATE products SET updated_at = clock_timestamp() WHERE tenant_id = $1 AND id = ANY($2::uuid[])',
+        [tenantId, [...new Set(touchedProductIds)]],
+      )
+      await client.query(
+        'UPDATE inventory_items SET updated_at = clock_timestamp() WHERE session_id = $1',
+        [sessionId],
       )
     }
     await client.query(
       `UPDATE inventory_sessions
-       SET status = 'completed', completed_at = $3, name = $4
+       SET status = 'completed', completed_at = $3, name = $4, updated_at = $5
        WHERE id = $1 AND tenant_id = $2`,
-      [sessionId, tenantId, completedAt, name],
+      [sessionId, tenantId, completedAt, name, appliedAt],
     )
   })
 }
@@ -3916,6 +4187,8 @@ async function applyCustomerDebtPaid(tenantId: string, userId: string, operation
   const customerId = String(payload.customer_id ?? operation.aggregate_id)
   const amount = Number(payload.amount ?? 0)
   const method = payload.method === 'card' || payload.method === 'transfer' ? payload.method : 'cash'
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   if (!customerId || !Number.isFinite(amount) || amount <= 0) {
     throw new AppError('SYNC_CUSTOMER_DEBT_INVALID', 'Некоректна оплата боргу', 400)
   }
@@ -3927,7 +4200,7 @@ async function applyCustomerDebtPaid(tenantId: string, userId: string, operation
        VALUES ($1, $2, $3::jsonb, $4)
        ON CONFLICT (key, tenant_id) DO NOTHING
        RETURNING key`,
-      [idempotencyKey, tenantId, JSON.stringify({ operation_id: operation.operation_id }), operation.created_at],
+      [idempotencyKey, tenantId, JSON.stringify({ operation_id: operation.operation_id }), appliedAt],
     )
     if (!claim.rowCount) return
 
@@ -3942,15 +4215,15 @@ async function applyCustomerDebtPaid(tenantId: string, userId: string, operation
     const balanceAfter = Number(customer.debt_balance ?? 0) - paid
     await client.query(
       'UPDATE customers SET debt_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
-      [customerId, tenantId, balanceAfter, payload.created_at ?? operation.created_at],
+      [customerId, tenantId, balanceAfter, appliedAt],
     )
     if (method === 'cash' && payload.shift_id) {
       const cashOperationId = isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id
       await client.query(
-        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at)
-         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7)
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7, $8)
          ON CONFLICT (id) DO NOTHING`,
-        [cashOperationId, tenantId, payload.shift_id, paid, payload.notes ?? (`Оплата боргу: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        [cashOperationId, tenantId, payload.shift_id, paid, payload.notes ?? (`Оплата боргу: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, createdAt, appliedAt],
       )
     }
   })
@@ -3964,6 +4237,8 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
   const method = payload.method === 'card' || payload.method === 'transfer' || payload.method === 'account' || payload.method === 'correction' || payload.method === 'cashback'
     ? payload.method
     : 'cash'
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   if (!customerId || !transactionId || !Number.isFinite(amount) || amount === 0) {
     throw new AppError('SYNC_CUSTOMER_DEPOSIT_INVALID', 'Некоректний рух рахунку клієнта', 400)
   }
@@ -3988,23 +4263,23 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
 
     await client.query(
       'UPDATE customers SET deposit_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
-      [customerId, tenantId, balanceAfter, payload.created_at ?? operation.created_at],
+      [customerId, tenantId, balanceAfter, appliedAt],
     )
     await client.query(
       `INSERT INTO customer_deposit_transactions (
         id, tenant_id, customer_id, amount, balance_after, method, order_id, sale_id,
-        shift_id, notes, created_by, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [transactionId, tenantId, customerId, amount, balanceAfter, method, payload.order_id ?? null, payload.sale_id ?? null, payload.shift_id ?? null, payload.notes ?? null, payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        shift_id, notes, created_by, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [transactionId, tenantId, customerId, amount, balanceAfter, method, payload.order_id ?? null, payload.sale_id ?? null, payload.shift_id ?? null, payload.notes ?? null, payload.created_by ?? userId, createdAt, appliedAt],
     )
 
     if (amount > 0 && method === 'cash' && payload.shift_id) {
       const cashOperationId = isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id
       await client.query(
-        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at)
-         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7)
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7, $8)
          ON CONFLICT (id) DO NOTHING`,
-        [cashOperationId, tenantId, payload.shift_id, amount, payload.notes ?? (`Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        [cashOperationId, tenantId, payload.shift_id, amount, payload.notes ?? (`Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, createdAt, appliedAt],
       )
     }
   })
@@ -4015,6 +4290,8 @@ async function applyCustomerBonusAdjusted(tenantId: string, userId: string, oper
   const customerId = String(payload.customer_id ?? operation.aggregate_id)
   const transactionId = String(payload.transaction_id ?? operation.operation_id)
   const amount = Number(payload.amount ?? 0)
+  const createdAt = payload.created_at ?? operation.created_at
+  const appliedAt = operation.applied_at ?? operation.created_at
   if (!isUuid(customerId) || !isUuid(transactionId) || !Number.isFinite(amount) || amount === 0) {
     throw new AppError('SYNC_CUSTOMER_BONUS_INVALID', 'Некоректна зміна бонусів клієнта', 400)
   }
@@ -4034,16 +4311,16 @@ async function applyCustomerBonusAdjusted(tenantId: string, userId: string, oper
        WHERE id = $3 AND tenant_id = $4 AND deleted_at IS NULL
          AND COALESCE(bonus_balance, 0) + $1 >= 0
        RETURNING bonus_balance`,
-      [amount, payload.created_at ?? operation.created_at, customerId, tenantId],
+      [amount, appliedAt, customerId, tenantId],
     )
     if (!updated.rowCount) {
       throw new AppError('SYNC_CUSTOMER_BONUS_REJECTED', 'Клієнта не знайдено або недостатньо бонусів', 409)
     }
     await client.query(
       `INSERT INTO bonus_transactions (
-        id, tenant_id, customer_id, amount, transaction_type, description, created_by, created_at
-      ) VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7)`,
-      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_by ?? userId, payload.created_at ?? operation.created_at],
+        id, tenant_id, customer_id, amount, transaction_type, description, created_by, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7, $8)`,
+      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_by ?? userId, createdAt, appliedAt],
     )
   })
 }
@@ -4075,6 +4352,7 @@ async function applyOrderPaymentAdded(tenantId: string, userId: string, operatio
     shift_id: shiftId,
     notes: typeof payload.notes === 'string' ? payload.notes : null,
     created_at: String(payload.created_at ?? operation.created_at),
+    applied_at: operation.applied_at ?? operation.created_at,
     // Offline payment was validated while the local shift was open. It can reach
     // the server after that shift closed, so validate its timestamp interval.
     accept_closed_shift: true,
@@ -4143,7 +4421,7 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
     const paymentResult = await client.query(
       `SELECT method, COALESCE(SUM(amount), 0)::bigint AS amount
        FROM order_payments
-       WHERE order_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       WHERE order_id = $1 AND tenant_id = $2
        GROUP BY method`,
       [orderId, tenantId],
     )

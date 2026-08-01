@@ -96,7 +96,11 @@ export interface DesktopCheckoutResult {
 export interface DesktopBootstrapSnapshot {
   exported_at: string
   tenant_id: string
+  reset_required?: boolean
+  reset_generation?: number
+  reset_at?: string | null
   staff?: unknown[]
+  staff_pins?: unknown[]
   categories?: unknown[]
   brands?: unknown[]
   suppliers?: unknown[]
@@ -115,7 +119,9 @@ export interface DesktopBootstrapSnapshot {
   sale_items?: unknown[]
   commission_rules?: unknown[]
   salary_payments?: unknown[]
+  deleted_salary_payment_ids?: string[]
   cash_operations?: unknown[]
+  deleted_cash_operation_ids?: string[]
   customer_returns?: unknown[]
   customer_return_items?: unknown[]
   stock_reserves?: unknown[]
@@ -131,6 +137,7 @@ export interface DesktopBootstrapSnapshot {
   supplier_price_items?: unknown[]
   supplier_price_imports?: unknown[]
   inventory_sessions?: unknown[]
+  deleted_inventory_session_ids?: string[]
   inventory_items?: unknown[]
   shop_settings?: Record<string, unknown> | null
   counts?: Record<string, number>
@@ -159,15 +166,19 @@ export interface DesktopSyncOutboxOperation {
 export interface DesktopSyncPushResult {
   sequence: number
   operation_id: string
-  status: 'synced' | 'failed'
+  status: 'synced' | 'failed' | 'discarded'
   aggregate_id?: string
   error?: string
+  error_code?: 'SYNC_RESET_REQUIRED'
+  reset_generation?: number
+  reset_at?: string
 }
 
 export interface DesktopSyncPullState {
   cursor: string | null
   last_success_at: string | null
   last_reference_sync_at: string | null
+  reset_generation: number
   last_error: string | null
 }
 
@@ -175,6 +186,10 @@ export interface DesktopSyncPullChanges {
   tenant_id?: string
   cursor: string
   staff?: unknown[]
+  staff_pins?: unknown[]
+  reset_required?: boolean
+  reset_generation?: number
+  reset_at?: string | null
   products?: unknown[]
   deleted_product_ids?: string[]
   customers?: unknown[]
@@ -184,9 +199,15 @@ export interface DesktopSyncPullChanges {
   categories?: unknown[]
   brands?: unknown[]
   product_barcodes?: unknown[]
+  deleted_product_barcode_ids?: string[]
   product_aliases?: unknown[]
+  deleted_product_alias_ids?: string[]
   product_cross_numbers?: unknown[]
+  deleted_product_cross_number_ids?: string[]
   customer_vehicles?: unknown[]
+  deleted_customer_vehicle_ids?: string[]
+  deleted_category_ids?: string[]
+  deleted_brand_ids?: string[]
   customer_orders?: unknown[]
   deleted_customer_order_ids?: string[]
   customer_order_items?: unknown[]
@@ -196,7 +217,9 @@ export interface DesktopSyncPullChanges {
   sale_items?: unknown[]
   commission_rules?: unknown[]
   salary_payments?: unknown[]
+  deleted_salary_payment_ids?: string[]
   cash_operations?: unknown[]
+  deleted_cash_operation_ids?: string[]
   customer_returns?: unknown[]
   customer_return_items?: unknown[]
   stock_reserves?: unknown[]
@@ -212,6 +235,7 @@ export interface DesktopSyncPullChanges {
   supplier_price_items?: unknown[]
   supplier_price_imports?: unknown[]
   inventory_sessions?: unknown[]
+  deleted_inventory_session_ids?: string[]
   inventory_items?: unknown[]
   shop_settings?: Record<string, unknown> | null
   references_included?: boolean
@@ -548,6 +572,7 @@ interface ForsageDesktopBridge {
     getOpenShift: (cashierId: string) => Promise<Shift | null>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listSales?: (input?: any) => Promise<any>
+    dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>
     listReturns?: (input?: any) => Promise<any>
     getReturn?: (id: string, tenantId?: string) => Promise<any>
     getSaleForReturn?: (saleId: string, tenantId?: string) => Promise<any>
@@ -598,6 +623,7 @@ interface ForsageDesktopBridge {
       heightMm?: number
       /** Явний принтер Windows — чеки й етикетки не діляться одним пристроєм. */
       deviceName?: string
+      printerRole?: 'receipt' | 'label'
       silent?: boolean
       showPreviewWindow?: boolean
       useDriverPaper?: boolean

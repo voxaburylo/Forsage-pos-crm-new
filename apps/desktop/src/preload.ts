@@ -173,6 +173,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listSales: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-sales', input),
+    dashboardSummary: (input: unknown) => ipcRenderer.invoke('desktop:pos:dashboard-summary', input),
     listReturns: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-returns', input),
     getReturn: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-return', id, tenantId),
     getSaleForReturn: (saleId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-sale-for-return', saleId, tenantId),

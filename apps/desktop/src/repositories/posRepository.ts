@@ -22,6 +22,18 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+const businessDateFormatter = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Europe/Kyiv',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+function businessDateKey(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : businessDateFormatter.format(date)
+}
+
 function dayStamp(date = new Date()): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -1231,6 +1243,131 @@ export class LocalPosRepository {
     return {
       data: rows.map((row) => this.decorateSale(row, tenantId)),
       pagination: { page, per_page: perPage, total, total_pages: Math.max(1, Math.ceil(total / perPage)) },
+    }
+  }
+
+  dashboardSummary(input: { tenant_id?: string; date_from: string; date_to: string }): any {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const dateFrom = String(input.date_from ?? '').trim()
+    const dateTo = String(input.date_to ?? '').trim()
+    if (!dateFrom || !dateTo) throw new Error('Analytics period is required')
+
+    const stats = this.db.prepare(`
+      WITH scope(tenant_id, now_at) AS (VALUES (?, ?))
+      SELECT
+        (SELECT COUNT(*)
+         FROM products p
+         WHERE p.tenant_id = scope.tenant_id
+           AND p.deleted_at IS NULL
+           AND p.is_active = 1) AS products,
+        (SELECT COUNT(*)
+         FROM products p
+         WHERE p.tenant_id = scope.tenant_id
+           AND p.deleted_at IS NULL
+           AND p.is_active = 1
+           AND p.qty_on_hand <= p.reorder_point) AS low_stock,
+        (SELECT COUNT(*)
+         FROM customers c
+         WHERE c.tenant_id = scope.tenant_id
+           AND c.deleted_at IS NULL) AS customers,
+        (SELECT COUNT(*)
+         FROM suppliers s
+         WHERE s.tenant_id = scope.tenant_id
+           AND s.deleted_at IS NULL) AS suppliers,
+        (SELECT COUNT(*)
+         FROM customer_orders o
+         WHERE o.tenant_id = scope.tenant_id
+           AND o.deleted_at IS NULL
+           AND o.status NOT IN ('completed', 'canceled', 'cancelled', 'archived')) AS open_orders,
+        (SELECT COUNT(*)
+         FROM customer_orders o
+         WHERE o.tenant_id = scope.tenant_id
+           AND o.deleted_at IS NULL
+           AND o.status NOT IN ('completed', 'canceled', 'cancelled', 'archived')
+           AND o.pickup_deadline_at IS NOT NULL
+           AND o.pickup_deadline_at < scope.now_at) AS overdue_orders,
+        (SELECT COUNT(*)
+         FROM customers c
+         WHERE c.tenant_id = scope.tenant_id
+           AND c.deleted_at IS NULL
+           AND c.debt_balance > 0) AS debt_customers,
+        (SELECT COALESCE(SUM(c.debt_balance), 0)
+         FROM customers c
+         WHERE c.tenant_id = scope.tenant_id
+           AND c.deleted_at IS NULL
+           AND c.debt_balance > 0) AS debt_total
+      FROM scope
+    `).get(tenantId, nowIso()) as any
+
+    const sales = this.db.prepare(`
+      SELECT
+        s.id,
+        COALESCE(s.completed_at, s.created_at) AS occurred_at,
+        COALESCE(s.total, 0) AS revenue,
+        COALESCE(SUM(
+          CASE WHEN si.deleted_at IS NULL
+            THEN COALESCE(NULLIF(si.purchase_price, 0), p.purchase_price, 0) * COALESCE(si.qty, 0)
+            ELSE 0
+          END
+        ), 0) AS cogs
+      FROM sales s
+      LEFT JOIN sale_items si
+        ON si.sale_id = s.id
+       AND si.tenant_id = s.tenant_id
+      LEFT JOIN products p
+        ON p.id = si.product_id
+       AND p.tenant_id = si.tenant_id
+      WHERE s.tenant_id = ?
+        AND s.deleted_at IS NULL
+        AND s.status = 'completed'
+        AND COALESCE(s.completed_at, s.created_at) >= ?
+        AND COALESCE(s.completed_at, s.created_at) <= ?
+      GROUP BY s.id, s.completed_at, s.created_at, s.total
+      ORDER BY COALESCE(s.completed_at, s.created_at) ASC
+    `).all(tenantId, dateFrom, dateTo) as Array<{
+      id: string
+      occurred_at: string
+      revenue: number
+      cogs: number
+    }>
+
+    let totalRevenue = 0
+    let totalCogs = 0
+    const daily = new Map<string, { date: string; revenue: number; profit: number }>()
+    for (const sale of sales) {
+      const revenue = Number(sale.revenue ?? 0)
+      const cogs = Number(sale.cogs ?? 0)
+      const date = businessDateKey(sale.occurred_at)
+      totalRevenue += revenue
+      totalCogs += cogs
+      if (!date) continue
+      const current = daily.get(date) ?? { date, revenue: 0, profit: 0 }
+      current.revenue += revenue
+      current.profit += revenue - cogs
+      daily.set(date, current)
+    }
+
+    return {
+      analytics: {
+        total_revenue: totalRevenue,
+        cogs: totalCogs,
+        gross_profit: totalRevenue - totalCogs,
+        total_receipts: sales.length,
+        average_receipt: sales.length > 0 ? Math.round(totalRevenue / sales.length) : 0,
+        daily: [...daily.values()],
+      },
+      low_stock: Number(stats?.low_stock ?? 0),
+      totals: {
+        products: Number(stats?.products ?? 0),
+        customers: Number(stats?.customers ?? 0),
+        suppliers: Number(stats?.suppliers ?? 0),
+        openOrders: Number(stats?.open_orders ?? 0),
+      },
+      overdue_count: Number(stats?.overdue_orders ?? 0),
+      debt: {
+        count: Number(stats?.debt_customers ?? 0),
+        total: Number(stats?.debt_total ?? 0),
+      },
     }
   }
 

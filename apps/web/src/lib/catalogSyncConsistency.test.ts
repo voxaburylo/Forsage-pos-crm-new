@@ -27,10 +27,12 @@ describe('catalog synchronization consistency', () => {
     expect(offlineProductMatchesQuery(product, 'OEM77')).toBe(true)
   })
 
-  it('never starts a blocking full catalog refresh from the automatic agent', () => {
+  it('runs a bounded catalogue repair only while idle and after outbox drain', () => {
     expect(desktopSyncSource).not.toContain('referencesAreStale')
     expect(desktopSyncSource).toContain('options.includeReferences === true')
-    expect(desktopSyncSource).toContain('options.canApplyPull && !options.canApplyPull()')
+    expect(desktopSyncSource).toContain('options.canStartPull && !options.canStartPull()')
+    expect(desktopSyncSource).toContain("desktopBridge()?.sync.listPending(1)")
+    expect(desktopSyncAgentSource).toContain('referenceRepairIsIdle')
     expect(desktopSyncAgentSource).toContain('document.visibilityState !== \'visible\'')
     expect(desktopSyncAgentSource).not.toContain('schedule(1_000, true)')
     expect(desktopSyncAgentSource).toContain('schedule(1_000)')

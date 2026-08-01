@@ -20,6 +20,14 @@ const TEST_JWT_OPTIONS = {
 
 vi.mock('../../db/pg.js', () => ({
   runTransaction: vi.fn(),
+  pool: {
+    options: { max: 10 },
+    query: vi.fn().mockResolvedValue({
+      rows: [{ generation: 0, reset_at: null, resetting_at: null }],
+      rowCount: 1,
+    }),
+    connect: vi.fn(),
+  },
 }))
 
 // Set up mock function slots on global before hoisting runs

@@ -189,6 +189,9 @@ export interface LocalUnresolvedFiscalReturnIntent {
 export interface LocalBootstrapSnapshot {
   exported_at: string
   tenant_id: string
+  reset_required?: boolean
+  reset_generation?: number
+  reset_at?: string | null
   staff?: any[]
   staff_pins?: any[]
   categories?: any[]
@@ -303,12 +306,17 @@ export interface LocalSyncOutboxOperation {
 export interface LocalSyncPushResult {
   sequence: number
   operation_id: string
-  status: 'synced' | 'failed'
+  status: 'synced' | 'failed' | 'discarded'
+  aggregate_id?: string
   error?: string
+  error_code?: 'SYNC_RESET_REQUIRED'
+  reset_generation?: number
+  reset_at?: string
 }
 
 export interface LocalSyncPullState {
   cursor: string | null
+  reset_generation: number
   last_success_at: string | null
   last_reference_sync_at: string | null
   last_error: string | null
@@ -317,6 +325,9 @@ export interface LocalSyncPullState {
 export interface LocalSyncPullChanges {
   tenant_id?: string
   cursor: string
+  reset_required?: boolean
+  reset_generation?: number
+  reset_at?: string | null
   staff?: any[]
   staff_pins?: any[]
   products?: any[]
@@ -328,9 +339,15 @@ export interface LocalSyncPullChanges {
   categories?: any[]
   brands?: any[]
   product_barcodes?: any[]
+  deleted_product_barcode_ids?: string[]
   product_aliases?: any[]
+  deleted_product_alias_ids?: string[]
   product_cross_numbers?: any[]
+  deleted_product_cross_number_ids?: string[]
   customer_vehicles?: any[]
+  deleted_customer_vehicle_ids?: string[]
+  deleted_category_ids?: string[]
+  deleted_brand_ids?: string[]
   customer_orders?: any[]
   deleted_customer_order_ids?: string[]
   customer_order_items?: any[]

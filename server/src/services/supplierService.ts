@@ -180,11 +180,13 @@ export async function mergeSuppliers(primaryId: string, duplicateId: string, ten
 
 export async function deleteSupplier(id: string, tenantId: string) {
   await getSupplier(id, tenantId)
+  const deletedAt = new Date().toISOString()
   const { error } = await db
     .from(SUPPLIER_TABLE)
-    .update({ deleted_at: new Date().toISOString() })
+    .update({ deleted_at: deletedAt, updated_at: deletedAt, is_active: false })
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }

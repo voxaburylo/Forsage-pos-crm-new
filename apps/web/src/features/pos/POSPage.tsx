@@ -559,6 +559,11 @@ export default function POSPage() {
     printAfterPayment?: boolean,
   ): Promise<boolean> {
     async function saveOfflineSale() {
+      const scopeKey = session?.user?.id ?? ''
+      if (!scopeKey) {
+        toast.error('??? ???????? ??????-???, ???????? ?? ????? ?????????? ??????')
+        return null
+      }
       if (method === 'card' || method === 'debt' || method === 'mixed') {
         toast.error('Офлайн доступні лише готівка та переказ')
         return null
@@ -585,6 +590,7 @@ export default function POSPage() {
       const idempotencyKey = getActiveTab()?.idempotencyKey ?? crypto.randomUUID()
       const offlineSale = {
         offline_id:      offlineId,
+        scope_key:      scopeKey,
         created_at:      createdAt,
         shift_id:        currentShift.id,
         customer_id:     customer?.id ?? null,
@@ -633,7 +639,7 @@ export default function POSPage() {
         id: offlineId,
         sale_number: `OFF-${offlineId.slice(0, 8).toUpperCase()}`,
         customer_id: customer?.id ?? null,
-        cashier_id: session?.user?.id ?? '',
+        cashier_id: scopeKey,
         manager_id: saleManagerId,
         shift_id: currentShift.id,
         status: 'completed',

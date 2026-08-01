@@ -1217,12 +1217,25 @@ export async function runChat(
 async function resolveBrandId(brandName: string, tenantId: string): Promise<string | null> {
   const name = brandName.trim()
   if (!name) return null
-  const { data: existing } = await db
-    .from('brands').select('id').eq('tenant_id', tenantId).ilike('name', name).maybeSingle()
+  const findActiveBrand = () => db
+    .from('brands')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .ilike('name', name)
+    .is('deleted_at', null)
+    .limit(1)
+    .maybeSingle()
+  const { data: existing } = await findActiveBrand()
   if (existing?.id) return existing.id
   const { data: created, error } = await db
-    .from('brands').insert({ name, tenant_id: tenantId }).select('id').single()
-  if (error) { logger.warn({ err: error.message, name }, '[ai] failed to create brand'); return null }
+    .from('brands').insert({
+      name, tenant_id: tenantId, deleted_at: null,
+    }).select('id').single()
+  if (error) {
+    const { data: concurrentBrand } = await findActiveBrand()
+    if (concurrentBrand?.id) return concurrentBrand.id
+    logger.warn({ err: error.message, name }, '[ai] failed to create brand'); return null
+  }
   return created.id
 }
 
@@ -1232,8 +1245,21 @@ async function resolveCategoryId(categoryName: string, tenantId: string): Promis
   const cats = await listCategories(tenantId)
   const found = cats.find((c: any) => (c.name ?? '').toLowerCase() === n.toLowerCase())
   if (found) return found.id
-  const created = await createCategory({ name: n, sort_order: 0 } as any, tenantId)
-  return created.id
+  try {
+    const created = await createCategory({ name: n, sort_order: 0 } as any, tenantId)
+    return created.id
+  } catch (error) {
+    const { data: concurrentCategory } = await db
+      .from('categories')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .ilike('name', n)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle()
+    if (concurrentCategory?.id) return concurrentCategory.id
+    throw error
+  }
 }
 
 // Витягнути перший валідний укр. телефон із клітинки (може бути "067..., 066..." тощо).
@@ -1294,7 +1320,7 @@ async function doCreateCustomer(c: any, tenantId: string) {
     const extraNote = rawVin && !vin ? `VIN: ${rawVin}` : null
     let carExists = false
     if (vin) {
-      const { data } = await db.from('customer_cars').select('id').eq('tenant_id', tenantId).eq('vin', vin).maybeSingle()
+      const { data } = await db.from('customer_cars').select('id').eq('tenant_id', tenantId).eq('vin', vin).is('deleted_at', null).maybeSingle()
       carExists = !!data
     }
     if (!carExists) {
@@ -1349,11 +1375,13 @@ async function doCreateOrderFromAi(p: any, userId: string, tenantId: string) {
     // Клієнт існує — переконаємось, що авто є в гаражі (дубль VIN не створюємо)
     let exists = false
     if (vin) {
-      const { data } = await db.from('customer_cars').select('id').eq('vin', vin).maybeSingle()
+      const { data } = await db.from('customer_cars').select('id').eq('tenant_id', tenantId).eq('vin', vin).is('deleted_at', null).maybeSingle()
       exists = !!data
     } else {
       const { data } = await db.from('customer_cars').select('id')
+        .eq('tenant_id', tenantId)
         .eq('customer_id', customerId)
+        .is('deleted_at', null)
         .ilike('make', String(p.car_make ?? '').trim() || 'Авто')
         .ilike('model', String(p.car_model ?? '').trim() || '—')
         .maybeSingle()

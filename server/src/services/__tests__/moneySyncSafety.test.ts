@@ -15,7 +15,7 @@ const deletionMigration = readFileSync(
 describe('money synchronization safety', () => {
   it('uses deterministic cash operation ids for debt and deposit sync', () => {
     expect(syncSource).toContain('isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id')
-    expect(syncSource).toContain('INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at)')
+    expect(syncSource).toContain('INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at, updated_at)')
     expect(syncSource).toContain('ON CONFLICT (id) DO NOTHING')
   })
 
@@ -42,11 +42,11 @@ describe('money synchronization safety', () => {
     expect(syncSource).toContain(".from('sync_deletions')")
     expect(syncSource).toContain('deleted_salary_payment_ids: deletedSalaryPayments.map')
     expect(syncSource).toContain('deleted_cash_operation_ids: deletedCashOperations.map')
-    expect(syncSource).toContain("VALUES ($1, 'salary_payment', $2, $3)")
-    expect(syncSource).toContain("VALUES ($1, 'cash_operation', $2, $3)")
+    expect(syncSource).toContain("VALUES ($1, 'salary_payment', $2, clock_timestamp())")
+    expect(syncSource).toContain("VALUES ($1, 'cash_operation', $2, clock_timestamp())")
     expect(salaryRouteSource).toContain('SELECT cash_operation_id, source FROM salary_payments')
     expect(salaryRouteSource).toContain('AUTOMATIC_SALARY_IMMUTABLE')
-    expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, NOW())")
+    expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, clock_timestamp())")
     expect(deletionMigration).toContain('CREATE TABLE IF NOT EXISTS sync_deletions')
     expect(deletionMigration).toContain('TO authenticated')
   })

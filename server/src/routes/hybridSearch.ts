@@ -52,6 +52,7 @@ router.get('/vehicles', async (req, res, next) => {
       .from('customer_vehicles')
       .select('id, vin, brand, model, year, customer:customers(id, full_name, phone)')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .or(`vin.ilike.%${q}%,brand.ilike.%${q}%,model.ilike.%${q}%`)
       .limit(limit)
     if (error) throw new AppError('DB_ERROR', error.message, 500)

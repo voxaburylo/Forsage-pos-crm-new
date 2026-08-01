@@ -374,7 +374,7 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
       }
       await client.query(
         `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-         VALUES ($1, 'salary_payment', $2, NOW())
+         VALUES ($1, 'salary_payment', $2, clock_timestamp())
          ON CONFLICT (tenant_id, entity_type, entity_id)
          DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
         [req.user!.tenant_id, req.params.id],
@@ -382,7 +382,7 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
       if (cashOperationId) {
         await client.query(
           `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-           VALUES ($1, 'cash_operation', $2, NOW())
+           VALUES ($1, 'cash_operation', $2, clock_timestamp())
            ON CONFLICT (tenant_id, entity_type, entity_id)
            DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
           [req.user!.tenant_id, cashOperationId],

@@ -129,7 +129,51 @@ async function seed() {
     { tenant_id: TENANT_ID, name: 'Kayaba', country: 'Japan' },
   ]
   for (const b of brands) {
-    await supabase.from('brands').upsert(b, { onConflict: 'tenant_id, name' })
+    const { data: activeBrand, error: lookupError } = await supabase
+      .from('brands')
+      .select('id')
+      .eq('tenant_id', b.tenant_id)
+      .eq('name', b.name)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle()
+    if (lookupError) {
+      console.error('  ❌ Brand lookup:', b.name, lookupError.message)
+      continue
+    }
+
+    if (activeBrand) {
+      const { error } = await supabase
+        .from('brands')
+        .update({ country: b.country })
+        .eq('id', activeBrand.id)
+        .eq('tenant_id', b.tenant_id)
+        .is('deleted_at', null)
+      if (error) console.error('  ❌ Brand:', b.name, error.message)
+      continue
+    }
+
+    // Seed must respect an explicit soft delete. Partial unique indexes only
+    // cover active rows, so onConflict cannot safely target tenant_id,name.
+    const { data: deletedBrand, error: deletedLookupError } = await supabase
+      .from('brands')
+      .select('id')
+      .eq('tenant_id', b.tenant_id)
+      .eq('name', b.name)
+      .not('deleted_at', 'is', null)
+      .limit(1)
+      .maybeSingle()
+    if (deletedLookupError) {
+      console.error('  ❌ Brand lookup:', b.name, deletedLookupError.message)
+      continue
+    }
+    if (deletedBrand) continue
+
+    const { error } = await supabase.from('brands').insert({
+      ...b,
+      deleted_at: null,
+    })
+    if (error) console.error('  ❌ Brand:', b.name, error.message)
   }
   console.log('  ✅ Бренди створені')
 

@@ -25,14 +25,17 @@ describe('stage 1 stock integrity', () => {
   })
 
   it('periodically heals supply children and accepts safe retries of deleted categories', () => {
-    expect(syncSource).toContain('withChangedSince(query, includeReferences ? undefined : since)')
-    expect(syncSource).toContain("if (since && !includeReferences) query = query.gt('invoice.updated_at', since)")
+    expect(syncSource).toContain('supplyInvoices.filter((row: any) => !row.deleted_at)')
+    expect(syncSource).toContain(".from('supply_invoice_items')")
+    expect(syncSource).toContain(".in('invoice_id', ids)")
+    expect(syncSource).toContain('referencesIncluded ? undefined : since')
     const categoryDelete = syncSource.slice(
       syncSource.indexOf('async function applyCategoryDeleted'),
       syncSource.indexOf('async function applyBrandUpsert'),
     )
     expect(categoryDelete).toContain('WHERE tenant_id = $1 AND category_id = $2')
-    expect(categoryDelete).not.toContain('deleted_at IS NULL')
+    expect(categoryDelete).not.toContain('rowCount')
+    expect(categoryDelete).not.toContain('NOT_FOUND')
   })
 
   it('rejects product prices outside the database money range with a readable error', () => {

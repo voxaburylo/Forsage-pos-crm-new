@@ -10,9 +10,13 @@ router.use(requireAuth)
 const querySchema = z.object({
   since: z.string().datetime({ offset: true }).optional(),
   include_references: z.enum(['true', 'false']).optional().transform((value) => value === 'true'),
+  reset_generation: z.coerce.number().int().nonnegative().optional().default(0),
 })
 
 const pushSchema = z.object({
+  // Legacy clients did not send a generation. Generation 0 is valid only
+  // until the first destructive tenant reset.
+  reset_generation: z.number().int().nonnegative().optional().default(0),
   operations: z.array(z.object({
     sequence: z.number().int().positive(),
     operation_id: z.string().min(1),
@@ -38,6 +42,7 @@ router.get('/changes', async (req, res, next) => {
       userId: req.user!.id,
       role: req.user!.role,
       includeReferences: parsed.data.include_references,
+      resetGeneration: parsed.data.reset_generation,
     })
     res.json({ data })
   } catch (error) {
@@ -64,6 +69,7 @@ router.post('/push', async (req, res, next) => {
       tenantId: req.user!.tenant_id,
       userId: req.user!.id,
       role: req.user!.role,
+      resetGeneration: parsed.data.reset_generation,
       operations: parsed.data.operations.map((operation) => ({
         ...operation,
         payload: operation.payload ?? {},

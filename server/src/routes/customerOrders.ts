@@ -12,6 +12,7 @@ import { logAction } from '../services/auditService.js'
 import { addOrderPayment } from '../services/orderPaymentService.js'
 import { markOrderItemsArrived } from '../services/orderBulkArrivalService.js'
 import { cancelOrderSafely } from '../services/orderCancellationService.js'
+import { runTransaction } from '../db/pg.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -29,6 +30,7 @@ async function ensureCustomerCar(
     .select('id, customer_id')
     .eq('tenant_id', tenantId)
     .eq('vin', vin)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (findError) {
@@ -1508,46 +1510,57 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
 router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const orderId = String(req.params.id)
+    const tenantId = req.user!.tenant_id
 
     const { data: order } = await db.from('customer_orders')
       .select('*, customer:customers(id,phone,full_name), items:customer_order_items(*)')
       .eq('id', orderId)
-      .eq('tenant_id', req.user!.tenant_id)
+      .eq('tenant_id', tenantId)
       .is('deleted_at', null)
       .single()
     if (!order) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
 
-    const { data: payments, error: paymentsError } = await db.from('order_payments')
-      .select('id,amount')
-      .eq('tenant_id', req.user!.tenant_id)
-      .eq('order_id', orderId)
-      .is('deleted_at', null)
-    if (paymentsError) throw new AppError('DB_ERROR', paymentsError.message, 500)
-    const paidInLedger = (payments ?? []).reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0)
-    if (!['lead', 'quoted', 'new'].includes(order.status)
-      || Number(order.prepayment ?? 0) !== 0
-      || Number(order.total_paid ?? 0) !== 0
-      || paidInLedger !== 0
-      || (payments?.length ?? 0) > 0
-      || order.sale_id) {
-      throw new AppError('ORDER_DELETE_FORBIDDEN', 'Видалити можна лише неоплачений чернетковий заказ. Інший заказ можна скасувати або архівувати.', 409)
-    }
+    const deletedAt = await runTransaction(async (client) => {
+      const locked = await client.query(`
+        SELECT status, prepayment, total_paid, sale_id
+        FROM customer_orders
+        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+        FOR UPDATE
+      `, [orderId, tenantId])
+      if (!locked.rowCount) throw new AppError('NOT_FOUND', 'Замовлення не знайдено', 404)
 
-    const deletedAt = new Date().toISOString()
-    const { error } = await db.from('customer_orders').update({
-      deleted_at: deletedAt,
-      deleted_by: req.user!.id,
-      updated_at: deletedAt,
-    }).eq('id', orderId).eq('tenant_id', req.user!.tenant_id)
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+      const payments = await client.query(`
+        SELECT COUNT(*)::integer AS payment_count,
+               COALESCE(SUM(amount), 0)::bigint AS paid_amount
+        FROM order_payments
+        WHERE tenant_id = $1 AND order_id = $2
+      `, [tenantId, orderId])
+      const state = locked.rows[0]
+      const paymentCount = Number(payments.rows[0]?.payment_count ?? 0)
+      const paidInLedger = Number(payments.rows[0]?.paid_amount ?? 0)
+      if (!['lead', 'quoted', 'new'].includes(String(state.status))
+        || Number(state.prepayment ?? 0) !== 0
+        || Number(state.total_paid ?? 0) !== 0
+        || paidInLedger !== 0
+        || paymentCount > 0
+        || state.sale_id) {
+        throw new AppError('ORDER_DELETE_FORBIDDEN', 'Видалити можна лише неоплачений чернетковий заказ. Інший заказ можна скасувати або архівувати.', 409)
+      }
 
-    // Активне приховане замовлення більше не повинно утримувати товар у резерві.
-    if (!['completed', 'canceled'].includes(order.status)) {
-      await db.from('inventory_reserves')
-        .update({ released_at: deletedAt })
-        .eq('order_id', orderId)
-        .is('released_at', null)
-    }
+      const stamp = await client.query<{ at: Date }>('SELECT clock_timestamp() AS at')
+      const timestamp = stamp.rows[0].at
+      await client.query(`
+        UPDATE customer_orders
+        SET deleted_at = $3, deleted_by = $4, updated_at = $3
+        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+      `, [orderId, tenantId, timestamp, req.user!.id])
+      await client.query(`
+        UPDATE inventory_reserves
+        SET released_at = $3
+        WHERE tenant_id = $2 AND order_id = $1 AND released_at IS NULL
+      `, [orderId, tenantId, timestamp])
+      return timestamp.toISOString()
+    })
 
     await auditOrder(req, 'order_deleted', orderId, order, {
       id: orderId,

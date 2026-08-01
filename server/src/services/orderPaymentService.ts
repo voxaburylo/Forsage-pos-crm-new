@@ -15,6 +15,7 @@ export type AddOrderPaymentInput = {
   shift_id?: string | null
   notes?: string | null
   created_at?: string
+  applied_at?: string
   accept_closed_shift?: boolean
 }
 
@@ -37,6 +38,11 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
     throw new AppError('INVALID_PAYMENT_DATE', 'Некоректна дата платежу', 422)
   }
   const createdAt = requestedDate.toISOString()
+  const appliedDate = input.applied_at ? new Date(input.applied_at) : new Date()
+  if (Number.isNaN(appliedDate.getTime())) {
+    throw new AppError('INVALID_PAYMENT_APPLIED_DATE', 'Некоректна дата обробки платежу', 422)
+  }
+  const appliedAt = appliedDate.toISOString()
 
   return runTransaction(async (client) => {
     // The order lock serializes simultaneous payments. The idempotency check is
@@ -149,13 +155,13 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
         `UPDATE customers
          SET deposit_balance = $3, updated_at = $4
          WHERE id = $1 AND tenant_id = $2`,
-        [order.customer_id, input.tenant_id, balanceAfter, createdAt],
+        [order.customer_id, input.tenant_id, balanceAfter, appliedAt],
       )
       await client.query(
         `INSERT INTO customer_deposit_transactions (
            id, tenant_id, customer_id, amount, balance_after, method, order_id,
-           shift_id, notes, created_by, created_at
-         ) VALUES ($1, $2, $3, $4, $5, 'account', $6, $7, $8, $9, $10)`,
+           shift_id, notes, created_by, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, 'account', $6, $7, $8, $9, $10, $11)`,
         [
           paymentId,
           input.tenant_id,
@@ -167,6 +173,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
           paymentNote ?? `Оплата замовлення #${order.order_number ?? input.order_id.slice(0, 8)}`,
           input.user_id,
           createdAt,
+          appliedAt,
         ],
       )
     }
@@ -174,8 +181,8 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
     const paymentResult = await client.query(
       `INSERT INTO order_payments (
          id, tenant_id, order_id, amount, method, is_fiscal, shift_id,
-         created_by, notes, created_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         created_by, notes, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         paymentId,
@@ -188,6 +195,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
         input.user_id,
         paymentNote,
         createdAt,
+        appliedAt,
       ],
     )
 
@@ -199,7 +207,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
       `UPDATE customer_orders
        SET total_paid = $3, status = $4, updated_at = $5
        WHERE id = $1 AND tenant_id = $2`,
-      [input.order_id, input.tenant_id, newTotalPaid, updatedStatus, createdAt],
+      [input.order_id, input.tenant_id, newTotalPaid, updatedStatus, appliedAt],
     )
 
     if (updatedStatus === 'new' && ['lead', 'quoted'].includes(String(order.status))) {
@@ -213,8 +221,8 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
     if (input.method === 'cash') {
       await client.query(
         `INSERT INTO cash_operations (
-           id, tenant_id, shift_id, type, amount, note, source, created_by, created_at
-         ) VALUES ($1, $2, $3, 'in', $4, $5, 'cashbox', $6, $7)`,
+           id, tenant_id, shift_id, type, amount, note, source, created_by, created_at, updated_at
+         ) VALUES ($1, $2, $3, 'in', $4, $5, 'cashbox', $6, $7, $8)`,
         [
           paymentId,
           input.tenant_id,
@@ -223,6 +231,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
           paymentNote ?? `${canAcceptOpenDraftDeposit ? 'Передоплата' : 'Оплата'} замовлення #${order.order_number ?? input.order_id.slice(0, 8)}`,
           input.user_id,
           createdAt,
+          appliedAt,
         ],
       )
     }
@@ -242,7 +251,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
     return {
       payment: paymentResult.rows[0] as Record<string, unknown>,
       order_before: order,
-      order_after: { ...order, total_paid: newTotalPaid, status: updatedStatus, updated_at: createdAt },
+      order_after: { ...order, total_paid: newTotalPaid, status: updatedStatus, updated_at: appliedAt },
       replayed: false,
     }
   })

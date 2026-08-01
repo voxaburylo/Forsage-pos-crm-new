@@ -1,5 +1,6 @@
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
+import { assertTenantSyncGenerationInTransaction } from './syncGeneration.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getCurrentShift } from './shiftService.js'
 import { logAction } from './auditService.js'
@@ -114,6 +115,7 @@ export async function listSales(query: SaleListQuery, tenantId: string) {
       .from('customer_vehicles')
       .select('customer_id')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .ilike('vin', `%${search}%`)
     vehs?.forEach((v: any) => customerIds.push(v.customer_id))
 
@@ -121,6 +123,7 @@ export async function listSales(query: SaleListQuery, tenantId: string) {
       .from('customer_cars')
       .select('customer_id')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .ilike('vin', `%${search}%`)
     cars?.forEach((c: any) => customerIds.push(c.customer_id))
 
@@ -386,10 +389,12 @@ async function executeSaleTransaction(
   transferAmount: number,
   idempotencyKey: string | undefined,
   requestHash: string,
+  clientResetGeneration: number,
 ): Promise<any> {
   return runTransaction(async (client) => {
     // Set local lock timeout to 2 seconds to prevent indefinitely hanging transaction locks
     await client.query("SET LOCAL lock_timeout = '2s'")
+    await assertTenantSyncGenerationInTransaction(client, tenantId, clientResetGeneration)
 
     // 1. Get allow_negative_qty
     const settingsRes = await client.query(
@@ -908,7 +913,13 @@ async function processLegacyBonuses(sale: any, input: CreateSaleInput): Promise<
   }
 }
 
-export async function createSale(cashierId: string, tenantId: string, input: CreateSaleInput, idempotencyKey?: string) {
+export async function createSale(
+  cashierId: string,
+  tenantId: string,
+  input: CreateSaleInput,
+  idempotencyKey?: string,
+  clientResetGeneration = 0,
+) {
   const requestHash = saleRequestHash(input)
   if (idempotencyKey) {
     const cachedResponse = await checkIdempotencyLock(idempotencyKey, tenantId, requestHash)
@@ -975,6 +986,7 @@ export async function createSale(cashierId: string, tenantId: string, input: Cre
     const sale = await executeSaleTransaction(
       cashierId, tenantId, input, useBonusAtomic, bonusesEarned, bonusExpiresAt,
       cashAmount, cardAmount, transferAmount, idempotencyKey, requestHash,
+      clientResetGeneration,
     )
     committedSale = sale
 

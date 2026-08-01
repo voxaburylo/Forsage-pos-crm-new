@@ -2,6 +2,7 @@ import path from 'node:path'
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
@@ -33,6 +34,9 @@ import {
   type CashalotConfigUpdate,
 } from './fiscal/cashalotService'
 import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
+import { enqueuePrinterJob } from './print/printerJobQueue'
+import { assertPrinterRole, type PrinterRole } from './print/printerRole'
+import { withPrintTimeout } from './print/printTimeout'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 
@@ -112,6 +116,8 @@ interface DesktopPrintOptions {
   /** Ім'я принтера у Windows. Задаємо ЗАВЖДИ, щоб чек не поїхав на етикетковий
    * (і навпаки) через зміну «принтера за замовчуванням». */
   deviceName?: string
+  /** Жорстко не дозволяє чеку потрапити на POS-80, а етикетці — на POS-58. */
+  printerRole?: PrinterRole
   silent?: boolean
   showPreviewWindow?: boolean
   /** true — не задавати pageSize, друкувати на папері за налаштуванням драйвера
@@ -545,15 +551,23 @@ function sanitizePageMm(value: unknown, fallback: number, min: number, max: numb
   return Math.max(min, Math.min(max, numeric))
 }
 
-async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}): Promise<{ success: true }> {
+function createPrintDocumentName(role?: PrinterRole): string {
+  const kind = role === 'receipt' ? 'receipt' : role === 'label' ? 'label' : 'document'
+  return `Forsage-${kind}-${randomUUID().slice(0, 8)}`
+}
+
+async function executePrintHtmlDocument(html: string, options: DesktopPrintOptions = {}): Promise<{ success: true }> {
   if (typeof html !== 'string' || html.trim().length === 0) {
     throw new Error('PRINT_HTML_EMPTY')
   }
 
+  const deviceName = String(options.deviceName ?? '').trim()
+  if (options.printerRole) assertPrinterRole(deviceName, options.printerRole)
+  const documentName = createPrintDocumentName(options.printerRole)
   const widthMm = sanitizePageMm(options.widthMm, 40, 10, 300)
   const heightMm = sanitizePageMm(options.heightMm, 30, 10, 300)
   const printWindow = new BrowserWindow({
-    title: options.title ?? 'Друк',
+    title: documentName,
     width: Math.max(360, Math.round(widthMm * 10)),
     height: Math.max(320, Math.round(heightMm * 12)),
     show: options.showPreviewWindow === true,
@@ -567,11 +581,25 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
     },
   })
 
+  const destroyPrintWindow = () => {
+    if (!printWindow.isDestroyed()) printWindow.destroy()
+  }
+
   try {
-    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-    await printWindow.webContents.executeJavaScript(
-      'Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)',
-      true,
+    await withPrintTimeout(
+      printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`),
+      15_000,
+      'PRINT_RENDER_TIMEOUT',
+      destroyPrintWindow,
+    )
+    await withPrintTimeout(
+      printWindow.webContents.executeJavaScript(
+        `document.title = ${JSON.stringify(documentName)}; Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => null))).then(() => true)`,
+        true,
+      ),
+      10_000,
+      'PRINT_RESOURCES_TIMEOUT',
+      destroyPrintWindow,
     )
     if (options.showPreviewWindow === true) {
       printWindow.show()
@@ -591,7 +619,6 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
     // pageSize+landscape з «Invalid printer settings». Тому пробуємо каскадом:
     // спершу ідеальні налаштування, а якщо драйвер їх не приймає — простіші,
     // щоб друк узагалі відбувся, а не падав.
-    const deviceName = String(options.deviceName ?? '').trim()
     const minimalBase = {
       silent: options.silent === true,
       printBackground: true,
@@ -631,35 +658,38 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
     const printOnce = (opts: Electron.WebContentsPrintOptions) =>
       new Promise<void>((resolve, reject) => {
         let done = false
-        const timeout = opts.silent === true
-          ? setTimeout(() => {
-              if (done) return
-              done = true
-              reject(new Error('PRINT_TIMEOUT'))
-            }, 15000)
-          : null
+        const timeout = setTimeout(() => {
+          if (done) return
+          done = true
+          try { printWindow.webContents.stop() } catch { /* window may already be gone */ }
+          reject(new Error('PRINT_OUTCOME_UNKNOWN'))
+        }, opts.silent === true ? 20_000 : 60_000)
         printWindow.webContents.print(opts, (success, failureReason) => {
           if (done) return
           done = true
-          if (timeout) clearTimeout(timeout)
-          if (success || failureReason === 'cancelled') resolve()
+          clearTimeout(timeout)
+          if (success) resolve()
+          else if (failureReason === 'cancelled') reject(new Error('PRINT_CANCELLED'))
           else reject(new Error(failureReason || 'PRINT_FAILED'))
         })
       })
 
     // Залипле завдання цього ж принтера з'їло б друк мовчки — чистимо до відправки.
     if (deviceName) await preflightPrinter(deviceName)
+    const submittedAfter = new Date(Date.now() - 2_000).toISOString()
 
     let lastError: unknown = null
     for (const opts of attempts) {
       try {
         await printOnce(opts)
         // Спулер прийняв байти — це ще не друк. Переконуємось, що завдання пішло.
-        if (deviceName && options.silent === true) await postflightPrinter(deviceName)
+        if (deviceName && options.silent === true) await postflightPrinter(deviceName, documentName, submittedAfter)
         return { success: true }
       } catch (error) {
         lastError = error
-        if (error instanceof Error && error.message === 'PRINT_TIMEOUT') break
+        if (error instanceof Error && (
+          error.message === 'PRINT_OUTCOME_UNKNOWN' || error.message === 'PRINT_CANCELLED'
+        )) break
         // Принтер не готовий або завдання не поїхало — інші налаштування паперу
         // цього не виправлять, тому каскад далі не має сенсу.
         if (error instanceof Error && isSpoolerGuardError(error)) break
@@ -670,6 +700,11 @@ async function printHtmlDocument(html: string, options: DesktopPrintOptions = {}
   } finally {
     if (!printWindow.isDestroyed()) printWindow.close()
   }
+}
+
+function printHtmlDocument(html: string, options: DesktopPrintOptions = {}): Promise<{ success: true }> {
+  const deviceName = String(options.deviceName ?? '').trim()
+  return enqueuePrinterJob(deviceName, () => executePrintHtmlDocument(html, options))
 }
 
 app.on('second-instance', () => {
@@ -703,7 +738,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:get-runtime-info', () => requireLocalDatabase().info())
   handleDesktopIpc('desktop:backup-now', () => requireLocalDatabase().backupNow())
   handleDesktopIpc('desktop:bootstrap:import-snapshot', (_event, snapshot: LocalBootstrapSnapshot) =>
-    requireLocalBootstrap().importSnapshot(snapshot),
+    requireLocalSync().importSnapshotChunked(snapshot),
   )
   handleDesktopIpc('desktop:catalog:find-by-barcode', (_event, barcode: string) =>
     requireLocalCatalog().findByBarcode(barcode),
@@ -1081,6 +1116,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:list-sales', (_event, input) =>
     requireLocalPos().listSales(input),
   )
+  handleDesktopIpc('desktop:pos:dashboard-summary', (_event, input) =>
+    requireLocalPos().dashboardSummary(input),
+  )
   handleDesktopIpc('desktop:pos:list-returns', (_event, input) =>
     requireLocalPos().listReturns(input),
   )
@@ -1127,7 +1165,7 @@ app.whenReady().then(async () => {
     requireLocalSync().getSyncStatus(),
   )
   handleDesktopIpc('desktop:sync:apply-pull-changes', (_event, changes: LocalSyncPullChanges) =>
-    requireLocalSync().applyPullChanges(changes),
+    requireLocalSync().applyPullChangesChunked(changes),
   )
   handleDesktopIpc('desktop:sync:mark-pull-failed', (_event, error: string) =>
     requireLocalSync().markPullFailed(error),

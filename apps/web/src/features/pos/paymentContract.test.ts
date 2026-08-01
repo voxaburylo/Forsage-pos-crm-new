@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { buildRoleSafeCustomerUpdate, canManageCustomerFinancials } from '../customers/customerEditPermissions'
 import { areAllDisplayedProductsSelected, toggleDisplayedProductsSelection } from '../products/productSelection'
@@ -85,5 +86,14 @@ describe('desktop terminal safety', () => {
   it('never claims a desktop terminal is integrated without a local adapter', () => {
     expect(canUseIntegratedTerminal(true, true, 'privatbank')).toBe(false)
     expect(canUseIntegratedTerminal(false, true, 'privatbank')).toBe(true)
+  })
+})
+
+describe('web sale reset generation', () => {
+  it('sends the current local generation with every online sale', () => {
+    const source = readFileSync(new URL('./saleApi.ts', import.meta.url), 'utf8')
+    expect(source).toContain('await getLocalSyncState(scopeKey)')
+    expect(source).toContain("'X-Sync-Reset-Generation': String(resetGeneration)")
+    expect(source).toContain("'X-Idempotency-Key': idempotencyKey")
   })
 })

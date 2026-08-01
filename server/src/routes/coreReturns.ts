@@ -105,15 +105,47 @@ router.post('/supplier/:itemId/return', async (req, res, next) => {
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна кількість', 422, parsed.error.flatten())
 
     // Атомарний інкремент з обмеженням зверху — паралельні запити не "перевернуть" більше, ніж є
-    const { rows, rowCount } = await runTransaction((pgClient) =>
-      pgClient.query(
+    const { rows, rowCount } = await runTransaction(async (pgClient) => {
+      // Lock the parent first. Invoice editing follows the same parent -> child
+      // lock order, so a concurrent edit cannot deadlock with a core return.
+      const invoiceResult = await pgClient.query(
+        `SELECT invoice.id
+         FROM supply_invoices AS invoice
+         JOIN supply_invoice_items AS item ON item.invoice_id = invoice.id
+         WHERE item.id = $1
+           AND item.tenant_id = $2
+           AND invoice.tenant_id = $2
+           AND invoice.deleted_at IS NULL
+         FOR UPDATE OF invoice`,
+        [req.params.itemId, tenantId],
+      )
+      if (invoiceResult.rowCount === 0) {
+        return { rows: [], rowCount: 0 }
+      }
+
+      const invoiceId = invoiceResult.rows[0].id
+      const updated = await pgClient.query(
         `UPDATE supply_invoice_items
          SET core_returned_qty = LEAST(qty, core_returned_qty + $1)
-         WHERE id = $2 AND tenant_id = $3 AND core_returned_qty < qty
+         WHERE id = $2
+           AND tenant_id = $3
+           AND invoice_id = $4
+           AND core_returned_qty < qty
          RETURNING id, qty, core_returned_qty`,
-        [parsed.data.qty, req.params.itemId, tenantId]
+        [parsed.data.qty, req.params.itemId, tenantId, invoiceId],
       )
-    )
+      if ((updated.rowCount ?? 0) > 0) {
+        // Child rows are pulled together with a changed parent invoice. Touch
+        // it at the end of this transaction so delta sync cannot miss the row.
+        await pgClient.query(
+          `UPDATE supply_invoices
+           SET updated_at = clock_timestamp()
+           WHERE id = $1 AND tenant_id = $2`,
+          [invoiceId, tenantId],
+        )
+      }
+      return updated
+    })
 
     if (rowCount === 0) {
       throw new AppError('CONFLICT', 'Позицію не знайдено або борг вже закрито', 409)
@@ -168,6 +200,7 @@ router.post('/:type/:itemId/status', async (req, res, next) => {
             `UPDATE sale_items si SET core_return_status = $1
              FROM sales s
              WHERE si.id = $2 AND si.tenant_id = $3 AND si.sale_id = s.id
+               AND s.tenant_id = $3
                AND si.core_return_status = $4
              RETURNING si.*, s.customer_id,
                (SELECT name FROM products WHERE id = si.product_id) AS item_name`,
@@ -187,12 +220,6 @@ router.post('/:type/:itemId/status', async (req, res, next) => {
       }
 
       const item = updateRes.rows[0]
-      if (type === 'order') {
-        await pgClient.query(
-          'UPDATE customer_orders SET updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
-          [item.order_id, tenantId]
-        )
-      }
       const coreDepositAmount = parseInt(item.core_deposit_amount, 10) || 0
       const customerId: string | null = item.customer_id || null
 
@@ -213,6 +240,25 @@ router.post('/:type/:itemId/status', async (req, res, next) => {
             coreDepositAmount,
             `Повернення застави за стару деталь (позиція: ${item.item_name || 'Запчастина'})`
           ]
+        )
+      }
+
+      // sale_items/customer_order_items are synchronized as children of their
+      // document. A fresh parent timestamp in the same transaction makes both
+      // branches visible to the next local delta pull.
+      if (type === 'sale') {
+        await pgClient.query(
+          `UPDATE sales
+           SET updated_at = clock_timestamp()
+           WHERE id = $1 AND tenant_id = $2`,
+          [item.sale_id, tenantId],
+        )
+      } else {
+        await pgClient.query(
+          `UPDATE customer_orders
+           SET updated_at = clock_timestamp()
+           WHERE id = $1 AND tenant_id = $2`,
+          [item.order_id, tenantId],
         )
       }
 

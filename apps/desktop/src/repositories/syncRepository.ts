@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
-import { DEFAULT_TENANT_ID, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult } from '../db/localTypes'
+import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
 import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
+import { ChunkedSyncApplier } from './chunkedSyncApplier'
+import { readServerResetGeneration } from './localTenantReset'
 
 const SERVER_PULL_SCOPE = 'desktop_server_pull'
 const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
@@ -67,6 +69,7 @@ export class LocalSyncRepository {
     this.recoverLegacyReturnOutbox()
     this.recoverMissingCustomerVehicleOutbox()
     this.recoverOrphanProductDirtyFlags()
+    this.recoverAcknowledgedDirtyFlags()
   }
 
   getPullState(): LocalSyncPullState {
@@ -89,6 +92,7 @@ export class LocalSyncRepository {
       cursor: row?.pull_cursor ?? null,
       last_success_at: row?.last_success_at ?? null,
       last_reference_sync_at: parseStoredString(referenceRow?.value_json),
+      reset_generation: readServerResetGeneration(this.db),
       last_error: row?.last_error ?? null,
     }
   }
@@ -179,6 +183,14 @@ export class LocalSyncRepository {
       return applied
     })
     return result
+  }
+
+  applyPullChangesChunked(changes: LocalSyncPullChanges): Promise<LocalSyncPullResult> {
+    return new ChunkedSyncApplier(this.db).applyPullChanges(changes)
+  }
+
+  importSnapshotChunked(snapshot: LocalBootstrapSnapshot): Promise<LocalBootstrapImportResult> {
+    return new ChunkedSyncApplier(this.db).importSnapshot(snapshot)
   }
 
   markPullFailed(error: string): void {
@@ -278,8 +290,16 @@ export class LocalSyncRepository {
   applyPushResults(results: LocalSyncPushResult[]): void {
     const timestamp = nowIso()
     this.db.transaction(() => {
+      const acknowledged: Array<{
+        tenant_id: string
+        aggregate_type: string
+        aggregate_id: string
+        operation_type: string
+        payload_json: string | null
+        created_at: string
+      }> = []
       for (const result of results) {
-        if (result.status === 'synced') {
+        if (result.status === 'synced' || result.status === 'discarded') {
           const operation = this.db.prepare(`
             SELECT tenant_id, aggregate_type, aggregate_id, operation_type, payload_json, created_at
             FROM sync_outbox
@@ -303,7 +323,8 @@ export class LocalSyncRepository {
             WHERE sequence = ?
               AND operation_id = ?
           `).run(timestamp, result.sequence, result.operation_id)
-          if (operation) this.clearDirtyAfterPush(operation)
+          // Discard is terminal, but the obsolete mutation was not accepted.
+          if (operation && result.status === 'synced') acknowledged.push(operation)
           continue
         }
 
@@ -318,6 +339,9 @@ export class LocalSyncRepository {
             AND operation_id = ?
         `).run(result.error ?? 'Помилка синхронізації', nextAttemptAt, result.sequence, result.operation_id)
       }
+      // All statuses must be final before dirty flags are inspected. Otherwise
+      // a reverse-ordered acknowledgement batch can leave a newer dirty_at orphaned.
+      for (const operation of acknowledged) this.clearDirtyAfterPush(operation)
     })
   }
 
@@ -340,6 +364,15 @@ export class LocalSyncRepository {
   }
 
 
+  private hasUnsyncedAggregate(tenantId: string, aggregateType: string, aggregateId: string): boolean {
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM sync_outbox
+      WHERE tenant_id = ? AND aggregate_type = ? AND aggregate_id = ?
+        AND status IN ('pending', 'failed', 'sending')
+      LIMIT 1
+    `).get(tenantId, aggregateType, aggregateId))
+  }
+
   private clearDirtyAfterPush(operation: {
     tenant_id: string
     aggregate_type: string
@@ -348,6 +381,10 @@ export class LocalSyncRepository {
     payload_json: string | null
     created_at: string
   }): void {
+    // Acknowledging an older operation must never clear a dirty flag while a
+    // newer retry for the same aggregate is still pending or failed.
+    if (this.hasUnsyncedAggregate(operation.tenant_id, operation.aggregate_type, operation.aggregate_id)) return
+
     let payload: any = null
     try {
       payload = operation.payload_json ? JSON.parse(operation.payload_json) : null
@@ -660,6 +697,62 @@ export class LocalSyncRepository {
           OR last_error LIKE '%COMMISSION_REVERSAL_FAILED%'
         )
     `).run()
+  }
+
+  private recoverAcknowledgedDirtyFlags(): void {
+    // Older builds sometimes acknowledged an outbox operation but crashed
+    // before clearing the related dirty rows. Replaying only acknowledgements
+    // whose timestamp is still present is safe: pending/failed work for the
+    // same aggregate is checked again by clearDirtyAfterPush.
+    const dirtyRows = this.db.prepare(`
+      SELECT tenant_id, dirty_at FROM staff_users WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM brands WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM categories WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM suppliers WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM products WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM customers WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM customer_vehicles WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM customer_orders WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM customer_order_items WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM order_payments WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM shifts WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM sales WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM cash_operations WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM inventory_movements WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM inventory_sessions WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM supply_invoices WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM supply_invoice_items WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM supplier_payments WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM customer_deposit_transactions WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM customer_returns WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM bonus_transactions WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM warehouse_movements WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM stock_reserves WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM writeoffs WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM commission_rules WHERE dirty_at IS NOT NULL
+      UNION ALL SELECT tenant_id, dirty_at FROM salary_payments WHERE dirty_at IS NOT NULL
+    `).all() as Array<{ tenant_id: string; dirty_at: string }>
+    if (dirtyRows.length === 0) return
+
+    const dirtyKeys = new Set(dirtyRows.map((row) => `${row.tenant_id}:${row.dirty_at}`))
+    const acknowledged = (this.db.prepare(`
+      SELECT tenant_id, aggregate_type, aggregate_id, operation_type, payload_json, created_at
+      FROM sync_outbox
+      WHERE status = 'synced'
+      ORDER BY sequence ASC
+    `).all() as Array<{
+      tenant_id: string
+      aggregate_type: string
+      aggregate_id: string
+      operation_type: string
+      payload_json: string | null
+      created_at: string
+    }>).filter((operation) => dirtyKeys.has(`${operation.tenant_id}:${operation.created_at}`))
+    if (acknowledged.length === 0) return
+
+    this.db.transaction(() => {
+      for (const operation of acknowledged) this.clearDirtyAfterPush(operation)
+    })
   }
 
   private recoverOrphanProductDirtyFlags(): void {

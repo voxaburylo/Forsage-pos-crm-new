@@ -4,6 +4,7 @@ import { getCachedProductsByIds, getPendingSales, type PendingSale } from '@/lib
 import { formatMoney } from '@/lib/utils'
 import type { Sale } from '@/types/sale'
 import { printReceipt, ReceiptPrint } from './ReceiptPrint'
+import { useAuthStore } from '@/stores/authStore'
 
 interface Props {
   open: boolean
@@ -17,6 +18,7 @@ interface Props {
 export function OfflineSalesModal({
   open, online, syncing, refreshKey, onClose, onSync,
 }: Props) {
+  const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [sales, setSales] = useState<PendingSale[]>([])
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -24,9 +26,13 @@ export function OfflineSalesModal({
   const [printSale, setPrintSale] = useState<Sale | null>(null)
 
   async function load() {
+    if (!scopeKey) {
+      setSales([])
+      return
+    }
     setLoading(true)
     try {
-      const pending = await getPendingSales()
+      const pending = await getPendingSales(scopeKey)
       setSales(pending)
       const cached = await getCachedProductsByIds(
         pending.flatMap((sale) => sale.items.map((item) => item.product_id)),
@@ -39,7 +45,7 @@ export function OfflineSalesModal({
 
   useEffect(() => {
     if (open) load()
-  }, [open, refreshKey, syncing])
+  }, [open, refreshKey, syncing, scopeKey])
 
   if (!open) return null
 

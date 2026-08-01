@@ -4,6 +4,7 @@ import type { Sale } from '@/types/sale'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatDateTime } from '@/lib/utils'
 import { PrintService } from '@/lib/printService'
+import { SingleFlight } from '@/lib/singleFlight'
 import { toast } from '@/components/ui/Toast'
 import { resolveReceiptPrinter } from './receiptPrinterSettings'
 
@@ -196,44 +197,56 @@ function receiptPrintErrorMessage(error: unknown): string {
   if (raw.includes('PRINT_PRINTER_NOT_READY') || raw.includes('PRINT_NOT_CONFIRMED')) {
     return 'Чековий принтер не готовий: перевірте живлення, USB-кабель і наявність паперу. Чек НЕ надруковано.'
   }
+  if (raw.includes('PRINT_RECEIPT_PRINTER_NOT_SET') || raw.includes('PRINT_RECEIPT_PRINTER_MISMATCH')) {
+    return 'Чековий принтер POS-58 не знайдено. Чек не буде перенаправлено на принтер етикеток POS-80.'
+  }
+  if (raw.includes('PRINT_OUTCOME_UNKNOWN')) {
+    return 'Windows не підтвердила результат друку. Не запускайте чек повторно автоматично: перевірте принтер і чергу друку.'
+  }
+  if (raw.includes('PRINT_RENDER_TIMEOUT') || raw.includes('PRINT_RESOURCES_TIMEOUT')) {
+    return 'Чек не вдалося підготувати до друку вчасно. Повторний прихований друк не запускався.'
+  }
   return ''
 }
 
+const receiptPrintFlight = new SingleFlight<void>()
+
 export function printReceipt() {
-  // Desktop (Electron): друкуємо чек через нативний друк — системний діалог
-  // принтера без кривого Chromium-передперегляду («не підтримує передперегляд»).
-  // Папір бере з налаштувань чекового драйвера (58/80мм, змінна висота).
-  const desktopPrint = typeof window !== 'undefined' ? window.forsageDesktop?.print : undefined
-  if (desktopPrint) {
-    const el = document.querySelector('.receipt-print')
-    if (el) {
+  // Повторне натискання, авто-друк і ручна кнопка ділять одне живе завдання.
+  if (receiptPrintFlight.isActive) return
+
+  void receiptPrintFlight.run(async () => {
+    try {
+      const desktopPrint = typeof window !== 'undefined' ? window.forsageDesktop?.print : undefined
+      if (!desktopPrint) {
+        PrintService.printCurrentPage()
+        return
+      }
+
+      const el = document.querySelector('.receipt-print')
+      if (!el) throw new Error('PRINT_RECEIPT_NOT_READY')
       const html = `<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">`
         + `<style>@page{margin:0}html,body{margin:0;padding:0;background:#fff}`
         + `.receipt-print{display:block !important}</style></head><body>`
         + `${el.outerHTML}</body></html>`
-      // Чек друкуємо ТИХО і на ЯВНО названий чековий принтер: покладатись на
-      // «принтер за замовчуванням» не можна — варто йому стати етикетковим,
-      // і чек іде на HL80, зависає там і глушить чергу.
-      void resolveReceiptPrinter().then((deviceName) =>
-        desktopPrint.html(html, {
-          title: 'Чек',
-          silent: true,
-          useDriverPaper: true,
-          ...(deviceName ? { deviceName } : {}),
-        }),
-      ).catch((error: unknown) => {
-        console.error('Native receipt print failed', error)
-        const explained = receiptPrintErrorMessage(error)
-        if (explained) {
-          // Принтер недоступний — друкувати ще раз через браузер немає сенсу,
-          // це лише створило б другий висячий job.
-          toast.error(explained)
-          return
-        }
-        PrintService.printCurrentPage()
+      const deviceName = await resolveReceiptPrinter()
+      if (!deviceName) throw new Error('PRINT_RECEIPT_PRINTER_NOT_SET')
+
+      await desktopPrint.html(html, {
+        title: 'Чек',
+        silent: true,
+        deviceName,
+        printerRole: 'receipt',
+        useDriverPaper: true,
       })
-      return
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : String(error ?? '')
+      // Скасування користувачем — завершена дія, а не привід відкривати друге
+      // вікно або показувати помилку.
+      if (raw.includes('PRINT_CANCELLED')) return
+      console.error('Native receipt print failed', error)
+      const explained = receiptPrintErrorMessage(error)
+      toast.error(explained || 'Чек не надруковано. Автоматичний повторний друк не запускався.')
     }
-  }
-  PrintService.printCurrentPage()
+  })
 }

@@ -38,8 +38,16 @@ describe('order child synchronization safety', () => {
     expect(customerOrdersSource).toContain(".update({ updated_at: new Date().toISOString() })")
   })
 
-  it('touches the parent order when a core-return status changes', () => {
-    expect(coreReturnsSource).toContain("if (type === 'order')")
-    expect(coreReturnsSource).toContain('UPDATE customer_orders SET updated_at = NOW()')
+  it('touches every parent document when a core-return child changes', () => {
+    expect(coreReturnsSource).toContain('UPDATE supply_invoices')
+    expect(coreReturnsSource).toContain('UPDATE sales')
+    expect(coreReturnsSource).toContain('UPDATE customer_orders')
+    expect(coreReturnsSource.match(/SET updated_at = clock_timestamp\(\)/g)).toHaveLength(3)
+    expect(coreReturnsSource).toContain('FOR UPDATE OF invoice')
+  })
+
+  it('keeps core-return child changes and their parent sync stamp in one transaction', () => {
+    expect(coreReturnsSource.match(/runTransaction\(async \(pgClient\) =>/g)).toHaveLength(2)
+    expect(coreReturnsSource).not.toContain('UPDATE customer_orders SET updated_at = NOW()')
   })
 })

@@ -13,11 +13,24 @@ describe('sync self-healing safeguards', () => {
     expect(migration).toContain("source <> 'commission_reversal' AND amount > 0")
   })
 
-  it('uses canonical snapshots for catalog, orders and recent receipt history', () => {
+  it('uses bounded canonical snapshots for catalog, orders and recent receipt history', () => {
     expect(syncSource).toContain('const snapshotSince = referencesIncluded ? undefined : since')
-    expect(syncSource).toContain('query = withChangedSince(query, snapshotSince)')
-    expect(syncSource).toContain("if (since && !referencesIncluded) query = query.gt('order.updated_at', since)")
-    expect(syncSource).toContain("else query = query.gte('completed_at', historySince)")
-    expect(syncSource).toContain('else query = query.or(`status.eq.open,opened_at.gte.${historySince}`)')
+    expect(syncSource).toContain("if (referencesIncluded) query = query.gte('completed_at', historySince)")
+    expect(syncSource).toContain('activeReferenceQuery')
+    expect(syncSource).toContain('references_included: referencesIncluded')
+    expect(syncSource).not.toContain('function withChangedSince')
+  })
+
+  it('repairs embedded browser reference values and publishes every reference tombstone', () => {
+    expect(syncSource).toContain('referenceProductIds')
+    expect(syncSource).toContain('result.additional_barcodes =')
+    expect(syncSource).toContain('result.aliases =')
+    expect(syncSource).toContain('result.cross_numbers =')
+    expect(syncSource).toContain('deleted_product_barcode_ids:')
+    expect(syncSource).toContain('deleted_product_alias_ids:')
+    expect(syncSource).toContain('deleted_product_cross_number_ids:')
+    expect(syncSource).toContain('deleted_customer_vehicle_ids:')
+    expect(syncSource).toContain('deleted_category_ids:')
+    expect(syncSource).toContain('deleted_brand_ids:')
   })
 })

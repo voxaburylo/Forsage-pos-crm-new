@@ -81,11 +81,29 @@ try {
 `
 
 const POSTFLIGHT_SCRIPT = String.raw`
-param([string]$PrinterName, [int]$TimeoutSeconds = 20)
+param(
+  [string]$PrinterName,
+  [string]$DocumentName,
+  [string]$SubmittedAfter,
+  [int]$TimeoutSeconds = 20
+)
 $ErrorActionPreference = 'Stop'
 $stuckPattern = '${STUCK_JOB_PATTERN}'
 
-# Чекаємо, поки завдання піде з черги. Порожня черга = надруковано.
+$submittedAfterDate = if ($SubmittedAfter) { [DateTime]::Parse($SubmittedAfter).ToUniversalTime() } else { $null }
+
+function Get-TargetJobs {
+  @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue | Where-Object {
+    $_.DocumentName -eq $DocumentName -and (
+      -not $submittedAfterDate -or
+      -not $_.SubmittedTime -or
+      $_.SubmittedTime.ToUniversalTime() -ge $submittedAfterDate
+    )
+  })
+}
+
+# Чекаємо лише КОНКРЕТНИЙ документ Forsage. Чужий документ або інший чек у
+# черзі цього ж принтера не повинен затримувати чи скасовувати поточний друк.
 # Статус помилки = ні. Якщо воно й далі друкується і сторінки РЕАЛЬНО йдуть
 # (довга партія) — виходимо з успіхом, щоб не блокувати касу. А от завдання,
 # яке за весь час не надрукувало жодної сторінки, — це і є класичне зависання
@@ -95,19 +113,19 @@ try {
   $failure = $null
   $drained = $false
   while ((Get-Date) -lt $deadline) {
-    $jobs = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue)
+    $jobs = @(Get-TargetJobs)
     if ($jobs.Count -eq 0) { $drained = $true; break }
     $bad = @($jobs | Where-Object { $_.JobStatus -match $stuckPattern })
     if ($bad.Count -gt 0) { $failure = $bad[0].JobStatus; break }
     Start-Sleep -Milliseconds 400
   }
   if (-not $drained -and -not $failure) {
-    $left = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue)
+    $left = @(Get-TargetJobs)
     $printing = @($left | Where-Object { $_.PagesPrinted -gt 0 })
     if ($left.Count -gt 0 -and $printing.Count -eq 0) { $failure = 'No pages printed' }
   }
   if ($failure) {
-    Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
+    Get-TargetJobs |
       Where-Object { $_.JobStatus -match $stuckPattern } |
       Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
     throw "${SPOOLER_ERRORS.notConfirmed}: $failure"
@@ -169,14 +187,25 @@ export function preflightPrinter(printerName: string): Promise<void> {
  * Чекає, поки завдання зникне з черги принтера. Кидає PRINT_NOT_CONFIRMED,
  * якщо воно натомість впало в помилку — тобто друку НЕ відбулось.
  */
-export function postflightPrinter(printerName: string, timeoutSeconds = 20): Promise<void> {
+export function postflightPrinter(
+  printerName: string,
+  documentName: string,
+  submittedAfter: string,
+  timeoutSeconds = 20,
+): Promise<void> {
   const name = printerName.trim()
   if (!name) return Promise.resolve()
+  const document = documentName.trim()
+  if (!document) return Promise.resolve()
   return runGuardScript(
     'print-postflight.ps1',
     POSTFLIGHT_SCRIPT,
     name,
-    ['-TimeoutSeconds', String(timeoutSeconds)],
+    [
+      '-DocumentName', document,
+      '-SubmittedAfter', submittedAfter,
+      '-TimeoutSeconds', String(timeoutSeconds),
+    ],
     (timeoutSeconds + 10) * 1000,
     'POSTFLIGHT_OK',
   )

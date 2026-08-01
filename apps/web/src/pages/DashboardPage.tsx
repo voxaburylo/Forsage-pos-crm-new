@@ -1,9 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Zap, Package, Users, Truck, AlertTriangle, ClipboardList, Receipt, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { api } from '@/lib/api'
-import { orderApi } from '@/features/orders/orderApi'
 import { Layout } from '@/components/Layout'
 import { Card, Button } from '@/components/ui'
 import { formatMoney } from '@/lib/utils'
@@ -24,6 +23,10 @@ interface Analytics {
   total_receipts: number
   average_receipt: number
   daily: DailyData[]
+  low_stock?: number
+  totals?: { products: number; customers: number; suppliers: number; openOrders: number }
+  overdue_count?: number
+  debt?: { count: number; total: number }
 }
 
 interface ForecastItem { month: string; projected: number }
@@ -61,14 +64,34 @@ export default function DashboardPage() {
   const [overdueCount, setOverdueCount] = useState(0)
   const [debt, setDebt] = useState({ count: 0, total: 0 })
   const [loading, setLoading] = useState(true)
+  const loadSequenceRef = useRef(0)
 
   const range = useMemo(() => getRange(period, selectedDate), [period, selectedDate])
 
   useEffect(() => {
+    const requestId = ++loadSequenceRef.current
+    let cancelled = false
+    const isCurrent = () => !cancelled && requestId === loadSequenceRef.current
     async function load() {
       setLoading(true)
       try {
         const desktop = desktopBridge()
+        if (desktop?.pos.dashboardSummary) {
+          const saleDateRange = businessDateRangeUtc(range.startDate, range.endDate)
+          const summary = await desktop.pos.dashboardSummary({
+            date_from: saleDateRange.from,
+            date_to: saleDateRange.to,
+          })
+          if (!isCurrent()) return
+          setAnalytics(summary.analytics)
+          setLowStock(Number(summary.low_stock ?? 0))
+          setTotals(summary.totals)
+          setOverdueCount(Number(summary.overdue_count ?? 0))
+          setDebt(summary.debt)
+          setForecast(null)
+          setAnomalies([])
+          return
+        }
         if (desktop?.catalog.listProducts && desktop.pos.listCustomers && desktop.pos.listSales && desktop.orders?.list) {
           const [productResult, customerResult, supplierResult, orders] = await Promise.all([
             desktop.catalog.listProducts({ limit: 1, offset: 0 }),
@@ -90,6 +113,7 @@ export default function DashboardPage() {
             salesPage++
           } while (salesPage <= salesPages)
 
+          if (!isCurrent()) return
           const rangeSales = allSales.filter((sale) => {
             const key = businessDateKey(String(sale.completed_at ?? ''))
             return key >= range.startDate && key <= range.endDate
@@ -119,7 +143,7 @@ export default function DashboardPage() {
             average_receipt: rangeSales.length ? Math.round(totalRevenue / rangeSales.length) : 0,
             daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
           })
-          const activeOrders = (orders ?? []).filter((order: any) => !['completed', 'canceled'].includes(order.status))
+          const activeOrders = (orders ?? []).filter((order: any) => !['completed', 'canceled', 'cancelled', 'archived'].includes(order.status))
           setLowStock(Number(lowResult.total ?? 0))
           setTotals({
             products: Number(productResult.total ?? 0),
@@ -139,49 +163,31 @@ export default function DashboardPage() {
           setAnomalies([])
           return
         }
-        const [a, p, c, s, l, o] = await Promise.all([
-          api.get<{ data: Analytics }>(`/api/v1/analytics/dashboard?startDate=${range.startDate}&endDate=${range.endDate}`),
-          api.get<any>('/api/v1/products?per_page=1'),
-          api.get<any>('/api/v1/customers?per_page=1'),
-          api.get<any>('/api/v1/suppliers?per_page=1'),
-          api.get<any>('/api/v1/reports/products/low-stock'),
-          orderApi.list().catch(() => ({ data: [] })),
-        ])
-        setAnalytics(a.data)
-        setLowStock(l.data?.length ?? 0)
-        const activeOrders = (o.data ?? []).filter((ord: any) => !['completed', 'canceled'].includes(ord.status))
-        setTotals({
-          products: p.pagination?.total ?? 0, customers: c.pagination?.total ?? 0,
-          suppliers: s.pagination?.total ?? 0, openOrders: activeOrders.length,
-        })
-
-        // Прострочені замовлення (дедлайн видачі минув)
-        const nowTs = Date.now()
-        setOverdueCount(activeOrders.filter((ord: any) =>
-          ord.pickup_deadline_at && new Date(ord.pickup_deadline_at).getTime() < nowTs).length)
-
-        // Борги клієнтів (кількість — з пагінації; сума — по завантаженій сторінці)
-        api.get<{ data: Array<{ debt_balance: number }>; pagination?: { total: number } }>('/api/v1/customers?has_debt=true&per_page=100')
-          .then((r) => {
-            const list = r.data ?? []
-            setDebt({
-              count: r.pagination?.total ?? list.length,
-              total: list.reduce((s2, x) => s2 + (x.debt_balance ?? 0), 0),
-            })
-          })
-          .catch(() => {})
+        const response = await api.get<{ data: Analytics }>(
+          `/api/v1/analytics/dashboard?startDate=${range.startDate}&endDate=${range.endDate}`,
+        )
+        if (!isCurrent()) return
+        setAnalytics(response.data)
+        setLowStock(Number(response.data.low_stock ?? 0))
+        setTotals(response.data.totals ?? { products: 0, customers: 0, suppliers: 0, openOrders: 0 })
+        setOverdueCount(Number(response.data.overdue_count ?? 0))
+        setDebt(response.data.debt ?? { count: 0, total: 0 })
 
         // Завантаження прогнозу та аномалій (не блокують основне завантаження)
         api.get<{ data: ForecastItem[]; trend: string }>('/api/v1/analytics/forecast?months=3')
-          .then((r) => setForecast(r))
+          .then((r) => { if (isCurrent()) setForecast(r) })
           .catch(() => {})
         api.get<{ data: Anomaly[] }>('/api/v1/analytics/anomalies')
-          .then((r) => setAnomalies(r.data ?? []))
+          .then((r) => { if (isCurrent()) setAnomalies(r.data ?? []) })
           .catch(() => {})
-      } catch { setAnalytics(null) }
-      finally { setLoading(false) }
+      } catch {
+        if (isCurrent()) setAnalytics(null)
+      } finally {
+        if (isCurrent()) setLoading(false)
+      }
     }
-    load()
+    void load()
+    return () => { cancelled = true }
   }, [range])
 
   const d = analytics

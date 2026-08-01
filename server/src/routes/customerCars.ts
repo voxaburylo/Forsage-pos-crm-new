@@ -24,6 +24,7 @@ router.get('/:customerId', async (req, res, next) => {
       .select('*')
       .eq('tenant_id', req.user!.tenant_id)
       .eq('customer_id', req.params.customerId)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -54,13 +55,15 @@ router.post('/', requireRole('owner', 'admin', 'manager', 'cashier'), async (req
         .select('id')
         .eq('vin', parsed.data.vin)
         .eq('tenant_id', req.user!.tenant_id)
+        .is('deleted_at', null)
         .maybeSingle()
       if (existing) throw new AppError('VIN_DUPLICATE', 'Цей VIN-код вже додано до іншого авто', 409)
     }
 
+    const updatedAt = new Date().toISOString()
     const { data, error } = await db
       .from('customer_cars')
-      .insert({ ...parsed.data, tenant_id: req.user!.tenant_id })
+      .insert({ ...parsed.data, tenant_id: req.user!.tenant_id, updated_at: updatedAt, deleted_at: null })
       .select()
       .single()
 
@@ -81,6 +84,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       .select('id')
       .eq('id', req.params.id)
       .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
       .maybeSingle()
     if (!car) throw new AppError('NOT_FOUND', 'Авто не знайдено', 404)
 
@@ -89,6 +93,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       .update({ ...parsed.data, updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
       .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
       .select()
       .single()
 
@@ -109,11 +114,13 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
       .maybeSingle()
     if (!car) throw new AppError('NOT_FOUND', 'Авто не знайдено', 404)
 
+    const deletedAt = new Date().toISOString()
     const { error } = await db
       .from('customer_cars')
-      .delete()
+      .update({ deleted_at: deletedAt, updated_at: deletedAt })
       .eq('id', req.params.id)
       .eq('tenant_id', req.user!.tenant_id)
+      .is('deleted_at', null)
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     res.status(204).send()

@@ -12,7 +12,7 @@
  */
 
 const DB_NAME    = 'forsage_offline'
-const DB_VERSION = 6
+const DB_VERSION = 7
 let dbPromise: Promise<IDBDatabase> | null = null
 
 function normalizeOfflineProductSearchText(value: unknown): string {
@@ -130,10 +130,14 @@ function openDB(): Promise<IDBDatabase> {
         const store = db.createObjectStore('pending_sales', { keyPath: 'offline_id' })
         store.createIndex('by_created', 'created_at', { unique: false })
         store.createIndex('by_status', 'sync_status', { unique: false })
+        store.createIndex('by_scope', 'scope_key', { unique: false })
       } else {
         const store = req.transaction!.objectStore('pending_sales')
         if (!store.indexNames.contains('by_status')) {
           store.createIndex('by_status', 'sync_status', { unique: false })
+        }
+        if (!store.indexNames.contains('by_scope')) {
+          store.createIndex('by_scope', 'scope_key', { unique: false })
         }
       }
 
@@ -156,8 +160,13 @@ function openDB(): Promise<IDBDatabase> {
         store.createIndex('by_completed_at', 'completed_at', { unique: false })
         store.createIndex('by_sync_status', 'sync_status', { unique: false })
         store.createIndex('by_customer', 'customer_id', { unique: false })
+        store.createIndex('by_scope', 'scope_key', { unique: false })
+      } else {
+        const store = req.transaction!.objectStore('sales')
+        if (!store.indexNames.contains('by_scope')) {
+          store.createIndex('by_scope', 'scope_key', { unique: false })
+        }
       }
-
       if (!db.objectStoreNames.contains('brands')) {
         db.createObjectStore('brands', { keyPath: 'id' })
       }
@@ -555,6 +564,7 @@ export async function getCachedCurrentShift(scopeKey: string): Promise<any | nul
 
 export interface PendingSale {
   offline_id:     string   // crypto.randomUUID()
+  scope_key:      string
   created_at:     string   // ISO
   shift_id:       string
   customer_id:    string | null
@@ -585,6 +595,7 @@ export interface PendingSale {
 
 export interface LocalSaleRecord {
   local_id: string
+  scope_key: string
   server_id: string | null
   sync_status: 'pending' | 'failed' | 'synced' | 'remote'
   sync_error: string | null
@@ -616,6 +627,9 @@ export interface LocalSaleRecord {
 export interface SyncChanges {
   tenant_id?: string
   cursor: string
+  reset_required?: boolean
+  reset_generation?: number
+  reset_at?: string | null
   products: any[]
   deleted_product_ids: string[]
   customers: any[]
@@ -626,9 +640,15 @@ export interface SyncChanges {
   categories: any[]
   brands: any[]
   product_barcodes?: any[]
+  deleted_product_barcode_ids?: string[]
   product_aliases?: any[]
+  deleted_product_alias_ids?: string[]
   product_cross_numbers?: any[]
+  deleted_product_cross_number_ids?: string[]
   customer_vehicles?: any[]
+  deleted_customer_vehicle_ids?: string[]
+  deleted_category_ids?: string[]
+  deleted_brand_ids?: string[]
   references_included: boolean
 }
 
@@ -687,9 +707,11 @@ export function attachProductReferences(
 export interface LocalSyncState {
   cursor: string | null
   last_success_at: number | null
+  reset_generation: number
   last_attempt_at: number | null
   last_error: string | null
   last_reference_sync_at: number | null
+  snapshot_in_progress?: boolean
 }
 
 function syncMetaKey(scopeKey: string): string {
@@ -701,13 +723,19 @@ export async function getLocalSyncState(scopeKey: string): Promise<LocalSyncStat
   return new Promise((resolve, reject) => {
     const tx = db.transaction('meta', 'readonly')
     const req = tx.objectStore('meta').get(syncMetaKey(scopeKey))
-    req.onsuccess = () => resolve(req.result?.value ?? {
+    req.onsuccess = () => {
+      const stored = req.result?.value as Partial<LocalSyncState> | undefined
+      resolve({
       cursor: null,
       last_success_at: null,
       last_attempt_at: null,
       last_error: null,
       last_reference_sync_at: null,
-    })
+      snapshot_in_progress: false,
+        ...stored,
+        reset_generation: Number(stored?.reset_generation ?? 0),
+      })
+    }
     req.onerror = () => reject(req.error)
   })
 }
@@ -820,12 +848,78 @@ export async function markSyncError(scopeKey: string, error: string): Promise<vo
   })
 }
 
+export async function resetOfflineSyncData(
+  changes: Pick<SyncChanges, 'reset_generation' | 'reset_at'>,
+  scopeKey: string,
+): Promise<void> {
+  const db = await openDB()
+  const now = Date.now()
+  await new Promise<void>((resolve, reject) => {
+    const stores = [
+      'products',
+      'categories',
+      'brands',
+      'customers',
+      'staff',
+      'sales',
+      'pending_sales',
+      'meta',
+      'sync_log',
+    ]
+    const tx = db.transaction(stores, 'readwrite')
+    for (const storeName of stores.slice(0, 5)) {
+      tx.objectStore(storeName).clear()
+    }
+    for (const storeName of ['sales', 'pending_sales']) {
+      const request = tx.objectStore(storeName).openCursor()
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (!cursor) return
+        if (cursor.value?.scope_key === scopeKey) cursor.delete()
+        cursor.continue()
+      }
+    }
+    const meta = tx.objectStore('meta')
+    meta.delete('current_shift')
+    meta.delete('products_cached_at')
+    meta.delete('cache_scope')
+    meta.put({
+      key: syncMetaKey(scopeKey),
+      value: {
+        cursor: null,
+        reset_generation: Number(changes.reset_generation ?? 0),
+        last_success_at: null,
+        last_attempt_at: now,
+        last_error: null,
+        last_reference_sync_at: null,
+        snapshot_in_progress: false,
+      } satisfies LocalSyncState,
+    })
+    const log = tx.objectStore('sync_log')
+    log.clear()
+    log.add({
+      created_at: new Date().toISOString(),
+      level: 'success',
+      message: `server reset applied; generation=${Number(changes.reset_generation ?? 0)}`,
+    })
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB reset transaction aborted'))
+  })
+  window.dispatchEvent(new CustomEvent('forsage:offline-stock-updated'))
+  window.dispatchEvent(new CustomEvent('forsage:offline-products-refreshed'))
+}
+
 export async function applySyncChanges(
   changes: SyncChanges,
   scopeKey: string,
   replaceSnapshot: boolean,
 ): Promise<void> {
-  const pending = await getPendingSales()
+  if (changes.reset_required === true) {
+    await resetOfflineSyncData(changes, scopeKey)
+    return
+  }
+  const pending = await getPendingSales(scopeKey)
   const previousSyncState = await getLocalSyncState(scopeKey)
   const pendingQty = new Map<string, number>()
   for (const sale of pending) {
@@ -835,96 +929,193 @@ export async function applySyncChanges(
   }
 
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const stores = ['products', 'customers', 'sales', 'categories', 'brands', 'meta', 'sync_log']
+  const batchSize = 500
+  const yieldToBrowser = () => new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+  const transact = (
+    stores: string[],
+    write: (tx: IDBTransaction) => void,
+  ): Promise<void> => new Promise((resolve, reject) => {
     const tx = db.transaction(stores, 'readwrite')
-    const productsStore = tx.objectStore('products')
-    const customersStore = tx.objectStore('customers')
-    const salesStore = tx.objectStore('sales')
-    const categoriesStore = tx.objectStore('categories')
-    const brandsStore = tx.objectStore('brands')
-
-    if (replaceSnapshot) {
-      productsStore.clear()
-      customersStore.clear()
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'))
+    try {
+      write(tx)
+    } catch (error) {
+      try { tx.abort() } catch { /* transaction may already be inactive */ }
+      reject(error)
     }
-    if (replaceSnapshot || changes.references_included) {
-      categoriesStore.clear()
-      brandsStore.clear()
+  })
+  const readStoreKeys = (storeName: string): Promise<string[]> => new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly')
+    const request = tx.objectStore(storeName).getAllKeys()
+    request.onsuccess = () => resolve((request.result ?? []).map(String))
+    request.onerror = () => reject(request.error)
+  })
+  const writeBatches = async <T>(
+    rows: T[],
+    stores: string[],
+    write: (tx: IDBTransaction, row: T) => void,
+  ) => {
+    for (let offset = 0; offset < rows.length; offset += batchSize) {
+      const batch = rows.slice(offset, offset + batchSize)
+      await transact(stores, (tx) => {
+        for (const row of batch) write(tx, row)
+      })
+      await yieldToBrowser()
     }
+  }
 
-    const productsWithReferences = changes.references_included
-      ? attachProductReferences(
-          changes.products ?? [],
-          changes.product_barcodes,
-          changes.product_aliases,
-          changes.product_cross_numbers,
-        )
-      : changes.products ?? []
+  // Never clear a known-good cache before a replacement snapshot succeeds.
+  // Incoming rows are persisted first; only then are keys missing from the
+  // replacement pruned. A failed refresh therefore remains usable and retries.
+  const snapshotKeyLists = replaceSnapshot
+    ? await Promise.all([
+        readStoreKeys('products'),
+        readStoreKeys('customers'),
+        changes.references_included ? readStoreKeys('categories') : Promise.resolve([]),
+        changes.references_included ? readStoreKeys('brands') : Promise.resolve([]),
+      ])
+    : null
+  const snapshotKeys = snapshotKeyLists
+    ? {
+        products: snapshotKeyLists[0],
+        customers: snapshotKeyLists[1],
+        categories: snapshotKeyLists[2],
+        brands: snapshotKeyLists[3],
+      }
+    : null
 
-    for (const product of productsWithReferences) {
-      const queuedQty = pendingQty.get(product.id) ?? 0
-      productsStore.put({
-        ...product,
-        qty_on_hand: product.is_service
-          ? product.qty_on_hand
-          : Math.max(0, Number(product.qty_on_hand ?? 0) - queuedQty),
-        qty_available: product.is_service
-          ? product.qty_available
-          : Math.max(0, Number(product.qty_available ?? product.qty_on_hand ?? 0) - queuedQty),
+  if (replaceSnapshot) {
+    await transact(['meta'], (tx) => {
+      tx.objectStore('meta').put({
+        key: syncMetaKey(scopeKey),
+        value: {
+          ...previousSyncState,
+          cursor: null,
+          last_attempt_at: Date.now(),
+          snapshot_in_progress: true,
+        } satisfies LocalSyncState,
+      })
+    })
+    await yieldToBrowser()
+  }
+
+  const productsWithReferences = changes.references_included
+    ? attachProductReferences(
+        changes.products ?? [],
+        changes.product_barcodes,
+        changes.product_aliases,
+        changes.product_cross_numbers,
+      )
+    : changes.products ?? []
+
+  await writeBatches(productsWithReferences, ['products'], (tx, product) => {
+    const queuedQty = pendingQty.get(product.id) ?? 0
+    tx.objectStore('products').put({
+      ...product,
+      qty_on_hand: product.is_service
+        ? product.qty_on_hand
+        : Math.max(0, Number(product.qty_on_hand ?? 0) - queuedQty),
+      qty_available: product.is_service
+        ? product.qty_available
+        : Math.max(0, Number(product.qty_available ?? product.qty_on_hand ?? 0) - queuedQty),
+    })
+  })
+  await writeBatches(changes.deleted_product_ids ?? [], ['products'], (tx, id) => {
+    tx.objectStore('products').delete(id)
+  })
+  await writeBatches(changes.customers ?? [], ['customers'], (tx, customer) => {
+    tx.objectStore('customers').put(customer)
+  })
+  await writeBatches(changes.deleted_customer_ids ?? [], ['customers'], (tx, id) => {
+    tx.objectStore('customers').delete(id)
+  })
+  await writeBatches(changes.categories ?? [], ['categories'], (tx, category) => {
+    tx.objectStore('categories').put(category)
+  })
+  await writeBatches(changes.deleted_category_ids ?? [], ['categories'], (tx, id) => {
+    tx.objectStore('categories').delete(id)
+  })
+  await writeBatches(changes.brands ?? [], ['brands'], (tx, brand) => {
+    tx.objectStore('brands').put(brand)
+  })
+  await writeBatches(changes.deleted_brand_ids ?? [], ['brands'], (tx, id) => {
+    tx.objectStore('brands').delete(id)
+  })
+
+  if (snapshotKeys) {
+    const staleKeys = (existing: string[], incomingRows: any[]) => {
+      const incoming = new Set(incomingRows
+        .map((row) => String(row?.id ?? ''))
+        .filter(Boolean))
+      return existing.filter((id) => !incoming.has(id))
+    }
+    await writeBatches(staleKeys(snapshotKeys.products, changes.products ?? []), ['products'], (tx, id) => {
+      tx.objectStore('products').delete(id)
+    })
+    await writeBatches(staleKeys(snapshotKeys.customers, changes.customers ?? []), ['customers'], (tx, id) => {
+      tx.objectStore('customers').delete(id)
+    })
+    if (changes.references_included) {
+      await writeBatches(staleKeys(snapshotKeys.categories, changes.categories ?? []), ['categories'], (tx, id) => {
+        tx.objectStore('categories').delete(id)
+      })
+      await writeBatches(staleKeys(snapshotKeys.brands, changes.brands ?? []), ['brands'], (tx, id) => {
+        tx.objectStore('brands').delete(id)
       })
     }
-    for (const id of changes.deleted_product_ids ?? []) productsStore.delete(id)
+  }
 
-    for (const customer of changes.customers ?? []) customersStore.put(customer)
-    for (const id of changes.deleted_customer_ids ?? []) customersStore.delete(id)
-    for (const category of changes.categories ?? []) categoriesStore.put(category)
-    for (const brand of changes.brands ?? []) brandsStore.put(brand)
-
-    const serverIndex = salesStore.index('by_server_id')
-    for (const sale of changes.sales ?? []) {
-      const req = serverIndex.get(sale.id)
-      req.onsuccess = () => {
-        const existing = req.result as LocalSaleRecord | undefined
-        salesStore.put({
-          ...existing,
-          ...sale,
-          local_id: existing?.local_id ?? `server:${sale.id}`,
-          server_id: sale.id,
-          sync_status: existing?.sync_status === 'synced' ? 'synced' : 'remote',
-          sync_error: null,
-          synced_at: existing?.synced_at ?? new Date().toISOString(),
-        })
-      }
+  await writeBatches(changes.sales ?? [], ['sales'], (tx, sale) => {
+    const salesStore = tx.objectStore('sales')
+    const req = salesStore.index('by_server_id').getAll(sale.id)
+    req.onsuccess = () => {
+      const existing = (req.result as LocalSaleRecord[] | undefined)
+        ?.find((record) => record.scope_key === scopeKey)
+      salesStore.put({
+        ...existing,
+        ...sale,
+        local_id: existing?.local_id ?? `server:${scopeKey}:${sale.id}`,
+        scope_key: scopeKey,
+        server_id: sale.id,
+        sync_status: existing?.sync_status === 'synced' ? 'synced' : 'remote',
+        sync_error: null,
+        synced_at: existing?.synced_at ?? new Date().toISOString(),
+      })
     }
+  })
 
-    const now = Date.now()
+  const now = Date.now()
+  await transact(['meta', 'sync_log'], (tx) => {
     tx.objectStore('meta').put({ key: 'products_cached_at', value: now })
     tx.objectStore('meta').put({ key: 'cache_scope', value: scopeKey })
     tx.objectStore('meta').put({
       key: syncMetaKey(scopeKey),
       value: {
         cursor: changes.cursor,
+        reset_generation: Number(changes.reset_generation ?? previousSyncState.reset_generation),
         last_success_at: now,
         last_attempt_at: now,
         last_error: null,
         last_reference_sync_at: changes.references_included
           ? now
           : previousSyncState.last_reference_sync_at,
+        snapshot_in_progress: false,
       } satisfies LocalSyncState,
     })
     tx.objectStore('sync_log').add({
       created_at: new Date().toISOString(),
       level: 'success',
-      message: `products=${changes.products?.length ?? 0}; customers=${changes.customers?.length ?? 0}; sales=${changes.sales?.length ?? 0}`,
+      message: [
+        'products=', changes.products?.length ?? 0,
+        '; customers=', changes.customers?.length ?? 0,
+        '; sales=', changes.sales?.length ?? 0,
+      ].join(''),
     })
-
-    tx.oncomplete = () => {
-      window.dispatchEvent(new CustomEvent('forsage:offline-stock-updated'))
-      resolve()
-    }
-    tx.onerror = () => reject(tx.error)
   })
+
+  window.dispatchEvent(new CustomEvent('forsage:offline-stock-updated'))
 }
 
 export async function commitLocalSale(
@@ -935,10 +1126,11 @@ export async function commitLocalSale(
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['pending_sales', 'sales', 'products', 'meta'], 'readwrite')
-    tx.objectStore('pending_sales').add(pendingSale)
+    tx.objectStore('pending_sales').add({ ...pendingSale, scope_key: scopeKey })
     tx.objectStore('sales').put({
       ...receipt,
       local_id: pendingSale.offline_id,
+      scope_key: scopeKey,
       server_id: null,
       sync_status: 'pending',
       sync_error: null,
@@ -968,16 +1160,24 @@ export async function commitLocalSale(
   })
 }
 
-export async function completePendingSaleSync(offlineId: string, serverSale: any): Promise<void> {
+export async function completePendingSaleSync(
+  offlineId: string,
+  serverSale: any,
+  scopeKey: string,
+): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['pending_sales', 'sales'], 'readwrite')
-    tx.objectStore('pending_sales').delete(offlineId)
+    const pendingStore = tx.objectStore('pending_sales')
+    const pendingReq = pendingStore.get(offlineId)
+    pendingReq.onsuccess = () => {
+      if (pendingReq.result?.scope_key === scopeKey) pendingStore.delete(offlineId)
+    }
     const salesStore = tx.objectStore('sales')
     const req = salesStore.get(offlineId)
     req.onsuccess = () => {
       const local = req.result
-      if (!local) return
+      if (!local || local.scope_key !== scopeKey) return
       salesStore.put({
         ...local,
         ...serverSale,
@@ -993,11 +1193,11 @@ export async function completePendingSaleSync(offlineId: string, serverSale: any
   })
 }
 
-export async function getLocalSales(limit = 100): Promise<LocalSaleRecord[]> {
+export async function getLocalSales(limit = 100, scopeKey: string): Promise<LocalSaleRecord[]> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction('sales', 'readonly')
-    const req = tx.objectStore('sales').getAll()
+    const req = tx.objectStore('sales').index('by_scope').getAll(scopeKey)
     req.onsuccess = () => resolve((req.result ?? [])
       .sort((a: LocalSaleRecord, b: LocalSaleRecord) =>
         new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime())
@@ -1006,19 +1206,22 @@ export async function getLocalSales(limit = 100): Promise<LocalSaleRecord[]> {
   })
 }
 
-export async function getLocalSale(id: string): Promise<LocalSaleRecord | null> {
+export async function getLocalSale(id: string, scopeKey: string): Promise<LocalSaleRecord | null> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction('sales', 'readonly')
     const store = tx.objectStore('sales')
     const localRequest = store.get(id)
     localRequest.onsuccess = () => {
-      if (localRequest.result) {
+      if (localRequest.result?.scope_key === scopeKey) {
         resolve(localRequest.result)
         return
       }
-      const serverRequest = store.index('by_server_id').get(id)
-      serverRequest.onsuccess = () => resolve(serverRequest.result ?? null)
+      const serverRequest = store.index('by_server_id').getAll(id)
+      serverRequest.onsuccess = () => resolve(
+        (serverRequest.result as LocalSaleRecord[] | undefined)
+          ?.find((record) => record.scope_key === scopeKey) ?? null,
+      )
       serverRequest.onerror = () => reject(serverRequest.error)
     }
     localRequest.onerror = () => reject(localRequest.error)
@@ -1035,11 +1238,11 @@ export async function enqueueSale(sale: PendingSale): Promise<void> {
   })
 }
 
-export async function getPendingSales(): Promise<PendingSale[]> {
+export async function getPendingSales(scopeKey: string): Promise<PendingSale[]> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx  = db.transaction('pending_sales', 'readonly')
-    const req = tx.objectStore('pending_sales').getAll()
+    const req = tx.objectStore('pending_sales').index('by_scope').getAll(scopeKey)
     req.onsuccess = () => resolve(
       (req.result ?? []).sort((a: PendingSale, b: PendingSale) =>
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -1049,14 +1252,18 @@ export async function getPendingSales(): Promise<PendingSale[]> {
   })
 }
 
-export async function markPendingSaleFailed(offlineId: string, error: string): Promise<void> {
+export async function markPendingSaleFailed(
+  offlineId: string,
+  error: string,
+  scopeKey: string,
+): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['pending_sales', 'sales'], 'readwrite')
     const store = tx.objectStore('pending_sales')
     const req = store.get(offlineId)
     req.onsuccess = () => {
-      if (!req.result) return
+      if (!req.result || req.result.scope_key !== scopeKey) return
       store.put({
         ...req.result,
         sync_status: 'failed',
@@ -1066,7 +1273,7 @@ export async function markPendingSaleFailed(offlineId: string, error: string): P
     }
     const saleReq = tx.objectStore('sales').get(offlineId)
     saleReq.onsuccess = () => {
-      if (!saleReq.result) return
+      if (!saleReq.result || saleReq.result.scope_key !== scopeKey) return
       tx.objectStore('sales').put({
         ...saleReq.result,
         sync_status: 'failed',
@@ -1078,21 +1285,25 @@ export async function markPendingSaleFailed(offlineId: string, error: string): P
   })
 }
 
-export async function removePendingSale(offlineId: string): Promise<void> {
+export async function removePendingSale(offlineId: string, scopeKey: string): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction('pending_sales', 'readwrite')
-    tx.objectStore('pending_sales').delete(offlineId)
+    const store = tx.objectStore('pending_sales')
+    const request = store.get(offlineId)
+    request.onsuccess = () => {
+      if (request.result?.scope_key === scopeKey) store.delete(offlineId)
+    }
     tx.oncomplete = () => resolve()
     tx.onerror    = () => reject(tx.error)
   })
 }
 
-export async function countPendingSales(): Promise<number> {
+export async function countPendingSales(scopeKey: string): Promise<number> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx  = db.transaction('pending_sales', 'readonly')
-    const req = tx.objectStore('pending_sales').count()
+    const req = tx.objectStore('pending_sales').index('by_scope').count(scopeKey)
     req.onsuccess = () => resolve(req.result)
     req.onerror   = () => reject(req.error)
   })

@@ -106,6 +106,7 @@ async function collectProductIdsFromRelatedSearch(search: string, tenantId: stri
       .from('product_aliases')
       .select('product_id')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .or(aliasOr)
       .limit(500)
       .then(({ data, error }) => {
@@ -135,6 +136,7 @@ async function collectProductIdsFromRelatedSearch(search: string, tenantId: stri
       .from('product_cross_numbers')
       .select('product_id')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .ilike('normalized_number', `%${normalizedOem}%`)
       .limit(500)
       .then(({ data, error }) => {
@@ -150,6 +152,7 @@ async function collectProductIdsFromRelatedSearch(search: string, tenantId: stri
       .from('product_barcodes')
       .select('product_id')
       .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
       .or(barcodeOr)
       .limit(500)
       .then(({ data, error }) => {
@@ -368,12 +371,29 @@ export async function setProductCrossNumbers(productId: string, numbers: string[
     const normalized = normalizeOemValue(num)
     if (normalized) unique.set(normalized, num)
   }
-  const { error: delErr } = await db
+
+  const updatedAt = new Date().toISOString()
+  const { data: existing, error: existingError } = await db
     .from('product_cross_numbers')
-    .delete()
+    .select('id,normalized_number,deleted_at')
     .eq('tenant_id', tenantId)
     .eq('product_id', productId)
-  if (delErr) throw new AppError('DB_ERROR', delErr.message, 500)
+  if (existingError) throw new AppError('DB_ERROR', existingError.message, 500)
+
+  const removedIds = (existing ?? [])
+    .filter((row: any) => !row.deleted_at && !unique.has(String(row.normalized_number)))
+    .map((row: any) => String(row.id))
+  if (removedIds.length > 0) {
+    const { error } = await db
+      .from('product_cross_numbers')
+      .update({ deleted_at: updatedAt, updated_at: updatedAt })
+      .eq('tenant_id', tenantId)
+      .eq('product_id', productId)
+      .in('id', removedIds)
+      .is('deleted_at', null)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+  }
+
   if (unique.size === 0) return
   const rows = [...unique.entries()].map(([normalized, num]) => ({
     tenant_id: tenantId,
@@ -384,11 +404,14 @@ export async function setProductCrossNumbers(productId: string, numbers: string[
     source: 'Картка товару',
     is_verified: true,
     created_by: userId,
+    updated_at: updatedAt,
+    deleted_at: null,
   }))
-  const { error } = await db.from('product_cross_numbers').insert(rows)
+  const { error } = await db
+    .from('product_cross_numbers')
+    .upsert(rows, { onConflict: 'tenant_id,product_id,normalized_number' })
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 }
-
 export async function createProduct(input: CreateProductInput, _userId: string, tenantId: string) {
   // cross_numbers зберігаються в окрему таблицю, у колонки products їх не пишемо.
   const { cross_numbers: crossNumbers, ...productInput } = input as CreateProductInput & { cross_numbers?: string[] }
@@ -557,11 +580,13 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
 
 export async function deleteProduct(id: string, tenantId: string) {
   await getProduct(id, tenantId)
+  const deletedAt = new Date().toISOString()
   const { error } = await db
     .from(TABLE)
-    .update({ deleted_at: new Date().toISOString() })
+    .update({ deleted_at: deletedAt, updated_at: deletedAt, is_active: false })
     .eq('id', id)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   await searchCache.clear()
@@ -745,6 +770,7 @@ export async function getProductCrossNumbers(productId: string, tenantId: string
     .select('id, number, normalized_number, number_type, brand, source, is_verified, created_at')
     .eq('tenant_id', tenantId)
     .eq('product_id', productId)
+    .is('deleted_at', null)
     .order('number_type')
     .order('number')
 
@@ -775,11 +801,13 @@ export async function addProductCrossNumbers(
     .select('normalized_number')
     .eq('tenant_id', tenantId)
     .eq('product_id', productId)
+    .is('deleted_at', null)
     .in('normalized_number', normalizedNumbers)
 
   if (existingError) throw new AppError('DB_ERROR', existingError.message, 500)
   const existingSet = new Set((existing ?? []).map((row: any) => row.normalized_number))
 
+  const updatedAt = new Date().toISOString()
   const rows = normalizedNumbers
     .filter((normalized) => !existingSet.has(normalized))
     .map((normalized) => ({
@@ -791,10 +819,13 @@ export async function addProductCrossNumbers(
       source: input.source || 'Внесено менеджером',
       is_verified: true,
       created_by: userId,
+      updated_at: updatedAt,
+      deleted_at: null,
     }))
 
   if (rows.length > 0) {
-    const { error } = await db.from('product_cross_numbers').insert(rows)
+    const { error } = await db.from('product_cross_numbers')
+      .upsert(rows, { onConflict: 'tenant_id,product_id,normalized_number' })
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 
     void logAction({
@@ -832,17 +863,20 @@ export async function removeProductCrossNumber(
     .eq('id', crossNumberId)
     .eq('product_id', productId)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (getError) throw new AppError('DB_ERROR', getError.message, 500)
   if (!crossNumber) throw new AppError('CROSS_NUMBER_NOT_FOUND', 'Крос-номер не знайдено', 404)
 
+  const deletedAt = new Date().toISOString()
   const { error } = await db
     .from('product_cross_numbers')
-    .delete()
+    .update({ deleted_at: deletedAt, updated_at: deletedAt })
     .eq('id', crossNumberId)
     .eq('product_id', productId)
     .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
@@ -925,18 +959,19 @@ export async function importCrossNumbersBulk(
         source: source || 'Масовий імпорт',
         is_verified: true,
         created_by: userId,
+        updated_at: new Date().toISOString(),
+        deleted_at: null,
       })
     }
   }
 
-  // Вставляємо порціями; конфлікт унікальності (дубль) не валить порцію —
-  // використовуємо upsert з ignoreDuplicates
+  // Upsert також відновлює раніше видалений зв'язок з тим самим номером.
   let linked = 0
   let skippedDup = 0
   for (let i = 0; i < rows.length; i += 500) {
     const chunk = rows.slice(i, i + 500)
     const { data, error } = await db.from('product_cross_numbers')
-      .upsert(chunk, { onConflict: 'tenant_id,product_id,normalized_number', ignoreDuplicates: true })
+      .upsert(chunk, { onConflict: 'tenant_id,product_id,normalized_number' })
       .select('id')
     if (error) {
       logger.warn({ err: error.message, from: i }, '[cross-import] порція не вдалася')
@@ -1176,12 +1211,16 @@ async function findOrCreateBrandByName(name: string, tenantId: string): Promise<
   const normalizedBrand = name.trim()
   if (!normalizedBrand) return null
 
-  const { data: existingBrand } = await db
+  const { data: existingBrand, error: lookupError } = await db
     .from('brands')
     .select('id')
     .eq('tenant_id', tenantId)
     .ilike('name', normalizedBrand)
+    .is('deleted_at', null)
+    .limit(1)
     .maybeSingle()
+
+  if (lookupError) throw new AppError('DB_ERROR', lookupError.message, 500)
 
   if (existingBrand) {
     return existingBrand.id
@@ -1192,12 +1231,23 @@ async function findOrCreateBrandByName(name: string, tenantId: string): Promise<
     .insert({
       tenant_id: tenantId,
       name: normalizedBrand,
-      tier: 'standard'
+      tier: 'standard',
+      deleted_at: null,
     })
     .select('id')
     .single()
 
   if (error) {
+    const { data: concurrentBrand } = await db
+      .from('brands')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .ilike('name', normalizedBrand)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle()
+    if (concurrentBrand) return concurrentBrand.id
+
     logger.warn({ error: error.message, brand: normalizedBrand }, 'Failed to auto-create brand')
     return null
   }
