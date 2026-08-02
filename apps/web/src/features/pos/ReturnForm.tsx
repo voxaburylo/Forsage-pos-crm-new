@@ -576,7 +576,22 @@ export default function ReturnForm() {
     if (!exchangeOrderId) return
     try {
       const { data: order } = await orderApi.get(exchangeOrderId, { silent: true })
-      const { data: exchangeOrder } = await orderApi.createExchange(order, { silent: true })
+      const replacements = activeItems.map((returnedItem) => {
+        const sourceItem = order.items.find((item) => item.product_id === returnedItem.product_id)
+        return {
+          name: sourceItem?.name ?? returnedItem.product_name,
+          sku: sourceItem?.sku ?? returnedItem.sku,
+          product_id: returnedItem.product_id,
+          supplier_id: sourceItem?.supplier_id ?? null,
+          source_type: sourceItem?.source_type ?? 'warehouse' as const,
+          item_type: sourceItem?.item_type ?? 'product' as const,
+          buy_price: sourceItem?.buy_price ?? 0,
+          sell_price: sourceItem?.sell_price ?? returnedItem.unit_price,
+          qty: returnedItem.qty,
+          expected_date: sourceItem?.expected_date ?? null,
+        }
+      })
+      const { data: exchangeOrder } = await orderApi.createExchange(order, replacements, { silent: true })
       navigate('/orders/' + exchangeOrder.id)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося створити замовлення на заміну')

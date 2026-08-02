@@ -6,6 +6,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
+import { canIssueOrderFromPos } from '@/features/orders/orderWorkflow'
 
 interface OrderItem {
   id: string
@@ -37,7 +38,6 @@ interface ReadyOrder {
 const READY_ORDER_READ_TIMEOUT_MS = 10_000
 const READY_ORDER_WRITE_TIMEOUT_MS = 30_000
 const ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
-const NON_ISSUEABLE_STATUSES = ['completed', 'canceled', 'archived']
 type PaymentAction = 'deposit' | 'full'
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -45,7 +45,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 function canIssueOrder(order: ReadyOrder) {
-  return !NON_ISSUEABLE_STATUSES.includes(order.status)
+  return canIssueOrderFromPos(order)
 }
 
 export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileInline?: boolean; onCloseMobile?: () => void } = {}) {

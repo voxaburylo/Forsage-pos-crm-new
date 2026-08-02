@@ -182,6 +182,18 @@ function isLead(o: CustomerOrder) {
   return o.status === 'lead' && !isDraft(o)
 }
 
+function statusFilterForTab(tab: Tab): string | undefined {
+  if (tab === 'all') return 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
+  if (tab === 'leads') return 'lead'
+  if (tab === 'drafts') return 'lead,quoted'
+  if (tab === 'active') return 'new,in_progress,ordered,arrived,called,no_answer'
+  if (tab === 'ready') return 'ready'
+  if (tab === 'completed') return 'completed,archived'
+  if (tab === 'canceled') return 'canceled'
+  return undefined
+}
+
+
 function draftCountLabel(count: number) {
   const mod10 = count % 10
   const mod100 = count % 100
@@ -1005,6 +1017,8 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
 
   const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
     { id: 'all',       label: 'Усі активні' },
+    { id: 'leads',     label: 'Ліди' },
+    { id: 'drafts',    label: 'Чернетки' },
     { id: 'active',    label: 'В дорозі' },
     { id: 'ready',     label: 'До видачі', accent: true },
     { id: 'completed', label: 'Виконані' },
@@ -1366,6 +1380,7 @@ export default function OrdersPage() {
   const [loadingChats, setLoadingChats] = useState(chatMode && !offlineMode)
   const [loadingOrders, setLoadingOrders] = useState(true)
 
+  const [hasMoreOrders, setHasMoreOrders] = useState(false)
   // ui
   const [tab, setTab] = useState<Tab>(chatMode ? 'bots' : 'all')
   const [offset, setOffset] = useState(0)
@@ -1385,6 +1400,14 @@ export default function OrdersPage() {
   }, [searchParams, chatMode])
   const [search, setSearch] = useState('')
   const [selection, setSelection] = useState<Selection>(null)
+  const [serverSearch, setServerSearch] = useState('')
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setServerSearch(search.trim())
+      setOffset(0)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [search])
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -1443,15 +1466,16 @@ export default function OrdersPage() {
   // ── завантаження замовлень за вкладкою ──
   const loadOrders = useCallback(async (showLoading = true) => {
     const requestId = ++orderLoadRequestRef.current
-    const cacheKey = `${tab}:${offset}`
+    const cacheKey = `${tab}:${offset}:${serverSearch}`
     const cached = orderCacheRef.current.get(cacheKey)
     if (cached) setOrders(cached)
     setLoadingOrders(showLoading || !cached)
     try {
-      const response = await orderApi.list(offset, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }, 50)
+      const response = await orderApi.list(offset, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }, 50, { search: chatMode ? undefined : serverSearch, status: statusFilterForTab(tab) })
       if (requestId !== orderLoadRequestRef.current) return
       const next = response.data ?? []
       orderCacheRef.current.set(cacheKey, next)
+      setHasMoreOrders(response.meta?.has_more ?? false)
       if (tab === 'all') {
         orderCacheRef.current.set(`active:${offset}`, next.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)))
         orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => o.status === 'ready'))
@@ -1467,7 +1491,7 @@ export default function OrdersPage() {
     } finally {
       if (requestId === orderLoadRequestRef.current) setLoadingOrders(false)
     }
-  }, [tab, offset])
+  }, [tab, offset, serverSearch, chatMode])
   useEffect(() => {
     void loadOrders()
     const timer = window.setInterval(() => { void loadOrders(false) }, 15_000)
@@ -1541,10 +1565,10 @@ export default function OrdersPage() {
       // «Список замовлень» → «Усі активні»: усі відкриті замовлення, включно з
       // відкритими лідами (щоб збережені «Зберегти»-замовлення не губились —
       // окремої вкладки «Ліди» більше немає). Ховаємо лише рукописні чернетки.
-      if (tab === 'all')       return !isTerminalOrderStatus(o.status) && !isDraft(o)
+      if (tab === 'all')       return !isTerminalOrderStatus(o.status)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
-      if (tab === 'active')    return ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
+      if (tab === 'active')    return ['new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
       if (tab === 'ready')     return o.status === 'ready'
       if (tab === 'completed') return isCompletedOrderStatus(o.status)
       if (tab === 'canceled')  return o.status === 'canceled'
@@ -1635,14 +1659,6 @@ export default function OrdersPage() {
   }
 
   async function changeOrderStatus(orderId: string, status: string, callbackAt?: string | null) {
-    if ((status === 'called' || status === 'no_answer') && callbackAt === undefined) {
-      setCallbackModal({ orderId, status })
-      const tomorrow = new Date()
-      tomorrow.setDate(tomorrow.getDate() + 1)
-      setCallbackDate(tomorrow.toISOString().split('T')[0])
-      setCallbackTime('10:00')
-      return
-    }
 
     const previousOrders = orders
     orderCacheRef.current.clear()
@@ -1984,7 +2000,7 @@ export default function OrdersPage() {
               offset={offset}
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
-              hasMore={orders.length >= 50}
+              hasMore={hasMoreOrders}
             />
           ) : (
             <OrdersTable 
@@ -1995,7 +2011,7 @@ export default function OrdersPage() {
               offset={offset}
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
-              hasMore={orders.length >= 50}
+              hasMore={hasMoreOrders}
               onQuickView={(o) => navigate('/orders/' + o.id)}
               onQuickOrder={handleQuickOrder}
               onDelete={handleDeleteOrder}
@@ -2287,7 +2303,7 @@ function OrderInlineView({
           ) : (
             <div className="space-y-1.5">
               {order.items.map((item) => {
-                const actions = ITEM_STATUS_ACTIONS[item.item_status]
+                const actions = item.item_status === 'arrived' ? [] : ITEM_STATUS_ACTIONS[item.item_status]
                 const itemConf = ITEM_STATUS_CONFIG[item.item_status]
                 return (
                   <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm gap-1.5">

@@ -29,6 +29,18 @@ import { withTenantSyncGenerationGuard } from './syncGeneration.js'
 // Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
 // такий запит як Bad Request (уся синхронізація падала з DB_ERROR). Ліміт на
 // сторінку вибірки тут не годиться — потрібен окремий, менший крок.
+const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
+  lead: ['new', 'in_progress', 'ordered'],
+  quoted: ['new', 'in_progress', 'ordered'],
+  new: ['in_progress', 'ordered'],
+  in_progress: ['new', 'ordered'],
+  ordered: ['new'],
+  arrived: ['called', 'no_answer'],
+  ready: ['called', 'no_answer'],
+  called: ['no_answer', 'ready'],
+  no_answer: ['called', 'ready'],
+}
+
 const IN_FILTER_CHUNK = 200
 const CURSOR_OVERLAP_MS = 5_000
 
@@ -1361,11 +1373,11 @@ async function applyLocalOperation(params: {
     return
   }
   if (operation.operation_type === 'order.status_updated') {
-    await applyOrderStatusUpdated(tenantId, operation)
+    await applyOrderStatusUpdated(tenantId, userId, operation)
     return
   }
   if (operation.operation_type === 'order.item_status_updated') {
-    await applyOrderItemStatusUpdated(tenantId, operation)
+    await applyOrderItemStatusUpdated(tenantId, userId, operation)
     return
   }
   if (operation.operation_type === 'order.items_arrived') {
@@ -1883,24 +1895,29 @@ async function applyOrderDeleted(tenantId: string, userId: string, operation: Sy
   })
 }
 
-async function applyOrderStatusUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+async function applyOrderStatusUpdated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const status = String(operation.payload?.status ?? '')
   const allowed = new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'])
   if (!allowed.has(status)) {
     throw new AppError('SYNC_ORDER_STATUS_INVALID', 'Видача та скасування замовлення виконуються окремою безпечною операцією', 409)
   }
   await runTransaction(async (client) => {
-    const result = await client.query(
-      `UPDATE customer_orders SET status = $3, updated_at = $4
-       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-         AND status NOT IN ('completed', 'canceled', 'archived')`,
-      [operation.aggregate_id, tenantId, status, operation.created_at],
+    const current = await client.query(
+      `SELECT status FROM customer_orders WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [operation.aggregate_id, tenantId],
     )
-    if (!result.rowCount) throw new AppError('SYNC_ORDER_IMMUTABLE', 'Замовлення не знайдено або його вже закрито', 409)
+    if (!current.rowCount || ['completed', 'canceled', 'archived'].includes(String(current.rows[0].status))) {
+      throw new AppError('SYNC_ORDER_IMMUTABLE', 'Замовлення не знайдено або його вже закрито', 409)
+    }
+    const from = String(current.rows[0].status)
+    if (from !== status && !(ORDER_STATUS_TRANSITIONS[from] ?? []).includes(status)) {
+      throw new AppError('SYNC_ORDER_STATUS_TRANSITION_INVALID', 'Недоступний перехід статусу замовлення', 409)
+    }
+    await client.query('SELECT update_customer_order_status($1, $2, $3, $4)', [tenantId, operation.aggregate_id, status, userId])
   })
 }
 
-async function applyOrderItemStatusUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+async function applyOrderItemStatusUpdated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   if (!isUuid(payload.item_id)) throw new AppError('SYNC_ORDER_ITEM_INVALID', 'Некоректна позиція замовлення', 400)
   const itemStatus = String(payload.item_status ?? '')
@@ -1918,10 +1935,26 @@ async function applyOrderItemStatusUpdated(tenantId: string, operation: SyncOutb
       [payload.item_id, tenantId, itemStatus],
     )
     if (!result.rowCount) throw new AppError('SYNC_ORDER_ITEM_IMMUTABLE', 'Позицію не знайдено або замовлення вже закрито', 409)
-    await client.query(
-      'UPDATE customer_orders SET updated_at = $3 WHERE id = $1 AND tenant_id = $2',
-      [result.rows[0].order_id, tenantId, operation.applied_at ?? operation.created_at],
+    const orderId = result.rows[0].order_id
+    const state = await client.query(
+      `SELECT item_status, sell_price, qty, COALESCE(core_deposit_amount, 0) AS core_deposit_amount
+       FROM customer_order_items WHERE order_id = $1`,
+      [orderId],
     )
+    const active = state.rows.filter((item) => item.item_status !== 'canceled')
+    const total = active.reduce((sum, item) => sum + Number(item.sell_price) * Number(item.qty) + Number(item.core_deposit_amount) * Number(item.qty), 0)
+    const nextStatus = active.length > 0 && active.every((item) => ['arrived', 'handed', 'returned'].includes(item.item_status))
+      ? 'ready'
+      : active.some((item) => item.item_status === 'ordered')
+        ? 'ordered'
+        : 'new'
+    await client.query(
+      'UPDATE customer_orders SET total_amount = $3, status = $4, updated_at = $5 WHERE id = $1 AND tenant_id = $2',
+      [orderId, tenantId, total, nextStatus, operation.applied_at ?? operation.created_at],
+    )
+    if (itemStatus === 'canceled' || itemStatus === 'pending') {
+      await client.query('SELECT reserve_order_items($1, $2, $3)', [tenantId, orderId, userId])
+    }
   })
 }
 

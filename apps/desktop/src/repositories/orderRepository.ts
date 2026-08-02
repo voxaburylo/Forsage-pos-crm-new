@@ -16,6 +16,24 @@ const NON_ISSUEABLE = new Set(['canceled', 'archived'])
 const TERMINAL_STATUSES = new Set(['completed', 'canceled', 'archived'])
 const MANUAL_ORDER_STATUSES = new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'])
 const MANUAL_ITEM_STATUSES = new Set(['pending', 'ordered', 'arrived', 'canceled'])
+const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
+  lead: ['new', 'in_progress', 'ordered'],
+  quoted: ['new', 'in_progress', 'ordered'],
+  new: ['in_progress', 'ordered'],
+  in_progress: ['new', 'ordered'],
+  ordered: ['new'],
+  arrived: ['called', 'no_answer'],
+  ready: ['called', 'no_answer'],
+  called: ['no_answer', 'ready'],
+  no_answer: ['called', 'ready'],
+}
+
+function canChangeOrderStatus(from: string, to: string): boolean {
+  return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
+}
+
+type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
+
 
 type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
 
@@ -26,13 +44,20 @@ export class LocalOrderRepository {
     this.pos = new LocalPosRepository(db)
   }
 
-  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string } = {}): any[] {
+  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const offset = Math.max(0, Number(input.offset ?? 0) || 0)
     const limit = Math.max(1, Math.min(500, Number(input.limit ?? 200) || 200))
     const raw = String(input.search ?? '').trim()
     const params: any[] = [tenantId]
     let searchSql = ''
+    const statuses = String(input.status ?? '').split(',').map((status) => status.trim()).filter(Boolean)
+    let statusSql = ''
+    if (statuses.length > 0) {
+      statusSql = ` AND o.status IN (${statuses.map(() => '?').join(',')})`
+      params.push(...statuses)
+    }
+
     if (raw) {
       const q = `%${raw}%`
       searchSql = ` AND (
@@ -41,8 +66,13 @@ export class LocalOrderRepository {
         OR COALESCE(c.phone, '') LIKE ?
         OR COALESCE(c.full_name, '') LIKE ?
         OR COALESCE(c.card_barcode, '') LIKE ?
+        OR EXISTS (
+          SELECT 1 FROM customer_order_items i
+          WHERE i.order_id = o.id AND i.deleted_at IS NULL
+            AND (lower(COALESCE(i.name, '')) LIKE lower(?) OR lower(COALESCE(i.sku, '')) LIKE lower(?))
+        )
       )`
-      params.push(q, q, q, q, q)
+      params.push(q, q, q, q, q, q, q)
     }
     params.push(limit, offset)
     const rows = this.db.prepare(`
@@ -50,8 +80,8 @@ export class LocalOrderRepository {
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode
       FROM customer_orders o
       LEFT JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
-      WHERE o.tenant_id = ? AND o.deleted_at IS NULL ${searchSql}
-      ORDER BY o.updated_at DESC
+      WHERE o.tenant_id = ? AND o.deleted_at IS NULL ${statusSql} ${searchSql}
+      ORDER BY o.updated_at DESC, o.id DESC
       LIMIT ? OFFSET ?
     `).all(...params) as any[]
     return rows.map((row) => this.decorateOrder(row, tenantId))
@@ -264,6 +294,9 @@ export class LocalOrderRepository {
     if (!MANUAL_ORDER_STATUSES.has(status)) {
       throw new Error('Видача та скасування замовлення виконуються тільки окремою безпечною дією в касі')
     }
+    if (!canChangeOrderStatus(String(order.status), status)) {
+      throw new Error('Цей перехід статусу недоступний. Готовність визначається за позиціями, а видача виконується в касі.')
+    }
     this.db.prepare(`
       UPDATE customer_orders SET status = ?, dirty_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
@@ -282,14 +315,39 @@ export class LocalOrderRepository {
     if (!MANUAL_ITEM_STATUSES.has(itemStatus)) {
       throw new Error('Видача або повернення позиції виконується тільки через касу')
     }
+    this.db.transaction(() => {
     const result = this.db.prepare(`
       UPDATE customer_order_items SET item_status = ?, dirty_at = ?, updated_at = ?
       WHERE id = ? AND order_id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(itemStatus, timestamp, timestamp, itemId, orderId, tenantId)
     if (Number(result.changes) === 0) throw new Error('Позицію не знайдено')
+    const activeItems = this.db.prepare(`
+      SELECT item_status, sell_price, qty, core_deposit_amount
+      FROM customer_order_items
+      WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL AND item_status <> 'canceled'
+    `).all(tenantId, orderId) as LocalOrderItemState[]
+    const totalAmount = activeItems.reduce((sum, item) => sum + num(item.sell_price) * num(item.qty) + num(item.core_deposit_amount) * num(item.qty), 0)
+    const nextStatus = activeItems.length > 0 && activeItems.every((item) => ['arrived', 'handed', 'returned'].includes(item.item_status))
+      ? 'ready'
+      : activeItems.some((item) => item.item_status === 'ordered')
+        ? 'ordered'
+        : 'new'
+    this.db.prepare(`
+      UPDATE customer_orders SET total_amount = ?, status = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(totalAmount, nextStatus, timestamp, timestamp, orderId, tenantId)
+    if (itemStatus === 'canceled') {
+      this.db.prepare(`
+        UPDATE stock_reserves SET released_at = ?, dirty_at = ?, updated_at = ?
+        WHERE tenant_id = ? AND order_id = ? AND product_id = (
+          SELECT product_id FROM customer_order_items WHERE id = ? AND tenant_id = ?
+        ) AND released_at IS NULL AND deleted_at IS NULL
+      `).run(timestamp, timestamp, timestamp, tenantId, orderId, itemId, tenantId)
+    }
     this.addOutbox(tenantId, 'customer_order', orderId, 'order.item_status_updated', {
       order_id: orderId, item_id: itemId, item_status: itemStatus,
     }, timestamp)
+    })
     return this.getOrder(orderId, tenantId)
   }
 
@@ -615,6 +673,10 @@ export class LocalOrderRepository {
     if (activeItems.length === 0) {
       throw new Error('У замовленні немає активних позицій для видачі')
     }
+    if (!activeItems.every((item: any) => ['arrived', 'handed'].includes(item.item_status))) {
+      throw new Error('Спочатку позначте всі активні позиції як отримані. Видача неготового замовлення заблокована.')
+    }
+
     const unlinkedItems = activeItems.filter((item: any) => !item.product_id)
     if (unlinkedItems.length > 0) {
       const names = unlinkedItems.slice(0, 3).map((item: any) => `«${item.name || 'Без назви'}»`).join(', ')

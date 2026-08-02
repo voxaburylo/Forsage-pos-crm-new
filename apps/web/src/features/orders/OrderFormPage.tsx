@@ -166,9 +166,10 @@ interface ItemRow {
   item_status?: CustomerOrder['items'][number]['item_status']
   buy_price?:  string
   manual_edit?: boolean
+  source_type?: 'warehouse' | 'supplier'
 }
 
-const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product', buy_price: '0' }
+const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product', buy_price: '0', source_type: 'supplier' }
 
 export default function OrderFormPage() {
   const navigate = useNavigate()
@@ -388,6 +389,8 @@ export default function OrderFormPage() {
             item_type: item.item_type ?? 'product',
             item_status: item.item_status,
             buy_price: item.buy_price ? (item.buy_price / 100).toString() : '0',
+            source_type: item.source_type ?? (item.product_id ? 'warehouse' : 'supplier'),
+            manual_edit: true,
           })))
         }
         // Редагування: клієнт і авто вже відомі — одразу переходимо до позицій,
@@ -677,6 +680,7 @@ export default function OrderFormPage() {
   function addProductAsItem(p: Product) {
     setItems((rows) => {
       const base = rows.filter((r) => r.name.trim())
+      const stock = p.qty_available ?? p.qty_on_hand ?? 0
       const existingIndex = base.findIndex((row) => row.product_id === p.id)
       if (existingIndex >= 0) {
         return base.map((row, index) => index === existingIndex
@@ -690,7 +694,9 @@ export default function OrderFormPage() {
         sell_price: kopecksToHryvnia(p.retail_price),
         buy_price: p.purchase_price ? kopecksToHryvnia(p.purchase_price) : '0',
         product_id: p.id,
-        stock: p.qty_available ?? p.qty_on_hand ?? 0,
+        stock,
+        source_type: stock > 0 ? 'warehouse' : 'supplier',
+        manual_edit: stock <= 0,
         item_type: p.is_service ? 'service' : 'product',
       }]
     })
@@ -777,7 +783,7 @@ export default function OrderFormPage() {
   }
 
   function addManualItemRow(name = '') {
-    setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true, name }])
+    setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true, source_type: 'supplier', name }])
   }
 
   // Швидка націнка: рахує ціну продажу від закупки за обраним відсотком,
@@ -916,7 +922,7 @@ export default function OrderFormPage() {
         sell_price:  Math.round(parseFloat(row.sell_price || '0') * 100),
         buy_price:   Math.round(parseFloat(row.buy_price || '0') * 100),
         supplier_id: row.supplier_id || null,
-        source_type: row.product_id ? 'warehouse' : 'supplier',
+        source_type: row.source_type ?? (row.product_id ? 'warehouse' : 'supplier'),
         item_type:   row.item_type ?? 'product',
         item_status: row.item_status,
         expected_date: row.supplier_id && row.expected_date ? row.expected_date : null,
@@ -968,6 +974,8 @@ export default function OrderFormPage() {
       product_id: item.product_id ?? null,
       supplier_id: item.supplier_id ?? '',
       item_type: item.item_type ?? 'product',
+      source_type: item.source_type ?? (item.product_id ? 'warehouse' : 'supplier'),
+      manual_edit: true,
     }
     setItems((current) => {
       const emptyIndex = current.findIndex((row) => !row.name.trim())
@@ -1508,7 +1516,7 @@ export default function OrderFormPage() {
                               <SupplierQuickPicker
                                 suppliers={suppliers}
                                 value={row.supplier_id}
-                                onChange={(supplierId) => updateItem(idx, 'supplier_id', supplierId)}
+                                onChange={(supplierId) => setItems((current) => current.map((item, index) => index === idx ? { ...item, supplier_id: supplierId, source_type: supplierId ? 'supplier' : item.source_type } : item))}
                                 onCreate={createSupplierFromName}
                                 placeholder="Пошук або новий"
                               />
@@ -1561,7 +1569,7 @@ export default function OrderFormPage() {
                       )
                     }
                     if (!row.name.trim()) return null
-                    const isBackorder = !!row.supplier_id || !row.product_id
+                    const isBackorder = row.source_type === 'supplier'
                     const supplierName = suppliers.find((s) => s.id === row.supplier_id)?.name
                     return (
                       <div key={idx} className="flex items-center gap-3 px-4 py-3">

@@ -92,15 +92,20 @@ const ORDER_FINALIZE_TIMEOUT_MS = 30_000
 function requestOrderSync() {
   window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
 }
+export type OrderListFilters = { search?: string; status?: string }
+
 
 export const orderApi = {
-  list: async (offset = 0, opts: OrderRequestOptions = {}, limit = 200) => {
+  list: async (offset = 0, opts: OrderRequestOptions = {}, limit = 200, filters: OrderListFilters = {}) => {
     const local = desktopBridge()?.orders?.list
-    if (local) return { data: await local({ offset, limit }) as CustomerOrder[] }
-    return api.get<{ data: CustomerOrder[] }>(
-      `/api/v1/customer-orders?per_page=${limit}&offset=${offset}`,
-      { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts },
-    )
+    if (local) {
+      const rows = await local({ offset, limit: limit + 1, search: filters.search, status: filters.status }) as CustomerOrder[]
+      return { data: rows.slice(0, limit), meta: { has_more: rows.length > limit, offset, per_page: limit } }
+    }
+    const params = new URLSearchParams({ per_page: String(limit), offset: String(offset) })
+    if (filters.search?.trim()) params.set('search', filters.search.trim())
+    if (filters.status?.trim()) params.set('status', filters.status.trim())
+    return api.get<{ data: CustomerOrder[]; meta: { has_more: boolean; offset: number; per_page: number } }>(`/api/v1/customer-orders?${params.toString()}`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts })
   },
 
   get: async (id: string, opts: OrderRequestOptions = {}) => {
@@ -123,14 +128,14 @@ export const orderApi = {
     return api.post<{ data: CustomerOrder }>('/api/v1/customer-orders', body, undefined, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
   },
 
-  createExchange: async (sourceOrder: CustomerOrder, opts: OrderRequestOptions = {}) => {
+  createExchange: async (sourceOrder: CustomerOrder, replacementItems?: CreateOrderItemPayload[], opts: OrderRequestOptions = {}) => {
     return orderApi.create({
       customer_id: sourceOrder.customer_id,
       vehicle_info: sourceOrder.vehicle_info,
       source: 'walk_in',
       exchange_source_order_id: sourceOrder.id,
       comment: `Обмін до замовлення ${sourceOrder.order_number ? '#' + sourceOrder.order_number : sourceOrder.id.slice(0, 8)}`,
-      items: (sourceOrder.items ?? [])
+      items: replacementItems ?? (sourceOrder.items ?? [])
         .filter((item) => item.item_status !== 'canceled')
         .map((item) => ({
           name: item.name,

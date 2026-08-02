@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
+import { randomUUID } from 'node:crypto'
 import * as adminService from '../services/adminService.js'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
@@ -16,6 +17,25 @@ import { runTransaction } from '../db/pg.js'
 
 const router = Router()
 router.use(requireAuth)
+
+const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
+  lead: ['new', 'in_progress', 'ordered'],
+  quoted: ['new', 'in_progress', 'ordered'],
+  new: ['in_progress', 'ordered'],
+  in_progress: ['new', 'ordered'],
+  ordered: ['new'],
+  arrived: ['called', 'no_answer'],
+  ready: ['called', 'no_answer'],
+  called: ['no_answer', 'ready'],
+  no_answer: ['called', 'ready'],
+}
+
+function assertManualOrderTransition(from: string, to: string) {
+  if (from === to) return
+  if (!(ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)) {
+    throw new AppError('ORDER_STATUS_TRANSITION_INVALID', `Перехід зі статусу «${from}» у «${to}» недоступний. Готовність визначається за позиціями, а видача виконується в касі.`, 409)
+  }
+}
 
 async function ensureCustomerCar(
   customerId: string | null | undefined,
@@ -372,6 +392,7 @@ router.get('/', async (req, res, next) => {
       const digits = searchRaw.replace(/\D/g, '')
       const numericOrder = searchRaw.replace(/^(ORD-?|#)/i, '')
       const customerIds: string[] = []
+      const itemOrderIds: string[] = []
 
       if (safeSearch || digits) {
         const customerOr = [
@@ -399,6 +420,18 @@ router.get('/', async (req, res, next) => {
           customerIds.push(...(customers ?? []).map((c) => c.id))
         }
       }
+      if (safeSearch) {
+        const { data: matchedItems, error: itemSearchError } = await db
+          .from('customer_order_items')
+          .select('order_id, order:customer_orders!inner(tenant_id,deleted_at)')
+          .eq('order.tenant_id', req.user!.tenant_id)
+          .is('order.deleted_at', null)
+          .or(`name.ilike.%${safeSearch}%,sku.ilike.%${safeSearch}%`)
+          .limit(200)
+        if (itemSearchError) throw new AppError('DB_ERROR', itemSearchError.message, 500)
+        itemOrderIds.push(...(matchedItems ?? []).map((item: any) => item.order_id))
+      }
+
 
       const orderFilters: string[] = []
       const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -411,6 +444,9 @@ router.get('/', async (req, res, next) => {
         orderFilters.push(`customer_id.in.(${customerIds.join(',')})`)
       }
 
+      if (itemOrderIds.length > 0) {
+        orderFilters.push(`id.in.(${[...new Set(itemOrderIds)].join(',')})`)
+      }
       if (orderFilters.length > 0) {
         query = query.or(orderFilters.join(','))
       } else {
@@ -419,11 +455,13 @@ router.get('/', async (req, res, next) => {
     }
 
     const { data, error } = await query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + perPage - 1)
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(offset, offset + perPage)
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-    res.json({ data: data ?? [] })
+    const rows = data ?? []
+    res.json({ data: rows.slice(0, perPage), meta: { has_more: rows.length > perPage, offset, per_page: perPage } })
   } catch (err) { next(err) }
 })
 
@@ -1051,6 +1089,7 @@ router.patch('/:id/status', requireRole('owner', 'admin', 'manager'), async (req
       throw new AppError('ORDER_IMMUTABLE', 'Статус завершеного, скасованого або архівного замовлення змінювати не можна', 409)
     }
 
+    assertManualOrderTransition(String(oldOrder.status), parsed.data.status)
     const { data: order, error } = await db.rpc('update_customer_order_status', {
       p_tenant_id: req.user!.tenant_id,
       p_order_id: req.params.id,
@@ -1113,6 +1152,19 @@ router.post('/:id/complete', requireRole('owner', 'admin', 'cashier'), async (re
       res.json({ data: { success: true, remaining: 0, sale_id: order.sale_id, replayed: true } })
       return
     }
+    const { data: completionItems, error: completionItemsError } = await db
+      .from('customer_order_items')
+      .select('item_status')
+      .eq('order_id', order.id)
+    if (completionItemsError) throw new AppError('DB_ERROR', completionItemsError.message, 500)
+    const activeCompletionItems = (completionItems ?? []).filter((item) => !['canceled', 'returned'].includes(item.item_status))
+    if (activeCompletionItems.length === 0) {
+      throw new AppError('ORDER_HAS_NO_ITEMS', 'У замовленні немає позицій для видачі', 409)
+    }
+    if (!activeCompletionItems.every((item) => ['arrived', 'handed'].includes(item.item_status))) {
+      throw new AppError('ORDER_NOT_READY', 'Спочатку позначте всі активні позиції як отримані. Видача неготового замовлення заблокована.', 409)
+    }
+
 
     const totalPaid = Math.max(order.total_paid ?? 0, order.prepayment ?? 0)
     const remaining = order.total_amount - (order.discount_amount ?? 0) - totalPaid
@@ -1427,11 +1479,9 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
       }
 
       // Видаляємо старі позиції тільки після tenant-scoped перевірки батьківського замовлення.
-      const { error: deleteItemsError } = await db.from('customer_order_items').delete().eq('order_id', orderId)
-      if (deleteItemsError) throw new AppError('DB_ERROR', deleteItemsError.message, 500)
 
       if (parsed.data.items.length > 0) {
-        const { error: insertItemsError } = await db.from('customer_order_items').insert(
+        const { error: insertItemsError } = await db.from('customer_order_items').upsert(
           parsed.data.items.map((item) => {
             const prodData = item.product_id ? prodMap.get(item.product_id) : null
             const requiresCore = prodData?.requires_core_return ?? false
@@ -1442,6 +1492,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
             const prev = item.id ? oldByIdMap.get(item.id) : undefined
             const keptStatus = prev && prev.item_status !== 'canceled' ? prev.item_status : (prev?.item_status ?? 'pending')
             return {
+              id: item.id ?? randomUUID(),
               order_id: orderId,
               product_id: item.product_id ?? null,
               supplier_id: item.supplier_id ?? null,
@@ -1450,7 +1501,7 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
               qty: item.qty,
               sell_price: item.sell_price,
               buy_price: item.buy_price,
-              source_type: item.supplier_id ? 'supplier' : 'warehouse',
+              source_type: item.source_type,
               item_type: item.item_type,
               item_status: item.item_status ?? (prev ? keptStatus : 'pending'),
               is_draft_note: item.is_draft_note,
@@ -1459,9 +1510,17 @@ router.put('/:id', requireRole('owner', 'admin', 'manager'), async (req, res, ne
               core_return_status: coreStatus,
             }
           })
-        )
+        , { onConflict: 'id' })
         if (insertItemsError) throw new AppError('DB_ERROR', insertItemsError.message, 500)
       }
+      const incomingExistingIds = new Set(parsed.data.items.map((item) => item.id).filter(Boolean))
+      const staleIds = (oldItems ?? []).map((item) => item.id as string).filter((itemId) => !incomingExistingIds.has(itemId))
+      if (staleIds.length > 0) {
+        const { error: deleteItemsError } = await db.from('customer_order_items')
+          .delete().eq('order_id', orderId).in('id', staleIds)
+        if (deleteItemsError) throw new AppError('DB_ERROR', deleteItemsError.message, 500)
+      }
+
     }
 
     const { error: updateError } = await db.from('customer_orders')

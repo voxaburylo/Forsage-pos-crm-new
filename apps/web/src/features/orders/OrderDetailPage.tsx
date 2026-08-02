@@ -18,6 +18,7 @@ import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
+import { allowedOrderStatusTransitions } from './orderWorkflow'
 
 interface Payment {
   id: string
@@ -478,7 +479,7 @@ export default function OrderDetailPage() {
                     className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-sm font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-yellow-400"
                     aria-label="Загальний статус замовлення"
                   >
-                    {(['lead', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready'] as CustomerOrderStatus[]).map((status) => (
+                    {[order.status, ...allowedOrderStatusTransitions(order.status)].map((status) => (
                       <option key={status} value={status}>{STATUS_CONFIG[status]?.label ?? status}</option>
                     ))}
                   </select>
