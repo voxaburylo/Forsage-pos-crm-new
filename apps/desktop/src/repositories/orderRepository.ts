@@ -432,13 +432,17 @@ export class LocalOrderRepository {
     })
     return { updated: uniqueIds.length }
   }
-  listReadyOrders(input: { tenant_id?: string; search?: string; limit?: number } = {}): any[] {
+  listReadyOrders(input: { tenant_id?: string; search?: string; customer_id?: string | null; limit?: number } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const search = String(input.search ?? '').trim().toLowerCase()
     const limit = Math.max(1, Math.min(200, input.limit ?? 80))
     const statusPlaceholders = ACTIVE_STATUSES.map(() => '?').join(',')
     const params: any[] = [tenantId, ...ACTIVE_STATUSES]
     let where = `o.tenant_id = ? AND o.deleted_at IS NULL AND o.status IN (${statusPlaceholders})`
+    if (input.customer_id) {
+      where += ' AND o.customer_id = ?'
+      params.push(input.customer_id)
+    }
     if (search) {
       where += ` AND (
         CAST(o.order_number AS TEXT) LIKE ?
@@ -560,7 +564,7 @@ export class LocalOrderRepository {
 
     const timestamp = nowIso()
     const accountTransactionId = input.method === 'account' ? paymentId : null
-    const nextPaid = num(order.total_paid ?? order.prepayment) + amount
+    const nextPaid = Math.max(num(order.total_paid), num(order.prepayment)) + amount
     const nextStatus = (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
 
     this.db.transaction(() => {
@@ -698,7 +702,7 @@ export class LocalOrderRepository {
       else paymentTotals.cash += amount
     }
     const listedPaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
-    const legacyPaid = Math.max(0, Math.round(num(order.total_paid ?? order.prepayment)) - listedPaid)
+    const legacyPaid = Math.max(0, Math.round(Math.max(num(order.total_paid), num(order.prepayment))) - listedPaid)
     if (legacyPaid > 0) {
       const legacyMethod = order.prepayment_method ?? input.payment_method
       if (legacyMethod === 'card') paymentTotals.card += legacyPaid
@@ -1034,7 +1038,7 @@ export class LocalOrderRepository {
   }
 
   private remainingDue(order: any): number {
-    return Math.max(0, num(order.total_amount) - num(order.discount_amount) - num(order.total_paid ?? order.prepayment))
+    return Math.max(0, num(order.total_amount) - num(order.discount_amount) - Math.max(num(order.total_paid), num(order.prepayment)))
   }
 
   private addOutbox(tenantId: string, aggregateType: string, aggregateId: string, operationType: string, payload: unknown, timestamp: string): number | bigint {

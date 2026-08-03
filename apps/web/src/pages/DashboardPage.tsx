@@ -27,6 +27,7 @@ interface Analytics {
   totals?: { products: number; customers: number; suppliers: number; openOrders: number }
   overdue_count?: number
   debt?: { count: number; total: number }
+  inventory?: { purchase_value: number; retail_value: number }
 }
 
 interface ForecastItem { month: string; projected: number }
@@ -83,7 +84,7 @@ export default function DashboardPage() {
             date_to: saleDateRange.to,
           })
           if (!isCurrent()) return
-          setAnalytics(summary.analytics)
+          setAnalytics({ ...summary.analytics, inventory: summary.inventory })
           setLowStock(Number(summary.low_stock ?? 0))
           setTotals(summary.totals)
           setOverdueCount(Number(summary.overdue_count ?? 0))
@@ -238,6 +239,8 @@ export default function DashboardPage() {
           <strong className="text-2xl text-emerald-800">{loading ? '—' : formatMoney(d?.total_revenue ?? 0)}</strong>
         </div>
       )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-6"><div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? "—" : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div><div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? "—" : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div><div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">Продано сьогодні</div><div className="mt-2 text-2xl font-bold text-emerald-950">{loading ? "—" : formatMoney(d?.daily?.find((item) => item.date === businessDateKey(new Date()))?.revenue ?? 0)}</div><div className="text-xs text-emerald-700 mt-1">за поточний день</div></div></div>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">

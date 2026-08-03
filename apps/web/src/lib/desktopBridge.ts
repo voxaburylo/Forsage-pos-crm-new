@@ -536,7 +536,7 @@ interface ForsageDesktopBridge {
     complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
   }
   orders?: {
-    listReady: (input?: { tenant_id?: string; search?: string; limit?: number }) => Promise<any[]>
+    listReady: (input?: { tenant_id?: string; search?: string; customer_id?: string; limit?: number }) => Promise<any[]>
     list?: (input?: any) => Promise<any[]>
     save?: (input: any, id?: string) => Promise<any>
     delete?: (id: string, tenantId?: string) => Promise<{ success: true }>

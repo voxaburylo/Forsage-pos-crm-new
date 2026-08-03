@@ -92,7 +92,8 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
       throw new AppError('PAYMENT_NOT_ALLOWED', 'Для скасованого або архівного замовлення оплату приймати не можна', 400)
     }
 
-    const totalPaid = numeric(order.total_paid ?? order.prepayment)
+    // Legacy rows may store prepayment separately from total_paid; never count it twice.
+    const totalPaid = Math.max(numeric(order.total_paid), numeric(order.prepayment))
     const payable = Math.max(0, numeric(order.total_amount) - numeric(order.discount_amount))
     const remaining = payable - totalPaid
     const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(String(order.status)) && remaining <= 0

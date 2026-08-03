@@ -83,6 +83,16 @@ router.get('/dashboard', async (req, res, next) => {
              AND p.deleted_at IS NULL
              AND p.is_active = true
              AND p.qty_on_hand <= p.reorder_point) AS low_stock,
+          (SELECT COALESCE(SUM(GREATEST(p.qty_on_hand, 0) * COALESCE(p.purchase_price, 0)), 0)::double precision
+           FROM products p
+           WHERE p.tenant_id = $1
+             AND p.deleted_at IS NULL
+             AND p.is_active = true) AS stock_purchase_value,
+          (SELECT COALESCE(SUM(GREATEST(p.qty_on_hand, 0) * COALESCE(p.retail_price, 0)), 0)::double precision
+           FROM products p
+           WHERE p.tenant_id = $1
+             AND p.deleted_at IS NULL
+             AND p.is_active = true) AS stock_retail_value,
           (SELECT COUNT(*)::integer
            FROM customers c
            WHERE c.tenant_id = $1
@@ -173,7 +183,11 @@ router.get('/dashboard', async (req, res, next) => {
           count: Number(overview.debt_customers ?? 0),
           total: Number(overview.debt_total ?? 0),
         },
-      },
+
+        inventory: {
+          purchase_value: Number(overview.stock_purchase_value ?? 0),
+          retail_value: Number(overview.stock_retail_value ?? 0),
+        },      },
     })
   } catch (err) { next(err) }
 })

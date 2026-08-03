@@ -1266,6 +1266,16 @@ export class LocalPosRepository {
            AND p.deleted_at IS NULL
            AND p.is_active = 1
            AND p.qty_on_hand <= p.reorder_point) AS low_stock,
+        (SELECT COALESCE(SUM(MAX(p.qty_on_hand, 0) * COALESCE(p.purchase_price, 0)), 0)
+         FROM products p
+         WHERE p.tenant_id = scope.tenant_id
+           AND p.deleted_at IS NULL
+           AND p.is_active = 1) AS stock_purchase_value,
+        (SELECT COALESCE(SUM(MAX(p.qty_on_hand, 0) * COALESCE(p.retail_price, 0)), 0)
+         FROM products p
+         WHERE p.tenant_id = scope.tenant_id
+           AND p.deleted_at IS NULL
+           AND p.is_active = 1) AS stock_retail_value,
         (SELECT COUNT(*)
          FROM customers c
          WHERE c.tenant_id = scope.tenant_id
@@ -1367,6 +1377,10 @@ export class LocalPosRepository {
       debt: {
         count: Number(stats?.debt_customers ?? 0),
         total: Number(stats?.debt_total ?? 0),
+      },
+      inventory: {
+        purchase_value: Number(stats?.stock_purchase_value ?? 0),
+        retail_value: Number(stats?.stock_retail_value ?? 0),
       },
     }
   }

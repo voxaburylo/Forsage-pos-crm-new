@@ -63,15 +63,28 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [payAction, setPayAction] = useState<PaymentAction>('deposit')
   const [closeAfterPayment, setCloseAfterPayment] = useState(false)
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account'>('cash')
+  const [fiscal, setFiscal] = useState(() => {
+    try {
+      const saved = localStorage.getItem('forsage_pos_fiscal_enabled')
+      return saved === null ? true : saved === 'true'
+    } catch {
+      return true
+    }
+  })
   const [paying, setPaying] = useState(false)
   // Рахунок клієнта (передплата) — для оплати замовлення з балансу
   const [accountBalance, setAccountBalance] = useState<number | null>(null)
   const paymentAttemptRef = useRef<{ fingerprint: string; paymentId: string } | null>(null)
   const payOrderCustomerId = payOrder?.customer?.id
+  const selectedCustomerId = store.customer?.id ?? null
 
   useEffect(() => {
     paymentAttemptRef.current = null
   }, [payOrder?.id, payAmount, payAction, payMethod])
+
+  useEffect(() => {
+    try { localStorage.setItem('forsage_pos_fiscal_enabled', String(fiscal)) } catch { /* localStorage недоступний */ }
+  }, [fiscal])
 
   useEffect(() => {
     setAccountBalance(null)
@@ -136,8 +149,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     try {
       const { data } = await posOrderApi.listReady(
         search.trim()
-          ? { search: search.trim(), limit: 50 }
-          : { activeStatuses: ACTIVE_ORDER_STATUSES, limit: 80 },
+          ? { search: search.trim(), customer_id: selectedCustomerId, limit: 50 }
+          : { activeStatuses: ACTIVE_ORDER_STATUSES, customer_id: selectedCustomerId, limit: 80 },
         { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS },
       ) as { data: ReadyOrder[] }
       setOrders((data ?? []).filter((order) => !['completed', 'canceled', 'archived'].includes(order.status)))
@@ -148,7 +161,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     } finally {
       setLoading(false)
     }
-  }, [isMobileInline, open, search])
+  }, [isMobileInline, open, search, selectedCustomerId])
 
   useEffect(() => {
     load()
@@ -161,11 +174,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [load])
 
   function payableTotal(order: ReadyOrder) {
-    return Math.max(0, order.total_amount)
+    return Math.max(0, Number(order.total_amount) - Number(order.discount_amount ?? 0))
   }
 
   function remainingDue(order: ReadyOrder) {
-    return Math.max(0, payableTotal(order) - (order.total_paid ?? order.prepayment ?? 0))
+    return Math.max(0, payableTotal(order) - Math.max(Number(order.total_paid) || 0, Number(order.prepayment) || 0))
   }
 
   function openPayment(order: ReadyOrder, action: PaymentAction, issueAfterPayment = false) {
@@ -229,7 +242,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           amount: amountVal,
           payment_id: paymentId,
           method: payMethod,
-          is_fiscal: false,
+          is_fiscal: fiscal,
           shift_id: store.currentShift?.id || null,
           notes: payMethod === 'account'
             ? 'Оплата замовлення з рахунку клієнта'
@@ -282,7 +295,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           payment_method: options.method ?? 'cash',
           cash_amount: 0,
           card_amount: 0,
-          is_fiscal: false,
+          is_fiscal: fiscal,
           shift_id: store.currentShift?.id || null,
         },
         { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
@@ -531,9 +544,13 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                 </div>
 
                 <div className="rounded-xl border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-100">
-                  Передоплата зберігається без фіскального чека. ПРРО для передоплат буде доступне
-                  лише після підключення безпечної інтеграції — програма не ставить фіктивну ознаку фіскалізації.
+                  Фіскальний режим вибирається нижче для цієї оплати.
+                  Ознака передається разом із платежем у ПРРО.
                 </div>
+                <label className="flex items-center gap-3 rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs text-amber-100">
+                  <input type="checkbox" checked={fiscal} onChange={(e) => setFiscal(e.target.checked)} className="h-4 w-4 accent-yellow-500" />
+                  Фіскальний чек (ПРРО)
+                </label>
                 {payAction === 'full' && canIssueOrder(payOrder) && (
                   <label className="flex items-center gap-3 rounded-xl border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
                     <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
@@ -772,9 +789,13 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               </div>
 
               <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-100">
-                Передоплата зберігається без фіскального чека. ПРРО для передоплат буде доступне
-                лише після підключення безпечної інтеграції — програма не ставить фіктивну ознаку фіскалізації.
+                Фіскальний режим вибирається нижче для цієї оплати.
+                Ознака передається разом із платежем у ПРРО.
               </div>
+                <label className="flex items-center gap-3 rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs text-amber-100">
+                  <input type="checkbox" checked={fiscal} onChange={(e) => setFiscal(e.target.checked)} className="h-4 w-4 accent-yellow-500" />
+                  Фіскальний чек (ПРРО)
+                </label>
                 {payAction === 'full' && canIssueOrder(payOrder) && (
                   <label className="flex items-center gap-3 rounded-lg border border-green-800/60 bg-green-950/30 px-3 py-3 text-sm text-green-100">
                     <input type="checkbox" checked={closeAfterPayment} onChange={(e) => setCloseAfterPayment(e.target.checked)}
