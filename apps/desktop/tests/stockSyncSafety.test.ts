@@ -92,6 +92,21 @@ describe('local stock sync safety', () => {
     expect(catalog.findById(stored.id)?.qty_on_hand).toBe(3)
   })
 
+  it('preserves a batched scanner quantity during inventory completion', () => {
+    const stored = product(0)
+    const inventory = new LocalInventoryRepository(db)
+    const session = inventory.createSession({ name: 'Серія сканів' })
+    inventory.startSession(session.id)
+    inventory.scan(session.id, { product_id: stored.id, qty: 12 })
+    const item = db.prepare('SELECT counted_stock FROM inventory_items WHERE session_id = ? AND product_id = ?')
+      .get(session.id, stored.id) as { counted_stock: number }
+    const entry = db.prepare('SELECT qty FROM inventory_count_entries WHERE session_id = ? AND product_id = ?')
+      .get(session.id, stored.id) as { qty: number }
+    expect(item.counted_stock).toBe(12)
+    expect(entry.qty).toBe(12)
+    inventory.complete(session.id)
+    expect(catalog.findById(stored.id)?.qty_on_hand).toBe(12)
+  })
   it('sends a writeoff once without a duplicate product stock snapshot', () => {
     const stored = product(10)
     const warehouse = new LocalWarehouseRepository(db)

@@ -359,12 +359,14 @@ router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) =
     if (!product?.id) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
 
     await refreshInventoryExpectedStock(sessionId, req.user!.tenant_id, product.id, product.qty_on_hand)
+    const requestedQty = Number(req.body?.qty ?? 1)
+    const scanQty = Number.isFinite(requestedQty) ? Math.max(1, Math.floor(requestedQty)) : 1
     const counted = await db.rpc('add_inventory_count', {
       p_session_id: sessionId,
       p_tenant_id: req.user!.tenant_id,
       p_product_id: product.id,
       p_user_id: req.user!.id,
-      p_qty: 1,
+      p_qty: scanQty,
       p_price_checked: true,
       p_observed_retail_price: null,
     })

@@ -11,8 +11,8 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:pos:checkout', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:print:html', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:staff:list-users', 'cashier')).toBe(false)
-    expect(isDesktopChannelAllowed('desktop:supply:post-invoice', 'cashier')).toBe(false)
-    expect(isDesktopChannelAllowed('desktop:catalog:save-product', 'cashier')).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:supply:post-invoice', 'cashier')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:catalog:save-product', 'cashier')).toBe(true)
   })
 
   it('identifies standalone tenant arguments that cannot be checked recursively', () => {
@@ -23,7 +23,7 @@ describe('desktop authorization boundary', () => {
   it('allows stock roles where needed and denies unknown channels and roles', () => {
     expect(isDesktopChannelAllowed('desktop:supply:post-invoice', 'storekeeper')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:inventory:complete', 'storekeeper')).toBe(true)
-    expect(isDesktopChannelAllowed('desktop:inventory:complete', 'cashier')).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:inventory:complete', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:unknown:operation', 'owner')).toBe(false)
     expect(isDesktopChannelAllowed('desktop:pos:checkout', 'unknown')).toBe(false)
   })

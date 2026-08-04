@@ -251,7 +251,7 @@ export default function ActiveSession() {
   const [printingLabels, setPrintingLabels] = useState<string | null>(null)
   const [labelRows, setLabelRows] = useState<InventoryItem[] | null>(null)
   const [labelQtys, setLabelQtys] = useState<Record<string, number>>({})
-  const scanQueue = useRef<string[]>([])
+  const scanQueue = useRef<Array<{ code: string; qty: number }>>([])
   const scanQueueRunning = useRef(false)
   const inventoryDraftReadyRef = useRef(false)
   const inventoryDraftPersistenceDisabledRef = useRef(false)
@@ -786,7 +786,9 @@ export default function ActiveSession() {
   function queueInventoryScan(code: string) {
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
-    scanQueue.current.push(normalizedCode)
+    const tail = scanQueue.current[scanQueue.current.length - 1]
+    if (tail?.code === normalizedCode) tail.qty += 1
+    else scanQueue.current.push({ code: normalizedCode, qty: 1 })
     void drainInventoryScanQueue()
   }
 
@@ -795,8 +797,8 @@ export default function ActiveSession() {
     scanQueueRunning.current = true
     try {
       while (scanQueue.current.length > 0) {
-        const code = scanQueue.current.shift()
-        if (code) await scanCodeFast(code, { fromHardware: true })
+        const pending = scanQueue.current.shift()
+        if (pending) await scanCodeFast(pending.code, { fromHardware: true, qty: pending.qty })
       }
     } finally {
       scanQueueRunning.current = false
