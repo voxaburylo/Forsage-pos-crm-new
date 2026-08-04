@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, FileText } from 'lucide-react'
 import { supplierApi } from './supplierApi'
@@ -37,11 +37,19 @@ export default function InvoicesPage() {
   useEffect(() => { load() }, [load])
   useEffect(() => { setPage(1) }, [status])
 
+  function openInvoice(inv: SupplyInvoice) {
+    if (inv.id.startsWith('local-draft:')) {
+      const key = decodeURIComponent(inv.id.slice('local-draft:'.length))
+      navigate('/suppliers/invoices/new?resume=' + encodeURIComponent(key))
+      return
+    }
+    navigate('/suppliers/invoices/' + inv.id)
+  }
   const columns = [
     {
       key: 'num', header: '№',
       render: (inv: SupplyInvoice) => (
-        <button onClick={() => navigate(`/suppliers/invoices/${inv.id}`)} className="text-left hover:text-yellow-600 font-mono text-sm">
+        <button onClick={() => openInvoice(inv)} className="text-left hover:text-yellow-600 font-mono text-sm">
           {inv.invoice_number ?? '—'}
         </button>
       ),
@@ -69,7 +77,7 @@ export default function InvoicesPage() {
     {
       key: 'actions', header: '', className: 'w-16 text-right',
       render: (inv: SupplyInvoice) => (
-        <button onClick={() => navigate(`/suppliers/invoices/${inv.id}`)}
+        <button onClick={() => openInvoice(inv)}
           className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">✎</button>
       ),
     },
@@ -83,7 +91,7 @@ export default function InvoicesPage() {
       title={`Приходні накладні${total ? ` (${total})` : ''}`}
       onBack={() => navigate('/receiving')}
       actions={
-        <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new')}>
+        <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new?fresh=' + Date.now())}>
           Накладна
         </Button>
       }

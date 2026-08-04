@@ -68,8 +68,9 @@ const OFFICE_ROLES = ['owner', 'admin', 'manager']
 const ADMIN_ROLES = ['owner', 'admin']
 const WAREHOUSE_ROLES = ['owner', 'admin', 'storekeeper']
 const INVENTORY_COUNTER_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer']
-const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
+const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
+const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
 
 function Loader() {
@@ -189,13 +190,13 @@ function App() {
           <Route path="/suppliers/new" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id" element={<ProtectedRoute roles={SUPPLIER_ROLES}><SupplierDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
-          <Route path="/receiving" element={<ProtectedRoute roles={SUPPLIER_ROLES}><ReceivingPage /></ProtectedRoute>} />
-          <Route path="/suppliers/invoices" element={<ProtectedRoute roles={SUPPLIER_ROLES}><InvoicesPage /></ProtectedRoute>} />
+          <Route path="/receiving" element={<ProtectedRoute roles={RECEIVING_ROLES}><ReceivingPage /></ProtectedRoute>} />
+          <Route path="/suppliers/invoices" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoicesPage /></ProtectedRoute>} />
           <Route path="/suppliers/pos" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute>} />
-          <Route path="/suppliers/invoices/new" element={<ProtectedRoute roles={SUPPLIER_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
-          <Route path="/suppliers/invoices/:id" element={<ProtectedRoute roles={SUPPLIER_ROLES}><InvoiceDetailPage /></ProtectedRoute>} />
-          <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
-          <Route path="/suppliers/import"            element={<ProtectedRoute roles={SUPPLIER_ROLES}><ImportPage /></ProtectedRoute>} />
+          <Route path="/suppliers/invoices/new" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
+          <Route path="/suppliers/invoices/:id" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceDetailPage /></ProtectedRoute>} />
+          <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
+          <Route path="/suppliers/import"            element={<ProtectedRoute roles={RECEIVING_ROLES}><ImportPage /></ProtectedRoute>} />
 
           <Route path="/staff"          element={<ProtectedRoute roles={ADMIN_ROLES}><StaffPage /></ProtectedRoute>} />
           

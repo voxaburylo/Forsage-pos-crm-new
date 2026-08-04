@@ -1,4 +1,4 @@
-﻿import { api } from '@/lib/api'
+import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
@@ -29,6 +29,38 @@ function localSupply() {
   return desktopBridge()?.supply ?? null
 }
 
+function readLocalInvoiceDrafts(): SupplyInvoice[] {
+  if (typeof window === 'undefined') return []
+  const drafts: SupplyInvoice[] = []
+  for (let i = 0; i < window.localStorage.length; i += 1) {
+    const key = window.localStorage.key(i) ?? ''
+    if (!key.startsWith('forsage:supply-invoice:') || !key.endsWith(':draft:v2')) continue
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(key) || '')
+      if (!raw || !Array.isArray(raw.items)) continue
+      const savedAt = String(raw.savedAt || new Date().toISOString())
+      const total = raw.items.reduce((sum: number, item: any) => sum + Math.max(0, Number(item?.total) || 0), 0)
+      drafts.push({
+        id: 'local-draft:' + encodeURIComponent(key),
+        supplier_id: raw.supplierId ? String(raw.supplierId) : null,
+        invoice_number: raw.invoiceNumber ? String(raw.invoiceNumber) : null,
+        status: 'draft',
+        total,
+        paid_amount: 0,
+        payment_method: null,
+        notes: raw.notes ? String(raw.notes) : null,
+        posted_by: null,
+        posted_at: null,
+        created_at: savedAt,
+        updated_at: savedAt,
+        supplier: raw.supplierId ? { id: String(raw.supplierId), name: 'Постачальник' } : null,
+      })
+    } catch {
+      // Пошкоджений локальний чернетник не повинен блокувати список накладних.
+    }
+  }
+  return drafts.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
+}
 function buildQuery(filters: object): string {
   const params = new URLSearchParams()
   Object.entries(filters as Record<string, unknown>).forEach(([k, v]) => {
@@ -103,7 +135,20 @@ export const supplierApi = {
   // Приходні накладні
   listInvoices: async (filters: InvoiceFilters = {}) => {
     const local = localSupply()
-    if (local?.listInvoices) return local.listInvoices(filters) as Promise<PaginatedInvoices>
+    if (local?.listInvoices) {
+      const result = await local.listInvoices(filters) as PaginatedInvoices
+      const localDrafts = !filters.status || filters.status === 'draft' ? readLocalInvoiceDrafts() : []
+      if (localDrafts.length === 0) return result
+      return {
+        ...result,
+        data: [...localDrafts, ...result.data],
+        pagination: {
+          ...result.pagination,
+          total: result.pagination.total + localDrafts.length,
+          total_pages: Math.max(1, Math.ceil((result.pagination.total + localDrafts.length) / (result.pagination.per_page || 20))),
+        },
+      }
+    }
     return api.get<PaginatedInvoices>(`/api/v1/suppliers/invoices${buildQuery(filters)}`)
   },
 

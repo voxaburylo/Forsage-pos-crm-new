@@ -179,7 +179,10 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
     try {
       // Сучасний Clipboard API (працює в Chrome/Edge/Safari на мобільних)
       if (navigator.clipboard?.read) {
-        const items = await navigator.clipboard.read()
+        const items = await Promise.race([
+          navigator.clipboard.read(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('CLIPBOARD_TIMEOUT')), 3000)),
+        ])
         for (const item of items) {
           const imageType = item.types.find((t) => t.startsWith('image/'))
           if (!imageType) continue

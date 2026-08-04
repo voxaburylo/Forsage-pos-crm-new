@@ -10,7 +10,7 @@ const router = Router()
 router.use(requireAuth)
 
 const COUNTER_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer'] as const
-const MANAGER_ROLES = ['owner', 'admin', 'storekeeper'] as const
+const MANAGER_ROLES = ['owner', 'admin', 'cashier', 'storekeeper'] as const
 
 async function requireInventorySession(sessionId: string, tenantId: string, activeOnly = false) {
   let query = db.from('inventory_sessions').select('*')
@@ -474,7 +474,7 @@ router.delete('/:id/items/:itemId', requireRole(...COUNTER_ROLES), async (req, r
 })
 // Зміна ціни прямо з ревізії: оновлює роздрібну ціну товару (з історією цін)
 // і закриває розбіжність у сесії. Ролі — ті самі, що можуть редагувати товар.
-router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
     const parsed = z.object({
       product_id: z.string().uuid(),
@@ -516,7 +516,7 @@ router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storek
   } catch (error) { next(error) }
 })
 
-router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, next) => {
+router.post('/:id/complete', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
   try {
     const sessionId = String(req.params.id)
     const session = await requireInventorySession(sessionId, req.user!.tenant_id, true)

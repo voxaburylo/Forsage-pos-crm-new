@@ -1,4 +1,4 @@
-﻿import { Router } from 'express'
+import { Router } from 'express'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import * as productController from '../controllers/productController.js'
 
@@ -35,7 +35,7 @@ router.use((req, res, next) => {
 router.get('/export', requireRole('owner', 'admin'), productController.exportCsv)
 
 // GET /api/v1/products/generate-barcode-only — згенерувати унікальний штрих-код без прив'язки до товару
-router.get('/generate-barcode-only', requireRole('owner', 'admin', 'storekeeper'), productController.generateBarcodeOnly)
+router.get('/generate-barcode-only', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), productController.generateBarcodeOnly)
 
 // POST /api/v1/products/import — імпорт товарів (upsert по sku або barcode)
 router.post('/import', requireRole('owner', 'admin', 'manager'), productController.importBulk)
@@ -85,10 +85,10 @@ router.post('/:id/cobuy', requireRole('owner', 'admin', 'storekeeper'), productC
 router.delete('/:id/cobuy/:recommendedId', requireRole('owner', 'admin', 'storekeeper'), productController.removeCobuy)
 
 // POST /api/v1/products — создать товар
-router.post('/', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.createOne)
+router.post('/', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), productController.createOne)
 
 // PUT /api/v1/products/:id — обновить товар
-router.put('/:id', requireRole('owner', 'admin', 'manager', 'storekeeper'), productController.updateOne)
+router.put('/:id', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), productController.updateOne)
 
 // DELETE /api/v1/products/:id — soft delete
 router.delete('/:id', requireRole('owner', 'admin'), productController.deleteOne)

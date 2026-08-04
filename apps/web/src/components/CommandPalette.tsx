@@ -43,7 +43,7 @@ const STATIC: StaticCmd[] = [
   { label: 'Налаштування', icon: <Settings size={16} />, to: '/settings', group: 'Перейти', roles: ['owner', 'admin'] },
   // Створити
   { label: 'Новий товар', icon: <Plus size={16} />, to: '/products/new', group: 'Створити', roles: ['owner', 'admin', 'manager', 'storekeeper'], keywords: 'додати товар' },
-  { label: 'Нова накладна (прийом товару)', icon: <Plus size={16} />, to: '/suppliers/invoices/new', group: 'Створити', roles: ['owner', 'admin', 'manager', 'storekeeper'], keywords: 'прийом приход' },
+  { label: 'Нова накладна (прийом товару)', icon: <Plus size={16} />, to: '/suppliers/invoices/new', group: 'Створити', roles: ['owner', 'admin', 'manager', 'cashier', 'storekeeper'], keywords: 'прийом приход' },
   { label: 'Нове замовлення', icon: <Plus size={16} />, to: '/orders/new', group: 'Створити', roles: ['owner', 'admin', 'manager'] },
   { label: 'Новий клієнт', icon: <Plus size={16} />, to: '/customers/new', group: 'Створити' },
   { label: 'Новий постачальник', icon: <Plus size={16} />, to: '/suppliers/new', group: 'Створити', roles: ['owner', 'admin', 'manager'] },

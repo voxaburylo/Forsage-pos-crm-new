@@ -75,6 +75,7 @@ export function ShiftCloseModal({
   const expectedCash = cashBreakdown?.expected_amount ?? 0
   const variance     = cashInput ? cashReceived - expectedCash : null
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
+  const cashierAmountMismatch = !isOwnerOrAdmin && variance !== null && variance !== 0
 
   async function handleClose() {
     if (offline && !isDesktop) {
@@ -83,6 +84,10 @@ export function ShiftCloseModal({
     }
     if (pendingOfflineSales > 0) {
       toast.error(`Спочатку синхронізуйте офлайн-чеки: ${pendingOfflineSales}`)
+      return
+    }
+    if (cashierAmountMismatch) {
+      toast.error('Сума не сходиться. Очікується ' + formatMoney(expectedCash) + ', введено ' + formatMoney(cashReceived) + '.')
       return
     }
     if (needsComment && !comment.trim()) {
@@ -216,6 +221,11 @@ export function ShiftCloseModal({
               </div>
             )}
 
+            {!isOwnerOrAdmin && cashBreakdown && (
+              <div className="bg-[#2C2C2C] rounded-xl px-4 py-3 text-sm text-gray-300">
+                Очікується в касі: <span className="font-semibold text-white">{formatMoney(expectedCash)}</span>
+              </div>
+            )}
             {/* Ввід фактичної суми */}
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Фактична сума в касі (₴)</label>

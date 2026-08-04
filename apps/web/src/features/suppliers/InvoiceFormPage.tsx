@@ -519,7 +519,10 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
 
   const handlePaste = async () => {
     try {
-      const items = await navigator.clipboard.read()
+      const items = await Promise.race([
+        navigator.clipboard.read(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('CLIPBOARD_TIMEOUT')), 3000)),
+      ])
       for (const item of items) {
         const imageType = item.types.find(type => type.startsWith('image/'))
         if (imageType) {
@@ -622,11 +625,18 @@ export default function InvoiceFormPage() {
   const isEdit = Boolean(id)
   const preSelectedSupplier = searchParams.get('supplier_id') ?? ''
   const cloneId = searchParams.get('clone')
+  const freshToken = searchParams.get('fresh') ?? ''
+  const requestedResumeKey = searchParams.get('resume') ?? ''
+  const resumeDraftKey = requestedResumeKey.startsWith('forsage:supply-invoice:')
+    ? requestedResumeKey
+    : ''
   const invoiceDraftKey = useMemo(() => {
+    if (resumeDraftKey) return resumeDraftKey
     if (isEdit && id) return supplyInvoiceDraftKey('edit-' + id)
     if (cloneId) return supplyInvoiceDraftKey('clone-' + cloneId)
+    if (freshToken) return supplyInvoiceDraftKey('fresh-' + freshToken)
     return supplyInvoiceDraftKey('new')
-  }, [cloneId, id, isEdit])
+  }, [cloneId, freshToken, id, isEdit, resumeDraftKey])
   const invoiceDraftReadyRef = useRef(false)
   const invoiceSubmitRef = useRef(false)
   const invoiceDraftPersistenceDisabledRef = useRef(false)
@@ -740,7 +750,7 @@ export default function InvoiceFormPage() {
       applySupplyInvoiceDraft(localDraft, preSelectedSupplier)
       toast.success('Чернетку накладної відновлено')
     }
-    if (desktopBridge()) {
+    if (desktopBridge() || freshToken || resumeDraftKey) {
       markReady()
       return () => {
         cancelled = true
@@ -775,7 +785,7 @@ export default function InvoiceFormPage() {
       cancelled = true
       if (readyTimer != null) window.clearTimeout(readyTimer)
     }
-  }, [cloneId, invoiceDraftKey, isEdit, preSelectedSupplier])
+  }, [cloneId, freshToken, invoiceDraftKey, isEdit, preSelectedSupplier, resumeDraftKey])
 
   useEffect(() => {
     if (!invoiceDraftReadyRef.current || invoiceDraftPersistenceDisabledRef.current) return
@@ -1965,14 +1975,27 @@ export default function InvoiceFormPage() {
   }
 
   function closeInvoiceForm() {
-    // Раніше «Назад» СТИРАВ чернетку — тому випадковий вихід губив усю роботу.
-    // Тепер чернетку НЕ чистимо: вона лишається і відновиться при наступному
-    // відкритті. Якщо накладна не порожня — питаємо підтвердження.
+    // Вихід через «Назад» зберігає незакриту накладну як чернетку.
     const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
-    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться чернеткою і відновиться тут або з іншого пристрою.')) return
+    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться у списку як чернетка.')) return
     navigate('/suppliers/invoices')
   }
 
+  async function cancelInvoiceForm() {
+    const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
+    if (hasContent && !confirm('Скасувати накладну?\n\nЧернетку буде видалено без зміни залишків.')) return
+    invoiceDraftPersistenceDisabledRef.current = true
+    clearSupplyInvoiceDraft(invoiceDraftKey)
+    const draftId = serverDraftIdRef.current || (isEdit && id ? id : null)
+    try {
+      if (draftId) await supplierApi.deleteInvoice(draftId)
+      toast.success('Чернетку накладної видалено')
+      navigate('/suppliers/invoices')
+    } catch (err) {
+      invoiceDraftPersistenceDisabledRef.current = false
+      toast.error(err instanceof Error ? err.message : 'Не вдалося видалити чернетку')
+    }
+  }
   if (loading) return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>
 
   return (
@@ -2171,7 +2194,15 @@ export default function InvoiceFormPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
-                <th className="w-10 px-2 py-2 text-center">✓</th>
+                <th className="w-10 px-2 py-2 text-center">
+  <input
+    type="checkbox"
+    aria-label="Вибрати всі товари"
+    checked={items.length > 0 && selectedLineKeys.length === items.length}
+    onChange={(e) => toggleAllLineSelection(e.target.checked)}
+    className="w-4 h-4 accent-yellow-400"
+  />
+</th>
                 <th className="w-12 px-2 py-2">Фото</th>
                 <th className="text-left px-4 py-2">Товар</th>
                 <th className="text-left px-2 py-2 w-44">Папка</th>
@@ -2671,7 +2702,7 @@ export default function InvoiceFormPage() {
           <Button type="submit" disabled={saving}>
             {saving ? 'Збереження...' : isEdit ? 'Оновити' : postImmediately ? 'Створити і провести' : 'Створити чернетку'}
           </Button>
-          <Button type="button" variant="outline" onClick={closeInvoiceForm}>Скасувати</Button>
+          <Button type="button" variant="outline" onClick={() => void cancelInvoiceForm()}>Скасувати</Button>
           {!isEdit && (
             <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-1">
               <input type="checkbox" checked={postImmediately} onChange={(e) => setPostImmediately(e.target.checked)}
