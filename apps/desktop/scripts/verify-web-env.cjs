@@ -4,6 +4,7 @@ const path = require('node:path')
 const webEnvPath = path.resolve(__dirname, '../../web/.env')
 const desktopDistPath = path.resolve(__dirname, '../dist')
 const authConfigPath = path.join(desktopDistPath, 'trusted-auth-config.json')
+const webDistIndexPath = path.resolve(__dirname, '../../web/dist/index.html')
 const requiredKeys = ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'VITE_API_URL']
 
 function parseEnvFile(filePath) {
@@ -43,6 +44,17 @@ if (supabaseUrl.protocol !== 'https:') {
   console.error('VITE_SUPABASE_URL must use HTTPS.')
   process.exit(1)
 }
+// A desktop renderer is loaded from file://, so Vite assets must be relative
+// (./assets/...). Catch a web-mode build here instead of producing a black EXE.
+if (fs.existsSync(webDistIndexPath)) {
+  const webIndex = fs.readFileSync(webDistIndexPath, 'utf8')
+  if (webIndex.includes('src="/assets/') || webIndex.includes('href="/assets/') || webIndex.includes('href="/favicon')) {
+    console.error('Desktop renderer was built with absolute web asset paths.')
+    console.error('Rebuild the web app with FORSAGE_DESKTOP_BUILD=1 before packaging the portable EXE.')
+    process.exit(1)
+  }
+}
+
 
 // The desktop main process uses this pinned public project configuration only
 // to bootstrap a missing local password after Supabase has authenticated it.
