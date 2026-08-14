@@ -6,12 +6,13 @@ import {
   getAiConfig, saveAiConfig, testKey, runChat, applyAction, getUsageSummary,
   AI_MODELS,
 } from '../services/aiService.js'
+import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
 
 const router = Router()
 router.use(requireAuth)
 
 // GET /api/v1/ai/status — чи налаштовано, модель, витрати за місяць
-router.get('/status', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+router.get('/status', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   try {
     const cfg = await getAiConfig(req.user!.tenant_id)
     const usage = await getUsageSummary(req.user!.tenant_id)
@@ -20,7 +21,7 @@ router.get('/status', requireRole('owner', 'admin', 'manager'), async (req, res,
 })
 
 // GET /api/v1/ai/usage — лічильник вартості
-router.get('/usage', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+router.get('/usage', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   try { res.json({ data: await getUsageSummary(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
@@ -63,26 +64,55 @@ const chatSchema = z.object({
     text: z.string(),
   })).max(40).optional(),
   file_text: z.string().max(1_000_000).optional(),
-  // Фото (рукописні замовлення тощо): стиснуті на клієнті JPEG/PNG/WebP у base64
-  images: z.array(z.object({
-    mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
-    data_base64: z.string().min(1).max(6_000_000),
-  })).max(4).optional(),
+  // Новий веб-клієнт передає приватний шлях Supabase Storage, старі клієнти — base64.
+  images: z.array(z.union([
+    z.object({
+      mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+      storage_path: z.string().min(1).max(300),
+    }),
+    z.object({
+      mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+      data_base64: z.string().min(1).max(6_000_000),
+    }),
+  ])).max(4).optional(),
 })
 
 // POST /api/v1/ai/chat — діалог із «директором»
-router.post('/chat', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  const storagePaths: string[] = []
   try {
     const parsed = chatSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    const images = []
+    for (const image of parsed.data.images ?? []) {
+      if ('data_base64' in image) {
+        images.push(image)
+        continue
+      }
+      storagePaths.push(image.storage_path)
+      const uploaded = await downloadProcessingUpload({
+        path: image.storage_path,
+        userId: req.user!.id,
+        purpose: 'ai',
+        maxBytes: 6 * 1024 * 1024,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+      })
+      images.push({
+        mime_type: uploaded.mimeType as 'image/jpeg' | 'image/png' | 'image/webp',
+        data_base64: uploaded.buffer.toString('base64'),
+      })
+    }
     const out = await runChat(req.user!.tenant_id, req.user!.id, {
       message: parsed.data.message,
       history: parsed.data.history,
       fileText: parsed.data.file_text,
-      images: parsed.data.images,
+      images: images.length > 0 ? images : undefined,
     })
     res.json({ data: out })
   } catch (err) { next(err) }
+  finally {
+    await removeProcessingUploads(storagePaths, req.user!.id).catch(() => {})
+  }
 })
 
 const optionalText = (max: number) => z.string().max(max).optional().nullable()

@@ -6,6 +6,7 @@ import {
   type OrderPaymentReceipt,
   type SaleReceipt,
 } from './cashAccounting.js'
+import { kyivDateRange } from '../lib/businessDate.js'
 
 function todayRange(): { from: string; to: string } {
   const now = new Date()
@@ -372,22 +373,28 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
   }
 }
 
-// Продані товари за день — для дозамовлення у постачальників.
-// Агрегує позиції завершених чеків за київську добу; послуги пропускаються.
-export async function getSoldItems(date: string, tenantId: string) {
-  const from = `${date}T00:00:00+03:00`
-  const to   = `${date}T23:59:59.999+03:00`
-  const { data: sales, error } = await db.from('sales').select('id')
-    .eq('tenant_id', tenantId).eq('status', 'completed')
-    .gte('completed_at', from).lte('completed_at', to)
-    .limit(5000)
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+// Продані товари за період — для дозамовлення у постачальників.
+// Агрегує однакові позиції завершених чеків; послуги пропускаються.
+export async function getSoldItems(fromDate: string, toDate: string, tenantId: string) {
+  const { from, toExclusive } = kyivDateRange(fromDate, toDate)
+  const sales: Array<{ id: string }> = []
+  const pageSize = 1000
+  for (let offset = 0; ; offset += pageSize) {
+    const { data: page, error } = await db.from('sales').select('id')
+      .eq('tenant_id', tenantId).eq('status', 'completed')
+      .gte('completed_at', from).lt('completed_at', toExclusive)
+      .order('completed_at', { ascending: true })
+      .range(offset, offset + pageSize - 1)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    sales.push(...(page ?? []))
+    if ((page?.length ?? 0) < pageSize) break
+  }
 
-  const ids = (sales ?? []).map((s: any) => s.id)
+  const ids = sales.map((sale) => sale.id)
   const agg = new Map<string, any>()
   for (let i = 0; i < ids.length; i += 100) {
     const { data: items, error: itemsErr } = await db.from('sale_items')
-      .select('product_id, qty, unit_price, discount, product:products(sku, name, unit, qty_on_hand, storage_bin, is_service)')
+      .select('product_id, qty, unit_price, discount, product:products(sku, barcode, name, unit, qty_on_hand, storage_bin, is_service)')
       .in('sale_id', ids.slice(i, i + 100))
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
     for (const it of (items ?? []) as any[]) {
@@ -395,6 +402,7 @@ export async function getSoldItems(date: string, tenantId: string) {
       const cur = agg.get(it.product_id) ?? {
         product_id: it.product_id,
         sku: it.product?.sku ?? '',
+        barcode: it.product?.barcode ?? null,
         name: it.product?.name ?? '(товар видалено)',
         unit: it.product?.unit ?? 'шт',
         qty_on_hand: Number(it.product?.qty_on_hand ?? 0),

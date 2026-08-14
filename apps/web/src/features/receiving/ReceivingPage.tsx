@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { FilePlus2, FileText, Upload, PackagePlus } from 'lucide-react'
+import { FilePlus2, FileText, Upload, PackagePlus, Sparkles } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 
 /**
@@ -17,6 +17,12 @@ export default function ReceivingPage() {
       desc: 'Прийняти товар, прописати штрихкоди скануванням, оновити залишки',
       to: '/suppliers/invoices/new',
       accent: true,
+    },
+    {
+      icon: <Sparkles size={22} />,
+      title: 'Створити накладну з фото (AI)',
+      desc: 'Додайте фото накладної — AI розпізнає товари та підготує чернетку приходу',
+      to: '/receiving/ai',
     },
     {
       icon: <FileText size={22} />,

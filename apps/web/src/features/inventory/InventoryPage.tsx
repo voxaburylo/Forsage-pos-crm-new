@@ -46,7 +46,7 @@ export default function InventoryPage() {
   const navigate = useNavigate()
   const { session } = useAuthStore()
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
-  const canManage = ['owner', 'admin', 'storekeeper'].includes(role)
+  const canManage = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
   const [sessions, setSessions] = useState<Session[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)

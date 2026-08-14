@@ -85,7 +85,7 @@ router.post('/invoices/:id/post', requireRole(...RECEIVING_ROLES), async (req, r
 })
 
 // POST /api/v1/suppliers/invoices/:id/pay — доплата постачальнику
-router.post('/invoices/:id/pay', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/invoices/:id/pay', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
     const parsed = invoicePaymentSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна сума оплати', 422, parsed.error.flatten())

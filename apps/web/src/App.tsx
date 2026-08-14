@@ -191,6 +191,7 @@ function App() {
           <Route path="/suppliers/:id" element={<ProtectedRoute roles={SUPPLIER_ROLES}><SupplierDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
           <Route path="/receiving" element={<ProtectedRoute roles={RECEIVING_ROLES}><ReceivingPage /></ProtectedRoute>} />
+          <Route path="/receiving/ai" element={<ProtectedRoute roles={RECEIVING_ROLES}><AiAssistantPage invoiceOnly /></ProtectedRoute>} />
           <Route path="/suppliers/invoices" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoicesPage /></ProtectedRoute>} />
           <Route path="/suppliers/pos" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/new" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />

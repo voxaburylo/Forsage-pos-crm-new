@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getSettings } from '../services/adminService.js'
 
+import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
 const router = Router()
 router.use(requireAuth)
 
@@ -71,16 +72,31 @@ router.get('/decode', async (req, res, next) => {
 
 // POST /api/v1/vin/ocr — розпізнавання VIN з фото (base64) через Gemini
 router.post('/ocr', async (req, res, next) => {
+  const storagePath = typeof req.body?.storage_path === 'string' ? req.body.storage_path : null
   try {
     const { image, mimeType } = req.body ?? {}
-    if (!image) throw new AppError('NO_IMAGE', 'Не передано зображення', 400)
+    if (!image && !storagePath) throw new AppError('NO_IMAGE', 'Не передано зображення', 400)
     const model = gemini()
     if (!model) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання недоступне (не налаштовано GEMINI_API_KEY)', 503)
 
-    const base64 = String(image).replace(/^data:[^;]+;base64,/, '')
+    let base64: string
+    let resolvedMimeType = mimeType || 'image/jpeg'
+    if (storagePath) {
+      const uploaded = await downloadProcessingUpload({
+        path: storagePath,
+        userId: req.user!.id,
+        purpose: 'vin',
+        maxBytes: 6 * 1024 * 1024,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+      })
+      base64 = uploaded.buffer.toString('base64')
+      resolvedMimeType = uploaded.mimeType
+    } else {
+      base64 = String(image).replace(/^data:[^;]+;base64,/, '')
+    }
     const prompt = 'Ти — експерт з автомобілів. На фото — VIN-код або документ на авто. Знайди 17-символьний VIN. Поверни ТІЛЬКИ сам VIN великими літерами без пробілів і розділювачів. Якщо VIN не видно — поверни NONE.'
     const result = await model.generateContent([
-      { inlineData: { mimeType: mimeType || 'image/jpeg', data: base64 } },
+      { inlineData: { mimeType: resolvedMimeType, data: base64 } },
       { text: prompt },
     ])
     const raw = (result?.response?.text?.() ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
@@ -88,6 +104,9 @@ router.post('/ocr', async (req, res, next) => {
     if (!vin) throw new AppError('VIN_NOT_FOUND', 'VIN не розпізнано на фото. Спробуйте чіткіше фото.', 422)
     res.json({ data: { vin } })
   } catch (err) { next(err) }
+  finally {
+    if (storagePath) await removeProcessingUploads([storagePath], req.user!.id).catch(() => {})
+  }
 })
 
 export default router

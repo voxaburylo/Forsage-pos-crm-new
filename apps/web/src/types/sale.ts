@@ -5,7 +5,15 @@ export interface SaleItem {
   unit_price: number   // копійки
   discount: number     // копійки
   total: number        // копійки
-  product?: { id: string; sku: string; name: string; unit: string; qty_on_hand?: number }
+  product?: {
+    id: string
+    sku: string
+    barcode?: string | null
+    name: string
+    unit: string
+    qty_on_hand?: number
+    storage_bin?: string | null
+  }
   core_deposit_amount?: number
   core_return_status?: string
 }

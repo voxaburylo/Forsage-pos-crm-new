@@ -561,6 +561,7 @@ interface ForsageDesktopBridge {
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
+    createInvoiceFromAi?: (input: { tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{ invoice: any; matched: number; created: number; unresolved: Array<{ name: string; sku: string; needs_barcode: true }> }>
     updateInvoice: (id: string, input: any) => Promise<any>
     payInvoice: (id: string, input: any) => Promise<any>
     postInvoice: (id: string, input?: any) => Promise<any>
@@ -599,6 +600,7 @@ interface ForsageDesktopBridge {
     getCustomerDeposit?: (customerId: string, tenantId?: string) => Promise<{ balance: number; transactions: unknown[] }>
     payDebt?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
     addCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>
+    payOutCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; payout_id?: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number; replayed: boolean } }>
     createCashOperation?: (input: any) => Promise<any>
     listCashOperations?: (shiftId: string, tenantId?: string) => Promise<any[]>
     cashOperationSummary?: (shiftId: string, tenantId?: string) => Promise<any>

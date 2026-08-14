@@ -15,6 +15,8 @@ export type CancelOrderResult = {
   order_before: Record<string, unknown>
   order_after: Record<string, unknown>
   paid_amount: number
+  credited_amount: number
+  customer_balance: number | null
   replayed: boolean
 }
 
@@ -24,9 +26,10 @@ function numeric(value: unknown): number {
 }
 
 /**
- * Cancels an order without silently fabricating a refund. Financial cancellation
- * is deliberately blocked until it can be confirmed by the POS/fiscal flow for
- * each original payment method. Existing payments remain immutable ledger rows.
+ * Cancels an order and moves any collected payment to the customer's single
+ * account balance. The original payment rows stay immutable. The deposit
+ * transaction deliberately uses the order id as its idempotency key, so a web
+ * request, a desktop outbox replay and a repeated click cannot credit it twice.
  */
 export async function cancelOrderSafely(input: CancelOrderInput): Promise<CancelOrderResult> {
   if (input.refund_prepayment && input.keep_as_credit) {
@@ -68,14 +71,87 @@ export async function cancelOrderSafely(input: CancelOrderInput): Promise<Cancel
     )
 
     if (order.status === 'canceled') {
-      return { order_before: order, order_after: order, paid_amount: paidAmount, replayed: true }
+      const creditResult = await client.query(
+        `SELECT amount, balance_after
+         FROM customer_deposit_transactions
+         WHERE id = $1 AND tenant_id = $2
+         LIMIT 1`,
+        [input.order_id, input.tenant_id],
+      )
+      return {
+        order_before: order,
+        order_after: order,
+        paid_amount: paidAmount,
+        credited_amount: numeric(creditResult.rows[0]?.amount),
+        customer_balance: creditResult.rowCount ? numeric(creditResult.rows[0]?.balance_after) : null,
+        replayed: true,
+      }
     }
-    if (paidAmount > 0 && (input.refund_prepayment || input.keep_as_credit)) {
+    if (paidAmount > 0 && input.refund_prepayment) {
       throw new AppError(
         'FINANCIAL_CANCEL_IN_POS_ONLY',
-        'Оплачене замовлення можна скасувати без зміни оплати. Повернення або зарахування на рахунок проведіть через касу.',
+        'Менеджер скасовує замовлення із зарахуванням оплати на рахунок клієнта. Фактичну видачу грошей потім проводить касир.',
         409,
       )
+    }
+
+    let customerBalance: number | null = null
+    let creditedAmount = 0
+    if (paidAmount > 0) {
+      const customerId = String(order.customer_id ?? '')
+      if (!customerId) {
+        throw new AppError(
+          'ORDER_CUSTOMER_REQUIRED_FOR_CREDIT',
+          'До оплаченого замовлення не прив’язаний клієнт. Спочатку виберіть клієнта в замовленні.',
+          422,
+        )
+      }
+      const existingCredit = await client.query(
+        `SELECT amount, balance_after
+         FROM customer_deposit_transactions
+         WHERE id = $1 AND tenant_id = $2
+         LIMIT 1`,
+        [input.order_id, input.tenant_id],
+      )
+      if (existingCredit.rowCount) {
+        creditedAmount = numeric(existingCredit.rows[0].amount)
+        customerBalance = numeric(existingCredit.rows[0].balance_after)
+      } else {
+        const customerResult = await client.query(
+          `SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance
+           FROM customers
+           WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+           LIMIT 1 FOR UPDATE`,
+          [customerId, input.tenant_id],
+        )
+        if (!customerResult.rowCount) {
+          throw new AppError('ORDER_CUSTOMER_NOT_FOUND', 'Клієнта замовлення не знайдено', 404)
+        }
+        customerBalance = numeric(customerResult.rows[0].deposit_balance) + paidAmount
+        await client.query(
+          `UPDATE customers
+           SET deposit_balance = $3, updated_at = $4
+           WHERE id = $1 AND tenant_id = $2`,
+          [customerId, input.tenant_id, customerBalance, createdAt],
+        )
+        await client.query(
+          `INSERT INTO customer_deposit_transactions (
+             id, tenant_id, customer_id, amount, balance_after, method, order_id,
+             notes, created_by, created_at, updated_at
+           ) VALUES ($1, $2, $3, $4, $5, 'account', $1, $6, $7, $8, $8)`,
+          [
+            input.order_id,
+            input.tenant_id,
+            customerId,
+            paidAmount,
+            customerBalance,
+            `Скасування замовлення №${String(order.order_number ?? input.order_id)}`,
+            input.user_id,
+            createdAt,
+          ],
+        )
+        creditedAmount = paidAmount
+      }
     }
 
     const reason = String(input.reason ?? '').trim()
@@ -115,9 +191,10 @@ export async function cancelOrderSafely(input: CancelOrderInput): Promise<Cancel
         input.user_id,
         JSON.stringify({
           refund_prepayment: false,
-          keep_as_credit: false,
+          keep_as_credit: creditedAmount > 0,
           reason: input.reason ?? null,
-          amount_preserved: paidAmount,
+          credited_amount: creditedAmount,
+          customer_balance: customerBalance,
         }),
         createdAt,
       ],
@@ -127,6 +204,8 @@ export async function cancelOrderSafely(input: CancelOrderInput): Promise<Cancel
       order_before: order,
       order_after: updateResult.rows[0] as Record<string, unknown>,
       paid_amount: paidAmount,
+      credited_amount: creditedAmount,
+      customer_balance: customerBalance,
       replayed: false,
     }
   })

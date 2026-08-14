@@ -12,7 +12,9 @@ import { OrderConfirmModal } from './OrderConfirmModal'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { parseProductsWorkbook, type ExcelImportProduct } from './excelProductImport'
+import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
 function ChangesTable({ changes }: { changes: AiActionChange[] }) {
@@ -233,12 +235,18 @@ async function fileToCompressedImage(file: File): Promise<{ name: string; dataUr
   }
 }
 
-function dataUrlToChatImage(dataUrl: string): AiChatImage {
-  const [, base64] = dataUrl.split(',', 2)
-  return { mime_type: 'image/jpeg', data_base64: base64 ?? '' }
+async function recognizeVinImage(dataUrl: string): Promise<{ data: { vin: string } }> {
+  const uploaded = await uploadProcessingBlob(dataUrlToBlob(dataUrl), 'vin')
+  try {
+    return await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', {
+      storage_path: uploaded.path,
+    })
+  } finally {
+    await removeProcessingUploads([uploaded.path]).catch(() => {})
+  }
 }
 
-export default function AiAssistantPage() {
+export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?: boolean }) {
   const navigate = useNavigate()
   const role = useAuthStore((state) => state.session?.user.app_metadata?.role as string | undefined)
   const canConfigure = role === 'owner' || role === 'admin'
@@ -261,6 +269,8 @@ export default function AiAssistantPage() {
   const [recognizedVin, setRecognizedVin] = useState('')
   const [recognizingVin, setRecognizingVin] = useState(false)
   const [sendingProgress, setSendingProgress] = useState('')
+  // Окремий режим для касира: фото накладної завжди готує чернетку приходу.
+  const [localInvoiceMode, setLocalInvoiceMode] = useState(invoiceOnly)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -318,6 +328,18 @@ export default function AiAssistantPage() {
           return
         }
         const img = await fileToCompressedImage(file)
+        if (!localInvoiceMode) {
+          try {
+            const { data } = await recognizeVinImage(img.dataUrl)
+            if (data.vin) {
+              setRecognizedVin(data.vin)
+              toast.success(`VIN розпізнано: ${data.vin}`)
+              return
+            }
+          } catch {
+            // Фото без VIN — передаємо його AI-помічнику як звичайне вкладення.
+          }
+        }
         setImageAttachments((prev) => [...prev, img])
         toast.success(`Фото «${file.name}» прикріплено`)
         return
@@ -357,14 +379,22 @@ export default function AiAssistantPage() {
     }
     setEntries((prev) => [...prev, userEntry])
     const fileParts = attachment?.parts ?? []
-    const images = imageAttachments.length > 0 ? imageAttachments.map((img) => dataUrlToChatImage(img.dataUrl)) : undefined
-    const fallbackPrompt = images
-      ? 'Ось фото замовлення з зошита — додай замовлення в програму.'
+    const hasImages = imageAttachments.length > 0
+    const fallbackPrompt = hasImages
+      ? (localInvoiceMode
+        ? 'Ось фото накладної постачальника. Розпізнай усі рядки товарів і підготуй create_products_bulk: назва товару, бренд, артикул, штрихкод якщо є, кількість, закупівельна ціна в грн, ціна продажу в грн. Не створюй замовлення клієнта.'
+        : 'Ось фото замовлення з зошита — додай замовлення в програму.')
       : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Назви товарів і папок не перекладай та не виправляй.'
     setInput('')
 
     if (attachment?.products?.length) {
-      const actions = buildExcelImportActions(attachment.products)
+      const actions = localInvoiceMode
+        ? buildExcelImportActions(attachment.products).map((action) => ({
+          ...action,
+          tool: 'create_supply_invoice_bulk',
+          title: action.title.replace(/товари/gi, 'чернетку приходу'),
+        }))
+        : buildExcelImportActions(attachment.products)
       const skippedText = attachment.skippedRows
         ? ` ${attachment.skippedRows} непорожніх рядків без назви пропущено.`
         : ''
@@ -378,9 +408,22 @@ export default function AiAssistantPage() {
     }
 
     setSending(true)
+    const uploadedPaths: string[] = []
 
     try {
       const responses = []
+      let images: AiChatImage[] | undefined
+      if (hasImages) {
+        images = []
+        for (const image of imageAttachments) {
+          const uploaded = await uploadProcessingBlob(dataUrlToBlob(image.dataUrl), 'ai')
+          uploadedPaths.push(uploaded.path)
+          images.push({
+            mime_type: uploaded.mimeType as AiChatImage['mime_type'],
+            storage_path: uploaded.path,
+          })
+        }
+      }
       const partsToSend = fileParts.length > 0 ? fileParts : [undefined]
       let failedAt = -1
       let failureMessage = ''
@@ -406,7 +449,12 @@ export default function AiAssistantPage() {
 
       if (responses.length === 0 && failedAt >= 0) throw new Error(failureMessage)
 
-      const actions = responses.flatMap((response) => response.actions)
+      let actions = responses.flatMap((response) => response.actions)
+      if (localInvoiceMode) {
+        actions = actions.map((action) => action.tool === 'create_products_bulk'
+          ? { ...action, tool: 'create_supply_invoice_bulk', title: action.title.replace(/товари/gi, 'чернетку приходу') }
+          : action)
+      }
       const cost = responses.reduce((sum, response) => sum + response.usage.cost_usd, 0)
       const completedAllParts = failedAt < 0
       const reply = completedAllParts
@@ -440,12 +488,35 @@ export default function AiAssistantPage() {
     } finally {
       setSendingProgress('')
       setSending(false)
+      await removeProcessingUploads(uploadedPaths).catch(() => {})
     }
   }
 
   async function applyAction(action: AiPendingAction, payloadOverride?: Record<string, any>) {
     setApplyingId(action.id)
     try {
+      if (action.tool === 'create_supply_invoice_bulk') {
+        const createLocalInvoice = desktopBridge()?.supply?.createInvoiceFromAi
+        if (!createLocalInvoice) throw new Error('Локальна база недоступна — відкрийте програму Форсаж')
+        const payload = payloadOverride ?? action.payload
+        const result = await createLocalInvoice({
+          supplier_id: payload.supplier_id ?? null,
+          supplier_name: payload.supplier_name ?? null,
+          invoice_number: payload.invoice_number ?? null,
+          notes: payload.notes ?? null,
+          rows: Array.isArray(payload.products) ? payload.products : [],
+        })
+        const unresolvedText = result.unresolved.length > 0
+          ? ` Нових товарів без штрихкоду/папки: ${result.unresolved.length}.`
+          : ''
+        const msg = `Чернетку приходу створено: ${result.matched} товарів знайдено, ${result.created} додано.${unresolvedText}`
+        setApplyMsg((prev) => ({ ...prev, [action.id]: msg }))
+        setApplyStatus((prev) => ({ ...prev, [action.id]: result.unresolved.length ? 'warn' : 'ok' }))
+        setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
+        toast.success(msg)
+        if (result.invoice?.id) navigate(`/suppliers/invoices/${result.invoice.id}/edit`)
+        return
+      }
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload })
       const r = data.result
       if (['create_products_bulk', 'update_products_bulk', 'merge_products_bulk'].includes(action.tool)) {
@@ -529,10 +600,7 @@ export default function AiAssistantPage() {
     setRecognizingVin(true)
     try {
       const compressed = await fileToCompressedImage(image)
-      const { data } = await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', {
-        image: compressed.dataUrl,
-        mimeType: 'image/jpeg',
-      })
+      const { data } = await recognizeVinImage(compressed.dataUrl)
       setRecognizedVin(data.vin)
       toast.success(`VIN розпізнано: ${data.vin}`)
     } catch {
@@ -546,7 +614,7 @@ export default function AiAssistantPage() {
   const notConfigured = !loadingStatus && status && (!status.has_key || !status.enabled)
 
   return (
-    <Layout title="Допомога АІ">
+    <Layout title={invoiceOnly ? "Створення накладної з фото (AI)" : "Допомога АІ"}>
       <div
         className="max-w-3xl mx-auto flex flex-col relative"
         style={{ height: 'calc(100vh - 140px)' }}
@@ -555,6 +623,18 @@ export default function AiAssistantPage() {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {invoiceOnly && (
+          <Card className="mb-3 border-purple-200 bg-purple-50/70">
+            <div className="flex items-start gap-3">
+              <Sparkles size={18} className="text-purple-600 mt-0.5 shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-purple-900">Фото накладної постачальника</p>
+                <p className="text-xs text-purple-700 mt-0.5">Додайте одне або кілька фото. AI розпізнає рядки, знайде існуючі товари та створить чернетку приходу для перевірки.</p>
+              </div>
+            </div>
+          </Card>
+        )}
+
         {/* Оверлей при перетягуванні файлу */}
         {dragOver && (
           <div className="absolute inset-0 z-30 rounded-2xl border-2 border-dashed border-purple-400 bg-purple-50/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 pointer-events-none">
@@ -792,6 +872,16 @@ export default function AiAssistantPage() {
                 if (fileRef.current) fileRef.current.value = ''
               }}
             />
+            {isDesktopRuntime() && !invoiceOnly && (
+              <button
+                type="button"
+                onClick={() => setLocalInvoiceMode((value) => !value)}
+                className={`px-2 py-1.5 rounded-lg text-[11px] font-medium border transition-colors shrink-0 ${localInvoiceMode ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                title="Фото накладної постачальника: створити локальний чернетковий прихід"
+              >
+                {localInvoiceMode ? 'Фото накладної увімкнено' : 'Фото накладної'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => fileRef.current?.click()}

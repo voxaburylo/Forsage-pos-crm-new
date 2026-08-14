@@ -35,10 +35,13 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:supply:list-invoices', RECEIVING_ROLES],
   ['desktop:supply:get-invoice', RECEIVING_ROLES],
   ['desktop:supply:create-invoice', RECEIVING_ROLES],
+  ['desktop:supply:create-invoice-from-ai', RECEIVING_ROLES],
   ['desktop:supply:update-invoice', RECEIVING_ROLES],
   ['desktop:supply:post-invoice', RECEIVING_ROLES],
+  ['desktop:supply:pay-invoice', RECEIVING_ROLES],
   ['desktop:supply:delete-invoice', RECEIVING_ROLES],
   ['desktop:pos:reconcile', OWNER_ROLES],
+  ['desktop:pos:payout-customer-deposit', ['owner', 'admin', 'cashier']],
   ['desktop:fiscal:set-config', OWNER_ROLES],
   ['desktop:fiscal:register-com', OWNER_ROLES],
 ])

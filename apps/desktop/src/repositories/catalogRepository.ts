@@ -981,7 +981,7 @@ export class LocalCatalogRepository {
       shop_address: null,
       phone: null,
       max_discount_pct: 100,
-      allow_negative_qty: true,
+      allow_negative_qty: false,
       return_days: 14,
       currency: 'UAH',
       default_debt_limit_kopecks: 0,

@@ -1349,7 +1349,7 @@ router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req,
       await auditOrder(req, 'order_canceled', String(req.params.id), result.order_before, result.order_after)
       notifyStatusUpdate(String(req.params.id), 'canceled', req.user!.tenant_id).catch(() => {})
     }
-    res.json({ data: { success: true, payment_preserved: result.paid_amount, replayed: result.replayed } })
+    res.json({ data: { success: true, credited_amount: result.credited_amount, customer_balance: result.customer_balance, replayed: result.replayed } })
   } catch (err) { next(err) }
 })
 

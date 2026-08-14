@@ -270,19 +270,24 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated, 
                             Борг: {(c.debt_balance / 100).toFixed(2)} грн
                           </p>
                         )}
+                        {(c.deposit_balance ?? 0) > 0 && (
+                          <p className="mt-0.5 text-xs text-emerald-600">
+                            Рахунок: {((c.deposit_balance ?? 0) / 100).toFixed(2)} грн
+                          </p>
+                        )}
                       </div>
                     </div>
                   </button>
-                  {((onEdit && !offline) || (onPayDebt && c.debt_balance > 0)) && (
+                  {((onEdit && !offline) || onPayDebt) && (
                     <div className="flex shrink-0 border-l border-gray-100">
-                      {onPayDebt && c.debt_balance > 0 && (
+                      {onPayDebt && (
                         <button
                           type="button"
                           onClick={() => onPayDebt(c)}
-                          className="border-r border-gray-100 px-3 text-xs font-bold text-red-600 hover:bg-red-50"
-                          title="Прийняти повну або часткову оплату боргу"
+                          className="border-r border-gray-100 px-3 text-xs font-bold text-yellow-700 hover:bg-yellow-50"
+                          title="Борг, поповнення або видача коштів клієнту"
                         >
-                          Сплатити борг
+                          Гроші
                         </button>
                       )}
                       {onEdit && !offline && (

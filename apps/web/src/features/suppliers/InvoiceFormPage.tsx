@@ -639,6 +639,8 @@ export default function InvoiceFormPage() {
   }, [cloneId, freshToken, id, isEdit, resumeDraftKey])
   const invoiceDraftReadyRef = useRef(false)
   const invoiceSubmitRef = useRef(false)
+  // Одноразовый флаг для кнопки «Сохранить и закрыть».
+  const postOnSaveRef = useRef(false)
   const invoiceDraftPersistenceDisabledRef = useRef(false)
   const serverDraftIdRef = useRef<string | null>(isEdit && id ? id : null)
 
@@ -1912,6 +1914,7 @@ export default function InvoiceFormPage() {
           })
         }
       }
+      const shouldPost = postOnSaveRef.current || postImmediately
       const existingDraftId = isEdit ? id! : serverDraftIdRef.current
       if (existingDraftId) {
         const updated = await supplierApi.updateInvoice(existingDraftId, { ...body, draft_payload: null })
@@ -1921,7 +1924,7 @@ export default function InvoiceFormPage() {
           await recordInitialPayments(invoiceId)
         }
 
-        if (!isEdit && postImmediately) {
+        if (shouldPost) {
           try {
             await supplierApi.postInvoice(invoiceId)
             toast.success('Накладну створено і проведено — залишки оновлено')
@@ -1945,7 +1948,7 @@ export default function InvoiceFormPage() {
         }
 
         // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
-        if (postImmediately && created?.data?.id) {
+        if (shouldPost && created?.data?.id) {
           try {
             await supplierApi.postInvoice(created.data.id)
             toast.success('Накладну створено і проведено — залишки оновлено')
@@ -1970,8 +1973,17 @@ export default function InvoiceFormPage() {
       }
     } finally {
       invoiceSubmitRef.current = false
+      postOnSaveRef.current = false
       setSaving(false)
     }
+  }
+
+  function saveAndPostInvoice() {
+    if (saving) return
+    postOnSaveRef.current = true
+    setPostImmediately(true)
+    const form = document.querySelector('form[data-supply-invoice-form="true"]') as HTMLFormElement | null
+    form?.requestSubmit()
   }
 
   function closeInvoiceForm() {
@@ -2003,7 +2015,7 @@ export default function InvoiceFormPage() {
       title={isEdit ? 'Редагувати накладну' : 'Нова приходна накладна'}
       onBack={closeInvoiceForm}
     >
-      <form onSubmit={handleSubmit}>
+      <form data-supply-invoice-form="true" onSubmit={handleSubmit}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <Card>
             <div className="space-y-4">
@@ -2702,6 +2714,11 @@ export default function InvoiceFormPage() {
           <Button type="submit" disabled={saving}>
             {saving ? 'Збереження...' : isEdit ? 'Оновити' : postImmediately ? 'Створити і провести' : 'Створити чернетку'}
           </Button>
+          {isEdit && (
+            <Button type="button" onClick={saveAndPostInvoice} disabled={saving} className="bg-green-600 hover:bg-green-700 text-white">
+              {saving ? 'Збереження...' : 'Зберегти і закрити накладну'}
+            </Button>
+          )}
           <Button type="button" variant="outline" onClick={() => void cancelInvoiceForm()}>Скасувати</Button>
           {!isEdit && (
             <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-1">

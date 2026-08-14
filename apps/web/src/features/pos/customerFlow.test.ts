@@ -11,10 +11,12 @@ describe('unified POS customer flow', () => {
     expect(posSource).toContain('onPayDebt={(c) =>')
   })
 
-  it('offers debt payment directly beside a matching customer', () => {
-    expect(customerSource).toContain('c.debt_balance > 0')
-    expect(customerSource).toContain('Сплатити борг')
+  it('offers one customer-money action for debt, top-up and payout', () => {
+    expect(customerSource).toContain('title="Борг, поповнення або видача коштів клієнту"')
+    expect(customerSource).toContain('Гроші')
     expect(customerSource).toContain('onPayDebt(c)')
+    expect(debtSource).toContain("{ id: 'payout', label: 'Видати' }")
+    expect(debtSource).toContain('posCustomerMoneyApi.payOutDeposit')
   })
 
   it('opens debt payment with the customer already selected', () => {

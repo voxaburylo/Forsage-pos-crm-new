@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Rnd } from 'react-rnd'
+import { useState, useEffect, useCallback, useRef, type ComponentType } from 'react'
+import { Rnd, type Props as RndProps } from 'react-rnd'
 import { Save, Printer, Plus, Trash2, Copy, Settings, Tag, Move, FileText, Loader2 } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import { productApi } from '@/features/products/productApi'
@@ -14,6 +14,8 @@ import { renderBarcodePrintSvg, renderBarcodeSvg } from '@/lib/barcodeSvg'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { loadTsplSettings, saveTsplSettings, pickLabelPrinter, type TsplLabelPrintSettings } from './tsplPrintSettings'
+const CompatibleRnd = Rnd as unknown as ComponentType<RndProps>
+
 
 type Tab = 'design' | 'print'
 
@@ -744,7 +746,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
         {items.map((item) => {
           const pos = item.defaultPos || { x: 5, y: 5 }
           return (
-            <Rnd
+            <CompatibleRnd
               key={item.key}
               position={{ x: Math.round(innerW * pos.x / 100), y: Math.round(innerH * pos.y / 100) }}
               size={item.dragBox}
@@ -760,7 +762,7 @@ export function LabelPreview({ settings, product, binLabel, onPosChange }:
               <div className="relative group cursor-move select-none" style={{ display: 'inline-block', lineHeight: 1 }}>
                 {item.children}
               </div>
-            </Rnd>
+            </CompatibleRnd>
           )
         })}
       </div>

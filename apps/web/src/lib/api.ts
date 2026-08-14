@@ -1,6 +1,5 @@
 import { isDesktopRuntime } from './desktopBridge'
-
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
+import { API_BASE_URL } from './apiBaseUrl'
 
 export interface RequestOptions extends Omit<RequestInit, 'headers'> {
   headers?: Record<string, string>
@@ -56,7 +55,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
 
   let res: Response
   try {
-    res = await fetch(`${API_URL}${path}`, {
+    res = await fetch(`${API_BASE_URL}${path}`, {
       ...fetchOptions,
       signal: controller ? controller.signal : fetchOptions.signal,
       headers: {

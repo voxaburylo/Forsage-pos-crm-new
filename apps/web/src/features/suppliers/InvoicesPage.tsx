@@ -92,7 +92,7 @@ export default function InvoicesPage() {
       onBack={() => navigate('/receiving')}
       actions={
         <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new?fresh=' + Date.now())}>
-          Накладна
+          + Приходна накладна
         </Button>
       }
     >

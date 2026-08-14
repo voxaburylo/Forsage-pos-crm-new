@@ -1,4 +1,5 @@
 import { request } from '@/lib/api'
+import { removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { mirrorProductToDesktop, productApi, requestDesktopSync } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -127,15 +128,22 @@ function mappedRowsToServerFile(filename: string, rows: SupplierImportRow[]): Fi
 }
 
 async function uploadServerFile(file: File, options: SupplierImportRowsOptions) {
-  const query = new URLSearchParams()
-  if (options.supplierId) query.append('supplier_id', options.supplierId)
-  query.append('mode', options.mode)
-  if (options.warehouseName) query.append('warehouse_name', options.warehouseName)
-  return request<{ success: boolean; importId: string }>('/api/v1/supplier-imports/upload?' + query.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/csv', 'X-Filename': encodeURIComponent(file.name) },
-    body: file,
-  })
+  const uploaded = await uploadProcessingBlob(file, 'supplier-import')
+  try {
+    return await request<{ success: boolean; importId: string }>('/api/v1/supplier-imports/upload-from-storage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storage_path: uploaded.path,
+        filename: file.name,
+        supplier_id: options.supplierId,
+        mode: options.mode,
+        warehouse_name: options.warehouseName,
+      }),
+    })
+  } finally {
+    await removeProcessingUploads([uploaded.path]).catch(() => {})
+  }
 }
 
 async function uploadLocalRows(filename: string, rows: SupplierImportRow[], options: SupplierImportRowsOptions) {

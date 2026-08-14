@@ -420,6 +420,91 @@ export async function topUpDeposit(
   })
 }
 
+
+export async function payOutDeposit(
+  customerId: string,
+  input: { payout_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; notes?: string | null },
+  userId: string,
+  tenantId: string,
+) {
+  return runTransaction(async (client) => {
+    const existing = await client.query(
+      `SELECT tenant_id, customer_id, amount, balance_after
+       FROM customer_deposit_transactions
+       WHERE id = $1
+       LIMIT 1`,
+      [input.payout_id],
+    )
+    if (existing.rowCount) {
+      const transaction = existing.rows[0]
+      if (transaction.tenant_id !== tenantId || transaction.customer_id !== customerId || Number(transaction.amount) !== -input.amount) {
+        throw new AppError('DEPOSIT_PAYOUT_ID_CONFLICT', 'Ідентифікатор виплати вже використано іншою операцією', 409)
+      }
+      return { balance: Number(transaction.balance_after ?? 0), replayed: true }
+    }
+
+    const customerResult = await client.query(
+      `SELECT id, full_name, phone, COALESCE(deposit_balance, 0) AS deposit_balance
+       FROM customers
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [customerId, tenantId],
+    )
+    if (!customerResult.rowCount) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
+    const customer = customerResult.rows[0]
+    const currentBalance = Number(customer.deposit_balance ?? 0)
+    if (input.amount > currentBalance) {
+      throw new AppError('INSUFFICIENT_DEPOSIT', 'Сума видачі перевищує кошти на рахунку клієнта', 422)
+    }
+    if (input.method === 'cash') {
+      if (!input.shift_id) throw new AppError('SHIFT_REQUIRED', 'Для видачі готівки потрібна відкрита касова зміна', 422)
+      const shift = await client.query(
+        `SELECT id FROM shifts
+         WHERE id = $1 AND tenant_id = $2 AND status = 'open'
+         LIMIT 1 FOR UPDATE`,
+        [input.shift_id, tenantId],
+      )
+      if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+    }
+
+    const balance = currentBalance - input.amount
+    const note = input.notes?.trim() || 'Видача коштів з рахунку клієнта'
+    await client.query(
+      'UPDATE customers SET deposit_balance = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
+      [customerId, tenantId, balance],
+    )
+    await client.query(
+      `INSERT INTO customer_deposit_transactions (
+         id, tenant_id, customer_id, amount, balance_after, method, shift_id,
+         notes, created_by, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`,
+      [input.payout_id, tenantId, customerId, -input.amount, balance, input.method, input.shift_id ?? null, note, userId],
+    )
+    if (input.method === 'cash') {
+      await client.query(
+        `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, source)
+         VALUES ($1, $2, $3, 'out', $4, $5, $6, 'cashbox')`,
+        [input.payout_id, tenantId, input.shift_id, input.amount,
+          `${note}: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`, userId],
+      )
+    }
+    await client.query(
+      `INSERT INTO audit_log (
+         tenant_id, user_id, user_name, action, entity_type, entity_id,
+         entity_label, old_value, new_value, note
+       ) SELECT $1, $2,
+           COALESCE((SELECT raw_user_meta_data->>'full_name' FROM auth.users WHERE id = $2), 'Користувач'),
+           'DEPOSIT_PAYOUT', 'customers', $3, $4, $5::jsonb, $6::jsonb, $7`,
+      [
+        tenantId, userId, customerId, customer.full_name ?? customer.phone ?? customerId.slice(0, 8),
+        JSON.stringify({ deposit_balance: currentBalance }),
+        JSON.stringify({ deposit_balance: balance }),
+        `Видано з рахунку: ${(input.amount / 100).toFixed(2)} грн (${input.method})`,
+      ],
+    )
+    return { balance, replayed: false }
+  })
+}
 // ===================== VEHICLES =====================
 // Єдине джерело правди — customer_cars («Гараж»): туди пишуть Telegram-бот,
 // AI-імпорт і роут /customer-cars. Раніше тут була ПАРАЛЕЛЬНА таблиця

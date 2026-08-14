@@ -6,9 +6,10 @@ import { warehouseApi } from '@/features/inventory/warehouseApi'
 import { useAuthStore } from '@/stores/authStore'
 import type { Sale } from '@/types/sale'
 import type { SalesSummary, SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
+import { businessDateKey } from '@/lib/businessDate'
 
 function localDate(value: string | Date): string {
-  return new Date(value).toLocaleDateString('sv-SE')
+  return businessDateKey(value)
 }
 
 function today(): string {
@@ -182,17 +183,18 @@ if (desktopBridge()) {
     return api.get<{ data: { count: number; total_cost: number; writeoffs: Array<{ id: string; reason: string; created_at: string; items: Array<{ cost_kopecks: number }> }> } }>('/api/v1/reports/writeoffs/summary')
   },
 
-  soldItems: async (date: string) => {
+  soldItems: async (from: string, to: string = from) => {
     if (desktopBridge()) {
-      const rows = salesInRange(await localSales(), date, date)
+      const rows = salesInRange(await localSales(), from, to)
       const grouped = new Map<string, any>()
       for (const sale of rows) {
         for (const item of sale.sale_items ?? []) {
           if (!item.product_id || !item.product) continue
           const current = grouped.get(item.product_id) ?? {
             product_id: item.product_id, sku: item.product.sku, name: item.product.name,
+            barcode: item.product.barcode ?? null,
             unit: item.product.unit, qty_sold: 0, revenue: 0,
-            qty_on_hand: Number(item.product.qty_on_hand ?? 0), storage_bin: null,
+            qty_on_hand: Number(item.product.qty_on_hand ?? 0), storage_bin: item.product.storage_bin ?? null,
           }
           current.qty_sold += Number(item.qty)
           current.revenue += Number(item.total)
@@ -202,7 +204,8 @@ if (desktopBridge()) {
       }
       return { data: [...grouped.values()].sort((a, b) => b.qty_sold - a.qty_sold) }
     }
-    return api.get<{ data: any[] }>(`/api/v1/reports/sold-items?date=${date}`, { silent: true })
+    const params = new URLSearchParams({ from, to })
+    return api.get<{ data: any[] }>(`/api/v1/reports/sold-items?${params.toString()}`, { silent: true })
   },
 
   dailyControl: async () => {

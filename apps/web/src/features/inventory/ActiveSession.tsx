@@ -196,7 +196,10 @@ export default function ActiveSession() {
   const { id } = useParams<{ id: string }>()
   const authSession = useAuthStore((state) => state.session)
   const role = (authSession?.user?.app_metadata?.role as string) ?? 'cashier'
-  const canComplete = ['owner', 'admin'].includes(role)
+  // Завершення ревізії дозволено власнику, адміністратору та касиру.
+  // Сервер і локальний IPC мають ті самі права; не залишаємо касира
+  // учасником без кнопки завершення.
+  const canComplete = ['owner', 'admin', 'cashier'].includes(role)
   const desktopRuntime = Boolean(desktopBridge())
 
   const [session, setSession] = useState<SessionData | null>(null)
@@ -241,7 +244,8 @@ export default function ActiveSession() {
   const inputRef = useRef<HTMLInputElement>(null)
   const pendingRowWritesRef = useRef(0)
   // Редагування цін товару прямо в сесії (без окремого вікна)
-  const canEditPrice = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
+  // Касир також має право виправляти закупівельну та роздрібну ціну під час ревізії. Всі шляхи (web, IPC, сервер) це дозволяють.
+  const canEditPrice = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
   const [editRetail, setEditRetail] = useState('')
   const [editPurchase, setEditPurchase] = useState('')
   const [savingPrice, setSavingPrice] = useState(false)
@@ -1592,7 +1596,7 @@ export default function ActiveSession() {
           </div>
         )}
         {isActive && !canComplete && (
-          <p className="text-center text-xs text-gray-500">Завершує ревізію власник або адміністратор.</p>
+          <p className="text-center text-xs text-gray-500">Завершує ревізію власник, адміністратор або касир.</p>
         )}
       </div>
 

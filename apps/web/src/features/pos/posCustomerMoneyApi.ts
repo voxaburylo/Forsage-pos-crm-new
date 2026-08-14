@@ -82,4 +82,18 @@ export const posCustomerMoneyApi = {
       timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS,
     })
   },
+
+  payOutDeposit: async (customerId: string, body: { payout_id?: string; amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
+    const payload = { ...body, payout_id: body.payout_id ?? crypto.randomUUID() }
+    const local = localPos()
+    if (local?.payOutCustomerDeposit) {
+      const result = await local.payOutCustomerDeposit({ ...payload, customer_id: customerId, user_id: userId() })
+      requestDesktopSync()
+      return result
+    }
+    return api.post<{ data: { balance: number; replayed: boolean } }>(`/api/v1/customers/${customerId}/deposit/payout`, payload, undefined, {
+      silent: opts.silent ?? true,
+      timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS,
+    })
+  },
 }

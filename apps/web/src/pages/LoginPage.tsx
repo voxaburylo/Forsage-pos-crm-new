@@ -5,6 +5,7 @@ import { signIn } from '@/lib/auth'
 import { homePathForRole } from '@/components/ProtectedRoute'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 
+import { API_BASE_URL } from '@/lib/apiBaseUrl'
 const PHONE_REGEX = /^\+?380\d{9}$/
 
 function normalizePhone(value: string): string {
@@ -14,8 +15,6 @@ function normalizePhone(value: string): string {
   if (digits.startsWith('0')) return `+38${digits}`
   return value
 }
-
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -41,7 +40,7 @@ export default function LoginPage() {
   // У desktop вхід іде через локальну базу; сервер будити не потрібно.
   useEffect(() => {
     if (isDesktopRuntime()) return
-    fetch(`${API_URL}/api/v1/health`, { signal: AbortSignal.timeout(30000) }).catch(() => {})
+    fetch(`${API_BASE_URL}/api/v1/health`, { signal: AbortSignal.timeout(30000) }).catch(() => {})
   }, [])
 
   useEffect(() => {

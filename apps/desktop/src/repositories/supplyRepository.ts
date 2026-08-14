@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
+import { LocalCatalogRepository } from './catalogRepository'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -286,6 +287,121 @@ export class LocalSupplyRepository {
     return invoice
   }
 
+  /**
+   * Створює локальну чернетку приходу з розпізнаних AI-рядків.
+   * Існуючі картки шукаються за штрихкодом, артикулом або точною назвою;
+   * нові картки створюються без штрихкоду й категорії для ручного заповнення.
+   */
+  createInvoiceFromAiRows(input: {
+    tenant_id?: string
+    supplier_id?: string | null
+    supplier_name?: string | null
+    invoice_number?: string | null
+    notes?: string | null
+    rows: Array<Record<string, unknown>>
+  }): { invoice: any; matched: number; created: number; unresolved: Array<{ name: string; sku: string; needs_barcode: true }> } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    if (!Array.isArray(input.rows) || input.rows.length === 0) throw new Error('AI не знайшов позицій у накладній')
+    const catalog = new LocalCatalogRepository(this.db)
+    const normalize = (value: unknown) => String(value ?? '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+    const moneyUah = (value: unknown) => {
+      const normalized = typeof value === 'string'
+        ? value.replace(/\s/g, '').replace(',', '.')
+        : value
+      const number = Number(normalized ?? 0)
+      return Number.isFinite(number) ? Math.max(0, Math.round(number * 100)) : 0
+    }
+    let supplierId = input.supplier_id ?? null
+    if (!supplierId && input.supplier_name?.trim()) {
+      const supplier = this.db.prepare(`
+        SELECT id FROM suppliers
+        WHERE tenant_id = ? AND deleted_at IS NULL AND lower(trim(name)) = lower(trim(?))
+        LIMIT 1
+      `).get(tenantId, input.supplier_name.trim()) as { id: string } | undefined
+      supplierId = supplier?.id ?? null
+    }
+    let matched = 0
+    let created = 0
+    const unresolved: Array<{ name: string; sku: string; needs_barcode: true }> = []
+    const items: SupplyInvoiceItemInput[] = []
+
+    const invoice = this.db.transaction(() => {
+      for (const raw of input.rows) {
+        const name = String(raw.name ?? raw.title ?? raw.description ?? '').trim()
+        if (!name) continue
+        const sku = String(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number ?? '').trim()
+        const barcode = String(raw.barcode ?? raw.ean ?? '').trim()
+        const qtyValue = Number(raw.qty ?? raw.quantity ?? raw.qty_on_hand ?? 1)
+        const rowQty = Number.isFinite(qtyValue) && qtyValue > 0 ? qtyValue : 1
+        const purchasePrice = moneyUah(raw.purchase_price_uah ?? raw.purchase_price ?? raw.cost_price)
+        const retailPrice = moneyUah(raw.retail_price_uah ?? raw.retail_price ?? raw.sell_price_uah)
+
+        let product = barcode ? catalog.findByBarcode(barcode, tenantId) : null
+        if (!product && sku) product = catalog.findBySku(sku, tenantId)
+        if (!product) {
+          const wantedName = normalize(name)
+          const row = this.db.prepare(`
+            SELECT id FROM products
+            WHERE tenant_id = ? AND deleted_at IS NULL AND lower(trim(name)) = lower(trim(?))
+            LIMIT 1
+          `).get(tenantId, name) as { id: string } | undefined
+          product = row ? catalog.findById(row.id, tenantId) : null
+          if (!product && wantedName) {
+            const candidates = this.db.prepare(`
+              SELECT id, name FROM products
+              WHERE tenant_id = ? AND deleted_at IS NULL
+            `).all(tenantId) as Array<{ id: string; name: string }>
+            const exact = candidates.find((candidate) => normalize(candidate.name) === wantedName)
+            if (exact) product = catalog.findById(exact.id, tenantId)
+          }
+        }
+
+        if (!product) {
+          const productId = randomUUID()
+          const productSku = sku || `AI-${productId.slice(0, 8).toUpperCase()}`
+          const brandName = String(raw.brand_name ?? raw.brand ?? '').trim()
+          let brandId: string | null = null
+          if (brandName) {
+            const storedBrand = this.db.prepare(`
+              SELECT id FROM brands
+              WHERE tenant_id = ? AND deleted_at IS NULL AND lower(trim(name)) = lower(trim(?))
+              LIMIT 1
+            `).get(tenantId, brandName) as { id: string } | undefined
+            brandId = storedBrand?.id ?? catalog.createBrand(brandName, null, tenantId).id
+          }
+          product = catalog.saveProduct({
+            id: productId,
+            tenant_id: tenantId,
+            sku: productSku,
+            name,
+            barcode: null,
+            purchase_price: purchasePrice,
+            retail_price: retailPrice,
+            qty_on_hand: 0,
+            unit: String(raw.unit ?? 'шт'),
+            is_active: true,
+            is_service: false,
+            category_id: null,
+            brand_id: brandId,
+          })
+          created++
+          unresolved.push({ name, sku: productSku, needs_barcode: true })
+        } else {
+          matched++
+        }
+        items.push({ product_id: product.id, qty: rowQty, purchase_price: purchasePrice })
+      }
+      if (items.length === 0) throw new Error('AI не знайшов позицій у накладній')
+      return this.createInvoice({
+        tenant_id: tenantId,
+        supplier_id: supplierId,
+        invoice_number: input.invoice_number ?? null,
+        notes: input.notes ?? 'Створено з фото накладної через AI. Перевірте нові товари, штрихкоди та папки.',
+        items,
+      })
+    })
+    return { invoice, matched, created, unresolved }
+  }
   createInvoice(input: CreateSupplyInvoiceInput): any {
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new Error('Додайте хоча б один товар у накладну')

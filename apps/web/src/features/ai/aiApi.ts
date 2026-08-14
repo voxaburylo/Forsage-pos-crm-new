@@ -45,7 +45,7 @@ export interface AiPendingAction {
 
 export interface AiChatImage {
   mime_type: 'image/jpeg' | 'image/png' | 'image/webp'
-  data_base64: string
+  storage_path: string
 }
 
 export interface AiApplyResult {

@@ -204,23 +204,14 @@ export default function OrderDetailPage() {
     navigate(`/pos?order=${encodeURIComponent(search)}`)
   }
 
-  async function handleCancel(refund: boolean) {
-    if (!id || !order) return
-    setCanceling(true)
-    try {
-      await orderApi.cancel(id, refund, undefined, undefined, { silent: true })
-      toast.success(refund ? 'Скасовано, передоплату повернено' : 'Замовлення скасовано')
-      setCancelModal(false)
-      load()
-    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) } finally { setCanceling(false) }
-  }
-
-  async function handleCancelAsCredit() {
+  async function handleCancel() {
     if (!id || !order) return
     setCanceling(true)
     try {
       await orderApi.cancel(id, false, null, true, { silent: true })
-      toast.success('Скасовано, передоплата залишена як кредит клієнту')
+      toast.success(totalPaid > 0
+        ? `Замовлення скасовано. ${formatMoney(totalPaid)} зараховано на рахунок клієнта`
+        : 'Замовлення скасовано')
       setCancelModal(false)
       load()
     } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) } finally { setCanceling(false) }
@@ -733,32 +724,20 @@ export default function OrderDetailPage() {
       <Modal open={cancelModal} onClose={() => setCancelModal(false)} title="Скасувати замовлення" size="sm">
         {order && (
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              {totalPaid > 0
-                ? `Оплачено: ${formatMoney(totalPaid)}. Що робити з грошима?`
-                : 'Ви впевнені, що хочете скасувати це замовлення?'}
-            </p>
-            {totalPaid > 0 ? (
-              <div className="space-y-2">
-                <Button onClick={() => handleCancel(true)} loading={canceling} className="w-full bg-red-600 hover:bg-red-700 text-white">
-                  💰 Повернути {formatMoney(totalPaid)}
-                </Button>
-                <Button variant="secondary" onClick={() => handleCancel(false)} loading={canceling} className="w-full">
-                  Залишити в магазині
-                </Button>
-                <Button variant="secondary" onClick={() => handleCancelAsCredit()} loading={canceling}
-                  className="w-full border-blue-300 text-blue-700">
-                  📋 Залишити як кредит клієнту
-                </Button>
-              </div>
-            ) : (
-              <div className="flex gap-3">
-                <Button onClick={() => handleCancel(false)} loading={canceling} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
-                  Скасувати
-                </Button>
-                <Button variant="secondary" onClick={() => setCancelModal(false)}>Назад</Button>
-              </div>
-            )}
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              {totalPaid > 0 ? (
+                <>
+                  Після скасування <b>{formatMoney(totalPaid)}</b> автоматично буде зараховано на рахунок клієнта.
+                  Касир зможе знайти клієнта в касі й видати всю суму або частину.
+                </>
+              ) : 'Замовлення буде скасовано, а резерв товару — звільнено.'}
+            </div>
+            <div className="flex gap-3">
+              <Button onClick={handleCancel} loading={canceling} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
+                Скасувати замовлення
+              </Button>
+              <Button variant="secondary" onClick={() => setCancelModal(false)}>Назад</Button>
+            </div>
           </div>
         )}
       </Modal>

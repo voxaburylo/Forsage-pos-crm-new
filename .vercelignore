@@ -1,0 +1,30 @@
+# Desktop application and its local installers are not part of the web deploy.
+apps/desktop/
+
+# Dependencies and generated output are rebuilt by Vercel.
+node_modules/
+apps/web/dist/
+server/dist/
+dist/
+.pnpm-store/
+*.tsbuildinfo
+
+# Local databases, installers, logs, screenshots and test artefacts.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.exe
+*.blockmap
+*.zip
+logs/
+qa/
+.ux-shots/
+test_*.cjs
+test_*.js
+server/test_*.cjs
+server/test_*.js
+
+# Local configuration and credentials.
+.env*
+.vercel/

@@ -3,14 +3,89 @@ import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { createWriteStream, promises as fs } from 'fs'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { db } from '../db/supabase.js'
 import { processImport } from '../services/supplierImportService.js'
+import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
 
 const router = Router()
 router.use(requireAuth)
 
 const ALLOWED = ['owner', 'admin'] as const
+
+// Vercel приймає лише невеликі HTTP-запити. Файл клієнт спочатку кладе
+// у приватний Supabase Storage, а цей запит передає тільки його шлях.
+router.post('/upload-from-storage', requireRole(...ALLOWED), async (req, res, next) => {
+  const storagePath = typeof req.body?.storage_path === 'string' ? req.body.storage_path : ''
+  let tempPath: string | null = null
+  try {
+    if (!storagePath) throw new AppError('NO_FILE', 'Не передано файл прайсу', 400)
+
+    const supplierId = typeof req.body?.supplier_id === 'string' && req.body.supplier_id
+      ? req.body.supplier_id
+      : null
+    const mode = req.body?.mode === 'add' ? 'add' : 'replace'
+    const warehouseName = typeof req.body?.warehouse_name === 'string'
+      ? req.body.warehouse_name.trim().slice(0, 200) || null
+      : null
+    const filename = typeof req.body?.filename === 'string'
+      ? req.body.filename.trim().slice(0, 255) || 'import.csv'
+      : 'import.csv'
+
+    if (supplierId) {
+      const { data: supplier } = await db.from('suppliers')
+        .select('id')
+        .eq('id', supplierId)
+        .eq('tenant_id', req.user!.tenant_id)
+        .maybeSingle()
+      if (!supplier) throw new AppError('SUPPLIER_NOT_FOUND', 'Постачальника не знайдено', 404)
+    }
+
+    const uploaded = await downloadProcessingUpload({
+      path: storagePath,
+      userId: req.user!.id,
+      purpose: 'supplier-import',
+      maxBytes: 25 * 1024 * 1024,
+      allowedMimeTypes: ['text/csv', 'text/plain', 'application/csv'],
+    })
+    tempPath = join(tmpdir(), randomUUID() + '.csv')
+    await fs.writeFile(tempPath, uploaded.buffer)
+
+    const { data: importRecord, error: dbErr } = await db
+      .from('supplier_price_imports')
+      .insert({
+        tenant_id: req.user!.tenant_id,
+        supplier_id: supplierId,
+        filename,
+        status: 'pending',
+        total_rows: 0,
+        processed_rows: 0,
+        errors_log: [],
+      })
+      .select('id')
+      .single()
+
+    if (dbErr || !importRecord) {
+      throw new AppError('DB_ERROR', 'Помилка створення запису імпорту: ' + dbErr?.message, 500)
+    }
+
+    await processImport('inline-' + importRecord.id, {
+      importId: importRecord.id,
+      tempPath,
+      supplierId,
+      mode,
+      warehouseName,
+    })
+    tempPath = null
+    res.status(201).json({ success: true, importId: importRecord.id })
+  } catch (err) {
+    next(err)
+  } finally {
+    if (tempPath) await fs.unlink(tempPath).catch(() => {})
+    if (storagePath) await removeProcessingUploads([storagePath], req.user!.id).catch(() => {})
+  }
+})
 
 // 1. Завантаження файлу прайс-листа
 router.post('/upload', requireRole(...ALLOWED), async (req, res, next) => {

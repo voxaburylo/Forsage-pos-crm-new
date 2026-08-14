@@ -1152,6 +1152,94 @@ export class LocalPosRepository {
       return { data: { balance: balanceAfter } }
     })
   }
+  payOutCustomerDeposit(input: {
+    tenant_id?: string
+    customer_id: string
+    payout_id?: string
+    amount: number
+    method: 'cash' | 'card' | 'transfer'
+    shift_id?: string | null
+    user_id?: string | null
+    notes?: string | null
+  }): { data: { balance: number; replayed: boolean } } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Вкажіть коректну суму видачі')
+    if (input.method === 'cash' && !input.shift_id) {
+      throw new Error('Для видачі готівки потрібна відкрита касова зміна')
+    }
+    const payoutId = input.payout_id ?? randomUUID()
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT tenant_id, customer_id, amount, balance_after
+        FROM customer_deposit_transactions
+        WHERE id = ?
+        LIMIT 1
+      `).get(payoutId) as { tenant_id: string; customer_id: string; amount: number; balance_after: number } | undefined
+      if (existing) {
+        if (existing.tenant_id !== tenantId || existing.customer_id !== input.customer_id || Number(existing.amount) !== -amount) {
+          throw new Error('Ідентифікатор виплати вже використано іншою операцією')
+        }
+        return { data: { balance: Number(existing.balance_after), replayed: true } }
+      }
+
+      const customer = this.getCustomerForMoney(input.customer_id, tenantId)
+      if (amount > Number(customer.deposit_balance ?? 0)) {
+        throw new Error('Сума видачі перевищує кошти на рахунку клієнта')
+      }
+      if (input.method === 'cash') {
+        const shift = this.db.prepare(`
+          SELECT id FROM shifts
+          WHERE id = ? AND tenant_id = ? AND status = 'open'
+          LIMIT 1
+        `).get(input.shift_id!, tenantId)
+        if (!shift) throw new Error('Касова зміна не відкрита')
+      }
+
+      const timestamp = nowIso()
+      const balanceAfter = Number(customer.deposit_balance ?? 0) - amount
+      const note = input.notes?.trim() || 'Видача коштів з рахунку клієнта'
+      this.db.prepare(`
+        UPDATE customers
+        SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
+      this.db.prepare(`
+        INSERT INTO customer_deposit_transactions (
+          id, tenant_id, customer_id, amount, balance_after, method, shift_id,
+          notes, created_by, dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        payoutId, tenantId, customer.id, -amount, balanceAfter, input.method,
+        input.shift_id ?? null, note, input.user_id ?? null, timestamp, timestamp, timestamp,
+      )
+
+      const cashOperationId = input.method === 'cash' ? payoutId : null
+      if (cashOperationId) {
+        this.addCashOperation(
+          tenantId, input.shift_id!, input.user_id ?? null, 'cash_out', amount,
+          `${note}: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`,
+          timestamp, cashOperationId,
+        )
+      }
+      this.addOutbox(tenantId, 'customer', customer.id, 'customer.deposit_changed', {
+        customer_id: customer.id,
+        transaction_id: payoutId,
+        amount: -amount,
+        method: input.method,
+        shift_id: input.shift_id ?? null,
+        cash_operation_id: cashOperationId,
+        notes: note,
+        created_by: input.user_id ?? null,
+        created_at: timestamp,
+      }, timestamp)
+      this.addAudit(
+        tenantId, input.user_id ?? 'local', 'customer.deposit_payout', 'customer', customer.id,
+        { amount: -amount, method: input.method, balance_after: balanceAfter }, timestamp,
+      )
+      return { data: { balance: balanceAfter, replayed: false } }
+    })
+  }
   getSale(saleId: string, tenantId = DEFAULT_TENANT_ID): any {
     const row = this.db.prepare(`
       SELECT s.*, c.phone AS customer_phone, c.full_name AS customer_name
@@ -3173,7 +3261,7 @@ export class LocalPosRepository {
     amount: number,
     notes: string,
     timestamp: string,
-    operationId = randomUUID(),
+    operationId: string = randomUUID(),
   ): void {
     this.db.prepare(`
       INSERT INTO cash_operations (

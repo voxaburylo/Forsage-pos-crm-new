@@ -970,7 +970,7 @@ app.whenReady().then(async () => {
     requireLocalOrders().updateOrderItemStatus(orderId, itemId, status, tenantId),
   )
   handleDesktopIpc('desktop:orders:cancel', (_event, id: string, input) =>
-    requireLocalOrders().cancelOrder(id, input),
+    requireLocalOrders().cancelOrder(id, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:orders:pending-items', (_event, supplierId: string, tenantId?: string) =>
     requireLocalOrders().listPendingItems(supplierId, tenantId),
@@ -1023,6 +1023,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:supply:create-invoice', (_event, input: any) =>
     requireLocalSupply().createInvoice(input),
+  )
+  handleDesktopIpc('desktop:supply:create-invoice-from-ai', (_event, input: any) =>
+    requireLocalSupply().createInvoiceFromAiRows(input),
   )
   handleDesktopIpc('desktop:supply:update-invoice', (_event, id: string, input: any) =>
     requireLocalSupply().updateInvoice(id, input),
@@ -1080,6 +1083,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:pos:add-customer-deposit', (_event, input: any) =>
     requireLocalPos().addCustomerDeposit({ ...input, user_id: requireDesktopSession().id }),
+  )
+  handleDesktopIpc('desktop:pos:payout-customer-deposit', (_event, input: any) =>
+    requireLocalPos().payOutCustomerDeposit({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:pos:create-cash-operation', (_event, input) =>
     requireLocalPos().createCashOperation({ ...input, user_id: requireDesktopSession().id }),

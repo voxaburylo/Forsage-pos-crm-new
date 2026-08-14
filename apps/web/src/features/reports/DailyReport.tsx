@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
 import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
@@ -12,8 +13,9 @@ import { Layout } from '@/components/Layout'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
+import { businessDateKey } from '@/lib/businessDate'
 
-type Tab = 'today' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
+type Tab = 'today' | 'sold' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
 interface ProfitReport {
   from: string; to: string
@@ -50,6 +52,12 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
   )
 }
 
+function dateKeyDaysAgo(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return businessDateKey(date)
+}
+
 export default function DailyReport() {
   const offlineMode = useAuthStore((state) => state.offlineMode)
   const [tab, setTab]           = useState<Tab>('today')
@@ -75,37 +83,51 @@ export default function DailyReport() {
   const [control, setControl] = useState<DailyControl | null>(null)
   const [sendingTg, setSendingTg] = useState(false)
 
-  // Продані товари за день — список для дозамовлення у постачальників
+  // Продані товари за період — один зведений список для дозамовлення.
   interface SoldItem {
-    product_id: string; sku: string; name: string; unit: string
+    product_id: string; sku: string; barcode: string | null; name: string; unit: string
     qty_sold: number; revenue: number; qty_on_hand: number; storage_bin: string | null
   }
+  const todayKey = businessDateKey()
   const [soldItems, setSoldItems] = useState<SoldItem[]>([])
-  const [soldDate, setSoldDate] = useState(() => new Date().toLocaleDateString('sv-SE'))
-  const [soldOpen, setSoldOpen] = useState(false)
+  const [soldFrom, setSoldFrom] = useState(todayKey)
+  const [soldTo, setSoldTo] = useState(todayKey)
+  const [soldLoading, setSoldLoading] = useState(false)
 
   useEffect(() => {
-    if (tab !== 'today') return
-    reportApi.soldItems(soldDate)
-      .then((r) => setSoldItems(r.data ?? []))
-      .catch(() => setSoldItems([]))
-  }, [tab, soldDate])
+    if (tab !== 'sold' || !soldFrom || !soldTo || soldFrom > soldTo) return
+    let cancelled = false
+    setSoldLoading(true)
+    reportApi.soldItems(soldFrom, soldTo)
+      .then((r) => { if (!cancelled) setSoldItems(r.data ?? []) })
+      .catch(() => {
+        if (!cancelled) {
+          setSoldItems([])
+          toast.error('Не вдалося сформувати список проданих товарів')
+        }
+      })
+      .finally(() => { if (!cancelled) setSoldLoading(false) })
+    return () => { cancelled = true }
+  }, [tab, soldFrom, soldTo])
 
   function printSoldItems() {
+    const escapeHtml = (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const period = soldFrom === soldTo ? soldFrom : `${soldFrom} — ${soldTo}`
     const rows = soldItems.map((it, i) =>
-      `<tr><td>${i + 1}</td><td>${it.sku}</td><td>${it.name.replace(/</g, '&lt;')}</td>` +
-      `<td style="text-align:right;font-weight:bold">${it.qty_sold} ${it.unit}</td>` +
-      `<td style="text-align:right">${it.qty_on_hand} ${it.unit}</td></tr>`).join('')
-    const w = window.open('', '_blank', 'width=800,height=900')
+      `<tr><td>${i + 1}</td><td>${escapeHtml(it.sku)}</td><td>${escapeHtml(it.barcode || '—')}</td>` +
+      `<td>${escapeHtml(it.name)}</td><td style="text-align:right;font-weight:bold">${it.qty_sold} ${escapeHtml(it.unit)}</td>` +
+      `<td style="text-align:right">${it.qty_on_hand} ${escapeHtml(it.unit)}</td></tr>`).join('')
+    const w = window.open('', '_blank', 'width=900,height=900')
     if (!w) return
-    w.document.write(`<html><head><title>Продано ${soldDate}</title><style>
+    w.document.write(`<html><head><title>Продані товари ${period}</title><style>
       body{font-family:Arial,sans-serif;font-size:12px;padding:16px}
       table{width:100%;border-collapse:collapse}
       td,th{border:1px solid #ccc;padding:4px 6px;text-align:left}
       th{background:#f3f3f3}
     </style></head><body>
-      <h3>Продані товари за ${soldDate} — для дозамовлення</h3>
-      <table><tr><th>#</th><th>Артикул</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
+      <h3>Продані товари за ${period} — для дозамовлення</h3>
+      <table><tr><th>#</th><th>Артикул</th><th>Штрихкод</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
     </body></html>`)
     w.document.close()
     w.focus()
@@ -204,6 +226,22 @@ export default function DailyReport() {
           'Виручка (грн)': d.revenue / 100,
         }))
         fileName = 'weekly_sales'
+      } else if (tab === 'sold') {
+        if (!soldItems.length) {
+          toast.error('Немає проданих товарів за вибраний період')
+          return
+        }
+        dataToExport = soldItems.map((item) => ({
+          'Артикул': item.sku,
+          'Штрихкод': item.barcode || '',
+          'Назва': item.name,
+          'Продано': item.qty_sold,
+          'Одиниця': item.unit,
+          'Залишок зараз': item.qty_on_hand,
+          'Полиця': item.storage_bin || '',
+          'Сума продажів (грн)': item.revenue / 100,
+        }))
+        fileName = `sold_items_${soldFrom}_${soldTo}`
       } else if (tab === 'lowstock') {
         if (!lowStock.length) {
           toast.error('Немає даних для експорту')
@@ -261,12 +299,13 @@ export default function DailyReport() {
       const worksheet = XLSX.utils.json_to_sheet(dataToExport)
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Звіт')
-      XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      const exportName = tab === 'sold' ? `${fileName}.xlsx` : `${fileName}_${businessDateKey()}.xlsx`
+      XLSX.writeFile(workbook, exportName)
       toast.success('Звіт успішно експортовано в Excel')
     } catch (err) {
       toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit])
+  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo])
 
   useEffect(() => {
     if (tab === 'today')         loadToday()
@@ -279,6 +318,7 @@ export default function DailyReport() {
 
   const TABS = [
     { id: 'today',    label: 'Сьогодні',   icon: <TrendingUp size={15} /> },
+    { id: 'sold',     label: 'Продані товари', icon: <BarChart2 size={15} /> },
     { id: 'weekly',   label: '7 днів',     icon: <BarChart2 size={15} /> },
     { id: 'period',   label: 'За період',  icon: <BarChart2 size={15} /> },
     { id: 'lowstock', label: 'Мало товару', icon: <AlertTriangle size={15} /> },
@@ -289,6 +329,8 @@ export default function DailyReport() {
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
+  const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_sold), 0)
+  const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.revenue), 0)
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -391,62 +433,6 @@ export default function DailyReport() {
             </Card>
           )}
 
-          {/* Продані товари за день — для дозамовлення */}
-          <Card padding="none" className="mb-4">
-            <button onClick={() => setSoldOpen(!soldOpen)}
-              className="flex w-full items-center justify-between px-4 py-3 text-left">
-              <span className="text-sm font-bold text-gray-800">
-                📦 Продано за день — для дозамовлення ({soldItems.length} поз.)
-              </span>
-              <span className="flex items-center gap-2">
-                <input type="date" value={soldDate}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => { e.stopPropagation(); setSoldDate(e.target.value); setSoldOpen(true) }}
-                  className="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600" />
-                <span className="text-gray-400 text-xs">{soldOpen ? '▲' : '▼'}</span>
-              </span>
-            </button>
-            {soldOpen && (
-              <div className="border-t border-gray-100">
-                <div className="flex justify-end px-4 py-2">
-                  <button onClick={printSoldItems} disabled={soldItems.length === 0}
-                    className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium disabled:opacity-40">
-                    🖨 Друк списку
-                  </button>
-                </div>
-                {soldItems.length === 0 ? (
-                  <p className="px-4 pb-4 text-sm text-gray-400">За цей день продажів товарів немає</p>
-                ) : (
-                  <div className="max-h-96 overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
-                        <tr>
-                          <th className="px-4 py-2 text-left">Артикул</th>
-                          <th className="px-2 py-2 text-left">Назва</th>
-                          <th className="px-2 py-2 text-right">Продано</th>
-                          <th className="px-2 py-2 text-right">Залишок</th>
-                          <th className="px-4 py-2 text-right hidden md:table-cell">Виручка</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-50">
-                        {soldItems.map((it) => (
-                          <tr key={it.product_id} className={it.qty_on_hand <= 0 ? 'bg-red-50/60' : ''}>
-                            <td className="px-4 py-1.5 font-mono text-xs text-gray-500">{it.sku}</td>
-                            <td className="px-2 py-1.5 text-gray-800">{it.name}</td>
-                            <td className="px-2 py-1.5 text-right font-bold">{it.qty_sold} {it.unit}</td>
-                            <td className={`px-2 py-1.5 text-right font-semibold ${it.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
-                              {it.qty_on_hand} {it.unit}
-                            </td>
-                            <td className="px-4 py-1.5 text-right text-gray-500 hidden md:table-cell">{formatMoney(it.revenue)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-          </Card>
 
           <Card padding="none">
             <Table
@@ -462,6 +448,115 @@ export default function DailyReport() {
               loading={loading}
               empty={<p className="text-gray-400 text-sm">Продажів немає</p>}
             />
+          </Card>
+        </>
+      )}
+
+      {/* Продані товари за вибраний період — список для дозамовлення */}
+      {tab === 'sold' && (
+        <>
+          <Card className="mb-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Продані товари за період</h2>
+                <p className="mt-1 text-sm text-gray-500">Однакові товари з усіх чеків зібрані в один рядок — готовий список для повторного замовлення.</p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="text-xs font-medium text-gray-600">
+                  Від
+                  <input type="date" value={soldFrom} max={soldTo}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setSoldFrom(value)
+                      if (value > soldTo) setSoldTo(value)
+                    }}
+                    className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+                </label>
+                <label className="text-xs font-medium text-gray-600">
+                  До
+                  <input type="date" value={soldTo} min={soldFrom} max={todayKey}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setSoldTo(value)
+                      if (value < soldFrom) setSoldFrom(value)
+                    }}
+                    className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+                </label>
+                <button onClick={printSoldItems} disabled={soldItems.length === 0 || soldLoading}
+                  className="h-[38px] rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+                  🖨 Друк
+                </button>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {[
+                { label: 'Сьогодні', days: 0 },
+                { label: '2 дні', days: 1 },
+                { label: '7 днів', days: 6 },
+                { label: '30 днів', days: 29 },
+              ].map(({ label, days }) => (
+                <button key={label} onClick={() => { setSoldFrom(dateKeyDaysAgo(days)); setSoldTo(todayKey) }}
+                  className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700 hover:border-yellow-400 hover:bg-yellow-50">
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Card>
+
+          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Card>
+              <p className="text-xs text-gray-400">Товарних позицій</p>
+              <p className="text-2xl font-bold text-gray-900">{soldItems.length}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-gray-400">Всього продано</p>
+              <p className="text-2xl font-bold text-gray-900">{Number(soldQty.toFixed(3))}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-gray-400">Сума продажів</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
+            </Card>
+          </div>
+
+          <Card padding="none">
+            {soldLoading ? (
+              <div className="flex min-h-48 items-center justify-center text-sm text-gray-400">Формуємо список…</div>
+            ) : soldItems.length === 0 ? (
+              <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-gray-400">
+                За вибраний період проданих товарів немає
+              </div>
+            ) : (
+              <div className="max-h-[65vh] overflow-auto">
+                <table className="w-full min-w-[900px] text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Артикул</th>
+                      <th className="px-2 py-3 text-left">Штрихкод</th>
+                      <th className="px-2 py-3 text-left">Назва</th>
+                      <th className="px-2 py-3 text-left">Полиця</th>
+                      <th className="px-2 py-3 text-right">Продано</th>
+                      <th className="px-2 py-3 text-right">Залишок</th>
+                      <th className="px-4 py-3 text-right">Сума</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {soldItems.map((item) => (
+                      <tr key={item.product_id} className={item.qty_on_hand <= 0 ? 'bg-red-50/60' : 'hover:bg-gray-50'}>
+                        <td className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
+                        <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
+                        <td className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_sold} {item.unit}</td>
+                        <td className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                          {item.qty_on_hand} {item.unit}
+                        </td>
+                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </>
       )}
@@ -489,7 +584,7 @@ export default function DailyReport() {
                 <BarChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                  <YAxis tickFormatter={(v) => (v / 100).toFixed(0)} tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={48} />
+                  <YAxis tickFormatter={(v: number) => (v / 100).toFixed(0)} tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={48} />
                   <Tooltip content={<CustomTooltip />} />
                   <Bar dataKey="revenue" fill="#FFD000" radius={[4, 4, 0, 0]} />
                 </BarChart>

@@ -188,6 +188,7 @@ export class LocalBootstrapRepository {
         this.upsertSaleItem(tenantId, item, appliedAt)
         counts.sale_items++
       }
+      this.recoverMissingSaleMovements(tenantId, appliedAt)
 
       for (const order of changes.customer_orders ?? []) {
         this.upsertCustomerOrder(tenantId, order, appliedAt)
@@ -462,6 +463,7 @@ export class LocalBootstrapRepository {
         this.upsertSaleItem(tenantId, item, importedAt)
         counts.sale_items++
       }
+      this.recoverMissingSaleMovements(tenantId, importedAt)
 
       for (const order of snapshot.customer_orders ?? []) {
         this.upsertCustomerOrder(tenantId, order, importedAt)
@@ -1409,6 +1411,85 @@ export class LocalBootstrapRepository {
     )
   }
 
+  private recoverMissingSaleMovements(tenantId: string, importedAt: string): void {
+    // Продажі з сервера приходять окремими рядками, а старі версії імпортували
+    // лише sales/sale_items. Відновлюємо відсутній запис руху без повторного
+    // списання товару: qty_on_hand вже є канонічним знімком сервера.
+    const rows = this.db.prepare(`
+      SELECT si.id AS sale_item_id, si.sale_id, si.product_id, si.qty,
+             si.purchase_price, si.created_at, s.sale_number, s.completed_at,
+             p.is_service, p.qty_on_hand
+      FROM sale_items si
+      JOIN sales s
+        ON s.id = si.sale_id AND s.tenant_id = si.tenant_id
+      JOIN products p
+        ON p.id = si.product_id AND p.tenant_id = si.tenant_id
+      WHERE si.tenant_id = ?
+        AND si.deleted_at IS NULL
+        AND s.deleted_at IS NULL
+        AND s.status = 'completed'
+        AND p.deleted_at IS NULL
+        AND COALESCE(p.is_service, 0) = 0
+        AND NOT EXISTS (
+          SELECT 1
+          FROM inventory_movements m
+          WHERE m.tenant_id = si.tenant_id
+            AND m.product_id = si.product_id
+            AND m.source_type = 'sale'
+            AND m.source_id = si.sale_id
+            AND m.deleted_at IS NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM inventory_movements om
+          JOIN customer_orders co
+            ON co.id = om.source_id
+           AND co.tenant_id = om.tenant_id
+           AND co.sale_id = si.sale_id
+          WHERE om.tenant_id = si.tenant_id
+            AND om.product_id = si.product_id
+            AND om.source_type = 'order'
+            AND om.deleted_at IS NULL
+        )
+      ORDER BY COALESCE(s.completed_at, s.created_at), si.created_at, si.id
+    `).all(tenantId) as Array<{
+      sale_item_id: string
+      sale_id: string
+      product_id: string
+      qty: number
+      purchase_price: number | null
+      created_at: string | null
+      sale_number: string | null
+      completed_at: string | null
+      qty_on_hand: number
+    }>
+
+    if (rows.length === 0) return
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO inventory_movements (
+        id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+        unit_cost, notes, remote_updated_at, dirty_at, created_at, updated_at
+      ) VALUES (?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+    `)
+    for (const row of rows) {
+      const qty = Number(row.qty ?? 0)
+      if (!Number.isFinite(qty) || qty <= 0) continue
+      const eventAt = row.completed_at ?? row.created_at ?? importedAt
+      insert.run(
+        `remote-sale-${row.sale_id}-${row.sale_item_id}`,
+        tenantId,
+        row.product_id,
+        row.sale_id,
+        -qty,
+        Number(row.qty_on_hand ?? 0),
+        Number(row.purchase_price ?? 0),
+        `Синхронізація продажу ${row.sale_number ?? row.sale_id}`,
+        eventAt,
+        eventAt,
+        eventAt,
+      )
+    }
+  }
   private upsertSupplyInvoice(tenantId: string, invoice: any, importedAt: string): void {
     const updatedAt = timestamp(invoice, importedAt)
     this.db.prepare(`

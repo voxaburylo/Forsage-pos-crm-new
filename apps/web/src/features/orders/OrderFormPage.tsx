@@ -11,6 +11,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
+import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
@@ -603,7 +604,16 @@ export default function OrderFormPage() {
         img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Не вдалося прочитати фото')) }
         img.src = url
       })
-      const { data } = await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', { image: dataUrl, mimeType: 'image/jpeg' })
+      const uploaded = await uploadProcessingBlob(dataUrlToBlob(dataUrl), 'vin')
+      let data: { vin: string }
+      try {
+        const response = await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', {
+          storage_path: uploaded.path,
+        })
+        data = response.data
+      } finally {
+        await removeProcessingUploads([uploaded.path]).catch(() => {})
+      }
       setNewVehVin(data.vin)
       toast.success('VIN розпізнано: ' + data.vin)
     } catch (e) {

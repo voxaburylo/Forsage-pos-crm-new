@@ -165,11 +165,7 @@ function sweepTelegramMaps() {
   }
 }
 
-// Run sweep every 1 hour
-const telegramSweepInterval = setInterval(sweepTelegramMaps, 3600 * 1000)
-if (telegramSweepInterval.unref) {
-  telegramSweepInterval.unref()
-}
+let telegramSweepInterval: NodeJS.Timeout | null = null
 
 const GREETING_COOLDOWN_MS = 24 * 3600_000
 
@@ -1218,6 +1214,11 @@ async function deleteCar(carId: string, chatId: number, send: SendFn) {
 export function startBot() {
   if (!bot) return
 
+  if (!telegramSweepInterval) {
+    telegramSweepInterval = setInterval(sweepTelegramMaps, 3600 * 1000)
+    telegramSweepInterval.unref?.()
+  }
+
   bot.telegram.getMe().then((me) => { ownerBotId = me.id }).catch(() => {})
 
   // Не витрачаємо токени та час на кожен рестарт сервера.
@@ -1612,5 +1613,9 @@ export function startBot() {
 }
 
 export function stopBot() {
+  if (telegramSweepInterval) {
+    clearInterval(telegramSweepInterval)
+    telegramSweepInterval = null
+  }
   if (bot) { bot.stop('SIGTERM'); logger.info('Telegram bot stopped') }
 }
