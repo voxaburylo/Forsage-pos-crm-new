@@ -506,6 +506,7 @@ interface ForsageDesktopBridge {
     listSalary: (input?: any) => Promise<any[]>
     salarySummary: (period?: string) => Promise<any[]>
     dailySummary: (workDate?: string) => Promise<any[]>
+    tireServiceReport: (workDate?: string) => Promise<any[]>
     createSalary: (input: any) => Promise<any>
     dailyPayout: (input: any) => Promise<any>
     deleteSalary: (id: string) => Promise<{ success: true }>
@@ -574,6 +575,7 @@ interface ForsageDesktopBridge {
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listSales?: (input?: any) => Promise<any>
     dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>
+    soldItemsReport?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any[]>
     listReturns?: (input?: any) => Promise<any>
     getReturn?: (id: string, tenantId?: string) => Promise<any>
     getSaleForReturn?: (saleId: string, tenantId?: string) => Promise<any>

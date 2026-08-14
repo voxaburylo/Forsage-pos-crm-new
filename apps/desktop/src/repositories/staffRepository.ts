@@ -12,8 +12,18 @@ function commissionReversalId(returnId: string, employeeId: string): string {
   const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
-function currentPeriod(): string { return nowIso().slice(0, 7) }
-function currentDate(): string { return nowIso().slice(0, 10) }
+const businessDateFormatter = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Europe/Kyiv',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+function businessDate(value: string | Date = new Date()): string {
+  const parsed = value instanceof Date ? value : new Date(value)
+  return businessDateFormatter.format(Number.isNaN(parsed.getTime()) ? new Date() : parsed)
+}
+function currentDate(): string { return businessDate() }
+function currentPeriod(): string { return currentDate().slice(0, 7) }
 function money(value: unknown): number {
   const parsed = Math.round(Number(value ?? 0))
   return Number.isFinite(parsed) ? parsed : 0
@@ -466,6 +476,77 @@ export class LocalStaffRepository {
     return [...map.values()]
   }
 
+  tireServiceReport(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any[] {
+    const rows = this.db.prepare([
+      'WITH tire_workers AS (',
+      '  SELECT DISTINCT u.id AS employee_id, u.full_name AS employee_name, u.base_rate, u.rate_period',
+      '  FROM staff_users u',
+      '  WHERE u.tenant_id = ? AND u.is_active = 1 AND u.deleted_at IS NULL',
+      "    AND (u.role = 'tire_worker' OR EXISTS (",
+      '      SELECT 1 FROM commission_rules rule',
+      '      WHERE rule.tenant_id = u.tenant_id AND rule.deleted_at IS NULL',
+      "        AND rule.rule_type = 'tire_service'",
+      '        AND (rule.user_id = u.id OR rule.user_id IS NULL)',
+      '    ))',
+      '), salary AS (',
+      '  SELECT employee_id,',
+      "    COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0) AS earned,",
+      "    COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0) AS paid,",
+      "    COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0) AS penalty,",
+      "    COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0) AS commission_earned,",
+      "    COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0) AS daily_rate",
+      '  FROM salary_payments',
+      '  WHERE tenant_id = ? AND work_date = ? AND deleted_at IS NULL',
+      '  GROUP BY employee_id',
+      '), employee_sales AS (',
+      '  SELECT DISTINCT employee_id, commission_source_sale_id AS sale_id',
+      '  FROM salary_payments',
+      "  WHERE tenant_id = ? AND work_date = ? AND source = 'commission'",
+      '    AND commission_source_sale_id IS NOT NULL AND deleted_at IS NULL',
+      '), service_work AS (',
+      '  SELECT linked.employee_id,',
+      '    COALESCE(SUM(items.qty), 0) AS services_qty,',
+      '    COALESCE(SUM(items.total), 0) AS service_revenue',
+      '  FROM employee_sales linked',
+      '  JOIN sale_items items ON items.sale_id = linked.sale_id',
+      '    AND items.tenant_id = ? AND items.deleted_at IS NULL',
+      '  LEFT JOIN products product ON product.id = items.product_id',
+      '    AND product.tenant_id = items.tenant_id',
+      "  WHERE COALESCE(product.sku, items.sku, '') = 'POS-TIRE-SERVICE'",
+      '  GROUP BY linked.employee_id',
+      ')',
+      'SELECT worker.employee_id, worker.employee_name,',
+      '  worker.base_rate, worker.rate_period,',
+      '  COALESCE(work.services_qty, 0) AS services_qty,',
+      '  COALESCE(work.service_revenue, 0) AS service_revenue,',
+      '  COALESCE(salary.commission_earned, 0) AS commission_earned,',
+      '  COALESCE(salary.daily_rate, 0) AS daily_rate,',
+      '  COALESCE(salary.earned, 0) AS earned,',
+      '  COALESCE(salary.paid, 0) AS paid,',
+      '  COALESCE(salary.penalty, 0) AS penalty',
+      'FROM tire_workers worker',
+      'LEFT JOIN salary ON salary.employee_id = worker.employee_id',
+      'LEFT JOIN service_work work ON work.employee_id = worker.employee_id',
+      'ORDER BY worker.employee_name COLLATE NOCASE',
+    ].join('\n')).all(tenantId, tenantId, workDate, tenantId, workDate, tenantId) as any[]
+    return rows.map((row) => {
+      const recordedDailyRate = money(row.daily_rate)
+      const projectedDailyRate = recordedDailyRate === 0 && row.rate_period === 'day' ? money(row.base_rate) : 0
+      const earned = money(row.earned) + projectedDailyRate
+      return {
+        ...row,
+        services_qty: Number(row.services_qty ?? 0),
+        service_revenue: money(row.service_revenue),
+        commission_earned: money(row.commission_earned),
+        daily_rate: recordedDailyRate + projectedDailyRate,
+        earned,
+        paid: money(row.paid),
+        penalty: money(row.penalty),
+        balance: earned - money(row.paid) - money(row.penalty),
+        due: Math.max(0, earned - money(row.paid) - money(row.penalty)),
+      }
+    })
+  }
   createSalary(input: {
     tenant_id?: string
     employee_id: string
@@ -636,7 +717,7 @@ export class LocalStaffRepository {
       WHERE i.sale_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
     `).all(saleId, tenantId) as any[]
     const commissions = localCommissionMap(items, rules, managerId, order ? 'order' : 'pos')
-    const workDate = String(sale.completed_at ?? nowIso()).slice(0, 10)
+    const workDate = businessDate(String(sale.completed_at ?? nowIso()))
     const timestamp = nowIso()
     const created: any[] = []
     this.db.transaction(() => {

@@ -8,7 +8,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
-import type { SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
+import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
 import { Layout } from '@/components/Layout'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -27,7 +27,7 @@ const PAYMENT_COLOR: Record<string, 'green' | 'blue' | 'red'> = {
   cash: 'green', card: 'blue', debt: 'red',
 }
 const PAYMENT_LABELS: Record<string, string> = {
-  cash: 'Готівка', card: 'Картка', debt: 'Борг',
+  cash: 'Готівка', card: 'Картка', transfer: 'Переказ', account: 'Рахунок клієнта', debt: 'Борг',
 }
 
 interface WeekDay { date: string; revenue: number; sales: number }
@@ -84,10 +84,6 @@ export default function DailyReport() {
   const [sendingTg, setSendingTg] = useState(false)
 
   // Продані товари за період — один зведений список для дозамовлення.
-  interface SoldItem {
-    product_id: string; sku: string; barcode: string | null; name: string; unit: string
-    qty_sold: number; revenue: number; qty_on_hand: number; storage_bin: string | null
-  }
   const todayKey = businessDateKey()
   const [soldItems, setSoldItems] = useState<SoldItem[]>([])
   const [soldFrom, setSoldFrom] = useState(todayKey)
@@ -116,7 +112,7 @@ export default function DailyReport() {
     const period = soldFrom === soldTo ? soldFrom : `${soldFrom} — ${soldTo}`
     const rows = soldItems.map((it, i) =>
       `<tr><td>${i + 1}</td><td>${escapeHtml(it.sku)}</td><td>${escapeHtml(it.barcode || '—')}</td>` +
-      `<td>${escapeHtml(it.name)}</td><td style="text-align:right;font-weight:bold">${it.qty_sold} ${escapeHtml(it.unit)}</td>` +
+      `<td>${escapeHtml(it.name)}</td><td style="text-align:right;font-weight:bold">${it.qty_net} ${escapeHtml(it.unit)}</td>` +
       `<td style="text-align:right">${it.qty_on_hand} ${escapeHtml(it.unit)}</td></tr>`).join('')
     const w = window.open('', '_blank', 'width=900,height=900')
     if (!w) return
@@ -137,15 +133,17 @@ export default function DailyReport() {
   const loadToday = useCallback(async () => {
     setLoading(true)
     try {
-      const [{ data: summary }, { data: period }] = await Promise.all([
+      const [{ data: summary }, { data: period }, { data: items }] = await Promise.all([
         reportApi.salesToday(),
-        reportApi.salesPeriod(),
+        reportApi.salesPeriod(todayKey, todayKey),
+        reportApi.soldItems(todayKey, todayKey).catch(() => ({ data: [] as SoldItem[] })),
       ])
       setReport({ ...summary, sales: period.sales })
+      setSoldItems(items ?? [])
       reportApi.dailyControl()
         .then((r) => setControl(r.data)).catch(() => {})
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
-  }, [])
+  }, [todayKey])
 
   const loadWeekly = useCallback(async () => {
     setLoading(true)
@@ -235,11 +233,11 @@ export default function DailyReport() {
           'Артикул': item.sku,
           'Штрихкод': item.barcode || '',
           'Назва': item.name,
-          'Продано': item.qty_sold,
+          'Чисто продано': item.qty_net,
           'Одиниця': item.unit,
           'Залишок зараз': item.qty_on_hand,
           'Полиця': item.storage_bin || '',
-          'Сума продажів (грн)': item.revenue / 100,
+          'Чиста сума (грн)': item.net_revenue / 100,
         }))
         fileName = `sold_items_${soldFrom}_${soldTo}`
       } else if (tab === 'lowstock') {
@@ -329,8 +327,8 @@ export default function DailyReport() {
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
-  const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_sold), 0)
-  const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.revenue), 0)
+  const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_net), 0)
+  const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.net_revenue), 0)
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -365,12 +363,16 @@ export default function DailyReport() {
       {/* Сьогодні */}
       {tab === 'today' && report && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
             {[
-              { label: 'Продажів',  value: String(report.total_sales) },
-              { label: 'Виручка',   value: formatMoney(report.total_revenue) },
-              { label: 'Готівка',   value: formatMoney(report.by_method.cash) },
-              { label: 'Картка',    value: formatMoney(report.by_method.card) },
+              { label: 'Чеків', value: String(report.total_sales) },
+              { label: 'Продано за чеками', value: formatMoney(report.total_revenue) },
+              { label: 'Отримано грошей', value: formatMoney(report.payment_received_total) },
+              { label: 'Повернення', value: formatMoney(control?.returns_sum ?? 0) },
+              { label: 'Готівка', value: formatMoney(report.by_method.cash) },
+              { label: 'Картка', value: formatMoney(report.by_method.card) },
+              { label: 'Переказ', value: formatMoney(report.by_method.transfer) },
+              { label: 'З рахунку клієнта', value: formatMoney(report.by_method.account) },
             ].map(({ label, value }) => (
               <Card key={label}>
                 <p className="text-xs text-gray-400 mb-1">{label}</p>
@@ -378,6 +380,10 @@ export default function DailyReport() {
               </Card>
             ))}
           </div>
+          <p className="mb-4 text-xs text-gray-500">
+            Продажі рахуються за датою закриття чека. Передоплати замовлень — за датою прийняття грошей.
+            Тому «Продано» та «Отримано грошей» можуть відрізнятися, але кожна сума має окрему розшифровку.
+          </p>
 
           {/* Контроль дня — очима власника */}
           {control && (
@@ -449,6 +455,52 @@ export default function DailyReport() {
               empty={<p className="text-gray-400 text-sm">Продажів немає</p>}
             />
           </Card>
+
+          <Card padding="none" className="mt-4">
+            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+              <div>
+                <h3 className="font-bold text-gray-900">Продані товари за сьогодні</h3>
+                <p className="text-xs text-gray-500">Один товар — один рядок, незалежно від кількості чеків</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTab('sold')}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-yellow-400"
+              >
+                Відкрити повний звіт
+              </button>
+            </div>
+            {soldItems.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
+            ) : (
+              <div className="max-h-[55vh] overflow-auto">
+                <table className="w-full min-w-[760px] text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Артикул</th>
+                      <th className="px-2 py-3 text-left">Штрихкод</th>
+                      <th className="px-2 py-3 text-left">Назва</th>
+                      <th className="px-2 py-3 text-right">Продано</th>
+                      <th className="px-2 py-3 text-right">Залишок</th>
+                      <th className="px-4 py-3 text-right">Сума</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {soldItems.map((item) => (
+                      <tr key={item.product_id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
+                        <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
+                        <td className="px-2 py-2 text-right text-gray-600">{item.qty_on_hand} {item.unit}</td>
+                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
         </>
       )}
 
@@ -509,11 +561,11 @@ export default function DailyReport() {
               <p className="text-2xl font-bold text-gray-900">{soldItems.length}</p>
             </Card>
             <Card>
-              <p className="text-xs text-gray-400">Всього продано</p>
+              <p className="text-xs text-gray-400">Чисто продано</p>
               <p className="text-2xl font-bold text-gray-900">{Number(soldQty.toFixed(3))}</p>
             </Card>
             <Card>
-              <p className="text-xs text-gray-400">Сума продажів</p>
+              <p className="text-xs text-gray-400">Чиста сума продажів</p>
               <p className="text-2xl font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
             </Card>
           </div>
@@ -534,7 +586,7 @@ export default function DailyReport() {
                       <th className="px-2 py-3 text-left">Штрихкод</th>
                       <th className="px-2 py-3 text-left">Назва</th>
                       <th className="px-2 py-3 text-left">Полиця</th>
-                      <th className="px-2 py-3 text-right">Продано</th>
+                      <th className="px-2 py-3 text-right">Чисто продано</th>
                       <th className="px-2 py-3 text-right">Залишок</th>
                       <th className="px-4 py-3 text-right">Сума</th>
                     </tr>
@@ -546,11 +598,11 @@ export default function DailyReport() {
                         <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
                         <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
                         <td className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
-                        <td className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_sold} {item.unit}</td>
+                        <td className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
                         <td className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
                           {item.qty_on_hand} {item.unit}
                         </td>
-                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.revenue)}</td>
+                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
                       </tr>
                     ))}
                   </tbody>

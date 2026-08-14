@@ -4,6 +4,19 @@ import { desktopBridge } from '@/lib/desktopBridge'
 export interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
 export interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string }
 export interface DailySummary { employee_id:string; employee_name:string; earned:number; paid:number; penalty:number; balance:number }
+export interface TireServiceReportRow {
+  employee_id: string
+  employee_name: string
+  services_qty: number
+  service_revenue: number
+  commission_earned: number
+  daily_rate: number
+  earned: number
+  paid: number
+  penalty: number
+  balance: number
+  due: number
+}
 
 function localStaff() { return desktopBridge()?.staff }
 
@@ -22,6 +35,11 @@ export const staffApi = {
     const local = localStaff()?.dailySummary
     if (local) return { data: await local(date) as DailySummary[] }
     return api.get<{ data: DailySummary[] }>(`/api/v1/salary/daily-summary?date=${date}`)
+  },
+  async tireServiceReport(date: string): Promise<{ data: TireServiceReportRow[] }> {
+    const local = localStaff()?.tireServiceReport
+    if (local) return { data: await local(date) as TireServiceReportRow[] }
+    return api.get<{ data: TireServiceReportRow[] }>('/api/v1/salary/tire-service-report?date=' + encodeURIComponent(date))
   },
   async setPin(userId: string, pin: string): Promise<void> {
     const local = localStaff()?.setPin

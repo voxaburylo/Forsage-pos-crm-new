@@ -35,7 +35,7 @@ router.get('/dashboard', async (req, res, next) => {
           SELECT id, total, completed_at
           FROM sales
           WHERE tenant_id = $1
-            AND status = 'completed'
+            AND status IN ('completed', 'returned')
             AND completed_at >= $2::timestamptz
             AND completed_at < $3::timestamptz
         ),

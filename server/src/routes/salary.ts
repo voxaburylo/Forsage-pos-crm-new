@@ -4,7 +4,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
-import { runTransaction } from '../db/pg.js'
+import { pool, runTransaction } from '../db/pg.js'
+import * as adminService from '../services/adminService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -142,7 +143,7 @@ router.get('/summary', requireRole('owner', 'admin'), async (req, res, next) => 
 // GET /api/v1/salary/daily-summary?date=YYYY-MM-DD
 router.get('/daily-summary', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const date = String(req.query.date ?? new Date().toISOString().slice(0, 10))
+    const date = String(req.query.date ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' }))
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError('VALIDATION_ERROR', 'Невірна дата', 422)
     const { data, error } = await db
       .from('salary_payments')
@@ -163,6 +164,82 @@ router.get('/daily-summary', requireRole('owner', 'admin'), async (req, res, nex
     }
     for (const value of Object.values(map) as any[]) value.balance = value.earned - value.paid - value.penalty
     res.json({ data: Object.values(map), date })
+  } catch (err) { next(err) }
+})
+// GET /api/v1/salary/tire-service-report?date=YYYY-MM-DD
+// Практичний денний звіт: виконані послуги, виручка, нараховано, виплачено і залишок.
+router.get('/tire-service-report', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const date = String(req.query.date ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' }))
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError('VALIDATION_ERROR', 'Невірна дата', 422)
+    const workers = (await adminService.listUsers(req.user!.tenant_id))
+      .filter((user) => user.is_active && user.role === 'tire_worker')
+    if (workers.length === 0) {
+      res.json({ data: [], date, totals: { services_qty: 0, service_revenue: 0, due: 0 } })
+      return
+    }
+    const workerIds = workers.map((worker) => worker.id)
+    const result = await pool.query(
+      [
+        'WITH salary AS (',
+        '  SELECT employee_id,',
+        "    COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0)::bigint AS earned,",
+        "    COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0)::bigint AS paid,",
+        "    COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0)::bigint AS penalty,",
+        "    COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0)::bigint AS commission_earned,",
+        "    COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0)::bigint AS daily_rate",
+        '  FROM salary_payments',
+        '  WHERE tenant_id = $1 AND work_date = $2',
+        '  GROUP BY employee_id',
+        '), employee_sales AS (',
+        '  SELECT DISTINCT employee_id, commission_source_sale_id AS sale_id',
+        '  FROM salary_payments',
+        "  WHERE tenant_id = $1 AND work_date = $2 AND source = 'commission'",
+        '    AND commission_source_sale_id IS NOT NULL',
+        '), service_work AS (',
+        '  SELECT linked.employee_id, COALESCE(SUM(item.qty), 0) AS services_qty,',
+        '    COALESCE(SUM(item.total), 0)::bigint AS service_revenue',
+        '  FROM employee_sales linked',
+        '  JOIN sale_items item ON item.sale_id = linked.sale_id AND item.tenant_id = $1',
+        '  JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id',
+        "  WHERE product.sku = 'POS-TIRE-SERVICE'",
+        '  GROUP BY linked.employee_id',
+        ')',
+        'SELECT COALESCE(salary.employee_id, work.employee_id)::text AS employee_id,',
+        '  COALESCE(work.services_qty, 0)::float AS services_qty,',
+        '  COALESCE(work.service_revenue, 0)::bigint AS service_revenue,',
+        '  COALESCE(salary.commission_earned, 0)::bigint AS commission_earned,',
+        '  COALESCE(salary.daily_rate, 0)::bigint AS daily_rate,',
+        '  COALESCE(salary.earned, 0)::bigint AS earned,',
+        '  COALESCE(salary.paid, 0)::bigint AS paid,',
+        '  COALESCE(salary.penalty, 0)::bigint AS penalty',
+        'FROM salary FULL JOIN service_work work ON work.employee_id = salary.employee_id',
+        'WHERE COALESCE(salary.employee_id, work.employee_id) = ANY($3::uuid[])',
+      ].join('\n'),
+      [req.user!.tenant_id, date, workerIds],
+    )
+    const byEmployee = new Map(result.rows.map((row) => [row.employee_id, row]))
+    const data = workers.map((worker) => {
+      const row = byEmployee.get(worker.id) ?? {}
+      const earned = Number(row.earned ?? 0)
+      const recordedDailyRate = Number(row.daily_rate ?? 0)
+      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? Number(worker.base_rate ?? 0) : 0
+      const earnedWithRate = earned + projectedDailyRate
+      const paid = Number(row.paid ?? 0)
+      const penalty = Number(row.penalty ?? 0)
+      const balance = earnedWithRate - paid - penalty
+      return {
+        employee_id: worker.id, employee_name: worker.full_name,
+        services_qty: Number(row.services_qty ?? 0), service_revenue: Number(row.service_revenue ?? 0),
+        commission_earned: Number(row.commission_earned ?? 0), daily_rate: recordedDailyRate + projectedDailyRate,
+        earned: earnedWithRate, paid, penalty, balance, due: Math.max(0, balance),
+      }
+    })
+    res.json({ data, date, totals: {
+      services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
+      service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
+      due: data.reduce((sum, row) => sum + row.due, 0),
+    } })
   } catch (err) { next(err) }
 })
 

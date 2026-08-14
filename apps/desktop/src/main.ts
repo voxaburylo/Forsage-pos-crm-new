@@ -885,6 +885,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:list-salary', (_event, input?: any) => requireLocalStaff().listSalary(input))
   handleDesktopIpc('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
+  handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
   handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary(input))
   handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout(input))
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
@@ -1124,6 +1125,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:pos:dashboard-summary', (_event, input) =>
     requireLocalPos().dashboardSummary(input),
+  )
+  handleDesktopIpc('desktop:pos:sold-items-report', (_event, input) =>
+    requireLocalPos().soldItemsReport(input),
   )
   handleDesktopIpc('desktop:pos:list-returns', (_event, input) =>
     requireLocalPos().listReturns(input),

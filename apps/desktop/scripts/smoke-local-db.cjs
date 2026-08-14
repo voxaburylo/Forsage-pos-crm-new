@@ -687,6 +687,7 @@ async function main() {
       qty: 1,
     }],
   });
+  orders.bulkArrival(draftOrder.items.map((item) => item.id));
   const orderPaymentId = '88888888-8888-4888-8888-888888888888';
   const orderPaymentInput = {
     payment_id: orderPaymentId,
@@ -768,6 +769,7 @@ async function main() {
       qty: 1,
     }],
   });
+  orders.bulkArrival(unlinkedOrder.items.map((item) => item.id));
   let unlinkedOrderError = '';
   try {
     orders.completeOrder(unlinkedOrder.id, { user_id: 'smoke-cashier', shift_id: shiftId });
