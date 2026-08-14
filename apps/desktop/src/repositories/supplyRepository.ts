@@ -298,6 +298,7 @@ export class LocalSupplyRepository {
     supplier_name?: string | null
     invoice_number?: string | null
     notes?: string | null
+    user_id?: string | null
     rows: Array<Record<string, unknown>>
   }): { invoice: any; matched: number; created: number; unresolved: Array<{ name: string; sku: string; needs_barcode: true }> } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
@@ -397,6 +398,7 @@ export class LocalSupplyRepository {
         supplier_id: supplierId,
         invoice_number: input.invoice_number ?? null,
         notes: input.notes ?? 'Створено з фото накладної через AI. Перевірте нові товари, штрихкоди та папки.',
+        user_id: input.user_id ?? null,
         items,
       })
     })

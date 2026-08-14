@@ -2,11 +2,26 @@ import type { Product } from '@/types/product'
 import type { Shift } from '@/types/shift'
 import type { Sale } from '@/types/sale'
 
+export type DesktopLanMode = 'standalone' | 'hub' | 'client'
+
+export interface DesktopLanStatus {
+  mode: DesktopLanMode
+  port: number
+  hubAddress: string
+  accessKey: string
+  allowedUserId: string
+  addresses: string[]
+  running: boolean
+  connected: boolean
+  lastError: string | null
+}
+
 export interface DesktopRuntimeInfo {
   databasePath: string
   deviceId: string
   schemaVersion: number
   pendingOperations: number
+  lan?: DesktopLanStatus | null
 }
 
 export interface DesktopProduct {
@@ -398,6 +413,11 @@ interface ForsageDesktopBridge {
     logout: () => Promise<{ success: true }>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
+  lan?: {
+    getStatus: () => Promise<DesktopLanStatus>
+    update: (input: Partial<Pick<DesktopLanStatus, 'mode' | 'port' | 'hubAddress' | 'accessKey' | 'allowedUserId'>>) => Promise<DesktopLanStatus>
+    test: () => Promise<DesktopLanStatus>
+  }
   backupNow: () => Promise<string>
   bootstrap: {
     importSnapshot: (snapshot: DesktopBootstrapSnapshot) => Promise<DesktopBootstrapImportResult>

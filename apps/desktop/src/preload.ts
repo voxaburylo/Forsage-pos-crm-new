@@ -19,6 +19,11 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     logout: () => ipcRenderer.invoke('desktop:auth:logout'),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
+  lan: {
+    getStatus: () => ipcRenderer.invoke('desktop:lan:get-status'),
+    update: (input: unknown) => ipcRenderer.invoke('desktop:lan:update', input),
+    test: () => ipcRenderer.invoke('desktop:lan:test'),
+  },
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
   bootstrap: {
     importSnapshot: (snapshot: unknown) =>

@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
   LocalBootstrapSnapshot,
@@ -37,6 +38,7 @@ import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter
 import { enqueuePrinterJob } from './print/printerJobQueue'
 import { assertPrinterRole, type PrinterRole } from './print/printerRole'
 import { withPrintTimeout } from './print/printTimeout'
+import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 
@@ -84,6 +86,10 @@ let localStaff: LocalStaffRepository | null = null
 let localWarehouse: LocalWarehouseRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let localSupplierCatalog: LocalSupplierCatalogRepository | null = null
+let localNetwork: LocalNetworkCoordinator | null = null
+type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
+const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
+const desktopSessionContext = new AsyncLocalStorage<LanSession>()
 let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
 let rendererCrashTimes: number[] = []
@@ -193,6 +199,8 @@ function requireCashalot(): CashalotService {
 }
 
 function requireDesktopSession(): { id: string; tenant_id: string; role: string } {
+  const contextualSession = desktopSessionContext.getStore()
+  if (contextualSession) return contextualSession
   if (!desktopAuthSession) throw new Error('Необхідно увійти в програму')
   return desktopAuthSession
 }
@@ -362,30 +370,19 @@ function validateTenantArguments(value: unknown, tenantId: string, depth = 0): v
   for (const nested of Object.values(record)) validateTenantArguments(nested, tenantId, depth + 1)
 }
 
-function handleDesktopIpc(
-  channel: string,
-  listener: (event: IpcMainInvokeEvent, ...args: any[]) => unknown,
-): void {
+function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
+  desktopCommandHandlers.set(channel, listener)
   ipcMain.handle(channel, async (event, ...args) => {
     const startedAt = Date.now()
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
       throw new Error('Неприпустиме джерело локальної команди')
     }
-    if (!PUBLIC_DESKTOP_CHANNELS.has(channel)) {
-      const session = requireDesktopSession()
-      if (!isDesktopChannelAllowed(channel, session.role)) {
-        throw new Error('Недостатньо прав для цієї дії')
-      }
-      for (const argument of args) validateTenantArguments(argument, session.tenant_id)
-      for (const position of desktopTenantArgumentPositions(channel)) {
-        const suppliedTenantId = args[position]
-        if (typeof suppliedTenantId === 'string' && suppliedTenantId !== session.tenant_id) {
-          throw new Error('Операція належить іншому магазину')
-        }
-      }
-    }
     try {
-      return await listener(event, ...args)
+      const session = PUBLIC_DESKTOP_CHANNELS.has(channel) ? null : requireDesktopSession()
+      if (session && localNetwork?.getStatus().mode === 'client' && isLanProxyChannel(channel)) {
+        return await localNetwork.invoke(channel, args, session)
+      }
+      return await executeDesktopCommand(channel, listener, event, args, session)
     } finally {
       const durationMs = Date.now() - startedAt
       if (durationMs >= 2_000) {
@@ -393,6 +390,45 @@ function handleDesktopIpc(
       }
     }
   })
+}
+
+async function executeDesktopCommand(
+  channel: string,
+  listener: DesktopIpcListener,
+  event: IpcMainInvokeEvent,
+  args: any[],
+  session: LanSession | null,
+): Promise<unknown> {
+  if (!PUBLIC_DESKTOP_CHANNELS.has(channel)) {
+    if (!session) throw new Error('Необхідно увійти в програму')
+    if (!isDesktopChannelAllowed(channel, session.role)) {
+      throw new Error('Недостатньо прав для цієї дії')
+    }
+    for (const argument of args) validateTenantArguments(argument, session.tenant_id)
+    for (const position of desktopTenantArgumentPositions(channel)) {
+      const suppliedTenantId = args[position]
+      if (typeof suppliedTenantId === 'string' && suppliedTenantId !== session.tenant_id) {
+        throw new Error('Операція належить іншому магазину')
+      }
+    }
+  }
+  const run = () => Promise.resolve(listener(event, ...args))
+  return session ? desktopSessionContext.run(session, run) : run()
+}
+
+function resolveLanSession(userId: string): LanSession | null {
+  const row = requireLocalDatabase().prepare(`
+    SELECT id, tenant_id, role, is_active FROM staff_users
+    WHERE id = ? AND tenant_id = ? LIMIT 1
+  `).get(userId, DEFAULT_TENANT_ID) as (LanSession & { is_active: number }) | undefined
+  if (!row || row.is_active !== 1) return null
+  return { id: row.id, tenant_id: row.tenant_id, role: row.role }
+}
+
+async function executeLanCommand(channel: string, args: unknown[], session: LanSession): Promise<unknown> {
+  const listener = desktopCommandHandlers.get(channel)
+  if (!listener) throw new Error('Локальну команду не знайдено')
+  return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, args, session)
 }
 
 async function processFiscalReturn(request: LocalFiscalReturnRequest) {
@@ -734,8 +770,13 @@ app.whenReady().then(async () => {
   localSync = new LocalSyncRepository(localDatabase)
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
+  localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession)
 
   handleDesktopIpc('desktop:get-runtime-info', () => requireLocalDatabase().info())
+
+  handleDesktopIpc('desktop:lan:get-status', () => localNetwork?.getStatus())
+  handleDesktopIpc('desktop:lan:update', (_event, input) => localNetwork?.update(input))
+  handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
   handleDesktopIpc('desktop:backup-now', () => requireLocalDatabase().backupNow())
   handleDesktopIpc('desktop:bootstrap:import-snapshot', (_event, snapshot: LocalBootstrapSnapshot) =>
     requireLocalSync().importSnapshotChunked(snapshot),
@@ -917,25 +958,25 @@ app.whenReady().then(async () => {
     requireLocalInventory().listSessions(input?.tenant_id),
   )
   handleDesktopIpc('desktop:inventory:create-session', (_event, input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) =>
-    requireLocalInventory().createSession(input),
+    requireLocalInventory().createSession({ ...input, created_by: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:start-session', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
-    requireLocalInventory().startSession(sessionId, input),
+    requireLocalInventory().startSession(sessionId, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:delete-session', (_event, sessionId: string, tenantId?: string) =>
     requireLocalInventory().deleteEmptySession(sessionId, tenantId),
   )
   handleDesktopIpc('desktop:inventory:get-session', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string }) =>
-    requireLocalInventory().getSessionData(sessionId, input?.tenant_id, input?.user_id),
+    requireLocalInventory().getSessionData(sessionId, input?.tenant_id, requireDesktopSession().id),
   )
   handleDesktopIpc('desktop:inventory:find-product', (_event, sessionId: string, input: { tenant_id?: string; code?: string; product_id?: string }) =>
     requireLocalInventory().findProduct(sessionId, input),
   )
   handleDesktopIpc('desktop:inventory:count', (_event, sessionId: string, input: any) =>
-    requireLocalInventory().countProduct(sessionId, input),
+    requireLocalInventory().countProduct(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:scan', (_event, sessionId: string, input: any) =>
-    requireLocalInventory().scan(sessionId, input),
+    requireLocalInventory().scan(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:set-item-qty', (_event, sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) =>
     requireLocalInventory().setItemQty(sessionId, itemId, input),
@@ -950,7 +991,7 @@ app.whenReady().then(async () => {
     requireLocalInventory().applyPrice(sessionId, input),
   )
   handleDesktopIpc('desktop:inventory:complete', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
-    requireLocalInventory().complete(sessionId, input),
+    requireLocalInventory().complete(sessionId, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:orders:list-ready', (_event, input?: { tenant_id?: string; search?: string; limit?: number }) =>
     requireLocalOrders().listReadyOrders(input),
@@ -959,7 +1000,7 @@ app.whenReady().then(async () => {
     requireLocalOrders().listOrders(input),
   )
   handleDesktopIpc('desktop:orders:save', (_event, input, id?: string) =>
-    requireLocalOrders().saveOrder(input, id),
+    requireLocalOrders().saveOrder({ ...input, manager_id: requireDesktopSession().id }, id),
   )
   handleDesktopIpc('desktop:orders:delete', (_event, id: string, tenantId?: string) =>
     requireLocalOrders().deleteOrder(id, tenantId),
@@ -1023,19 +1064,19 @@ app.whenReady().then(async () => {
     requireLocalSupply().getInvoice(id, tenantId),
   )
   handleDesktopIpc('desktop:supply:create-invoice', (_event, input: any) =>
-    requireLocalSupply().createInvoice(input),
+    requireLocalSupply().createInvoice({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:create-invoice-from-ai', (_event, input: any) =>
-    requireLocalSupply().createInvoiceFromAiRows(input),
+    requireLocalSupply().createInvoiceFromAiRows({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:update-invoice', (_event, id: string, input: any) =>
     requireLocalSupply().updateInvoice(id, input),
   )
   handleDesktopIpc('desktop:supply:pay-invoice', (_event, id: string, input: any) =>
-    requireLocalSupply().payInvoice(id, input),
+    requireLocalSupply().payInvoice(id, { ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:post-invoice', (_event, id: string, input?: any) =>
-    requireLocalSupply().postInvoice(id, input),
+    requireLocalSupply().postInvoice(id, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:cancel-invoice', (_event, id: string, tenantId?: string) =>
     requireLocalSupply().cancelInvoice(id, tenantId),
@@ -1286,6 +1327,7 @@ app.whenReady().then(async () => {
     input: LocalFiscalReturnIntentCancelInput,
   ) => requireLocalPos().cancelPreparedFiscalReturnIntent(operationId, input))
 
+  await localNetwork.startConfigured()
   await createWindow()
 }).catch((error: unknown) => {
   writeDesktopDiagnostic('startup-failed', error)
@@ -1312,6 +1354,8 @@ app.on('child-process-gone', (_event, details) => {
 
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
+  void localNetwork?.stop()
+  localNetwork = null
   cashalot?.stopWorker()
   cashalot = null
   localDatabase?.close()
