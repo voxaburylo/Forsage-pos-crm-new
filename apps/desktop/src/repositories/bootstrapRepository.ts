@@ -100,6 +100,10 @@ export class LocalBootstrapRepository {
         this.upsertStaff(tenantId, user, appliedAt)
         counts.staff++
       }
+      for (const user of changes.staff_directory ?? []) {
+        this.upsertStaff(tenantId, user, appliedAt)
+        counts.staff++
+      }
 
       if (changes.references_included) {
         this.replaceTenantTable('product_barcodes', tenantId)
@@ -326,7 +330,8 @@ export class LocalBootstrapRepository {
       }
       const secondaryCounts = new LocalSecondarySyncImporter(this.db).apply(tenantId, changes, appliedAt, {
         catalogStructure: changes.catalog_structure_snapshot_included === true,
-        staff: changes.staff_snapshot_included === true,
+        staff: changes.staff_snapshot_included === true || changes.staff_directory_snapshot_included === true,
+        staffRows: changes.staff_directory_snapshot_included === true ? changes.staff_directory : changes.staff,
         commissionRules: changes.commission_rules_snapshot_included === true,
         salaryPayments: changes.salary_payments_snapshot_included === true,
         stockReserves: changes.stock_reserves_snapshot_included === true,

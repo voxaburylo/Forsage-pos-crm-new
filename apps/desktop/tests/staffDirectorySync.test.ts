@@ -46,8 +46,8 @@ describe('safe staff directory sync', () => {
     sync.applyPullChanges({
       tenant_id: DEFAULT_TENANT_ID,
       cursor: '2026-08-15T08:01:00.000Z',
-      staff_snapshot_included: true,
-      staff: [{
+      staff_directory_snapshot_included: true,
+      staff_directory: [{
         id: employeeId,
         full_name: 'Новий працівник',
         phone: '+380502222222',

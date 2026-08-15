@@ -347,6 +347,11 @@ export class ChunkedSyncApplier {
     if (changes.staff_snapshot_included === true) {
       await this.pruneSnapshotTable('staff_users', tenantId, changes.staff, deletedAt, counts, 'deleted_staff', true)
     }
+    if (changes.staff_directory_snapshot_included === true) {
+      await this.pruneSnapshotTable(
+        'staff_users', tenantId, changes.staff_directory, deletedAt, counts, 'deleted_staff', true,
+      )
+    }
     if (changes.commission_rules_snapshot_included === true) {
       await this.pruneSnapshotTable(
         'commission_rules', tenantId, changes.commission_rules, deletedAt, counts, 'deleted_commission_rules',

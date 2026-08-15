@@ -4,6 +4,7 @@ import type { LocalDatabase } from '../db/localDatabase'
 type SnapshotOptions = {
   catalogStructure?: boolean
   staff?: boolean
+  staffRows?: any[]
   commissionRules?: boolean
   salaryPayments?: boolean
   stockReserves?: boolean
@@ -83,7 +84,9 @@ export class LocalSecondarySyncImporter {
       counts.deleted_brands = this.pruneCleanMissing('brands', tenantId, source.brands, importedAt)
     }
     if (snapshots.staff) {
-      counts.deleted_staff = this.pruneCleanMissing('staff_users', tenantId, source.staff, importedAt, true)
+      counts.deleted_staff = this.pruneCleanMissing(
+        'staff_users', tenantId, snapshots.staffRows ?? source.staff, importedAt, true,
+      )
     }
     for (const pin of source.staff_pins ?? []) {
       if (this.upsertStaffPin(tenantId, pin)) counts.staff_pins++

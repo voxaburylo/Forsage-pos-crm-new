@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildStaffSyncPayload,
   canPullStaffDirectory,
   canPullSupplyData,
   isSyncOperationAllowed,
@@ -39,6 +40,40 @@ describe('sync role policy', () => {
     }
     expect(canPullStaffDirectory('unknown')).toBe(false)
   })
+  it('keeps the legacy staff payload private while exposing a salary-safe directory', () => {
+    const staff = [{
+      id: 'worker-1',
+      full_name: 'Новий працівник',
+      phone: '+380501234567',
+      role: 'cashier',
+      is_active: true,
+      base_rate: 250000,
+      rate_period: 'month',
+      created_at: '2026-08-15T08:00:00.000Z',
+      updated_at: '2026-08-15T08:00:00.000Z',
+    }]
+
+    const cashier = buildStaffSyncPayload(staff, 'cashier')
+    expect(cashier.staff).toEqual([])
+    expect(cashier.staff_snapshot_included).toBe(false)
+    expect(cashier.staff_directory_snapshot_included).toBe(true)
+    expect(cashier.staff_directory).toEqual([{
+      id: 'worker-1',
+      full_name: 'Новий працівник',
+      phone: '+380501234567',
+      role: 'cashier',
+      is_active: true,
+      created_at: '2026-08-15T08:00:00.000Z',
+      updated_at: '2026-08-15T08:00:00.000Z',
+    }])
+
+    const owner = buildStaffSyncPayload(staff, 'owner')
+    expect(owner.staff).toBe(staff)
+    expect(owner.staff_directory).toEqual([])
+    expect(owner.staff_snapshot_included).toBe(true)
+    expect(owner.staff_directory_snapshot_included).toBe(false)
+  })
+
   it('does not expose supply documents to cashier roles', () => {
     expect(canPullSupplyData('cashier')).toBe(false)
     expect(canPullSupplyData('sto_viewer')).toBe(false)

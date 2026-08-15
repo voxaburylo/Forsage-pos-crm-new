@@ -64,6 +64,25 @@ export function canPullStaffDirectory(role: string): boolean {
   return STAFF_DIRECTORY_ROLES.has(role)
 }
 
+export function buildStaffSyncPayload(staff: Array<Record<string, any>>, role: string) {
+  const canPullPayroll = role === 'owner' || role === 'admin'
+  const staffDirectory = canPullPayroll ? [] : staff.map((user) => ({
+    id: user.id,
+    phone: user.phone,
+    full_name: user.full_name,
+    role: user.role,
+    is_active: user.is_active,
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+  }))
+  return {
+    staff: canPullPayroll ? staff : [],
+    staff_directory: staffDirectory,
+    staff_snapshot_included: canPullPayroll,
+    staff_directory_snapshot_included: canPullStaffDirectory(role) && !canPullPayroll,
+  }
+}
+
 export function canPullSupplyData(role: string): boolean {
   return SUPPLY_ROLES.has(role)
 }

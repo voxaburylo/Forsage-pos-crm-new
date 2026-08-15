@@ -15,6 +15,7 @@ function baseChunk(changes: LocalSyncPullChanges): LocalSyncPullChanges {
     references_included: false,
     catalog_structure_snapshot_included: false,
     staff_snapshot_included: false,
+    staff_directory_snapshot_included: false,
     commission_rules_snapshot_included: false,
     salary_payments_snapshot_included: false,
     stock_reserves_snapshot_included: false,
@@ -60,6 +61,7 @@ export function createPullChangeChunks(
   // Dependencies first. Categories are intentionally kept together so parent
   // links never point at a category that is scheduled for a later chunk.
   pushArray('staff', changes.staff)
+  pushArray('staff_directory', changes.staff_directory)
   pushArray('staff_pins', changes.staff_pins)
   if (changes.brands?.length) push({ ...make(), brands: changes.brands })
   if (changes.categories?.length) push({ ...make(), categories: changes.categories })

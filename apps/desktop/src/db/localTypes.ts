@@ -329,6 +329,7 @@ export interface LocalSyncPullChanges {
   reset_generation?: number
   reset_at?: string | null
   staff?: any[]
+  staff_directory?: any[]
   staff_pins?: any[]
   products?: any[]
   deleted_product_ids?: string[]
@@ -381,6 +382,7 @@ export interface LocalSyncPullChanges {
   references_included?: boolean
   catalog_structure_snapshot_included?: boolean
   staff_snapshot_included?: boolean
+  staff_directory_snapshot_included?: boolean
   commission_rules_snapshot_included?: boolean
   salary_payments_snapshot_included?: boolean
   stock_reserves_snapshot_included?: boolean

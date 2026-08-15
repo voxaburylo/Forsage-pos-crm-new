@@ -13,6 +13,7 @@ import {
   applySupplierCatalogItemUpsert,
 } from './supplierCatalogSyncService.js'
 import {
+  buildStaffSyncPayload,
   canPullStaffDirectory,
   canPullSupplyData,
   isSyncOperationAllowed,
@@ -361,12 +362,10 @@ async function fetchSecondarySyncData(params: {
       }
     }
   }
-  const staffDirectory = canPullPayroll
-    ? staff
-    : staff.map(({ base_rate: _baseRate, rate_period: _ratePeriod, ...user }) => user)
+  const staffSyncPayload = buildStaffSyncPayload(staff, role)
 
   return {
-    staff: staffDirectory,
+    ...staffSyncPayload,
     staff_pins: staffPins,
     commission_rules: commissionRules,
     salary_payments: salaryPayments,
@@ -381,7 +380,6 @@ async function fetchSecondarySyncData(params: {
     writeoff_items: writeoffItems.map((row) => ({ ...row, parent: undefined })),
     bonus_transactions: bonusTransactions,
     customer_deposit_transactions: customerDepositTransactions,
-    staff_snapshot_included: canPullStaff,
     commission_rules_snapshot_included: canPullPayroll,
     salary_payments_snapshot_included: canPullPayroll && fullSnapshots,
     stock_reserves_snapshot_included: canPullReserves && fullSnapshots,
