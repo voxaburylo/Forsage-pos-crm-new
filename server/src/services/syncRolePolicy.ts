@@ -1,3 +1,4 @@
+const STAFF_DIRECTORY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker'])
 const SUPPLY_ROLES = new Set(['owner', 'admin', 'manager', 'storekeeper'])
 const PRIVILEGED_SETTINGS_ROLES = new Set(['owner', 'admin'])
 const CASHDESK_SETTINGS_KEYS = new Set([
@@ -59,6 +60,10 @@ export function isSyncOperationAllowed(role: string, operationType: string): boo
         : null
   return allowed?.has(operationType) === true
 }
+export function canPullStaffDirectory(role: string): boolean {
+  return STAFF_DIRECTORY_ROLES.has(role)
+}
+
 export function canPullSupplyData(role: string): boolean {
   return SUPPLY_ROLES.has(role)
 }

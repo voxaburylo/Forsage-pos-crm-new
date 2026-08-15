@@ -13,6 +13,7 @@ import {
   applySupplierCatalogItemUpsert,
 } from './supplierCatalogSyncService.js'
 import {
+  canPullStaffDirectory,
   canPullSupplyData,
   isSyncOperationAllowed,
   sanitizeCommercialFieldsForRole,
@@ -223,6 +224,7 @@ async function fetchSecondarySyncData(params: {
   historySince?: string
 }) {
   const { since, upperBound, tenantId, userId, role, fullSnapshots, historySince } = params
+  const canPullStaff = canPullStaffDirectory(role)
   const canPullPayroll = role === 'owner' || role === 'admin'
   const canPullCash = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReturns = ['owner', 'admin', 'manager', 'cashier'].includes(role)
@@ -279,7 +281,7 @@ async function fetchSecondarySyncData(params: {
     bonusTransactions,
     customerDepositTransactions,
   ] = await Promise.all([
-    canPullPayroll ? listUsers(tenantId) : Promise.resolve([]),
+    canPullStaff ? listUsers(tenantId) : Promise.resolve([]),
     canPullPayroll
       ? fetchAllById(() => db.from('commission_rules').select('*').eq('tenant_id', tenantId))
       : Promise.resolve([]),
@@ -359,8 +361,12 @@ async function fetchSecondarySyncData(params: {
       }
     }
   }
+  const staffDirectory = canPullPayroll
+    ? staff
+    : staff.map(({ base_rate: _baseRate, rate_period: _ratePeriod, ...user }) => user)
+
   return {
-    staff,
+    staff: staffDirectory,
     staff_pins: staffPins,
     commission_rules: commissionRules,
     salary_payments: salaryPayments,
@@ -375,7 +381,7 @@ async function fetchSecondarySyncData(params: {
     writeoff_items: writeoffItems.map((row) => ({ ...row, parent: undefined })),
     bonus_transactions: bonusTransactions,
     customer_deposit_transactions: customerDepositTransactions,
-    staff_snapshot_included: canPullPayroll,
+    staff_snapshot_included: canPullStaff,
     commission_rules_snapshot_included: canPullPayroll,
     salary_payments_snapshot_included: canPullPayroll && fullSnapshots,
     stock_reserves_snapshot_included: canPullReserves && fullSnapshots,

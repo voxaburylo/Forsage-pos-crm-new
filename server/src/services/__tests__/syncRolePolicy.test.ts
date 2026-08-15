@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canPullStaffDirectory,
   canPullSupplyData,
   isSyncOperationAllowed,
   sanitizeCommercialFieldsForRole,
@@ -31,6 +32,12 @@ describe('sync role policy', () => {
     }
     expect(isSyncOperationAllowed('storekeeper', 'inventory.completed')).toBe(false)
     expect(isSyncOperationAllowed('owner', 'inventory.completed')).toBe(true)
+  })
+  it('syncs the safe staff directory to every local workstation role', () => {
+    for (const role of ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker']) {
+      expect(canPullStaffDirectory(role)).toBe(true)
+    }
+    expect(canPullStaffDirectory('unknown')).toBe(false)
   })
   it('does not expose supply documents to cashier roles', () => {
     expect(canPullSupplyData('cashier')).toBe(false)

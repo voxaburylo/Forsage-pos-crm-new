@@ -590,6 +590,8 @@ export class LocalBootstrapRepository {
 
   private upsertStaff(tenantId: string, user: any, importedAt: string): void {
     const updatedAt = timestamp(user, importedAt)
+    const hasBaseRate = user.base_rate !== undefined && user.base_rate !== null
+    const hasRatePeriod = user.rate_period !== undefined && user.rate_period !== null
     const baseRate = Math.max(0, Math.round(Number(user.base_rate ?? 0) || 0))
     const ratePeriod = user.rate_period === 'month' ? 'month' : 'day'
     this.db.prepare(`
@@ -603,8 +605,8 @@ export class LocalBootstrapRepository {
         role = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.role ELSE staff_users.role END,
         phone = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.phone ELSE staff_users.phone END,
         is_active = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.is_active ELSE staff_users.is_active END,
-        base_rate = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.base_rate ELSE staff_users.base_rate END,
-        rate_period = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.rate_period ELSE staff_users.rate_period END,
+        base_rate = CASE WHEN staff_users.dirty_at IS NULL AND ? = 1 THEN excluded.base_rate ELSE staff_users.base_rate END,
+        rate_period = CASE WHEN staff_users.dirty_at IS NULL AND ? = 1 THEN excluded.rate_period ELSE staff_users.rate_period END,
         remote_updated_at = excluded.remote_updated_at,
         updated_at = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.updated_at ELSE staff_users.updated_at END,
         deleted_at = CASE WHEN staff_users.dirty_at IS NULL THEN excluded.deleted_at ELSE staff_users.deleted_at END
@@ -621,6 +623,8 @@ export class LocalBootstrapRepository {
       user.created_at ?? updatedAt,
       updatedAt,
       user.deleted_at ?? null,
+      hasBaseRate ? 1 : 0,
+      hasRatePeriod ? 1 : 0,
     )
   }
   private upsertBrand(tenantId: string, brand: any, importedAt: string): void {

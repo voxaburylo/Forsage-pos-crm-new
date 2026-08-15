@@ -4,8 +4,6 @@ import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAx
 import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
-import { api } from '@/lib/api'
-import { useAuthStore } from '@/stores/authStore'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
 import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
@@ -59,7 +57,6 @@ function dateKeyDaysAgo(days: number): string {
 }
 
 export default function DailyReport() {
-  const offlineMode = useAuthStore((state) => state.offlineMode)
   const [tab, setTab]           = useState<Tab>('today')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
@@ -71,17 +68,6 @@ export default function DailyReport() {
   const [profit, setProfit]       = useState<ProfitReport | null>(null)
   const [loading, setLoading]   = useState(false)
 
-  // «Контроль дня» — метрики для власника (повернення, знижки, недостачі, мінуси)
-  interface DailyControl {
-    revenue: number; receipts: number; avg_receipt: number
-    cash: number; card: number; transfer: number; debt_sales: number; discounts: number
-    returns_count: number; returns_sum: number
-    returns_reasons: Array<{ reason: string; count: number }>
-    recon_diffs: Array<{ difference: number; comment: string | null }>
-    negative_stock: number; no_price: number
-  }
-  const [control, setControl] = useState<DailyControl | null>(null)
-  const [sendingTg, setSendingTg] = useState(false)
 
   // Продані товари за період — один зведений список для дозамовлення.
   const todayKey = businessDateKey()
@@ -140,8 +126,6 @@ export default function DailyReport() {
       ])
       setReport({ ...summary, sales: period.sales })
       setSoldItems(items ?? [])
-      reportApi.dailyControl()
-        .then((r) => setControl(r.data)).catch(() => {})
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [todayKey])
 
@@ -201,18 +185,31 @@ export default function DailyReport() {
       let dataToExport: any[] = []
       let fileName = 'zvit'
 
-      if (tab === 'today' || tab === 'period') {
+      if (tab === 'today') {
+        if (!soldItems.length) {
+          toast.error('Немає проданих товарів за сьогодні')
+          return
+        }
+        dataToExport = soldItems.map((item) => ({
+          'Назва товару': item.name,
+          'Артикул': item.sku,
+          'Продано': item.qty_net,
+          'Одиниця': item.unit,
+          'Сума (грн)': item.net_revenue / 100,
+        }))
+        fileName = 'sold_items_today'
+      } else if (tab === 'period') {
         if (!report || !report.sales.length) {
           toast.error('Немає даних для експорту')
           return
         }
         dataToExport = report.sales.map((s) => ({
-          'Номер чека': `#${s.sale_number}`,
+          'Номер чека': '#' + s.sale_number,
           'Метод оплати': PAYMENT_LABELS[s.payment_method] || s.payment_method,
           'Сума (грн)': s.total / 100,
           'Дата': formatDateTime(s.completed_at),
         }))
-        fileName = `sales_${tab === 'today' ? 'today' : 'period'}`
+        fileName = 'sales_period'
       } else if (tab === 'weekly') {
         if (!weekly.length) {
           toast.error('Немає даних для експорту')
@@ -368,7 +365,7 @@ export default function DailyReport() {
               { label: 'Чеків', value: String(report.total_sales) },
               { label: 'Продано за чеками', value: formatMoney(report.total_revenue) },
               { label: 'Отримано грошей', value: formatMoney(report.payment_received_total) },
-              { label: 'Повернення', value: formatMoney(control?.returns_sum ?? 0) },
+              { label: 'Продано одиниць', value: String(Number(soldQty.toFixed(3))) },
               { label: 'Готівка', value: formatMoney(report.by_method.cash) },
               { label: 'Картка', value: formatMoney(report.by_method.card) },
               { label: 'Переказ', value: formatMoney(report.by_method.transfer) },
@@ -385,62 +382,49 @@ export default function DailyReport() {
             Тому «Продано» та «Отримано грошей» можуть відрізнятися, але кожна сума має окрему розшифровку.
           </p>
 
-          {/* Контроль дня — очима власника */}
-          {control && (
-            <Card className="mb-4 border-yellow-200 bg-yellow-50/40">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-bold text-gray-800">🔎 Контроль дня</p>
-                {!offlineMode && (
-                <button
-                  onClick={async () => {
-                    setSendingTg(true)
-                    try {
-                      const r = await api.post<{ data: { sent: boolean } }>('/api/v1/reports/daily-control/send', {})
-                      if (r.data.sent) toast.success('Звіт надіслано в Telegram')
-                      else toast.warning('Не налаштовано Telegram chat ID власника (Налаштування)')
-                    } catch { toast.error('Не вдалося надіслати') } finally { setSendingTg(false) }
-                  }}
-                  disabled={sendingTg}
-                  className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium disabled:opacity-50"
-                >
-                  {sendingTg ? 'Надсилаю…' : '✈️ Надіслати в Telegram'}
-                </button>
-                )}
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div>
-                  <p className="text-xs text-gray-400">Повернення</p>
-                  <p className={`font-bold ${control.returns_count > 0 ? 'text-red-600' : 'text-gray-900'}`}>
-                    {control.returns_count} шт{control.returns_sum > 0 ? ' · ' + formatMoney(control.returns_sum) : ''}
-                  </p>
-                  {control.returns_reasons.slice(0, 3).map((r, i) => (
-                    <p key={i} className="text-[11px] text-gray-500">• {r.reason} ×{r.count}</p>
-                  ))}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Знижки за день</p>
-                  <p className={`font-bold ${control.discounts > 0 ? 'text-amber-600' : 'text-gray-900'}`}>{formatMoney(control.discounts)}</p>
-                  {control.debt_sales > 0 && <p className="text-[11px] text-gray-500">в борг: {formatMoney(control.debt_sales)}</p>}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Звірка каси</p>
-                  {control.recon_diffs.length === 0
-                    ? <p className="font-bold text-green-600">без розбіжностей</p>
-                    : control.recon_diffs.map((d, i) => (
-                        <p key={i} className="font-bold text-red-600">{d.difference > 0 ? '+' : ''}{formatMoney(d.difference)}</p>
-                      ))}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Каталог</p>
-                  <p className={`font-bold ${control.negative_stock > 0 ? 'text-red-600' : 'text-gray-900'}`}>мінуси: {control.negative_stock}</p>
-                  <p className={`text-[11px] ${control.no_price > 0 ? 'text-amber-600 font-semibold' : 'text-gray-500'}`}>без ціни: {control.no_price}</p>
-                </div>
-              </div>
-            </Card>
-          )}
-
-
           <Card padding="none">
+            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+              <div>
+                <h3 className="font-bold text-gray-900">Продані товари за сьогодні</h3>
+                <p className="text-xs text-gray-500">Один товар — один рядок, незалежно від кількості чеків</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-500">Сума товарів за день</p>
+                <p className="text-lg font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
+              </div>
+            </div>
+            {soldItems.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
+            ) : (
+              <div className="max-h-[55vh] overflow-auto">
+                <table className="w-full min-w-[620px] text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Назва товару</th>
+                      <th className="px-2 py-3 text-left">Артикул</th>
+                      <th className="px-2 py-3 text-right">Продано</th>
+                      <th className="px-4 py-3 text-right">Сума</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {soldItems.map((item) => (
+                      <tr key={item.product_id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
+                        <td className="px-4 py-2 text-right font-semibold text-gray-900">{formatMoney(item.net_revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          <Card padding="none" className="mt-4">
+            <div className="border-b border-gray-100 px-4 py-3">
+              <h3 className="font-semibold text-gray-800">Чеки за сьогодні</h3>
+            </div>
             <Table
               columns={[
                 { key: 'num',   header: 'Чек',    render: (s) => <span className="font-mono text-xs">#{s.sale_number}</span> },
@@ -454,52 +438,6 @@ export default function DailyReport() {
               loading={loading}
               empty={<p className="text-gray-400 text-sm">Продажів немає</p>}
             />
-          </Card>
-
-          <Card padding="none" className="mt-4">
-            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-              <div>
-                <h3 className="font-bold text-gray-900">Продані товари за сьогодні</h3>
-                <p className="text-xs text-gray-500">Один товар — один рядок, незалежно від кількості чеків</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTab('sold')}
-                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-yellow-400"
-              >
-                Відкрити повний звіт
-              </button>
-            </div>
-            {soldItems.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
-            ) : (
-              <div className="max-h-[55vh] overflow-auto">
-                <table className="w-full min-w-[760px] text-sm">
-                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
-                    <tr>
-                      <th className="px-4 py-3 text-left">Артикул</th>
-                      <th className="px-2 py-3 text-left">Штрихкод</th>
-                      <th className="px-2 py-3 text-left">Назва</th>
-                      <th className="px-2 py-3 text-right">Продано</th>
-                      <th className="px-2 py-3 text-right">Залишок</th>
-                      <th className="px-4 py-3 text-right">Сума</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {soldItems.map((item) => (
-                      <tr key={item.product_id} className="hover:bg-gray-50">
-                        <td className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
-                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
-                        <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
-                        <td className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
-                        <td className="px-2 py-2 text-right text-gray-600">{item.qty_on_hand} {item.unit}</td>
-                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
           </Card>
         </>
       )}
