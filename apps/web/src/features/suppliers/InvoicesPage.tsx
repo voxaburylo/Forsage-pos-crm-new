@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FileText } from 'lucide-react'
+import { Plus, FileText, Sparkles } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import type { SupplyInvoice, PaginatedInvoices } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
@@ -91,9 +91,14 @@ export default function InvoicesPage() {
       title={`Приходні накладні${total ? ` (${total})` : ''}`}
       onBack={() => navigate('/receiving')}
       actions={
-        <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new?fresh=' + Date.now())}>
-          + Приходна накладна
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" icon={<Sparkles size={16} />} onClick={() => navigate('/receiving/ai')}>
+            Створити з фото (AI)
+          </Button>
+          <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new?fresh=' + Date.now())}>
+            + Приходна накладна
+          </Button>
+        </div>
       }
     >
       <div className="mb-4 flex items-center gap-2">

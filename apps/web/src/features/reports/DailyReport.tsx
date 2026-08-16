@@ -425,10 +425,10 @@ export default function DailyReport() {
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
             {[
-              { label: 'Чеків', value: String(report.total_sales) },
-              { label: 'Продано за чеками', value: formatMoney(report.total_revenue) },
-              { label: 'Отримано грошей', value: formatMoney(report.payment_received_total) },
+              { label: 'Товарних позицій', value: String(soldItems.length) },
               { label: 'Продано одиниць', value: String(Number(soldQty.toFixed(3))) },
+              { label: 'Сума проданих товарів', value: formatMoney(soldRevenue) },
+              { label: 'Отримано грошей', value: formatMoney(report.payment_received_total) },
               { label: 'Готівка', value: formatMoney(report.by_method.cash) },
               { label: 'Картка', value: formatMoney(report.by_method.card) },
               { label: 'Переказ', value: formatMoney(report.by_method.transfer) },
@@ -441,8 +441,8 @@ export default function DailyReport() {
             ))}
           </div>
           <p className="mb-4 text-xs text-gray-500">
-            Продажі рахуються за датою закриття чека. Передоплати замовлень — за датою прийняття грошей.
-            Тому «Продано» та «Отримано грошей» можуть відрізнятися, але кожна сума має окрему розшифровку.
+            Товари потрапляють у цей список за датою завершення продажу та об’єднуються незалежно від кількості чеків.
+            Передоплати замовлень рахуються окремо за датою прийняття грошей.
           </p>
 
           <Card padding="none">
@@ -484,24 +484,6 @@ export default function DailyReport() {
             )}
           </Card>
 
-          <Card padding="none" className="mt-4">
-            <div className="border-b border-gray-100 px-4 py-3">
-              <h3 className="font-semibold text-gray-800">Чеки за сьогодні</h3>
-            </div>
-            <Table
-              columns={[
-                { key: 'num',   header: 'Чек',    render: (s) => <span className="font-mono text-xs">#{s.sale_number}</span> },
-                { key: 'cust',  header: 'Клієнт', render: (s) => <span className="text-gray-600 text-sm">{s.customer?.full_name ?? s.customer?.phone ?? '—'}</span> },
-                { key: 'pay',   header: 'Оплата', render: (s) => <Badge color={PAYMENT_COLOR[s.payment_method] ?? 'gray'}>{PAYMENT_LABELS[s.payment_method]}</Badge> },
-                { key: 'total', header: 'Сума', className: 'text-right', render: (s) => <span className="font-semibold">{formatMoney(s.total)}</span> },
-                { key: 'date',  header: 'Час', className: 'hidden md:table-cell text-right', render: (s) => <span className="text-gray-400 text-xs">{formatDateTime(s.completed_at)}</span> },
-              ]}
-              data={report.sales}
-              keyFn={(s) => s.id}
-              loading={loading}
-              empty={<p className="text-gray-400 text-sm">Продажів немає</p>}
-            />
-          </Card>
         </>
       )}
 

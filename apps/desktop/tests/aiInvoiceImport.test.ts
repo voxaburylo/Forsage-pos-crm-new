@@ -56,4 +56,38 @@ describe('AI invoice import into local supply draft', () => {
     expect(created?.category_id).toBeNull()
     expect(result.invoice.items.find((item: any) => item.product_id === created?.id)?.qty).toBe(2)
   })
+
+  it('reuses exact article and normalized exact name but keeps a similar product separate', () => {
+    const bySku = catalog.upsertProduct({
+      id: 'existing-by-sku',
+      sku: 'SKU-EXACT',
+      name: 'Підшипник маточини передній',
+      qty_on_hand: 0,
+      purchase_price: 1000,
+      retail_price: 1500,
+    })
+    const byName = catalog.upsertProduct({
+      id: 'existing-by-name',
+      sku: 'OIL-530',
+      name: 'Олива ELF 5W-30',
+      qty_on_hand: 0,
+      purchase_price: 1000,
+      retail_price: 1500,
+    })
+
+    const result = supply.createInvoiceFromAiRows({
+      rows: [
+        { name: 'Підшипник з фото накладної', sku: 'SKU-EXACT', qty: 1, purchase_price_uah: 200 },
+        { name: 'олива elf 5w 30', qty: 2, purchase_price_uah: 300 },
+        { name: 'Олива ELF 5W-40', qty: 3, purchase_price_uah: 400 },
+      ],
+    })
+
+    expect(result.matched).toBe(2)
+    expect(result.created).toBe(1)
+    expect(result.invoice.items.some((item: any) => item.product_id === bySku.id)).toBe(true)
+    expect(result.invoice.items.some((item: any) => item.product_id === byName.id)).toBe(true)
+    expect(catalog.findBySku('OIL-530')?.name).toBe('Олива ELF 5W-30')
+    expect(result.unresolved[0]?.name).toBe('Олива ELF 5W-40')
+  })
 })
