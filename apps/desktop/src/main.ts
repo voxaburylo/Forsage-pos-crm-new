@@ -135,7 +135,7 @@ interface DesktopPrintOptions {
 
 function rendererIndexPath(): string {
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'renderer', 'index.html')
+    ? path.join(__dirname, 'renderer', 'index.html')
     : path.resolve(__dirname, '../../web/dist/index.html')
 }
 
