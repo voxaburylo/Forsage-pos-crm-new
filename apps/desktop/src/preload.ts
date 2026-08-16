@@ -112,6 +112,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     salarySummary: (period?: string) => ipcRenderer.invoke('desktop:staff:salary-summary', period),
     dailySummary: (workDate?: string) => ipcRenderer.invoke('desktop:staff:daily-summary', workDate),
     tireServiceReport: (workDate?: string) => ipcRenderer.invoke('desktop:staff:tire-service-report', workDate),
+    tireCashHandover: (input: unknown) => ipcRenderer.invoke('desktop:staff:tire-cash-handover', input),
     createSalary: (input: unknown) => ipcRenderer.invoke('desktop:staff:create-salary', input),
     dailyPayout: (input: unknown) => ipcRenderer.invoke('desktop:staff:daily-payout', input),
     deleteSalary: (id: string) => ipcRenderer.invoke('desktop:staff:delete-salary', id),
@@ -272,4 +273,3 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:fiscal:cancel-prepared-return', operationId, input),
   },
 })
-

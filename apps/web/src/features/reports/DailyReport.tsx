@@ -14,7 +14,8 @@ import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import { businessDateKey } from '@/lib/businessDate'
 import { useAuthStore } from '@/stores/authStore'
 import { staffApi } from '@/features/staff/staffApi'
-import type { TireServiceReportRow } from '@/features/staff/staffApi'
+import type { TireServiceReceipt, TireServiceReportRow } from '@/features/staff/staffApi'
+import { shiftApi } from '@/features/pos/shiftApi'
 
 type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
@@ -62,6 +63,7 @@ function dateKeyDaysAgo(days: number): string {
 export default function DailyReport() {
   const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
   const canSeeFullReports = role === 'owner' || role === 'admin'
+  const canSeeTireReport = canSeeFullReports || role === 'cashier'
   const [tab, setTab]           = useState<Tab>(() => canSeeFullReports ? 'today' : 'sold')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
@@ -82,6 +84,8 @@ export default function DailyReport() {
   const [soldLoading, setSoldLoading] = useState(false)
   const [tireDate, setTireDate] = useState(todayKey)
   const [tireRows, setTireRows] = useState<TireServiceReportRow[]>([])
+  const [tireReceipts, setTireReceipts] = useState<TireServiceReceipt[]>([])
+  const [tireHandoverEmployee, setTireHandoverEmployee] = useState<string | null>(null)
   const [tireLoading, setTireLoading] = useState(false)
 
   useEffect(() => {
@@ -205,18 +209,38 @@ export default function DailyReport() {
   }, [])
 
   const loadTireReport = useCallback(async () => {
-    if (!canSeeFullReports) return
+    if (!canSeeTireReport) return
     setTireLoading(true)
     try {
-      const { data } = await staffApi.tireServiceReport(tireDate)
-      setTireRows(data ?? [])
+      const report = await staffApi.tireServiceReport(tireDate)
+      setTireRows(report.data ?? [])
+      setTireReceipts(report.receipts ?? [])
     } catch {
       setTireRows([])
+      setTireReceipts([])
       toast.error('Не вдалося завантажити звіт шиномонтажу')
     } finally {
       setTireLoading(false)
     }
-  }, [canSeeFullReports, tireDate])
+  }, [canSeeTireReport, tireDate])
+
+  const handOverTireCash = useCallback(async (row: TireServiceReportRow) => {
+    if (row.cash_pending <= 0 || tireHandoverEmployee) return
+    try {
+      const { data: shift } = await shiftApi.current({ silent: true })
+      if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
+      if (!window.confirm(`Внести ${formatMoney(row.cash_pending)} каси шиномонтажу за ${tireDate} від ${row.employee_name} у поточну зміну?`)) return
+      setTireHandoverEmployee(row.employee_id)
+      await staffApi.tireCashHandover({
+        employee_id: row.employee_id, employee_name: row.employee_name, work_date: tireDate,
+        shift_id: shift.id, amount: row.cash_pending, operation_id: crypto.randomUUID(),
+      })
+      toast.success('Касу шиномонтажу внесено в поточну зміну')
+      await loadTireReport()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося внести касу шиномонтажу')
+    } finally { setTireHandoverEmployee(null) }
+  }, [loadTireReport, tireDate, tireHandoverEmployee])
 
   const exportToExcel = useCallback(() => {
     try {
@@ -377,7 +401,7 @@ export default function DailyReport() {
     { id: 'debtors',  label: 'Боржники',   icon: <Users size={15} /> },
     { id: 'writeoffs', label: 'Списання',  icon: <Trash2 size={15} /> },
     { id: 'profit',    label: 'P&L',        icon: <DollarSign size={15} /> },
-  ].filter((item) => canSeeFullReports || item.id === 'sold')
+  ].filter((item) => canSeeFullReports || item.id === 'sold' || (canSeeTireReport && item.id === 'tire'))
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
@@ -388,7 +412,10 @@ export default function DailyReport() {
     revenue: totals.revenue + Number(row.service_revenue ?? 0),
     earned: totals.earned + Number(row.earned ?? 0),
     due: totals.due + Number(row.due ?? 0),
-  }), { services: 0, revenue: 0, earned: 0, due: 0 })
+    payable: totals.payable + Number(row.payable_due ?? 0),
+    cashPending: totals.cashPending + Number(row.cash_pending ?? 0),
+    cashHanded: totals.cashHanded + Number(row.cash_handed_over ?? 0),
+  }), { services: 0, revenue: 0, earned: 0, due: 0, payable: 0, cashPending: 0, cashHanded: 0 })
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -600,61 +627,61 @@ export default function DailyReport() {
         </>
       )}
 
-      {/* Шиномонтаж — каса та зарплата за день */}
-      {tab === 'tire' && canSeeFullReports && (
+      {/* Шиномонтаж — чеки, відкладена каса та зарплата */}
+      {tab === 'tire' && canSeeTireReport && (
         <>
           <Card className="mb-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-bold text-gray-900">Шиномонтаж за день</h2>
-                <p className="mt-1 text-sm text-gray-500">Виручка за роботи та фактичний розрахунок зарплати кожного шиномонтажника.</p>
-              </div>
-              <label className="text-xs font-medium text-gray-600">
-                Дата
-                <input type="date" value={tireDate} max={todayKey} onChange={(event) => setTireDate(event.target.value)}
-                  className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+              <div><h2 className="text-lg font-bold text-gray-900">Шиномонтаж за день</h2>
+                <p className="mt-1 max-w-3xl text-sm text-gray-500">Чеки прив’язані до дня робіт. Готівку можна внести в будь-яку наступну відкриту зміну; зарплата доступна через 2 дні та після внесення всієї готівки.</p></div>
+              <label className="text-xs font-medium text-gray-600">Дата робіт
+                <input type="date" value={tireDate} max={todayKey} onChange={(event) => setTireDate(event.target.value)} className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
               </label>
             </div>
           </Card>
-          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Card><p className="text-xs text-gray-400">Виконано послуг</p><p className="text-2xl font-bold text-gray-900">{Number(tireTotals.services.toFixed(3))}</p></Card>
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <Card><p className="text-xs text-gray-400">Чеків</p><p className="text-2xl font-bold text-gray-900">{tireReceipts.length}</p></Card>
             <Card><p className="text-xs text-gray-400">Каса шиномонтажу</p><p className="text-2xl font-bold text-gray-900">{formatMoney(tireTotals.revenue)}</p></Card>
-            <Card><p className="text-xs text-gray-400">Нараховано зарплати</p><p className="text-2xl font-bold text-gray-900">{formatMoney(tireTotals.earned)}</p></Card>
-            <Card><p className="text-xs text-gray-400">Зараз до виплати</p><p className="text-2xl font-bold text-amber-700">{formatMoney(tireTotals.due)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Внесено готівки</p><p className="text-2xl font-bold text-green-700">{formatMoney(tireTotals.cashHanded)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Очікує внесення</p><p className="text-2xl font-bold text-orange-700">{formatMoney(tireTotals.cashPending)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Зарплата до видачі</p><p className="text-2xl font-bold text-amber-700">{formatMoney(tireTotals.payable)}</p></Card>
           </div>
+          <Card padding="none" className="mb-4">
+            <div className="border-b border-gray-100 px-4 py-3"><h3 className="font-bold text-gray-900">Чеки шиномонтажу</h3><p className="text-xs text-gray-500">Один рядок — один закритий чек.</p></div>
+            {tireLoading ? <div className="flex min-h-32 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div> : tireReceipts.length === 0 ?
+              <div className="flex min-h-32 items-center justify-center px-4 text-center text-sm text-gray-400">За цей день немає закритих чеків шиномонтажу</div> :
+              <div className="overflow-auto"><table className="w-full min-w-[780px] text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Чек / час</th><th className="px-3 py-3 text-left">Шиномонтажник</th><th className="px-3 py-3 text-right">Послуг</th><th className="px-3 py-3 text-right">Сума робіт</th><th className="px-3 py-3 text-left">Оплата</th><th className="px-4 py-3 text-right">Готівка</th></tr></thead>
+                <tbody className="divide-y divide-gray-100">{tireReceipts.map((receipt) => <tr key={receipt.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3"><div className="font-semibold text-gray-900">#{receipt.sale_number}</div><div className="text-xs text-gray-500">{formatDateTime(receipt.completed_at)}</div></td>
+                  <td className="px-3 py-3">{receipt.employee_name}</td><td className="px-3 py-3 text-right">{Number(receipt.services_qty.toFixed(3))}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatMoney(receipt.service_revenue)}</td>
+                  <td className="px-3 py-3"><Badge color={PAYMENT_COLOR[receipt.payment_method] ?? 'gray'}>{PAYMENT_LABELS[receipt.payment_method] ?? receipt.payment_method}</Badge></td>
+                  <td className="px-4 py-3 text-right">{formatMoney(receipt.cash_revenue)}</td></tr>)}</tbody>
+              </table></div>}
+          </Card>
           <Card padding="none">
-            {tireLoading ? (
-              <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div>
-            ) : tireRows.length === 0 ? (
-              <div className="flex min-h-40 items-center justify-center px-4 text-center text-sm text-gray-400">За цей день немає робіт шиномонтажу або активних шиномонтажників</div>
-            ) : (
-              <div className="overflow-auto">
-                <table className="w-full min-w-[900px] text-sm">
-                  <thead className="bg-gray-50 text-xs text-gray-500"><tr>
-                    <th className="px-4 py-3 text-left">Працівник</th><th className="px-2 py-3 text-right">Послуг</th>
-                    <th className="px-2 py-3 text-right">Каса</th><th className="px-2 py-3 text-right">Процент</th>
-                    <th className="px-2 py-3 text-right">Ставка</th><th className="px-2 py-3 text-right">Нараховано</th>
-                    <th className="px-2 py-3 text-right">Виплачено</th><th className="px-4 py-3 text-right">До виплати</th>
-                  </tr></thead>
-                  <tbody className="divide-y divide-gray-100">{tireRows.map((row) => (
-                    <tr key={row.employee_id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td>
-                      <td className="px-2 py-3 text-right">{Number(row.services_qty.toFixed(3))}</td>
-                      <td className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
-                      <td className="px-2 py-3 text-right">{formatMoney(row.commission_earned)}</td>
-                      <td className="px-2 py-3 text-right">{formatMoney(row.daily_rate)}</td>
-                      <td className="px-2 py-3 text-right font-semibold">{formatMoney(row.earned)}</td>
-                      <td className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td>
-                      <td className="px-4 py-3 text-right font-bold text-amber-700">{formatMoney(row.due)}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            )}
+            <div className="border-b border-gray-100 px-4 py-3"><h3 className="font-bold text-gray-900">Розрахунок по працівниках</h3></div>
+            {tireLoading ? <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div> : tireRows.length === 0 ?
+              <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Немає активних шиномонтажників</div> :
+              <div className="overflow-auto"><table className="w-full min-w-[1100px] text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Працівник</th><th className="px-2 py-3 text-right">Каса</th><th className="px-2 py-3 text-right">Готівкою</th><th className="px-2 py-3 text-right">Внесено</th><th className="px-2 py-3 text-right">Ще внести</th><th className="px-2 py-3 text-right">Нараховано</th><th className="px-2 py-3 text-right">Виплачено</th><th className="px-2 py-3 text-right">Залишок</th><th className="px-4 py-3 text-left">Статус / дія</th></tr></thead>
+                <tbody className="divide-y divide-gray-100">{tireRows.map((row) => <tr key={row.employee_id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td><td className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
+                  <td className="px-2 py-3 text-right">{formatMoney(row.cash_revenue)}</td><td className="px-2 py-3 text-right text-green-700">{formatMoney(row.cash_handed_over)}</td>
+                  <td className="px-2 py-3 text-right font-semibold text-orange-700">{formatMoney(row.cash_pending)}</td><td className="px-2 py-3 text-right">{formatMoney(row.earned)}</td>
+                  <td className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td><td className="px-2 py-3 text-right font-bold">{formatMoney(row.due)}</td>
+                  <td className="px-4 py-3">{row.cash_pending > 0 ?
+                    <button onClick={() => handOverTireCash(row)} disabled={tireHandoverEmployee === row.employee_id} className="rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300 disabled:opacity-50">
+                      {tireHandoverEmployee === row.employee_id ? 'Вносимо…' : `+ Внести ${formatMoney(row.cash_pending)}`}</button> :
+                    row.salary_ready ? <span className="font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span> :
+                    <span className="text-xs font-medium text-blue-700">Очікує до {formatDate(row.salary_available_on)}</span>}</td>
+                </tr>)}</tbody>
+                <tfoot className="border-t-2 border-gray-200 bg-amber-50"><tr><td colSpan={8} className="px-4 py-4 text-right text-base font-bold">Усього зарплати, яку можна видати:</td><td className="px-4 py-4 text-xl font-black text-amber-800">{formatMoney(tireTotals.payable)}</td></tr></tfoot>
+              </table></div>}
           </Card>
         </>
       )}
-
       {/* 7 днів — графік */}
       {tab === 'weekly' && (
         <>

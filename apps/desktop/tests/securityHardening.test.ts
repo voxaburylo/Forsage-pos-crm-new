@@ -11,6 +11,8 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:pos:checkout', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:print:html', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:staff:list-users', 'cashier')).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:staff:tire-service-report', 'cashier')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:staff:tire-cash-handover', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:supply:post-invoice', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:catalog:save-product', 'cashier')).toBe(true)
   })

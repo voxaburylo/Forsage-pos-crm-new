@@ -6,6 +6,7 @@ import { db } from '../db/supabase.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { pool, runTransaction } from '../db/pg.js'
 import * as adminService from '../services/adminService.js'
+import { kyivDateKey } from '../lib/businessDate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -60,6 +61,114 @@ async function assertCashAvailable(
   }
 }
 
+const tireCashHandoverSchema = z.object({
+  employee_id: z.string().uuid(),
+  employee_name: z.string().min(1).max(200),
+  work_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  shift_id: z.string().uuid(),
+  amount: z.number().int().positive(),
+  operation_id: z.string().uuid(),
+})
+
+function plusDays(date: string, days: number): string {
+  const value = new Date(`${date}T12:00:00Z`)
+  value.setUTCDate(value.getUTCDate() + days)
+  return value.toISOString().slice(0, 10)
+}
+
+async function buildTireServiceReport(tenantId: string, date: string) {
+  const workers = (await adminService.listUsers(tenantId))
+    .filter((user) => user.is_active && user.role === 'tire_worker')
+  const workerIds = workers.map((worker) => worker.id)
+  if (workerIds.length === 0) {
+    return { data: [], receipts: [], date, totals: { services_qty: 0, service_revenue: 0, cash_revenue: 0, cash_handed_over: 0, cash_pending: 0, due: 0, payable_due: 0 } }
+  }
+  const [salaryResult, receiptResult, handoverResult] = await Promise.all([
+    pool.query(`
+      SELECT employee_id::text,
+        COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0)::bigint AS earned,
+        COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0)::bigint AS paid,
+        COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0)::bigint AS penalty,
+        COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0)::bigint AS commission_earned,
+        COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0)::bigint AS daily_rate
+      FROM salary_payments
+      WHERE tenant_id = $1 AND work_date = $2
+      GROUP BY employee_id
+    `, [tenantId, date]),
+    pool.query(`
+      WITH service_sales AS (
+        SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
+          sale.payment_method, sale.total, sale.cash_amount,
+          COALESCE(SUM(item.qty), 0)::float AS services_qty,
+          COALESCE(SUM(item.total), 0)::bigint AS service_revenue
+        FROM sales sale
+        JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id
+        JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
+        WHERE sale.tenant_id = $1 AND sale.status = 'completed'
+          AND sale.manager_id = ANY($3::uuid[])
+          AND product.sku = 'POS-TIRE-SERVICE'
+          AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date = $2::date
+        GROUP BY sale.id
+      )
+      SELECT *, CASE WHEN total > 0 THEN
+        LEAST(service_revenue, ROUND(service_revenue::numeric *
+          CASE WHEN payment_method = 'cash' THEN COALESCE(NULLIF(cash_amount, 0), total) ELSE COALESCE(cash_amount, 0) END / total
+        ))::bigint ELSE 0 END AS cash_revenue
+      FROM service_sales ORDER BY completed_at DESC
+    `, [tenantId, date, workerIds]),
+    pool.query(`
+      SELECT employee_id::text, COALESCE(SUM(amount), 0)::bigint AS amount
+      FROM cash_operations
+      WHERE tenant_id = $1 AND type = 'in' AND work_date = $2
+        AND employee_id = ANY($3::uuid[])
+      GROUP BY employee_id
+    `, [tenantId, date, workerIds]),
+  ])
+  const workerNames = new Map(workers.map((worker) => [worker.id, worker.full_name]))
+  const receipts = receiptResult.rows.map((row) => ({
+    id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
+    employee_id: row.employee_id, employee_name: workerNames.get(row.employee_id) ?? 'Шиномонтажник',
+    services_qty: Number(row.services_qty ?? 0), service_revenue: Number(row.service_revenue ?? 0),
+    cash_revenue: Number(row.cash_revenue ?? 0), payment_method: row.payment_method, total: Number(row.total ?? 0),
+  }))
+  const salaryByWorker = new Map(salaryResult.rows.map((row) => [row.employee_id, row]))
+  const handedByWorker = new Map(handoverResult.rows.map((row) => [row.employee_id, Number(row.amount ?? 0)]))
+  const salaryAvailableOn = plusDays(date, 2)
+  const matured = kyivDateKey() >= salaryAvailableOn
+  const data = workers.map((worker) => {
+    const salary = salaryByWorker.get(worker.id) ?? {}
+    const workerReceipts = receipts.filter((receipt) => receipt.employee_id === worker.id)
+    const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
+    const cashRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.cash_revenue, 0)
+    const cashHandedOver = handedByWorker.get(worker.id) ?? 0
+    const cashPending = Math.max(0, cashRevenue - cashHandedOver)
+    const recordedDailyRate = Number(salary.daily_rate ?? 0)
+    const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? Number(worker.base_rate ?? 0) : 0
+    const earned = Number(salary.earned ?? 0) + projectedDailyRate
+    const paid = Number(salary.paid ?? 0)
+    const penalty = Number(salary.penalty ?? 0)
+    const balance = earned - paid - penalty
+    const due = Math.max(0, balance)
+    const salaryReady = matured && cashPending === 0
+    return {
+      employee_id: worker.id, employee_name: worker.full_name,
+      services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
+      service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
+      commission_earned: Number(salary.commission_earned ?? 0), daily_rate: recordedDailyRate + projectedDailyRate,
+      earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
+      salary_ready: salaryReady, payable_due: salaryReady ? due : 0,
+    }
+  })
+  return { data, receipts, date, totals: {
+    services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
+    service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
+    cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),
+    cash_handed_over: data.reduce((sum, row) => sum + row.cash_handed_over, 0),
+    cash_pending: data.reduce((sum, row) => sum + row.cash_pending, 0),
+    due: data.reduce((sum, row) => sum + row.due, 0),
+    payable_due: data.reduce((sum, row) => sum + row.payable_due, 0),
+  } }
+}
 const dailyPayoutSchema = z.object({
   employee_id:   z.string().uuid(),
   employee_name: z.string().min(1).max(200),
@@ -167,79 +276,61 @@ router.get('/daily-summary', requireRole('owner', 'admin'), async (req, res, nex
   } catch (err) { next(err) }
 })
 // GET /api/v1/salary/tire-service-report?date=YYYY-MM-DD
-// Практичний денний звіт: виконані послуги, виручка, нараховано, виплачено і залишок.
-router.get('/tire-service-report', requireRole('owner', 'admin'), async (req, res, next) => {
+router.get('/tire-service-report', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
   try {
-    const date = String(req.query.date ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' }))
+    const date = String(req.query.date ?? kyivDateKey())
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError('VALIDATION_ERROR', 'Невірна дата', 422)
-    const workers = (await adminService.listUsers(req.user!.tenant_id))
-      .filter((user) => user.is_active && user.role === 'tire_worker')
-    if (workers.length === 0) {
-      res.json({ data: [], date, totals: { services_qty: 0, service_revenue: 0, due: 0 } })
-      return
-    }
-    const workerIds = workers.map((worker) => worker.id)
-    const result = await pool.query(
-      [
-        'WITH salary AS (',
-        '  SELECT employee_id,',
-        "    COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0)::bigint AS earned,",
-        "    COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0)::bigint AS paid,",
-        "    COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0)::bigint AS penalty,",
-        "    COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0)::bigint AS commission_earned,",
-        "    COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0)::bigint AS daily_rate",
-        '  FROM salary_payments',
-        '  WHERE tenant_id = $1 AND work_date = $2',
-        '  GROUP BY employee_id',
-        '), employee_sales AS (',
-        '  SELECT DISTINCT employee_id, commission_source_sale_id AS sale_id',
-        '  FROM salary_payments',
-        "  WHERE tenant_id = $1 AND work_date = $2 AND source = 'commission'",
-        '    AND commission_source_sale_id IS NOT NULL',
-        '), service_work AS (',
-        '  SELECT linked.employee_id, COALESCE(SUM(item.qty), 0) AS services_qty,',
-        '    COALESCE(SUM(item.total), 0)::bigint AS service_revenue',
-        '  FROM employee_sales linked',
-        '  JOIN sale_items item ON item.sale_id = linked.sale_id AND item.tenant_id = $1',
-        '  JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id',
-        "  WHERE product.sku = 'POS-TIRE-SERVICE'",
-        '  GROUP BY linked.employee_id',
-        ')',
-        'SELECT COALESCE(salary.employee_id, work.employee_id)::text AS employee_id,',
-        '  COALESCE(work.services_qty, 0)::float AS services_qty,',
-        '  COALESCE(work.service_revenue, 0)::bigint AS service_revenue,',
-        '  COALESCE(salary.commission_earned, 0)::bigint AS commission_earned,',
-        '  COALESCE(salary.daily_rate, 0)::bigint AS daily_rate,',
-        '  COALESCE(salary.earned, 0)::bigint AS earned,',
-        '  COALESCE(salary.paid, 0)::bigint AS paid,',
-        '  COALESCE(salary.penalty, 0)::bigint AS penalty',
-        'FROM salary FULL JOIN service_work work ON work.employee_id = salary.employee_id',
-        'WHERE COALESCE(salary.employee_id, work.employee_id) = ANY($3::uuid[])',
-      ].join('\n'),
-      [req.user!.tenant_id, date, workerIds],
-    )
-    const byEmployee = new Map(result.rows.map((row) => [row.employee_id, row]))
-    const data = workers.map((worker) => {
-      const row = byEmployee.get(worker.id) ?? {}
-      const earned = Number(row.earned ?? 0)
-      const recordedDailyRate = Number(row.daily_rate ?? 0)
-      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? Number(worker.base_rate ?? 0) : 0
-      const earnedWithRate = earned + projectedDailyRate
-      const paid = Number(row.paid ?? 0)
-      const penalty = Number(row.penalty ?? 0)
-      const balance = earnedWithRate - paid - penalty
-      return {
-        employee_id: worker.id, employee_name: worker.full_name,
-        services_qty: Number(row.services_qty ?? 0), service_revenue: Number(row.service_revenue ?? 0),
-        commission_earned: Number(row.commission_earned ?? 0), daily_rate: recordedDailyRate + projectedDailyRate,
-        earned: earnedWithRate, paid, penalty, balance, due: Math.max(0, balance),
-      }
+    res.json(await buildTireServiceReport(req.user!.tenant_id, date))
+  } catch (err) { next(err) }
+})
+
+router.post('/tire-cash-handover', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
+  try {
+    const parsed = tireCashHandoverSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані внесення', 422, parsed.error.flatten())
+    const input = parsed.data
+    const worker = (await adminService.listUsers(req.user!.tenant_id))
+      .find((user) => user.id === input.employee_id && user.is_active && user.role === 'tire_worker')
+    if (!worker) throw new AppError('NOT_FOUND', 'Шиномонтажника не знайдено', 404)
+    const result = await runTransaction(async (client) => {
+      const shift = await client.query(`SELECT id FROM shifts WHERE id=$1 AND tenant_id=$2 AND status='open' FOR UPDATE`, [input.shift_id, req.user!.tenant_id])
+      if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Спочатку відкрийте касову зміну', 409)
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `${req.user!.tenant_id}:${input.employee_id}:${input.work_date}`,
+      ])
+      const locked = await client.query(`
+        WITH service_sales AS (
+          SELECT sale.total, sale.cash_amount, sale.payment_method, SUM(item.total)::bigint AS service_revenue
+          FROM sales sale
+          JOIN sale_items item ON item.sale_id=sale.id AND item.tenant_id=sale.tenant_id
+          JOIN products product ON product.id=item.product_id AND product.tenant_id=item.tenant_id
+          WHERE sale.tenant_id=$1 AND sale.manager_id=$2 AND sale.status='completed'
+            AND product.sku='POS-TIRE-SERVICE'
+            AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date=$3::date
+          GROUP BY sale.id
+        ), required AS (
+          SELECT COALESCE(SUM(CASE WHEN total > 0 THEN LEAST(service_revenue, ROUND(service_revenue::numeric *
+            CASE WHEN payment_method='cash' THEN COALESCE(NULLIF(cash_amount,0),total) ELSE COALESCE(cash_amount,0) END / total
+          ))::bigint ELSE 0 END),0)::bigint AS amount FROM service_sales
+        ), handed AS (
+          SELECT COALESCE(SUM(amount),0)::bigint AS amount FROM cash_operations
+          WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3 AND type='in'
+        )
+        SELECT GREATEST(0, required.amount-handed.amount)::bigint AS pending FROM required, handed
+      `, [req.user!.tenant_id, input.employee_id, input.work_date])
+      const pending = Number(locked.rows[0]?.pending ?? 0)
+      if (pending <= 0) throw new AppError('NOTHING_TO_HAND_OVER', 'Каса за цей день уже внесена', 409)
+      if (input.amount > pending) throw new AppError('HANDOVER_TOO_LARGE', `Залишилось внести ${(pending / 100).toFixed(2)} грн`, 409)
+      const inserted = await client.query(`
+        INSERT INTO cash_operations
+          (id, tenant_id, shift_id, type, amount, note, source, created_by, employee_id, work_date)
+        VALUES ($1,$2,$3,'in',$4,$5,'cashbox',$6,$7,$8)
+        ON CONFLICT (id) DO NOTHING RETURNING id
+      `, [input.operation_id, req.user!.tenant_id, input.shift_id, input.amount,
+        `Каса шиномонтажу за ${input.work_date}: ${worker.full_name}`, req.user!.id, input.employee_id, input.work_date])
+      return { amount: input.amount, remaining: Math.max(0, pending - input.amount), created: Boolean(inserted.rowCount) }
     })
-    res.json({ data, date, totals: {
-      services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
-      service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
-      due: data.reduce((sum, row) => sum + row.due, 0),
-    } })
+    res.status(result.created ? 201 : 200).json({ data: result })
   } catch (err) { next(err) }
 })
 
@@ -257,6 +348,16 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
     const employee = authData.user
     if (!employee || employee.app_metadata?.tenant_id !== req.user!.tenant_id) {
       throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
+    }
+    if (employee.app_metadata?.role === 'tire_worker') {
+      const tireReport = await buildTireServiceReport(req.user!.tenant_id, input.work_date)
+      const tireRow = tireReport.data.find((row) => row.employee_id === input.employee_id)
+      if (!tireRow?.salary_ready) {
+        const reason = (tireRow?.cash_pending ?? 0) > 0
+          ? 'Спочатку внесіть усю готівкову касу шиномонтажу за цей день'
+          : `Зарплата стане доступною ${tireRow?.salary_available_on ?? plusDays(input.work_date, 2)}`
+        throw new AppError('TIRE_SALARY_NOT_READY', reason, 409)
+      }
     }
     const dailyRate = employee.app_metadata?.rate_period === 'day'
       ? Number(employee.app_metadata?.base_rate ?? 0)

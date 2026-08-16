@@ -78,6 +78,7 @@ export function buildStaffSyncPayload(staff: Array<Record<string, any>>, role: s
     full_name: user.full_name,
     role: user.role,
     is_active: user.is_active,
+    ...(user.role === 'tire_worker' ? { base_rate: user.base_rate, rate_period: user.rate_period } : {}),
     created_at: user.created_at,
     updated_at: user.updated_at,
   }))

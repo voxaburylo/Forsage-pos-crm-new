@@ -99,6 +99,16 @@ describe('sync role policy', () => {
     expect(owner.staff_directory_snapshot_included).toBe(false)
   })
 
+  it('shares rate details only for tire workers in the cashier directory', () => {
+    const payload = buildStaffSyncPayload([{
+      id: 'tire-1', full_name: 'Шиномонтажник', phone: null, role: 'tire_worker',
+      is_active: true, base_rate: 50000, rate_period: 'day',
+      created_at: '2026-08-15T08:00:00.000Z', updated_at: '2026-08-15T08:00:00.000Z',
+    }], 'cashier')
+    expect(payload.staff_directory[0]).toMatchObject({
+      id: 'tire-1', role: 'tire_worker', base_rate: 50000, rate_period: 'day',
+    })
+  })
   it('exposes supply documents to every role allowed to receive goods', () => {
     expect(canPullSupplyData('sto_viewer')).toBe(false)
     expect(canPullSupplyData('tire_worker')).toBe(false)

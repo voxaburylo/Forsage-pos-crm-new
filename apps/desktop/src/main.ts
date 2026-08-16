@@ -953,6 +953,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
   handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
+  handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover(input))
   handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary(input))
   handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout(input))
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
@@ -1392,4 +1393,3 @@ app.on('before-quit', () => {
   localSync = null
   localSupplierCatalog = null
 })
-

@@ -528,7 +528,8 @@ interface ForsageDesktopBridge {
     listSalary: (input?: any) => Promise<any[]>
     salarySummary: (period?: string) => Promise<any[]>
     dailySummary: (workDate?: string) => Promise<any[]>
-    tireServiceReport: (workDate?: string) => Promise<any[]>
+    tireServiceReport: (workDate?: string) => Promise<any>
+    tireCashHandover: (input: any) => Promise<any>
     createSalary: (input: any) => Promise<any>
     dailyPayout: (input: any) => Promise<any>
     deleteSalary: (id: string) => Promise<{ success: true }>
@@ -793,4 +794,3 @@ export function desktopCheckoutToSale(
     sale_items: receiptItems,
   }
 }
-

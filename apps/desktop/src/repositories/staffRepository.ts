@@ -486,71 +486,147 @@ export class LocalStaffRepository {
     return [...map.values()]
   }
 
-  tireServiceReport(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any[] {
-    const rows = this.db.prepare([
-      'WITH tire_workers AS (',
-      '  SELECT DISTINCT u.id AS employee_id, u.full_name AS employee_name, u.base_rate, u.rate_period',
-      '  FROM staff_users u',
-      '  WHERE u.tenant_id = ? AND u.is_active = 1 AND u.deleted_at IS NULL',
-      "    AND u.role = 'tire_worker'",
-      '), salary AS (',
-      '  SELECT employee_id,',
-      "    COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0) AS earned,",
-      "    COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0) AS paid,",
-      "    COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0) AS penalty,",
-      "    COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0) AS commission_earned,",
-      "    COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0) AS daily_rate",
-      '  FROM salary_payments',
-      '  WHERE tenant_id = ? AND work_date = ? AND deleted_at IS NULL',
-      '  GROUP BY employee_id',
-      '), employee_sales AS (',
-      '  SELECT DISTINCT employee_id, commission_source_sale_id AS sale_id',
-      '  FROM salary_payments',
-      "  WHERE tenant_id = ? AND work_date = ? AND source = 'commission'",
-      '    AND commission_source_sale_id IS NOT NULL AND deleted_at IS NULL',
-      '), service_work AS (',
-      '  SELECT linked.employee_id,',
-      '    COALESCE(SUM(items.qty), 0) AS services_qty,',
-      '    COALESCE(SUM(items.total), 0) AS service_revenue',
-      '  FROM employee_sales linked',
-      '  JOIN sale_items items ON items.sale_id = linked.sale_id',
-      '    AND items.tenant_id = ? AND items.deleted_at IS NULL',
-      '  LEFT JOIN products product ON product.id = items.product_id',
-      '    AND product.tenant_id = items.tenant_id',
-      "  WHERE COALESCE(product.sku, items.sku, '') = 'POS-TIRE-SERVICE'",
-      '  GROUP BY linked.employee_id',
-      ')',
-      'SELECT worker.employee_id, worker.employee_name,',
-      '  worker.base_rate, worker.rate_period,',
-      '  COALESCE(work.services_qty, 0) AS services_qty,',
-      '  COALESCE(work.service_revenue, 0) AS service_revenue,',
-      '  COALESCE(salary.commission_earned, 0) AS commission_earned,',
-      '  COALESCE(salary.daily_rate, 0) AS daily_rate,',
-      '  COALESCE(salary.earned, 0) AS earned,',
-      '  COALESCE(salary.paid, 0) AS paid,',
-      '  COALESCE(salary.penalty, 0) AS penalty',
-      'FROM tire_workers worker',
-      'LEFT JOIN salary ON salary.employee_id = worker.employee_id',
-      'LEFT JOIN service_work work ON work.employee_id = worker.employee_id',
-      'ORDER BY worker.employee_name COLLATE NOCASE',
-    ].join('\n')).all(tenantId, tenantId, workDate, tenantId, workDate, tenantId) as any[]
-    return rows.map((row) => {
-      const recordedDailyRate = money(row.daily_rate)
-      const projectedDailyRate = recordedDailyRate === 0 && row.rate_period === 'day' ? money(row.base_rate) : 0
-      const earned = money(row.earned) + projectedDailyRate
+  tireServiceReport(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any {
+    const workers = this.db.prepare(`
+      SELECT id AS employee_id, full_name AS employee_name, base_rate, rate_period
+      FROM staff_users
+      WHERE tenant_id = ? AND is_active = 1 AND deleted_at IS NULL AND role = 'tire_worker'
+      ORDER BY full_name COLLATE NOCASE
+    `).all(tenantId) as any[]
+    const salaryRows = this.db.prepare(`
+      SELECT employee_id,
+        COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0) AS earned,
+        COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0) AS paid,
+        COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0) AS penalty,
+        COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0) AS commission_earned,
+        COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0) AS daily_rate
+      FROM salary_payments
+      WHERE tenant_id = ? AND work_date = ? AND deleted_at IS NULL
+      GROUP BY employee_id
+    `).all(tenantId, workDate) as any[]
+    const salaryByWorker = new Map(salaryRows.map((row) => [String(row.employee_id), row]))
+    const candidateReceipts = this.db.prepare(`
+      SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
+        sale.payment_method, sale.total, sale.cash_amount,
+        COALESCE(SUM(item.qty), 0) AS services_qty,
+        COALESCE(SUM(item.total), 0) AS service_revenue
+      FROM sales sale
+      JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id AND item.deleted_at IS NULL
+      LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
+      WHERE sale.tenant_id = ? AND sale.status = 'completed' AND sale.deleted_at IS NULL
+        AND sale.manager_id IS NOT NULL
+        AND COALESCE(product.sku, item.sku, '') = 'POS-TIRE-SERVICE'
+        AND datetime(sale.completed_at) >= datetime(?, '-1 day')
+        AND datetime(sale.completed_at) < datetime(?, '+2 day')
+      GROUP BY sale.id
+      ORDER BY datetime(sale.completed_at) DESC
+    `).all(tenantId, workDate, workDate) as any[]
+    const workerNames = new Map(workers.map((worker) => [String(worker.employee_id), String(worker.employee_name)]))
+    const receipts = candidateReceipts
+      .filter((row) => businessDate(String(row.completed_at)) === workDate && workerNames.has(String(row.employee_id)))
+      .map((row) => {
+        const serviceRevenue = money(row.service_revenue)
+        const saleTotal = money(row.total)
+        const cashAmount = row.payment_method === 'cash'
+          ? money(row.cash_amount) || saleTotal
+          : money(row.cash_amount)
+        const cashRevenue = saleTotal > 0 ? Math.min(serviceRevenue, Math.round(serviceRevenue * cashAmount / saleTotal)) : 0
+        return {
+          id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
+          employee_id: row.employee_id, employee_name: workerNames.get(String(row.employee_id)) ?? 'Шиномонтажник',
+          services_qty: Number(row.services_qty ?? 0), service_revenue: serviceRevenue,
+          cash_revenue: cashRevenue, payment_method: row.payment_method, total: saleTotal,
+        }
+      })
+    const handovers = this.db.prepare(`
+      SELECT employee_id, COALESCE(SUM(amount), 0) AS amount
+      FROM cash_operations
+      WHERE tenant_id = ? AND type = 'cash_in' AND work_date = ?
+        AND employee_id IS NOT NULL AND deleted_at IS NULL
+      GROUP BY employee_id
+    `).all(tenantId, workDate) as any[]
+    const handedByWorker = new Map(handovers.map((row) => [String(row.employee_id), money(row.amount)]))
+    const availableOn = new Date(`${workDate}T12:00:00Z`)
+    availableOn.setUTCDate(availableOn.getUTCDate() + 2)
+    const salaryAvailableOn = availableOn.toISOString().slice(0, 10)
+    const matured = currentDate() >= salaryAvailableOn
+    const data = workers.map((worker) => {
+      const salary = salaryByWorker.get(String(worker.employee_id)) ?? {}
+      const workerReceipts = receipts.filter((receipt) => receipt.employee_id === worker.employee_id)
+      const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
+      const cashRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.cash_revenue, 0)
+      const cashHandedOver = handedByWorker.get(String(worker.employee_id)) ?? 0
+      const cashPending = Math.max(0, cashRevenue - cashHandedOver)
+      const recordedDailyRate = money(salary.daily_rate)
+      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? money(worker.base_rate) : 0
+      const earned = money(salary.earned) + projectedDailyRate
+      const paid = money(salary.paid)
+      const penalty = money(salary.penalty)
+      const balance = earned - paid - penalty
+      const due = Math.max(0, balance)
+      const salaryReady = matured && cashPending === 0
       return {
-        ...row,
-        services_qty: Number(row.services_qty ?? 0),
-        service_revenue: money(row.service_revenue),
-        commission_earned: money(row.commission_earned),
-        daily_rate: recordedDailyRate + projectedDailyRate,
-        earned,
-        paid: money(row.paid),
-        penalty: money(row.penalty),
-        balance: earned - money(row.paid) - money(row.penalty),
-        due: Math.max(0, earned - money(row.paid) - money(row.penalty)),
+        employee_id: worker.employee_id, employee_name: worker.employee_name,
+        services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
+        service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
+        commission_earned: money(salary.commission_earned), daily_rate: recordedDailyRate + projectedDailyRate,
+        earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
+        salary_ready: salaryReady, payable_due: salaryReady ? due : 0,
       }
     })
+    return {
+      data, receipts, date: workDate, totals: {
+        services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
+        service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
+        cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),
+        cash_handed_over: data.reduce((sum, row) => sum + row.cash_handed_over, 0),
+        cash_pending: data.reduce((sum, row) => sum + row.cash_pending, 0),
+        due: data.reduce((sum, row) => sum + row.due, 0),
+        payable_due: data.reduce((sum, row) => sum + row.payable_due, 0),
+      },
+    }
+  }
+
+  tireCashHandover(input: {
+    tenant_id?: string; employee_id: string; employee_name?: string; work_date: string
+    shift_id: string; amount: number; operation_id: string; user_id?: string | null
+  }): { amount: number; remaining: number } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Немає готівки для внесення')
+    const existing = this.db.prepare(`SELECT id FROM cash_operations WHERE id = ? AND tenant_id = ? LIMIT 1`).get(input.operation_id, tenantId)
+    if (existing) return { amount, remaining: 0 }
+    const employee = this.requireUser(input.employee_id, tenantId)
+    if (employee.role !== 'tire_worker') throw new Error('Оберіть шиномонтажника')
+    const shift = this.db.prepare(`
+      SELECT id FROM shifts WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL LIMIT 1
+    `).get(input.shift_id, tenantId)
+    if (!shift) throw new Error('Спочатку відкрийте касову зміну')
+    const report = this.tireServiceReport(input.work_date, tenantId)
+    const row = report.data.find((item: any) => item.employee_id === input.employee_id)
+    const pending = money(row?.cash_pending)
+    if (pending <= 0) throw new Error('Каса за цей день уже внесена')
+    if (amount > pending) throw new Error(`Залишилось внести ${(pending / 100).toFixed(2)} грн`)
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO cash_operations (
+          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
+          dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'cash_in', 'cashbox', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.operation_id, tenantId, input.shift_id, input.user_id ?? null, amount, employee.id, input.work_date,
+        `Каса шиномонтажу за ${input.work_date}: ${input.employee_name || employee.full_name}`,
+        timestamp, timestamp, timestamp,
+      )
+      this.addOutbox(tenantId, 'cash_operation', input.operation_id, 'cash_operation.created', {
+        id: input.operation_id, shift_id: input.shift_id, type: 'in', amount, source: 'cashbox',
+        employee_id: employee.id, work_date: input.work_date, user_id: input.user_id ?? null,
+        note: `Каса шиномонтажу за ${input.work_date}: ${input.employee_name || employee.full_name}`,
+        created_at: timestamp,
+      }, timestamp)
+    })
+    return { amount, remaining: Math.max(0, pending - amount) }
   }
   createSalary(input: {
     tenant_id?: string
@@ -598,6 +674,14 @@ export class LocalStaffRepository {
   }): { payment: any; amount: number; earned: number; previously_paid: number; penalty: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const employee = this.requireUser(input.employee_id, tenantId)
+    if (employee.role === 'tire_worker') {
+      const tireRow = this.tireServiceReport(input.work_date, tenantId).data
+        .find((row: any) => row.employee_id === employee.id)
+      if (!tireRow?.salary_ready) {
+        if (money(tireRow?.cash_pending) > 0) throw new Error('Спочатку внесіть усю готівкову касу шиномонтажу за цей день')
+        throw new Error(`Зарплата стане доступною ${tireRow?.salary_available_on ?? ''}`)
+      }
+    }
     const timestamp = nowIso()
     return this.db.transaction(() => {
       if (money(employee.base_rate) > 0 && employee.rate_period === 'day') {
@@ -912,5 +996,3 @@ export class LocalStaffRepository {
     )
   }
 }
-
-

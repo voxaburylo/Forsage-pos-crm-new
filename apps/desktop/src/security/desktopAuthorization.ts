@@ -26,6 +26,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:catalog:update-brand', OWNER_ROLES],
   ['desktop:catalog:delete-brand', OWNER_ROLES],
   ['desktop:staff:verify-pin', ALL_ROLES],
+  ['desktop:staff:tire-service-report', POS_ROLES],
+  ['desktop:staff:tire-cash-handover', POS_ROLES],
   ['desktop:inventory:create-session', RECEIVING_ROLES],
   ['desktop:inventory:start-session', RECEIVING_ROLES],
   ['desktop:inventory:delete-session', RECEIVING_ROLES],

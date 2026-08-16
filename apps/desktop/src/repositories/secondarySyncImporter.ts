@@ -305,9 +305,9 @@ export class LocalSecondarySyncImporter {
 
     this.db.prepare(`
       INSERT INTO cash_operations (
-        id, tenant_id, shift_id, user_id, type, source, amount, notes,
+        id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
         remote_updated_at, created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       ON CONFLICT(id) DO UPDATE SET
         shift_id = excluded.shift_id,
         user_id = excluded.user_id,
@@ -317,6 +317,8 @@ export class LocalSecondarySyncImporter {
         END,
         source = excluded.source,
         amount = excluded.amount,
+        employee_id = excluded.employee_id,
+        work_date = excluded.work_date,
         notes = excluded.notes,
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
@@ -324,6 +326,7 @@ export class LocalSecondarySyncImporter {
       WHERE cash_operations.dirty_at IS NULL
     `).run(
       id, tenantId, shiftId, operation.created_by ?? null, type, source, amount,
+      operation.employee_id ?? null, operation.work_date ?? null,
       operation.note ?? operation.notes ?? null, createdAt, createdAt, createdAt,
     )
     return true

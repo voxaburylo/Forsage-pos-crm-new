@@ -85,7 +85,7 @@ export function ShiftCloseModal({
     return () => { cancelled = true }
   }, [open, isOwnerOrAdmin])
 
-  const tireWorkersDue = tireWorkers.reduce((sum, worker) => sum + Number(worker.due ?? 0), 0)
+  const tireWorkersDue = tireWorkers.reduce((sum, worker) => sum + Number(worker.payable_due ?? 0), 0)
   if (!open) return null
 
   const cashReceived = Math.round(parseFloat(cashInput || '0') * 100)
@@ -246,7 +246,7 @@ export function ShiftCloseModal({
               <div className="rounded-xl border border-cyan-700/50 bg-cyan-950/20 p-4 text-sm">
                 <div className="mb-3 flex items-center justify-between">
                   <span className="font-semibold text-cyan-100">Шиномонтаж за сьогодні</span>
-                  <strong className="text-cyan-300">До виплати: {formatMoney(tireWorkersDue)}</strong>
+                  <strong className="text-cyan-300">Доступно до виплати: {formatMoney(tireWorkersDue)}</strong>
                 </div>
                 {tireWorkers.length === 0 ? (
                   <p className="text-xs text-gray-500">Немає працівників шиномонтажу або нарахувань.</p>
@@ -261,7 +261,7 @@ export function ShiftCloseModal({
                           </p>
                         </div>
                         <div className="text-right">
-                          <p className="font-semibold text-cyan-300">{formatMoney(worker.due)}</p>
+                          <p className="font-semibold text-cyan-300">{formatMoney(worker.payable_due)}</p>
                           <p className="text-[11px] text-gray-500">нараховано {formatMoney(worker.earned)} · видано {formatMoney(worker.paid)}</p>
                         </div>
                       </div>

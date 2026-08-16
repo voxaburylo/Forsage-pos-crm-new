@@ -227,6 +227,7 @@ async function fetchSecondarySyncData(params: {
   const { since, upperBound, tenantId, userId, role, fullSnapshots, historySince } = params
   const canPullStaff = canPullStaffDirectory(role)
   const canPullPayroll = role === 'owner' || role === 'admin'
+  const canPullTirePayroll = canPullPayroll || role === 'cashier'
   const canPullCash = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReturns = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReserves = ['owner', 'admin', 'manager', 'storekeeper', 'cashier'].includes(role)
@@ -286,7 +287,7 @@ async function fetchSecondarySyncData(params: {
     canPullPayroll
       ? fetchAllById(() => db.from('commission_rules').select('*').eq('tenant_id', tenantId))
       : Promise.resolve([]),
-    canPullPayroll
+    canPullTirePayroll
       ? changed(
           () => db.from('salary_payments').select('*').eq('tenant_id', tenantId),
           fullSnapshots,
@@ -295,7 +296,7 @@ async function fetchSecondarySyncData(params: {
     canPullCash
       ? recentChanged('cash_operations')
       : Promise.resolve([]),
-    canPullPayroll ? deletions('salary_payment') : Promise.resolve([]),
+    canPullTirePayroll ? deletions('salary_payment') : Promise.resolve([]),
     canPullCash ? deletions('cash_operation') : Promise.resolve([]),
     canPullReturns
       ? recentChanged('customer_returns')
@@ -362,13 +363,17 @@ async function fetchSecondarySyncData(params: {
       }
     }
   }
+  const tireWorkerIds = new Set(staff.filter((user: any) => user.role === 'tire_worker').map((user: any) => String(user.id)))
+  const visibleSalaryPayments = canPullPayroll
+    ? salaryPayments
+    : salaryPayments.filter((payment: any) => tireWorkerIds.has(String(payment.employee_id)))
   const staffSyncPayload = buildStaffSyncPayload(staff, role)
 
   return {
     ...staffSyncPayload,
     staff_pins: staffPins,
     commission_rules: commissionRules,
-    salary_payments: salaryPayments,
+    salary_payments: visibleSalaryPayments,
     deleted_salary_payment_ids: deletedSalaryPayments.map((row) => row.entity_id),
     cash_operations: cashOperations,
     deleted_cash_operation_ids: deletedCashOperations.map((row) => row.entity_id),
@@ -2343,8 +2348,8 @@ async function applyCashOperationCreated(tenantId: string, userId: string, opera
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO cash_operations (
-        id, tenant_id, shift_id, type, amount, note, source, created_by, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        id, tenant_id, shift_id, type, amount, note, source, created_by, employee_id, work_date, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       ON CONFLICT (id) DO NOTHING`,
       [
         id,
@@ -2355,6 +2360,8 @@ async function applyCashOperationCreated(tenantId: string, userId: string, opera
         payload.note ?? payload.notes ?? null,
         payload.source ?? 'cashbox',
         uuidOr(payload.user_id ?? payload.created_by, userId),
+        isUuid(payload.employee_id) ? payload.employee_id : null,
+        /^\d{4}-\d{2}-\d{2}$/.test(String(payload.work_date ?? '')) ? payload.work_date : null,
         createdAt,
         appliedAt,
       ],
