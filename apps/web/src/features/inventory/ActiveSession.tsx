@@ -18,6 +18,7 @@ import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { useAuthStore } from '@/stores/authStore'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { hasSuspiciousInventorySku, inventoryQuickCreateSeed } from './inventoryQuickCreate'
 
 interface ProductInfo {
   id: string
@@ -388,14 +389,13 @@ export default function ActiveSession() {
 
   function openQuickCreate(seed = query) {
     const code = seed.trim()
-    const looksLikeBarcode = /^\d{6,}$/.test(code)
+    const initial = inventoryQuickCreateSeed(code)
     setSelected(null)
     setSearchResults([])
     setQuickCreateOpen(true)
     setQuickProduct({
       ...emptyQuickProduct,
-      sku: code,
-      barcode: looksLikeBarcode ? code : '',
+      ...initial,
     })
   }
 
@@ -954,6 +954,10 @@ export default function ActiveSession() {
     const countedQty = Number(String(draft.qty).replace(',', '.'))
     if (!sku) { toast.error('Вкажіть артикул або код'); return }
     if (name.length < 2) { toast.error('Вкажіть назву товару'); return }
+    if (hasSuspiciousInventorySku(sku, name)) {
+      toast.error('Схоже, назва товару потрапила в поле артикулу. Перенесіть опис у поле «Назва», а в артикулі залиште лише код.')
+      return
+    }
     if (!Number.isFinite(countedQty) || countedQty <= 0) { toast.error('Кількість має бути більше 0'); return }
     setCreatingProduct(true)
     try {
@@ -1741,8 +1745,8 @@ function InventoryRowBase({
           ) : (
             <p className="whitespace-normal break-words font-medium text-gray-900" title={product?.name}>{product?.name ?? 'Товар'}</p>
           )}
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-600">
-            <span className="flex items-center gap-1">
+          <div className="mt-1 grid min-w-0 gap-1 text-xs text-gray-600 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-2">
+            <span className="flex min-w-0 items-center gap-1">
               <span className="font-sans font-semibold uppercase tracking-wide text-gray-400">Арт.</span>
               {canEditPrice && product ? (
                 <input
@@ -1751,14 +1755,14 @@ function InventoryRowBase({
                   disabled={!isActive}
                   onBlur={(event) => onSetSku(event.target.value)}
                   onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-                  className="w-40 rounded border border-gray-200 px-2 py-1 font-mono text-xs text-gray-900 outline-none focus:border-yellow-500 disabled:bg-gray-50"
+                  className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs text-gray-900 outline-none focus:border-yellow-500 disabled:bg-gray-50"
                 />
               ) : (
-                <span className="font-mono text-gray-800">{product?.sku || 'без SKU'}</span>
+                <span className="min-w-0 break-all font-mono text-gray-800">{product?.sku || 'без SKU'}</span>
               )}
             </span>
-            <span className="select-all font-mono text-gray-500">{barcode}</span>
-            {product?.storage_bin && <span className="font-semibold text-blue-600">{product.storage_bin}</span>}
+            <span className="select-all break-all font-mono text-gray-500">{barcode}</span>
+            {product?.storage_bin && <span className="font-semibold text-blue-600 sm:col-span-2">{product.storage_bin}</span>}
           </div>
         </div>
       </div>

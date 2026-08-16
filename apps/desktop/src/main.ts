@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -137,6 +137,26 @@ function rendererIndexPath(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'renderer', 'index.html')
     : path.resolve(__dirname, '../../web/dist/index.html')
+}
+
+async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
+  const target = rendererIndexPath()
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (!existsSync(target)) {
+      lastError = new Error(`Файл інтерфейсу не знайдено: ${target}`)
+    } else {
+      try {
+        await window.loadFile(target)
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    writeDesktopDiagnostic('renderer-load-retry', { attempt, target, error: diagnosticValue(lastError) })
+    if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  }
+  throw lastError instanceof Error ? lastError : new Error('Не вдалося завантажити інтерфейс Forsage')
 }
 
 function requireLocalDatabase(): LocalDatabase {
@@ -574,10 +594,16 @@ async function createWindow(): Promise<void> {
     if (/^https?:\/\//i.test(targetUrl)) void shell.openExternal(targetUrl)
   })
 
-  if (!app.isPackaged && developmentUrl) await mainWindow.loadURL(developmentUrl)
-  else await mainWindow.loadFile(rendererIndexPath())
+  const showMainWindow = () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show()
+  }
+  // Підписуємося ДО loadFile: на швидкому диску ready-to-show може настати
+  // раніше за пізно зареєстрований обробник і лишити порожнє вікно.
+  mainWindow.once('ready-to-show', showMainWindow)
+  mainWindow.webContents.once('did-finish-load', () => setTimeout(showMainWindow, 0))
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  if (!app.isPackaged && developmentUrl) await mainWindow.loadURL(developmentUrl)
+  else await loadRendererWithRetry(mainWindow)
   mainWindow.on('closed', () => { desktopAuthSession = null; mainWindow = null })
 }
 

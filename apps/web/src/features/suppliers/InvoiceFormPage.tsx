@@ -19,6 +19,7 @@ import { parseLocaleNumber } from '@/lib/parseDecimal'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
 import { resolveActiveLinkedInvoiceProduct } from './invoiceProductLink'
+import { applyManualInvoiceQuantities, parseManualInvoiceQuantity } from './invoiceQuantityGuard'
 
 interface LineItem {
   product_id?: string
@@ -639,6 +640,9 @@ export default function InvoiceFormPage() {
   }, [cloneId, freshToken, id, isEdit, resumeDraftKey])
   const invoiceDraftReadyRef = useRef(false)
   const invoiceSubmitRef = useRef(false)
+  // Окремо пам'ятаємо останню кількість, яку людина фізично ввела у рядок.
+  // Асинхронна прив'язка картки товару не має права повернути старе значення.
+  const manualQtyOverridesRef = useRef<Map<string, number>>(new Map())
   // Одноразовый флаг для кнопки «Сохранить и закрыть».
   const postOnSaveRef = useRef(false)
   const invoiceDraftPersistenceDisabledRef = useRef(false)
@@ -1244,6 +1248,12 @@ export default function InvoiceFormPage() {
     })
   }
 
+  function updateManualQuantity(index: number, value: string | number) {
+    const row = itemsRef.current[index]
+    if (row) manualQtyOverridesRef.current.set(row.client_key, parseManualInvoiceQuantity(value))
+    updateItem(index, 'qty', value)
+  }
+
   // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
   async function recalcRetail(onlyIndex?: number | number[], forceUseGrid?: boolean, purchaseOverride?: number) {
     const isSingle = typeof onlyIndex === 'number'
@@ -1712,7 +1722,8 @@ export default function InvoiceFormPage() {
   }
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (items.length === 0) { toast.error('Додайте хоча б один товар'); return }
+    const submittedItems = applyManualInvoiceQuantities(itemsRef.current, manualQtyOverridesRef.current)
+    if (submittedItems.length === 0) { toast.error('Додайте хоча б один товар'); return }
     if (!supplierId) { toast.error('Оберіть постачальника'); return }
     if (invoiceSubmitRef.current) return
 
@@ -1721,7 +1732,8 @@ export default function InvoiceFormPage() {
     try {
       // Перевіряємо касу до створення нових карток товарів. Інакше при відмові
       // оплати накладна не створювалась, а її товари вже лишались у базі.
-      const paidKopecks = !isEdit ? Math.min(payFullNow ? total : parseMoneyToKopecks(paidAmount), total) : 0
+      const submittedTotal = submittedItems.reduce((sum, item) => sum + item.total, 0)
+      const paidKopecks = !isEdit ? Math.min(payFullNow ? submittedTotal : parseMoneyToKopecks(paidAmount), submittedTotal) : 0
       const paymentParts = !isEdit ? buildSupplierPaymentParts(paidKopecks) : []
       const cashboxPart = paymentParts.find((part) => part.fund_source === 'cashbox')?.amount ?? 0
       const shiftId = cashboxPart > 0 ? await requireCashboxFunds(cashboxPart) : null
@@ -1757,7 +1769,7 @@ export default function InvoiceFormPage() {
       }
 
       const resolvedItems: LineItem[] = []
-      for (const item of items) {
+      for (const item of submittedItems) {
         // Перед проведенням ще раз шукаємо точний збіг у базі за артикулом/ШК.
         // Якщо постачальник прислав рядок з уже існуючим артикулом — приймаємо товар
         // на існуючу картку, а не створюємо дубль і не блокуємо накладну.
@@ -2324,7 +2336,7 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <input ref={(el) => { qtyRefs.current[i] = el }} type="number" step="1" min="0" value={item.qty}
-                      onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                      onChange={(e) => updateManualQuantity(i, e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'qty')}
 
                       className="w-full min-w-[72px] text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
@@ -2528,14 +2540,14 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">К-сть</label>
                     <div className="flex items-center gap-1">
                       <button type="button" disabled={item.qty <= 1}
-                        onClick={() => updateItem(i, 'qty', Math.max(1, item.qty - 1))}
+                        onClick={() => updateManualQuantity(i, Math.max(1, item.qty - 1))}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
                       <input type="number" step="1" min="0" value={item.qty}
-                        onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                        onChange={(e) => updateManualQuantity(i, e.target.value)}
 
                         className="w-full min-w-[64px] text-center border border-gray-200 rounded-lg px-2 py-2 text-base focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                       <button type="button"
-                        onClick={() => updateItem(i, 'qty', item.qty + 1)}
+                        onClick={() => updateManualQuantity(i, item.qty + 1)}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
                     </div>
                   </div>
