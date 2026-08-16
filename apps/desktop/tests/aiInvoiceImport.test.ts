@@ -90,4 +90,43 @@ describe('AI invoice import into local supply draft', () => {
     expect(catalog.findBySku('OIL-530')?.name).toBe('Олива ELF 5W-30')
     expect(result.unresolved[0]?.name).toBe('Олива ELF 5W-40')
   })
+
+  it('uses our matched product card and calculates new rows by folder and markup grid', () => {
+    const category = catalog.createCategory('Колодки')
+    catalog.updateSettings({
+      markup_rules: [{ minPrice: 0, maxPrice: 999999999, markupPct: 50 }],
+      price_rounding_enabled: true,
+      price_rounding_step: 500,
+      price_rounding_dir: 'up',
+    })
+    const existing = catalog.upsertProduct({
+      id: 'existing-with-own-barcode',
+      sku: 'OUR-ARTICLE',
+      name: 'Наша точна назва',
+      barcode: '4820999999999',
+      category_id: category.id,
+      qty_on_hand: 0,
+      purchase_price: 5000,
+      retail_price: 7000,
+    })
+
+    const result = supply.createInvoiceFromAiRows({
+      rows: [
+        { name: 'Інша назва з фото', sku: 'OTHER', barcode: '4820999999999', qty: 2, purchase_price_uah: 101 },
+        { name: 'Колодки передні нові', sku: 'NEW-PADS', category_name: 'Гальмівні колодки', qty: 3, purchase_price_uah: 101 },
+      ],
+    })
+
+    const matchedDraft = result.draft_items.find((item: any) => item.product_id === existing.id) as any
+    expect(matchedDraft.product_name).toBe('Наша точна назва')
+    expect(matchedDraft.sku).toBe('OUR-ARTICLE')
+    expect(matchedDraft.barcode).toBe('4820999999999')
+    expect(matchedDraft.retail_price).toBe(15500)
+
+    const created = catalog.findBySku('NEW-PADS')
+    expect(created?.barcode).toBeNull()
+    expect(created?.category_id).toBe(category.id)
+    expect(created?.retail_price).toBe(15500)
+    expect(result.unresolved[0]).toMatchObject({ needs_barcode: true, needs_category: false })
+  })
 })

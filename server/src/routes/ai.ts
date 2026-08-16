@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
-  getAiConfig, saveAiConfig, testKey, runChat, applyAction, getUsageSummary,
+  getAiConfig, saveAiConfig, testKey, runChat, recognizeSupplyInvoicePhoto, applyAction, getUsageSummary,
   AI_MODELS,
 } from '../services/aiService.js'
 import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
@@ -75,6 +75,45 @@ const chatSchema = z.object({
       data_base64: z.string().min(1).max(6_000_000),
     }),
   ])).max(4).optional(),
+})
+const supplyInvoicePhotoSchema = z.object({
+  message: z.string().max(20000).optional(),
+  images: chatSchema.shape.images.unwrap().min(1),
+})
+
+router.post('/supply-invoice-photo', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  const storagePaths: string[] = []
+  try {
+    const parsed = supplyInvoicePhotoSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані фото накладної', 422, parsed.error.flatten())
+    const images = []
+    for (const image of parsed.data.images) {
+      if ('data_base64' in image) {
+        images.push(image)
+        continue
+      }
+      storagePaths.push(image.storage_path)
+      const uploaded = await downloadProcessingUpload({
+        path: image.storage_path,
+        userId: req.user!.id,
+        purpose: 'ai',
+        maxBytes: 6 * 1024 * 1024,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+      })
+      images.push({
+        mime_type: uploaded.mimeType as 'image/jpeg' | 'image/png' | 'image/webp',
+        data_base64: uploaded.buffer.toString('base64'),
+      })
+    }
+    const out = await recognizeSupplyInvoicePhoto(req.user!.tenant_id, req.user!.id, {
+      message: parsed.data.message,
+      images,
+    })
+    res.json({ data: out })
+  } catch (err) { next(err) }
+  finally {
+    await removeProcessingUploads(storagePaths, req.user!.id).catch(() => {})
+  }
 })
 
 // POST /api/v1/ai/chat — діалог із «директором»

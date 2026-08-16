@@ -584,7 +584,13 @@ interface ForsageDesktopBridge {
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
-    createInvoiceFromAi?: (input: { tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{ invoice: any; matched: number; created: number; unresolved: Array<{ name: string; sku: string; needs_barcode: true }> }>
+    createInvoiceFromAi?: (input: { tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{
+      invoice: any
+      matched: number
+      created: number
+      unresolved: Array<{ name: string; sku: string; needs_barcode: true; needs_category: boolean }>
+      draft_items: Array<Record<string, unknown>>
+    }>
     updateInvoice: (id: string, input: any) => Promise<any>
     payInvoice: (id: string, input: any) => Promise<any>
     postInvoice: (id: string, input?: any) => Promise<any>

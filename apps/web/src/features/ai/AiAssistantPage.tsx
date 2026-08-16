@@ -382,7 +382,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
     const hasImages = imageAttachments.length > 0
     const fallbackPrompt = hasImages
       ? (localInvoiceMode
-        ? 'Ось фото накладної постачальника. Розпізнай усі рядки товарів і підготуй create_products_bulk: назва товару, бренд, артикул, штрихкод якщо є, кількість, закупівельна ціна в грн, ціна продажу в грн. Назву, артикул і штрихкод перенеси дослівно без вигаданих значень: програма перевірить їх у каталозі та підставить існуючий товар замість створення дубля. Не створюй замовлення клієнта.'
+        ? 'Ось фото накладної постачальника. Розпізнай усі рядки товарів: назву, бренд, артикул, штрихкод лише якщо він надрукований, кількість, закупівельну ціну та папку товару. Не вигадуй штрихкод і не визначай ціну продажу — програма знайде існуючі товари та розрахує продаж за таблицею націнок.'
         : 'Ось фото замовлення з зошита — додай замовлення в програму.')
       : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Назви товарів і папок не перекладай та не виправляй.'
     setInput('')
@@ -433,12 +433,14 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
           ? `${message || fallbackPrompt}\n\nЦе частина ${index + 1} з ${partsToSend.length}. Оброби всі рядки цієї частини, не пропускаючи товари.`
           : message || fallbackPrompt
         try {
-          const response = await aiApi.chat({
-            message: partPrompt,
-            history: index === 0 ? history : undefined,
-            file_text: partsToSend[index],
-            images: index === 0 ? images : undefined,
-          })
+          const response = localInvoiceMode && index === 0 && images?.length && !partsToSend[index]
+            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt, images })
+            : await aiApi.chat({
+              message: partPrompt,
+              history: index === 0 && !localInvoiceMode ? history : undefined,
+              file_text: partsToSend[index],
+              images: index === 0 ? images : undefined,
+            })
           responses.push(response.data)
         } catch (error) {
           failedAt = index
@@ -506,8 +508,18 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
           notes: payload.notes ?? null,
           rows: Array.isArray(payload.products) ? payload.products : [],
         })
+        if (result.invoice?.id && Array.isArray(result.draft_items)) {
+          localStorage.setItem(`forsage:supply-invoice:edit-${result.invoice.id}:draft:v2`, JSON.stringify({
+            supplierId: result.invoice.supplier_id ?? '', invoiceNumber: result.invoice.invoice_number ?? '',
+            notes: result.invoice.notes ?? '', items: result.draft_items, paidAmount: '', cashboxPaidAmount: '',
+            payFullNow: false, paymentMethod: 'cash', fundSource: 'cashbox', postImmediately: false,
+            serverInvoiceId: result.invoice.id, savedAt: new Date().toISOString(),
+          }))
+        }
+        const withoutBarcode = result.unresolved.filter((item) => item.needs_barcode).length
+        const withoutCategory = result.unresolved.filter((item) => item.needs_category).length
         const unresolvedText = result.unresolved.length > 0
-          ? ` Нових товарів без штрихкоду/папки: ${result.unresolved.length}.`
+          ? ` Нових без штрихкоду: ${withoutBarcode}; папку треба вибрати вручну: ${withoutCategory}.`
           : ''
         const msg = `Чернетку приходу створено: ${result.matched} товарів знайдено, ${result.created} додано.${unresolvedText}`
         setApplyMsg((prev) => ({ ...prev, [action.id]: msg }))
