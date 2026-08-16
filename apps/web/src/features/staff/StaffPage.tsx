@@ -53,7 +53,7 @@ export default function StaffPage() {
   const [deleteConfirmUser, setDeleteConfirmUser] = useState<AdminUser|null>(null)
   const [selectedUser, setSelectedUser] = useState<AdminUser|null>(null)
   const [modalTab, setModalTab] = useState<'settings'|'payouts'>('settings')
-  const [addForm, setAddForm] = useState({phone:'',password:'',full_name:'',role:'cashier' as UserRole,base_rate:'',rate_period:'day' as 'day'|'month'})
+  const [addForm, setAddForm] = useState({phone:'',password:'',full_name:'',role:'cashier' as UserRole,base_rate:'',rate_period:'day' as 'day'|'month',salaryMode:'only_rate' as SalaryMode,pos_revenue:'',pos_profit:'',order_revenue:'',order_profit:'',tire_revenue:'',tire_profit:''})
   const [editForm, setEditForm] = useState({role:'cashier' as UserRole,is_active:true,full_name:'',phone:'',base_rate:'',rate_period:'day' as 'day'|'month',salaryMode:'only_rate' as SalaryMode,pos_revenue:'',pos_profit:'',order_revenue:'',order_profit:'',tire_revenue:'',tire_profit:''})
   const [newPass, setNewPass] = useState('')
   const [pinInput, setPinInput] = useState('')
@@ -75,7 +75,25 @@ export default function StaffPage() {
 
   function shiftPeriod(d:number){const[y,m]=period.split('-').map(Number);const dt=new Date(y,m-1+d,1);setPeriod(dt.toISOString().slice(0,7))}
 
-  async function handleCreate(e:React.FormEvent){e.preventDefault();setSaving(true);try{await adminApi.createUser({...addForm,base_rate:addForm.base_rate?Math.round(parseFloat(addForm.base_rate)*100):0});toast.success('Співробітника додано');setAddOpen(false);setAddForm({phone:'',password:'',full_name:'',role:'cashier',base_rate:'',rate_period:'day'});loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка створення')}finally{setSaving(false)}}
+  async function handleCreate(e:React.FormEvent){
+    e.preventDefault(); setSaving(true)
+    try {
+      const rate=addForm.salaryMode!=='only_pct'&&addForm.base_rate?Math.round(parseFloat(addForm.base_rate)*100):0
+      const created=await adminApi.createUser({phone:addForm.phone,password:addForm.password,full_name:addForm.full_name,role:addForm.role,base_rate:rate,rate_period:addForm.rate_period})
+      let rulesSaved=true
+      if(addForm.salaryMode!=='only_rate'){
+        const configs=[['pos_sales',addForm.pos_revenue,addForm.pos_profit],['order_sales',addForm.order_revenue,addForm.order_profit],['tire_service',addForm.tire_revenue,addForm.tire_profit]] as const
+        try {
+          for(const [rule_type,revenueValue,profitValue] of configs){const pR=Number(revenueValue)||0;const pP=Number(profitValue)||0;if(pR>0||pP>0)await commissionApi.createRule({user_id:created.data.id,brand_id:null,category_id:null,pct_from_revenue:pR,pct_from_profit:pP,rule_type})}
+        } catch { rulesSaved=false }
+      }
+      setAddOpen(false)
+      setAddForm({phone:'',password:'',full_name:'',role:'cashier',base_rate:'',rate_period:'day',salaryMode:'only_rate',pos_revenue:'',pos_profit:'',order_revenue:'',order_profit:'',tire_revenue:'',tire_profit:''})
+      await loadData()
+      if(rulesSaved)toast.success('Співробітника додано разом із налаштуваннями оплати')
+      else toast.warning('Співробітника створено, але частину процентів не збережено. Відкрийте його картку та перевірте оплату.')
+    }catch(err){toast.error(err instanceof Error?err.message:'Помилка створення')}finally{setSaving(false)}
+  }
 
   function openModal(u:AdminUser){
     setSelectedUser(u)
@@ -284,17 +302,35 @@ export default function StaffPage() {
         )}
       </Modal>
 
-      <Modal open={addOpen} onClose={()=>setAddOpen(false)} title="Додати співробітника" size="sm">
-        <form onSubmit={handleCreate} className="space-y-4">
-          <Input label="Телефон *" type="tel" value={addForm.phone} onChange={(e)=>setAddForm(f=>({...f,phone:e.target.value}))} placeholder="+380671234567" required/>
-          <Input label="Повне ім'я *" value={addForm.full_name} onChange={(e)=>setAddForm(f=>({...f,full_name:e.target.value}))} placeholder="Іванов Іван Іванович" required/>
-          <Input label="Пароль *" type="password" value={addForm.password} onChange={(e)=>setAddForm(f=>({...f,password:e.target.value}))} placeholder="Мінімум 8 символів" required/>
-          <div className="grid grid-cols-2 gap-3">
-            <Input label={`Ставка (грн/${addForm.rate_period==='day'?'день':'місяць'})`} type="number" min="0" step="0.01" value={addForm.base_rate} onChange={(e)=>setAddForm(f=>({...f,base_rate:e.target.value}))} placeholder={addForm.rate_period==='day'?'наприклад: 800':'наприклад: 15000'}/>
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">Період ставки</label><select value={addForm.rate_period} onChange={(e)=>setAddForm(f=>({...f,rate_period:e.target.value as 'day'|'month'}))} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white"><option value="day">За день</option><option value="month">За місяць</option></select></div>
+      <Modal open={addOpen} onClose={()=>setAddOpen(false)} title="Додати співробітника" size="xl">
+        <form onSubmit={handleCreate} className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Input label="Телефон *" type="tel" value={addForm.phone} onChange={(e)=>setAddForm(f=>({...f,phone:e.target.value}))} placeholder="+380671234567" required/>
+            <Input label="Повне ім'я *" value={addForm.full_name} onChange={(e)=>setAddForm(f=>({...f,full_name:e.target.value}))} placeholder="Іванов Іван Іванович" required/>
+            <Input label="Пароль *" type="password" value={addForm.password} onChange={(e)=>setAddForm(f=>({...f,password:e.target.value}))} placeholder="Мінімум 8 символів" required/>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Роль *</label><select value={addForm.role} onChange={(e)=>setAddForm(f=>({...f,role:e.target.value as UserRole}))} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white">{Object.entries(ROLE_LABELS).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
           </div>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Роль *</label><select value={addForm.role} onChange={(e)=>setAddForm(f=>({...f,role:e.target.value as UserRole}))} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white">{Object.entries(ROLE_LABELS).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
-          <div className="flex gap-3 pt-2"><Button type="submit" loading={saving} className="flex-1">Створити</Button><Button type="button" variant="secondary" onClick={()=>setAddOpen(false)}>Скасувати</Button></div>
+          <div className="rounded-xl border border-amber-100 bg-gradient-to-br from-amber-50/80 to-yellow-50/40 p-4 space-y-4">
+            <h4 className="flex items-center gap-2 text-sm font-bold text-gray-800"><DollarSign size={14} className="text-amber-600"/>Оплата праці відразу при створенні</h4>
+            <div><label className="mb-2 block text-xs font-medium text-gray-500">Тип нарахування</label><div className="grid grid-cols-3 gap-1.5">
+              {([{v:'only_rate' as SalaryMode,l:'Тільки ставка',icon:<DollarSign size={13}/>},{v:'only_pct' as SalaryMode,l:'Тільки %',icon:<Percent size={13}/>},{v:'rate_and_pct' as SalaryMode,l:'Ставка + %',icon:<><DollarSign size={13}/><Percent size={13}/></>}]).map(opt=><button key={opt.v} type="button" onClick={()=>setAddForm({...addForm,salaryMode:opt.v})} className={`flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-xs font-medium transition-all ${addForm.salaryMode===opt.v?'border-amber-300 bg-amber-100 text-amber-800 shadow-sm':'border-gray-200 bg-white text-gray-500 hover:border-amber-200'}`}>{opt.icon}{opt.l}</button>)}
+            </div></div>
+            {addForm.salaryMode!=='only_pct'&&<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Input label={`Ставка (грн/${addForm.rate_period==='day'?'день':'місяць'})`} type="number" min="0" step="0.01" value={addForm.base_rate} onChange={(e)=>setAddForm(f=>({...f,base_rate:e.target.value}))} placeholder={addForm.rate_period==='day'?'наприклад: 800':'наприклад: 15000'}/>
+              <div><label className="block text-sm font-medium text-gray-700 mb-1">Період ставки</label><select value={addForm.rate_period} onChange={(e)=>setAddForm(f=>({...f,rate_period:e.target.value as 'day'|'month'}))} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white"><option value="day">За робочий день</option><option value="month">За місяць</option></select></div>
+            </div>}
+            {addForm.salaryMode!=='only_rate'&&<div className="space-y-3 rounded-lg border border-amber-100/50 bg-white/70 p-3">
+              <p className="text-xs font-semibold text-amber-700">Окремі правила за видом роботи</p>
+              <div className="grid grid-cols-[minmax(0,1fr)_90px_90px] items-end gap-2 text-xs">
+                <span className="pb-2 font-medium text-gray-600">Джерело</span><span className="pb-2 text-center text-gray-400">% виручки</span><span className="pb-2 text-center text-gray-400">% прибутку</span>
+                <span className="font-medium text-gray-700">Продажі в касі</span><input type="number" min="0" max="100" step="0.1" value={addForm.pos_revenue} onChange={(e)=>setAddForm({...addForm,pos_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={addForm.pos_profit} onChange={(e)=>setAddForm({...addForm,pos_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
+                <span className="font-medium text-gray-700">Замовлення</span><input type="number" min="0" max="100" step="0.1" value={addForm.order_revenue} onChange={(e)=>setAddForm({...addForm,order_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={addForm.order_profit} onChange={(e)=>setAddForm({...addForm,order_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
+                <span className="font-medium text-gray-700">Шиномонтаж</span><input type="number" min="0" max="100" step="0.1" value={addForm.tire_revenue} onChange={(e)=>setAddForm({...addForm,tire_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={addForm.tire_profit} onChange={(e)=>setAddForm({...addForm,tire_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
+              </div>
+              <p className="text-[10px] text-gray-500">Нульове поле не створює правило. Проценти можна змінити пізніше в цій же картці працівника.</p>
+            </div>}
+          </div>
+          <div className="flex gap-3 pt-1"><Button type="submit" loading={saving} className="flex-1">Створити з налаштуваннями оплати</Button><Button type="button" variant="secondary" onClick={()=>setAddOpen(false)}>Скасувати</Button></div>
         </form>
       </Modal>
 

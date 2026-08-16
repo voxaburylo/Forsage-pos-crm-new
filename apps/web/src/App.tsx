@@ -71,6 +71,7 @@ const INVENTORY_COUNTER_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storek
 const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
+const REPORT_ROLES = ['owner', 'admin', 'manager', 'cashier']
 const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
 
 function Loader() {
@@ -176,7 +177,7 @@ function App() {
           <Route path="/returns"  element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
           <Route path="/cashflow" element={<ProtectedRoute><CashflowPage /></ProtectedRoute>} />
           {/* Звіти з прибутком/маржею — лише власник і адмін */}
-          <Route path="/reports"  element={<ProtectedRoute roles={ADMIN_ROLES}><DailyReport /></ProtectedRoute>} />
+          <Route path="/reports"  element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute>} />
           <Route path="/needs-action" element={<ProtectedRoute roles={OFFICE_ROLES}><NeedsActionPage /></ProtectedRoute>} />

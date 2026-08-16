@@ -78,7 +78,7 @@ router.get('/shift/:id', requireRole('owner', 'admin', 'manager', 'cashier'), as
 // GET /api/v1/reports/sold-items?from=YYYY-MM-DD&to=YYYY-MM-DD
 // Продані товари за вибраний період одним списком для дозамовлення.
 // Параметр date залишено для сумісності зі старими клієнтами.
-router.get('/sold-items', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.get('/sold-items', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' })
     const legacyDate = String(req.query.date ?? '')

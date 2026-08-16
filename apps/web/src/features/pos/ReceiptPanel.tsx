@@ -95,8 +95,9 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
                 </span>
               )}
             </p>
-            <p className="text-gray-500 text-xs mt-0.5">
-              {kopecksToHryvnia(item.unitPrice)} ₴ / {item.unit}
+            <p className="mt-1 text-sm font-semibold text-amber-200">
+              <span className="text-xs font-normal text-gray-400">За 1 {item.unit}: </span>
+              {kopecksToHryvnia(item.unitPrice)} ₴
               {item.requiresCoreReturn && ` • Застава: +${kopecksToHryvnia(item.coreDepositAmount ?? 0)} ₴`}
             </p>
           </div>

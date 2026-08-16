@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
-import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download } from 'lucide-react'
+import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download, Wrench, ClipboardCopy } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
 import { REASON_LABEL } from '@/types/writeoff'
@@ -12,8 +12,11 @@ import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import { businessDateKey } from '@/lib/businessDate'
+import { useAuthStore } from '@/stores/authStore'
+import { staffApi } from '@/features/staff/staffApi'
+import type { TireServiceReportRow } from '@/features/staff/staffApi'
 
-type Tab = 'today' | 'sold' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
+type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
 interface ProfitReport {
   from: string; to: string
@@ -57,7 +60,9 @@ function dateKeyDaysAgo(days: number): string {
 }
 
 export default function DailyReport() {
-  const [tab, setTab]           = useState<Tab>('today')
+  const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
+  const canSeeFullReports = role === 'owner' || role === 'admin'
+  const [tab, setTab]           = useState<Tab>(() => canSeeFullReports ? 'today' : 'sold')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
   const [report, setReport]     = useState<SalesPeriodReport | null>(null)
@@ -75,6 +80,9 @@ export default function DailyReport() {
   const [soldFrom, setSoldFrom] = useState(todayKey)
   const [soldTo, setSoldTo] = useState(todayKey)
   const [soldLoading, setSoldLoading] = useState(false)
+  const [tireDate, setTireDate] = useState(todayKey)
+  const [tireRows, setTireRows] = useState<TireServiceReportRow[]>([])
+  const [tireLoading, setTireLoading] = useState(false)
 
   useEffect(() => {
     if (tab !== 'sold' || !soldFrom || !soldTo || soldFrom > soldTo) return
@@ -91,6 +99,22 @@ export default function DailyReport() {
       .finally(() => { if (!cancelled) setSoldLoading(false) })
     return () => { cancelled = true }
   }, [tab, soldFrom, soldTo])
+
+  async function copySoldItems() {
+    if (soldItems.length === 0) {
+      toast.error('Немає товарів для копіювання')
+      return
+    }
+    const text = soldItems.map((item, index) =>
+      `${index + 1}. ${item.name} | арт. ${item.sku || '—'} | продано ${item.qty_net} ${item.unit} | залишок ${item.qty_on_hand} ${item.unit}`,
+    ).join('\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('Список проданих товарів скопійовано')
+    } catch {
+      toast.error('Не вдалося скопіювати список')
+    }
+  }
 
   function printSoldItems() {
     const escapeHtml = (value: unknown) => String(value ?? '')
@@ -180,6 +204,20 @@ export default function DailyReport() {
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [])
 
+  const loadTireReport = useCallback(async () => {
+    if (!canSeeFullReports) return
+    setTireLoading(true)
+    try {
+      const { data } = await staffApi.tireServiceReport(tireDate)
+      setTireRows(data ?? [])
+    } catch {
+      setTireRows([])
+      toast.error('Не вдалося завантажити звіт шиномонтажу')
+    } finally {
+      setTireLoading(false)
+    }
+  }, [canSeeFullReports, tireDate])
+
   const exportToExcel = useCallback(() => {
     try {
       let dataToExport: any[] = []
@@ -237,6 +275,23 @@ export default function DailyReport() {
           'Чиста сума (грн)': item.net_revenue / 100,
         }))
         fileName = `sold_items_${soldFrom}_${soldTo}`
+      } else if (tab === 'tire') {
+        if (!tireRows.length) {
+          toast.error('Немає даних шиномонтажу за вибраний день')
+          return
+        }
+        dataToExport = tireRows.map((row) => ({
+          'Працівник': row.employee_name,
+          'Послуг': row.services_qty,
+          'Виручка шиномонтажу (грн)': row.service_revenue / 100,
+          'Процент (грн)': row.commission_earned / 100,
+          'Денна ставка (грн)': row.daily_rate / 100,
+          'Нараховано (грн)': row.earned / 100,
+          'Виплачено (грн)': row.paid / 100,
+          'Штраф (грн)': row.penalty / 100,
+          'До виплати (грн)': row.due / 100,
+        }))
+        fileName = `tire_service_${tireDate}`
       } else if (tab === 'lowstock') {
         if (!lowStock.length) {
           toast.error('Немає даних для експорту')
@@ -300,7 +355,7 @@ export default function DailyReport() {
     } catch (err) {
       toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo])
+  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, tireRows, tireDate])
 
   useEffect(() => {
     if (tab === 'today')         loadToday()
@@ -309,23 +364,31 @@ export default function DailyReport() {
     else if (tab === 'debtors')  loadDebtors()
     else if (tab === 'writeoffs') loadWriteoffs()
     else if (tab === 'profit')   loadProfit()
-  }, [tab, loadToday, loadWeekly, loadLowStock, loadDebtors, loadWriteoffs, loadProfit])
+    else if (tab === 'tire')     loadTireReport()
+  }, [tab, loadToday, loadWeekly, loadLowStock, loadDebtors, loadWriteoffs, loadProfit, loadTireReport])
 
   const TABS = [
     { id: 'today',    label: 'Сьогодні',   icon: <TrendingUp size={15} /> },
     { id: 'sold',     label: 'Продані товари', icon: <BarChart2 size={15} /> },
+    { id: 'tire',     label: 'Шиномонтаж', icon: <Wrench size={15} /> },
     { id: 'weekly',   label: '7 днів',     icon: <BarChart2 size={15} /> },
     { id: 'period',   label: 'За період',  icon: <BarChart2 size={15} /> },
     { id: 'lowstock', label: 'Мало товару', icon: <AlertTriangle size={15} /> },
     { id: 'debtors',  label: 'Боржники',   icon: <Users size={15} /> },
     { id: 'writeoffs', label: 'Списання',  icon: <Trash2 size={15} /> },
     { id: 'profit',    label: 'P&L',        icon: <DollarSign size={15} /> },
-  ] as const
+  ].filter((item) => canSeeFullReports || item.id === 'sold')
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
   const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_net), 0)
   const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.net_revenue), 0)
+  const tireTotals = tireRows.reduce((totals, row) => ({
+    services: totals.services + Number(row.services_qty ?? 0),
+    revenue: totals.revenue + Number(row.service_revenue ?? 0),
+    earned: totals.earned + Number(row.earned ?? 0),
+    due: totals.due + Number(row.due ?? 0),
+  }), { services: 0, revenue: 0, earned: 0, due: 0 })
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -472,6 +535,10 @@ export default function DailyReport() {
                     }}
                     className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
                 </label>
+                <button onClick={copySoldItems} disabled={soldItems.length === 0 || soldLoading}
+                  className="flex h-[38px] items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+                  <ClipboardCopy size={14} /> Копіювати список
+                </button>
                 <button onClick={printSoldItems} disabled={soldItems.length === 0 || soldLoading}
                   className="h-[38px] rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
                   🖨 Друк
@@ -544,6 +611,61 @@ export default function DailyReport() {
                       </tr>
                     ))}
                   </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+
+      {/* Шиномонтаж — каса та зарплата за день */}
+      {tab === 'tire' && canSeeFullReports && (
+        <>
+          <Card className="mb-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Шиномонтаж за день</h2>
+                <p className="mt-1 text-sm text-gray-500">Виручка за роботи та фактичний розрахунок зарплати кожного шиномонтажника.</p>
+              </div>
+              <label className="text-xs font-medium text-gray-600">
+                Дата
+                <input type="date" value={tireDate} max={todayKey} onChange={(event) => setTireDate(event.target.value)}
+                  className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+              </label>
+            </div>
+          </Card>
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Card><p className="text-xs text-gray-400">Виконано послуг</p><p className="text-2xl font-bold text-gray-900">{Number(tireTotals.services.toFixed(3))}</p></Card>
+            <Card><p className="text-xs text-gray-400">Каса шиномонтажу</p><p className="text-2xl font-bold text-gray-900">{formatMoney(tireTotals.revenue)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Нараховано зарплати</p><p className="text-2xl font-bold text-gray-900">{formatMoney(tireTotals.earned)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Зараз до виплати</p><p className="text-2xl font-bold text-amber-700">{formatMoney(tireTotals.due)}</p></Card>
+          </div>
+          <Card padding="none">
+            {tireLoading ? (
+              <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div>
+            ) : tireRows.length === 0 ? (
+              <div className="flex min-h-40 items-center justify-center px-4 text-center text-sm text-gray-400">За цей день немає робіт шиномонтажу або активних шиномонтажників</div>
+            ) : (
+              <div className="overflow-auto">
+                <table className="w-full min-w-[900px] text-sm">
+                  <thead className="bg-gray-50 text-xs text-gray-500"><tr>
+                    <th className="px-4 py-3 text-left">Працівник</th><th className="px-2 py-3 text-right">Послуг</th>
+                    <th className="px-2 py-3 text-right">Каса</th><th className="px-2 py-3 text-right">Процент</th>
+                    <th className="px-2 py-3 text-right">Ставка</th><th className="px-2 py-3 text-right">Нараховано</th>
+                    <th className="px-2 py-3 text-right">Виплачено</th><th className="px-4 py-3 text-right">До виплати</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-gray-100">{tireRows.map((row) => (
+                    <tr key={row.employee_id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td>
+                      <td className="px-2 py-3 text-right">{Number(row.services_qty.toFixed(3))}</td>
+                      <td className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
+                      <td className="px-2 py-3 text-right">{formatMoney(row.commission_earned)}</td>
+                      <td className="px-2 py-3 text-right">{formatMoney(row.daily_rate)}</td>
+                      <td className="px-2 py-3 text-right font-semibold">{formatMoney(row.earned)}</td>
+                      <td className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-amber-700">{formatMoney(row.due)}</td>
+                    </tr>
+                  ))}</tbody>
                 </table>
               </div>
             )}
