@@ -9,4 +9,3 @@ CREATE INDEX IF NOT EXISTS idx_cash_operations_tire_handover
   WHERE type = 'in' AND employee_id IS NOT NULL AND work_date IS NOT NULL;
 
 NOTIFY pgrst, 'reload schema';
-
