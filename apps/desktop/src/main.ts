@@ -421,7 +421,7 @@ function resolveLanSession(userId: string): LanSession | null {
     SELECT id, tenant_id, role, is_active FROM staff_users
     WHERE id = ? AND tenant_id = ? LIMIT 1
   `).get(userId, DEFAULT_TENANT_ID) as (LanSession & { is_active: number }) | undefined
-  if (!row || row.is_active !== 1) return null
+  if (!row || row.is_active !== 1 || row.role === 'tire_worker') return null
   return { id: row.id, tenant_id: row.tenant_id, role: row.role }
 }
 
@@ -908,7 +908,7 @@ app.whenReady().then(async () => {
     return { success: true }
   })
   handleDesktopIpc('desktop:staff:list-users', () => requireLocalStaff().listUsers())
-  handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password: string) =>
+  handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password?: string) =>
     requireLocalStaff().saveServerUser(input, password))
   handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
   handleDesktopIpc('desktop:staff:delete-user', (_event, id: string) => requireLocalStaff().deleteUser(id))

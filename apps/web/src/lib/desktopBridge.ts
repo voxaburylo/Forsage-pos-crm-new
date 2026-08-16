@@ -516,7 +516,7 @@ interface ForsageDesktopBridge {
   }
   staff?: {
     listUsers: () => Promise<any[]>
-    saveServerUser: (input: any, password: string) => Promise<any>
+    saveServerUser: (input: any, password?: string) => Promise<any>
     updateUser: (id: string, input: any) => Promise<any>
     deleteUser: (id: string) => Promise<{ ok: true }>
     saveServerPassword: (id: string, password: string) => Promise<{ success: true }>

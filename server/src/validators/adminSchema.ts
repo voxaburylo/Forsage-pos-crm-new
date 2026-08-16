@@ -15,12 +15,16 @@ const phoneSchema = z
   .refine((v) => /^\+?380\d{9}$/.test(v), 'Невірний формат (+380XXXXXXXXX)')
 
 export const createUserSchema = z.object({
-  phone:    phoneSchema,
-  password: z.string().min(8, 'Пароль мінімум 8 символів'),
+  phone:    phoneSchema.optional(),
+  password: z.string().min(8, 'Пароль мінімум 8 символів').optional(),
   full_name: z.string().min(1).max(200),
   role:     z.enum(['owner','admin','manager','cashier','storekeeper','sto_viewer','tire_worker']),
   base_rate: z.number().int().min(0).optional(),
   rate_period: z.enum(['day', 'month']).optional(),
+}).superRefine((value, ctx) => {
+  if (value.role === 'tire_worker') return
+  if (!value.phone) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['phone'], message: 'Телефон обов’язковий' })
+  if (!value.password) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['password'], message: 'Пароль обов’язковий' })
 })
 
 export const updateUserSchema = z.object({

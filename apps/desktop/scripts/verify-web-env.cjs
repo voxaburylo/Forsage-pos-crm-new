@@ -2,6 +2,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const webEnvPath = path.resolve(__dirname, '../../web/.env')
+const webProductionEnvPath = path.resolve(__dirname, '../../web/.env.production')
 const desktopDistPath = path.resolve(__dirname, '../dist')
 const authConfigPath = path.join(desktopDistPath, 'trusted-auth-config.json')
 const webDistIndexPath = path.resolve(__dirname, '../../web/dist/index.html')
@@ -22,7 +23,7 @@ function parseEnvFile(filePath) {
   return result
 }
 
-const fileEnv = parseEnvFile(webEnvPath)
+const fileEnv = { ...parseEnvFile(webEnvPath), ...parseEnvFile(webProductionEnvPath) }
 const valueFor = (key) => process.env[key] || fileEnv[key] || ''
 const missing = requiredKeys.filter((key) => !valueFor(key))
 
@@ -42,6 +43,17 @@ try {
 }
 if (supabaseUrl.protocol !== 'https:') {
   console.error('VITE_SUPABASE_URL must use HTTPS.')
+  process.exit(1)
+}
+let apiUrl
+try {
+  apiUrl = new URL(valueFor('VITE_API_URL'))
+} catch {
+  console.error('VITE_API_URL must be a valid HTTPS URL for the desktop build.')
+  process.exit(1)
+}
+if (apiUrl.protocol !== 'https:' || apiUrl.hostname.endsWith('.onrender.com')) {
+  console.error('Desktop VITE_API_URL must use the active HTTPS API and must not point to the retired Render service.')
   process.exit(1)
 }
 // A desktop renderer is loaded from file://, so Vite assets must be relative

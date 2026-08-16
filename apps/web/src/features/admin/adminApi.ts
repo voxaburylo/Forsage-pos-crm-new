@@ -101,7 +101,7 @@ export const adminApi = {
     if (local) return { data: await local() as AdminUser[] }
     return api.get<{ data: AdminUser[] }>('/api/v1/admin/users')
   },
-  createUser: async (body: { phone: string; password: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) => {
+  createUser: async (body: { phone?: string; password?: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) => {
     const saveLocal = desktopBridge()?.staff?.saveServerUser
     if (!saveLocal) return api.post<{ data: AdminUser }>('/api/v1/admin/users', body)
     const requiredMessage = 'Для створення співробітника потрібне підключення до сервера. Перевірте інтернет і повторіть.'
@@ -125,7 +125,7 @@ export const adminApi = {
       throw error
     }
     try {
-      await saveLocal(response.data, body.password)
+      await saveLocal(response.data, body.password ?? '')
     } catch {
       throw new Error('Співробітника створено на сервері, але локальну копію не оновлено. Оновіть список співробітників онлайн.')
     }

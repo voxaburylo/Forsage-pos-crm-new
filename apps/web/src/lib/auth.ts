@@ -16,6 +16,11 @@ function normalizePhone(raw: string): string {
   return raw
 }
 
+function isProgramAccessDenied(user: unknown): boolean {
+  const metadata = (user as { app_metadata?: Record<string, unknown> } | null | undefined)?.app_metadata
+  return metadata?.role === 'tire_worker' || metadata?.can_login === false
+}
+
 // Відрізняємо тимчасову мережеву помилку від помилки облікових даних.
 function isNetworkFailure(err: unknown): boolean {
   if (!err) return false
@@ -59,6 +64,7 @@ async function connectDesktopToServer(
     if (generation !== desktopServerLoginGeneration) return
     if (error) { if (isNetworkFailure(error)) retry(); return }
     if (!data.session) { retry(); return }
+    if (isProgramAccessDenied(data.user)) { await supabase.auth.signOut().catch(() => {}); return }
     useAuthStore.getState().setSession(data.session)
   } catch {
     // Локальний вхід уже успішний: повторюємо серверний вхід у фоні,
@@ -188,6 +194,10 @@ export async function signIn(phone: string, password: string) {
   }
 
   if (!data?.session) throw new Error('Помилка входу')
+  if (isProgramAccessDenied(data.user)) {
+    await supabase.auth.signOut().catch(() => {})
+    throw new Error('Цей працівник не має доступу до програми')
+  }
 
   return data.session
 }
@@ -203,6 +213,10 @@ export async function signOut() {
 
 export async function getSession() {
   const { data } = await supabase.auth.getSession()
+  if (data.session && isProgramAccessDenied(data.session.user)) {
+    await supabase.auth.signOut().catch(() => {})
+    return null
+  }
   return data.session
 }
 

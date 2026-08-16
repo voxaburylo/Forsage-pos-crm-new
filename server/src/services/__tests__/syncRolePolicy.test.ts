@@ -26,10 +26,35 @@ describe('sync role policy', () => {
     expect(isSyncOperationAllowed('cashier', 'sale.completed')).toBe(true)
     expect(isSyncOperationAllowed('storekeeper', 'product.upsert')).toBe(true)
   })
-  it('allows storekeepers to synchronize inventory drafts and empty-session deletion', () => {
-    for (const operation of ['inventory.created', 'inventory.started', 'inventory.deleted']) {
+  it('allows cashier receiving and inventory operations permitted by the application', () => {
+    const cashierOperations = [
+      'product.upsert',
+      'supplier_invoice.created',
+      'supplier_invoice.updated',
+      'supplier_invoice.posted',
+      'supplier_invoice.payment_added',
+      'supplier_invoice.deleted',
+      'inventory.created',
+      'inventory.started',
+      'inventory.completed',
+      'inventory.deleted',
+    ]
+    for (const operation of cashierOperations) {
+      expect(isSyncOperationAllowed('cashier', operation)).toBe(true)
+    }
+    expect(isSyncOperationAllowed('cashier', 'supplier_invoice.cancelled')).toBe(false)
+  })
+  it('allows storekeepers to synchronize the supply and inventory operations they can perform', () => {
+    for (const operation of [
+      'supplier_invoice.created',
+      'supplier_invoice.updated',
+      'supplier_invoice.posted',
+      'supplier_invoice.payment_added',
+      'inventory.created',
+      'inventory.started',
+      'inventory.deleted',
+    ]) {
       expect(isSyncOperationAllowed('storekeeper', operation)).toBe(true)
-      expect(isSyncOperationAllowed('cashier', operation)).toBe(false)
     }
     expect(isSyncOperationAllowed('storekeeper', 'inventory.completed')).toBe(false)
     expect(isSyncOperationAllowed('owner', 'inventory.completed')).toBe(true)
@@ -74,10 +99,10 @@ describe('sync role policy', () => {
     expect(owner.staff_directory_snapshot_included).toBe(false)
   })
 
-  it('does not expose supply documents to cashier roles', () => {
-    expect(canPullSupplyData('cashier')).toBe(false)
+  it('exposes supply documents to every role allowed to receive goods', () => {
     expect(canPullSupplyData('sto_viewer')).toBe(false)
-    for (const role of ['owner', 'admin', 'manager', 'storekeeper']) {
+    expect(canPullSupplyData('tire_worker')).toBe(false)
+    for (const role of ['owner', 'admin', 'manager', 'cashier', 'storekeeper']) {
       expect(canPullSupplyData(role)).toBe(true)
     }
   })

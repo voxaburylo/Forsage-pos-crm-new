@@ -99,7 +99,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   },
   staff: {
     listUsers: () => ipcRenderer.invoke('desktop:staff:list-users'),
-    saveServerUser: (input: unknown, password: string) => ipcRenderer.invoke('desktop:staff:save-server-user', input, password),
+    saveServerUser: (input: unknown, password?: string) => ipcRenderer.invoke('desktop:staff:save-server-user', input, password),
     updateUser: (id: string, input: unknown) => ipcRenderer.invoke('desktop:staff:update-user', id, input),
     deleteUser: (id: string) => ipcRenderer.invoke('desktop:staff:delete-user', id),
     saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),

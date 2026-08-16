@@ -44,6 +44,42 @@ describe('LocalStaffRepository server-first credentials', () => {
     expect(outbox.count).toBe(0)
   })
 
+  it('stores tire workers without credentials and blocks password and PIN access', () => {
+    repository.saveServerUser({
+      id: 'tire-worker-no-login',
+      full_name: 'Майстер шиномонтажу',
+      role: 'tire_worker',
+      is_active: true,
+    }, '')
+
+    const stored = db.prepare(
+      'SELECT phone, password_hash, pin_hash FROM staff_users WHERE id = ?',
+    ).get('tire-worker-no-login') as { phone: string | null; password_hash: string | null; pin_hash: string | null }
+    expect(stored.phone).toBeNull()
+    expect(stored.password_hash).toBeNull()
+    expect(stored.pin_hash).toBeNull()
+    expect(() => repository.loginWithPassword('', '')).toThrow('Невірний номер телефону або пароль')
+    expect(() => repository.setPin('tire-worker-no-login', '1234')).toThrow('не має доступу')
+    expect(repository.verifyPin('tire-worker-no-login', '1234')).toEqual({
+      valid: false,
+      error: 'Шиномонтажник не має доступу до програми',
+    })
+  })
+
+  it('does not treat a cashier with a tire commission rule as a tire worker', () => {
+    const timestamp = '2026-07-29T08:00:00.000Z'
+    const cashierId = randomUUID()
+    db.prepare(`
+      INSERT INTO staff_users (id, tenant_id, full_name, role, phone, is_active, created_at, updated_at)
+      VALUES (?, ?, 'Касир', 'cashier', '+380670000099', 1, ?, ?)
+    `).run(cashierId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO commission_rules (id, tenant_id, user_id, pct_from_revenue, pct_from_profit, rule_type, created_at, updated_at)
+      VALUES (?, ?, ?, 10, 0, 'tire_service', ?, ?)
+    `).run(randomUUID(), DEFAULT_TENANT_ID, cashierId, timestamp, timestamp)
+
+    expect(repository.tireServiceReport('2026-07-29')).toEqual([])
+  })
   it('retires an old provisional UUID and removes its unsupported outbox entry', () => {
     const provisionalId = 'legacy-local-user'
     const timestamp = '2026-07-22T09:00:00.000Z'

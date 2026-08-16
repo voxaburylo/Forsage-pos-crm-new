@@ -126,7 +126,7 @@ export class LocalStaffRepository {
 
   saveServerUser(input: {
     id: string
-    phone: string
+    phone?: string
     full_name: string
     role: string
     is_active?: boolean
@@ -134,14 +134,15 @@ export class LocalStaffRepository {
     rate_period?: 'day' | 'month'
     created_at?: string
     updated_at?: string
-  }, password: string, tenantId = DEFAULT_TENANT_ID): any {
+  }, password = '', tenantId = DEFAULT_TENANT_ID): any {
     const id = String(input.id ?? '').trim()
     const fullName = String(input.full_name ?? '').trim()
     const phone = String(input.phone ?? '').trim()
+    const noProgramAccess = input.role === 'tire_worker'
     if (!id) throw new Error('Сервер не повернув ідентифікатор співробітника')
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
-    if (!phone) throw new Error('Вкажіть телефон співробітника')
-    if (String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
+    if (!noProgramAccess && !phone) throw new Error('Вкажіть телефон співробітника')
+    if (!noProgramAccess && String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
 
     const timestamp = nowIso()
     const createdAt = input.created_at || timestamp
@@ -151,7 +152,7 @@ export class LocalStaffRepository {
       FROM staff_users
       WHERE tenant_id = ? AND id <> ? AND deleted_at IS NULL
     `).all(tenantId, id) as Array<{ id: string; phone: string | null }>)
-      .find((candidate) => normalizePhone(candidate.phone ?? '') === normalizePhone(phone))
+      .find((candidate) => Boolean(phone) && normalizePhone(candidate.phone ?? '') === normalizePhone(phone))
 
     return this.db.transaction(() => {
       // Old desktop builds could create a local UUID first. Keep that row only
@@ -193,11 +194,11 @@ export class LocalStaffRepository {
         tenantId,
         fullName,
         input.role || 'cashier',
-        phone,
+        phone || null,
         input.is_active === false ? 0 : 1,
         money(input.base_rate),
         input.rate_period === 'month' ? 'month' : 'day',
-        hashSecret(password),
+        noProgramAccess ? null : hashSecret(password),
         updatedAt,
         createdAt,
         updatedAt,
@@ -213,7 +214,8 @@ export class LocalStaffRepository {
   }
 
   saveServerPassword(id: string, password: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
-    this.requireUser(id, tenantId)
+    const user = this.requireUser(id, tenantId)
+    if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')
     if (String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
     this.db.prepare(`
       UPDATE staff_users SET password_hash = ?, updated_at = ?
@@ -225,7 +227,9 @@ export class LocalStaffRepository {
   updateUser(id: string, input: any, tenantId = DEFAULT_TENANT_ID): any {
     const current = this.requireUser(id, tenantId)
     const fullName = input.full_name === undefined ? current.full_name : String(input.full_name).trim()
-    const phone = input.phone === undefined ? current.phone : String(input.phone).trim()
+    const role = input.role ?? current.role
+    const noProgramAccess = role === 'tire_worker'
+    const phone = noProgramAccess ? '' : (input.phone === undefined ? current.phone : String(input.phone).trim())
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
     if (phone) {
       const duplicate = this.db.prepare(`
@@ -238,17 +242,20 @@ export class LocalStaffRepository {
     this.db.prepare(`
       UPDATE staff_users SET
         full_name = ?, phone = ?, role = ?, is_active = ?, base_rate = ?, rate_period = ?,
+        password_hash = CASE WHEN ? = 1 THEN NULL ELSE password_hash END,
+        pin_hash = CASE WHEN ? = 1 THEN NULL ELSE pin_hash END,
         dirty_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(
-      fullName, phone || null, input.role ?? current.role,
+      fullName, phone || null, role,
       input.is_active === undefined ? current.is_active : (input.is_active ? 1 : 0),
       input.base_rate === undefined ? current.base_rate : money(input.base_rate),
       input.rate_period === 'month' ? 'month' : (input.rate_period === 'day' ? 'day' : current.rate_period),
+      noProgramAccess ? 1 : 0, noProgramAccess ? 1 : 0,
       timestamp, timestamp, id, tenantId,
     )
     this.addOutbox(tenantId, 'staff_user', id, 'staff_user.updated', {
-      id, full_name: fullName, phone: phone || null, role: input.role ?? current.role,
+      id, full_name: fullName, phone: phone || null, role,
       is_active: input.is_active === undefined ? Number(current.is_active) === 1 : Boolean(input.is_active),
       base_rate: input.base_rate === undefined ? money(current.base_rate) : money(input.base_rate),
       rate_period: input.rate_period ?? current.rate_period,
@@ -275,13 +282,13 @@ export class LocalStaffRepository {
   ): any {
     const normalizedPhone = normalizePhone(phone)
     const row = this.db.prepare(`
-      SELECT id, phone, is_active
+      SELECT id, phone, role, is_active
       FROM staff_users
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
       LIMIT 1
-    `).get(serverUserId, tenantId) as { id: string; phone: string | null; is_active: number } | undefined
+    `).get(serverUserId, tenantId) as { id: string; phone: string | null; role: string; is_active: number } | undefined
 
-    if (!row || Number(row.is_active) !== 1 || normalizePhone(row.phone ?? '') !== normalizedPhone) {
+    if (!row || row.role === 'tire_worker' || Number(row.is_active) !== 1 || normalizePhone(row.phone ?? '') !== normalizedPhone) {
       throw new Error('Обліковий запис сервера не відповідає локальному співробітнику')
     }
     if (!password) throw new Error('Пароль не може бути порожнім')
@@ -312,6 +319,7 @@ export class LocalStaffRepository {
     const valid = Boolean(
       row
       && Number(row.is_active) === 1
+      && row.role !== 'tire_worker'
       && row.password_hash
       && verifySecret(row.password_hash, password, row.id),
     )
@@ -346,7 +354,8 @@ export class LocalStaffRepository {
     }
   }
   setPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
-    this.requireUser(userId, tenantId)
+    const user = this.requireUser(userId, tenantId)
+    if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')
     if (!/^\d{4}$/.test(pin)) throw new Error('PIN-код має складатися з 4 цифр')
     const timestamp = nowIso()
     const pinHash = hashSecret(pin)
@@ -372,10 +381,11 @@ export class LocalStaffRepository {
     }
 
     const row = this.db.prepare(`
-      SELECT pin_hash FROM staff_users
+      SELECT pin_hash, role FROM staff_users
       WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL LIMIT 1
-    `).get(userId, tenantId) as { pin_hash: string | null } | undefined
+    `).get(userId, tenantId) as { pin_hash: string | null; role: string } | undefined
     if (!row) return { valid: false, error: 'Співробітника не знайдено' }
+    if (row.role === 'tire_worker') return { valid: false, error: 'Шиномонтажник не має доступу до програми' }
     if (!row.pin_hash) return { valid: false, error: 'PIN-код не налаштовано' }
 
     const valid = verifySecret(row.pin_hash, pin, userId)
@@ -482,12 +492,7 @@ export class LocalStaffRepository {
       '  SELECT DISTINCT u.id AS employee_id, u.full_name AS employee_name, u.base_rate, u.rate_period',
       '  FROM staff_users u',
       '  WHERE u.tenant_id = ? AND u.is_active = 1 AND u.deleted_at IS NULL',
-      "    AND (u.role = 'tire_worker' OR EXISTS (",
-      '      SELECT 1 FROM commission_rules rule',
-      '      WHERE rule.tenant_id = u.tenant_id AND rule.deleted_at IS NULL',
-      "        AND rule.rule_type = 'tire_service'",
-      '        AND (rule.user_id = u.id OR rule.user_id IS NULL)',
-      '    ))',
+      "    AND u.role = 'tire_worker'",
       '), salary AS (',
       '  SELECT employee_id,',
       "    COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0) AS earned,",

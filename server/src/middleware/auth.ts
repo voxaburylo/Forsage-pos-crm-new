@@ -11,6 +11,7 @@ interface SupabaseJwtPayload {
   iat?: number
   app_metadata?: {
     is_active?: boolean
+    can_login?: boolean
     role?: string
     tenant_id?: string
   }
@@ -22,6 +23,7 @@ type AuthUserPayload = {
   role: string
   tenant_id?: string
   is_active?: boolean
+  can_login?: boolean
   issued_at?: number
 }
 
@@ -53,6 +55,7 @@ async function loadRemoteUser(token: string): Promise<AuthUserPayload | null> {
     role: (meta.role as string) ?? 'cashier',
     tenant_id: meta.tenant_id as string | undefined,
     is_active: meta.is_active as boolean | undefined,
+    can_login: meta.can_login as boolean | undefined,
   }
 }
 
@@ -96,6 +99,7 @@ export async function requireAuth(
           role: trustedMeta.role ?? 'cashier',
           tenant_id: trustedMeta.tenant_id,
           is_active: trustedMeta.is_active,
+          can_login: trustedMeta.can_login,
           issued_at: decoded.iat,
         }
       }
@@ -137,6 +141,9 @@ export async function requireAuth(
 
   if (userPayload.is_active === false) {
     return next(new AppError('FORBIDDEN', 'Акаунт заблоковано', 403))
+  }
+  if (userPayload.role === 'tire_worker' || userPayload.can_login === false) {
+    return next(new AppError('FORBIDDEN', 'Цей працівник не має доступу до програми', 403))
   }
 
   req.user = {

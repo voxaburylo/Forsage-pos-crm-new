@@ -79,10 +79,11 @@ export default function StaffPage() {
     e.preventDefault(); setSaving(true)
     try {
       const rate=addForm.salaryMode!=='only_pct'&&addForm.base_rate?Math.round(parseFloat(addForm.base_rate)*100):0
-      const created=await adminApi.createUser({phone:addForm.phone,password:addForm.password,full_name:addForm.full_name,role:addForm.role,base_rate:rate,rate_period:addForm.rate_period})
+      const noProgramAccess=addForm.role==='tire_worker'
+      const created=await adminApi.createUser({phone:noProgramAccess?undefined:addForm.phone,password:noProgramAccess?undefined:addForm.password,full_name:addForm.full_name,role:addForm.role,base_rate:rate,rate_period:addForm.rate_period})
       let rulesSaved=true
       if(addForm.salaryMode!=='only_rate'){
-        const configs=[['pos_sales',addForm.pos_revenue,addForm.pos_profit],['order_sales',addForm.order_revenue,addForm.order_profit],['tire_service',addForm.tire_revenue,addForm.tire_profit]] as const
+        const configs=(noProgramAccess?[['tire_service',addForm.tire_revenue,addForm.tire_profit]]:[['pos_sales',addForm.pos_revenue,addForm.pos_profit],['order_sales',addForm.order_revenue,addForm.order_profit],['tire_service',addForm.tire_revenue,addForm.tire_profit]]) as ReadonlyArray<readonly [string,string,string]>
         try {
           for(const [rule_type,revenueValue,profitValue] of configs){const pR=Number(revenueValue)||0;const pP=Number(profitValue)||0;if(pR>0||pP>0)await commissionApi.createRule({user_id:created.data.id,brand_id:null,category_id:null,pct_from_revenue:pR,pct_from_profit:pP,rule_type})}
         } catch { rulesSaved=false }
@@ -110,12 +111,12 @@ export default function StaffPage() {
     e.preventDefault(); if(!selectedUser) return; setSaving(true)
     try {
       const rate=editForm.salaryMode!=='only_pct'&&editForm.base_rate?Math.round(parseFloat(editForm.base_rate)*100):0
-      await adminApi.updateUser(selectedUser.id,{role:editForm.role,is_active:editForm.is_active,full_name:editForm.full_name,base_rate:rate,rate_period:editForm.rate_period,phone:editForm.phone||undefined})
+      await adminApi.updateUser(selectedUser.id,{role:editForm.role,is_active:editForm.is_active,full_name:editForm.full_name,base_rate:rate,rate_period:editForm.rate_period,phone:editForm.role==='tire_worker'?undefined:(editForm.phone||undefined)})
       const managedTypes=['personal_sales','pos_sales','order_sales','tire_service']
       const oldR=rules.filter(r=>r.user_id===selectedUser.id&&managedTypes.includes(r.rule_type)&&!r.brand_id&&!r.category_id)
       for(const r of oldR) await commissionApi.deleteRule(r.id)
       if(editForm.salaryMode!=='only_rate'){
-        const configs=[['pos_sales',editForm.pos_revenue,editForm.pos_profit],['order_sales',editForm.order_revenue,editForm.order_profit],['tire_service',editForm.tire_revenue,editForm.tire_profit]] as const
+        const configs=(editForm.role==='tire_worker'?[['tire_service',editForm.tire_revenue,editForm.tire_profit]]:[['pos_sales',editForm.pos_revenue,editForm.pos_profit],['order_sales',editForm.order_revenue,editForm.order_profit],['tire_service',editForm.tire_revenue,editForm.tire_profit]]) as ReadonlyArray<readonly [string,string,string]>
         for(const [rule_type,revenueValue,profitValue] of configs){const pR=Number(revenueValue)||0;const pP=Number(profitValue)||0;if(pR>0||pP>0) await commissionApi.createRule({user_id:selectedUser.id,brand_id:null,category_id:null,pct_from_revenue:pR,pct_from_profit:pP,rule_type})}
       }
       toast.success('Всі налаштування збережено')
@@ -133,7 +134,7 @@ export default function StaffPage() {
 
   const columns = [
     { key:'full_name' as const, header:'Співробітник', render:(u:AdminUser)=>(
-      <button onClick={()=>openModal(u)} className="text-left group"><div className="flex items-center gap-3"><div className="w-9 h-9 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center text-sm font-bold text-gray-600 ring-2 ring-white shadow-sm group-hover:ring-yellow-200 transition-all">{(u.full_name||'?')[0]?.toUpperCase()}</div><div><p className="text-sm font-semibold text-gray-900 group-hover:text-yellow-700 transition-colors">{u.full_name||'Без імені'}</p><p className="text-[11px] text-gray-400 font-mono">{u.phone}</p></div></div></button>
+      <button onClick={()=>openModal(u)} className="text-left group"><div className="flex items-center gap-3"><div className="w-9 h-9 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center text-sm font-bold text-gray-600 ring-2 ring-white shadow-sm group-hover:ring-yellow-200 transition-all">{(u.full_name||'?')[0]?.toUpperCase()}</div><div><p className="text-sm font-semibold text-gray-900 group-hover:text-yellow-700 transition-colors">{u.full_name||'Без імені'}</p><p className="text-[11px] text-gray-400">{u.role==='tire_worker'?'Без доступу до програми':u.phone}</p></div></div></button>
     )},
     { key:'role' as const, header:'Роль', render:(u:AdminUser)=>(<Badge color={ROLE_COLORS[u.role as UserRole]||'gray'}>{ROLE_LABELS[u.role as UserRole]||u.role}</Badge>) },
     { key:'base_rate' as const, header:'Ставка', render:(u:AdminUser)=>(<span className="text-sm font-medium text-gray-700">{u.base_rate?`${formatMoney(u.base_rate)} / ${u.rate_period==='day'?'день':'місяць'}`:'—'}</span>) },
@@ -174,7 +175,7 @@ export default function StaffPage() {
           <div className="space-y-0">
             <div className="flex items-center gap-4 pb-4 mb-4 border-b border-gray-100">
               <div className="w-12 h-12 rounded-full bg-gradient-to-br from-yellow-100 to-amber-200 flex items-center justify-center text-lg font-bold text-amber-700 shadow-sm">{(selectedUser.full_name||'?')[0]?.toUpperCase()}</div>
-              <div className="flex-1 min-w-0"><h3 className="text-lg font-bold text-gray-900">{selectedUser.full_name||'Без імені'}</h3><p className="text-xs text-gray-500 font-mono">{selectedUser.phone} · {ROLE_LABELS[selectedUser.role as UserRole]||selectedUser.role}</p></div>
+              <div className="flex-1 min-w-0"><h3 className="text-lg font-bold text-gray-900">{selectedUser.full_name||'Без імені'}</h3><p className="text-xs text-gray-500">{selectedUser.role==='tire_worker'?'Без доступу до програми':selectedUser.phone} · {ROLE_LABELS[selectedUser.role as UserRole]||selectedUser.role}</p></div>
               <Badge color={selectedUser.is_active?'green':'red'}>{selectedUser.is_active?'Активний':'Неактивний'}</Badge>
             </div>
 
@@ -190,15 +191,21 @@ export default function StaffPage() {
                     <div className="bg-gray-50/70 rounded-xl p-4 space-y-3 border border-gray-100">
                       <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><User size={14} className="text-gray-500"/>Профіль</h4>
                       <Input label="Повне ім'я" value={editForm.full_name} onChange={(e)=>setEditForm({...editForm,full_name:e.target.value})} required/>
-                      <Input label="Телефон (логін)" type="tel" value={editForm.phone} onChange={(e)=>setEditForm({...editForm,phone:e.target.value})} placeholder="+380671234567"/>
-                      <div><label className="block text-sm font-medium text-gray-700 mb-1">Роль</label><select value={editForm.role} onChange={(e)=>setEditForm({...editForm,role:e.target.value as UserRole})} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white">{Object.entries(ROLE_LABELS).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
-                      <div className="flex items-center gap-3 pt-1"><input type="checkbox" id="edit_active_modal" checked={editForm.is_active} onChange={(e)=>setEditForm({...editForm,is_active:e.target.checked})} className="w-4 h-4 rounded text-amber-500 focus:ring-amber-300"/><label htmlFor="edit_active_modal" className="text-sm text-gray-700 font-medium">Активний акаунт (дозволити вхід)</label></div>
+                      <div><label className="block text-sm font-medium text-gray-700 mb-1">Роль</label><select value={editForm.role} onChange={(e)=>setEditForm({...editForm,role:e.target.value as UserRole,phone:e.target.value==='tire_worker'?'':editForm.phone})} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white">{Object.entries(ROLE_LABELS).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
+                      {editForm.role==='tire_worker'?(
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Шиномонтажник використовується тільки як виконавець робіт. Логін, пароль і доступ до програми для нього не створюються.</div>
+                      ):(<>
+                        <Input label="Телефон (логін)" type="tel" value={editForm.phone} onChange={(e)=>setEditForm({...editForm,phone:e.target.value})} placeholder="+380671234567"/>
+                        <div className="flex items-center gap-3 pt-1"><input type="checkbox" id="edit_active_modal" checked={editForm.is_active} onChange={(e)=>setEditForm({...editForm,is_active:e.target.checked})} className="w-4 h-4 rounded text-amber-500 focus:ring-amber-300"/><label htmlFor="edit_active_modal" className="text-sm text-gray-700 font-medium">Активний акаунт (дозволити вхід)</label></div>
+                      </>)}
                     </div>
-                    <div className="bg-gray-50/70 rounded-xl p-4 space-y-3 border border-gray-100">
-                      <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Shield size={14} className="text-gray-500"/>Безпека</h4>
-                      <div className="space-y-2"><label className="text-xs font-medium text-gray-500">Новий пароль для входу</label><div className="flex gap-2"><input type="password" value={newPass} onChange={(e)=>setNewPass(e.target.value)} placeholder="Мінімум 8 символів" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"/><Button type="button" size="sm" onClick={handleResetPassword} variant="secondary"><Lock size={14}/></Button></div></div>
-                      <div className="space-y-2"><label className="text-xs font-medium text-gray-500">PIN-код для каси (POS)</label><div className="flex gap-2"><input type="text" maxLength={4} pattern="[0-9]*" inputMode="numeric" value={pinInput} onChange={(e)=>setPinInput(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="0000" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-300"/><Button type="button" size="sm" onClick={handleSetPin} variant="secondary"><Key size={14}/></Button></div></div>
-                    </div>
+                    {editForm.role!=='tire_worker'&&(
+                      <div className="bg-gray-50/70 rounded-xl p-4 space-y-3 border border-gray-100">
+                        <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Shield size={14} className="text-gray-500"/>Безпека</h4>
+                        <div className="space-y-2"><label className="text-xs font-medium text-gray-500">Новий пароль для входу</label><div className="flex gap-2"><input type="password" value={newPass} onChange={(e)=>setNewPass(e.target.value)} placeholder="Мінімум 8 символів" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"/><Button type="button" size="sm" onClick={handleResetPassword} variant="secondary"><Lock size={14}/></Button></div></div>
+                        <div className="space-y-2"><label className="text-xs font-medium text-gray-500">PIN-код для каси (POS)</label><div className="flex gap-2"><input type="text" maxLength={4} pattern="[0-9]*" inputMode="numeric" value={pinInput} onChange={(e)=>setPinInput(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="0000" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-300"/><Button type="button" size="sm" onClick={handleSetPin} variant="secondary"><Key size={14}/></Button></div></div>
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-5">
                     <div className="bg-gradient-to-br from-amber-50/80 to-yellow-50/40 rounded-xl p-4 space-y-4 border border-amber-100/60">
@@ -225,7 +232,7 @@ export default function StaffPage() {
                             <span className="font-medium text-gray-700">Замовлення<br/><small className="font-normal text-gray-400">після видачі клієнту</small></span><input type="number" min="0" max="100" step="0.1" value={editForm.order_revenue} onChange={(e)=>setEditForm({...editForm,order_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={editForm.order_profit} onChange={(e)=>setEditForm({...editForm,order_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
                             <span className="font-medium text-gray-700">Шиномонтаж<br/><small className="font-normal text-gray-400">виконавець з каси</small></span><input type="number" min="0" max="100" step="0.1" value={editForm.tire_revenue} onChange={(e)=>setEditForm({...editForm,tire_revenue:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/><input type="number" min="0" max="100" step="0.1" value={editForm.tire_profit} onChange={(e)=>setEditForm({...editForm,tire_profit:e.target.value})} className="rounded-lg border border-gray-200 px-2 py-2 text-center"/>
                           </div>
-                          <p className="text-[10px] text-gray-500">У касі процент отримує вибраний продавець або виконавець. У замовленні — призначений менеджер. Якщо нікого не вибрано, використовується поточний касир.</p>
+                          <p className="text-[10px] text-gray-500">Для шиномонтажу обов’язково вибирається активний працівник зі статусом «Шиномонтажник». Касир не вважається виконавцем цих робіт.</p>
                         </div>                      )}
                       {employeeRules.length>0&&(
                         <div className="bg-white/60 rounded-lg p-3 border border-amber-100/50">
@@ -305,10 +312,14 @@ export default function StaffPage() {
       <Modal open={addOpen} onClose={()=>setAddOpen(false)} title="Додати співробітника" size="xl">
         <form onSubmit={handleCreate} className="space-y-5">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Input label="Телефон *" type="tel" value={addForm.phone} onChange={(e)=>setAddForm(f=>({...f,phone:e.target.value}))} placeholder="+380671234567" required/>
             <Input label="Повне ім'я *" value={addForm.full_name} onChange={(e)=>setAddForm(f=>({...f,full_name:e.target.value}))} placeholder="Іванов Іван Іванович" required/>
-            <Input label="Пароль *" type="password" value={addForm.password} onChange={(e)=>setAddForm(f=>({...f,password:e.target.value}))} placeholder="Мінімум 8 символів" required/>
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">Роль *</label><select value={addForm.role} onChange={(e)=>setAddForm(f=>({...f,role:e.target.value as UserRole}))} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white">{Object.entries(ROLE_LABELS).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Роль *</label><select value={addForm.role} onChange={(e)=>setAddForm(f=>({...f,role:e.target.value as UserRole,phone:e.target.value==='tire_worker'?'':f.phone,password:e.target.value==='tire_worker'?'':f.password}))} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white">{Object.entries(ROLE_LABELS).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
+            {addForm.role==='tire_worker'?(
+              <div className="md:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Для шиномонтажника потрібне тільки ім’я. Він з’явиться у виборі виконавця робіт, але не матиме логіна, пароля чи доступу до програми.</div>
+            ):(<>
+              <Input label="Телефон *" type="tel" value={addForm.phone} onChange={(e)=>setAddForm(f=>({...f,phone:e.target.value}))} placeholder="+380671234567" required/>
+              <Input label="Пароль *" type="password" value={addForm.password} onChange={(e)=>setAddForm(f=>({...f,password:e.target.value}))} placeholder="Мінімум 8 символів" required/>
+            </>)}
           </div>
           <div className="rounded-xl border border-amber-100 bg-gradient-to-br from-amber-50/80 to-yellow-50/40 p-4 space-y-4">
             <h4 className="flex items-center gap-2 text-sm font-bold text-gray-800"><DollarSign size={14} className="text-amber-600"/>Оплата праці відразу при створенні</h4>

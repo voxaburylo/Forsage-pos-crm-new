@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
 import { usePOS } from './usePOS'
@@ -275,7 +275,8 @@ export default function POSPage() {
   const effectiveOnline = desktopRuntime || serverOnline
   const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
   const [isEmployeeSale] = useState(false)
-  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
+  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string; is_active?: boolean }>>([])
+  const tireWorkers = useMemo(() => staffUsers.filter((user) => user.role === 'tire_worker' && user.is_active !== false), [staffUsers])
   const session = useAuthStore((s) => s.session)
   // Dashboard is restricted to office roles. Sending a cashier there caused
   // ProtectedRoute to redirect back to POS, which looked like a frozen Home
@@ -1001,7 +1002,7 @@ export default function POSPage() {
       <QuickChargeModal
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}
-        staff={staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer','tire_worker'].includes(u.role))}
+        staff={tireWorkers}
         offline={!effectiveOnline}
         onClose={() => setQuickCharge(null)}
       />
