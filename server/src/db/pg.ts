@@ -6,6 +6,13 @@ if (!process.env.DATABASE_URL) {
 
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
+  // Для Vercel використовуємо малий пул: багато великих пулів швидко
+  // вичерпають ліміт підключень Supabase. DATABASE_URL у Vercel має вести
+  // на transaction pooler Supabase (порт 6543).
+  max: Number.parseInt(process.env.PG_POOL_MAX ?? (process.env.VERCEL ? '3' : '10'), 10),
+  idleTimeoutMillis: process.env.VERCEL ? 5_000 : 30_000,
+  connectionTimeoutMillis: 10_000,
+  allowExitOnIdle: Boolean(process.env.VERCEL),
 })
 
 export async function runTransaction<T>(

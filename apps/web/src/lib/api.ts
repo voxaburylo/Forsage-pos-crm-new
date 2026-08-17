@@ -1,6 +1,7 @@
 import { isDesktopRuntime } from './desktopBridge'
+import { API_BASE_URL } from './apiBaseUrl'
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
+const DEFAULT_API_REQUEST_TIMEOUT_MS = 60_000
 
 export interface RequestOptions extends Omit<RequestInit, 'headers'> {
   headers?: Record<string, string>
@@ -48,17 +49,25 @@ async function refreshToken(): Promise<string | null> {
 
 export async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const token = await getAccessToken()
-  const { silent, _retry, timeoutMs, ...fetchOptions } = options ?? {}
+  const { silent, _retry, timeoutMs = DEFAULT_API_REQUEST_TIMEOUT_MS, ...fetchOptions } = options ?? {}
 
-  // Опціональний таймаут — щоб UI (зокрема вікно оплати) не зависав, якщо сервер не відповідає
-  const controller = timeoutMs ? new AbortController() : null
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+  // Кожен серверний запит має межу очікування. Без цього втрачений TCP-запит
+  // залишав модальні вікна та розділи у стані «завантаження» без кінця.
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort(fetchOptions.signal?.reason)
+  if (fetchOptions.signal?.aborted) abortFromCaller()
+  else fetchOptions.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, Math.max(1_000, timeoutMs))
 
   let res: Response
   try {
-    res = await fetch(`${API_URL}${path}`, {
+    res = await fetch(`${API_BASE_URL}${path}`, {
       ...fetchOptions,
-      signal: controller ? controller.signal : fetchOptions.signal,
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -66,16 +75,19 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
       },
     })
   } catch (networkErr) {
-    const aborted = (networkErr as any)?.name === 'AbortError'
-    const msg = aborted
+    const aborted = controller.signal.aborted || (networkErr as any)?.name === 'AbortError'
+    const msg = timedOut
       ? 'Сервер не відповів вчасно. Перевірте результат операції перед повторенням.'
-      : 'Сервер недоступний. Перевірте підключення до мережі.'
+      : aborted
+        ? 'Запит скасовано.'
+        : 'Сервер недоступний. Перевірте підключення до мережі.'
     if (!silent && !isDesktopRuntime()) {
       import('@/components/ui/Toast').then(({ toast }) => toast.error(msg))
     }
     throw new Error(msg)
   } finally {
-    if (timer) clearTimeout(timer)
+    clearTimeout(timer)
+    fetchOptions.signal?.removeEventListener('abort', abortFromCaller)
   }
 
   // При 401 — спробуємо оновити токен і повторити запит один раз

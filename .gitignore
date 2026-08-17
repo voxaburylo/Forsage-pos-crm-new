@@ -36,6 +36,7 @@ google-key.json
 server/test_*.cjs
 server/test_*.js
 test_*.cjs
+apps/desktop/release-next*/
 test_*.js
 
 # Скріншоти живих UI-прогонів (Playwright)

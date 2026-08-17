@@ -28,13 +28,13 @@ function sale(id: string, status: Sale['status']): Sale {
 }
 
 describe('local report sales range', () => {
-  it('counts completed sales and excludes fully returned receipts', () => {
+  it('keeps completed and returned receipts in gross sales history', () => {
     const result = salesInRange([
       sale('completed', 'completed'),
       sale('returned', 'returned'),
       sale('cancelled', 'cancelled'),
     ], '2026-07-22', '2026-07-22')
 
-    expect(result.map((item) => item.id)).toEqual(['completed'])
+    expect(result.map((item) => item.id)).toEqual(['completed', 'returned'])
   })
 })

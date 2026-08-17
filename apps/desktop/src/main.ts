@@ -1,10 +1,11 @@
 import path from 'node:path'
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { LocalDatabase } from './db/localDatabase'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
   LocalBootstrapSnapshot,
@@ -37,6 +38,7 @@ import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter
 import { enqueuePrinterJob } from './print/printerJobQueue'
 import { assertPrinterRole, type PrinterRole } from './print/printerRole'
 import { withPrintTimeout } from './print/printTimeout'
+import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 
@@ -84,6 +86,10 @@ let localStaff: LocalStaffRepository | null = null
 let localWarehouse: LocalWarehouseRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let localSupplierCatalog: LocalSupplierCatalogRepository | null = null
+let localNetwork: LocalNetworkCoordinator | null = null
+type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
+const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
+const desktopSessionContext = new AsyncLocalStorage<LanSession>()
 let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
 let rendererCrashTimes: number[] = []
@@ -129,8 +135,31 @@ interface DesktopPrintOptions {
 
 function rendererIndexPath(): string {
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'renderer', 'index.html')
+    ? path.join(__dirname, 'renderer', 'index.html')
     : path.resolve(__dirname, '../../web/dist/index.html')
+}
+
+async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
+  const target = rendererIndexPath()
+  let lastError: unknown = null
+  const retryDelaysMs = [250, 500, 1_000, 2_000, 3_000]
+  for (let attempt = 1; attempt <= retryDelaysMs.length + 1; attempt += 1) {
+    if (!existsSync(target)) {
+      lastError = new Error(`Файл інтерфейсу не знайдено: ${target}`)
+    } else {
+      try {
+        await window.loadFile(target)
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    writeDesktopDiagnostic('renderer-load-retry', { attempt, target, error: diagnosticValue(lastError) })
+    if (attempt <= retryDelaysMs.length) {
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Не вдалося завантажити інтерфейс Forsage')
 }
 
 function requireLocalDatabase(): LocalDatabase {
@@ -193,6 +222,8 @@ function requireCashalot(): CashalotService {
 }
 
 function requireDesktopSession(): { id: string; tenant_id: string; role: string } {
+  const contextualSession = desktopSessionContext.getStore()
+  if (contextualSession) return contextualSession
   if (!desktopAuthSession) throw new Error('Необхідно увійти в програму')
   return desktopAuthSession
 }
@@ -362,30 +393,19 @@ function validateTenantArguments(value: unknown, tenantId: string, depth = 0): v
   for (const nested of Object.values(record)) validateTenantArguments(nested, tenantId, depth + 1)
 }
 
-function handleDesktopIpc(
-  channel: string,
-  listener: (event: IpcMainInvokeEvent, ...args: any[]) => unknown,
-): void {
+function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
+  desktopCommandHandlers.set(channel, listener)
   ipcMain.handle(channel, async (event, ...args) => {
     const startedAt = Date.now()
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
       throw new Error('Неприпустиме джерело локальної команди')
     }
-    if (!PUBLIC_DESKTOP_CHANNELS.has(channel)) {
-      const session = requireDesktopSession()
-      if (!isDesktopChannelAllowed(channel, session.role)) {
-        throw new Error('Недостатньо прав для цієї дії')
-      }
-      for (const argument of args) validateTenantArguments(argument, session.tenant_id)
-      for (const position of desktopTenantArgumentPositions(channel)) {
-        const suppliedTenantId = args[position]
-        if (typeof suppliedTenantId === 'string' && suppliedTenantId !== session.tenant_id) {
-          throw new Error('Операція належить іншому магазину')
-        }
-      }
-    }
     try {
-      return await listener(event, ...args)
+      const session = PUBLIC_DESKTOP_CHANNELS.has(channel) ? null : requireDesktopSession()
+      if (session && localNetwork?.getStatus().mode === 'client' && isLanProxyChannel(channel)) {
+        return await localNetwork.invoke(channel, args, session)
+      }
+      return await executeDesktopCommand(channel, listener, event, args, session)
     } finally {
       const durationMs = Date.now() - startedAt
       if (durationMs >= 2_000) {
@@ -393,6 +413,45 @@ function handleDesktopIpc(
       }
     }
   })
+}
+
+async function executeDesktopCommand(
+  channel: string,
+  listener: DesktopIpcListener,
+  event: IpcMainInvokeEvent,
+  args: any[],
+  session: LanSession | null,
+): Promise<unknown> {
+  if (!PUBLIC_DESKTOP_CHANNELS.has(channel)) {
+    if (!session) throw new Error('Необхідно увійти в програму')
+    if (!isDesktopChannelAllowed(channel, session.role)) {
+      throw new Error('Недостатньо прав для цієї дії')
+    }
+    for (const argument of args) validateTenantArguments(argument, session.tenant_id)
+    for (const position of desktopTenantArgumentPositions(channel)) {
+      const suppliedTenantId = args[position]
+      if (typeof suppliedTenantId === 'string' && suppliedTenantId !== session.tenant_id) {
+        throw new Error('Операція належить іншому магазину')
+      }
+    }
+  }
+  const run = () => Promise.resolve(listener(event, ...args))
+  return session ? desktopSessionContext.run(session, run) : run()
+}
+
+function resolveLanSession(userId: string): LanSession | null {
+  const row = requireLocalDatabase().prepare(`
+    SELECT id, tenant_id, role, is_active FROM staff_users
+    WHERE id = ? AND tenant_id = ? LIMIT 1
+  `).get(userId, DEFAULT_TENANT_ID) as (LanSession & { is_active: number }) | undefined
+  if (!row || row.is_active !== 1 || row.role === 'tire_worker') return null
+  return { id: row.id, tenant_id: row.tenant_id, role: row.role }
+}
+
+async function executeLanCommand(channel: string, args: unknown[], session: LanSession): Promise<unknown> {
+  const listener = desktopCommandHandlers.get(channel)
+  if (!listener) throw new Error('Локальну команду не знайдено')
+  return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, args, session)
 }
 
 async function processFiscalReturn(request: LocalFiscalReturnRequest) {
@@ -538,10 +597,16 @@ async function createWindow(): Promise<void> {
     if (/^https?:\/\//i.test(targetUrl)) void shell.openExternal(targetUrl)
   })
 
-  if (!app.isPackaged && developmentUrl) await mainWindow.loadURL(developmentUrl)
-  else await mainWindow.loadFile(rendererIndexPath())
+  const showMainWindow = () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show()
+  }
+  // Підписуємося ДО loadFile: на швидкому диску ready-to-show може настати
+  // раніше за пізно зареєстрований обробник і лишити порожнє вікно.
+  mainWindow.once('ready-to-show', showMainWindow)
+  mainWindow.webContents.once('did-finish-load', () => setTimeout(showMainWindow, 0))
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  if (!app.isPackaged && developmentUrl) await mainWindow.loadURL(developmentUrl)
+  else await loadRendererWithRetry(mainWindow)
   mainWindow.on('closed', () => { desktopAuthSession = null; mainWindow = null })
 }
 
@@ -734,8 +799,13 @@ app.whenReady().then(async () => {
   localSync = new LocalSyncRepository(localDatabase)
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   cashalot = new CashalotService(dataRoot)
+  localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession)
 
   handleDesktopIpc('desktop:get-runtime-info', () => requireLocalDatabase().info())
+
+  handleDesktopIpc('desktop:lan:get-status', () => localNetwork?.getStatus())
+  handleDesktopIpc('desktop:lan:update', (_event, input) => localNetwork?.update(input))
+  handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
   handleDesktopIpc('desktop:backup-now', () => requireLocalDatabase().backupNow())
   handleDesktopIpc('desktop:bootstrap:import-snapshot', (_event, snapshot: LocalBootstrapSnapshot) =>
     requireLocalSync().importSnapshotChunked(snapshot),
@@ -829,6 +899,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:catalog:list-cross-numbers', (_event, productId: string) =>
     requireLocalCatalog().listCrossNumbers(productId),
   )
+  handleDesktopIpc('desktop:catalog:list-analogs', (_event, productId: string, limit?: number) =>
+    requireLocalCatalog().listAnalogs(productId, undefined, limit),
+  )
   handleDesktopIpc('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
   )
@@ -867,7 +940,7 @@ app.whenReady().then(async () => {
     return { success: true }
   })
   handleDesktopIpc('desktop:staff:list-users', () => requireLocalStaff().listUsers())
-  handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password: string) =>
+  handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password?: string) =>
     requireLocalStaff().saveServerUser(input, password))
   handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
   handleDesktopIpc('desktop:staff:delete-user', (_event, id: string) => requireLocalStaff().deleteUser(id))
@@ -885,6 +958,8 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:list-salary', (_event, input?: any) => requireLocalStaff().listSalary(input))
   handleDesktopIpc('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
+  handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
+  handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover(input))
   handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary(input))
   handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout(input))
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
@@ -912,29 +987,41 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:warehouse:create-writeoff', (_event, input: any) =>
     requireLocalWarehouse().createWriteoff(input),
   )
-  handleDesktopIpc('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string }) =>
-    requireLocalInventory().listSessions(input?.tenant_id),
-  )
+  handleDesktopIpc('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string; page?: number; per_page?: number }) => {
+    const page = Math.max(1, Math.trunc(Number(input?.page) || 1))
+    const perPage = Math.min(100, Math.max(1, Math.trunc(Number(input?.per_page) || 20)))
+    const inventory = requireLocalInventory()
+    const total = inventory.countSessions(input?.tenant_id)
+    return {
+      data: inventory.listSessions(input?.tenant_id, { limit: perPage, offset: (page - 1) * perPage }),
+      pagination: {
+        page,
+        per_page: perPage,
+        total,
+        total_pages: Math.max(1, Math.ceil(total / perPage)),
+      },
+    }
+  })
   handleDesktopIpc('desktop:inventory:create-session', (_event, input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) =>
-    requireLocalInventory().createSession(input),
+    requireLocalInventory().createSession({ ...input, created_by: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:start-session', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
-    requireLocalInventory().startSession(sessionId, input),
+    requireLocalInventory().startSession(sessionId, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:delete-session', (_event, sessionId: string, tenantId?: string) =>
     requireLocalInventory().deleteEmptySession(sessionId, tenantId),
   )
   handleDesktopIpc('desktop:inventory:get-session', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string }) =>
-    requireLocalInventory().getSessionData(sessionId, input?.tenant_id, input?.user_id),
+    requireLocalInventory().getSessionData(sessionId, input?.tenant_id, requireDesktopSession().id),
   )
   handleDesktopIpc('desktop:inventory:find-product', (_event, sessionId: string, input: { tenant_id?: string; code?: string; product_id?: string }) =>
     requireLocalInventory().findProduct(sessionId, input),
   )
   handleDesktopIpc('desktop:inventory:count', (_event, sessionId: string, input: any) =>
-    requireLocalInventory().countProduct(sessionId, input),
+    requireLocalInventory().countProduct(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:scan', (_event, sessionId: string, input: any) =>
-    requireLocalInventory().scan(sessionId, input),
+    requireLocalInventory().scan(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:set-item-qty', (_event, sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) =>
     requireLocalInventory().setItemQty(sessionId, itemId, input),
@@ -949,7 +1036,7 @@ app.whenReady().then(async () => {
     requireLocalInventory().applyPrice(sessionId, input),
   )
   handleDesktopIpc('desktop:inventory:complete', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
-    requireLocalInventory().complete(sessionId, input),
+    requireLocalInventory().complete(sessionId, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:orders:list-ready', (_event, input?: { tenant_id?: string; search?: string; limit?: number }) =>
     requireLocalOrders().listReadyOrders(input),
@@ -958,7 +1045,7 @@ app.whenReady().then(async () => {
     requireLocalOrders().listOrders(input),
   )
   handleDesktopIpc('desktop:orders:save', (_event, input, id?: string) =>
-    requireLocalOrders().saveOrder(input, id),
+    requireLocalOrders().saveOrder({ ...input, manager_id: requireDesktopSession().id }, id),
   )
   handleDesktopIpc('desktop:orders:delete', (_event, id: string, tenantId?: string) =>
     requireLocalOrders().deleteOrder(id, tenantId),
@@ -970,7 +1057,7 @@ app.whenReady().then(async () => {
     requireLocalOrders().updateOrderItemStatus(orderId, itemId, status, tenantId),
   )
   handleDesktopIpc('desktop:orders:cancel', (_event, id: string, input) =>
-    requireLocalOrders().cancelOrder(id, input),
+    requireLocalOrders().cancelOrder(id, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:orders:pending-items', (_event, supplierId: string, tenantId?: string) =>
     requireLocalOrders().listPendingItems(supplierId, tenantId),
@@ -1022,16 +1109,19 @@ app.whenReady().then(async () => {
     requireLocalSupply().getInvoice(id, tenantId),
   )
   handleDesktopIpc('desktop:supply:create-invoice', (_event, input: any) =>
-    requireLocalSupply().createInvoice(input),
+    requireLocalSupply().createInvoice({ ...input, user_id: requireDesktopSession().id }),
+  )
+  handleDesktopIpc('desktop:supply:create-invoice-from-ai', (_event, input: any) =>
+    requireLocalSupply().createInvoiceFromAiRows({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:update-invoice', (_event, id: string, input: any) =>
     requireLocalSupply().updateInvoice(id, input),
   )
   handleDesktopIpc('desktop:supply:pay-invoice', (_event, id: string, input: any) =>
-    requireLocalSupply().payInvoice(id, input),
+    requireLocalSupply().payInvoice(id, { ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:post-invoice', (_event, id: string, input?: any) =>
-    requireLocalSupply().postInvoice(id, input),
+    requireLocalSupply().postInvoice(id, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:cancel-invoice', (_event, id: string, tenantId?: string) =>
     requireLocalSupply().cancelInvoice(id, tenantId),
@@ -1081,6 +1171,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:add-customer-deposit', (_event, input: any) =>
     requireLocalPos().addCustomerDeposit({ ...input, user_id: requireDesktopSession().id }),
   )
+  handleDesktopIpc('desktop:pos:payout-customer-deposit', (_event, input: any) =>
+    requireLocalPos().payOutCustomerDeposit({ ...input, user_id: requireDesktopSession().id }),
+  )
   handleDesktopIpc('desktop:pos:create-cash-operation', (_event, input) =>
     requireLocalPos().createCashOperation({ ...input, user_id: requireDesktopSession().id }),
   )
@@ -1118,6 +1211,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:pos:dashboard-summary', (_event, input) =>
     requireLocalPos().dashboardSummary(input),
+  )
+  handleDesktopIpc('desktop:pos:sold-items-report', (_event, input) =>
+    requireLocalPos().soldItemsReport(input),
   )
   handleDesktopIpc('desktop:pos:list-returns', (_event, input) =>
     requireLocalPos().listReturns(input),
@@ -1276,6 +1372,7 @@ app.whenReady().then(async () => {
     input: LocalFiscalReturnIntentCancelInput,
   ) => requireLocalPos().cancelPreparedFiscalReturnIntent(operationId, input))
 
+  await localNetwork.startConfigured()
   await createWindow()
 }).catch((error: unknown) => {
   writeDesktopDiagnostic('startup-failed', error)
@@ -1302,6 +1399,8 @@ app.on('child-process-gone', (_event, details) => {
 
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
+  void localNetwork?.stop()
+  localNetwork = null
   cashalot?.stopWorker()
   cashalot = null
   localDatabase?.close()
@@ -1312,4 +1411,3 @@ app.on('before-quit', () => {
   localSync = null
   localSupplierCatalog = null
 })
-

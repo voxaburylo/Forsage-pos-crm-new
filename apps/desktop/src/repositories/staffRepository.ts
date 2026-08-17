@@ -5,6 +5,7 @@ import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
 type SalaryType = 'salary' | 'bonus' | 'advance' | 'penalty'
 type SalaryMethod = 'cash' | 'card' | 'transfer'
+type SalaryFundSource = 'cashbox' | 'owner_funds'
 
 function nowIso(): string { return new Date().toISOString() }
 function commissionReversalId(returnId: string, employeeId: string): string {
@@ -12,8 +13,18 @@ function commissionReversalId(returnId: string, employeeId: string): string {
   const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
-function currentPeriod(): string { return nowIso().slice(0, 7) }
-function currentDate(): string { return nowIso().slice(0, 10) }
+const businessDateFormatter = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Europe/Kyiv',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+function businessDate(value: string | Date = new Date()): string {
+  const parsed = value instanceof Date ? value : new Date(value)
+  return businessDateFormatter.format(Number.isNaN(parsed.getTime()) ? new Date() : parsed)
+}
+function currentDate(): string { return businessDate() }
+function currentPeriod(): string { return currentDate().slice(0, 7) }
 function money(value: unknown): number {
   const parsed = Math.round(Number(value ?? 0))
   return Number.isFinite(parsed) ? parsed : 0
@@ -116,7 +127,7 @@ export class LocalStaffRepository {
 
   saveServerUser(input: {
     id: string
-    phone: string
+    phone?: string
     full_name: string
     role: string
     is_active?: boolean
@@ -124,14 +135,15 @@ export class LocalStaffRepository {
     rate_period?: 'day' | 'month'
     created_at?: string
     updated_at?: string
-  }, password: string, tenantId = DEFAULT_TENANT_ID): any {
+  }, password = '', tenantId = DEFAULT_TENANT_ID): any {
     const id = String(input.id ?? '').trim()
     const fullName = String(input.full_name ?? '').trim()
     const phone = String(input.phone ?? '').trim()
+    const noProgramAccess = input.role === 'tire_worker'
     if (!id) throw new Error('Сервер не повернув ідентифікатор співробітника')
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
-    if (!phone) throw new Error('Вкажіть телефон співробітника')
-    if (String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
+    if (!noProgramAccess && !phone) throw new Error('Вкажіть телефон співробітника')
+    if (!noProgramAccess && String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
 
     const timestamp = nowIso()
     const createdAt = input.created_at || timestamp
@@ -141,7 +153,7 @@ export class LocalStaffRepository {
       FROM staff_users
       WHERE tenant_id = ? AND id <> ? AND deleted_at IS NULL
     `).all(tenantId, id) as Array<{ id: string; phone: string | null }>)
-      .find((candidate) => normalizePhone(candidate.phone ?? '') === normalizePhone(phone))
+      .find((candidate) => Boolean(phone) && normalizePhone(candidate.phone ?? '') === normalizePhone(phone))
 
     return this.db.transaction(() => {
       // Old desktop builds could create a local UUID first. Keep that row only
@@ -183,11 +195,11 @@ export class LocalStaffRepository {
         tenantId,
         fullName,
         input.role || 'cashier',
-        phone,
+        phone || null,
         input.is_active === false ? 0 : 1,
         money(input.base_rate),
         input.rate_period === 'month' ? 'month' : 'day',
-        hashSecret(password),
+        noProgramAccess ? null : hashSecret(password),
         updatedAt,
         createdAt,
         updatedAt,
@@ -203,7 +215,8 @@ export class LocalStaffRepository {
   }
 
   saveServerPassword(id: string, password: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
-    this.requireUser(id, tenantId)
+    const user = this.requireUser(id, tenantId)
+    if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')
     if (String(password).length < 8) throw new Error('Пароль має містити щонайменше 8 символів')
     this.db.prepare(`
       UPDATE staff_users SET password_hash = ?, updated_at = ?
@@ -215,7 +228,9 @@ export class LocalStaffRepository {
   updateUser(id: string, input: any, tenantId = DEFAULT_TENANT_ID): any {
     const current = this.requireUser(id, tenantId)
     const fullName = input.full_name === undefined ? current.full_name : String(input.full_name).trim()
-    const phone = input.phone === undefined ? current.phone : String(input.phone).trim()
+    const role = input.role ?? current.role
+    const noProgramAccess = role === 'tire_worker'
+    const phone = noProgramAccess ? '' : (input.phone === undefined ? current.phone : String(input.phone).trim())
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
     if (phone) {
       const duplicate = this.db.prepare(`
@@ -228,17 +243,20 @@ export class LocalStaffRepository {
     this.db.prepare(`
       UPDATE staff_users SET
         full_name = ?, phone = ?, role = ?, is_active = ?, base_rate = ?, rate_period = ?,
+        password_hash = CASE WHEN ? = 1 THEN NULL ELSE password_hash END,
+        pin_hash = CASE WHEN ? = 1 THEN NULL ELSE pin_hash END,
         dirty_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(
-      fullName, phone || null, input.role ?? current.role,
+      fullName, phone || null, role,
       input.is_active === undefined ? current.is_active : (input.is_active ? 1 : 0),
       input.base_rate === undefined ? current.base_rate : money(input.base_rate),
       input.rate_period === 'month' ? 'month' : (input.rate_period === 'day' ? 'day' : current.rate_period),
+      noProgramAccess ? 1 : 0, noProgramAccess ? 1 : 0,
       timestamp, timestamp, id, tenantId,
     )
     this.addOutbox(tenantId, 'staff_user', id, 'staff_user.updated', {
-      id, full_name: fullName, phone: phone || null, role: input.role ?? current.role,
+      id, full_name: fullName, phone: phone || null, role,
       is_active: input.is_active === undefined ? Number(current.is_active) === 1 : Boolean(input.is_active),
       base_rate: input.base_rate === undefined ? money(current.base_rate) : money(input.base_rate),
       rate_period: input.rate_period ?? current.rate_period,
@@ -265,13 +283,13 @@ export class LocalStaffRepository {
   ): any {
     const normalizedPhone = normalizePhone(phone)
     const row = this.db.prepare(`
-      SELECT id, phone, is_active
+      SELECT id, phone, role, is_active
       FROM staff_users
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
       LIMIT 1
-    `).get(serverUserId, tenantId) as { id: string; phone: string | null; is_active: number } | undefined
+    `).get(serverUserId, tenantId) as { id: string; phone: string | null; role: string; is_active: number } | undefined
 
-    if (!row || Number(row.is_active) !== 1 || normalizePhone(row.phone ?? '') !== normalizedPhone) {
+    if (!row || row.role === 'tire_worker' || Number(row.is_active) !== 1 || normalizePhone(row.phone ?? '') !== normalizedPhone) {
       throw new Error('Обліковий запис сервера не відповідає локальному співробітнику')
     }
     if (!password) throw new Error('Пароль не може бути порожнім')
@@ -302,6 +320,7 @@ export class LocalStaffRepository {
     const valid = Boolean(
       row
       && Number(row.is_active) === 1
+      && row.role !== 'tire_worker'
       && row.password_hash
       && verifySecret(row.password_hash, password, row.id),
     )
@@ -336,7 +355,8 @@ export class LocalStaffRepository {
     }
   }
   setPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
-    this.requireUser(userId, tenantId)
+    const user = this.requireUser(userId, tenantId)
+    if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')
     if (!/^\d{4}$/.test(pin)) throw new Error('PIN-код має складатися з 4 цифр')
     const timestamp = nowIso()
     const pinHash = hashSecret(pin)
@@ -362,10 +382,11 @@ export class LocalStaffRepository {
     }
 
     const row = this.db.prepare(`
-      SELECT pin_hash FROM staff_users
+      SELECT pin_hash, role FROM staff_users
       WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL LIMIT 1
-    `).get(userId, tenantId) as { pin_hash: string | null } | undefined
+    `).get(userId, tenantId) as { pin_hash: string | null; role: string } | undefined
     if (!row) return { valid: false, error: 'Співробітника не знайдено' }
+    if (row.role === 'tire_worker') return { valid: false, error: 'Шиномонтажник не має доступу до програми' }
     if (!row.pin_hash) return { valid: false, error: 'PIN-код не налаштовано' }
 
     const valid = verifySecret(row.pin_hash, pin, userId)
@@ -466,6 +487,148 @@ export class LocalStaffRepository {
     return [...map.values()]
   }
 
+  tireServiceReport(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any {
+    const workers = this.db.prepare(`
+      SELECT id AS employee_id, full_name AS employee_name, base_rate, rate_period
+      FROM staff_users
+      WHERE tenant_id = ? AND is_active = 1 AND deleted_at IS NULL AND role = 'tire_worker'
+      ORDER BY full_name COLLATE NOCASE
+    `).all(tenantId) as any[]
+    const salaryRows = this.db.prepare(`
+      SELECT employee_id,
+        COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0) AS earned,
+        COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0) AS paid,
+        COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0) AS penalty,
+        COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0) AS commission_earned,
+        COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0) AS daily_rate
+      FROM salary_payments
+      WHERE tenant_id = ? AND work_date = ? AND deleted_at IS NULL
+      GROUP BY employee_id
+    `).all(tenantId, workDate) as any[]
+    const salaryByWorker = new Map(salaryRows.map((row) => [String(row.employee_id), row]))
+    const candidateReceipts = this.db.prepare(`
+      SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
+        sale.payment_method, sale.total, sale.cash_amount,
+        COALESCE(SUM(item.qty), 0) AS services_qty,
+        COALESCE(SUM(item.total), 0) AS service_revenue
+      FROM sales sale
+      JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id AND item.deleted_at IS NULL
+      LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
+      WHERE sale.tenant_id = ? AND sale.status = 'completed' AND sale.deleted_at IS NULL
+        AND sale.manager_id IS NOT NULL
+        AND COALESCE(product.sku, item.sku, '') = 'POS-TIRE-SERVICE'
+        AND datetime(sale.completed_at) >= datetime(?, '-1 day')
+        AND datetime(sale.completed_at) < datetime(?, '+2 day')
+      GROUP BY sale.id
+      ORDER BY datetime(sale.completed_at) DESC
+    `).all(tenantId, workDate, workDate) as any[]
+    const workerNames = new Map(workers.map((worker) => [String(worker.employee_id), String(worker.employee_name)]))
+    const receipts = candidateReceipts
+      .filter((row) => businessDate(String(row.completed_at)) === workDate && workerNames.has(String(row.employee_id)))
+      .map((row) => {
+        const serviceRevenue = money(row.service_revenue)
+        const saleTotal = money(row.total)
+        const cashAmount = row.payment_method === 'cash'
+          ? money(row.cash_amount) || saleTotal
+          : money(row.cash_amount)
+        const cashRevenue = saleTotal > 0 ? Math.min(serviceRevenue, Math.round(serviceRevenue * cashAmount / saleTotal)) : 0
+        return {
+          id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
+          employee_id: row.employee_id, employee_name: workerNames.get(String(row.employee_id)) ?? 'Шиномонтажник',
+          services_qty: Number(row.services_qty ?? 0), service_revenue: serviceRevenue,
+          cash_revenue: cashRevenue, payment_method: row.payment_method, total: saleTotal,
+        }
+      })
+    const handovers = this.db.prepare(`
+      SELECT employee_id, COALESCE(SUM(amount), 0) AS amount
+      FROM cash_operations
+      WHERE tenant_id = ? AND type = 'cash_in' AND source = 'cashbox' AND work_date = ?
+        AND employee_id IS NOT NULL AND deleted_at IS NULL
+      GROUP BY employee_id
+    `).all(tenantId, workDate) as any[]
+    const handedByWorker = new Map(handovers.map((row) => [String(row.employee_id), money(row.amount)]))
+    const availableOn = new Date(`${workDate}T12:00:00Z`)
+    availableOn.setUTCDate(availableOn.getUTCDate() + 2)
+    const salaryAvailableOn = availableOn.toISOString().slice(0, 10)
+    const matured = currentDate() >= salaryAvailableOn
+    const data = workers.map((worker) => {
+      const salary = salaryByWorker.get(String(worker.employee_id)) ?? {}
+      const workerReceipts = receipts.filter((receipt) => receipt.employee_id === worker.employee_id)
+      const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
+      const cashRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.cash_revenue, 0)
+      const cashHandedOver = handedByWorker.get(String(worker.employee_id)) ?? 0
+      const cashPending = Math.max(0, cashRevenue - cashHandedOver)
+      const recordedDailyRate = money(salary.daily_rate)
+      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? money(worker.base_rate) : 0
+      const earned = money(salary.earned) + projectedDailyRate
+      const paid = money(salary.paid)
+      const penalty = money(salary.penalty)
+      const balance = earned - paid - penalty
+      const due = Math.max(0, balance)
+      const salaryReady = matured && cashPending === 0
+      return {
+        employee_id: worker.employee_id, employee_name: worker.employee_name,
+        services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
+        service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
+        commission_earned: money(salary.commission_earned), daily_rate: recordedDailyRate + projectedDailyRate,
+        earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
+        salary_ready: salaryReady, payable_due: salaryReady ? due : 0,
+      }
+    })
+    return {
+      data, receipts, date: workDate, totals: {
+        services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
+        service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
+        cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),
+        cash_handed_over: data.reduce((sum, row) => sum + row.cash_handed_over, 0),
+        cash_pending: data.reduce((sum, row) => sum + row.cash_pending, 0),
+        due: data.reduce((sum, row) => sum + row.due, 0),
+        payable_due: data.reduce((sum, row) => sum + row.payable_due, 0),
+      },
+    }
+  }
+
+  tireCashHandover(input: {
+    tenant_id?: string; employee_id: string; employee_name?: string; work_date: string
+    shift_id: string; amount: number; operation_id: string; user_id?: string | null
+  }): { amount: number; remaining: number } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Немає готівки для внесення')
+    const existing = this.db.prepare(`SELECT id FROM cash_operations WHERE id = ? AND tenant_id = ? LIMIT 1`).get(input.operation_id, tenantId)
+    if (existing) return { amount, remaining: 0 }
+    const employee = this.requireUser(input.employee_id, tenantId)
+    if (employee.role !== 'tire_worker') throw new Error('Оберіть шиномонтажника')
+    const shift = this.db.prepare(`
+      SELECT id FROM shifts WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL LIMIT 1
+    `).get(input.shift_id, tenantId)
+    if (!shift) throw new Error('Спочатку відкрийте касову зміну')
+    const report = this.tireServiceReport(input.work_date, tenantId)
+    const row = report.data.find((item: any) => item.employee_id === input.employee_id)
+    const pending = money(row?.cash_pending)
+    if (pending <= 0) throw new Error('Каса за цей день уже внесена')
+    if (amount > pending) throw new Error(`Залишилось внести ${(pending / 100).toFixed(2)} грн`)
+    const timestamp = nowIso()
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO cash_operations (
+          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
+          dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'cash_in', 'cashbox', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.operation_id, tenantId, input.shift_id, input.user_id ?? null, amount, employee.id, input.work_date,
+        `Каса шиномонтажу за ${input.work_date}: ${input.employee_name || employee.full_name}`,
+        timestamp, timestamp, timestamp,
+      )
+      this.addOutbox(tenantId, 'cash_operation', input.operation_id, 'cash_operation.created', {
+        id: input.operation_id, shift_id: input.shift_id, type: 'in', amount, source: 'cashbox',
+        employee_id: employee.id, work_date: input.work_date, user_id: input.user_id ?? null,
+        note: `Каса шиномонтажу за ${input.work_date}: ${input.employee_name || employee.full_name}`,
+        created_at: timestamp,
+      }, timestamp)
+    })
+    return { amount, remaining: Math.max(0, pending - amount) }
+  }
   createSalary(input: {
     tenant_id?: string
     employee_id: string
@@ -506,12 +669,21 @@ export class LocalStaffRepository {
     employee_id: string
     employee_name?: string
     method: SalaryMethod
+    fund_source?: SalaryFundSource
     shift_id?: string | null
     work_date: string
     user_id?: string | null
   }): { payment: any; amount: number; earned: number; previously_paid: number; penalty: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const employee = this.requireUser(input.employee_id, tenantId)
+    if (employee.role === 'tire_worker') {
+      const tireRow = this.tireServiceReport(input.work_date, tenantId).data
+        .find((row: any) => row.employee_id === employee.id)
+      if (!tireRow?.salary_ready) {
+        if (money(tireRow?.cash_pending) > 0) throw new Error('Спочатку внесіть усю готівкову касу шиномонтажу за цей день')
+        throw new Error(`Зарплата стане доступною ${tireRow?.salary_available_on ?? ''}`)
+      }
+    }
     const timestamp = nowIso()
     return this.db.transaction(() => {
       if (money(employee.base_rate) > 0 && employee.rate_period === 'day') {
@@ -540,7 +712,7 @@ export class LocalStaffRepository {
         amount, type: 'advance', method: input.method,
         period: input.work_date.slice(0, 7), workDate: input.work_date, source: 'daily_payout',
         note: `Виплата заробітку за ${input.work_date}`, shiftId: input.shift_id ?? null,
-        userId: input.user_id ?? null, timestamp,
+        userId: input.user_id ?? null, timestamp, fundSource: input.fund_source ?? 'cashbox',
       })
       return { payment, amount, earned, previously_paid: paid, penalty }
     })
@@ -636,7 +808,7 @@ export class LocalStaffRepository {
       WHERE i.sale_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
     `).all(saleId, tenantId) as any[]
     const commissions = localCommissionMap(items, rules, managerId, order ? 'order' : 'pos')
-    const workDate = String(sale.completed_at ?? nowIso()).slice(0, 10)
+    const workDate = businessDate(String(sale.completed_at ?? nowIso()))
     const timestamp = nowIso()
     const created: any[] = []
     this.db.transaction(() => {
@@ -726,6 +898,7 @@ export class LocalStaffRepository {
     type: SalaryType; method: SalaryMethod; period: string; workDate: string; source: string
     note: string | null; shiftId: string | null; userId: string | null; timestamp: string
     commissionSaleId?: string | null; commissionOrderId?: string | null; commissionReturnId?: string | null
+    fundSource?: SalaryFundSource
     id?: string
   }): any {
     let cashOperationId: string | null = null
@@ -746,21 +919,44 @@ export class LocalStaffRepository {
         WHERE s.id = ? AND s.tenant_id = ?
         GROUP BY s.id, s.opening_cash
       `).get(input.shiftId, input.tenantId) as { available: number } | undefined
-      if (input.amount > money(cash?.available)) throw new Error('У касі недостатньо готівки для цієї виплати')
+      const fundSource = input.fundSource ?? 'cashbox'
+      if (fundSource === 'cashbox' && input.amount > money(cash?.available)) {
+        throw new Error('У касі недостатньо готівки для цієї виплати')
+      }
+      if (fundSource === 'owner_funds') {
+        const ownerContributionId = randomUUID()
+        const contributionNote = `Внесення власних коштів власника для зарплати за ${input.workDate}: ${input.employeeName}`
+        this.db.prepare(`
+          INSERT INTO cash_operations (
+            id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
+            dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'cash_in', 'owner_funds', ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          ownerContributionId, input.tenantId, input.shiftId, input.userId, input.amount,
+          input.employeeId, input.workDate, contributionNote,
+          input.timestamp, input.timestamp, input.timestamp,
+        )
+        this.addOutbox(input.tenantId, 'cash_operation', ownerContributionId, 'cash_operation.created', {
+          id: ownerContributionId, shift_id: input.shiftId, type: 'in', amount: input.amount,
+          employee_id: input.employeeId, work_date: input.workDate, source: 'owner_funds',
+          note: contributionNote, user_id: input.userId, created_at: input.timestamp,
+        }, input.timestamp)
+      }
       cashOperationId = randomUUID()
       this.db.prepare(`
         INSERT INTO cash_operations (
-          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, notes,
+          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
           dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'salary_payout', 'cashbox', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, 'salary_payout', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        cashOperationId, input.tenantId, input.shiftId, input.userId, input.amount,
-        input.employeeId, input.note || `Виплата зарплати: ${input.employeeName}`,
+        cashOperationId, input.tenantId, input.shiftId, input.userId, fundSource, input.amount,
+        input.employeeId, input.workDate, input.note || `Виплата зарплати: ${input.employeeName}`,
         input.timestamp, input.timestamp, input.timestamp,
       )
       this.addOutbox(input.tenantId, 'cash_operation', cashOperationId, 'cash_operation.created', {
         id: cashOperationId, shift_id: input.shiftId, type: 'out', amount: input.amount,
-        employee_id: input.employeeId, source: 'cashbox', note: input.note,
+        employee_id: input.employeeId, work_date: input.workDate, source: fundSource,
+        note: input.note, user_id: input.userId, created_at: input.timestamp,
       }, input.timestamp)
     }
     const id = input.id ?? randomUUID()
@@ -826,5 +1022,3 @@ export class LocalStaffRepository {
     )
   }
 }
-
-

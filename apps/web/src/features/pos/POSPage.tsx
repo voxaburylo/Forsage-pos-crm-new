@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
 import { usePOS } from './usePOS'
@@ -275,8 +275,14 @@ export default function POSPage() {
   const effectiveOnline = desktopRuntime || serverOnline
   const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
   const [isEmployeeSale] = useState(false)
-  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string }>>([])
+  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string; is_active?: boolean }>>([])
+  const tireWorkers = useMemo(() => staffUsers.filter((user) => user.role === 'tire_worker' && user.is_active !== false), [staffUsers])
   const session = useAuthStore((s) => s.session)
+  // Dashboard is restricted to office roles. Sending a cashier there caused
+  // ProtectedRoute to redirect back to POS, which looked like a frozen Home
+  // button. Use the regular application menu for non-office roles instead.
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
+  const homeRoute = ['owner', 'admin', 'manager'].includes(role) ? '/dashboard' : '/products'
   const searchRef = useRef<SearchPanelHandle>(null)
   const earlyBarcodeScans = useRef<string[]>([])
   const routeBarcodeScan = useCallback((code: string) => {
@@ -540,7 +546,7 @@ export default function POSPage() {
   if (!shift) {
     return (
       <OpenShiftScreen
-        onBack={() => navigate('/dashboard')}
+        onBack={() => navigate(homeRoute)}
         onOpened={(openedShift) => {
           if (openedShift) store.setCurrentShift(openedShift)
           else checkShift()
@@ -817,7 +823,7 @@ export default function POSPage() {
       <header className="bg-[#0D0D0D] border-b border-gray-800 px-2 md:px-3 flex items-center justify-between shrink-0 gap-1 h-11 md:h-13">
         {/* Ліва частина — бренд + статус */}
         <div className="flex items-center gap-1 md:gap-1.5">
-          <button onClick={() => navigate('/dashboard')}
+          <button onClick={() => navigate(homeRoute)}
             className="flex items-center justify-center text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 w-8 h-8 md:w-10 md:h-10"
             title="На головну">
             <Home className="size-4 md:size-[18px]" />
@@ -996,7 +1002,7 @@ export default function POSPage() {
       <QuickChargeModal
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}
-        staff={staffUsers.filter((u) => ['admin','manager','cashier','sto_viewer','tire_worker'].includes(u.role))}
+        staff={tireWorkers}
         offline={!effectiveOnline}
         onClose={() => setQuickCharge(null)}
       />
@@ -1022,6 +1028,9 @@ export default function POSPage() {
           clearSavedCart()
           store.clearReceipt()
           setCloseOpen(false)
+          // After a successful shift close, leave the full-screen POS instead
+          // of keeping the cashier on the empty OpenShiftScreen.
+          navigate(homeRoute)
         }}
       />
 

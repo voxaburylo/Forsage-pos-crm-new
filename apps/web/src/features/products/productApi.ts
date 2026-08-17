@@ -347,8 +347,30 @@ export const productApi = {
       duplicate_product_id: duplicateId,
     }),
 
-  getAnalogs: (id: string) =>
-    desktopBridge() && useAuthStore.getState().offlineMode ? Promise.resolve({ analogs: [], grouped: {} }) : api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`),
+  getAnalogs: async (id: string) => {
+    const local = desktopBridge()?.catalog.listAnalogs
+    if (local) {
+      const rows = await local(id, 50)
+      const analogs = rows.map((row) => ({
+        ...desktopProductToProduct(row),
+        brand: row.brand_name ? { id: row.brand_id ?? '', name: row.brand_name } : null,
+        analog_type: 'cross',
+        priority: 500,
+      }))
+      if (analogs.length > 0 || useAuthStore.getState().offlineMode) {
+        return { analogs, grouped: { original: [], premium: [], standard: analogs, budget: [] } }
+      }
+      try {
+        return await api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(
+          `/api/v1/products/${id}/analogs`,
+          { silent: true, timeoutMs: 6000 },
+        )
+      } catch {
+        return { analogs: [], grouped: { original: [], premium: [], standard: [], budget: [] } }
+      }
+    }
+    return api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`)
+  },
 
   addAnalog: (id: string, analogProductId: string, analogType: 'substitute' | 'oem' | 'cross') =>
     api.post(`/api/v1/products/${id}/analogs`, {

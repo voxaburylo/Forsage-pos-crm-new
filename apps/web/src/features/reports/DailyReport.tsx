@@ -1,19 +1,23 @@
 import { useEffect, useState, useCallback } from 'react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download } from 'lucide-react'
+import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
+import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download, Wrench, ClipboardCopy } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
-import { api } from '@/lib/api'
-import { useAuthStore } from '@/stores/authStore'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
-import type { SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
+import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
 import { Layout } from '@/components/Layout'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
+import { businessDateKey } from '@/lib/businessDate'
+import { useAuthStore } from '@/stores/authStore'
+import { staffApi } from '@/features/staff/staffApi'
+import type { SalaryFundSource, TireServiceReceipt, TireServiceReportRow } from '@/features/staff/staffApi'
+import { shiftApi } from '@/features/pos/shiftApi'
 
-type Tab = 'today' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
+type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
 interface ProfitReport {
   from: string; to: string
@@ -25,7 +29,7 @@ const PAYMENT_COLOR: Record<string, 'green' | 'blue' | 'red'> = {
   cash: 'green', card: 'blue', debt: 'red',
 }
 const PAYMENT_LABELS: Record<string, string> = {
-  cash: 'Готівка', card: 'Картка', debt: 'Борг',
+  cash: 'Готівка', card: 'Картка', transfer: 'Переказ', account: 'Рахунок клієнта', debt: 'Борг',
 }
 
 interface WeekDay { date: string; revenue: number; sales: number }
@@ -50,9 +54,17 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
   )
 }
 
+function dateKeyDaysAgo(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return businessDateKey(date)
+}
+
 export default function DailyReport() {
-  const offlineMode = useAuthStore((state) => state.offlineMode)
-  const [tab, setTab]           = useState<Tab>('today')
+  const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
+  const canSeeFullReports = role === 'owner' || role === 'admin'
+  const canSeeTireReport = canSeeFullReports || role === 'cashier'
+  const [tab, setTab]           = useState<Tab>(() => canSeeFullReports ? 'today' : 'sold')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
   const [report, setReport]     = useState<SalesPeriodReport | null>(null)
@@ -63,49 +75,70 @@ export default function DailyReport() {
   const [profit, setProfit]       = useState<ProfitReport | null>(null)
   const [loading, setLoading]   = useState(false)
 
-  // «Контроль дня» — метрики для власника (повернення, знижки, недостачі, мінуси)
-  interface DailyControl {
-    revenue: number; receipts: number; avg_receipt: number
-    cash: number; card: number; transfer: number; debt_sales: number; discounts: number
-    returns_count: number; returns_sum: number
-    returns_reasons: Array<{ reason: string; count: number }>
-    recon_diffs: Array<{ difference: number; comment: string | null }>
-    negative_stock: number; no_price: number
-  }
-  const [control, setControl] = useState<DailyControl | null>(null)
-  const [sendingTg, setSendingTg] = useState(false)
 
-  // Продані товари за день — список для дозамовлення у постачальників
-  interface SoldItem {
-    product_id: string; sku: string; name: string; unit: string
-    qty_sold: number; revenue: number; qty_on_hand: number; storage_bin: string | null
-  }
+  // Продані товари за період — один зведений список для дозамовлення.
+  const todayKey = businessDateKey()
   const [soldItems, setSoldItems] = useState<SoldItem[]>([])
-  const [soldDate, setSoldDate] = useState(() => new Date().toLocaleDateString('sv-SE'))
-  const [soldOpen, setSoldOpen] = useState(false)
+  const [soldFrom, setSoldFrom] = useState(todayKey)
+  const [soldTo, setSoldTo] = useState(todayKey)
+  const [soldLoading, setSoldLoading] = useState(false)
+  const [tireDate, setTireDate] = useState(todayKey)
+  const [tireRows, setTireRows] = useState<TireServiceReportRow[]>([])
+  const [tireReceipts, setTireReceipts] = useState<TireServiceReceipt[]>([])
+  const [tireHandoverEmployee, setTireHandoverEmployee] = useState<string | null>(null)
+  const [tirePayoutEmployee, setTirePayoutEmployee] = useState<string | null>(null)
+  const [tireLoading, setTireLoading] = useState(false)
 
   useEffect(() => {
-    if (tab !== 'today') return
-    reportApi.soldItems(soldDate)
-      .then((r) => setSoldItems(r.data ?? []))
-      .catch(() => setSoldItems([]))
-  }, [tab, soldDate])
+    if (tab !== 'sold' || !soldFrom || !soldTo || soldFrom > soldTo) return
+    let cancelled = false
+    setSoldLoading(true)
+    reportApi.soldItems(soldFrom, soldTo)
+      .then((r) => { if (!cancelled) setSoldItems(r.data ?? []) })
+      .catch(() => {
+        if (!cancelled) {
+          setSoldItems([])
+          toast.error('Не вдалося сформувати список проданих товарів')
+        }
+      })
+      .finally(() => { if (!cancelled) setSoldLoading(false) })
+    return () => { cancelled = true }
+  }, [tab, soldFrom, soldTo])
+
+  async function copySoldItems() {
+    if (soldItems.length === 0) {
+      toast.error('Немає товарів для копіювання')
+      return
+    }
+    const text = soldItems.map((item, index) =>
+      `${index + 1}. ${item.name} | арт. ${item.sku || '—'} | продано ${item.qty_net} ${item.unit} | залишок ${item.qty_on_hand} ${item.unit}`,
+    ).join('\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('Список проданих товарів скопійовано')
+    } catch {
+      toast.error('Не вдалося скопіювати список')
+    }
+  }
 
   function printSoldItems() {
+    const escapeHtml = (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const period = soldFrom === soldTo ? soldFrom : `${soldFrom} — ${soldTo}`
     const rows = soldItems.map((it, i) =>
-      `<tr><td>${i + 1}</td><td>${it.sku}</td><td>${it.name.replace(/</g, '&lt;')}</td>` +
-      `<td style="text-align:right;font-weight:bold">${it.qty_sold} ${it.unit}</td>` +
-      `<td style="text-align:right">${it.qty_on_hand} ${it.unit}</td></tr>`).join('')
-    const w = window.open('', '_blank', 'width=800,height=900')
+      `<tr><td>${i + 1}</td><td>${escapeHtml(it.sku)}</td><td>${escapeHtml(it.barcode || '—')}</td>` +
+      `<td>${escapeHtml(it.name)}</td><td style="text-align:right;font-weight:bold">${it.qty_net} ${escapeHtml(it.unit)}</td>` +
+      `<td style="text-align:right">${it.qty_on_hand} ${escapeHtml(it.unit)}</td></tr>`).join('')
+    const w = window.open('', '_blank', 'width=900,height=900')
     if (!w) return
-    w.document.write(`<html><head><title>Продано ${soldDate}</title><style>
+    w.document.write(`<html><head><title>Продані товари ${period}</title><style>
       body{font-family:Arial,sans-serif;font-size:12px;padding:16px}
       table{width:100%;border-collapse:collapse}
       td,th{border:1px solid #ccc;padding:4px 6px;text-align:left}
       th{background:#f3f3f3}
     </style></head><body>
-      <h3>Продані товари за ${soldDate} — для дозамовлення</h3>
-      <table><tr><th>#</th><th>Артикул</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
+      <h3>Продані товари за ${period} — для дозамовлення</h3>
+      <table><tr><th>#</th><th>Артикул</th><th>Штрихкод</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
     </body></html>`)
     w.document.close()
     w.focus()
@@ -115,15 +148,15 @@ export default function DailyReport() {
   const loadToday = useCallback(async () => {
     setLoading(true)
     try {
-      const [{ data: summary }, { data: period }] = await Promise.all([
+      const [{ data: summary }, { data: period }, { data: items }] = await Promise.all([
         reportApi.salesToday(),
-        reportApi.salesPeriod(),
+        reportApi.salesPeriod(todayKey, todayKey),
+        reportApi.soldItems(todayKey, todayKey).catch(() => ({ data: [] as SoldItem[] })),
       ])
       setReport({ ...summary, sales: period.sales })
-      reportApi.dailyControl()
-        .then((r) => setControl(r.data)).catch(() => {})
+      setSoldItems(items ?? [])
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
-  }, [])
+  }, [todayKey])
 
   const loadWeekly = useCallback(async () => {
     setLoading(true)
@@ -176,23 +209,93 @@ export default function DailyReport() {
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [])
 
+  const loadTireReport = useCallback(async () => {
+    if (!canSeeTireReport) return
+    setTireLoading(true)
+    try {
+      const report = await staffApi.tireServiceReport(tireDate)
+      setTireRows(report.data ?? [])
+      setTireReceipts(report.receipts ?? [])
+    } catch {
+      setTireRows([])
+      setTireReceipts([])
+      toast.error('Не вдалося завантажити звіт шиномонтажу')
+    } finally {
+      setTireLoading(false)
+    }
+  }, [canSeeTireReport, tireDate])
+
+  const handOverTireCash = useCallback(async (row: TireServiceReportRow) => {
+    if (row.cash_pending <= 0 || tireHandoverEmployee) return
+    try {
+      const { data: shift } = await shiftApi.current({ silent: true })
+      if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
+      if (!window.confirm(`Внести ${formatMoney(row.cash_pending)} каси шиномонтажу за ${tireDate} від ${row.employee_name} у поточну зміну?`)) return
+      setTireHandoverEmployee(row.employee_id)
+      await staffApi.tireCashHandover({
+        employee_id: row.employee_id, employee_name: row.employee_name, work_date: tireDate,
+        shift_id: shift.id, amount: row.cash_pending, operation_id: crypto.randomUUID(),
+      })
+      toast.success('Касу шиномонтажу внесено в поточну зміну')
+      await loadTireReport()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося внести касу шиномонтажу')
+    } finally { setTireHandoverEmployee(null) }
+  }, [loadTireReport, tireDate, tireHandoverEmployee])
+
+  const payTireSalary = useCallback(async (row: TireServiceReportRow, fundSource: SalaryFundSource) => {
+    if (!canSeeFullReports || !row.salary_ready || row.payable_due <= 0 || tirePayoutEmployee) return
+    try {
+      const { data: shift } = await shiftApi.current({ silent: true })
+      if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
+      const question = fundSource === 'owner_funds'
+        ? `Внести ${formatMoney(row.payable_due)} власних коштів власника та одразу виплатити зарплату ${row.employee_name} за ${tireDate}? Залишок каси не зміниться.`
+        : `Видати ${formatMoney(row.payable_due)} зарплати ${row.employee_name} за ${tireDate} з поточної каси?`
+      if (!window.confirm(question)) return
+      setTirePayoutEmployee(row.employee_id)
+      const result = await staffApi.dailyPayout({
+        employee_id: row.employee_id, employee_name: row.employee_name, method: 'cash',
+        fund_source: fundSource, shift_id: shift.id, work_date: tireDate,
+      })
+      toast.success(fundSource === 'owner_funds'
+        ? `Виплачено ${formatMoney(result.data.amount)} власними коштами власника`
+        : `Виплачено з каси ${formatMoney(result.data.amount)}`)
+      await loadTireReport()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося виплатити зарплату')
+    } finally { setTirePayoutEmployee(null) }
+  }, [canSeeFullReports, loadTireReport, tireDate, tirePayoutEmployee])
+
   const exportToExcel = useCallback(() => {
     try {
       let dataToExport: any[] = []
       let fileName = 'zvit'
 
-      if (tab === 'today' || tab === 'period') {
+      if (tab === 'today') {
+        if (!soldItems.length) {
+          toast.error('Немає проданих товарів за сьогодні')
+          return
+        }
+        dataToExport = soldItems.map((item) => ({
+          'Назва товару': item.name,
+          'Артикул': item.sku,
+          'Продано': item.qty_net,
+          'Одиниця': item.unit,
+          'Сума (грн)': item.net_revenue / 100,
+        }))
+        fileName = 'sold_items_today'
+      } else if (tab === 'period') {
         if (!report || !report.sales.length) {
           toast.error('Немає даних для експорту')
           return
         }
         dataToExport = report.sales.map((s) => ({
-          'Номер чека': `#${s.sale_number}`,
+          'Номер чека': '#' + s.sale_number,
           'Метод оплати': PAYMENT_LABELS[s.payment_method] || s.payment_method,
           'Сума (грн)': s.total / 100,
           'Дата': formatDateTime(s.completed_at),
         }))
-        fileName = `sales_${tab === 'today' ? 'today' : 'period'}`
+        fileName = 'sales_period'
       } else if (tab === 'weekly') {
         if (!weekly.length) {
           toast.error('Немає даних для експорту')
@@ -204,6 +307,39 @@ export default function DailyReport() {
           'Виручка (грн)': d.revenue / 100,
         }))
         fileName = 'weekly_sales'
+      } else if (tab === 'sold') {
+        if (!soldItems.length) {
+          toast.error('Немає проданих товарів за вибраний період')
+          return
+        }
+        dataToExport = soldItems.map((item) => ({
+          'Артикул': item.sku,
+          'Штрихкод': item.barcode || '',
+          'Назва': item.name,
+          'Чисто продано': item.qty_net,
+          'Одиниця': item.unit,
+          'Залишок зараз': item.qty_on_hand,
+          'Полиця': item.storage_bin || '',
+          'Чиста сума (грн)': item.net_revenue / 100,
+        }))
+        fileName = `sold_items_${soldFrom}_${soldTo}`
+      } else if (tab === 'tire') {
+        if (!tireRows.length) {
+          toast.error('Немає даних шиномонтажу за вибраний день')
+          return
+        }
+        dataToExport = tireRows.map((row) => ({
+          'Працівник': row.employee_name,
+          'Послуг': row.services_qty,
+          'Виручка шиномонтажу (грн)': row.service_revenue / 100,
+          'Процент (грн)': row.commission_earned / 100,
+          'Денна ставка (грн)': row.daily_rate / 100,
+          'Нараховано (грн)': row.earned / 100,
+          'Виплачено (грн)': row.paid / 100,
+          'Штраф (грн)': row.penalty / 100,
+          'До виплати (грн)': row.due / 100,
+        }))
+        fileName = `tire_service_${tireDate}`
       } else if (tab === 'lowstock') {
         if (!lowStock.length) {
           toast.error('Немає даних для експорту')
@@ -261,12 +397,13 @@ export default function DailyReport() {
       const worksheet = XLSX.utils.json_to_sheet(dataToExport)
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Звіт')
-      XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      const exportName = tab === 'sold' ? `${fileName}.xlsx` : `${fileName}_${businessDateKey()}.xlsx`
+      XLSX.writeFile(workbook, exportName)
       toast.success('Звіт успішно експортовано в Excel')
     } catch (err) {
       toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit])
+  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, tireRows, tireDate])
 
   useEffect(() => {
     if (tab === 'today')         loadToday()
@@ -275,20 +412,34 @@ export default function DailyReport() {
     else if (tab === 'debtors')  loadDebtors()
     else if (tab === 'writeoffs') loadWriteoffs()
     else if (tab === 'profit')   loadProfit()
-  }, [tab, loadToday, loadWeekly, loadLowStock, loadDebtors, loadWriteoffs, loadProfit])
+    else if (tab === 'tire')     loadTireReport()
+  }, [tab, loadToday, loadWeekly, loadLowStock, loadDebtors, loadWriteoffs, loadProfit, loadTireReport])
 
   const TABS = [
     { id: 'today',    label: 'Сьогодні',   icon: <TrendingUp size={15} /> },
+    { id: 'sold',     label: 'Продані товари', icon: <BarChart2 size={15} /> },
+    { id: 'tire',     label: 'Шиномонтаж', icon: <Wrench size={15} /> },
     { id: 'weekly',   label: '7 днів',     icon: <BarChart2 size={15} /> },
     { id: 'period',   label: 'За період',  icon: <BarChart2 size={15} /> },
     { id: 'lowstock', label: 'Мало товару', icon: <AlertTriangle size={15} /> },
     { id: 'debtors',  label: 'Боржники',   icon: <Users size={15} /> },
     { id: 'writeoffs', label: 'Списання',  icon: <Trash2 size={15} /> },
     { id: 'profit',    label: 'P&L',        icon: <DollarSign size={15} /> },
-  ] as const
+  ].filter((item) => canSeeFullReports || item.id === 'sold' || (canSeeTireReport && item.id === 'tire'))
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
+  const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_net), 0)
+  const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.net_revenue), 0)
+  const tireTotals = tireRows.reduce((totals, row) => ({
+    services: totals.services + Number(row.services_qty ?? 0),
+    revenue: totals.revenue + Number(row.service_revenue ?? 0),
+    earned: totals.earned + Number(row.earned ?? 0),
+    due: totals.due + Number(row.due ?? 0),
+    payable: totals.payable + Number(row.payable_due ?? 0),
+    cashPending: totals.cashPending + Number(row.cash_pending ?? 0),
+    cashHanded: totals.cashHanded + Number(row.cash_handed_over ?? 0),
+  }), { services: 0, revenue: 0, earned: 0, due: 0, payable: 0, cashPending: 0, cashHanded: 0 })
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -297,7 +448,7 @@ export default function DailyReport() {
   }))
 
   return (
-    <Layout title="Звіти">
+    <Layout title="Продажі та звіти">
       <div className="flex justify-between items-center gap-2 mb-6 flex-wrap">
         <div className="flex gap-2 flex-wrap">
           {TABS.map((t) => (
@@ -323,12 +474,16 @@ export default function DailyReport() {
       {/* Сьогодні */}
       {tab === 'today' && report && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
             {[
-              { label: 'Продажів',  value: String(report.total_sales) },
-              { label: 'Виручка',   value: formatMoney(report.total_revenue) },
-              { label: 'Готівка',   value: formatMoney(report.by_method.cash) },
-              { label: 'Картка',    value: formatMoney(report.by_method.card) },
+              { label: 'Товарних позицій', value: String(soldItems.length) },
+              { label: 'Продано одиниць', value: String(Number(soldQty.toFixed(3))) },
+              { label: 'Сума проданих товарів', value: formatMoney(soldRevenue) },
+              { label: 'Отримано грошей', value: formatMoney(report.payment_received_total) },
+              { label: 'Готівка', value: formatMoney(report.by_method.cash) },
+              { label: 'Картка', value: formatMoney(report.by_method.card) },
+              { label: 'Переказ', value: formatMoney(report.by_method.transfer) },
+              { label: 'З рахунку клієнта', value: formatMoney(report.by_method.account) },
             ].map(({ label, value }) => (
               <Card key={label}>
                 <p className="text-xs text-gray-400 mb-1">{label}</p>
@@ -336,136 +491,229 @@ export default function DailyReport() {
               </Card>
             ))}
           </div>
+          <p className="mb-4 text-xs text-gray-500">
+            Товари потрапляють у цей список за датою завершення продажу та об’єднуються незалежно від кількості чеків.
+            Передоплати замовлень рахуються окремо за датою прийняття грошей.
+          </p>
 
-          {/* Контроль дня — очима власника */}
-          {control && (
-            <Card className="mb-4 border-yellow-200 bg-yellow-50/40">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-bold text-gray-800">🔎 Контроль дня</p>
-                {!offlineMode && (
-                <button
-                  onClick={async () => {
-                    setSendingTg(true)
-                    try {
-                      const r = await api.post<{ data: { sent: boolean } }>('/api/v1/reports/daily-control/send', {})
-                      if (r.data.sent) toast.success('Звіт надіслано в Telegram')
-                      else toast.warning('Не налаштовано Telegram chat ID власника (Налаштування)')
-                    } catch { toast.error('Не вдалося надіслати') } finally { setSendingTg(false) }
-                  }}
-                  disabled={sendingTg}
-                  className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium disabled:opacity-50"
-                >
-                  {sendingTg ? 'Надсилаю…' : '✈️ Надіслати в Telegram'}
-                </button>
-                )}
+          <Card padding="none">
+            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+              <div>
+                <h3 className="font-bold text-gray-900">Продані товари за сьогодні</h3>
+                <p className="text-xs text-gray-500">Один товар — один рядок, незалежно від кількості чеків</p>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div>
-                  <p className="text-xs text-gray-400">Повернення</p>
-                  <p className={`font-bold ${control.returns_count > 0 ? 'text-red-600' : 'text-gray-900'}`}>
-                    {control.returns_count} шт{control.returns_sum > 0 ? ' · ' + formatMoney(control.returns_sum) : ''}
-                  </p>
-                  {control.returns_reasons.slice(0, 3).map((r, i) => (
-                    <p key={i} className="text-[11px] text-gray-500">• {r.reason} ×{r.count}</p>
-                  ))}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Знижки за день</p>
-                  <p className={`font-bold ${control.discounts > 0 ? 'text-amber-600' : 'text-gray-900'}`}>{formatMoney(control.discounts)}</p>
-                  {control.debt_sales > 0 && <p className="text-[11px] text-gray-500">в борг: {formatMoney(control.debt_sales)}</p>}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Звірка каси</p>
-                  {control.recon_diffs.length === 0
-                    ? <p className="font-bold text-green-600">без розбіжностей</p>
-                    : control.recon_diffs.map((d, i) => (
-                        <p key={i} className="font-bold text-red-600">{d.difference > 0 ? '+' : ''}{formatMoney(d.difference)}</p>
-                      ))}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Каталог</p>
-                  <p className={`font-bold ${control.negative_stock > 0 ? 'text-red-600' : 'text-gray-900'}`}>мінуси: {control.negative_stock}</p>
-                  <p className={`text-[11px] ${control.no_price > 0 ? 'text-amber-600 font-semibold' : 'text-gray-500'}`}>без ціни: {control.no_price}</p>
-                </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-500">Сума товарів за день</p>
+                <p className="text-lg font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
               </div>
-            </Card>
-          )}
-
-          {/* Продані товари за день — для дозамовлення */}
-          <Card padding="none" className="mb-4">
-            <button onClick={() => setSoldOpen(!soldOpen)}
-              className="flex w-full items-center justify-between px-4 py-3 text-left">
-              <span className="text-sm font-bold text-gray-800">
-                📦 Продано за день — для дозамовлення ({soldItems.length} поз.)
-              </span>
-              <span className="flex items-center gap-2">
-                <input type="date" value={soldDate}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => { e.stopPropagation(); setSoldDate(e.target.value); setSoldOpen(true) }}
-                  className="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600" />
-                <span className="text-gray-400 text-xs">{soldOpen ? '▲' : '▼'}</span>
-              </span>
-            </button>
-            {soldOpen && (
-              <div className="border-t border-gray-100">
-                <div className="flex justify-end px-4 py-2">
-                  <button onClick={printSoldItems} disabled={soldItems.length === 0}
-                    className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium disabled:opacity-40">
-                    🖨 Друк списку
-                  </button>
-                </div>
-                {soldItems.length === 0 ? (
-                  <p className="px-4 pb-4 text-sm text-gray-400">За цей день продажів товарів немає</p>
-                ) : (
-                  <div className="max-h-96 overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
-                        <tr>
-                          <th className="px-4 py-2 text-left">Артикул</th>
-                          <th className="px-2 py-2 text-left">Назва</th>
-                          <th className="px-2 py-2 text-right">Продано</th>
-                          <th className="px-2 py-2 text-right">Залишок</th>
-                          <th className="px-4 py-2 text-right hidden md:table-cell">Виручка</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-50">
-                        {soldItems.map((it) => (
-                          <tr key={it.product_id} className={it.qty_on_hand <= 0 ? 'bg-red-50/60' : ''}>
-                            <td className="px-4 py-1.5 font-mono text-xs text-gray-500">{it.sku}</td>
-                            <td className="px-2 py-1.5 text-gray-800">{it.name}</td>
-                            <td className="px-2 py-1.5 text-right font-bold">{it.qty_sold} {it.unit}</td>
-                            <td className={`px-2 py-1.5 text-right font-semibold ${it.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
-                              {it.qty_on_hand} {it.unit}
-                            </td>
-                            <td className="px-4 py-1.5 text-right text-gray-500 hidden md:table-cell">{formatMoney(it.revenue)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+            </div>
+            {soldItems.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
+            ) : (
+              <div className="max-h-[55vh] overflow-auto">
+                <table className="w-full min-w-[620px] text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Назва товару</th>
+                      <th className="px-2 py-3 text-left">Артикул</th>
+                      <th className="px-2 py-3 text-right">Продано</th>
+                      <th className="px-4 py-3 text-right">Сума</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {soldItems.map((item) => (
+                      <tr key={item.product_id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
+                        <td className="px-4 py-2 text-right font-semibold text-gray-900">{formatMoney(item.net_revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </Card>
 
+        </>
+      )}
+
+      {/* Продані товари за вибраний період — список для дозамовлення */}
+      {tab === 'sold' && (
+        <>
+          <Card className="mb-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Продані товари за період</h2>
+                <p className="mt-1 text-sm text-gray-500">Однакові товари з усіх чеків зібрані в один рядок — готовий список для повторного замовлення.</p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="text-xs font-medium text-gray-600">
+                  Від
+                  <input type="date" value={soldFrom} max={soldTo}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setSoldFrom(value)
+                      if (value > soldTo) setSoldTo(value)
+                    }}
+                    className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+                </label>
+                <label className="text-xs font-medium text-gray-600">
+                  До
+                  <input type="date" value={soldTo} min={soldFrom} max={todayKey}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setSoldTo(value)
+                      if (value < soldFrom) setSoldFrom(value)
+                    }}
+                    className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+                </label>
+                <button onClick={copySoldItems} disabled={soldItems.length === 0 || soldLoading}
+                  className="flex h-[38px] items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+                  <ClipboardCopy size={14} /> Копіювати список
+                </button>
+                <button onClick={printSoldItems} disabled={soldItems.length === 0 || soldLoading}
+                  className="h-[38px] rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+                  🖨 Друк
+                </button>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {[
+                { label: 'Сьогодні', days: 0 },
+                { label: '2 дні', days: 1 },
+                { label: '7 днів', days: 6 },
+                { label: '30 днів', days: 29 },
+              ].map(({ label, days }) => (
+                <button key={label} onClick={() => { setSoldFrom(dateKeyDaysAgo(days)); setSoldTo(todayKey) }}
+                  className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700 hover:border-yellow-400 hover:bg-yellow-50">
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Card>
+
+          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Card>
+              <p className="text-xs text-gray-400">Товарних позицій</p>
+              <p className="text-2xl font-bold text-gray-900">{soldItems.length}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-gray-400">Чисто продано</p>
+              <p className="text-2xl font-bold text-gray-900">{Number(soldQty.toFixed(3))}</p>
+            </Card>
+            <Card>
+              <p className="text-xs text-gray-400">Чиста сума продажів</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
+            </Card>
+          </div>
+
           <Card padding="none">
-            <Table
-              columns={[
-                { key: 'num',   header: 'Чек',    render: (s) => <span className="font-mono text-xs">#{s.sale_number}</span> },
-                { key: 'cust',  header: 'Клієнт', render: (s) => <span className="text-gray-600 text-sm">{s.customer?.full_name ?? s.customer?.phone ?? '—'}</span> },
-                { key: 'pay',   header: 'Оплата', render: (s) => <Badge color={PAYMENT_COLOR[s.payment_method] ?? 'gray'}>{PAYMENT_LABELS[s.payment_method]}</Badge> },
-                { key: 'total', header: 'Сума', className: 'text-right', render: (s) => <span className="font-semibold">{formatMoney(s.total)}</span> },
-                { key: 'date',  header: 'Час', className: 'hidden md:table-cell text-right', render: (s) => <span className="text-gray-400 text-xs">{formatDateTime(s.completed_at)}</span> },
-              ]}
-              data={report.sales}
-              keyFn={(s) => s.id}
-              loading={loading}
-              empty={<p className="text-gray-400 text-sm">Продажів немає</p>}
-            />
+            {soldLoading ? (
+              <div className="flex min-h-48 items-center justify-center text-sm text-gray-400">Формуємо список…</div>
+            ) : soldItems.length === 0 ? (
+              <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-gray-400">
+                За вибраний період проданих товарів немає
+              </div>
+            ) : (
+              <div className="max-h-[65vh] overflow-auto">
+                <table className="w-full min-w-[900px] text-sm">
+                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Артикул</th>
+                      <th className="px-2 py-3 text-left">Штрихкод</th>
+                      <th className="px-2 py-3 text-left">Назва</th>
+                      <th className="px-2 py-3 text-left">Полиця</th>
+                      <th className="px-2 py-3 text-right">Чисто продано</th>
+                      <th className="px-2 py-3 text-right">Залишок</th>
+                      <th className="px-4 py-3 text-right">Сума</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {soldItems.map((item) => (
+                      <tr key={item.product_id} className={item.qty_on_hand <= 0 ? 'bg-red-50/60' : 'hover:bg-gray-50'}>
+                        <td className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
+                        <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
+                        <td className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
+                        <td className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                          {item.qty_on_hand} {item.unit}
+                        </td>
+                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </>
       )}
 
+      {/* Шиномонтаж — чеки, відкладена каса та зарплата */}
+      {tab === 'tire' && canSeeTireReport && (
+        <>
+          <Card className="mb-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div><h2 className="text-lg font-bold text-gray-900">Шиномонтаж за день</h2>
+                <p className="mt-1 max-w-3xl text-sm text-gray-500">Чеки прив’язані до дня робіт. Готівку можна внести в будь-яку наступну відкриту зміну; зарплата доступна через 2 дні та після внесення всієї готівки.</p></div>
+              <label className="text-xs font-medium text-gray-600">Дата робіт
+                <input type="date" value={tireDate} max={todayKey} onChange={(event) => setTireDate(event.target.value)} className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+              </label>
+            </div>
+          </Card>
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <Card><p className="text-xs text-gray-400">Чеків</p><p className="text-2xl font-bold text-gray-900">{tireReceipts.length}</p></Card>
+            <Card><p className="text-xs text-gray-400">Каса шиномонтажу</p><p className="text-2xl font-bold text-gray-900">{formatMoney(tireTotals.revenue)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Внесено готівки</p><p className="text-2xl font-bold text-green-700">{formatMoney(tireTotals.cashHanded)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Очікує внесення</p><p className="text-2xl font-bold text-orange-700">{formatMoney(tireTotals.cashPending)}</p></Card>
+            <Card><p className="text-xs text-gray-400">Зарплата до видачі</p><p className="text-2xl font-bold text-amber-700">{formatMoney(tireTotals.payable)}</p></Card>
+          </div>
+          <Card padding="none" className="mb-4">
+            <div className="border-b border-gray-100 px-4 py-3"><h3 className="font-bold text-gray-900">Чеки шиномонтажу</h3><p className="text-xs text-gray-500">Один рядок — один закритий чек.</p></div>
+            {tireLoading ? <div className="flex min-h-32 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div> : tireReceipts.length === 0 ?
+              <div className="flex min-h-32 items-center justify-center px-4 text-center text-sm text-gray-400">За цей день немає закритих чеків шиномонтажу</div> :
+              <div className="overflow-auto"><table className="w-full min-w-[780px] text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Чек / час</th><th className="px-3 py-3 text-left">Шиномонтажник</th><th className="px-3 py-3 text-right">Послуг</th><th className="px-3 py-3 text-right">Сума робіт</th><th className="px-3 py-3 text-left">Оплата</th><th className="px-4 py-3 text-right">Готівка</th></tr></thead>
+                <tbody className="divide-y divide-gray-100">{tireReceipts.map((receipt) => <tr key={receipt.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3"><div className="font-semibold text-gray-900">#{receipt.sale_number}</div><div className="text-xs text-gray-500">{formatDateTime(receipt.completed_at)}</div></td>
+                  <td className="px-3 py-3">{receipt.employee_name}</td><td className="px-3 py-3 text-right">{Number(receipt.services_qty.toFixed(3))}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatMoney(receipt.service_revenue)}</td>
+                  <td className="px-3 py-3"><Badge color={PAYMENT_COLOR[receipt.payment_method] ?? 'gray'}>{PAYMENT_LABELS[receipt.payment_method] ?? receipt.payment_method}</Badge></td>
+                  <td className="px-4 py-3 text-right">{formatMoney(receipt.cash_revenue)}</td></tr>)}</tbody>
+              </table></div>}
+          </Card>
+          <Card padding="none">
+            <div className="border-b border-gray-100 px-4 py-3"><h3 className="font-bold text-gray-900">Розрахунок по працівниках</h3></div>
+            {tireLoading ? <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div> : tireRows.length === 0 ?
+              <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Немає активних шиномонтажників</div> :
+              <div className="overflow-auto"><table className="w-full min-w-[1100px] text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Працівник</th><th className="px-2 py-3 text-right">Каса</th><th className="px-2 py-3 text-right">Готівкою</th><th className="px-2 py-3 text-right">Внесено</th><th className="px-2 py-3 text-right">Ще внести</th><th className="px-2 py-3 text-right">Нараховано</th><th className="px-2 py-3 text-right">Виплачено</th><th className="px-2 py-3 text-right">Залишок</th><th className="px-4 py-3 text-left">Статус / дія</th></tr></thead>
+                <tbody className="divide-y divide-gray-100">{tireRows.map((row) => <tr key={row.employee_id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td><td className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
+                  <td className="px-2 py-3 text-right">{formatMoney(row.cash_revenue)}</td><td className="px-2 py-3 text-right text-green-700">{formatMoney(row.cash_handed_over)}</td>
+                  <td className="px-2 py-3 text-right font-semibold text-orange-700">{formatMoney(row.cash_pending)}</td><td className="px-2 py-3 text-right">{formatMoney(row.earned)}</td>
+                  <td className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td><td className="px-2 py-3 text-right font-bold">{formatMoney(row.due)}</td>
+                  <td className="px-4 py-3">{row.cash_pending > 0 ?
+                    <button onClick={() => handOverTireCash(row)} disabled={tireHandoverEmployee === row.employee_id} className="rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300 disabled:opacity-50">
+                      {tireHandoverEmployee === row.employee_id ? 'Вносимо…' : `+ Внести ${formatMoney(row.cash_pending)}`}</button> :
+                    row.salary_ready && row.payable_due > 0 ? (canSeeFullReports ?
+                      <div className="flex min-w-[250px] flex-col gap-1.5">
+                        <span className="text-xs font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span>
+                        <div className="flex gap-1.5">
+                          <button onClick={() => payTireSalary(row, 'cashbox')} disabled={Boolean(tirePayoutEmployee)} className="rounded-lg bg-gray-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-gray-700 disabled:opacity-50">З каси</button>
+                          <button onClick={() => payTireSalary(row, 'owner_funds')} disabled={Boolean(tirePayoutEmployee)} className="rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-bold text-black hover:bg-amber-300 disabled:opacity-50">Кошти власника</button>
+                        </div>
+                      </div> : <span className="font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span>) :
+                    row.salary_ready ? <span className="text-xs font-semibold text-gray-500">Виплачено</span> :
+                    <span className="text-xs font-medium text-blue-700">Очікує до {formatDate(row.salary_available_on)}</span>}</td>
+                </tr>)}</tbody>
+                <tfoot className="border-t-2 border-gray-200 bg-amber-50"><tr><td colSpan={8} className="px-4 py-4 text-right text-base font-bold">Усього зарплати, яку можна видати:</td><td className="px-4 py-4 text-xl font-black text-amber-800">{formatMoney(tireTotals.payable)}</td></tr></tfoot>
+              </table></div>}
+          </Card>
+        </>
+      )}
       {/* 7 днів — графік */}
       {tab === 'weekly' && (
         <>
@@ -489,7 +737,7 @@ export default function DailyReport() {
                 <BarChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                  <YAxis tickFormatter={(v) => (v / 100).toFixed(0)} tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={48} />
+                  <YAxis tickFormatter={(v: number) => (v / 100).toFixed(0)} tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={48} />
                   <Tooltip content={<CustomTooltip />} />
                   <Bar dataKey="revenue" fill="#FFD000" radius={[4, 4, 0, 0]} />
                 </BarChart>

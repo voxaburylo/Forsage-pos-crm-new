@@ -32,8 +32,9 @@ export function QuickChargeModal({
     if (!open) return
     setAmount('')
     setDescription('')
-    setWorkerId(isTire ? (store.managerId ?? scopeKey) : '')
-  }, [open, kind, isTire, scopeKey, store.managerId])
+    const previousWorker = staff.find((person) => person.id === store.managerId)?.id ?? ''
+    setWorkerId(isTire ? (previousWorker || staff[0]?.id || '') : '')
+  }, [open, kind, isTire, staff, store.managerId])
 
   if (!open) return null
 
@@ -43,6 +44,10 @@ export function QuickChargeModal({
     const price = Math.round(Number(normalizedAmount) * 100)
     if (!Number.isFinite(price) || price <= 0) {
       toast.error('Вкажіть суму більше 0')
+      return
+    }
+    if (isTire && !workerId) {
+      toast.error('Спочатку створіть працівника з роллю «Шиномонтажник» та виберіть його')
       return
     }
     savingRef.current = true
@@ -153,11 +158,14 @@ export function QuickChargeModal({
               <label className="mb-1 block text-xs text-gray-400">Хто виконав роботу</label>
               <select value={workerId} onChange={(e) => setWorkerId(e.target.value)}
                 className="w-full rounded-xl border border-gray-700 bg-[#2C2C2C] px-3 py-3 text-sm outline-none focus:border-yellow-400">
-                <option value={scopeKey}>Поточний касир</option>
+                <option value="" disabled>Оберіть шиномонтажника</option>
                 {staff.map((person) => (
                   <option key={person.id} value={person.id}>{person.full_name || person.id.slice(0, 6)}</option>
                 ))}
               </select>
+              {staff.length === 0 && (
+                <p className="mt-2 text-xs text-amber-300">У команді немає активного працівника з роллю «Шиномонтажник».</p>
+              )}
             </div>
           )}
 

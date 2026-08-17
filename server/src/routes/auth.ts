@@ -47,6 +47,12 @@ router.post('/login', loginLimiter, async (req, res, next) => {
       throw new AppError('INVALID_CREDENTIALS', 'Невірний номер телефону або пароль', 401)
     }
 
+    const role = data.user.app_metadata?.role ?? 'cashier'
+    if (role === 'tire_worker' || data.user.app_metadata?.can_login === false) {
+      await supabase.auth.signOut().catch(() => {})
+      throw new AppError('LOGIN_FORBIDDEN', 'Цей працівник не має доступу до програми', 403)
+    }
+
     logger.info({ userId: data.user.id }, 'User logged in')
 
     res.json({
@@ -56,7 +62,7 @@ router.post('/login', loginLimiter, async (req, res, next) => {
       user: {
         id: data.user.id,
         phone,
-        role: data.user.app_metadata?.role ?? 'cashier',
+        role,
       },
     })
   } catch (err) { next(err) }

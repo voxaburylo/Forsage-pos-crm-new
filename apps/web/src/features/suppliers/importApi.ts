@@ -369,14 +369,14 @@ export const importApi = {
     if (desktopBridge()?.catalog.listProducts) {
       return localPreview({ ...body, mapping: guessMapping(body.text) })
     }
-    return api.post<ParseResult>('/api/v1/import/parse', body)
+    return api.post<ParseResult>('/api/v1/import/parse', body, undefined, { timeoutMs: 180_000 })
   },
   preview: async (body: PreviewBody) => {
     if (desktopBridge()?.catalog.listProducts) return localPreview(body)
-    return api.post<ParseResult>('/api/v1/import/preview', body)
+    return api.post<ParseResult>('/api/v1/import/preview', body, undefined, { timeoutMs: 180_000 })
   },
   confirm: async (body: ConfirmBody): Promise<{ data: any }> => {
     if (desktopBridge()?.catalog.saveProduct) return localConfirm(body)
-    return api.post<{ data: SupplyInvoice }>('/api/v1/import/confirm', body)
+    return api.post<{ data: SupplyInvoice }>('/api/v1/import/confirm', body, undefined, { timeoutMs: 180_000 })
   },
 }

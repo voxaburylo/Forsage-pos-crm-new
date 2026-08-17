@@ -45,7 +45,7 @@ export interface AiPendingAction {
 
 export interface AiChatImage {
   mime_type: 'image/jpeg' | 'image/png' | 'image/webp'
-  data_base64: string
+  storage_path: string
 }
 
 export interface AiApplyResult {
@@ -80,6 +80,9 @@ export const aiApi = {
 
   chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', body, undefined, { timeoutMs: 600000, silent: true }),
+
+  recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[] }) =>
+    api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 180000, silent: true }),
 
   applyAction: (body: { tool: string; payload: Record<string, any> }) =>
     api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),

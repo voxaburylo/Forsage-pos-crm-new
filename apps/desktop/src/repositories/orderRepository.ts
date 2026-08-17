@@ -351,7 +351,7 @@ export class LocalOrderRepository {
     return this.getOrder(orderId, tenantId)
   }
 
-  cancelOrder(orderId: string, input: { refund_prepayment?: boolean; keep_as_credit?: boolean; reason?: string | null; tenant_id?: string } = {}): any {
+  cancelOrder(orderId: string, input: { refund_prepayment?: boolean; keep_as_credit?: boolean; reason?: string | null; tenant_id?: string; user_id?: string | null } = {}): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
@@ -364,8 +364,11 @@ export class LocalOrderRepository {
       WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
     `).get(tenantId, orderId) as { paid: number } | undefined
     const paid = Math.max(num(order.total_paid), num(order.prepayment), num(ledger?.paid))
-    if (paid > 0 && (input.refund_prepayment || input.keep_as_credit)) {
-      throw new Error('Оплачене замовлення можна скасувати без зміни оплати. Повернення або зарахування на рахунок проведіть через касу.')
+    if (paid > 0 && input.refund_prepayment) {
+      throw new Error('Менеджер скасовує замовлення із зарахуванням оплати на рахунок клієнта. Фактичну видачу грошей потім проводить касир.')
+    }
+    if (paid > 0 && !order.customer_id) {
+      throw new Error('До оплаченого замовлення не прив’язаний клієнт. Спочатку виберіть клієнта в замовленні.')
     }
 
     const timestamp = nowIso()
@@ -373,6 +376,52 @@ export class LocalOrderRepository {
     const priorComment = String(order.comment ?? '').trim()
     const comment = reason ? `${priorComment ? `${priorComment}\n` : ''}Скасування: ${reason}` : priorComment || null
     this.db.transaction(() => {
+      let customerBalance: number | null = null
+      if (paid > 0 && order.customer_id) {
+        const existingCredit = this.db.prepare(`
+          SELECT amount, balance_after
+          FROM customer_deposit_transactions
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+          LIMIT 1
+        `).get(orderId, tenantId) as { amount: number; balance_after: number } | undefined
+        if (existingCredit) {
+          customerBalance = Number(existingCredit.balance_after)
+        } else {
+          const customer = this.db.prepare(`
+            SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance
+            FROM customers
+            WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+            LIMIT 1
+          `).get(order.customer_id, tenantId) as { id: string; deposit_balance: number } | undefined
+          if (!customer) throw new Error('Клієнта замовлення не знайдено')
+          customerBalance = Number(customer.deposit_balance ?? 0) + paid
+          this.db.prepare(`
+            UPDATE customers
+            SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+            WHERE id = ? AND tenant_id = ?
+          `).run(customerBalance, timestamp, timestamp, customer.id, tenantId)
+          this.db.prepare(`
+            INSERT INTO customer_deposit_transactions (
+              id, tenant_id, customer_id, amount, balance_after, method, order_id,
+              notes, created_by, dirty_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'account', ?, ?, ?, ?, ?, ?)
+          `).run(
+            orderId, tenantId, customer.id, paid, customerBalance, orderId,
+            `Скасування замовлення №${String(order.order_number ?? orderId)}`,
+            input.user_id ?? null, timestamp, timestamp, timestamp,
+          )
+          this.addOutbox(tenantId, 'customer', customer.id, 'customer.deposit_changed', {
+            customer_id: customer.id,
+            transaction_id: orderId,
+            amount: paid,
+            method: 'account',
+            order_id: orderId,
+            notes: `Скасування замовлення №${String(order.order_number ?? orderId)}`,
+            created_by: input.user_id ?? null,
+            created_at: timestamp,
+          }, timestamp)
+        }
+      }
       this.db.prepare(`
         UPDATE customer_orders
         SET status = 'canceled', comment = ?, dirty_at = ?, updated_at = ?
@@ -391,9 +440,10 @@ export class LocalOrderRepository {
       this.addOutbox(tenantId, 'customer_order', orderId, 'order.canceled', {
         id: orderId,
         refund_prepayment: false,
-        keep_as_credit: false,
+        keep_as_credit: paid > 0,
         reason: input.reason ?? null,
-        paid_amount_preserved: paid,
+        credited_amount: paid,
+        customer_balance: customerBalance,
       }, timestamp)
     })
     return this.getOrder(orderId, tenantId)
@@ -432,13 +482,17 @@ export class LocalOrderRepository {
     })
     return { updated: uniqueIds.length }
   }
-  listReadyOrders(input: { tenant_id?: string; search?: string; limit?: number } = {}): any[] {
+  listReadyOrders(input: { tenant_id?: string; search?: string; customer_id?: string | null; limit?: number } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const search = String(input.search ?? '').trim().toLowerCase()
     const limit = Math.max(1, Math.min(200, input.limit ?? 80))
     const statusPlaceholders = ACTIVE_STATUSES.map(() => '?').join(',')
     const params: any[] = [tenantId, ...ACTIVE_STATUSES]
     let where = `o.tenant_id = ? AND o.deleted_at IS NULL AND o.status IN (${statusPlaceholders})`
+    if (input.customer_id) {
+      where += ' AND o.customer_id = ?'
+      params.push(input.customer_id)
+    }
     if (search) {
       where += ` AND (
         CAST(o.order_number AS TEXT) LIKE ?
@@ -560,7 +614,7 @@ export class LocalOrderRepository {
 
     const timestamp = nowIso()
     const accountTransactionId = input.method === 'account' ? paymentId : null
-    const nextPaid = num(order.total_paid ?? order.prepayment) + amount
+    const nextPaid = Math.max(num(order.total_paid), num(order.prepayment)) + amount
     const nextStatus = (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
 
     this.db.transaction(() => {
@@ -698,7 +752,7 @@ export class LocalOrderRepository {
       else paymentTotals.cash += amount
     }
     const listedPaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
-    const legacyPaid = Math.max(0, Math.round(num(order.total_paid ?? order.prepayment)) - listedPaid)
+    const legacyPaid = Math.max(0, Math.round(Math.max(num(order.total_paid), num(order.prepayment))) - listedPaid)
     if (legacyPaid > 0) {
       const legacyMethod = order.prepayment_method ?? input.payment_method
       if (legacyMethod === 'card') paymentTotals.card += legacyPaid
@@ -722,7 +776,7 @@ export class LocalOrderRepository {
       let allowNegativeQty = false
       if (settingsRow?.value_json) {
         try {
-          allowNegativeQty = JSON.parse(settingsRow.value_json)?.allow_negative_qty !== false
+          allowNegativeQty = JSON.parse(settingsRow.value_json)?.allow_negative_qty === true
         } catch {
           allowNegativeQty = false
         }
@@ -1034,7 +1088,7 @@ export class LocalOrderRepository {
   }
 
   private remainingDue(order: any): number {
-    return Math.max(0, num(order.total_amount) - num(order.discount_amount) - num(order.total_paid ?? order.prepayment))
+    return Math.max(0, num(order.total_amount) - num(order.discount_amount) - Math.max(num(order.total_paid), num(order.prepayment)))
   }
 
   private addOutbox(tenantId: string, aggregateType: string, aggregateId: string, operationType: string, payload: unknown, timestamp: string): number | bigint {

@@ -27,6 +27,7 @@ import {
 } from '@/features/labels/LabelDesigner'
 import { areAllDisplayedProductsSelected, toggleDisplayedProductsSelection } from './productSelection'
 import { canDeleteCatalog } from './catalogDeletePermissions'
+import { API_BASE_URL } from '@/lib/apiBaseUrl'
 
 // ─── Типи ────────────────────────────────────────────────────────────────────
 interface Category { id: string; name: string; sort_order: number }
@@ -36,8 +37,6 @@ type SortDir   = 'asc' | 'desc'
 
 const STATUS_COLOR: Record<string, 'green' | 'orange' | 'red'> = { ok: 'green', low: 'orange', out: 'red' }
 const STATUS_LABEL = { ok: 'Є', low: 'Мало', out: 'Нема' }
-
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
 
 // ─── Іконка сортування ───────────────────────────────────────────────────────
 function SortIcon({ field, sort }: { field: SortField; sort: { field: SortField; dir: SortDir } | null }) {
@@ -554,7 +553,7 @@ export default function ProductsPage() {
       } else {
         const { supabase } = await import('@/lib/supabase')
         const token = (await supabase.auth.getSession()).data.session?.access_token ?? ''
-        const res = await fetch(`${API_URL}/api/v1/products/export`, { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(`${API_BASE_URL}/api/v1/products/export`, { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) throw new Error('Не вдалося експортувати товари')
         blob = await res.blob()
       }

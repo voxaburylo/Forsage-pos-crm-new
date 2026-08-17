@@ -11,6 +11,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
 import { api } from '@/lib/api'
+import { recognizeVehicleImage } from '@/lib/vehicleOcr'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
@@ -224,11 +225,24 @@ export default function OrderFormPage() {
 
   useEffect(() => {
     if (id) return
-    const vinFromUrl = searchParams.get('vin')?.trim().toUpperCase()
-    if (vinFromUrl) {
-      setNewVehVin(vinFromUrl)
-      setShowAddVehicle(true)
-    }
+    const vin = searchParams.get('vin')?.trim().toUpperCase() ?? ''
+    const make = searchParams.get('make')?.trim() ?? ''
+    const model = searchParams.get('model')?.trim() ?? ''
+    const yearText = searchParams.get('year')?.trim() ?? ''
+    const year = Number.parseInt(yearText, 10)
+    if (!vin && !make && !model && !Number.isFinite(year)) return
+
+    setNewVehVin(vin)
+    setNewVehBrand(make)
+    setNewVehModel(model)
+    setNewVehYear(Number.isFinite(year) ? String(year) : '')
+    setLoadedVehicleInfo({
+      vin: vin || undefined,
+      make: make || undefined,
+      model: model || undefined,
+      year: Number.isFinite(year) ? year : undefined,
+    })
+    setShowAddVehicle(true)
   }, [id, searchParams])
 
   // Duplicate order initialization (P1 Fix 9)
@@ -585,34 +599,25 @@ export default function OrderFormPage() {
   async function handleVinPhoto(file: File) {
     setOcrLoading(true)
     try {
-      // Стискаємо фото перед відправкою (швидше + дешевше для OCR)
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const img = new Image()
-        const url = URL.createObjectURL(file)
-        img.onload = () => {
-          URL.revokeObjectURL(url)
-          const scale = Math.min(1, 1280 / Math.max(img.width, img.height))
-          const w = Math.round(img.width * scale), h = Math.round(img.height * scale)
-          const canvas = document.createElement('canvas')
-          canvas.width = w; canvas.height = h
-          const ctx = canvas.getContext('2d')
-          if (!ctx) return reject(new Error('canvas'))
-          ctx.drawImage(img, 0, 0, w, h)
-          resolve(canvas.toDataURL('image/jpeg', 0.7))
-        }
-        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Не вдалося прочитати фото')) }
-        img.src = url
+      const data = await recognizeVehicleImage(file)
+      if (data.vin) setNewVehVin(data.vin)
+      if (data.make) setNewVehBrand(data.make)
+      if (data.model) setNewVehModel(data.model)
+      if (data.year) setNewVehYear(String(data.year))
+      setLoadedVehicleInfo({
+        vin: data.vin ?? undefined,
+        make: data.make ?? undefined,
+        model: data.model ?? undefined,
+        year: data.year ?? undefined,
       })
-      const { data } = await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', { image: dataUrl, mimeType: 'image/jpeg' })
-      setNewVehVin(data.vin)
-      toast.success('VIN розпізнано: ' + data.vin)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося розпізнати VIN')
+      const vehicleLabel = [data.make, data.model, data.year].filter(Boolean).join(' ')
+      toast.success(data.vin ? `VIN розпізнано: ${data.vin}` : `Автомобіль розпізнано: ${vehicleLabel}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати фото')
     } finally {
       setOcrLoading(false)
     }
   }
-
   async function handleCreateVehicle(e: React.FormEvent) {
     e.preventDefault()
     if (!newVehBrand.trim() || !newVehModel.trim()) {

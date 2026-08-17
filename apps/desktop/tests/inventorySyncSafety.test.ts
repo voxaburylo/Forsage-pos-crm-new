@@ -28,6 +28,20 @@ describe('local inventory synchronization safety', () => {
     }
   })
 
+  it('lists the complete revision history across pages', () => {
+    for (let index = 1; index <= 25; index += 1) {
+      inventory.createSession({ name: `Ревізія ${index}` })
+    }
+
+    const firstPage = inventory.listSessions(DEFAULT_TENANT_ID, { limit: 20, offset: 0 })
+    const secondPage = inventory.listSessions(DEFAULT_TENANT_ID, { limit: 20, offset: 20 })
+
+    expect(inventory.countSessions()).toBe(25)
+    expect(firstPage).toHaveLength(20)
+    expect(secondPage).toHaveLength(5)
+    expect(new Set([...firstPage, ...secondPage].map((item) => item.id)).size).toBe(25)
+  })
+
   it('queues create, start, and empty-session deletion in lifecycle order', () => {
     const userId = randomUUID()
     const session = inventory.createSession({ name: 'Тестова ревізія', created_by: userId })

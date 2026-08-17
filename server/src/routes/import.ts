@@ -5,7 +5,7 @@ import * as importController from '../controllers/importController.js'
 const router = Router()
 router.use(requireAuth)
 
-const ALLOWED = ['owner', 'admin', 'manager', 'storekeeper'] as const
+const ALLOWED = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'] as const
 
 router.post('/parse', requireRole(...ALLOWED), importController.parse)
 router.post('/preview', requireRole(...ALLOWED), importController.preview)

@@ -2,11 +2,26 @@ import type { Product } from '@/types/product'
 import type { Shift } from '@/types/shift'
 import type { Sale } from '@/types/sale'
 
+export type DesktopLanMode = 'standalone' | 'hub' | 'client'
+
+export interface DesktopLanStatus {
+  mode: DesktopLanMode
+  port: number
+  hubAddress: string
+  accessKey: string
+  allowedUserId: string
+  addresses: string[]
+  running: boolean
+  connected: boolean
+  lastError: string | null
+}
+
 export interface DesktopRuntimeInfo {
   databasePath: string
   deviceId: string
   schemaVersion: number
   pendingOperations: number
+  lan?: DesktopLanStatus | null
 }
 
 export interface DesktopProduct {
@@ -186,6 +201,7 @@ export interface DesktopSyncPullChanges {
   tenant_id?: string
   cursor: string
   staff?: unknown[]
+  staff_directory?: unknown[]
   staff_pins?: unknown[]
   reset_required?: boolean
   reset_generation?: number
@@ -241,6 +257,7 @@ export interface DesktopSyncPullChanges {
   references_included?: boolean
   catalog_structure_snapshot_included?: boolean
   staff_snapshot_included?: boolean
+  staff_directory_snapshot_included?: boolean
   commission_rules_snapshot_included?: boolean
   salary_payments_snapshot_included?: boolean
   stock_reserves_snapshot_included?: boolean
@@ -398,6 +415,11 @@ interface ForsageDesktopBridge {
     logout: () => Promise<{ success: true }>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
+  lan?: {
+    getStatus: () => Promise<DesktopLanStatus>
+    update: (input: Partial<Pick<DesktopLanStatus, 'mode' | 'port' | 'hubAddress' | 'accessKey' | 'allowedUserId'>>) => Promise<DesktopLanStatus>
+    test: () => Promise<DesktopLanStatus>
+  }
   backupNow: () => Promise<string>
   bootstrap: {
     importSnapshot: (snapshot: DesktopBootstrapSnapshot) => Promise<DesktopBootstrapImportResult>
@@ -475,6 +497,7 @@ interface ForsageDesktopBridge {
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
+    listAnalogs?: (productId: string, limit?: number) => Promise<DesktopProduct[]>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   supplierCatalog?: {
@@ -494,7 +517,7 @@ interface ForsageDesktopBridge {
   }
   staff?: {
     listUsers: () => Promise<any[]>
-    saveServerUser: (input: any, password: string) => Promise<any>
+    saveServerUser: (input: any, password?: string) => Promise<any>
     updateUser: (id: string, input: any) => Promise<any>
     deleteUser: (id: string) => Promise<{ ok: true }>
     saveServerPassword: (id: string, password: string) => Promise<{ success: true }>
@@ -506,6 +529,8 @@ interface ForsageDesktopBridge {
     listSalary: (input?: any) => Promise<any[]>
     salarySummary: (period?: string) => Promise<any[]>
     dailySummary: (workDate?: string) => Promise<any[]>
+    tireServiceReport: (workDate?: string) => Promise<any>
+    tireCashHandover: (input: any) => Promise<any>
     createSalary: (input: any) => Promise<any>
     dailyPayout: (input: any) => Promise<any>
     deleteSalary: (id: string) => Promise<{ success: true }>
@@ -521,7 +546,7 @@ interface ForsageDesktopBridge {
     createWriteoff: (input: any) => Promise<any>
   }
   inventory?: {
-    listSessions: (input?: { tenant_id?: string }) => Promise<any[]>
+    listSessions: (input?: { tenant_id?: string; page?: number; per_page?: number }) => Promise<{ data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } }>
     createSession: (input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) => Promise<any>
     startSession: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
     deleteSession: (sessionId: string, tenantId?: string) => Promise<any>
@@ -536,7 +561,7 @@ interface ForsageDesktopBridge {
     complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
   }
   orders?: {
-    listReady: (input?: { tenant_id?: string; search?: string; limit?: number }) => Promise<any[]>
+    listReady: (input?: { tenant_id?: string; search?: string; customer_id?: string; limit?: number }) => Promise<any[]>
     list?: (input?: any) => Promise<any[]>
     save?: (input: any, id?: string) => Promise<any>
     delete?: (id: string, tenantId?: string) => Promise<{ success: true }>
@@ -561,6 +586,13 @@ interface ForsageDesktopBridge {
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
+    createInvoiceFromAi?: (input: { tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{
+      invoice: any
+      matched: number
+      created: number
+      unresolved: Array<{ name: string; sku: string; needs_barcode: true; needs_category: boolean }>
+      draft_items: Array<Record<string, unknown>>
+    }>
     updateInvoice: (id: string, input: any) => Promise<any>
     payInvoice: (id: string, input: any) => Promise<any>
     postInvoice: (id: string, input?: any) => Promise<any>
@@ -573,6 +605,7 @@ interface ForsageDesktopBridge {
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listSales?: (input?: any) => Promise<any>
     dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>
+    soldItemsReport?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any[]>
     listReturns?: (input?: any) => Promise<any>
     getReturn?: (id: string, tenantId?: string) => Promise<any>
     getSaleForReturn?: (saleId: string, tenantId?: string) => Promise<any>
@@ -599,6 +632,7 @@ interface ForsageDesktopBridge {
     getCustomerDeposit?: (customerId: string, tenantId?: string) => Promise<{ balance: number; transactions: unknown[] }>
     payDebt?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
     addCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>
+    payOutCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; payout_id?: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number; replayed: boolean } }>
     createCashOperation?: (input: any) => Promise<any>
     listCashOperations?: (shiftId: string, tenantId?: string) => Promise<any[]>
     cashOperationSummary?: (shiftId: string, tenantId?: string) => Promise<any>
@@ -761,4 +795,3 @@ export function desktopCheckoutToSale(
     sale_items: receiptItems,
   }
 }
-

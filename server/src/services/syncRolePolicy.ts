@@ -1,4 +1,5 @@
-const SUPPLY_ROLES = new Set(['owner', 'admin', 'manager', 'storekeeper'])
+const STAFF_DIRECTORY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker'])
+const SUPPLY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper'])
 const PRIVILEGED_SETTINGS_ROLES = new Set(['owner', 'admin'])
 const CASHDESK_SETTINGS_KEYS = new Set([
   'shop_name',
@@ -40,10 +41,16 @@ const CASHIER_SYNC_OPERATIONS = new Set([
   'customer_vehicle.created', 'customer_vehicle.updated', 'customer_vehicle.deleted',
   'customer.debt_paid', 'customer.deposit_changed', 'return.created',
   'order.payment_added', 'order.completed', 'cash_operation.created',
+  // Cashiers are explicitly allowed to receive goods and complete stock counts.
+  // These operations must follow the same permission model as the HTTP routes/UI.
+  'product.upsert', 'supplier_invoice.created', 'supplier_invoice.updated',
+  'supplier_invoice.posted', 'supplier_invoice.payment_added', 'supplier_invoice.deleted',
+  'inventory.created', 'inventory.started', 'inventory.completed', 'inventory.deleted',
 ])
 const STOREKEEPER_SYNC_OPERATIONS = new Set([
   'product.upsert', 'category.upsert', 'brand.upsert', 'supplier_invoice.created',
-  'supplier_invoice.posted', 'order.item_status_updated', 'order.items_arrived',
+  'supplier_invoice.updated', 'supplier_invoice.posted', 'supplier_invoice.payment_added',
+  'order.item_status_updated', 'order.items_arrived',
   'reserve.created', 'reserve.released', 'warehouse_movement.created', 'writeoff.created',
   'inventory.created', 'inventory.started', 'inventory.deleted',
 ])
@@ -59,6 +66,30 @@ export function isSyncOperationAllowed(role: string, operationType: string): boo
         : null
   return allowed?.has(operationType) === true
 }
+export function canPullStaffDirectory(role: string): boolean {
+  return STAFF_DIRECTORY_ROLES.has(role)
+}
+
+export function buildStaffSyncPayload(staff: Array<Record<string, any>>, role: string) {
+  const canPullPayroll = role === 'owner' || role === 'admin'
+  const staffDirectory = canPullPayroll ? [] : staff.map((user) => ({
+    id: user.id,
+    phone: user.phone,
+    full_name: user.full_name,
+    role: user.role,
+    is_active: user.is_active,
+    ...(user.role === 'tire_worker' ? { base_rate: user.base_rate, rate_period: user.rate_period } : {}),
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+  }))
+  return {
+    staff: canPullPayroll ? staff : [],
+    staff_directory: staffDirectory,
+    staff_snapshot_included: canPullPayroll,
+    staff_directory_snapshot_included: canPullStaffDirectory(role) && !canPullPayroll,
+  }
+}
+
 export function canPullSupplyData(role: string): boolean {
   return SUPPLY_ROLES.has(role)
 }

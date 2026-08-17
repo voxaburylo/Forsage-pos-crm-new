@@ -49,6 +49,7 @@ import notificationsRouter from './routes/notifications.js'
 import autoPurchaseRouter from './routes/autoPurchase.js'
 import onecImportRouter from './routes/onecImport.js'
 import jobsRouter from './routes/jobs.js'
+import { pool } from './db/pg.js'
 import vinRouter from './routes/vin.js'
 import aiRouter from './routes/ai.js'
 import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
@@ -63,9 +64,16 @@ import { db } from './db/supabase.js'
 const app = express()
 const PORT = process.env.PORT ?? 3001
 
+// Render і Vercel передають реальну IP-адресу через X-Forwarded-For.
+// Без trust proxy express-rate-limit вважає це помилкою конфігурації та
+// не може коректно розділяти ліміти між користувачами.
+app.set('trust proxy', 1)
+
 const corsEnv = (process.env.CORS_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 const allowedOrigins = new Set<string>([
   'http://localhost:5173',
+  ...(process.env.VERCEL_URL ? ['https://' + process.env.VERCEL_URL] : []),
+  ...(process.env.VERCEL_PROJECT_PRODUCTION_URL ? ['https://' + process.env.VERCEL_PROJECT_PRODUCTION_URL] : []),
   'https://crm-forsage.vercel.app',
   'https://forsage-pos-crm-new.vercel.app',
   'https://forsage-pos-crm-new-web.vercel.app',
@@ -111,6 +119,19 @@ const loginLimiter = rateLimit({
 
 app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
+})
+
+app.get('/api/v1/health/database', async (_req, res) => {
+  try {
+    await pool.query('select 1')
+    res.json({
+      status: 'ok',
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+    })
+  } catch {
+    res.status(503).json({ status: 'unavailable', database: 'disconnected' })
+  }
 })
 
 app.get('/api/v1/version', (_req, res) => {
@@ -170,6 +191,9 @@ app.use('/api/v1/ai', aiRouter)
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)
 
+export default app
+
+function startStandaloneServer(): void {
 const jobWorker = new JobWorker()
 jobWorker.register('test_job', async (payload) => {
   logger.info({ payload }, 'Test job execution handler triggered')
@@ -300,3 +324,11 @@ process.on('unhandledRejection', (reason) => {
   logger.fatal({ reason }, 'unhandledRejection — зупиняємо сервер')
   process.exit(1)
 })
+}
+
+// Vercel імпортує Express-застосунок як serverless-функцію. Фонові воркери,
+// Telegram polling та окремий HTTP-listener там запускати не можна. Звичайний
+// локальний/довгоживучий сервер зберігає попередню поведінку.
+if (!process.env.VERCEL) {
+  startStandaloneServer()
+}

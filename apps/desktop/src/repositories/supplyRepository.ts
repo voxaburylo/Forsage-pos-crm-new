@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
+import { LocalCatalogRepository } from './catalogRepository'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -286,6 +287,181 @@ export class LocalSupplyRepository {
     return invoice
   }
 
+  /**
+   * Створює локальну чернетку приходу з розпізнаних AI-рядків.
+   * Існуючі картки шукаються за штрихкодом, артикулом або точною назвою;
+   * нові картки створюються без штрихкоду й категорії для ручного заповнення.
+   */
+  createInvoiceFromAiRows(input: {
+    tenant_id?: string
+    supplier_id?: string | null
+    supplier_name?: string | null
+    invoice_number?: string | null
+    notes?: string | null
+    user_id?: string | null
+    rows: Array<Record<string, unknown>>
+  }): {
+    invoice: any
+    matched: number
+    created: number
+    unresolved: Array<{ name: string; sku: string; needs_barcode: true; needs_category: boolean }>
+    draft_items: Array<Record<string, unknown>>
+  } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    if (!Array.isArray(input.rows) || input.rows.length === 0) throw new Error('AI не знайшов позицій у накладній')
+    const catalog = new LocalCatalogRepository(this.db)
+    const settings = catalog.getSettings()
+    const normalize = (value: unknown) => String(value ?? '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+    const moneyUah = (value: unknown) => {
+      const normalized = typeof value === 'string' ? value.replace(/\s/g, '').replace(',', '.') : value
+      const number = Number(normalized ?? 0)
+      return Number.isFinite(number) ? Math.max(0, Math.round(number * 100)) : 0
+    }
+    const categories = this.db.prepare(`
+      SELECT id, name FROM categories
+      WHERE tenant_id = ? AND deleted_at IS NULL
+    `).all(tenantId) as Array<{ id: string; name: string }>
+    const normalizedCategories = categories.map((category) => ({ ...category, normalized: normalize(category.name) }))
+    const resolveCategoryId = (suggested: unknown, productName: string): string | null => {
+      const wanted = normalize(suggested)
+      if (wanted) {
+        const exact = normalizedCategories.find((category) => category.normalized === wanted)
+        if (exact) return exact.id
+        const related = normalizedCategories
+          .filter((category) => category.normalized.length >= 3 && (
+            wanted.includes(category.normalized) || category.normalized.includes(wanted)
+          ))
+          .sort((a, b) => b.normalized.length - a.normalized.length)[0]
+        if (related) return related.id
+      }
+      const normalizedName = normalize(productName)
+      return normalizedCategories
+        .filter((category) => category.normalized.length >= 3 && normalizedName.includes(category.normalized))
+        .sort((a, b) => b.normalized.length - a.normalized.length)[0]?.id ?? null
+    }
+    const retailFromGrid = (purchasePrice: number, categoryId: string | null): number => {
+      if (purchasePrice <= 0) return 0
+      const categoryMarkup = (Array.isArray(settings?.category_markups) ? settings.category_markups : [])
+        .find((row: any) => row.category_id === categoryId)
+      const rule = (Array.isArray(settings?.markup_rules) ? settings.markup_rules : [])
+        .find((row: any) => purchasePrice >= Number(row.minPrice) && purchasePrice < Number(row.maxPrice))
+      const markupPct = Number(categoryMarkup?.markup_pct ?? rule?.markupPct ?? 30)
+      const retail = Math.round(purchasePrice * (1 + (Number.isFinite(markupPct) ? markupPct : 30) / 100))
+      const rawStep = settings?.price_rounding_enabled === true ? Number(settings.price_rounding_step) : 100
+      const step = Math.max(50, Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 100)
+      const scaled = retail / step
+      if (settings?.price_rounding_dir === 'up') return Math.ceil(scaled) * step
+      if (settings?.price_rounding_dir === 'down') return Math.floor(scaled) * step
+      return Math.round(scaled) * step
+    }
+
+    let supplierId = input.supplier_id ?? null
+    if (!supplierId && input.supplier_name?.trim()) {
+      const supplier = this.db.prepare(`
+        SELECT id FROM suppliers
+        WHERE tenant_id = ? AND deleted_at IS NULL AND lower(trim(name)) = lower(trim(?))
+        LIMIT 1
+      `).get(tenantId, input.supplier_name.trim()) as { id: string } | undefined
+      supplierId = supplier?.id ?? null
+    }
+    let matched = 0
+    let created = 0
+    const unresolved: Array<{ name: string; sku: string; needs_barcode: true; needs_category: boolean }> = []
+    const items: SupplyInvoiceItemInput[] = []
+    const draftItems: Array<Record<string, unknown>> = []
+
+    const invoice = this.db.transaction(() => {
+      for (const raw of input.rows) {
+        const recognizedName = String(raw.name ?? raw.title ?? raw.description ?? '').trim()
+        if (!recognizedName) continue
+        const recognizedSku = String(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number ?? '').trim()
+        const recognizedBarcode = String(raw.barcode ?? raw.ean ?? '').trim()
+        const qtyValue = Number(raw.qty ?? raw.quantity ?? raw.qty_on_hand ?? 1)
+        const rowQty = Number.isFinite(qtyValue) && qtyValue > 0 ? qtyValue : 1
+        const purchasePrice = moneyUah(raw.purchase_price_uah ?? raw.purchase_price ?? raw.cost_price)
+
+        let product = recognizedBarcode ? catalog.findByBarcode(recognizedBarcode, tenantId) : null
+        if (!product && recognizedSku) product = catalog.findBySku(recognizedSku, tenantId)
+        if (!product) {
+          const wantedName = normalize(recognizedName)
+          const candidates = this.db.prepare(`
+            SELECT id, name FROM products WHERE tenant_id = ? AND deleted_at IS NULL
+          `).all(tenantId) as Array<{ id: string; name: string }>
+          const exact = candidates.find((candidate) => normalize(candidate.name) === wantedName)
+          if (exact) product = catalog.findById(exact.id, tenantId)
+        }
+
+        const wasCreated = !product
+        let categoryId = product?.category_id ?? resolveCategoryId(
+          raw.category_name ?? raw.category ?? raw.folder_name ?? raw.folder,
+          recognizedName,
+        )
+        const retailPrice = retailFromGrid(purchasePrice, categoryId)
+
+        if (!product) {
+          const productId = randomUUID()
+          const productSku = recognizedSku || `AI-${productId.slice(0, 8).toUpperCase()}`
+          const brandName = String(raw.brand_name ?? raw.brand ?? '').trim()
+          let brandId: string | null = null
+          if (brandName) {
+            const storedBrand = this.db.prepare(`
+              SELECT id FROM brands
+              WHERE tenant_id = ? AND deleted_at IS NULL AND lower(trim(name)) = lower(trim(?))
+              LIMIT 1
+            `).get(tenantId, brandName) as { id: string } | undefined
+            brandId = storedBrand?.id ?? catalog.createBrand(brandName, null, tenantId).id
+          }
+          product = catalog.saveProduct({
+            id: productId,
+            tenant_id: tenantId,
+            sku: productSku,
+            name: recognizedName,
+            barcode: null,
+            purchase_price: purchasePrice,
+            retail_price: retailPrice,
+            qty_on_hand: 0,
+            unit: String(raw.unit ?? 'шт'),
+            is_active: true,
+            is_service: false,
+            category_id: categoryId,
+            brand_id: brandId,
+          })
+          created++
+          unresolved.push({ name: recognizedName, sku: productSku, needs_barcode: true, needs_category: !categoryId })
+        } else {
+          matched++
+          categoryId = product.category_id ?? categoryId
+        }
+
+        items.push({ product_id: product.id, qty: rowQty, purchase_price: purchasePrice })
+        draftItems.push({
+          product_id: product.id,
+          product_name: product.name,
+          sku: product.sku,
+          barcode: product.barcode ?? '',
+          unit: product.unit ?? String(raw.unit ?? 'шт'),
+          qty: rowQty,
+          purchase_price: purchasePrice,
+          retail_price: retailFromGrid(purchasePrice, categoryId),
+          category_id: categoryId,
+          total: Math.round(rowQty * purchasePrice),
+          storage_bin: product.storage_bin ?? null,
+          photo_url: (product as any).photo_url ?? null,
+          is_new: wasCreated,
+        })
+      }
+      if (items.length === 0) throw new Error('AI не знайшов позицій у накладній')
+      return this.createInvoice({
+        tenant_id: tenantId,
+        supplier_id: supplierId,
+        invoice_number: input.invoice_number ?? null,
+        notes: input.notes ?? 'Створено з фото накладної через AI. Перевірте нові товари та проскануйте їх штрихкоди.',
+        user_id: input.user_id ?? null,
+        items,
+      })
+    })
+    return { invoice, matched, created, unresolved, draft_items: draftItems }
+  }
   createInvoice(input: CreateSupplyInvoiceInput): any {
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new Error('Додайте хоча б один товар у накладну')

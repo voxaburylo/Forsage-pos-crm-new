@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, Package, Users, Truck, AlertTriangle, ClipboardList, Receipt, TrendingUp, TrendingDown, Minus } from 'lucide-react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { AlertTriangle, ClipboardList, Receipt, TrendingUp } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Card, Button } from '@/components/ui'
@@ -9,6 +8,8 @@ import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
+import { staffApi } from '@/features/staff/staffApi'
+import type { TireServiceReportRow } from '@/features/staff/staffApi'
 
 interface DailyData {
   date: string
@@ -27,10 +28,8 @@ interface Analytics {
   totals?: { products: number; customers: number; suppliers: number; openOrders: number }
   overdue_count?: number
   debt?: { count: number; total: number }
+  inventory?: { purchase_value: number; retail_value: number }
 }
-
-interface ForecastItem { month: string; projected: number }
-interface Anomaly { type: string; message: string; severity: 'warning' | 'critical' }
 
 type Period = 'today' | 'week' | 'month' | 'date'
 type QuickPeriod = Exclude<Period, 'date'>
@@ -54,17 +53,15 @@ export default function DashboardPage() {
   // Прибуток — тільки власнику/адміну; менеджер бачить виторг і чеки
   const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canSeeProfit = ['owner', 'admin'].includes(role)
-  const [period, setPeriod] = useState<Period>('month')
+  const [period, setPeriod] = useState<Period>('today')
   const [selectedDate, setSelectedDate] = useState(() => businessDateKey(new Date()))
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [lowStock, setLowStock] = useState(0)
-  const [totals, setTotals] = useState({ products: 0, customers: 0, suppliers: 0, openOrders: 0 })
-  const [forecast, setForecast] = useState<{ data: ForecastItem[]; trend: string } | null>(null)
-  const [anomalies, setAnomalies] = useState<Anomaly[]>([])
   const [overdueCount, setOverdueCount] = useState(0)
   const [debt, setDebt] = useState({ count: 0, total: 0 })
   const [loading, setLoading] = useState(true)
   const loadSequenceRef = useRef(0)
+  const [tireWorkers, setTireWorkers] = useState<TireServiceReportRow[]>([])
 
   const range = useMemo(() => getRange(period, selectedDate), [period, selectedDate])
 
@@ -74,8 +71,14 @@ export default function DashboardPage() {
     const isCurrent = () => !cancelled && requestId === loadSequenceRef.current
     async function load() {
       setLoading(true)
+      setTireWorkers([])
       try {
         const desktop = desktopBridge()
+        if (canSeeProfit && range.startDate === range.endDate) {
+          void staffApi.tireServiceReport(range.startDate)
+            .then(({ data }) => { if (isCurrent()) setTireWorkers(data ?? []) })
+            .catch(() => { if (isCurrent()) setTireWorkers([]) })
+        }
         if (desktop?.pos.dashboardSummary) {
           const saleDateRange = businessDateRangeUtc(range.startDate, range.endDate)
           const summary = await desktop.pos.dashboardSummary({
@@ -83,24 +86,18 @@ export default function DashboardPage() {
             date_to: saleDateRange.to,
           })
           if (!isCurrent()) return
-          setAnalytics(summary.analytics)
+          setAnalytics({ ...summary.analytics, inventory: summary.inventory })
           setLowStock(Number(summary.low_stock ?? 0))
-          setTotals(summary.totals)
           setOverdueCount(Number(summary.overdue_count ?? 0))
           setDebt(summary.debt)
-          setForecast(null)
-          setAnomalies([])
           return
         }
         if (desktop?.catalog.listProducts && desktop.pos.listCustomers && desktop.pos.listSales && desktop.orders?.list) {
-          const [productResult, customerResult, supplierResult, orders] = await Promise.all([
-            desktop.catalog.listProducts({ limit: 1, offset: 0 }),
-            desktop.pos.listCustomers({ page: 1, per_page: 1 }),
-            desktop.supply?.listSuppliers?.({ page: 1, per_page: 1 }) ?? Promise.resolve({ data: [], pagination: { total: 0 } }),
+          const [orders, lowResult, debtResult] = await Promise.all([
             desktop.orders.list({ offset: 0, limit: 500 }),
+            desktop.catalog.listProducts({ lowStock: true, limit: 1, offset: 0 }),
+            desktop.pos.listCustomers({ has_debt: 'true', sort: 'debt', page: 1, per_page: 200 }),
           ])
-          const lowResult = await desktop.catalog.listProducts({ lowStock: true, limit: 1, offset: 0 })
-          const debtResult = await desktop.pos.listCustomers({ has_debt: 'true', sort: 'debt', page: 1, per_page: 200 })
 
           const allSales: any[] = []
           let salesPage = 1
@@ -145,12 +142,6 @@ export default function DashboardPage() {
           })
           const activeOrders = (orders ?? []).filter((order: any) => !['completed', 'canceled', 'cancelled', 'archived'].includes(order.status))
           setLowStock(Number(lowResult.total ?? 0))
-          setTotals({
-            products: Number(productResult.total ?? 0),
-            customers: Number(customerResult.pagination?.total ?? 0),
-            suppliers: Number(supplierResult.pagination?.total ?? supplierResult.data?.length ?? 0),
-            openOrders: activeOrders.length,
-          })
           const nowTs = Date.now()
           setOverdueCount(activeOrders.filter((order: any) =>
             order.pickup_deadline_at && new Date(order.pickup_deadline_at).getTime() < nowTs).length)
@@ -159,8 +150,6 @@ export default function DashboardPage() {
             count: Number(debtResult.pagination?.total ?? debtList.length),
             total: debtList.reduce((sum: number, customer: any) => sum + Number(customer.debt_balance ?? 0), 0),
           })
-          setForecast(null)
-          setAnomalies([])
           return
         }
         const response = await api.get<{ data: Analytics }>(
@@ -169,17 +158,8 @@ export default function DashboardPage() {
         if (!isCurrent()) return
         setAnalytics(response.data)
         setLowStock(Number(response.data.low_stock ?? 0))
-        setTotals(response.data.totals ?? { products: 0, customers: 0, suppliers: 0, openOrders: 0 })
         setOverdueCount(Number(response.data.overdue_count ?? 0))
         setDebt(response.data.debt ?? { count: 0, total: 0 })
-
-        // Завантаження прогнозу та аномалій (не блокують основне завантаження)
-        api.get<{ data: ForecastItem[]; trend: string }>('/api/v1/analytics/forecast?months=3')
-          .then((r) => { if (isCurrent()) setForecast(r) })
-          .catch(() => {})
-        api.get<{ data: Anomaly[] }>('/api/v1/analytics/anomalies')
-          .then((r) => { if (isCurrent()) setAnomalies(r.data ?? []) })
-          .catch(() => {})
       } catch {
         if (isCurrent()) setAnalytics(null)
       } finally {
@@ -188,16 +168,17 @@ export default function DashboardPage() {
     }
     void load()
     return () => { cancelled = true }
-  }, [range])
+  }, [range, canSeeProfit])
 
   const d = analytics
+  const tireTotals = tireWorkers.reduce((sum, worker) => ({
+    services_qty: sum.services_qty + Number(worker.services_qty ?? 0),
+    service_revenue: sum.service_revenue + Number(worker.service_revenue ?? 0),
+    due: sum.due + Number(worker.due ?? 0),
+  }), { services_qty: 0, service_revenue: 0, due: 0 })
 
   return (
-    <Layout title="Дашборд" actions={
-      <Button icon={<Zap size={16} />} onClick={() => navigate('/pos')}>
-        <span className="hidden sm:inline">Відкрити касу</span>
-      </Button>
-    }>
+    <Layout title="Статистика">
       {/* Period selector */}
       <div className="flex gap-2 mb-6 flex-wrap">
         {(Object.keys(PERIOD_LABELS) as QuickPeriod[]).map((p) => (
@@ -239,6 +220,8 @@ export default function DashboardPage() {
         </div>
       )}
 
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-6"><div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? "—" : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div><div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? "—" : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div><div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">Продано сьогодні</div><div className="mt-2 text-2xl font-bold text-emerald-950">{loading ? "—" : formatMoney(d?.daily?.find((item) => item.date === businessDateKey(new Date()))?.revenue ?? 0)}</div><div className="text-xs text-emerald-700 mt-1">за поточний день</div></div></div>
+
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
         {[
@@ -259,41 +242,57 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Revenue Chart */}
-      {d?.daily && d.daily.length > 0 && (
-        <Card className="mb-6">
-          <h3 className="text-sm font-semibold text-gray-800 mb-4">Виторг по днях</h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={d.daily} margin={{ top: 5, right: 5, left: -10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => (v / 100).toFixed(0)} />
-                <Tooltip formatter={(v: number) => [formatMoney(v), 'Виторг']} />
-                <Bar dataKey="revenue" fill="#FFD000" radius={[4, 4, 0, 0]} maxBarSize={40} />
-              </BarChart>
-            </ResponsiveContainer>
+      {canSeeProfit && range.startDate === range.endDate && (
+        <Card padding="none" className="mb-6">
+          <div className="flex flex-col gap-2 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="font-bold text-gray-900">Шиномонтаж · {range.startDate}</h3>
+              <p className="text-xs text-gray-500">Роботи й зарплата кожного працівника за день</p>
+            </div>
+            <div className="flex gap-4 text-sm">
+              <span>Послуг: <strong>{tireTotals.services_qty}</strong></span>
+              <span>Виручка: <strong>{formatMoney(tireTotals.service_revenue)}</strong></span>
+              <span className="text-cyan-700">До виплати: <strong>{formatMoney(tireTotals.due)}</strong></span>
+            </div>
           </div>
+          {tireWorkers.length === 0 ? (
+            <div className="px-4 py-7 text-center text-sm text-gray-400">
+              Працівників шиномонтажу ще не налаштовано або за день немає нарахувань
+            </div>
+          ) : (
+            <div className="overflow-auto">
+              <table className="w-full min-w-[720px] text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Працівник</th>
+                    <th className="px-2 py-3 text-right">Послуг</th>
+                    <th className="px-2 py-3 text-right">Виручка</th>
+                    <th className="px-2 py-3 text-right">Відсоток</th>
+                    <th className="px-2 py-3 text-right">Нараховано</th>
+                    <th className="px-2 py-3 text-right">Виплачено</th>
+                    <th className="px-4 py-3 text-right">До виплати</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {tireWorkers.map((worker) => (
+                    <tr key={worker.employee_id}>
+                      <td className="px-4 py-3 font-semibold text-gray-900">{worker.employee_name}</td>
+                      <td className="px-2 py-3 text-right">{worker.services_qty}</td>
+                      <td className="px-2 py-3 text-right">{formatMoney(worker.service_revenue)}</td>
+                      <td className="px-2 py-3 text-right">{formatMoney(worker.commission_earned)}</td>
+                      <td className="px-2 py-3 text-right">{formatMoney(worker.earned)}</td>
+                      <td className="px-2 py-3 text-right">{formatMoney(worker.paid)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-cyan-700">{formatMoney(worker.due)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Card>
       )}
-
       {/* Bottom row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3 md:gap-4">
-          {[
-            { label: 'Товари', value: totals.products, icon: Package, href: '/products', color: 'text-blue-500' },
-            { label: 'Клієнти', value: totals.customers, icon: Users, href: '/customers', color: 'text-purple-500' },
-            { label: 'Постачальники', value: totals.suppliers, icon: Truck, href: '/suppliers', color: 'text-green-500' },
-            { label: 'Замовлень', value: totals.openOrders, icon: ClipboardList, href: '/orders', color: 'text-orange-500' },
-          ].map(({ label, value, icon: Icon, href, color }) => (
-            <button key={label} onClick={() => navigate(href)}
-              className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 text-left hover:border-yellow-300 hover:shadow-md transition-all group">
-              <Icon size={22} className={`${color} mb-2`} />
-              <div className="text-2xl font-bold text-gray-900">{loading ? '—' : value}</div>
-              <div className="text-xs text-gray-500 mt-0.5">{label}</div>
-            </button>
-          ))}
-        </div>
 
         {lowStock > 0 && (
           <Card className="border-orange-200 bg-orange-50 flex items-start gap-3">
@@ -332,50 +331,6 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Прогноз + Аномалії */}
-      {(forecast || anomalies.length > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-          {/* Прогноз */}
-          {forecast && forecast.data.length > 0 && (
-            <Card>
-              <div className="flex items-center gap-2 mb-3">
-                {forecast.trend === 'up' ? <TrendingUp size={16} className="text-green-500" />
-                  : forecast.trend === 'down' ? <TrendingDown size={16} className="text-red-500" />
-                  : <Minus size={16} className="text-gray-400" />}
-                <h3 className="text-sm font-semibold text-gray-800">Прогноз виручки</h3>
-              </div>
-              <div className="space-y-2">
-                {forecast.data.map((f) => (
-                  <div key={f.month} className="flex justify-between items-center text-sm">
-                    <span className="text-gray-600">{f.month}</span>
-                    <span className="font-semibold text-gray-900">{formatMoney(f.projected)}</span>
-                  </div>
-                ))}
-              </div>
-              <p className="text-[11px] text-gray-400 mt-3">Лінійна екстраполяція на основі 6 місяців</p>
-            </Card>
-          )}
-
-          {/* Аномалії */}
-          {anomalies.length > 0 && (
-            <Card>
-              <h3 className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                <AlertTriangle size={16} className="text-orange-500" /> Увага
-              </h3>
-              <div className="space-y-2">
-                {anomalies.map((a, i) => (
-                  <div key={i} className={`flex items-start gap-2 p-2 rounded-lg text-sm ${
-                    a.severity === 'critical' ? 'bg-red-50 text-red-700' : 'bg-orange-50 text-orange-700'
-                  }`}>
-                    <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                    <span>{a.message}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-        </div>
-      )}
     </Layout>
   )
 }

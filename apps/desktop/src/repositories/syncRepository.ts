@@ -69,6 +69,7 @@ export class LocalSyncRepository {
     this.recoverLegacyReturnOutbox()
     this.recoverMissingCustomerVehicleOutbox()
     this.recoverOrphanProductDirtyFlags()
+    this.recoverOrphanReturnedSaleDirtyFlags()
     this.recoverAcknowledgedDirtyFlags()
   }
 
@@ -523,6 +524,7 @@ export class LocalSyncRepository {
       const localReturn = this.db.prepare(`
         SELECT customer_id FROM customer_returns WHERE id = ? LIMIT 1
       `).get(operation.aggregate_id) as { customer_id: string | null } | undefined
+      clearRow('sales', payload?.sale_id)
       clearRow('customers', localReturn?.customer_id)
       clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
       this.db.prepare(`
@@ -779,6 +781,40 @@ export class LocalSyncRepository {
     }
   }
 
+  private recoverOrphanReturnedSaleDirtyFlags(): void {
+    // Старі версії позначали продаж як returned, але не знімали його dirty_at
+    // після успішного return.created. Чистимо лише рядки без будь-якої
+    // незавершеної операції повернення або самого продажу.
+    this.db.prepare(`
+      UPDATE sales
+      SET dirty_at = NULL
+      WHERE status = 'returned'
+        AND dirty_at IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM customer_returns r
+          WHERE r.tenant_id = sales.tenant_id
+            AND r.sale_id = sales.id
+            AND r.status = 'completed'
+            AND r.deleted_at IS NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sync_outbox o
+          WHERE o.tenant_id = sales.tenant_id
+            AND o.status IN ('pending', 'sending', 'failed')
+            AND (
+              (o.aggregate_type = 'sale' AND o.aggregate_id = sales.id)
+              OR (
+                o.operation_type = 'return.created'
+                AND o.aggregate_id IN (
+                  SELECT r.id FROM customer_returns r
+                  WHERE r.tenant_id = sales.tenant_id AND r.sale_id = sales.id
+                )
+              )
+            )
+        )
+    `).run()
+  }
   private recoverMissingCustomerVehicleOutbox(): void {
     const rows = this.db.prepare(`
       SELECT v.id, v.tenant_id, v.customer_id, v.brand, v.model, v.year, v.vin,

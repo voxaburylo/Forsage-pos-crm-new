@@ -44,6 +44,42 @@ describe('LocalStaffRepository server-first credentials', () => {
     expect(outbox.count).toBe(0)
   })
 
+  it('stores tire workers without credentials and blocks password and PIN access', () => {
+    repository.saveServerUser({
+      id: 'tire-worker-no-login',
+      full_name: 'Майстер шиномонтажу',
+      role: 'tire_worker',
+      is_active: true,
+    }, '')
+
+    const stored = db.prepare(
+      'SELECT phone, password_hash, pin_hash FROM staff_users WHERE id = ?',
+    ).get('tire-worker-no-login') as { phone: string | null; password_hash: string | null; pin_hash: string | null }
+    expect(stored.phone).toBeNull()
+    expect(stored.password_hash).toBeNull()
+    expect(stored.pin_hash).toBeNull()
+    expect(() => repository.loginWithPassword('', '')).toThrow('Невірний номер телефону або пароль')
+    expect(() => repository.setPin('tire-worker-no-login', '1234')).toThrow('не має доступу')
+    expect(repository.verifyPin('tire-worker-no-login', '1234')).toEqual({
+      valid: false,
+      error: 'Шиномонтажник не має доступу до програми',
+    })
+  })
+
+  it('does not treat a cashier with a tire commission rule as a tire worker', () => {
+    const timestamp = '2026-07-29T08:00:00.000Z'
+    const cashierId = randomUUID()
+    db.prepare(`
+      INSERT INTO staff_users (id, tenant_id, full_name, role, phone, is_active, created_at, updated_at)
+      VALUES (?, ?, 'Касир', 'cashier', '+380670000099', 1, ?, ?)
+    `).run(cashierId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO commission_rules (id, tenant_id, user_id, pct_from_revenue, pct_from_profit, rule_type, created_at, updated_at)
+      VALUES (?, ?, ?, 10, 0, 'tire_service', ?, ?)
+    `).run(randomUUID(), DEFAULT_TENANT_ID, cashierId, timestamp, timestamp)
+
+    expect(repository.tireServiceReport('2026-07-29').data).toEqual([])
+  })
   it('retires an old provisional UUID and removes its unsupported outbox entry', () => {
     const provisionalId = 'legacy-local-user'
     const timestamp = '2026-07-22T09:00:00.000Z'
@@ -212,5 +248,53 @@ describe('LocalStaffRepository server-first credentials', () => {
     expect(payment.source).toBe('commission_reversal')
     expect(payment.commission_source_return_id).toBe(returnId)
     expect(payment.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  })
+
+  it('reports tire-service work and the exact unpaid amount for the business day', () => {
+    const timestamp = '2026-07-29T12:00:00.000Z'
+    const employeeId = randomUUID()
+    const shiftId = randomUUID()
+    const productId = randomUUID()
+    const saleId = randomUUID()
+    db.prepare(
+      'INSERT INTO staff_users (id, tenant_id, full_name, role, phone, is_active, base_rate, rate_period, created_at, updated_at) ' +
+      "VALUES (?, ?, 'Шиномонтажник', 'tire_worker', '+380670000009', 1, 5000, 'day', ?, ?)",
+    ).run(employeeId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(
+      'INSERT INTO shifts (id, tenant_id, cashier_id, status, opening_cash, opened_at, created_at, updated_at) ' +
+      "VALUES (?, ?, ?, 'open', 0, ?, ?, ?)",
+    ).run(shiftId, DEFAULT_TENANT_ID, employeeId, timestamp, timestamp, timestamp)
+    db.prepare(
+      'INSERT INTO products (id, tenant_id, sku, name, purchase_price, retail_price, qty_on_hand, created_at, updated_at) ' +
+      "VALUES (?, ?, 'POS-TIRE-SERVICE', 'Послуги шиномонтажу', 0, 20000, 0, ?, ?)",
+    ).run(productId, DEFAULT_TENANT_ID, timestamp, timestamp)
+    db.prepare(
+      'INSERT INTO sales (id, tenant_id, sale_number, cashier_id, manager_id, shift_id, status, total, completed_at, created_at, updated_at) ' +
+      "VALUES (?, ?, 'TIRE-REPORT', ?, ?, ?, 'completed', 40000, ?, ?, ?)",
+    ).run(saleId, DEFAULT_TENANT_ID, employeeId, employeeId, shiftId, timestamp, timestamp, timestamp)
+    db.prepare(
+      'INSERT INTO sale_items (id, tenant_id, sale_id, product_id, sku, qty, unit_price, purchase_price, total, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, 2, 20000, 0, 40000, ?, ?)',
+    ).run(randomUUID(), DEFAULT_TENANT_ID, saleId, productId, 'POS-TIRE-SERVICE', timestamp, timestamp)
+    db.prepare(
+      'INSERT INTO commission_rules (id, tenant_id, user_id, pct_from_revenue, pct_from_profit, rule_type, created_at, updated_at) ' +
+      "VALUES (?, ?, ?, 10, 0, 'tire_service', ?, ?)",
+    ).run(randomUUID(), DEFAULT_TENANT_ID, employeeId, timestamp, timestamp)
+
+    expect(repository.recordSaleCommissions(saleId, DEFAULT_TENANT_ID, employeeId)).toHaveLength(1)
+    expect(repository.tireServiceReport('2026-07-29').data).toEqual([
+      expect.objectContaining({
+        employee_id: employeeId,
+        employee_name: 'Шиномонтажник',
+        services_qty: 2,
+        service_revenue: 40000,
+        commission_earned: 4000,
+        daily_rate: 5000,
+        earned: 9000,
+        paid: 0,
+        balance: 9000,
+        due: 9000,
+      }),
+    ])
   })
 })

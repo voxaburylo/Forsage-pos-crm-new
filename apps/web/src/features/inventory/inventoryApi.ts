@@ -10,6 +10,13 @@ const DEFAULT_COMPLETE_TIMEOUT_MS = 120_000
 type RequestOptions = { silent?: boolean; timeoutMs?: number }
 
 type ApiResponse<T> = { data: T }
+type Pagination = {
+  page: number
+  per_page: number
+  total: number
+  total_pages: number
+}
+type SessionsResponse = ApiResponse<any[]> & { pagination: Pagination }
 
 function userId(): string | undefined {
   return useAuthStore.getState().session?.user?.id ?? undefined
@@ -24,10 +31,15 @@ function withUser<T extends Record<string, unknown>>(input: T = {} as T): T & { 
 }
 
 export const inventoryApi = {
-  listSessions: async (opts: RequestOptions = {}): Promise<ApiResponse<any[]>> => {
+  listSessions: async (
+    params: { page?: number; per_page?: number } = {},
+    opts: RequestOptions = {},
+  ): Promise<SessionsResponse> => {
     const local = localInventory()
-    if (local?.listSessions) return { data: await local.listSessions({}) }
-    return api.get<ApiResponse<any[]>>('/api/v1/inventory', {
+    const page = Math.max(1, Math.trunc(Number(params.page) || 1))
+    const perPage = Math.min(100, Math.max(1, Math.trunc(Number(params.per_page) || 20)))
+    if (local?.listSessions) return local.listSessions({ page, per_page: perPage })
+    return api.get<SessionsResponse>(`/api/v1/inventory?page=${page}&per_page=${perPage}`, {
       silent: opts.silent ?? true,
       timeoutMs: opts.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
     })

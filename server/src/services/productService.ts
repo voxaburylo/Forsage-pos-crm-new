@@ -17,12 +17,55 @@ const TABLE = 'products'
 
 // Кеш пошукових запитів (30 сек TTL) — для POS касира
 const searchCache = new SimpleCache<string, any>(30_000)
+const analogCache = new SimpleCache<string, any>(30_000)
 
 export async function clearProductSearchCache(): Promise<void> {
   await searchCache.clear()
+  await analogCache.clear()
 }
 function cleanProductSearchTerm(value: string): string {
   return value.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+export function normalizeCatalogCode(value: string | null | undefined): string {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleUpperCase('uk-UA')
+    .replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
+}
+
+export function catalogCodesFromName(value: string | null | undefined): string[] {
+  const pieces = String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleUpperCase('uk-UA')
+    .split(/\s+/)
+    .map((piece) => piece.replace(/^[^A-ZА-ЯІЇЄҐ0-9]+|[^A-ZА-ЯІЇЄҐ0-9]+$/g, ''))
+    .filter(Boolean)
+  const codes = new Set<string>()
+  for (const piece of pieces) {
+    const code = normalizeCatalogCode(piece)
+    if (code.length >= 4 && /[A-ZА-ЯІЇЄҐ]/.test(code) && /\d/.test(code)) codes.add(code)
+  }
+  for (let index = 0; index + 1 < pieces.length; index += 1) {
+    const left = pieces[index]
+    const right = pieces[index + 1]
+    if (/^[A-Z]{1,3}$/.test(left) && /^\d[\d./_-]*$/.test(right)) {
+      const code = normalizeCatalogCode(left + right)
+      if (code.length >= 4) codes.add(code)
+    }
+  }
+  return [...codes]
+}
+
+function catalogNameVariants(code: string): string[] {
+  const values = new Set<string>([code])
+  const match = code.match(/^([A-ZА-ЯІЇЄҐ]{1,5})(\d{2,})$/)
+  if (match) {
+    values.add(`${match[1]} ${match[2]}`)
+    values.add(`${match[1]}-${match[2]}`)
+    values.add(`${match[1]}/${match[2]}`)
+  }
+  return [...values].map(cleanProductSearchTerm).filter(Boolean)
 }
 
 function productListSearchTerms(search: string): string[] {
@@ -461,6 +504,7 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
     await searchCache.clear()
+  await analogCache.clear()
     return data
   }
 
@@ -483,6 +527,7 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
   }
   if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
   await searchCache.clear()
+  await analogCache.clear()
   return data
 }
 
@@ -575,6 +620,7 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
 
   if (crossNumbers !== undefined) await setProductCrossNumbers(id, crossNumbers, existing.tenant_id, userId)
   await searchCache.clear()
+  await analogCache.clear()
   return data
 }
 
@@ -590,6 +636,7 @@ export async function deleteProduct(id: string, tenantId: string) {
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   await searchCache.clear()
+  await analogCache.clear()
 }
 
 /**
@@ -844,6 +891,7 @@ export async function addProductCrossNumbers(
       note: `Додано номерів: ${rows.length}`,
     })
     await searchCache.clear()
+  await analogCache.clear()
   }
 
   return getProductCrossNumbers(productId, tenantId)
@@ -892,6 +940,7 @@ export async function removeProductCrossNumber(
     note: `Видалено номер ${crossNumber.number}`,
   })
   await searchCache.clear()
+  await analogCache.clear()
 }
 
 // ─── Масовий імпорт крос-номерів ─────────────────────────────────────────────
@@ -982,6 +1031,7 @@ export async function importCrossNumbersBulk(
   }
 
   await searchCache.clear()
+  await analogCache.clear()
   logger.info({ linked, products: productBySku.size, notFound: notFound.length }, '[cross-import] масовий імпорт кросів')
 
   return {
@@ -994,50 +1044,178 @@ export async function importCrossNumbersBulk(
 }
 
 export async function getProductAnalogs(productId: string, tenantId: string) {
-  await getProduct(productId, tenantId)
-  // 1. Отримуємо всі аналоги з brand.tier
-  const { data: analogs, error } = await db
-    .from('product_analogs')
-    .select(`
-      analog_product_id,
-      analog_type,
-      priority,
-      analog:analog_product_id (
-        id, sku, name, barcode, retail_price, qty_on_hand, unit,
-        brand:brands(id, name, tier)
-      )
-    `)
-    .eq('product_id', productId)
-    .eq('tenant_id', tenantId)
-    .order('priority', { ascending: true })
+  const cacheKey = `${tenantId}:${productId}`
+  const cached = await analogCache.get(cacheKey)
+  if (cached) return cached
 
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
-  if (!analogs || analogs.length === 0) return { analogs: [], grouped: {} }
+  const [sourceResult, sourceCrossesResult, explicitResult] = await Promise.all([
+    db
+      .from(TABLE)
+      .select('id, name')
+      .eq('id', productId)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .single(),
+    db
+      .from('product_cross_numbers')
+      .select('number, normalized_number')
+      .eq('tenant_id', tenantId)
+      .eq('product_id', productId)
+      .is('deleted_at', null),
+    db
+      .from('product_analogs')
+      .select('product_id, analog_product_id, analog_type, priority')
+      .eq('tenant_id', tenantId)
+      .or(`product_id.eq.${productId},analog_product_id.eq.${productId}`),
+  ])
 
-  const result = analogs.map((a: any) => ({
-    id: a.analog.id,
-    sku: a.analog.sku,
-    name: a.analog.name,
-    barcode: a.analog.barcode,
-    retail_price: a.analog.retail_price,
-    qty_on_hand: a.analog.qty_on_hand,
-    unit: a.analog.unit,
-    brand: a.analog.brand,
-    analog_type: a.analog_type,
-    priority: a.priority,
-  }))
+  if (sourceResult.error || !sourceResult.data) {
+    throw new AppError('PRODUCT_NOT_FOUND', 'Товар не знайдено', 404)
+  }
+  if (sourceCrossesResult.error) throw new AppError('DB_ERROR', sourceCrossesResult.error.message, 500)
+  if (explicitResult.error) throw new AppError('DB_ERROR', explicitResult.error.message, 500)
+  const source = sourceResult.data
+  const sourceCrosses = sourceCrossesResult.data
+  const explicitRows = explicitResult.data
 
-  const enriched = await enrichWithAvailability(result)
-
-  // Групування по brand_tier (ТЗ Analog Display Logic)
-  const grouped: Record<string, typeof enriched> = {
-    original: enriched.filter((r: any) => r.analog_type === 'oem' || r.brand?.tier === 'original'),
-    premium: enriched.filter((r: any) => r.brand?.tier === 'premium'),
-    standard: enriched.filter((r: any) => r.brand?.tier === 'standard' || !r.brand),
-    budget: enriched.filter((r: any) => r.brand?.tier === 'budget'),
+  const lookupCodes = new Set<string>(catalogCodesFromName(source.name))
+  for (const row of sourceCrosses ?? []) {
+    const normalized = normalizeCatalogCode(row.normalized_number || row.number)
+    if (normalized.length >= 4) lookupCodes.add(normalized)
+    for (const code of catalogCodesFromName(row.number)) lookupCodes.add(code)
   }
 
-  return { analogs: enriched, grouped }
+  const explicitMeta = new Map<string, { analog_type: string; priority: number }>()
+  for (const row of explicitRows ?? []) {
+    const otherId = row.product_id === productId ? row.analog_product_id : row.product_id
+    if (!otherId || otherId === productId) continue
+    const priority = Number(row.priority ?? 100)
+    const current = explicitMeta.get(otherId)
+    if (!current || priority < current.priority) {
+      explicitMeta.set(otherId, { analog_type: row.analog_type ?? 'substitute', priority })
+    }
+  }
+
+  const candidateIds = new Set<string>(explicitMeta.keys())
+  const matchedByCross = new Set<string>()
+  const codes = [...lookupCodes].filter((code) => code.length >= 4)
+
+  const crossQueries = Array.from({ length: Math.ceil(codes.length / 100) }, (_, chunkIndex) => {
+    const chunk = codes.slice(chunkIndex * 100, chunkIndex * 100 + 100)
+    return db
+      .from('product_cross_numbers')
+      .select('product_id')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .in('normalized_number', chunk)
+      .neq('product_id', productId)
+      .limit(500)
+  })
+  const productQueries = Array.from({ length: Math.ceil(codes.length / 8) }, (_, chunkIndex) => {
+    const chunk = codes.slice(chunkIndex * 8, chunkIndex * 8 + 8)
+    const conditions = chunk.flatMap((code) => [
+      `sku.eq.${code}`,
+      `barcode.eq.${code}`,
+      `normalized_oem.eq.${code}`,
+      `normalized_supplier_article.eq.${code}`,
+      ...catalogNameVariants(code).map((term) => `name.ilike.%${term}%`),
+    ])
+    return db
+      .from(TABLE)
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .eq('is_active', true)
+      .neq('id', productId)
+      .or(conditions.join(','))
+      .limit(500)
+  })
+
+  const [crossResults, productResults] = await Promise.all([
+    Promise.all(crossQueries),
+    Promise.all(productQueries),
+  ])
+  for (const result of crossResults) {
+    if (result.error) throw new AppError('DB_ERROR', result.error.message, 500)
+    for (const row of result.data ?? []) {
+      candidateIds.add(row.product_id)
+      matchedByCross.add(row.product_id)
+    }
+  }
+  for (const result of productResults) {
+    if (result.error) throw new AppError('DB_ERROR', result.error.message, 500)
+    for (const row of result.data ?? []) candidateIds.add(row.id)
+  }
+
+  if (candidateIds.size === 0) {
+    const empty = { analogs: [], grouped: { original: [], premium: [], standard: [], budget: [] } }
+    await analogCache.set(cacheKey, empty)
+    return empty
+  }
+
+  const candidateProducts: any[] = []
+  const ids = [...candidateIds]
+  for (let index = 0; index < ids.length; index += 100) {
+    const { data, error } = await db
+      .from(TABLE)
+      .select('id, sku, name, barcode, retail_price, qty_on_hand, unit, normalized_oem, normalized_supplier_article, brand:brands(id, name, tier)')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .eq('is_active', true)
+      .in('id', ids.slice(index, index + 100))
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    candidateProducts.push(...(data ?? []))
+  }
+
+  const result = candidateProducts
+    .filter((candidate) => {
+      if (explicitMeta.has(candidate.id) || matchedByCross.has(candidate.id)) return true
+      const candidateCodes = new Set<string>([
+        ...catalogCodesFromName(candidate.name),
+        normalizeCatalogCode(candidate.sku),
+        normalizeCatalogCode(candidate.barcode),
+        normalizeCatalogCode(candidate.normalized_oem),
+        normalizeCatalogCode(candidate.normalized_supplier_article),
+      ].filter((code) => code.length >= 4))
+      return codes.some((code) => candidateCodes.has(code))
+    })
+    .map((candidate) => {
+      const explicit = explicitMeta.get(candidate.id)
+      return {
+        id: candidate.id,
+        sku: candidate.sku,
+        name: candidate.name,
+        barcode: candidate.barcode,
+        retail_price: candidate.retail_price,
+        qty_on_hand: candidate.qty_on_hand,
+        unit: candidate.unit,
+        brand: candidate.brand,
+        analog_type: explicit?.analog_type ?? 'cross',
+        priority: explicit?.priority ?? 500,
+      }
+    })
+
+  const enriched = (await enrichWithAvailability(result))
+    .sort((left: any, right: any) =>
+      Number(Number(right.qty_available ?? right.qty_on_hand) > 0)
+      - Number(Number(left.qty_available ?? left.qty_on_hand) > 0)
+      || Number(left.priority ?? 500) - Number(right.priority ?? 500)
+      || String(left.name ?? '').localeCompare(String(right.name ?? ''), 'uk', { sensitivity: 'base' }),
+    )
+
+  const grouped: Record<string, typeof enriched> = {
+    original: enriched.filter((row: any) => row.analog_type === 'oem' || row.brand?.tier === 'original'),
+    premium: enriched.filter((row: any) => row.brand?.tier === 'premium'),
+    standard: enriched.filter((row: any) =>
+      row.brand?.tier === 'standard'
+      || (!row.brand?.tier && row.analog_type !== 'oem'),
+    ),
+    budget: enriched.filter((row: any) => row.brand?.tier === 'budget'),
+  }
+
+  const response = { analogs: enriched, grouped }
+  await analogCache.set(cacheKey, response)
+  return response
 }
 
 /**
@@ -1336,6 +1514,7 @@ export async function importFromCatalog(
   }
 
   await searchCache.clear()
+  await analogCache.clear()
 
   return newProd
 }

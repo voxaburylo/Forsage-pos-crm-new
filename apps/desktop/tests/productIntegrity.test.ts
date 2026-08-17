@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
-import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
+import { catalogCodesFromName, LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalSyncRepository } from '../src/repositories/syncRepository'
 
 describe('local product integrity', () => {
@@ -44,6 +44,45 @@ describe('local product integrity', () => {
     })).toThrow(/Ціна продажу/)
   })
 
+  it('finds local analogs by exact catalog codes from crosses and names', () => {
+    expect(catalogCodesFromName('Фільтр MAN W811/80')).toContain('W81180')
+    expect(catalogCodesFromName('Фільтр MAN W811/80')).not.toContain('MANW81180')
+    expect(catalogCodesFromName('Фільтр MAHLE OC 196')).toContain('OC196')
+
+    const sourceId = randomUUID()
+    catalog.upsertProduct({
+      id: sourceId,
+      sku: '77267',
+      name: 'Фільтр масляний MAN W811/80',
+      cross_numbers: ['WIX: WL7131', 'MAHLE OC 196'],
+      qty_on_hand: 5,
+      retail_price: 34000,
+    })
+    catalog.upsertProduct({
+      id: randomUUID(),
+      sku: '77829',
+      name: 'Фільтр масляний WIX WL7131',
+      qty_on_hand: 2,
+      retail_price: 22500,
+    })
+    catalog.upsertProduct({
+      id: randomUUID(),
+      sku: '77290',
+      name: 'Фільтр масляний MAHLE/Knecht OC196',
+      qty_on_hand: 0,
+      retail_price: 24000,
+    })
+    catalog.upsertProduct({
+      id: randomUUID(),
+      sku: 'UNRELATED',
+      name: 'Фільтр масляний іншої моделі',
+      qty_on_hand: 10,
+      retail_price: 10000,
+    })
+
+    const analogs = catalog.listAnalogs(sourceId)
+    expect(analogs.map((product) => product.sku)).toEqual(['77829', '77290'])
+  })
   it('supersedes obsolete ordinary product updates but keeps the newest value', () => {
     const id = randomUUID()
     const now = new Date().toISOString()

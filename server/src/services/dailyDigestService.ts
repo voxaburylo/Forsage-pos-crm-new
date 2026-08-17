@@ -5,6 +5,7 @@
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { sendTelegramMessage } from './telegramBot.js'
+import { kyivDateRange } from '../lib/businessDate.js'
 
 export interface DailyControl {
   date: string
@@ -26,23 +27,21 @@ export interface DailyControl {
 
 // Метрики за день (дата у форматі YYYY-MM-DD, локальний день Києва)
 export async function buildDailyControl(tenantId: string, date: string): Promise<DailyControl> {
-  // Київ = UTC+2/+3; беремо з запасом [00:00 місцевого ~ -03:00 UTC] через явні межі
-  const from = date + 'T00:00:00+03:00'
-  const to = date + 'T23:59:59.999+03:00'
+  const { from, toExclusive } = kyivDateRange(date, date)
 
   const [salesQ, returnsQ, reconQ, negQ, nopriceQ] = await Promise.all([
     db.from('sales')
       .select('total, discount, payment_method, is_debt, cash_amount, card_amount, transfer_amount')
-      .eq('tenant_id', tenantId).eq('status', 'completed')
-      .gte('completed_at', from).lte('completed_at', to),
+      .eq('tenant_id', tenantId).in('status', ['completed', 'returned'])
+      .gte('completed_at', from).lt('completed_at', toExclusive),
     db.from('returns')
       .select('refund_amount, reason, reason_text')
       .eq('tenant_id', tenantId)
-      .gte('created_at', from).lte('created_at', to),
+      .gte('created_at', from).lt('created_at', toExclusive),
     db.from('cash_reconciliations')
       .select('difference_amount, comment')
       .eq('tenant_id', tenantId)
-      .gte('created_at', from).lte('created_at', to),
+      .gte('created_at', from).lt('created_at', toExclusive),
     db.from('products')
       .select('id', { count: 'exact', head: true })
       .eq('tenant_id', tenantId).is('deleted_at', null).lt('qty_on_hand', 0),

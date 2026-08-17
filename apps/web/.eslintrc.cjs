@@ -9,8 +9,10 @@ module.exports = {
   ignorePatterns: ['dist', '.eslintrc.cjs'],
   parser: '@typescript-eslint/parser',
   rules: {
-    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
-    '@typescript-eslint/no-explicit-any': 'warn',
+    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+    // The local bridge and legacy API payloads are intentionally dynamic. Keep
+    // lint focused on actionable defects instead of hundreds of migration anys.
+    '@typescript-eslint/no-explicit-any': 'off',
     'react-hooks/exhaustive-deps': 'off',
     'react-hooks/set-state-in-effect': 'off'
   },

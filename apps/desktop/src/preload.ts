@@ -19,6 +19,11 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     logout: () => ipcRenderer.invoke('desktop:auth:logout'),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
+  lan: {
+    getStatus: () => ipcRenderer.invoke('desktop:lan:get-status'),
+    update: (input: unknown) => ipcRenderer.invoke('desktop:lan:update', input),
+    test: () => ipcRenderer.invoke('desktop:lan:test'),
+  },
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
   bootstrap: {
     importSnapshot: (snapshot: unknown) =>
@@ -75,6 +80,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
     listCrossNumbers: (productId: string) =>
       ipcRenderer.invoke('desktop:catalog:list-cross-numbers', productId),
+    listAnalogs: (productId: string, limit?: number) =>
+      ipcRenderer.invoke('desktop:catalog:list-analogs', productId, limit),
   },
   supplierCatalog: {
     list: (options?: unknown) =>
@@ -94,7 +101,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   },
   staff: {
     listUsers: () => ipcRenderer.invoke('desktop:staff:list-users'),
-    saveServerUser: (input: unknown, password: string) => ipcRenderer.invoke('desktop:staff:save-server-user', input, password),
+    saveServerUser: (input: unknown, password?: string) => ipcRenderer.invoke('desktop:staff:save-server-user', input, password),
     updateUser: (id: string, input: unknown) => ipcRenderer.invoke('desktop:staff:update-user', id, input),
     deleteUser: (id: string) => ipcRenderer.invoke('desktop:staff:delete-user', id),
     saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),
@@ -106,6 +113,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listSalary: (input?: unknown) => ipcRenderer.invoke('desktop:staff:list-salary', input),
     salarySummary: (period?: string) => ipcRenderer.invoke('desktop:staff:salary-summary', period),
     dailySummary: (workDate?: string) => ipcRenderer.invoke('desktop:staff:daily-summary', workDate),
+    tireServiceReport: (workDate?: string) => ipcRenderer.invoke('desktop:staff:tire-service-report', workDate),
+    tireCashHandover: (input: unknown) => ipcRenderer.invoke('desktop:staff:tire-cash-handover', input),
     createSalary: (input: unknown) => ipcRenderer.invoke('desktop:staff:create-salary', input),
     dailyPayout: (input: unknown) => ipcRenderer.invoke('desktop:staff:daily-payout', input),
     deleteSalary: (id: string) => ipcRenderer.invoke('desktop:staff:delete-salary', id),
@@ -160,6 +169,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listInvoices: (input?: unknown) => ipcRenderer.invoke('desktop:supply:list-invoices', input),
     getInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:get-invoice', id, tenantId),
     createInvoice: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice', input),
+    createInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice-from-ai', input),
     updateInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:update-invoice', id, input),
     payInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:pay-invoice', id, input),
     postInvoice: (id: string, input?: unknown) => ipcRenderer.invoke('desktop:supply:post-invoice', id, input),
@@ -174,6 +184,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listSales: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-sales', input),
     dashboardSummary: (input: unknown) => ipcRenderer.invoke('desktop:pos:dashboard-summary', input),
+    soldItemsReport: (input: unknown) => ipcRenderer.invoke('desktop:pos:sold-items-report', input),
     listReturns: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-returns', input),
     getReturn: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-return', id, tenantId),
     getSaleForReturn: (saleId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-sale-for-return', saleId, tenantId),
@@ -201,6 +212,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getCustomerDeposit: (customerId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer-deposit', customerId, tenantId),
     payDebt: (input: unknown) => ipcRenderer.invoke('desktop:pos:pay-debt', input),
     addCustomerDeposit: (input: unknown) => ipcRenderer.invoke('desktop:pos:add-customer-deposit', input),
+    payOutCustomerDeposit: (input: unknown) => ipcRenderer.invoke('desktop:pos:payout-customer-deposit', input),
     createCashOperation: (input: unknown) => ipcRenderer.invoke('desktop:pos:create-cash-operation', input),
     listCashOperations: (shiftId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:list-cash-operations', shiftId, tenantId),
     cashOperationSummary: (shiftId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:cash-operation-summary', shiftId, tenantId),
@@ -263,4 +275,3 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:fiscal:cancel-prepared-return', operationId, input),
   },
 })
-

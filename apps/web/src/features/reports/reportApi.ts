@@ -6,24 +6,33 @@ import { warehouseApi } from '@/features/inventory/warehouseApi'
 import { useAuthStore } from '@/stores/authStore'
 import type { Sale } from '@/types/sale'
 import type { SalesSummary, SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
+import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 
 function localDate(value: string | Date): string {
-  return new Date(value).toLocaleDateString('sv-SE')
+  return businessDateKey(value)
 }
 
 function today(): string {
   return localDate(new Date())
 }
 
-async function localSales(): Promise<Sale[]> {
+async function localSales(from?: string, to?: string): Promise<Sale[]> {
   const local = desktopBridge()?.pos.listSales
   if (!local) return []
+  const startDay = from ? localDate(from) : (to ? localDate(to) : null)
+  const endDay = to ? localDate(to) : startDay
+  const range = startDay && endDay ? businessDateRangeUtc(startDay, endDay) : null
   const result: Sale[] = []
   for (let page = 1; page <= 100; page += 1) {
-    const batch = await local({ page, per_page: 200 })
+    const batch = await local({
+      page,
+      per_page: 200,
+      date_from: range?.from,
+      date_to: range?.to,
+    })
     const rows = (batch?.data ?? []) as Sale[]
     result.push(...rows)
-    if (rows.length < 200) break
+    if (page >= Number(batch?.pagination?.total_pages ?? page) || rows.length < 200) break
   }
   return result
 }
@@ -41,7 +50,7 @@ export function salesInRange(sales: Sale[], from?: string, to?: string): Sale[] 
   const fromDay = from ? localDate(from) : null
   const toDay = to ? localDate(to) : null
   return sales.filter((sale) => {
-    if (sale.status !== 'completed') return false
+    if (!['completed', 'returned'].includes(sale.status)) return false
     const day = localDate(sale.completed_at)
     return (!fromDay || day >= fromDay) && (!toDay || day <= toDay)
   })
@@ -53,17 +62,15 @@ type LocalOrderPayment = {
   created_at: string
 }
 
-function localDayBoundary(value: string, endOfDay: boolean): string {
-  const day = localDate(value)
-  return new Date(`${day}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`).toISOString()
-}
-
 async function localOrderPayments(from?: string, to?: string): Promise<LocalOrderPayment[]> {
   const list = desktopBridge()?.orders?.listPaymentsByPeriod
   if (!list) return []
+  const startDay = from ? localDate(from) : (to ? localDate(to) : null)
+  const endDay = to ? localDate(to) : startDay
+  const range = startDay && endDay ? businessDateRangeUtc(startDay, endDay) : null
   return await list({
-    date_from: from ? localDayBoundary(from, false) : undefined,
-    date_to: to ? localDayBoundary(to, true) : undefined,
+    date_from: range?.from,
+    date_to: range?.to,
   }) as LocalOrderPayment[]
 }
 
@@ -102,18 +109,24 @@ function summarize(sales: Sale[], orderPayments: LocalOrderPayment[] = []): Sale
 export const reportApi = {
   salesToday: async () => {
     if (desktopBridge()) {
-      const [allSales, payments] = await Promise.all([localSales(), localOrderPayments(today(), today())])
+      const [allSales, payments] = await Promise.all([localSales(today(), today()), localOrderPayments(today(), today())])
       const report = summarize(salesInRange(allSales, today(), today()), payments)
       const { sales: _sales, ...summary } = report
       return { data: summary as SalesSummary }
+      void _sales
     }
     return api.get<{ data: SalesSummary }>('/api/v1/reports/sales/today')
   },
 
   salesPeriod: async (from?: string, to?: string) => {
-if (desktopBridge()) {
-      const [allSales, payments] = await Promise.all([localSales(), localOrderPayments(from, to)])
-      return { data: summarize(salesInRange(allSales, from, to), payments) }
+    if (desktopBridge()) {
+      const effectiveFrom = from ?? today()
+      const effectiveTo = to ?? effectiveFrom
+      const [allSales, payments] = await Promise.all([
+        localSales(effectiveFrom, effectiveTo),
+        localOrderPayments(effectiveFrom, effectiveTo),
+      ])
+      return { data: summarize(salesInRange(allSales, effectiveFrom, effectiveTo), payments) }
     }
     const params = new URLSearchParams()
     if (from) params.set('from', from)
@@ -142,12 +155,12 @@ if (desktopBridge()) {
 
   weekly: async () => {
     if (desktopBridge()) {
-      const sales = await localSales()
       const days = Array.from({ length: 7 }, (_, index) => {
         const date = new Date()
         date.setDate(date.getDate() - (6 - index))
         return localDate(date)
       })
+      const sales = await localSales(days[0], days[days.length - 1])
       return { data: days.map((date) => {
         const rows = salesInRange(sales, date, date)
         return { date, revenue: rows.reduce((sum, sale) => sum + sale.total, 0), sales: rows.length }
@@ -182,32 +195,42 @@ if (desktopBridge()) {
     return api.get<{ data: { count: number; total_cost: number; writeoffs: Array<{ id: string; reason: string; created_at: string; items: Array<{ cost_kopecks: number }> }> } }>('/api/v1/reports/writeoffs/summary')
   },
 
-  soldItems: async (date: string) => {
+  soldItems: async (from: string, to: string = from) => {
     if (desktopBridge()) {
-      const rows = salesInRange(await localSales(), date, date)
+      const range = businessDateRangeUtc(localDate(from), localDate(to))
+      const direct = desktopBridge()?.pos.soldItemsReport
+      if (direct) {
+        return { data: await direct({ date_from: range.from, date_to: range.to }) }
+      }
+      const rows = salesInRange(await localSales(from, to), from, to)
       const grouped = new Map<string, any>()
       for (const sale of rows) {
         for (const item of sale.sale_items ?? []) {
           if (!item.product_id || !item.product) continue
           const current = grouped.get(item.product_id) ?? {
             product_id: item.product_id, sku: item.product.sku, name: item.product.name,
-            unit: item.product.unit, qty_sold: 0, revenue: 0,
-            qty_on_hand: Number(item.product.qty_on_hand ?? 0), storage_bin: null,
+            barcode: item.product.barcode ?? null,
+            unit: item.product.unit, qty_sold: 0, qty_returned: 0, qty_net: 0,
+            revenue: 0, refund_total: 0, net_revenue: 0,
+            qty_on_hand: Number(item.product.qty_on_hand ?? 0), storage_bin: item.product.storage_bin ?? null,
           }
           current.qty_sold += Number(item.qty)
+          current.qty_net += Number(item.qty)
           current.revenue += Number(item.total)
+          current.net_revenue += Number(item.total)
           current.qty_on_hand = Number(item.product.qty_on_hand ?? current.qty_on_hand)
           grouped.set(item.product_id, current)
         }
       }
-      return { data: [...grouped.values()].sort((a, b) => b.qty_sold - a.qty_sold) }
+      return { data: [...grouped.values()].sort((a, b) => b.qty_net - a.qty_net) }
     }
-    return api.get<{ data: any[] }>(`/api/v1/reports/sold-items?date=${date}`, { silent: true })
+    const params = new URLSearchParams({ from, to })
+    return api.get<{ data: any[] }>(`/api/v1/reports/sold-items?${params.toString()}`, { silent: true })
   },
 
   dailyControl: async () => {
     if (desktopBridge()) {
-      const [allSales, payments] = await Promise.all([localSales(), localOrderPayments(today(), today())])
+      const [allSales, payments] = await Promise.all([localSales(today(), today()), localOrderPayments(today(), today())])
       const sales = salesInRange(allSales, today(), today())
       const summary = summarize(sales, payments)
       const returnsResult = await desktopBridge()!.pos.listReturns?.({ page: 1, per_page: 200 })
@@ -236,7 +259,7 @@ if (desktopBridge()) {
 
   profit: async (from: string, to: string) => {
     if (desktopBridge()) {
-      const sales = salesInRange(await localSales(), from, to)
+      const sales = salesInRange(await localSales(from, to), from, to)
       const revenue = sales.reduce((sum, sale) => sum + sale.total, 0)
       const cogs = sales.reduce((sum, sale) => sum + (sale.sale_items ?? []).reduce(
         (itemSum, item: any) => itemSum + Number(item.purchase_price ?? 0) * Number(item.qty ?? 0), 0,

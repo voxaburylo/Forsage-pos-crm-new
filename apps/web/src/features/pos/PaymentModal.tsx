@@ -49,7 +49,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [maxBonus, setMaxBonus]           = useState(0)
   const [bonusInput, setBonusInput]       = useState('')
   const [loyaltyEnabled, setLoyaltyEnabled] = useState(false)
-  const [fiscal, setFiscal] = useState(() => localStorage.getItem(FISCAL_KEY) !== 'false')
+  const [fiscal, setFiscal] = useState(() => localStorage.getItem(FISCAL_KEY) === 'true')
+  const [cashalotEnabled, setCashalotEnabled] = useState<boolean | null>(null)
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
   const submittingRef = useRef(false)
@@ -67,6 +68,24 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setPrintAfterPayment(false)
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    const desktop = desktopBridge()
+    if (!desktop?.fiscal) {
+      setCashalotEnabled(null)
+      return
+    }
+    let cancelled = false
+    setCashalotEnabled(null)
+    desktop.fiscal.getConfig()
+      .then((config) => {
+        if (!cancelled) setCashalotEnabled(config.enabled === true && Boolean(config.fiscalNumberRRO?.trim()))
+      })
+      .catch(() => {
+        if (!cancelled) setCashalotEnabled(false)
+      })
+    return () => { cancelled = true }
+  }, [open])
   // Правило фіскалізації: термінал (картка або карткова частина змішаної
   // оплати) — фіскалізується ЗАВЖДИ, за законом. Готівка/переказ — за
   // перемикачем «Фіскальний чек» (запам'ятовується). Сам перемикач при
@@ -214,11 +233,11 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const splitValid       = method !== 'mixed' || (splitCashKopecks > 0 && splitCashKopecks < toPay)
 
   // Термінальна частина є → фіскалізація примусова (100% ПРРО)
-  const fiscalForced = method === 'card' || (method === 'mixed' && splitCardKopecks > 0)
+  const fiscalForced = cashalotEnabled === true && (method === 'card' || (method === 'mixed' && splitCardKopecks > 0))
   // Desktop фіскалізує через Кашалот локально (ПРРО має власний офлайн-режим,
   // чеки дореєструються у ФСКО самі) — тому офлайн НЕ вимикає фіскалізацію.
   // Веб-каса без інтернету фіскалізувати не може — там фіскал недоступний.
-  const fiscalAvailable = Boolean(desktopBridge()) || !offline
+  const fiscalAvailable = desktopBridge() ? cashalotEnabled === true : !offline
   const effectiveFiscal = fiscalAvailable && (fiscalForced || fiscal)
 
   function handleFiscalToggle() {
@@ -430,7 +449,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           )}
 
           {/* Fiscal toggle (for cash/card/transfer/mixed) */}
-          {method !== 'debt' && (
+          {method !== 'debt' && (!desktopBridge() || cashalotEnabled === true) && (
             <div className="py-1 px-1">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -457,6 +476,11 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             </div>
           )}
 
+          {method !== 'debt' && desktopBridge() && cashalotEnabled === false && (
+            <p className="text-gray-500 text-[11px]">
+              Кашалот вимкнений у налаштуваннях. Оплата проводиться без ПРРО.
+            </p>
+          )}
           {/* Кнопки */}
           <button
             type="button"

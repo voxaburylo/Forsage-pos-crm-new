@@ -99,5 +99,22 @@ describe('local dashboard summary', () => {
     })
     expect(summary.low_stock).toBe(1)
     expect(summary.debt).toEqual({ count: 1, total: 375 })
+    const soldItems = pos.soldItemsReport({
+      date_from: new Date(Date.now() - 60_000).toISOString(),
+      date_to: new Date(Date.now() + 60_000).toISOString(),
+    })
+    expect(soldItems).toEqual([
+      expect.objectContaining({
+        product_id: product.id,
+        sku: 'DASH-1',
+        name: 'Dashboard item',
+        qty_sold: 2,
+        qty_returned: 0,
+        qty_net: 2,
+        revenue: 120,
+        net_revenue: 120,
+        qty_on_hand: 8,
+      }),
+    ])
   })
 })

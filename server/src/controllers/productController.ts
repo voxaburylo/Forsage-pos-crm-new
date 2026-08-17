@@ -48,7 +48,7 @@ export async function importBulk(req: Request, res: Response, next: NextFunction
   try {
     const { z } = await import('zod')
     const importRowSchema = z.object({
-      sku: z.string().min(1).max(50),
+      sku: z.string().min(1).max(200),
       name: z.string().min(1).max(500),
       barcode: z.string().max(100).optional().nullable(),
       retail_price: z.number().int().min(0).default(0),

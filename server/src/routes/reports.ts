@@ -75,15 +75,20 @@ router.get('/shift/:id', requireRole('owner', 'admin', 'manager', 'cashier'), as
   } catch (err) { next(err) }
 })
 
-// GET /api/v1/reports/sold-items?date=YYYY-MM-DD — продані товари за день
-// (список для дозамовлення у постачальників; за замовч. сьогодні)
-router.get('/sold-items', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+// GET /api/v1/reports/sold-items?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Продані товари за вибраний період одним списком для дозамовлення.
+// Параметр date залишено для сумісності зі старими клієнтами.
+router.get('/sold-items', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
-    const raw = String(req.query.date ?? '')
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
-      ? raw
-      : new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' })
-    res.json({ data: await reportService.getSoldItems(date, req.user!.tenant_id), date })
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' })
+    const legacyDate = String(req.query.date ?? '')
+    const from = String(req.query.from ?? (legacyDate || today))
+    const to = String(req.query.to ?? (legacyDate || from))
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/
+    if (!datePattern.test(from) || !datePattern.test(to) || from > to) {
+      throw new AppError('VALIDATION_ERROR', 'Невірно вибраний період', 400)
+    }
+    res.json({ data: await reportService.getSoldItems(from, to, req.user!.tenant_id), from, to })
   } catch (err) { next(err) }
 })
 

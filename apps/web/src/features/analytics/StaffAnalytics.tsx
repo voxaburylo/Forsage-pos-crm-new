@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts'
+import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { ChartBar as Bar, ChartLegend as Legend, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Card, Badge } from '@/components/ui'

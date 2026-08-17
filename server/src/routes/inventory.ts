@@ -10,7 +10,7 @@ const router = Router()
 router.use(requireAuth)
 
 const COUNTER_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer'] as const
-const MANAGER_ROLES = ['owner', 'admin', 'storekeeper'] as const
+const MANAGER_ROLES = ['owner', 'admin', 'cashier', 'storekeeper'] as const
 
 async function requireInventorySession(sessionId: string, tenantId: string, activeOnly = false) {
   let query = db.from('inventory_sessions').select('*')
@@ -101,17 +101,34 @@ async function loadSessionData(sessionId: string, tenantId: string, userId: stri
 // Усі учасники бачать список, але створення/керування доступне лише відповідальним.
 router.get('/', requireRole(...COUNTER_ROLES), async (req, res, next) => {
   try {
+    const parsed = z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      per_page: z.coerce.number().int().min(1).max(100).default(20),
+    }).safeParse(req.query)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні параметри сторінки', 422)
+    const { page, per_page: perPage } = parsed.data
+    const from = (page - 1) * perPage
+    const to = from + perPage - 1
     // Вторинні ключі потрібні через старі записи, де created_at — гола дата
     // (опівніч): за одним лише created_at ревізії одного дня йшли в довільному
     // порядку і свіжа губилась усередині списку.
-    const { data, error } = await db.from('inventory_sessions').select('*')
+    const { data, error, count } = await db.from('inventory_sessions').select('*', { count: 'exact' })
       .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
       .order('completed_at', { ascending: false, nullsFirst: true })
       .order('started_at', { ascending: false, nullsFirst: true })
-      .limit(50)
+      .range(from, to)
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-    res.json({ data: data ?? [] })
+    const total = count ?? 0
+    res.json({
+      data: data ?? [],
+      pagination: {
+        page,
+        per_page: perPage,
+        total,
+        total_pages: Math.max(1, Math.ceil(total / perPage)),
+      },
+    })
   } catch (error) { next(error) }
 })
 
@@ -359,12 +376,14 @@ router.post('/:id/scan', requireRole(...COUNTER_ROLES), async (req, res, next) =
     if (!product?.id) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
 
     await refreshInventoryExpectedStock(sessionId, req.user!.tenant_id, product.id, product.qty_on_hand)
+    const requestedQty = Number(req.body?.qty ?? 1)
+    const scanQty = Number.isFinite(requestedQty) ? Math.max(1, Math.floor(requestedQty)) : 1
     const counted = await db.rpc('add_inventory_count', {
       p_session_id: sessionId,
       p_tenant_id: req.user!.tenant_id,
       p_product_id: product.id,
       p_user_id: req.user!.id,
-      p_qty: 1,
+      p_qty: scanQty,
       p_price_checked: true,
       p_observed_retail_price: null,
     })
@@ -474,7 +493,7 @@ router.delete('/:id/items/:itemId', requireRole(...COUNTER_ROLES), async (req, r
 })
 // Зміна ціни прямо з ревізії: оновлює роздрібну ціну товару (з історією цін)
 // і закриває розбіжність у сесії. Ролі — ті самі, що можуть редагувати товар.
-router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
     const parsed = z.object({
       product_id: z.string().uuid(),
@@ -516,7 +535,7 @@ router.post('/:id/apply-price', requireRole('owner', 'admin', 'manager', 'storek
   } catch (error) { next(error) }
 })
 
-router.post('/:id/complete', requireRole('owner', 'admin'), async (req, res, next) => {
+router.post('/:id/complete', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
   try {
     const sessionId = String(req.params.id)
     const session = await requireInventorySession(sessionId, req.user!.tenant_id, true)

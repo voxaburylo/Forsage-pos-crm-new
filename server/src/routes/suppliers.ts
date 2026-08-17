@@ -1,4 +1,4 @@
-﻿import { Router } from 'express'
+import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -11,8 +11,13 @@ import * as supplierService from '../services/supplierService.js'
 
 const router = Router()
 router.use(requireAuth)
-// Постачальники, накладні та закупівельні ціни — не для касира/СТО
-router.use(requireRole('owner', 'admin', 'manager', 'storekeeper'))
+const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper'] as const
+const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'] as const
+// Касиру відкрито лише шлях накладних; керування постачальниками та боргами залишається для складу.
+router.use((req, res, next) => {
+  const isInvoiceRoute = req.path === '/invoices' || req.path.startsWith('/invoices/')
+  return requireRole(...(isInvoiceRoute ? RECEIVING_ROLES : SUPPLIER_ROLES))(req, res, next)
+})
 
 // ===================== Приходні накладні =====================
 
@@ -27,7 +32,7 @@ router.get('/invoices', async (req, res, next) => {
 })
 
 // POST /api/v1/suppliers/invoices/draft — фонове збереження спільної чернетки з веб-накладної
-router.post('/invoices/draft', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/invoices/draft', requireRole(...RECEIVING_ROLES), async (req, res, next) => {
   try {
     const parsed = saveSupplyInvoiceDraftSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна чернетка накладної', 422, parsed.error.flatten())
@@ -37,7 +42,7 @@ router.post('/invoices/draft', requireRole('owner', 'admin', 'manager', 'storeke
 })
 
 // GET /api/v1/suppliers/invoices/draft/latest — остання серверна чернетка веб-приймання
-router.get('/invoices/draft/latest', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.get('/invoices/draft/latest', requireRole(...RECEIVING_ROLES), async (req, res, next) => {
   try {
     const invoice = await supplierService.getLatestSupplyInvoiceDraft(req.user!.tenant_id)
     res.json({ data: invoice })
@@ -52,7 +57,7 @@ router.get('/invoices/:id', async (req, res, next) => {
 })
 
 // POST /api/v1/suppliers/invoices
-router.post('/invoices', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/invoices', requireRole(...RECEIVING_ROLES), async (req, res, next) => {
   try {
     const parsed = createSupplyInvoiceSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані накладної', 422, parsed.error.flatten())
@@ -62,7 +67,7 @@ router.post('/invoices', requireRole('owner', 'admin', 'manager', 'storekeeper')
 })
 
 // PUT /api/v1/suppliers/invoices/:id
-router.put('/invoices/:id', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.put('/invoices/:id', requireRole(...RECEIVING_ROLES), async (req, res, next) => {
   try {
     const parsed = updateSupplyInvoiceSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані накладної', 422, parsed.error.flatten())
@@ -72,7 +77,7 @@ router.put('/invoices/:id', requireRole('owner', 'admin', 'manager', 'storekeepe
 })
 
 // POST /api/v1/suppliers/invoices/:id/post — проведення
-router.post('/invoices/:id/post', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/invoices/:id/post', requireRole(...RECEIVING_ROLES), async (req, res, next) => {
   try {
     const invoice = await supplierService.postSupplyInvoice(String(req.params.id), req.user!.id, req.user!.tenant_id)
     res.json({ data: invoice })
@@ -80,7 +85,7 @@ router.post('/invoices/:id/post', requireRole('owner', 'admin', 'manager', 'stor
 })
 
 // POST /api/v1/suppliers/invoices/:id/pay — доплата постачальнику
-router.post('/invoices/:id/pay', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/invoices/:id/pay', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
     const parsed = invoicePaymentSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірна сума оплати', 422, parsed.error.flatten())
@@ -102,7 +107,7 @@ router.post('/invoices/:id/cancel', requireRole('owner', 'admin'), async (req, r
 })
 
 // DELETE /api/v1/suppliers/invoices/:id
-router.delete('/invoices/:id', requireRole('owner', 'admin'), async (req, res, next) => {
+router.delete('/invoices/:id', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
   try {
     await supplierService.deleteSupplyInvoice(String(req.params.id), req.user!.tenant_id)
     res.status(204).send()

@@ -156,7 +156,7 @@ const createOrderSchema = z.object({
   parent_draft_id:       z.string().uuid().optional().nullable(),
   exchange_source_order_id: z.string().uuid().optional().nullable(),
   items: z.array(z.object({
-    sku:          z.string().max(100).optional().nullable(),
+    sku:          z.string().max(200).optional().nullable(),
     name:         z.string().min(1).max(500),
     product_id:   z.string().uuid().optional().nullable(),
     supplier_id:  z.string().uuid().optional().nullable(),
@@ -573,7 +573,7 @@ router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req
         selected_variant: z.object({
           brand: z.string().max(200).optional().nullable(),
           price: z.number().int().min(0),
-          sku: z.string().max(100).optional().nullable(),
+          sku: z.string().max(200).optional().nullable(),
           product_id: z.string().uuid().optional().nullable(),
         })
       })).min(1),
@@ -1349,7 +1349,7 @@ router.post('/:id/cancel', requireRole('owner', 'admin', 'manager'), async (req,
       await auditOrder(req, 'order_canceled', String(req.params.id), result.order_before, result.order_after)
       notifyStatusUpdate(String(req.params.id), 'canceled', req.user!.tenant_id).catch(() => {})
     }
-    res.json({ data: { success: true, payment_preserved: result.paid_amount, replayed: result.replayed } })
+    res.json({ data: { success: true, credited_amount: result.credited_amount, customer_balance: result.customer_balance, replayed: result.replayed } })
   } catch (err) { next(err) }
 })
 

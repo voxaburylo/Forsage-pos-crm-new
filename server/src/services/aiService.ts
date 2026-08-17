@@ -680,14 +680,14 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
       'Бренд': String(p.brand_name ?? '—'),
       'Категорія': String(p.category_name ?? '—'),
       'Штрихкод': String(p.barcode ?? '—'),
-      'Залишок': String(p.qty_on_hand ?? 0),
+      'Кількість': String(p.qty ?? p.quantity ?? p.qty_on_hand ?? 1),
       'Закупівля': p.purchase_price_uah !== undefined ? Number(p.purchase_price_uah).toFixed(2) + ' грн' : '—',
       'Продаж': p.retail_price_uah !== undefined ? Number(p.retail_price_uah).toFixed(2) + ' грн' : '—',
     }))
     return {
       id, tool: name, title: `Створити товари: ${list.length}`,
       changes: [], count: list.length,
-      columns: ['Артикул', 'Назва', 'Бренд', 'Категорія', 'Штрихкод', 'Залишок', 'Закупівля', 'Продаж'], items,
+      columns: ['Артикул', 'Назва', 'Бренд', 'Категорія', 'Штрихкод', 'Кількість', 'Закупівля', 'Продаж'], items,
       payload: { products: list },
     }
   }
@@ -1026,6 +1026,114 @@ async function sendWithRetry(chat: any, parts: string | Part[], iter: number) {
 
 // ─── Головний чат ────────────────────────────────────────────────────────────
 export interface ChatImage { mime_type: string; data_base64: string }
+const SUPPLY_INVOICE_PHOTO_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    supplier_name: { type: SchemaType.STRING },
+    invoice_number: { type: SchemaType.STRING },
+    products: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          name: { type: SchemaType.STRING },
+          sku: { type: SchemaType.STRING },
+          brand_name: { type: SchemaType.STRING },
+          category_name: { type: SchemaType.STRING },
+          barcode: { type: SchemaType.STRING },
+          qty: { type: SchemaType.NUMBER },
+          purchase_price_uah: { type: SchemaType.NUMBER },
+          unit: { type: SchemaType.STRING },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  required: ['products'],
+} as const
+
+export async function recognizeSupplyInvoicePhoto(
+  tenantId: string,
+  userId: string | null,
+  params: { message?: string; images: ChatImage[] },
+): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
+  const cfg = await getAiConfig(tenantId)
+  if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Gemini не налаштовано. Додайте його в Налаштуваннях.', 400)
+  if (!cfg.enabled) throw new AppError('AI_DISABLED', 'Помічник АІ вимкнено в Налаштуваннях.', 400)
+  if (!params.images.length) throw new AppError('VALIDATION_ERROR', 'Додайте фото накладної', 422)
+
+  const instruction = `Розпізнай прихідну накладну автомагазину одним проходом і поверни лише JSON за схемою.
+Для кожного видимого рядка перенеси дослівно назву, артикул, бренд, кількість і закупівельну ціну.
+Штрихкод передавай лише якщо він явно надрукований біля цього товару; не вигадуй його.
+Запропонуй коротку загальну category_name за призначенням товару, але не створюй папку.
+Не визначай роздрібну ціну: програма розрахує її за таблицею націнок.
+Не об'єднуй схожі назви та не пропускай рядки. Ціни повертай у гривнях числом.`
+
+  const genAI = new GoogleGenerativeAI(cfg.apiKey)
+  const model = genAI.getGenerativeModel({
+    model: cfg.model,
+    systemInstruction: instruction,
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: SUPPLY_INVOICE_PHOTO_SCHEMA as any,
+      maxOutputTokens: 8192,
+    },
+  })
+
+  let response
+  try {
+    const parts: Part[] = [
+      { text: params.message?.trim() || 'Розпізнай усі товарні рядки цієї накладної.' },
+      ...params.images.slice(0, 4).map((image): Part => ({
+        inlineData: { mimeType: image.mime_type, data: image.data_base64 },
+      })),
+    ]
+    response = (await model.generateContent(parts)).response
+  } catch (error: any) {
+    if (isQuotaError(error)) throw new AppError('AI_QUOTA_EXCEEDED', 'Вичерпано ліміт Gemini. Спробуйте пізніше.', 429)
+    logger.warn({ err: error?.message }, '[ai] supply invoice photo recognition failed')
+    throw new AppError('AI_UPSTREAM_UNAVAILABLE', 'Не вдалося розпізнати фото накладної. Спробуйте ще раз.', 503)
+  }
+
+  const usage = response.usageMetadata
+  const promptTokens = usage?.promptTokenCount ?? 0
+  const completionTokens = usage?.totalTokenCount != null
+    ? Math.max(usage.totalTokenCount - promptTokens, 0)
+    : (usage?.candidatesTokenCount ?? 0)
+  let parsed: any
+  try { parsed = JSON.parse(response.text()) }
+  catch { throw new AppError('AI_INVALID_RESPONSE', 'AI не повернув таблицю товарів. Спробуйте чіткіше фото.', 502) }
+  const products = (Array.isArray(parsed?.products) ? parsed.products : [])
+    .filter((product: any) => String(product?.name ?? '').trim())
+    .map((product: any) => ({
+      name: String(product.name).trim(),
+      sku: String(product.sku ?? '').trim(),
+      brand_name: String(product.brand_name ?? '').trim(),
+      category_name: String(product.category_name ?? '').trim(),
+      barcode: String(product.barcode ?? '').trim(),
+      qty: Number(product.qty) > 0 ? Number(product.qty) : 1,
+      purchase_price_uah: Math.max(0, Number(product.purchase_price_uah) || 0),
+      unit: String(product.unit ?? 'шт').trim() || 'шт',
+    }))
+  if (!products.length) throw new AppError('AI_NO_ROWS', 'На фото не знайдено товарних рядків. Перевірте якість і повторіть.', 422)
+
+  const action = await buildPendingAction('create_products_bulk', { products }, tenantId)
+  action.payload = {
+    ...action.payload,
+    supplier_name: String(parsed?.supplier_name ?? '').trim() || null,
+    invoice_number: String(parsed?.invoice_number ?? '').trim() || null,
+  }
+  await logUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
+  return {
+    reply: `Розпізнано ${products.length} позицій. Перевірте таблицю та натисніть «Застосувати».`,
+    actions: [action],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      cost_usd: Number(computeCostUsd(cfg.model, promptTokens, completionTokens).toFixed(6)),
+    },
+  }
+}
 
 export async function runChat(
   tenantId: string,

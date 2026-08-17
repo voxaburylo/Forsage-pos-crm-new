@@ -6,11 +6,16 @@ import {
   type OrderPaymentReceipt,
   type SaleReceipt,
 } from './cashAccounting.js'
+import { kyivDateKey, kyivDateRange } from '../lib/businessDate.js'
+
+function inclusiveKyivRange(fromDate: string, toDate: string): { from: string; to: string } {
+  const { from, toExclusive } = kyivDateRange(fromDate, toDate)
+  return { from, to: new Date(Date.parse(toExclusive) - 1).toISOString() }
+}
 
 function todayRange(): { from: string; to: string } {
-  const now = new Date()
-  const date = now.toISOString().split('T')[0]
-  return { from: `${date}T00:00:00.000Z`, to: `${date}T23:59:59.999Z` }
+  const today = kyivDateKey()
+  return inclusiveKyivRange(today, today)
 }
 
 type SummarySale = SaleReceipt & {
@@ -83,29 +88,30 @@ export async function getSalesToday(tenantId: string) {
 
   const { data, error } = await db
     .from('sales')
-    .select('id, total, payment_method, cash_amount, card_amount')
+    .select('id, total, payment_method, cash_amount, card_amount, transfer_amount')
     .eq('tenant_id', tenantId)
     .gte('completed_at', from)
     .lte('completed_at', to)
-    .eq('status', 'completed')
+    .in('status', ['completed', 'returned'])
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return buildSummaryForRange(data ?? [], tenantId, from, to)
 }
 
 export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
-  const { from, to } = todayRange()
-  const dateFrom = query.from ? `${query.from}T00:00:00.000Z` : from
-  const dateTo   = query.to   ? `${query.to}T23:59:59.999Z`   : to
+  const today = kyivDateKey()
+  const startDate = query.from ?? today
+  const endDate = query.to ?? query.from ?? today
+  const { from: dateFrom, to: dateTo } = inclusiveKyivRange(startDate, endDate)
 
   // 1. Отримуємо продажі за період
   const { data: sales, error: salesErr } = await db
     .from('sales')
-    .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount, customer:customers(id,phone,full_name)')
+    .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount, transfer_amount, customer:customers(id,phone,full_name)')
     .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
-    .eq('status', 'completed')
+    .in('status', ['completed', 'returned'])
     .order('completed_at', { ascending: false })
 
   if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
@@ -165,10 +171,11 @@ export async function getDebtors(tenantId: string) {
 
 export async function getWeeklySales(tenantId: string) {
   // Один запит замість 7 — групуємо в JS
-  const weekAgo = new Date()
-  weekAgo.setDate(weekAgo.getDate() - 6)
-  const fromDate = weekAgo.toISOString().split('T')[0] + 'T00:00:00.000Z'
-  const { to } = todayRange()
+  const today = kyivDateKey()
+  const weekAgo = new Date(`${today}T12:00:00.000Z`)
+  weekAgo.setUTCDate(weekAgo.getUTCDate() - 6)
+  const startDate = weekAgo.toISOString().slice(0, 10)
+  const { from: fromDate, to } = inclusiveKyivRange(startDate, today)
 
   const { data, error } = await db
     .from('sales')
@@ -176,7 +183,7 @@ export async function getWeeklySales(tenantId: string) {
     .eq('tenant_id', tenantId)
     .gte('completed_at', fromDate)
     .lte('completed_at', to)
-    .eq('status', 'completed')
+    .in('status', ['completed', 'returned'])
     .order('completed_at', { ascending: true })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
@@ -184,7 +191,7 @@ export async function getWeeklySales(tenantId: string) {
   // Групуємо по днях
   const daysMap = new Map<string, { date: string; revenue: number; sales: number }>()
   for (const s of data ?? []) {
-    const date = s.completed_at.split('T')[0]
+    const date = kyivDateKey(new Date(s.completed_at))
     const existing = daysMap.get(date) ?? { date, revenue: 0, sales: 0 }
     existing.revenue += s.total
     existing.sales++
@@ -194,9 +201,9 @@ export async function getWeeklySales(tenantId: string) {
   // Заповнюємо 7 днів (включно з днями без продажів)
   const result: Array<{ date: string; revenue: number; sales: number }> = []
   for (let i = 6; i >= 0; i--) {
-    const d = new Date()
-    d.setDate(d.getDate() - i)
-    const date = d.toISOString().split('T')[0]
+    const d = new Date(`${today}T12:00:00.000Z`)
+    d.setUTCDate(d.getUTCDate() - i)
+    const date = d.toISOString().slice(0, 10)
     result.push(daysMap.get(date) ?? { date, revenue: 0, sales: 0 })
   }
 
@@ -204,9 +211,10 @@ export async function getWeeklySales(tenantId: string) {
 }
 
 export async function getTopProducts(query: PeriodQuery, tenantId: string) {
-  const { to } = todayRange()
-  const dateFrom = query.from ? `${query.from}T00:00:00.000Z` : '1970-01-01T00:00:00.000Z'
-  const dateTo   = query.to   ? `${query.to}T23:59:59.999Z`   : to
+  const today = kyivDateKey()
+  const startDate = query.from ?? '1970-01-01'
+  const endDate = query.to ?? today
+  const { from: dateFrom, to: dateTo } = inclusiveKyivRange(startDate, endDate)
 
   // 1. Отримуємо ID продажів за період
   const { data: sales, error: salesErr } = await db
@@ -215,7 +223,7 @@ export async function getTopProducts(query: PeriodQuery, tenantId: string) {
     .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
-    .eq('status', 'completed')
+    .in('status', ['completed', 'returned'])
 
   if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
 
@@ -372,22 +380,29 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
   }
 }
 
-// Продані товари за день — для дозамовлення у постачальників.
-// Агрегує позиції завершених чеків за київську добу; послуги пропускаються.
-export async function getSoldItems(date: string, tenantId: string) {
-  const from = `${date}T00:00:00+03:00`
-  const to   = `${date}T23:59:59.999+03:00`
-  const { data: sales, error } = await db.from('sales').select('id')
-    .eq('tenant_id', tenantId).eq('status', 'completed')
-    .gte('completed_at', from).lte('completed_at', to)
-    .limit(5000)
-  if (error) throw new AppError('DB_ERROR', error.message, 500)
+// Продані товари за період — для дозамовлення у постачальників.
+// Агрегує однакові позиції завершених чеків; послуги пропускаються.
+export async function getSoldItems(fromDate: string, toDate: string, tenantId: string) {
+  const { from, toExclusive } = kyivDateRange(fromDate, toDate)
+  const sales: Array<{ id: string }> = []
+  const pageSize = 1000
+  for (let offset = 0; ; offset += pageSize) {
+    const { data: page, error } = await db.from('sales').select('id')
+      .eq('tenant_id', tenantId).in('status', ['completed', 'returned'])
+      .gte('completed_at', from).lt('completed_at', toExclusive)
+      .order('completed_at', { ascending: true })
+      .range(offset, offset + pageSize - 1)
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    sales.push(...(page ?? []))
+    if ((page?.length ?? 0) < pageSize) break
+  }
 
-  const ids = (sales ?? []).map((s: any) => s.id)
+  const ids = sales.map((sale) => sale.id)
   const agg = new Map<string, any>()
   for (let i = 0; i < ids.length; i += 100) {
     const { data: items, error: itemsErr } = await db.from('sale_items')
-      .select('product_id, qty, unit_price, discount, product:products(sku, name, unit, qty_on_hand, storage_bin, is_service)')
+      .select('product_id, qty, unit_price, discount, product:products(sku, barcode, name, unit, qty_on_hand, storage_bin, is_service)')
+      .eq('tenant_id', tenantId)
       .in('sale_id', ids.slice(i, i + 100))
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
     for (const it of (items ?? []) as any[]) {
@@ -395,17 +410,50 @@ export async function getSoldItems(date: string, tenantId: string) {
       const cur = agg.get(it.product_id) ?? {
         product_id: it.product_id,
         sku: it.product?.sku ?? '',
+        barcode: it.product?.barcode ?? null,
         name: it.product?.name ?? '(товар видалено)',
         unit: it.product?.unit ?? 'шт',
         qty_on_hand: Number(it.product?.qty_on_hand ?? 0),
         storage_bin: it.product?.storage_bin ?? null,
         qty_sold: 0,
+        qty_returned: 0,
+        qty_net: 0,
         revenue: 0,
+        refund_total: 0,
+        net_revenue: 0,
       }
+      const lineRevenue = it.unit_price * Number(it.qty) - (it.discount ?? 0)
       cur.qty_sold += Number(it.qty)
-      cur.revenue += it.unit_price * Number(it.qty) - (it.discount ?? 0)
+      cur.qty_net += Number(it.qty)
+      cur.revenue += lineRevenue
+      cur.net_revenue += lineRevenue
       agg.set(it.product_id, cur)
     }
   }
-  return [...agg.values()].sort((a, b) => b.qty_sold - a.qty_sold)
+  const returnIds: string[] = []
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data: returns, error: returnsErr } = await db.from('returns')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'completed')
+      .in('sale_id', ids.slice(i, i + 100))
+    if (returnsErr) throw new AppError('DB_ERROR', returnsErr.message, 500)
+    returnIds.push(...(returns ?? []).map((item) => item.id))
+  }
+  for (let i = 0; i < returnIds.length; i += 100) {
+    const { data: items, error: returnItemsErr } = await db.from('return_items')
+      .select('product_id, quantity, total_kopecks')
+      .eq('tenant_id', tenantId)
+      .in('return_id', returnIds.slice(i, i + 100))
+    if (returnItemsErr) throw new AppError('DB_ERROR', returnItemsErr.message, 500)
+    for (const item of items ?? []) {
+      const current = agg.get(item.product_id)
+      if (!current) continue
+      current.qty_returned += Number(item.quantity ?? 0)
+      current.refund_total += Number(item.total_kopecks ?? 0)
+      current.qty_net = Math.max(0, current.qty_sold - current.qty_returned)
+      current.net_revenue = Math.max(0, current.revenue - current.refund_total)
+    }
+  }
+  return [...agg.values()].sort((a, b) => b.qty_net - a.qty_net)
 }

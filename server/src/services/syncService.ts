@@ -13,6 +13,8 @@ import {
   applySupplierCatalogItemUpsert,
 } from './supplierCatalogSyncService.js'
 import {
+  buildStaffSyncPayload,
+  canPullStaffDirectory,
   canPullSupplyData,
   isSyncOperationAllowed,
   sanitizeCommercialFieldsForRole,
@@ -223,7 +225,9 @@ async function fetchSecondarySyncData(params: {
   historySince?: string
 }) {
   const { since, upperBound, tenantId, userId, role, fullSnapshots, historySince } = params
+  const canPullStaff = canPullStaffDirectory(role)
   const canPullPayroll = role === 'owner' || role === 'admin'
+  const canPullTirePayroll = canPullPayroll || role === 'cashier'
   const canPullCash = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReturns = ['owner', 'admin', 'manager', 'cashier'].includes(role)
   const canPullReserves = ['owner', 'admin', 'manager', 'storekeeper', 'cashier'].includes(role)
@@ -279,11 +283,11 @@ async function fetchSecondarySyncData(params: {
     bonusTransactions,
     customerDepositTransactions,
   ] = await Promise.all([
-    canPullPayroll ? listUsers(tenantId) : Promise.resolve([]),
+    canPullStaff ? listUsers(tenantId) : Promise.resolve([]),
     canPullPayroll
       ? fetchAllById(() => db.from('commission_rules').select('*').eq('tenant_id', tenantId))
       : Promise.resolve([]),
-    canPullPayroll
+    canPullTirePayroll
       ? changed(
           () => db.from('salary_payments').select('*').eq('tenant_id', tenantId),
           fullSnapshots,
@@ -292,7 +296,7 @@ async function fetchSecondarySyncData(params: {
     canPullCash
       ? recentChanged('cash_operations')
       : Promise.resolve([]),
-    canPullPayroll ? deletions('salary_payment') : Promise.resolve([]),
+    canPullTirePayroll ? deletions('salary_payment') : Promise.resolve([]),
     canPullCash ? deletions('cash_operation') : Promise.resolve([]),
     canPullReturns
       ? recentChanged('customer_returns')
@@ -359,11 +363,17 @@ async function fetchSecondarySyncData(params: {
       }
     }
   }
+  const tireWorkerIds = new Set(staff.filter((user: any) => user.role === 'tire_worker').map((user: any) => String(user.id)))
+  const visibleSalaryPayments = canPullPayroll
+    ? salaryPayments
+    : salaryPayments.filter((payment: any) => tireWorkerIds.has(String(payment.employee_id)))
+  const staffSyncPayload = buildStaffSyncPayload(staff, role)
+
   return {
-    staff,
+    ...staffSyncPayload,
     staff_pins: staffPins,
     commission_rules: commissionRules,
-    salary_payments: salaryPayments,
+    salary_payments: visibleSalaryPayments,
     deleted_salary_payment_ids: deletedSalaryPayments.map((row) => row.entity_id),
     cash_operations: cashOperations,
     deleted_cash_operation_ids: deletedCashOperations.map((row) => row.entity_id),
@@ -375,7 +385,6 @@ async function fetchSecondarySyncData(params: {
     writeoff_items: writeoffItems.map((row) => ({ ...row, parent: undefined })),
     bonus_transactions: bonusTransactions,
     customer_deposit_transactions: customerDepositTransactions,
-    staff_snapshot_included: canPullPayroll,
     commission_rules_snapshot_included: canPullPayroll,
     salary_payments_snapshot_included: canPullPayroll && fullSnapshots,
     stock_reserves_snapshot_included: canPullReserves && fullSnapshots,
@@ -2003,7 +2012,7 @@ async function applyOrderCanceled(
   const payload = operation.payload ?? {}
   await runTransaction(async (client) => {
     const orderResult = await client.query(
-      `SELECT status, comment, total_paid, prepayment
+      `SELECT status, comment, total_paid, prepayment, customer_id, order_number
        FROM customer_orders
        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
        FOR UPDATE`,
@@ -2027,18 +2036,64 @@ async function applyOrderCanceled(
       Number(order.prepayment ?? 0),
       Number(payments.rows[0]?.paid_amount ?? 0),
     )
+    const timestamp = operation.applied_at ?? operation.created_at
+    let customerBalance: number | null = null
+    let creditedAmount = 0
     if (paidAmount > 0) {
-      throw new AppError(
-        'SYNC_FINANCIAL_CANCEL_REJECTED',
-        'Повернення оплати скасованого замовлення потрібно підтвердити через касу',
-        409,
+      const customerId = String(order.customer_id ?? '')
+      if (!customerId) {
+        throw new AppError(
+          'SYNC_ORDER_CUSTOMER_REQUIRED_FOR_CREDIT',
+          'До оплаченого замовлення не прив’язаний клієнт',
+          422,
+        )
+      }
+      const existingCredit = await client.query(
+        `SELECT amount, balance_after
+         FROM customer_deposit_transactions
+         WHERE id = $1 AND tenant_id = $2
+         LIMIT 1`,
+        [operation.aggregate_id, tenantId],
       )
+      if (existingCredit.rowCount) {
+        creditedAmount = Number(existingCredit.rows[0].amount ?? 0)
+        customerBalance = Number(existingCredit.rows[0].balance_after ?? 0)
+      } else {
+        const customerResult = await client.query(
+          `SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance
+           FROM customers
+           WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+           LIMIT 1 FOR UPDATE`,
+          [customerId, tenantId],
+        )
+        if (!customerResult.rowCount) {
+          throw new AppError('SYNC_ORDER_CUSTOMER_NOT_FOUND', 'Клієнта замовлення не знайдено', 404)
+        }
+        customerBalance = Number(customerResult.rows[0].deposit_balance ?? 0) + paidAmount
+        await client.query(
+          `UPDATE customers
+           SET deposit_balance = $3, updated_at = $4
+           WHERE id = $1 AND tenant_id = $2`,
+          [customerId, tenantId, customerBalance, timestamp],
+        )
+        await client.query(
+          `INSERT INTO customer_deposit_transactions (
+             id, tenant_id, customer_id, amount, balance_after, method, order_id,
+             notes, created_by, created_at, updated_at
+           ) VALUES ($1, $2, $3, $4, $5, 'account', $1, $6, $7, $8, $8)`,
+          [
+            operation.aggregate_id, tenantId, customerId, paidAmount, customerBalance,
+            `Скасування замовлення №${String(order.order_number ?? operation.aggregate_id)}`,
+            userId, timestamp,
+          ],
+        )
+        creditedAmount = paidAmount
+      }
     }
 
     const priorComment = String(order.comment ?? '').trim()
     const reason = String(payload.reason ?? '').trim()
     const comment = reason ? `${priorComment ? `${priorComment}\n` : ''}Скасування: ${reason}` : priorComment || null
-    const timestamp = operation.applied_at ?? operation.created_at
     await client.query(
       `UPDATE customer_orders
        SET status = 'canceled', comment = $3, updated_at = $4
@@ -2066,7 +2121,7 @@ async function applyOrderCanceled(
       [
         operation.aggregate_id,
         userId,
-        JSON.stringify({ reason: payload.reason ?? null, amount_preserved: paidAmount, source: 'desktop_sync' }),
+        JSON.stringify({ reason: payload.reason ?? null, credited_amount: creditedAmount, customer_balance: customerBalance, source: 'desktop_sync' }),
         timestamp,
       ],
     )
@@ -2293,8 +2348,8 @@ async function applyCashOperationCreated(tenantId: string, userId: string, opera
   await runTransaction(async (client) => {
     await client.query(
       `INSERT INTO cash_operations (
-        id, tenant_id, shift_id, type, amount, note, source, created_by, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        id, tenant_id, shift_id, type, amount, note, source, created_by, employee_id, work_date, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       ON CONFLICT (id) DO NOTHING`,
       [
         id,
@@ -2305,6 +2360,8 @@ async function applyCashOperationCreated(tenantId: string, userId: string, opera
         payload.note ?? payload.notes ?? null,
         payload.source ?? 'cashbox',
         uuidOr(payload.user_id ?? payload.created_by, userId),
+        isUuid(payload.employee_id) ? payload.employee_id : null,
+        /^\d{4}-\d{2}-\d{2}$/.test(String(payload.work_date ?? '')) ? payload.work_date : null,
         createdAt,
         appliedAt,
       ],
@@ -4306,13 +4363,17 @@ async function applyCustomerDepositChanged(tenantId: string, userId: string, ope
       [transactionId, tenantId, customerId, amount, balanceAfter, method, payload.order_id ?? null, payload.sale_id ?? null, payload.shift_id ?? null, payload.notes ?? null, payload.created_by ?? userId, createdAt, appliedAt],
     )
 
-    if (amount > 0 && method === 'cash' && payload.shift_id) {
+    if (method === 'cash' && payload.shift_id) {
       const cashOperationId = isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id
+      const cashType = amount < 0 ? 'out' : 'in'
+      const cashNote = payload.notes ?? (amount < 0
+        ? `Видача з рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`
+        : `Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`)
       await client.query(
         `INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at, updated_at)
-         VALUES ($1, $2, $3, 'in', $4, $5, $6, $7, $8)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (id) DO NOTHING`,
-        [cashOperationId, tenantId, payload.shift_id, amount, payload.notes ?? (`Поповнення рахунку клієнта: ${customer.full_name ?? customer.phone ?? customerId.slice(0, 8)}`), payload.created_by ?? userId, createdAt, appliedAt],
+        [cashOperationId, tenantId, payload.shift_id, cashType, Math.abs(amount), cashNote, payload.created_by ?? userId, createdAt, appliedAt],
       )
     }
   })
@@ -4504,7 +4565,7 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
     }
 
     const allowNegativeResult = await client.query(
-      'SELECT COALESCE((SELECT allow_negative_qty FROM shop_settings WHERE tenant_id = $1 LIMIT 1), true) AS allow_negative',
+      'SELECT COALESCE((SELECT allow_negative_qty FROM shop_settings WHERE tenant_id = $1 LIMIT 1), false) AS allow_negative',
       [tenantId],
     )
     const allowNegative = allowNegativeResult.rows[0]?.allow_negative !== false

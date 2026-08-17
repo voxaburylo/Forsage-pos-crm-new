@@ -19,6 +19,7 @@ import { parseLocaleNumber } from '@/lib/parseDecimal'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
 import { resolveActiveLinkedInvoiceProduct } from './invoiceProductLink'
+import { applyManualInvoiceQuantities, parseManualInvoiceQuantity } from './invoiceQuantityGuard'
 
 interface LineItem {
   product_id?: string
@@ -510,7 +511,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
       const url = await uploadToStorage(blob, productId)
       onPhotoUpdated(url)   // лише в позицію; у товар — при проведенні накладної
       toast.success('Фото додано')
-    } catch (err) {
+    } catch {
       toast.error('Не вдалося завантажити фото')
     } finally {
       setUploading(false)
@@ -519,7 +520,10 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
 
   const handlePaste = async () => {
     try {
-      const items = await navigator.clipboard.read()
+      const items = await Promise.race([
+        navigator.clipboard.read(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('CLIPBOARD_TIMEOUT')), 3000)),
+      ])
       for (const item of items) {
         const imageType = item.types.find(type => type.startsWith('image/'))
         if (imageType) {
@@ -529,7 +533,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
         }
       }
       toast.error('У буфері обміну немає зображення')
-    } catch (err) {
+    } catch {
       toast.error('Будь ласка, натисніть Ctrl+V при фокусі на кнопці або надайте доступ')
     }
   }
@@ -622,13 +626,25 @@ export default function InvoiceFormPage() {
   const isEdit = Boolean(id)
   const preSelectedSupplier = searchParams.get('supplier_id') ?? ''
   const cloneId = searchParams.get('clone')
+  const freshToken = searchParams.get('fresh') ?? ''
+  const requestedResumeKey = searchParams.get('resume') ?? ''
+  const resumeDraftKey = requestedResumeKey.startsWith('forsage:supply-invoice:')
+    ? requestedResumeKey
+    : ''
   const invoiceDraftKey = useMemo(() => {
+    if (resumeDraftKey) return resumeDraftKey
     if (isEdit && id) return supplyInvoiceDraftKey('edit-' + id)
     if (cloneId) return supplyInvoiceDraftKey('clone-' + cloneId)
+    if (freshToken) return supplyInvoiceDraftKey('fresh-' + freshToken)
     return supplyInvoiceDraftKey('new')
-  }, [cloneId, id, isEdit])
+  }, [cloneId, freshToken, id, isEdit, resumeDraftKey])
   const invoiceDraftReadyRef = useRef(false)
   const invoiceSubmitRef = useRef(false)
+  // Окремо пам'ятаємо останню кількість, яку людина фізично ввела у рядок.
+  // Асинхронна прив'язка картки товару не має права повернути старе значення.
+  const manualQtyOverridesRef = useRef<Map<string, number>>(new Map())
+  // Одноразовый флаг для кнопки «Сохранить и закрыть».
+  const postOnSaveRef = useRef(false)
   const invoiceDraftPersistenceDisabledRef = useRef(false)
   const serverDraftIdRef = useRef<string | null>(isEdit && id ? id : null)
 
@@ -740,7 +756,7 @@ export default function InvoiceFormPage() {
       applySupplyInvoiceDraft(localDraft, preSelectedSupplier)
       toast.success('Чернетку накладної відновлено')
     }
-    if (desktopBridge()) {
+    if (desktopBridge() || freshToken || resumeDraftKey) {
       markReady()
       return () => {
         cancelled = true
@@ -775,7 +791,7 @@ export default function InvoiceFormPage() {
       cancelled = true
       if (readyTimer != null) window.clearTimeout(readyTimer)
     }
-  }, [cloneId, invoiceDraftKey, isEdit, preSelectedSupplier])
+  }, [cloneId, freshToken, invoiceDraftKey, isEdit, preSelectedSupplier, resumeDraftKey])
 
   useEffect(() => {
     if (!invoiceDraftReadyRef.current || invoiceDraftPersistenceDisabledRef.current) return
@@ -1232,6 +1248,12 @@ export default function InvoiceFormPage() {
     })
   }
 
+  function updateManualQuantity(index: number, value: string | number) {
+    const row = itemsRef.current[index]
+    if (row) manualQtyOverridesRef.current.set(row.client_key, parseManualInvoiceQuantity(value))
+    updateItem(index, 'qty', value)
+  }
+
   // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
   async function recalcRetail(onlyIndex?: number | number[], forceUseGrid?: boolean, purchaseOverride?: number) {
     const isSingle = typeof onlyIndex === 'number'
@@ -1467,7 +1489,7 @@ export default function InvoiceFormPage() {
       setSupplierModal(false)
       setNewSupplierName('')
       setNewSupplierPhone('')
-    } catch (err) {
+    } catch {
       toast.error('Помилка створення постачальника')
     } finally {
       setCreatingSupplier(false)
@@ -1575,9 +1597,9 @@ export default function InvoiceFormPage() {
       sku: product.sku,
       barcode: product.barcode || item.barcode || '',
       product_name: product.name || item.product_name,
-      category_id: item.category_id ?? product.category_id ?? null,
-      storage_bin: item.storage_bin ?? product.storage_bin ?? null,
-      photo_url: item.photo_url ?? product.photo_url ?? null,
+      category_id: product.category_id ?? item.category_id ?? null,
+      storage_bin: product.storage_bin ?? item.storage_bin ?? null,
+      photo_url: product.photo_url ?? item.photo_url ?? null,
       unit: normalizeInvoiceUnit(product.unit || item.unit),
       purchase_price: purchase,
       retail_price: retail,
@@ -1700,7 +1722,8 @@ export default function InvoiceFormPage() {
   }
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (items.length === 0) { toast.error('Додайте хоча б один товар'); return }
+    const submittedItems = applyManualInvoiceQuantities(itemsRef.current, manualQtyOverridesRef.current)
+    if (submittedItems.length === 0) { toast.error('Додайте хоча б один товар'); return }
     if (!supplierId) { toast.error('Оберіть постачальника'); return }
     if (invoiceSubmitRef.current) return
 
@@ -1709,7 +1732,8 @@ export default function InvoiceFormPage() {
     try {
       // Перевіряємо касу до створення нових карток товарів. Інакше при відмові
       // оплати накладна не створювалась, а її товари вже лишались у базі.
-      const paidKopecks = !isEdit ? Math.min(payFullNow ? total : parseMoneyToKopecks(paidAmount), total) : 0
+      const submittedTotal = submittedItems.reduce((sum, item) => sum + item.total, 0)
+      const paidKopecks = !isEdit ? Math.min(payFullNow ? submittedTotal : parseMoneyToKopecks(paidAmount), submittedTotal) : 0
       const paymentParts = !isEdit ? buildSupplierPaymentParts(paidKopecks) : []
       const cashboxPart = paymentParts.find((part) => part.fund_source === 'cashbox')?.amount ?? 0
       const shiftId = cashboxPart > 0 ? await requireCashboxFunds(cashboxPart) : null
@@ -1745,7 +1769,7 @@ export default function InvoiceFormPage() {
       }
 
       const resolvedItems: LineItem[] = []
-      for (const item of items) {
+      for (const item of submittedItems) {
         // Перед проведенням ще раз шукаємо точний збіг у базі за артикулом/ШК.
         // Якщо постачальник прислав рядок з уже існуючим артикулом — приймаємо товар
         // на існуючу картку, а не створюємо дубль і не блокуємо накладну.
@@ -1902,6 +1926,7 @@ export default function InvoiceFormPage() {
           })
         }
       }
+      const shouldPost = postOnSaveRef.current || postImmediately
       const existingDraftId = isEdit ? id! : serverDraftIdRef.current
       if (existingDraftId) {
         const updated = await supplierApi.updateInvoice(existingDraftId, { ...body, draft_payload: null })
@@ -1911,7 +1936,7 @@ export default function InvoiceFormPage() {
           await recordInitialPayments(invoiceId)
         }
 
-        if (!isEdit && postImmediately) {
+        if (shouldPost) {
           try {
             await supplierApi.postInvoice(invoiceId)
             toast.success('Накладну створено і проведено — залишки оновлено')
@@ -1935,7 +1960,7 @@ export default function InvoiceFormPage() {
         }
 
         // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
-        if (postImmediately && created?.data?.id) {
+        if (shouldPost && created?.data?.id) {
           try {
             await supplierApi.postInvoice(created.data.id)
             toast.success('Накладну створено і проведено — залишки оновлено')
@@ -1960,19 +1985,41 @@ export default function InvoiceFormPage() {
       }
     } finally {
       invoiceSubmitRef.current = false
+      postOnSaveRef.current = false
       setSaving(false)
     }
   }
 
+  function saveAndPostInvoice() {
+    if (saving) return
+    postOnSaveRef.current = true
+    setPostImmediately(true)
+    const form = document.querySelector('form[data-supply-invoice-form="true"]') as HTMLFormElement | null
+    form?.requestSubmit()
+  }
+
   function closeInvoiceForm() {
-    // Раніше «Назад» СТИРАВ чернетку — тому випадковий вихід губив усю роботу.
-    // Тепер чернетку НЕ чистимо: вона лишається і відновиться при наступному
-    // відкритті. Якщо накладна не порожня — питаємо підтвердження.
+    // Вихід через «Назад» зберігає незакриту накладну як чернетку.
     const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
-    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться чернеткою і відновиться тут або з іншого пристрою.')) return
+    if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться у списку як чернетка.')) return
     navigate('/suppliers/invoices')
   }
 
+  async function cancelInvoiceForm() {
+    const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
+    if (hasContent && !confirm('Скасувати накладну?\n\nЧернетку буде видалено без зміни залишків.')) return
+    invoiceDraftPersistenceDisabledRef.current = true
+    clearSupplyInvoiceDraft(invoiceDraftKey)
+    const draftId = serverDraftIdRef.current || (isEdit && id ? id : null)
+    try {
+      if (draftId) await supplierApi.deleteInvoice(draftId)
+      toast.success('Чернетку накладної видалено')
+      navigate('/suppliers/invoices')
+    } catch (err) {
+      invoiceDraftPersistenceDisabledRef.current = false
+      toast.error(err instanceof Error ? err.message : 'Не вдалося видалити чернетку')
+    }
+  }
   if (loading) return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>
 
   return (
@@ -1980,7 +2027,7 @@ export default function InvoiceFormPage() {
       title={isEdit ? 'Редагувати накладну' : 'Нова приходна накладна'}
       onBack={closeInvoiceForm}
     >
-      <form onSubmit={handleSubmit}>
+      <form data-supply-invoice-form="true" onSubmit={handleSubmit}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <Card>
             <div className="space-y-4">
@@ -2171,7 +2218,15 @@ export default function InvoiceFormPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b border-gray-100">
-                <th className="w-10 px-2 py-2 text-center">✓</th>
+                <th className="w-10 px-2 py-2 text-center">
+  <input
+    type="checkbox"
+    aria-label="Вибрати всі товари"
+    checked={items.length > 0 && selectedLineKeys.length === items.length}
+    onChange={(e) => toggleAllLineSelection(e.target.checked)}
+    className="w-4 h-4 accent-yellow-400"
+  />
+</th>
                 <th className="w-12 px-2 py-2">Фото</th>
                 <th className="text-left px-4 py-2">Товар</th>
                 <th className="text-left px-2 py-2 w-44">Папка</th>
@@ -2281,7 +2336,7 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <input ref={(el) => { qtyRefs.current[i] = el }} type="number" step="1" min="0" value={item.qty}
-                      onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                      onChange={(e) => updateManualQuantity(i, e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'qty')}
 
                       className="w-full min-w-[72px] text-right border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
@@ -2485,14 +2540,14 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">К-сть</label>
                     <div className="flex items-center gap-1">
                       <button type="button" disabled={item.qty <= 1}
-                        onClick={() => updateItem(i, 'qty', Math.max(1, item.qty - 1))}
+                        onClick={() => updateManualQuantity(i, Math.max(1, item.qty - 1))}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
                       <input type="number" step="1" min="0" value={item.qty}
-                        onChange={(e) => updateItem(i, 'qty', e.target.value)}
+                        onChange={(e) => updateManualQuantity(i, e.target.value)}
 
                         className="w-full min-w-[64px] text-center border border-gray-200 rounded-lg px-2 py-2 text-base focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
                       <button type="button"
-                        onClick={() => updateItem(i, 'qty', item.qty + 1)}
+                        onClick={() => updateManualQuantity(i, item.qty + 1)}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">+</button>
                     </div>
                   </div>
@@ -2671,7 +2726,12 @@ export default function InvoiceFormPage() {
           <Button type="submit" disabled={saving}>
             {saving ? 'Збереження...' : isEdit ? 'Оновити' : postImmediately ? 'Створити і провести' : 'Створити чернетку'}
           </Button>
-          <Button type="button" variant="outline" onClick={closeInvoiceForm}>Скасувати</Button>
+          {isEdit && (
+            <Button type="button" onClick={saveAndPostInvoice} disabled={saving} className="bg-green-600 hover:bg-green-700 text-white">
+              {saving ? 'Збереження...' : 'Зберегти і закрити накладну'}
+            </Button>
+          )}
+          <Button type="button" variant="outline" onClick={() => void cancelInvoiceForm()}>Скасувати</Button>
           {!isEdit && (
             <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-1">
               <input type="checkbox" checked={postImmediately} onChange={(e) => setPostImmediately(e.target.checked)}

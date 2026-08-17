@@ -6,6 +6,9 @@ import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { businessDateKey } from '@/lib/businessDate'
+import { staffApi } from '@/features/staff/staffApi'
+import type { TireServiceReportRow } from '@/features/staff/staffApi'
 
 interface Props {
   open: boolean
@@ -34,6 +37,7 @@ export function ShiftCloseModal({
   const [comment, setComment]           = useState('')
   const [loading, setLoading]           = useState(false)
   const [closing, setClosing]           = useState(false)
+  const [tireWorkers, setTireWorkers]   = useState<TireServiceReportRow[]>([])
 
   useEffect(() => {
     if (!open) return
@@ -69,12 +73,26 @@ export function ShiftCloseModal({
       .finally(() => setLoading(false))
   }, [open, shiftId, offline, cashierId])
 
+  useEffect(() => {
+    if (!open || !isOwnerOrAdmin) {
+      setTireWorkers([])
+      return
+    }
+    let cancelled = false
+    staffApi.tireServiceReport(businessDateKey(new Date()))
+      .then(({ data }) => { if (!cancelled) setTireWorkers(data ?? []) })
+      .catch(() => { if (!cancelled) setTireWorkers([]) })
+    return () => { cancelled = true }
+  }, [open, isOwnerOrAdmin])
+
+  const tireWorkersDue = tireWorkers.reduce((sum, worker) => sum + Number(worker.payable_due ?? 0), 0)
   if (!open) return null
 
   const cashReceived = Math.round(parseFloat(cashInput || '0') * 100)
   const expectedCash = cashBreakdown?.expected_amount ?? 0
   const variance     = cashInput ? cashReceived - expectedCash : null
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
+  const cashierAmountMismatch = !isOwnerOrAdmin && variance !== null && variance !== 0
 
   async function handleClose() {
     if (offline && !isDesktop) {
@@ -83,6 +101,10 @@ export function ShiftCloseModal({
     }
     if (pendingOfflineSales > 0) {
       toast.error(`Спочатку синхронізуйте офлайн-чеки: ${pendingOfflineSales}`)
+      return
+    }
+    if (cashierAmountMismatch) {
+      toast.error('Сума не сходиться. Очікується ' + formatMoney(expectedCash) + ', введено ' + formatMoney(cashReceived) + '.')
       return
     }
     if (needsComment && !comment.trim()) {
@@ -114,7 +136,11 @@ export function ShiftCloseModal({
       }
       // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
       try { localStorage.setItem('forsage_last_shift_close_cash', (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }
-      toast.success('Зміну закрито')
+      toast.success(
+        tireWorkersDue > 0
+          ? 'Зміну закрито. Шиномонтажникам до виплати: ' + formatMoney(tireWorkersDue)
+          : 'Зміну закрито',
+      )
 
       // Desktop + увімкнений ПРРО Кашалот: закриваємо фіскальну зміну (Z-звіт).
       if (desktop?.fiscal) {
@@ -143,7 +169,7 @@ export function ShiftCloseModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-5">
+      <div className="relative max-h-[92vh] overflow-y-auto bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6 space-y-5">
         <h2 className="text-white text-lg font-bold">Закрити зміну</h2>
         {((offline && !isDesktop) || pendingOfflineSales > 0) && (
           <div className="rounded-xl border border-red-500/50 bg-red-900/25 px-4 py-3 text-sm text-red-300">
@@ -216,6 +242,39 @@ export function ShiftCloseModal({
               </div>
             )}
 
+            {isOwnerOrAdmin && (
+              <div className="rounded-xl border border-cyan-700/50 bg-cyan-950/20 p-4 text-sm">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="font-semibold text-cyan-100">Шиномонтаж за сьогодні</span>
+                  <strong className="text-cyan-300">Доступно до виплати: {formatMoney(tireWorkersDue)}</strong>
+                </div>
+                {tireWorkers.length === 0 ? (
+                  <p className="text-xs text-gray-500">Немає працівників шиномонтажу або нарахувань.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {tireWorkers.map((worker) => (
+                      <div key={worker.employee_id} className="flex items-center justify-between gap-3 border-t border-cyan-900/50 pt-2">
+                        <div>
+                          <p className="font-medium text-white">{worker.employee_name}</p>
+                          <p className="text-xs text-gray-400">
+                            Послуг: {worker.services_qty} · виручка {formatMoney(worker.service_revenue)}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-semibold text-cyan-300">{formatMoney(worker.payable_due)}</p>
+                          <p className="text-[11px] text-gray-500">нараховано {formatMoney(worker.earned)} · видано {formatMoney(worker.paid)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {!isOwnerOrAdmin && cashBreakdown && (
+              <div className="bg-[#2C2C2C] rounded-xl px-4 py-3 text-sm text-gray-300">
+                Очікується в касі: <span className="font-semibold text-white">{formatMoney(expectedCash)}</span>
+              </div>
+            )}
             {/* Ввід фактичної суми */}
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Фактична сума в касі (₴)</label>

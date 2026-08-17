@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Package, ShoppingCart,
+  Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
   ChevronDown, Tag, UserCog, Users,
   X, PackagePlus,
@@ -48,7 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
       { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
-      { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','cashier','storekeeper'] },
       { to: '/labels',              icon: <Tag size={18} />,             label: 'Печать этикеток',       roles: ['owner','admin'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
       { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
@@ -56,10 +56,9 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     title: 'Аналітика',
-    roles: ['owner','admin','manager'],
+    roles: ['owner','admin','manager','cashier'],
     items: [
-      { to: '/dashboard',           icon: <LayoutDashboard size={18} />, label: 'Дашборд',              roles: ['owner','admin','manager'] },
-      { to: '/reports',             icon: <BarChart2 size={18} />,       label: 'Денний звіт',          roles: ['owner','admin'] },
+      { to: '/analytics',           icon: <BarChart2 size={18} />,       label: 'Аналітика', roles: ['owner','admin','manager','cashier'] },
     ],
   },
   {
@@ -88,10 +87,6 @@ function SidebarLink({ item, badge, onClose }: { item: NavItem; badge?: number; 
         ([key, val]) => currentParams.get(key) === val
       )
       return pathMatches && paramsMatch
-    }
-
-    if (item.to === '/dashboard') {
-      return location.pathname === '/dashboard' || location.pathname === '/'
     }
 
     if (item.to === '/inventory') {

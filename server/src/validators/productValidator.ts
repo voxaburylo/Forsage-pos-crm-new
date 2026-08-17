@@ -18,7 +18,7 @@ export type ProductStatus = (typeof PRODUCT_STATUSES)[number]
 export const statusSchema = z.enum(PRODUCT_STATUSES)
 
 export const createProductSchema = z.object({
-  sku: z.string().min(1).max(50).transform(normalizeArticle),
+  sku: z.string().min(1).max(200).transform(normalizeArticle),
   name: z.string().min(2).max(500),
   barcode: z.string().max(100).optional().nullable(),
   photo_url: z.string().max(500).optional().nullable(),

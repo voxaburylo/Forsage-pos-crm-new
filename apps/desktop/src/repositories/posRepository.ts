@@ -1152,6 +1152,94 @@ export class LocalPosRepository {
       return { data: { balance: balanceAfter } }
     })
   }
+  payOutCustomerDeposit(input: {
+    tenant_id?: string
+    customer_id: string
+    payout_id?: string
+    amount: number
+    method: 'cash' | 'card' | 'transfer'
+    shift_id?: string | null
+    user_id?: string | null
+    notes?: string | null
+  }): { data: { balance: number; replayed: boolean } } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const amount = money(input.amount)
+    if (amount <= 0) throw new Error('Вкажіть коректну суму видачі')
+    if (input.method === 'cash' && !input.shift_id) {
+      throw new Error('Для видачі готівки потрібна відкрита касова зміна')
+    }
+    const payoutId = input.payout_id ?? randomUUID()
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT tenant_id, customer_id, amount, balance_after
+        FROM customer_deposit_transactions
+        WHERE id = ?
+        LIMIT 1
+      `).get(payoutId) as { tenant_id: string; customer_id: string; amount: number; balance_after: number } | undefined
+      if (existing) {
+        if (existing.tenant_id !== tenantId || existing.customer_id !== input.customer_id || Number(existing.amount) !== -amount) {
+          throw new Error('Ідентифікатор виплати вже використано іншою операцією')
+        }
+        return { data: { balance: Number(existing.balance_after), replayed: true } }
+      }
+
+      const customer = this.getCustomerForMoney(input.customer_id, tenantId)
+      if (amount > Number(customer.deposit_balance ?? 0)) {
+        throw new Error('Сума видачі перевищує кошти на рахунку клієнта')
+      }
+      if (input.method === 'cash') {
+        const shift = this.db.prepare(`
+          SELECT id FROM shifts
+          WHERE id = ? AND tenant_id = ? AND status = 'open'
+          LIMIT 1
+        `).get(input.shift_id!, tenantId)
+        if (!shift) throw new Error('Касова зміна не відкрита')
+      }
+
+      const timestamp = nowIso()
+      const balanceAfter = Number(customer.deposit_balance ?? 0) - amount
+      const note = input.notes?.trim() || 'Видача коштів з рахунку клієнта'
+      this.db.prepare(`
+        UPDATE customers
+        SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+      `).run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
+      this.db.prepare(`
+        INSERT INTO customer_deposit_transactions (
+          id, tenant_id, customer_id, amount, balance_after, method, shift_id,
+          notes, created_by, dirty_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        payoutId, tenantId, customer.id, -amount, balanceAfter, input.method,
+        input.shift_id ?? null, note, input.user_id ?? null, timestamp, timestamp, timestamp,
+      )
+
+      const cashOperationId = input.method === 'cash' ? payoutId : null
+      if (cashOperationId) {
+        this.addCashOperation(
+          tenantId, input.shift_id!, input.user_id ?? null, 'cash_out', amount,
+          `${note}: ${customer.full_name ?? customer.phone ?? customer.id.slice(0, 8)}`,
+          timestamp, cashOperationId,
+        )
+      }
+      this.addOutbox(tenantId, 'customer', customer.id, 'customer.deposit_changed', {
+        customer_id: customer.id,
+        transaction_id: payoutId,
+        amount: -amount,
+        method: input.method,
+        shift_id: input.shift_id ?? null,
+        cash_operation_id: cashOperationId,
+        notes: note,
+        created_by: input.user_id ?? null,
+        created_at: timestamp,
+      }, timestamp)
+      this.addAudit(
+        tenantId, input.user_id ?? 'local', 'customer.deposit_payout', 'customer', customer.id,
+        { amount: -amount, method: input.method, balance_after: balanceAfter }, timestamp,
+      )
+      return { data: { balance: balanceAfter, replayed: false } }
+    })
+  }
   getSale(saleId: string, tenantId = DEFAULT_TENANT_ID): any {
     const row = this.db.prepare(`
       SELECT s.*, c.phone AS customer_phone, c.full_name AS customer_name
@@ -1266,6 +1354,16 @@ export class LocalPosRepository {
            AND p.deleted_at IS NULL
            AND p.is_active = 1
            AND p.qty_on_hand <= p.reorder_point) AS low_stock,
+        (SELECT COALESCE(SUM(MAX(p.qty_on_hand, 0) * COALESCE(p.purchase_price, 0)), 0)
+         FROM products p
+         WHERE p.tenant_id = scope.tenant_id
+           AND p.deleted_at IS NULL
+           AND p.is_active = 1) AS stock_purchase_value,
+        (SELECT COALESCE(SUM(MAX(p.qty_on_hand, 0) * COALESCE(p.retail_price, 0)), 0)
+         FROM products p
+         WHERE p.tenant_id = scope.tenant_id
+           AND p.deleted_at IS NULL
+           AND p.is_active = 1) AS stock_retail_value,
         (SELECT COUNT(*)
          FROM customers c
          WHERE c.tenant_id = scope.tenant_id
@@ -1319,7 +1417,7 @@ export class LocalPosRepository {
        AND p.tenant_id = si.tenant_id
       WHERE s.tenant_id = ?
         AND s.deleted_at IS NULL
-        AND s.status = 'completed'
+        AND s.status IN ('completed', 'returned')
         AND COALESCE(s.completed_at, s.created_at) >= ?
         AND COALESCE(s.completed_at, s.created_at) <= ?
       GROUP BY s.id, s.completed_at, s.created_at, s.total
@@ -1368,7 +1466,113 @@ export class LocalPosRepository {
         count: Number(stats?.debt_customers ?? 0),
         total: Number(stats?.debt_total ?? 0),
       },
+      inventory: {
+        purchase_value: Number(stats?.stock_purchase_value ?? 0),
+        retail_value: Number(stats?.stock_retail_value ?? 0),
+      },
     }
+  }
+
+  soldItemsReport(input: { tenant_id?: string; date_from: string; date_to: string }): any[] {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const dateFrom = String(input.date_from ?? '').trim()
+    const dateTo = String(input.date_to ?? '').trim()
+    if (!dateFrom || !dateTo) throw new Error('Analytics period is required')
+
+    const rows = this.db.prepare(`
+      WITH selected_sales AS (
+        SELECT id, tenant_id
+        FROM sales
+        WHERE tenant_id = ?
+          AND deleted_at IS NULL
+          AND status IN ('completed', 'returned')
+          AND COALESCE(completed_at, created_at) >= ?
+          AND COALESCE(completed_at, created_at) <= ?
+      ),
+      sold AS (
+        SELECT
+          si.product_id,
+          COALESCE(p.sku, si.sku, '') AS sku,
+          COALESCE(
+            NULLIF(p.barcode, ''),
+            (SELECT pb.barcode
+             FROM product_barcodes pb
+             WHERE pb.tenant_id = si.tenant_id
+               AND pb.product_id = si.product_id
+               AND pb.deleted_at IS NULL
+             ORDER BY pb.is_primary DESC, pb.created_at ASC
+             LIMIT 1),
+            ''
+          ) AS barcode,
+          COALESCE(p.name, si.description, '(товар видалено)') AS name,
+          COALESCE(p.unit, 'шт') AS unit,
+          COALESCE(p.qty_on_hand, 0) AS qty_on_hand,
+          p.storage_bin,
+          SUM(si.qty) AS qty_sold,
+          SUM(si.total) AS revenue
+        FROM selected_sales ss
+        JOIN sale_items si
+          ON si.sale_id = ss.id
+         AND si.tenant_id = ss.tenant_id
+         AND si.deleted_at IS NULL
+        LEFT JOIN products p
+          ON p.id = si.product_id
+         AND p.tenant_id = si.tenant_id
+        WHERE si.product_id IS NOT NULL
+          AND COALESCE(p.is_service, 0) = 0
+        GROUP BY
+          si.product_id, COALESCE(p.sku, si.sku, ''), p.barcode,
+          COALESCE(p.name, si.description, '(товар видалено)'),
+          COALESCE(p.unit, 'шт'), COALESCE(p.qty_on_hand, 0), p.storage_bin,
+          si.tenant_id
+      ),
+      returned AS (
+        SELECT
+          ri.product_id,
+          SUM(ri.quantity) AS qty_returned,
+          SUM(ri.total_kopecks) AS refund_total
+        FROM customer_return_items ri
+        JOIN customer_returns r
+          ON r.id = ri.return_id
+         AND r.tenant_id = ri.tenant_id
+         AND r.deleted_at IS NULL
+         AND r.status = 'completed'
+        JOIN selected_sales ss
+          ON ss.id = r.sale_id
+         AND ss.tenant_id = r.tenant_id
+        WHERE ri.tenant_id = ?
+          AND ri.deleted_at IS NULL
+        GROUP BY ri.product_id
+      )
+      SELECT
+        sold.product_id,
+        sold.sku,
+        NULLIF(sold.barcode, '') AS barcode,
+        sold.name,
+        sold.unit,
+        sold.qty_sold,
+        COALESCE(returned.qty_returned, 0) AS qty_returned,
+        MAX(sold.qty_sold - COALESCE(returned.qty_returned, 0), 0) AS qty_net,
+        sold.revenue,
+        COALESCE(returned.refund_total, 0) AS refund_total,
+        MAX(sold.revenue - COALESCE(returned.refund_total, 0), 0) AS net_revenue,
+        sold.qty_on_hand,
+        sold.storage_bin
+      FROM sold
+      LEFT JOIN returned ON returned.product_id = sold.product_id
+      ORDER BY qty_net DESC, sold.name COLLATE NOCASE ASC
+    `).all(tenantId, dateFrom, dateTo, tenantId) as any[]
+
+    return rows.map((row) => ({
+      ...row,
+      qty_sold: Number(row.qty_sold ?? 0),
+      qty_returned: Number(row.qty_returned ?? 0),
+      qty_net: Number(row.qty_net ?? 0),
+      revenue: Number(row.revenue ?? 0),
+      refund_total: Number(row.refund_total ?? 0),
+      net_revenue: Number(row.net_revenue ?? 0),
+      qty_on_hand: Number(row.qty_on_hand ?? 0),
+    }))
   }
 
   calculatePrices(items: Array<{ product_id: string; qty: number }>, tenantId = DEFAULT_TENANT_ID): any[] {
@@ -3159,7 +3363,7 @@ export class LocalPosRepository {
     amount: number,
     notes: string,
     timestamp: string,
-    operationId = randomUUID(),
+    operationId: string = randomUUID(),
   ): void {
     this.db.prepare(`
       INSERT INTO cash_operations (

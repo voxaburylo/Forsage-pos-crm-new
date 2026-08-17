@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildStaffSyncPayload,
+  canPullStaffDirectory,
   canPullSupplyData,
   isSyncOperationAllowed,
   sanitizeCommercialFieldsForRole,
@@ -24,18 +26,93 @@ describe('sync role policy', () => {
     expect(isSyncOperationAllowed('cashier', 'sale.completed')).toBe(true)
     expect(isSyncOperationAllowed('storekeeper', 'product.upsert')).toBe(true)
   })
-  it('allows storekeepers to synchronize inventory drafts and empty-session deletion', () => {
-    for (const operation of ['inventory.created', 'inventory.started', 'inventory.deleted']) {
+  it('allows cashier receiving and inventory operations permitted by the application', () => {
+    const cashierOperations = [
+      'product.upsert',
+      'supplier_invoice.created',
+      'supplier_invoice.updated',
+      'supplier_invoice.posted',
+      'supplier_invoice.payment_added',
+      'supplier_invoice.deleted',
+      'inventory.created',
+      'inventory.started',
+      'inventory.completed',
+      'inventory.deleted',
+    ]
+    for (const operation of cashierOperations) {
+      expect(isSyncOperationAllowed('cashier', operation)).toBe(true)
+    }
+    expect(isSyncOperationAllowed('cashier', 'supplier_invoice.cancelled')).toBe(false)
+  })
+  it('allows storekeepers to synchronize the supply and inventory operations they can perform', () => {
+    for (const operation of [
+      'supplier_invoice.created',
+      'supplier_invoice.updated',
+      'supplier_invoice.posted',
+      'supplier_invoice.payment_added',
+      'inventory.created',
+      'inventory.started',
+      'inventory.deleted',
+    ]) {
       expect(isSyncOperationAllowed('storekeeper', operation)).toBe(true)
-      expect(isSyncOperationAllowed('cashier', operation)).toBe(false)
     }
     expect(isSyncOperationAllowed('storekeeper', 'inventory.completed')).toBe(false)
     expect(isSyncOperationAllowed('owner', 'inventory.completed')).toBe(true)
   })
-  it('does not expose supply documents to cashier roles', () => {
-    expect(canPullSupplyData('cashier')).toBe(false)
+  it('syncs the safe staff directory to every local workstation role', () => {
+    for (const role of ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker']) {
+      expect(canPullStaffDirectory(role)).toBe(true)
+    }
+    expect(canPullStaffDirectory('unknown')).toBe(false)
+  })
+  it('keeps the legacy staff payload private while exposing a salary-safe directory', () => {
+    const staff = [{
+      id: 'worker-1',
+      full_name: 'Новий працівник',
+      phone: '+380501234567',
+      role: 'cashier',
+      is_active: true,
+      base_rate: 250000,
+      rate_period: 'month',
+      created_at: '2026-08-15T08:00:00.000Z',
+      updated_at: '2026-08-15T08:00:00.000Z',
+    }]
+
+    const cashier = buildStaffSyncPayload(staff, 'cashier')
+    expect(cashier.staff).toEqual([])
+    expect(cashier.staff_snapshot_included).toBe(false)
+    expect(cashier.staff_directory_snapshot_included).toBe(true)
+    expect(cashier.staff_directory).toEqual([{
+      id: 'worker-1',
+      full_name: 'Новий працівник',
+      phone: '+380501234567',
+      role: 'cashier',
+      is_active: true,
+      created_at: '2026-08-15T08:00:00.000Z',
+      updated_at: '2026-08-15T08:00:00.000Z',
+    }])
+
+    const owner = buildStaffSyncPayload(staff, 'owner')
+    expect(owner.staff).toBe(staff)
+    expect(owner.staff_directory).toEqual([])
+    expect(owner.staff_snapshot_included).toBe(true)
+    expect(owner.staff_directory_snapshot_included).toBe(false)
+  })
+
+  it('shares rate details only for tire workers in the cashier directory', () => {
+    const payload = buildStaffSyncPayload([{
+      id: 'tire-1', full_name: 'Шиномонтажник', phone: null, role: 'tire_worker',
+      is_active: true, base_rate: 50000, rate_period: 'day',
+      created_at: '2026-08-15T08:00:00.000Z', updated_at: '2026-08-15T08:00:00.000Z',
+    }], 'cashier')
+    expect(payload.staff_directory[0]).toMatchObject({
+      id: 'tire-1', role: 'tire_worker', base_rate: 50000, rate_period: 'day',
+    })
+  })
+  it('exposes supply documents to every role allowed to receive goods', () => {
     expect(canPullSupplyData('sto_viewer')).toBe(false)
-    for (const role of ['owner', 'admin', 'manager', 'storekeeper']) {
+    expect(canPullSupplyData('tire_worker')).toBe(false)
+    for (const role of ['owner', 'admin', 'manager', 'cashier', 'storekeeper']) {
       expect(canPullSupplyData(role)).toBe(true)
     }
   })

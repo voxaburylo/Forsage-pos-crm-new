@@ -1310,6 +1310,12 @@ const MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL = `
         AND operation.status IN ('pending', 'sending', 'failed')
     );
 `;
+const MIGRATION_022_TIRE_CASH_HANDOVER_SQL = `
+  ALTER TABLE cash_operations ADD COLUMN work_date TEXT;
+  CREATE INDEX IF NOT EXISTS idx_cash_operations_tire_handover
+    ON cash_operations(tenant_id, employee_id, work_date, created_at DESC)
+    WHERE type = 'cash_in' AND employee_id IS NOT NULL AND work_date IS NOT NULL;
+`;
 const MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL = `
   -- Revisions created by legacy builds did not record expected_stock. Applying
   -- them now could overwrite balances changed by newer sales or revisions.
@@ -1362,4 +1368,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 19, sql: MIGRATION_019_RETRY_PRODUCT_NUMERIC_SYNC_SQL },
   { version: 20, sql: MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL },
   { version: 21, sql: MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL },
+  { version: 22, sql: MIGRATION_022_TIRE_CASH_HANDOVER_SQL },
 ]

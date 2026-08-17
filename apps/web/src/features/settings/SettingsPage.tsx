@@ -14,6 +14,7 @@ import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
+import { LanSettingsCard } from './LanSettingsCard'
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
 
@@ -438,6 +439,8 @@ export default function SettingsPage() {
               )}
             </Card>
           )}
+
+          {isDesktopRuntime() && <LanSettingsCard />}
 
           {isDesktopRuntime() && <FiscalSettingsCard />}
 

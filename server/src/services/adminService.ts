@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { db } from '../db/supabase.js'
 import { pool, runTransaction } from '../db/pg.js'
@@ -106,24 +107,31 @@ export async function listUsers(tenantId: string) {
 }
 
 export async function createUser(input: CreateUserInput, tenantId: string) {
-  const email = phoneToEmail(input.phone)
+  const noProgramAccess = input.role === 'tire_worker'
+  const phone = input.phone?.trim() ?? ''
+  const email = noProgramAccess
+    ? `tire-worker-${randomUUID()}@forsage.internal`
+    : phoneToEmail(phone)
 
-  const existing = await listAllAuthUsers()
-  const dup = existing.find((u) => u.email === email)
-  if (dup) throw new AppError('PHONE_DUPLICATE', `Користувач з телефоном ${input.phone} вже існує`, 409)
+  if (!noProgramAccess) {
+    const existing = await listAllAuthUsers()
+    const dup = existing.find((u) => u.email === email)
+    if (dup) throw new AppError('PHONE_DUPLICATE', `Користувач з телефоном ${phone} вже існує`, 409)
+  }
 
   const { data, error } = await supabaseAdmin.auth.admin.createUser({
     email,
-    password:      input.password,
+    ...(noProgramAccess ? {} : { password: input.password! }),
     email_confirm: true,
     user_metadata: {
-      phone:     input.phone,
+      phone: noProgramAccess ? '' : phone,
       full_name: input.full_name,
     },
     app_metadata: {
-      role:      input.role,
+      role: input.role,
       tenant_id: tenantId,
       is_active: true,
+      can_login: !noProgramAccess,
       base_rate: input.base_rate ?? 0,
       rate_period: input.rate_period ?? 'month',
     },
@@ -158,7 +166,7 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
     },
     app_metadata: {
       ...currentAppMeta,
-      ...(input.role      !== undefined ? { role: input.role }           : {}),
+      ...(input.role      !== undefined ? { role: input.role, can_login: input.role !== 'tire_worker' } : {}),
       ...(input.is_active !== undefined ? { is_active: input.is_active } : {}),
       ...(input.base_rate !== undefined ? { base_rate: input.base_rate } : {}),
       ...(input.rate_period !== undefined ? { rate_period: input.rate_period } : {}),
@@ -179,6 +187,9 @@ export async function resetPassword(id: string, newPassword: string, tenantId: s
   const { data: existing } = await supabaseAdmin.auth.admin.getUserById(id)
   if (!existing.user || existing.user.app_metadata?.tenant_id !== tenantId) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
+  }
+  if (existing.user.app_metadata?.role === 'tire_worker') {
+    throw new AppError('LOGIN_FORBIDDEN', 'Шиномонтажник не має доступу до програми', 403)
   }
   const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password: newPassword })
   if (error) throw new AppError('AUTH_ERROR', error.message, 500)

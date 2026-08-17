@@ -16,6 +16,7 @@ export default defineConfig({
       // безкінечно утримує старі модулі (зокрема друк етикеток). Поточну
       // сторінку це не перезавантажує: оновлення з'явиться при наступному reload.
       registerType: 'autoUpdate',
+      selfDestroying: true,
       includeAssets: ['*.svg'],
       manifest: {
         name: 'Forsage CRM',

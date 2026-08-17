@@ -17,14 +17,17 @@ function localOrders() {
 }
 
 export const posOrderApi = {
-  listReady: async (input: { search?: string; activeStatuses?: string; limit?: number } = {}, opts: Options = {}) => {
+  listReady: async (input: { search?: string; customer_id?: string | null; activeStatuses?: string; limit?: number } = {}, opts: Options = {}) => {
     const local = localOrders()
     if (local?.listReady) {
-      return { data: await local.listReady({ search: input.search, limit: input.limit ?? 80 }) }
+      return { data: await local.listReady({ search: input.search, customer_id: input.customer_id ?? undefined, limit: input.limit ?? 80 }) }
     }
-    const url = input.search?.trim()
-      ? `/api/v1/customer-orders?search=${encodeURIComponent(input.search.trim())}&per_page=${input.limit ?? 50}`
-      : `/api/v1/customer-orders?status=${input.activeStatuses ?? ''}&per_page=${input.limit ?? 80}`
+    const params = new URLSearchParams()
+    if (input.search?.trim()) params.set('search', input.search.trim())
+    else params.set('status', input.activeStatuses ?? '')
+    if (input.customer_id) params.set('customer_id', input.customer_id)
+    params.set('per_page', String(input.limit ?? (input.search?.trim() ? 50 : 80)))
+    const url = `/api/v1/customer-orders?${params.toString()}`
     return api.get<{ data: any[] }>(url, { silent: opts.silent ?? true, timeoutMs: opts.timeoutMs ?? READ_TIMEOUT_MS })
   },
 

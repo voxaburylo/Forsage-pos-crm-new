@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
@@ -137,6 +138,28 @@ router.post('/:id/deposit', requireRole('owner', 'admin', 'manager', 'cashier'),
     res.json({ data: result })
   } catch (err) { next(err) }
 })
+// POST /api/v1/customers/:id/deposit/payout — видати клієнту всю або частину коштів з рахунку
+router.post('/:id/deposit/payout', requireRole('owner', 'admin', 'cashier'), async (req, res, next) => {
+  try {
+    const parsed = z.object({
+      payout_id: z.string().uuid().optional(),
+      amount: z.number().int().min(1).max(100_000_000_00),
+      method: z.enum(['cash', 'card', 'transfer']),
+      shift_id: z.string().uuid().optional().nullable(),
+      notes: z.string().max(500).optional().nullable(),
+    }).safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть коректну суму видачі', 422, parsed.error.flatten())
+
+    const result = await customerService.payOutDeposit(
+      String(req.params.id),
+      { ...parsed.data, payout_id: parsed.data.payout_id ?? randomUUID() },
+      req.user!.id,
+      req.user!.tenant_id,
+    )
+    res.json({ data: result })
+  } catch (err) { next(err) }
+})
+
 
 // POST /api/v1/customers/:id/bonuses — нарахувати/списати бонуси вручну
 router.post('/:id/bonuses', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {

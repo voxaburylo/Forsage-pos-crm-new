@@ -17,6 +17,8 @@ describe('money synchronization safety', () => {
     expect(syncSource).toContain('isUuid(payload.cash_operation_id) ? payload.cash_operation_id : operation.operation_id')
     expect(syncSource).toContain('INSERT INTO cash_operations (id, tenant_id, shift_id, type, amount, note, created_by, created_at, updated_at)')
     expect(syncSource).toContain('ON CONFLICT (id) DO NOTHING')
+    expect(syncSource).toContain("const cashType = amount < 0 ? 'out' : 'in'")
+    expect(syncSource).toContain('Math.abs(amount)')
   })
 
   it('keeps balance fields out of ordinary customer profile conflict resolution', () => {

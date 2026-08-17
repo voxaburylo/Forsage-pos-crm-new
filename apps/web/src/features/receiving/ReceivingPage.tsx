@@ -1,11 +1,11 @@
 import { useNavigate } from 'react-router-dom'
-import { FilePlus2, FileText, Upload, PackagePlus } from 'lucide-react'
+import { FilePlus2, FileText, PackagePlus, Sparkles } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 
 /**
  * «Поступлення товарів» — єдиний зрозумілий розділ для приходу товару,
  * щоб не плутати з керуванням постачальниками. Хаб із діями; самі сторінки
- * (накладна, список, імпорт, новий товар) уже існують — тут лише чіткі входи.
+ * (накладна, список, новий товар) уже існують — тут лише чіткі входи.
  */
 export default function ReceivingPage() {
   const navigate = useNavigate()
@@ -19,16 +19,16 @@ export default function ReceivingPage() {
       accent: true,
     },
     {
+      icon: <Sparkles size={22} />,
+      title: 'Створити накладну з фото (AI)',
+      desc: 'Додайте фото накладної — AI розпізнає товари та підготує чернетку приходу',
+      to: '/receiving/ai',
+    },
+    {
       icon: <FileText size={22} />,
       title: 'Список накладних',
       desc: 'Усі прихідні накладні: проведення, оплати, історія',
       to: '/suppliers/invoices',
-    },
-    {
-      icon: <Upload size={22} />,
-      title: 'Завантажити Excel',
-      desc: 'Імпорт приходу/прайсу з файлу (xlsx / csv)',
-      to: '/suppliers/import',
     },
     {
       icon: <PackagePlus size={22} />,

@@ -4,6 +4,7 @@ const ALL_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier
 const POS_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier']
 const ORDER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const STOCK_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'storekeeper']
+const RECEIVING_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const INVENTORY_COUNTER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer']
 const OWNER_ROLES: readonly DesktopRole[] = ['owner', 'admin']
 
@@ -15,6 +16,9 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:backup-now', OWNER_ROLES],
+  ['desktop:lan:get-status', OWNER_ROLES],
+  ['desktop:lan:update', OWNER_ROLES],
+  ['desktop:lan:test', OWNER_ROLES],
   ['desktop:bootstrap:import-snapshot', OWNER_ROLES],
   ['desktop:catalog:update-settings', OWNER_ROLES],
   ['desktop:catalog:update-category', OWNER_ROLES],
@@ -22,12 +26,27 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:catalog:update-brand', OWNER_ROLES],
   ['desktop:catalog:delete-brand', OWNER_ROLES],
   ['desktop:staff:verify-pin', ALL_ROLES],
-  ['desktop:inventory:create-session', STOCK_ROLES],
-  ['desktop:inventory:start-session', STOCK_ROLES],
-  ['desktop:inventory:delete-session', STOCK_ROLES],
-  ['desktop:inventory:apply-price', STOCK_ROLES],
-  ['desktop:inventory:complete', ['owner', 'admin', 'storekeeper']],
+  ['desktop:staff:tire-service-report', POS_ROLES],
+  ['desktop:staff:tire-cash-handover', POS_ROLES],
+  ['desktop:inventory:create-session', RECEIVING_ROLES],
+  ['desktop:inventory:start-session', RECEIVING_ROLES],
+  ['desktop:inventory:delete-session', RECEIVING_ROLES],
+  ['desktop:inventory:apply-price', RECEIVING_ROLES],
+  ['desktop:inventory:complete', RECEIVING_ROLES],
+  ['desktop:catalog:save-product', RECEIVING_ROLES],
+  ['desktop:catalog:generate-barcode', RECEIVING_ROLES],
+  ['desktop:supply:list-suppliers', RECEIVING_ROLES],
+  ['desktop:supply:get-supplier', RECEIVING_ROLES],
+  ['desktop:supply:list-invoices', RECEIVING_ROLES],
+  ['desktop:supply:get-invoice', RECEIVING_ROLES],
+  ['desktop:supply:create-invoice', RECEIVING_ROLES],
+  ['desktop:supply:create-invoice-from-ai', RECEIVING_ROLES],
+  ['desktop:supply:update-invoice', RECEIVING_ROLES],
+  ['desktop:supply:post-invoice', RECEIVING_ROLES],
+  ['desktop:supply:pay-invoice', RECEIVING_ROLES],
+  ['desktop:supply:delete-invoice', RECEIVING_ROLES],
   ['desktop:pos:reconcile', OWNER_ROLES],
+  ['desktop:pos:payout-customer-deposit', ['owner', 'admin', 'cashier']],
   ['desktop:fiscal:set-config', OWNER_ROLES],
   ['desktop:fiscal:register-com', OWNER_ROLES],
 ])

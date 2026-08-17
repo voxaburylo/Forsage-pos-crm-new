@@ -145,7 +145,11 @@ export function FiscalSettingsCard() {
           <Receipt size={18} className="text-amber-600" />
           <h3 className="text-sm font-semibold text-amber-900">ПРРО Кашалот (фіскальні чеки)</h3>
         </div>
-        <label className="relative inline-flex items-center cursor-pointer">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-gray-500">
+            {config.enabled ? 'Увімкнено' : 'Вимкнено'}
+          </span>
+          <label className="relative inline-flex items-center cursor-pointer">
           <input type="checkbox"
             aria-label="Увімкнути фіскалізацію через Кашалот"
             checked={config.enabled}
@@ -153,6 +157,7 @@ export function FiscalSettingsCard() {
             className="sr-only peer" />
           <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-yellow-400 peer-focus:ring-2 peer-focus:ring-yellow-200 after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
         </label>
+        </div>
       </div>
 
       <p className="text-xs text-amber-700">

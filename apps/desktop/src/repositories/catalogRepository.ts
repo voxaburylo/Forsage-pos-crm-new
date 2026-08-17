@@ -65,6 +65,39 @@ export interface LocalCatalogBrand {
   name: string
   country: string | null
 }
+
+export function normalizeCatalogCode(value: string | null | undefined): string {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleUpperCase('uk-UA')
+    .replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
+}
+
+export function catalogCodesFromName(value: string | null | undefined): string[] {
+  const pieces = String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleUpperCase('uk-UA')
+    .split(/\s+/)
+    .map((piece) => piece.replace(/^[^A-ZА-ЯІЇЄҐ0-9]+|[^A-ZА-ЯІЇЄҐ0-9]+$/g, ''))
+    .filter(Boolean)
+  const codes = new Set<string>()
+  for (const piece of pieces) {
+    const code = normalizeCatalogCode(piece)
+    if (code.length >= 4 && /[A-ZА-ЯІЇЄҐ]/.test(code) && /\d/.test(code)) {
+      codes.add(code)
+    }
+  }
+  for (let index = 0; index + 1 < pieces.length; index += 1) {
+    const left = pieces[index]
+    const right = pieces[index + 1]
+    if (/^[A-Z]{1,3}$/.test(left) && /^\d[\d./_-]*$/.test(right)) {
+      const code = normalizeCatalogCode(left + right)
+      if (code.length >= 4) codes.add(code)
+    }
+  }
+  return [...codes]
+}
+
 function productSearchNeedles(raw: string): string[] {
   const values = new Set<string>()
   const normalized = normalizeSearchText(raw)
@@ -79,7 +112,6 @@ function productSearchNeedles(raw: string): string[] {
     [/бустер/gi, 'booster'],
     [/провод/gi, 'wire'],
   ]
-
   for (const [pattern, replacement] of [...latinToCyrillic, ...cyrillicToLatin]) {
     const variant = normalizeSearchText(raw.replace(pattern, replacement))
     if (variant) values.add(variant)
@@ -466,6 +498,67 @@ export class LocalCatalogRepository {
       ORDER BY created_at ASC
     `).all(tenantId, productId) as Array<{ id: string; number: string; source: string }>
     return rows
+  }
+
+  listAnalogs(productId: string, tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
+    const source = this.findById(productId, tenantId)
+    if (!source) return []
+
+    const sourceCrosses = this.listCrossNumbers(productId, tenantId)
+    const lookupCodes = new Set<string>([
+      ...catalogCodesFromName(source.name),
+      ...sourceCrosses.map((row) => normalizeCatalogCode(row.number)),
+      ...sourceCrosses.flatMap((row) => catalogCodesFromName(row.number)),
+    ].filter((code) => code.length >= 4))
+    if (lookupCodes.size === 0) return []
+
+    const products = this.db.prepare(`
+      SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode,
+             p.brand_id, br.name AS brand_name, p.category_id, c.name AS category_name,
+             p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
+             p.notes, p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
+             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
+      FROM products p
+      LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
+      LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL
+      WHERE p.tenant_id = ?
+        AND p.id <> ?
+        AND p.deleted_at IS NULL
+        AND p.is_active = 1
+    `).all(tenantId, productId) as unknown as LocalProduct[]
+
+    const crossRows = this.db.prepare(`
+      SELECT product_id, cross_number
+      FROM product_cross_numbers
+      WHERE tenant_id = ? AND product_id <> ? AND deleted_at IS NULL
+    `).all(tenantId, productId) as Array<{ product_id: string; cross_number: string }>
+    const crossesByProduct = new Map<string, string[]>()
+    for (const row of crossRows) {
+      const values = crossesByProduct.get(row.product_id) ?? []
+      values.push(row.cross_number)
+      crossesByProduct.set(row.product_id, values)
+    }
+
+    const matched = products.filter((product) => {
+      const candidateCodes = new Set<string>([
+        ...catalogCodesFromName(product.name),
+        normalizeCatalogCode(product.sku),
+        normalizeCatalogCode(product.barcode),
+        ...(crossesByProduct.get(product.id) ?? []).map(normalizeCatalogCode),
+      ].filter((code) => code.length >= 4))
+      for (const code of lookupCodes) {
+        if (candidateCodes.has(code)) return true
+      }
+      return false
+    })
+
+    return this.attachAvailability(matched, tenantId)
+      .sort((left, right) =>
+        Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
+        - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1)
+        || String(left.name).localeCompare(String(right.name), 'uk', { sensitivity: 'base' }),
+      )
+      .slice(0, Math.max(1, Math.min(Number(limit) || 50, 100)))
   }
 
   findById(id: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
@@ -981,7 +1074,7 @@ export class LocalCatalogRepository {
       shop_address: null,
       phone: null,
       max_discount_pct: 100,
-      allow_negative_qty: true,
+      allow_negative_qty: false,
       return_days: 14,
       currency: 'UAH',
       default_debt_limit_kopecks: 0,

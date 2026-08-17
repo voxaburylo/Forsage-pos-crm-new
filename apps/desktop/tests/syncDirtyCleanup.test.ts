@@ -138,6 +138,40 @@ describe('outbox dirty flag cleanup', () => {
     expect(db.prepare('SELECT dirty_at FROM inventory_movements WHERE source_id = ?').get(saleId))
       .toEqual({ dirty_at: null })
   })
+  it('clears a stale dirty flag from a completed returned sale', () => {
+    const timestamp = new Date().toISOString()
+    const saleId = randomUUID()
+    const returnId = randomUUID()
+    const shiftId = randomUUID()
+    db.prepare('INSERT INTO shifts (id, tenant_id, cashier_id, status, opening_cash, opened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(shiftId, DEFAULT_TENANT_ID, randomUUID(), 'open', 0, timestamp, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO sales (
+        id, tenant_id, sale_number, cashier_id, shift_id, status,
+        subtotal, total, payment_method, dirty_at, completed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'returned', 20, 20, 'cash', ?, ?, ?, ?)
+    `).run(
+      saleId,
+      DEFAULT_TENANT_ID,
+      `RETURNED-${saleId.slice(0, 8)}`,
+      randomUUID(),
+      shiftId,
+      timestamp,
+      timestamp,
+      timestamp,
+      timestamp,
+    )
+    db.prepare(`
+      INSERT INTO customer_returns (
+        id, tenant_id, sale_id, reason, refund_method, stock_action,
+        refund_kopecks, status, created_at, updated_at
+      ) VALUES (?, ?, ?, 'customer_request', 'cash', 'no_return', 0, 'completed', ?, ?)
+    `).run(returnId, DEFAULT_TENANT_ID, saleId, timestamp, timestamp)
+
+    new LocalSyncRepository(db)
+
+    expect(db.prepare('SELECT dirty_at FROM sales WHERE id = ?').get(saleId))
+      .toEqual({ dirty_at: null })
+  })
   it('treats a reset-discarded operation as terminal without clearing its dirty row', () => {
     const product = catalog.saveProduct({
       id: randomUUID(),

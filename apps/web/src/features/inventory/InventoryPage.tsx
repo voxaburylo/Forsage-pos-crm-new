@@ -46,7 +46,7 @@ export default function InventoryPage() {
   const navigate = useNavigate()
   const { session } = useAuthStore()
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
-  const canManage = ['owner', 'admin', 'storekeeper'].includes(role)
+  const canManage = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
   const [sessions, setSessions] = useState<Session[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -56,15 +56,20 @@ export default function InventoryPage() {
   const [managerId, setManagerId] = useState('')
   const [creating, setCreating] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
 
   async function load() {
     setLoading(true)
     try {
       const [sessRes, usersRes] = await Promise.all([
-        inventoryApi.listSessions({ silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS }),
+        inventoryApi.listSessions({ page, per_page: 20 }, { silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS }),
         adminApi.listUsers().catch(() => ({ data: [] })),
       ])
       setSessions(sessRes.data)
+      setTotal(sessRes.pagination.total)
+      setTotalPages(sessRes.pagination.total_pages)
       setUsers(usersRes.data ?? [])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Помилка завантаження')
@@ -77,7 +82,7 @@ export default function InventoryPage() {
     const refreshFromLocalPull = () => { void load() }
     window.addEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
     return () => window.removeEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
-  }, [])
+  }, [page])
 
   useEffect(() => {
     if (session?.user?.id && !managerId) {
@@ -135,7 +140,11 @@ export default function InventoryPage() {
     setDeletingId(session.id)
     try {
       await inventoryApi.deleteSession(session.id)
-      setSessions((prev) => prev.filter((item) => item.id !== session.id))
+      if (sessions.length === 1 && page > 1) {
+        setPage((current) => current - 1)
+      } else {
+        await load()
+      }
       toast.success('Порожню ревізію видалено')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося видалити ревізію')
@@ -185,6 +194,8 @@ export default function InventoryPage() {
     )},
   ]
 
+  const firstShown = total === 0 ? 0 : (page - 1) * 20 + 1
+  const lastShown = Math.min(page * 20, total)
   return (
     <Layout title="Ревізія залишків">
       <div className="max-w-3xl">
@@ -197,6 +208,18 @@ export default function InventoryPage() {
         <Card padding="none">
           <Table columns={columns} data={sessions} keyFn={(s) => s.id} loading={loading}
             empty={<p className="text-gray-400 text-sm py-12 text-center">Ревізій ще не було</p>} />
+          {totalPages > 1 && (
+            <div className="border-t border-gray-100 px-4 py-3 flex items-center justify-between text-sm text-gray-500">
+              <span>Показано {firstShown}–{lastShown} з {total}</span>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1}
+                  className="px-3 py-1 border border-gray-200 rounded-lg disabled:opacity-40 hover:border-gray-300">←</button>
+                <span className="px-3 py-1 bg-gray-100 rounded-lg font-medium">{page} / {totalPages}</span>
+                <button type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page === totalPages}
+                  className="px-3 py-1 border border-gray-200 rounded-lg disabled:opacity-40 hover:border-gray-300">→</button>
+              </div>
+            </div>
+          )}
         </Card>
       </div>
 
