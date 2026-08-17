@@ -72,6 +72,9 @@ export default function StaffPage() {
   const employeePayments = useMemo(()=>{ if(!selectedUser) return []; return payments.filter(p=>p.employee_id===selectedUser.id) },[selectedUser,payments])
   const employeeRules = useMemo(()=>{ if(!selectedUser) return []; return rules.filter(r=>r.user_id===selectedUser.id) },[selectedUser,rules])
   const employeeToday = useMemo(()=>{ if(!selectedUser) return null; return dailySummary.find(s=>s.employee_id===selectedUser.id)||null },[selectedUser,dailySummary])
+  // Власник керує зарплатою, але не є працівником, якому магазин винен ЗП.
+  // Його старі комісійні записи лишаються в аудиті, проте не показуються як борг.
+  const payrollUsers = useMemo(()=>users.filter((user)=>user.role!=='owner'),[users])
 
   function shiftPeriod(d:number){const[y,m]=period.split('-').map(Number);const dt=new Date(y,m-1+d,1);setPeriod(dt.toISOString().slice(0,7))}
 
@@ -159,13 +162,13 @@ export default function StaffPage() {
             <button onClick={()=>shiftPeriod(1)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm hover:bg-gray-50 transition-colors"><ChevronRight size={16}/></button>
           </div>
           <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-end">
-            <p className="text-xs text-gray-500">Всього співробітників: <span className="font-semibold text-gray-900">{users.length}</span></p>
+            <p className="text-xs text-gray-500">Всього співробітників: <span className="font-semibold text-gray-900">{payrollUsers.length}</span></p>
             <Button icon={<Plus size={16}/>} onClick={()=>setAddOpen(true)}>Додати співробітника</Button>
           </div>
         </div>
 
         <Card padding="none">
-          <Table columns={columns} data={users} keyFn={(u)=>u.id} loading={loading} empty={<p className="text-gray-400 text-sm py-12 text-center">Співробітників не знайдено</p>}/>
+          <Table columns={columns} data={payrollUsers} keyFn={(u)=>u.id} loading={loading} empty={<p className="text-gray-400 text-sm py-12 text-center">Співробітників не знайдено</p>}/>
         </Card>
       </div>
 

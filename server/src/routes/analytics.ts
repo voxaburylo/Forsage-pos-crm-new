@@ -447,6 +447,7 @@ router.get('/staff-profitability', requireRole('owner', 'admin'), async (req, re
     for (const u of usersList) {
       userNamesMap.set(u.id, u.full_name || u.email)
     }
+    const ownerUserIds = new Set(usersList.filter((user) => user.role === 'owner').map((user) => user.id))
 
     // 7. Агрегуємо дані прибутковості по менеджерах
     const profitabilityMap: Record<string, {
@@ -527,6 +528,7 @@ router.get('/staff-profitability', requireRole('owner', 'admin'), async (req, re
 
     // Обробляємо витрати на ЗП
     for (const p of payments ?? []) {
+      if (ownerUserIds.has(p.employee_id)) continue
       const empId = p.employee_id
       const mData = getOrCreateManager(empId, p.employee_name)
       const amt = p.amount
