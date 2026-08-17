@@ -27,15 +27,28 @@ interface InventoryCountInput {
 export class LocalInventoryRepository {
   constructor(private readonly db: LocalDatabase) {}
 
-  listSessions(tenantId = DEFAULT_TENANT_ID): any[] {
+  listSessions(
+    tenantId = DEFAULT_TENANT_ID,
+    input: { limit?: number; offset?: number } = {},
+  ): any[] {
+    const limit = Math.min(100, Math.max(1, Math.trunc(num(input.limit) || 20)))
+    const offset = Math.max(0, Math.trunc(num(input.offset)))
     return this.db.prepare(`
       SELECT id, tenant_id, session_name AS name, status, started_by AS created_by,
              created_at, completed_at
       FROM inventory_sessions
       WHERE tenant_id = ? AND deleted_at IS NULL AND status <> 'cancelled'
       ORDER BY created_at DESC
-      LIMIT 50
-    `).all(tenantId) as any[]
+      LIMIT ? OFFSET ?
+    `).all(tenantId, limit, offset) as any[]
+  }
+
+  countSessions(tenantId = DEFAULT_TENANT_ID): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM inventory_sessions
+      WHERE tenant_id = ? AND deleted_at IS NULL AND status <> 'cancelled'
+    `).get(tenantId) as { count: number }
+    return Math.max(0, Math.trunc(num(row?.count)))
   }
 
   createSession(input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }): any {

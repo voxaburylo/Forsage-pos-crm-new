@@ -545,7 +545,7 @@ interface ForsageDesktopBridge {
     createWriteoff: (input: any) => Promise<any>
   }
   inventory?: {
-    listSessions: (input?: { tenant_id?: string }) => Promise<any[]>
+    listSessions: (input?: { tenant_id?: string; page?: number; per_page?: number }) => Promise<{ data: any[]; pagination: { page: number; per_page: number; total: number; total_pages: number } }>
     createSession: (input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) => Promise<any>
     startSession: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
     deleteSession: (sessionId: string, tenantId?: string) => Promise<any>

@@ -8,8 +8,6 @@ import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
-import { reportApi } from '@/features/reports/reportApi'
-import type { SoldItem } from '@/types/report'
 import { staffApi } from '@/features/staff/staffApi'
 import type { TireServiceReportRow } from '@/features/staff/staffApi'
 
@@ -62,7 +60,6 @@ export default function DashboardPage() {
   const [overdueCount, setOverdueCount] = useState(0)
   const [debt, setDebt] = useState({ count: 0, total: 0 })
   const [loading, setLoading] = useState(true)
-  const [soldItems, setSoldItems] = useState<SoldItem[]>([])
   const loadSequenceRef = useRef(0)
   const [tireWorkers, setTireWorkers] = useState<TireServiceReportRow[]>([])
 
@@ -74,12 +71,8 @@ export default function DashboardPage() {
     const isCurrent = () => !cancelled && requestId === loadSequenceRef.current
     async function load() {
       setLoading(true)
-      setSoldItems([])
       setTireWorkers([])
       try {
-        void reportApi.soldItems(range.startDate, range.endDate)
-          .then(({ data }) => { if (isCurrent()) setSoldItems(data ?? []) })
-          .catch(() => { if (isCurrent()) setSoldItems([]) })
         const desktop = desktopBridge()
         if (canSeeProfit && range.startDate === range.endDate) {
           void staffApi.tireServiceReport(range.startDate)
@@ -185,7 +178,7 @@ export default function DashboardPage() {
   }), { services_qty: 0, service_revenue: 0, due: 0 })
 
   return (
-    <Layout title="Аналітика">
+    <Layout title="Статистика">
       {/* Period selector */}
       <div className="flex gap-2 mb-6 flex-wrap">
         {(Object.keys(PERIOD_LABELS) as QuickPeriod[]).map((p) => (
@@ -248,57 +241,6 @@ export default function DashboardPage() {
           </div>
         ))}
       </div>
-
-      <Card padding="none" className="mb-6">
-        <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h3 className="font-bold text-gray-900">
-              Продані товари · {range.startDate === range.endDate ? range.startDate : `${range.startDate} — ${range.endDate}`}
-            </h3>
-            <p className="text-xs text-gray-500">Зведено по товарах без дублювання рядків із різних чеків</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => navigate('/reports')}
-            className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-yellow-400 sm:mt-0"
-          >
-            Повний звіт та Excel
-          </button>
-        </div>
-        {loading ? (
-          <div className="px-4 py-8 text-center text-sm text-gray-400">Формуємо список…</div>
-        ) : soldItems.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-gray-400">За вибраний період проданих товарів немає</div>
-        ) : (
-          <div className="max-h-[50vh] overflow-auto">
-            <table className="w-full min-w-[760px] text-sm">
-              <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
-                <tr>
-                  <th className="px-4 py-3 text-left">Артикул</th>
-                  <th className="px-2 py-3 text-left">Штрихкод</th>
-                  <th className="px-2 py-3 text-left">Назва</th>
-                  <th className="px-2 py-3 text-right">Продано</th>
-                  <th className="px-2 py-3 text-right">Залишок</th>
-                  <th className="px-4 py-3 text-right">Сума</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {soldItems.map((item) => (
-                  <tr key={item.product_id} className="hover:bg-gray-50">
-                    <td className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
-                    <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
-                    <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
-                    <td className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
-                    <td className="px-2 py-2 text-right text-gray-600">{item.qty_on_hand} {item.unit}</td>
-                    <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
-
 
       {canSeeProfit && range.startDate === range.endDate && (
         <Card padding="none" className="mb-6">

@@ -448,7 +448,7 @@ export default function DailyReport() {
   }))
 
   return (
-    <Layout title="Звіти">
+    <Layout title="Продажі та звіти">
       <div className="flex justify-between items-center gap-2 mb-6 flex-wrap">
         <div className="flex gap-2 flex-wrap">
           {TABS.map((t) => (

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Package, ShoppingCart,
+  Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
   ChevronDown, Tag, UserCog, Users,
   X, PackagePlus,
@@ -58,8 +58,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Аналітика',
     roles: ['owner','admin','manager','cashier'],
     items: [
-      { to: '/dashboard',           icon: <LayoutDashboard size={18} />, label: 'Дашборд',              roles: ['owner','admin','manager'] },
-      { to: '/reports',             icon: <BarChart2 size={18} />,       label: 'Продані товари / звіти', roles: ['owner','admin','manager','cashier'] },
+      { to: '/analytics',           icon: <BarChart2 size={18} />,       label: 'Аналітика', roles: ['owner','admin','manager','cashier'] },
     ],
   },
   {
@@ -88,10 +87,6 @@ function SidebarLink({ item, badge, onClose }: { item: NavItem; badge?: number; 
         ([key, val]) => currentParams.get(key) === val
       )
       return pathMatches && paramsMatch
-    }
-
-    if (item.to === '/dashboard') {
-      return location.pathname === '/dashboard' || location.pathname === '/'
     }
 
     if (item.to === '/inventory') {

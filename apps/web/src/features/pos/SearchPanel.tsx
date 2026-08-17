@@ -8,7 +8,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
-import { findProductByScanOffline, getCachedCategories, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
+import { findProductByScanOffline, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
@@ -72,7 +72,6 @@ export interface SearchPanelHandle {
   search: (q: string) => void
   appendSearchText: (text: string) => void
   backspaceSearch: () => void
-  openCamera: () => void
   scanBarcode: (code: string) => void
 }
 
@@ -90,7 +89,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const [analogs, setAnalogs]   = useState<Record<string, { analogs: Product[]; grouped: Record<string, Product[]> }>>({})
   const [analogsLoading, setAnalogsLoading] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
+  const [mobileWeb, setMobileWeb] = useState(false)
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null)
   const [pricingModalItem, setPricingModalItem] = useState<any | null>(null)
   const [pricingRetailPrice, setPricingRetailPrice] = useState<string>('')
@@ -121,11 +120,8 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     backspaceSearch: () => {
       setQuery((current) => current.slice(0, -1))
     },
-    openCamera: () => setCameraOpen(true),
     scanBarcode: (code: string) => queueBarcodeScan(code),
   }))
-
-  const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
 
   useEffect(() => {
     // Не читаємо весь каталог у пам'ять при старті каси: на великих базах це
@@ -148,21 +144,21 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     return () => window.removeEventListener('forsage:offline-stock-updated', refresh)
   }, [])
 
-  // Desktop завжди читає папки з локальної SQLite; сервер лише синхронізує їх у фоні.
   useEffect(() => {
-    const local = desktopBridge()?.catalog.listCategories
-    if (local) {
-      local().then(setCategories).catch(() => setCategories([]))
+    if (desktopRuntime) {
+      setMobileWeb(false)
+      setCameraOpen(false)
       return
     }
-    if (effectiveOnline) {
-      api.get<{ data: { id: string; name: string }[] }>('/api/v1/admin/categories', { silent: true, timeoutMs: 10000 })
-        .then((res) => setCategories(res.data ?? []))
-        .catch(() => {})
-    } else if (scopeKey) {
-      getCachedCategories(scopeKey).then(setCategories).catch(() => setCategories([]))
+    const media = window.matchMedia('(max-width: 767px) and (pointer: coarse)')
+    const update = () => {
+      setMobileWeb(media.matches)
+      if (!media.matches) setCameraOpen(false)
     }
-  }, [effectiveOnline, scopeKey])
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [desktopRuntime])
   // Debounced search
   useEffect(() => {
     clearTimeout(timer.current)
@@ -178,14 +174,10 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         // таймаутах і стирав уже показані товари.
         const desktopCatalog = desktopBridge()?.catalog
         if (desktopCatalog) {
-          const selectedCategoryId = categoryFilter
-            ? categories.find((category) => category.name === categoryFilter)?.id
-            : undefined
           let localProducts
           if (desktopCatalog.listProducts) {
             const localResult = await desktopCatalog.listProducts({
               query: query.trim() || undefined,
-              categoryId: selectedCategoryId,
               limit: query.trim() ? 30 : 50,
               offset: 0,
               sortField: query.trim() ? undefined : 'qty_on_hand',
@@ -196,9 +188,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             localProducts = query.trim()
               ? await desktopCatalog.searchProducts(query.trim(), 30)
               : await desktopCatalog.listPopular(50)
-            if (selectedCategoryId) {
-              localProducts = localProducts.filter((product) => product.category_id === selectedCategoryId)
-            }
           }
           if (epoch !== searchEpoch.current) return
           setResults(localProducts.map(desktopProductToProduct))
@@ -208,7 +197,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         }
         // Офлайн-режим (браузер/PWA): шукаємо в IndexedDB
         if (!effectiveOnline) {
-          const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter)
+          const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey)
           if (epoch !== searchEpoch.current) return
           setResults(offlineResults as Product[])
           setSupplierResults([])
@@ -216,11 +205,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           return
         }
         const activeQuery = query.trim()
-        const selectedCategoryId = categoryFilter
-          ? categories.find((category) => category.name === categoryFilter)?.id
-          : undefined
-
-        if (activeQuery && !selectedCategoryId) {
+        if (activeQuery) {
           const res = await productApi.search(activeQuery, 100)
           if (epoch !== searchEpoch.current) return
           setResults(res.data ?? [])
@@ -228,7 +213,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         } else {
           const res = await productApi.list({
             search: activeQuery || undefined,
-            category_id: selectedCategoryId,
             per_page: activeQuery ? 100 : 50,
             is_active: 'true',
             sort_field: activeQuery ? undefined : 'qty_on_hand',
@@ -239,7 +223,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           setSupplierResults([])
         }
       } catch {
-        const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey, categoryFilter).catch(() => [])
+        const offlineResults = await searchProductsOffline(query.trim(), 20, scopeKey).catch(() => [])
         if (epoch !== searchEpoch.current) return
         setResults(offlineResults as Product[])
         setSupplierResults([])
@@ -248,7 +232,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       }
     }, 200)
     return () => clearTimeout(timer.current)
-  }, [query, categoryFilter, categories, effectiveOnline, scopeKey, offlineStockVersion])
+  }, [query, effectiveOnline, scopeKey, offlineStockVersion])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
@@ -582,15 +566,19 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             }`}
           />
         </div>
-        <button onClick={() => setCameraOpen(true)}
-          className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 md:w-[50px] md:h-[50px] w-[44px] h-[44px] shrink-0"
-          title="Сканувати камерою (F8)">
-          <Camera size={20} />
-        </button>
+        {mobileWeb && (
+          <button onClick={() => setCameraOpen(true)}
+            className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 w-[44px] h-[44px] shrink-0"
+            title="Сканувати камерою">
+            <Camera size={20} />
+          </button>
+        )}
       </div>
 
-      <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
-        onScan={(code) => { setCameraOpen(false); queueBarcodeScan(code) }} />
+      {mobileWeb && (
+        <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
+          onScan={(code) => { setCameraOpen(false); queueBarcodeScan(code) }} />
+      )}
 
       {/* Нещодавні скани */}
       {query === '' && getRecentItems('recent_scans').length > 0 && (
@@ -609,30 +597,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         </div>
       )}
 
-      {/* Фільтр категорій */}
-      <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1.5 scrollbar-none shrink-0">
-        <button onClick={() => setCategoryFilter(null)}
-          className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-all border ${
-            !categoryFilter
-              ? 'bg-yellow-500 text-black border-yellow-500'
-              : 'bg-gray-800/60 text-gray-400 border-gray-700/50 hover:bg-gray-700/50'
-          }`}>
-          🏠 Все
-        </button>
-        {categories.map((cat) => {
-          const isActive = categoryFilter === cat.name
-          return (
-            <button key={cat.id} onClick={() => setCategoryFilter(isActive ? null : cat.name)}
-              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-all border ${
-                isActive
-                  ? 'bg-yellow-500 text-black border-yellow-500'
-                  : 'bg-gray-800/60 text-gray-400 border-gray-700/50 hover:bg-gray-700/50'
-              }`}>
-              {cat.name}
-            </button>
-          )
-        })}
-      </div>
 
       {/* Результати */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-4 pr-0.5 scrollbar-thin">

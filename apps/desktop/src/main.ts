@@ -984,9 +984,21 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:warehouse:create-writeoff', (_event, input: any) =>
     requireLocalWarehouse().createWriteoff(input),
   )
-  handleDesktopIpc('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string }) =>
-    requireLocalInventory().listSessions(input?.tenant_id),
-  )
+  handleDesktopIpc('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string; page?: number; per_page?: number }) => {
+    const page = Math.max(1, Math.trunc(Number(input?.page) || 1))
+    const perPage = Math.min(100, Math.max(1, Math.trunc(Number(input?.per_page) || 20)))
+    const inventory = requireLocalInventory()
+    const total = inventory.countSessions(input?.tenant_id)
+    return {
+      data: inventory.listSessions(input?.tenant_id, { limit: perPage, offset: (page - 1) * perPage }),
+      pagination: {
+        page,
+        per_page: perPage,
+        total,
+        total_pages: Math.max(1, Math.ceil(total / perPage)),
+      },
+    }
+  })
   handleDesktopIpc('desktop:inventory:create-session', (_event, input: { tenant_id?: string; name: string; created_by?: string | null; created_at?: string | null }) =>
     requireLocalInventory().createSession({ ...input, created_by: requireDesktopSession().id }),
   )

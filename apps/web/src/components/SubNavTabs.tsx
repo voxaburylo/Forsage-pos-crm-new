@@ -100,11 +100,10 @@ export const SUPPLIERS_TABS = [
   { to: '/suppliers/pos', label: 'Замовлення постачальникам', serverOnly: true },
 ]
 
-// Поступлення товарів — єдиний дім для приходу (накладні + імпорт), щоб не дублювати
+// Поступлення товарів — єдиний дім для приходу, щоб не дублювати
 // з керуванням постачальниками.
 export const RECEIVING_TABS = [
   { to: '/suppliers/invoices', label: 'Накладні' },
-  { to: '/suppliers/import', label: 'Імпорт' },
 ]
 
 export const INVENTORY_TABS = [
@@ -115,8 +114,9 @@ export const INVENTORY_TABS = [
 ]
 
 export const ANALYTICS_TABS = [
-  { to: '/dashboard', label: 'Дашборд', roles: ['owner', 'admin', 'manager'] },
-  { to: '/reports', label: 'Продані товари / звіти', roles: ['owner', 'admin', 'manager', 'cashier'] },
+  { to: '/analytics/statistics', label: 'Статистика', roles: ['owner', 'admin', 'manager'] },
+  { to: '/analytics/sales', label: 'Продажі та звіти', roles: ['owner', 'admin', 'manager', 'cashier'] },
+  { to: '/analytics/payroll', label: 'Зарплата та виплати', roles: ['owner', 'admin'] },
 ]
 
 export const STAFF_TABS = [

@@ -5,7 +5,7 @@ import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
 import { LocalSyncAgent } from '@/components/LocalSyncAgent'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
-import '@/stores/authStore'
+import { useAuthStore } from '@/stores/authStore'
 
 function lazyPage(componentImport: () => Promise<any>) {
   return lazy(componentImport)
@@ -23,6 +23,7 @@ const POSPage              = lazyPage(() => import('@/features/pos/POSPage'))
 const SalesPage            = lazyPage(() => import('@/features/sales/SalesPage'))
 const ReturnForm           = lazyPage(() => import('@/features/pos/ReturnForm'))
 const DailyReport          = lazyPage(() => import('@/features/reports/DailyReport'))
+const PayrollPage          = lazyPage(() => import('@/features/analytics/PayrollPage'))
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
 // CommissionRulesPage merged
@@ -33,7 +34,6 @@ const SupplierDetailPage   = lazyPage(() => import('@/features/suppliers/Supplie
 const InvoicesPage         = lazyPage(() => import('@/features/suppliers/InvoicesPage'))
 const InvoiceFormPage      = lazyPage(() => import('@/features/suppliers/InvoiceFormPage'))
 const InvoiceDetailPage    = lazyPage(() => import('@/features/suppliers/InvoiceDetailPage'))
-const ImportPage           = lazyPage(() => import('@/features/suppliers/ImportPage'))
 const BulkImportPage       = lazyPage(() => import('@/features/suppliers/BulkImportPage'))
 const SupplierPricesPage   = lazyPage(() => import('@/features/suppliers/SupplierPricesPage'))
 const WriteoffsPage        = lazyPage(() => import('@/features/inventory/WriteoffsPage'))
@@ -73,6 +73,11 @@ const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const REPORT_ROLES = ['owner', 'admin', 'manager', 'cashier']
 const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
+
+function AnalyticsHome() {
+  const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
+  return <Navigate to={role === 'cashier' ? '/analytics/sales' : '/analytics/statistics'} replace />
+}
 
 function Loader() {
   return (
@@ -170,7 +175,11 @@ function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
-          <Route path="/dashboard"          element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
+          <Route path="/analytics"            element={<AnalyticsHome />} />
+          <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
+          <Route path="/analytics/sales"      element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
+          <Route path="/analytics/payroll"    element={<ProtectedRoute roles={ADMIN_ROLES}><PayrollPage /></ProtectedRoute>} />
+          <Route path="/dashboard"             element={<Navigate to="/analytics/statistics" replace />} />
           <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
           <Route path="/products/new"       element={<ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute>} />
           <Route path="/products/:id"       element={<ProtectedRoute><ProductDetailPage /></ProtectedRoute>} />
@@ -185,8 +194,7 @@ function App() {
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
           <Route path="/returns"  element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
           <Route path="/cashflow" element={<ProtectedRoute><CashflowPage /></ProtectedRoute>} />
-          {/* Звіти з прибутком/маржею — лише власник і адмін */}
-          <Route path="/reports"  element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
+          <Route path="/reports"  element={<Navigate to="/analytics/sales" replace />} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute>} />
           <Route path="/needs-action" element={<ProtectedRoute roles={OFFICE_ROLES}><NeedsActionPage /></ProtectedRoute>} />
@@ -207,7 +215,6 @@ function App() {
           <Route path="/suppliers/invoices/new" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceDetailPage /></ProtectedRoute>} />
           <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
-          <Route path="/suppliers/import"            element={<ProtectedRoute roles={RECEIVING_ROLES}><ImportPage /></ProtectedRoute>} />
 
           <Route path="/staff"          element={<ProtectedRoute roles={ADMIN_ROLES}><StaffPage /></ProtectedRoute>} />
           
@@ -240,8 +247,8 @@ function App() {
           <Route path="/quotes/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute>} />
           <Route path="/quotes/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute>} />
 
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={<Navigate to="/analytics" replace />} />
+          <Route path="*" element={<Navigate to="/analytics" replace />} />
         </Routes>
       </Suspense>
       </AppErrorBoundary>

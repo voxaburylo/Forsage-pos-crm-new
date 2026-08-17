@@ -96,7 +96,7 @@ export default function InvoicesPage() {
             Створити з фото (AI)
           </Button>
           <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new?fresh=' + Date.now())}>
-            + Приходна накладна
+            Приходна накладна
           </Button>
         </div>
       }

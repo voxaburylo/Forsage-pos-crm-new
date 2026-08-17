@@ -367,6 +367,11 @@ describe('Multi-Tenant Data Isolation Tests', () => {
       await getSalesToday(tenantId)
       expect(db.from).toHaveBeenCalledWith('sales')
       expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+      const salesBuilder = (db.from as any).mock.results
+        .find((_: unknown, index: number) => (db.from as any).mock.calls[index]?.[0] === 'sales')
+        ?.value
+      expect(salesBuilder?.select).toHaveBeenCalled()
+      expect(String(salesBuilder?.select.mock.calls[0]?.[0] ?? '')).not.toContain('debt_amount')
     })
 
     it('should apply tenant_id query filter to loyalty balances and transactions', async () => {

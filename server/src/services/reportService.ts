@@ -88,7 +88,7 @@ export async function getSalesToday(tenantId: string) {
 
   const { data, error } = await db
     .from('sales')
-    .select('id, total, payment_method, cash_amount, card_amount, transfer_amount, debt_amount')
+    .select('id, total, payment_method, cash_amount, card_amount, transfer_amount')
     .eq('tenant_id', tenantId)
     .gte('completed_at', from)
     .lte('completed_at', to)
@@ -107,7 +107,7 @@ export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
   // 1. Отримуємо продажі за період
   const { data: sales, error: salesErr } = await db
     .from('sales')
-    .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount, transfer_amount, debt_amount, customer:customers(id,phone,full_name)')
+    .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount, transfer_amount, customer:customers(id,phone,full_name)')
     .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
