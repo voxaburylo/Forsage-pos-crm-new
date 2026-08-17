@@ -420,7 +420,10 @@ export class LocalStaffRepository {
     const revenue = Number(input.pct_from_revenue ?? 0)
     const profit = Number(input.pct_from_profit ?? 0)
     if (revenue < 0 || revenue > 100 || profit < 0 || profit > 100) throw new Error('Відсоток має бути від 0 до 100')
-    if (input.user_id) this.requireUser(input.user_id, tenantId)
+    if (input.user_id) {
+      const employee = this.requireUser(input.user_id, tenantId)
+      if (employee.role === 'owner') throw new Error('Власник не входить до зарплатної відомості працівників')
+    }
     const timestamp = nowIso()
     const id = randomUUID()
     this.db.prepare(`
@@ -459,6 +462,12 @@ export class LocalStaffRepository {
              work_date, source, shift_id, cash_operation_id, created_at
       FROM salary_payments
       WHERE tenant_id = ? AND deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM staff_users owner
+          WHERE owner.id = salary_payments.employee_id
+            AND owner.tenant_id = salary_payments.tenant_id
+            AND owner.role = 'owner' AND owner.deleted_at IS NULL
+        )
     ` + where + ' ORDER BY created_at DESC LIMIT 200').all(...params) as any[]
   }
 
@@ -471,6 +480,12 @@ export class LocalStaffRepository {
       SELECT employee_id, employee_name, amount, type
       FROM salary_payments
       WHERE tenant_id = ? AND work_date = ? AND deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM staff_users owner
+          WHERE owner.id = salary_payments.employee_id
+            AND owner.tenant_id = salary_payments.tenant_id
+            AND owner.role = 'owner' AND owner.deleted_at IS NULL
+        )
     `).all(tenantId, workDate) as any[]
     const map = new Map<string, any>()
     for (const row of rows) {
@@ -559,7 +574,9 @@ export class LocalStaffRepository {
       const cashHandedOver = handedByWorker.get(String(worker.employee_id)) ?? 0
       const cashPending = Math.max(0, cashRevenue - cashHandedOver)
       const recordedDailyRate = money(salary.daily_rate)
-      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? money(worker.base_rate) : 0
+      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
+        ? money(worker.base_rate)
+        : 0
       const earned = money(salary.earned) + projectedDailyRate
       const paid = money(salary.paid)
       const penalty = money(salary.penalty)
@@ -644,6 +661,7 @@ export class LocalStaffRepository {
   }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const employee = this.requireUser(input.employee_id, tenantId)
+    if (employee.role === 'owner') throw new Error('Власник не входить до зарплатної відомості працівників')
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть коректну суму')
     const timestamp = nowIso()
@@ -676,6 +694,7 @@ export class LocalStaffRepository {
   }): { payment: any; amount: number; earned: number; previously_paid: number; penalty: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const employee = this.requireUser(input.employee_id, tenantId)
+    if (employee.role === 'owner') throw new Error('Власник не входить до зарплатної відомості працівників')
     if (employee.role === 'tire_worker') {
       const tireRow = this.tireServiceReport(input.work_date, tenantId).data
         .find((row: any) => row.employee_id === employee.id)
@@ -765,10 +784,10 @@ export class LocalStaffRepository {
     this.db.transaction(() => {
       for (const [employeeId, amount] of commissions) {
         const employee = this.db.prepare(`
-          SELECT id, full_name FROM staff_users
+          SELECT id, full_name, role FROM staff_users
           WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
         `).get(employeeId, tenantId) as any
-        if (!employee) continue
+        if (!employee || employee.role === 'owner') continue
         const existing = this.db.prepare(`
           SELECT id FROM salary_payments
           WHERE tenant_id = ? AND employee_id = ? AND commission_source_order_id = ?
@@ -814,10 +833,10 @@ export class LocalStaffRepository {
     this.db.transaction(() => {
       for (const [employeeId, amount] of commissions) {
         const employee = this.db.prepare(`
-          SELECT id, full_name FROM staff_users
+          SELECT id, full_name, role FROM staff_users
           WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
         `).get(employeeId, tenantId) as any
-        if (!employee) continue
+        if (!employee || employee.role === 'owner') continue
         const existing = this.db.prepare(`
           SELECT id FROM salary_payments
           WHERE tenant_id = ? AND employee_id = ? AND commission_source_sale_id = ?
@@ -870,10 +889,10 @@ export class LocalStaffRepository {
     this.db.transaction(() => {
       for (const [employeeId, amount] of commissions) {
         const employee = this.db.prepare(`
-          SELECT id, full_name FROM staff_users
+          SELECT id, full_name, role FROM staff_users
           WHERE id = ? AND tenant_id = ? AND is_active = 1 AND deleted_at IS NULL
         `).get(employeeId, tenantId) as any
-        if (!employee) continue
+        if (!employee || employee.role === 'owner') continue
         const existing = this.db.prepare(`
           SELECT id FROM salary_payments
           WHERE tenant_id = ? AND employee_id = ? AND commission_source_return_id = ?

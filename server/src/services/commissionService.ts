@@ -37,6 +37,16 @@ export async function listCommissionRules(tenantId: string) {
 
 // Create a new commission rule
 export async function createCommissionRule(input: CreateCommissionRuleInput, tenantId: string) {
+  if (input.user_id) {
+    const { data } = await supabaseAdmin.auth.admin.getUserById(input.user_id)
+    const user = data?.user
+    if (!user || user.app_metadata?.tenant_id !== tenantId) {
+      throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
+    }
+    if (user.app_metadata?.role === 'owner') {
+      throw new AppError('OWNER_NOT_PAYROLL_EMPLOYEE', 'Власник не входить до зарплатної відомості працівників', 409)
+    }
+  }
   const { data, error } = await db
     .from(TABLE)
     .insert({
@@ -89,12 +99,16 @@ function currentWorkDate(): string {
   }).format(new Date())
 }
 
-async function resolveEmployeeName(userId: string, isManager: boolean): Promise<string> {
+async function resolvePayrollEmployee(userId: string, isManager: boolean, tenantId: string): Promise<{ name: string; eligible: boolean }> {
   const fallback = isManager ? 'Менеджер' : 'Співробітник'
   try {
     const { data } = await supabaseAdmin.auth.admin.getUserById(userId)
-    return data?.user?.user_metadata?.full_name || data?.user?.email || fallback
-  } catch { return fallback }
+    const user = data?.user
+    return {
+      name: user?.user_metadata?.full_name || user?.email || fallback,
+      eligible: !!user && user.app_metadata?.tenant_id === tenantId && user.app_metadata?.role !== 'owner',
+    }
+  } catch { return { name: fallback, eligible: false } }
 }
 
 /**
@@ -124,7 +138,9 @@ export async function calculateSaleCommission(saleId: string, tenantId: string, 
   for (const [candidateId, amount] of commMap) {
     if (amount <= 0) continue
     const isManager = candidateId === sale.manager_id
-    const name = await resolveEmployeeName(candidateId, isManager)
+    const employee = await resolvePayrollEmployee(candidateId, isManager, tenantId)
+    if (!employee.eligible) continue
+    const name = employee.name
     try {
       const { error } = await db.from('salary_payments').insert({
         tenant_id: tenantId, employee_id: candidateId, employee_name: name,
@@ -178,7 +194,9 @@ export async function reverseCommissionForReturn(
   for (const [candidateId, amount] of commMap) {
     if (amount <= 0) continue
     const isManager = candidateId === activeManagerId
-    const name = await resolveEmployeeName(candidateId, isManager)
+    const employee = await resolvePayrollEmployee(candidateId, isManager, tenantId)
+    if (!employee.eligible) continue
+    const name = employee.name
     const { error } = await db.from('salary_payments').insert({
       id: commissionReversalId(returnId, candidateId),
       tenant_id: tenantId, employee_id: candidateId, employee_name: name,
@@ -266,7 +284,9 @@ export async function calculateAndRecordCommission(
   for (const [candidateId, candidateCommission] of commMap) {
     if (candidateCommission <= 0) continue
     const isActiveManager = candidateId === order.manager_id
-    const employeeName = await resolveEmployeeName(candidateId, isActiveManager)
+    const employee = await resolvePayrollEmployee(candidateId, isActiveManager, tenantId)
+    if (!employee.eligible) continue
+    const employeeName = employee.name
     try {
       const { error: insertErr } = await db
         .from('salary_payments')

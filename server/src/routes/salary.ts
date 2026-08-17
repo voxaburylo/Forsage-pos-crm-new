@@ -76,6 +76,16 @@ function plusDays(date: string, days: number): string {
   return value.toISOString().slice(0, 10)
 }
 
+async function ownerPayrollIds(tenantId: string): Promise<Set<string>> {
+  const users = await adminService.listUsers(tenantId)
+  return new Set(users.filter((user) => user.role === 'owner').map((user) => user.id))
+}
+
+async function withoutOwnerPayrollRows<T extends { employee_id: string }>(tenantId: string, rows: T[]): Promise<T[]> {
+  const owners = await ownerPayrollIds(tenantId)
+  return rows.filter((row) => !owners.has(row.employee_id))
+}
+
 async function buildTireServiceReport(tenantId: string, date: string) {
   const workers = (await adminService.listUsers(tenantId))
     .filter((user) => user.is_active && user.role === 'tire_worker')
@@ -143,7 +153,9 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     const cashHandedOver = handedByWorker.get(worker.id) ?? 0
     const cashPending = Math.max(0, cashRevenue - cashHandedOver)
     const recordedDailyRate = Number(salary.daily_rate ?? 0)
-    const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' ? Number(worker.base_rate ?? 0) : 0
+    const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
+      ? Number(worker.base_rate ?? 0)
+      : 0
     const earned = Number(salary.earned ?? 0) + projectedDailyRate
     const paid = Number(salary.paid ?? 0)
     const penalty = Number(salary.penalty ?? 0)
@@ -196,7 +208,7 @@ router.get('/', requireRole('owner', 'admin'), async (req, res, next) => {
 
     const { data, error } = await query
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-    res.json({ data: data ?? [] })
+    res.json({ data: await withoutOwnerPayrollRows(req.user!.tenant_id, data ?? []) })
   } catch (err) { next(err) }
 })
 
@@ -226,7 +238,7 @@ router.get('/summary', requireRole('owner', 'admin'), async (req, res, next) => 
       total: number
     }> = {}
 
-    for (const row of data ?? []) {
+    for (const row of await withoutOwnerPayrollRows(req.user!.tenant_id, data ?? [])) {
       if (!map[row.employee_id]) {
         map[row.employee_id] = {
           employee_id: row.employee_id,
@@ -263,7 +275,7 @@ router.get('/daily-summary', requireRole('owner', 'admin'), async (req, res, nex
     if (error) throw new AppError('DB_ERROR', error.message, 500)
 
     const map: Record<string, any> = {}
-    for (const row of data ?? []) {
+    for (const row of await withoutOwnerPayrollRows(req.user!.tenant_id, data ?? [])) {
       if (!map[row.employee_id]) map[row.employee_id] = {
         employee_id: row.employee_id, employee_name: row.employee_name,
         earned: 0, paid: 0, penalty: 0, balance: 0,
@@ -349,6 +361,9 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
     const employee = authData.user
     if (!employee || employee.app_metadata?.tenant_id !== req.user!.tenant_id) {
       throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
+    }
+    if (employee.app_metadata?.role === 'owner') {
+      throw new AppError('OWNER_NOT_PAYROLL_EMPLOYEE', 'Власник не входить до зарплатної відомості працівників', 409)
     }
     if (employee.app_metadata?.role === 'tire_worker') {
       const tireReport = await buildTireServiceReport(req.user!.tenant_id, input.work_date)
@@ -457,6 +472,9 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
     if (!employee || employee.app_metadata?.tenant_id !== req.user!.tenant_id) {
       throw new AppError('NOT_FOUND', 'Співробітника не знайдено', 404)
     }
+    if (employee.app_metadata?.role === 'owner') {
+      throw new AppError('OWNER_NOT_PAYROLL_EMPLOYEE', 'Власник не входить до зарплатної відомості працівників', 409)
+    }
 
     const period = parsed.data.period ?? new Date().toISOString().slice(0, 7)
 
@@ -526,6 +544,9 @@ router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res
     const { data: sales, error: salesErr } = await salesQuery
     if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
 
+    // Власник може проводити продажі, але це не створює зарплатний борг самому собі.
+    const ownerIds = await ownerPayrollIds(tenantId)
+
     // Агрегуємо
     const map: Record<string, {
       employee_id: string
@@ -536,6 +557,7 @@ router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res
     }> = {}
 
     for (const s of commissions ?? []) {
+      if (ownerIds.has(s.employee_id)) continue
       if (!map[s.employee_id]) {
         map[s.employee_id] = { employee_id: s.employee_id, employee_name: s.employee_name, sales_count: 0, revenue: 0, commission_paid: 0 }
       }
@@ -543,7 +565,7 @@ router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res
     }
 
     for (const s of sales ?? []) {
-      if (!s.manager_id) continue
+      if (!s.manager_id || ownerIds.has(s.manager_id)) continue
       if (!map[s.manager_id]) {
         map[s.manager_id] = { employee_id: s.manager_id, employee_name: s.manager_id.slice(0, 8), sales_count: 0, revenue: 0, commission_paid: 0 }
       }
