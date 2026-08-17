@@ -190,10 +190,9 @@ export default function ProductFormPage() {
       // Персонал без доступу до маржі не надсилає purchase_price взагалі
       const payload: any = { ...form }
       if (!canSeeMargin) delete payload.purchase_price
-      // Залишок НЕ редагується через картку товару: інакше збереження картки
-      // (напр. після друку ценника) затирає прийнятий приходом склад. Залишок
-      // змінюється лише приходом/ревізією/продажем. Початковий залишок — тільки при створенні.
-      if (isEdit) delete payload.qty_on_hand
+      // Картка товару не керує складським залишком. Новий товар створюється з нулем,
+      // а кількість змінюється тільки документами: приходом, ревізією, продажем тощо.
+      delete payload.qty_on_hand
 
       if (isEdit) {
         await productApi.update(id, payload)
@@ -410,20 +409,13 @@ export default function ProductFormPage() {
 
             <div className="grid grid-cols-2 gap-4">
               <Input
-                label="Поточний залишок"
-                type="number" min="0" step="0.001"
-                value={form.qty_on_hand}
-                onChange={(e) => set('qty_on_hand', e.target.value)}
-                disabled={isEdit}
-                hint={isEdit ? 'Змінюється приходом, ревізією чи продажем — не через картку' : 'Початковий залишок'}
-              />
-              <Input
                 label="Мінімальний залишок"
                 type="number" min="0" step="0.001"
                 value={form.reorder_point}
                 onChange={(e) => set('reorder_point', e.target.value)}
                 hint="При залишку ≤ цього значення — попередження"
               />
+              <div></div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

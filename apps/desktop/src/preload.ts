@@ -80,6 +80,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
     listCrossNumbers: (productId: string) =>
       ipcRenderer.invoke('desktop:catalog:list-cross-numbers', productId),
+    listAnalogs: (productId: string, limit?: number) =>
+      ipcRenderer.invoke('desktop:catalog:list-analogs', productId, limit),
   },
   supplierCatalog: {
     list: (options?: unknown) =>

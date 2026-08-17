@@ -78,7 +78,7 @@ describe('LocalStaffRepository server-first credentials', () => {
       VALUES (?, ?, ?, 10, 0, 'tire_service', ?, ?)
     `).run(randomUUID(), DEFAULT_TENANT_ID, cashierId, timestamp, timestamp)
 
-    expect(repository.tireServiceReport('2026-07-29')).toEqual([])
+    expect(repository.tireServiceReport('2026-07-29').data).toEqual([])
   })
   it('retires an old provisional UUID and removes its unsupported outbox entry', () => {
     const provisionalId = 'legacy-local-user'
@@ -282,7 +282,7 @@ describe('LocalStaffRepository server-first credentials', () => {
     ).run(randomUUID(), DEFAULT_TENANT_ID, employeeId, timestamp, timestamp)
 
     expect(repository.recordSaleCommissions(saleId, DEFAULT_TENANT_ID, employeeId)).toHaveLength(1)
-    expect(repository.tireServiceReport('2026-07-29')).toEqual([
+    expect(repository.tireServiceReport('2026-07-29').data).toEqual([
       expect.objectContaining({
         employee_id: employeeId,
         employee_name: 'Шиномонтажник',

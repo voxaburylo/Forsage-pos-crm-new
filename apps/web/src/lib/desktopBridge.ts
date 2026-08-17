@@ -497,6 +497,7 @@ interface ForsageDesktopBridge {
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
+    listAnalogs?: (productId: string, limit?: number) => Promise<DesktopProduct[]>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   supplierCatalog?: {

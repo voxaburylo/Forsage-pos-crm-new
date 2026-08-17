@@ -899,6 +899,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:catalog:list-cross-numbers', (_event, productId: string) =>
     requireLocalCatalog().listCrossNumbers(productId),
   )
+  handleDesktopIpc('desktop:catalog:list-analogs', (_event, productId: string, limit?: number) =>
+    requireLocalCatalog().listAnalogs(productId, undefined, limit),
+  )
   handleDesktopIpc('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
   )
