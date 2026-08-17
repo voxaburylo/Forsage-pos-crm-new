@@ -68,7 +68,7 @@ export default function ImportPage() {
       setSupplierModal(false)
       setNewSupplierName('')
       setNewSupplierPhone('')
-    } catch (err) {
+    } catch {
       toast.error('Помилка створення постачальника')
     } finally {
       setCreatingSupplier(false)

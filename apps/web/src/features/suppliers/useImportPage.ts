@@ -116,7 +116,7 @@ export function useImportPage() {
 
         const tsv = rows.map((r) => r.map((c) => String(c ?? '')).join('\t')).join('\n')
         processRawText(tsv)
-      } catch (e) {
+      } catch {
         toast.error('Помилка читання Excel файлу')
       } finally {
         setParsing(false)

@@ -141,6 +141,15 @@ function App() {
   const desktop = isDesktopRuntime()
   const Router = desktop ? HashRouter : BrowserRouter
 
+  // Після успішного запуску знову дозволяємо одноразове автоматичне
+  // відновлення. Інакше один давній збій чанка блокував самовідновлення всіх
+  // наступних переходів до закриття вкладки.
+  useEffect(() => {
+    const timer = window.setTimeout(() => window.sessionStorage.removeItem(ROUTE_RELOAD_KEY), 15_000)
+    return () => window.clearTimeout(timer)
+  }, [])
+
+
   // Захист від випадкової зміни числа колесом миші: якщо курсор над сфокусованим
   // числовим полем і крутиш колесо — браузер міняє значення. У касі/ревізії це
   // небезпечно (тихо міняється кількість/ціна). Знімаємо фокус — колесо гортає сторінку.
@@ -154,7 +163,7 @@ function App() {
   }, [])
 
   return (
-    <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <Router>
       <LocalSyncAgent />
       <AppErrorBoundary>
       <Suspense fallback={<Loader />}>

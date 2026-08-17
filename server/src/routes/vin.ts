@@ -44,6 +44,50 @@ function extractVehicle(data: any): { make: string; model: string; year: string 
   }
 }
 
+
+type VehicleOcrData = {
+  document_type: 'vin' | 'registration_certificate' | 'other'
+  vin: string | null
+  make: string | null
+  model: string | null
+  year: number | null
+  registration_number: string | null
+}
+
+function cleanOcrText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null
+  const clean = value.replace(/\s+/g, ' ').trim()
+  return clean ? clean.slice(0, maxLength) : null
+}
+
+function parseVehicleOcr(raw: string): VehicleOcrData {
+  const jsonText = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch {
+    const vinMatch = raw.toUpperCase().match(/[A-HJ-NPR-Z0-9]{17}/)
+    parsed = { vin: vinMatch?.[0] ?? null }
+  }
+
+  const vinCandidate = String(parsed.vin ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const vin = /^[A-HJ-NPR-Z0-9]{17}$/.test(vinCandidate) ? vinCandidate : null
+  const numericYear = Number(parsed.year)
+  const maxYear = new Date().getFullYear() + 1
+  const year = Number.isInteger(numericYear) && numericYear >= 1900 && numericYear <= maxYear ? numericYear : null
+  const documentType = parsed.document_type === 'registration_certificate'
+    ? 'registration_certificate'
+    : parsed.document_type === 'vin' ? 'vin' : 'other'
+
+  return {
+    document_type: documentType,
+    vin,
+    make: cleanOcrText(parsed.make, 100),
+    model: cleanOcrText(parsed.model, 150),
+    year,
+    registration_number: cleanOcrText(parsed.registration_number, 30)?.toUpperCase() ?? null,
+  }
+}
 // GET /api/v1/vin/decode?vin=XXXX — декодування VIN через зовнішній API,
 // налаштований у shop_settings (vin_decoder_url / vin_decoder_api_key).
 router.get('/decode', async (req, res, next) => {
@@ -94,15 +138,25 @@ router.post('/ocr', async (req, res, next) => {
     } else {
       base64 = String(image).replace(/^data:[^;]+;base64,/, '')
     }
-    const prompt = 'Ти — експерт з автомобілів. На фото — VIN-код або документ на авто. Знайди 17-символьний VIN. Поверни ТІЛЬКИ сам VIN великими літерами без пробілів і розділювачів. Якщо VIN не видно — поверни NONE.'
+    const prompt = `Ти розпізнаєш дані автомобіля з фото VIN-коду або свідоцтва про реєстрацію (техпаспорта).
+Поверни ТІЛЬКИ валідний JSON без markdown:
+{"document_type":"vin|registration_certificate|other","vin":null,"make":null,"model":null,"year":null,"registration_number":null}
+Правила:
+- використовуй лише чітко видимі на фото дані, нічого не вигадуй;
+- VIN має рівно 17 символів A-H, J-N, P, R-Z та 0-9, без I, O, Q;
+- make — марка/виробник, model — модель, year — чотиризначний рік випуску;
+- registration_number — державний номер автомобіля;
+- для невідомого або нерозбірливого поля повертай null.`
     const result = await model.generateContent([
       { inlineData: { mimeType: resolvedMimeType, data: base64 } },
       { text: prompt },
     ])
-    const raw = (result?.response?.text?.() ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
-    const vin = raw === 'NONE' || raw.length < 11 ? null : raw.slice(0, 17)
-    if (!vin) throw new AppError('VIN_NOT_FOUND', 'VIN не розпізнано на фото. Спробуйте чіткіше фото.', 422)
-    res.json({ data: { vin } })
+    const raw = result?.response?.text?.() ?? ''
+    const vehicle = parseVehicleOcr(raw)
+    if (!vehicle.vin && !vehicle.make && !vehicle.model && !vehicle.year) {
+      throw new AppError('VEHICLE_NOT_FOUND', 'Не вдалося розпізнати VIN або дані автомобіля. Спробуйте чіткіше фото.', 422)
+    }
+    res.json({ data: vehicle })
   } catch (err) { next(err) }
   finally {
     if (storagePath) await removeProcessingUploads([storagePath], req.user!.id).catch(() => {})

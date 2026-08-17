@@ -1,6 +1,8 @@
 import type { LocalBootstrapSnapshot, LocalSyncPullChanges } from '../db/localTypes'
 
-export const DEFAULT_PULL_CHUNK_SIZE = 100
+// Keep each synchronous SQLite transaction short enough for Electron's main
+// process to continue servicing window and printer events during a large pull.
+export const DEFAULT_PULL_CHUNK_SIZE = 25
 
 type ArrayKey = {
   [K in keyof LocalSyncPullChanges]-?: NonNullable<LocalSyncPullChanges[K]> extends any[] ? K : never

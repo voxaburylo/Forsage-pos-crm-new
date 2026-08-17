@@ -790,6 +790,39 @@ async function main() {
   if (dailyPayout.amount !== 7500) throw new Error('Local daily salary payout has incorrect amount');
   const expectedAfterSalary = pos.getExpectedCash('smoke-cashier');
   if (expectedAfterSalary?.expected_amount !== 27500) throw new Error('Salary payout did not reduce expected cash');
+  const ownerFundsWorkDate = '2099-01-01';
+  staff.createSalary({
+    employee_id: 'smoke-cashier',
+    employee_name: 'Smoke Cashier',
+    amount: 1234,
+    type: 'bonus',
+    method: 'cash',
+    work_date: ownerFundsWorkDate,
+    user_id: 'smoke-cashier',
+  });
+  const expectedBeforeOwnerFunds = pos.getExpectedCash('smoke-cashier')?.expected_amount;
+  const ownerFundsPayout = staff.dailyPayout({
+    employee_id: 'smoke-cashier',
+    employee_name: 'Smoke Cashier',
+    method: 'cash',
+    fund_source: 'owner_funds',
+    shift_id: shiftId,
+    work_date: ownerFundsWorkDate,
+    user_id: 'smoke-cashier',
+  });
+  if (ownerFundsPayout.amount !== 6234) throw new Error('Owner-funded salary payout has incorrect amount');
+  const expectedAfterOwnerFunds = pos.getExpectedCash('smoke-cashier')?.expected_amount;
+  if (expectedAfterOwnerFunds !== expectedBeforeOwnerFunds) throw new Error('Owner-funded salary payout changed cashbox balance');
+  const ownerFundOperations = db.prepare(`
+    SELECT type, source, amount FROM cash_operations
+    WHERE tenant_id = ? AND employee_id = ? AND work_date = ? AND deleted_at IS NULL
+    ORDER BY created_at, id
+  `).all(DEFAULT_TENANT_ID, 'smoke-cashier', ownerFundsWorkDate);
+  if (ownerFundOperations.length !== 2
+    || !ownerFundOperations.some((operation) => operation.type === 'cash_in' && operation.source === 'owner_funds' && operation.amount === 6234)
+    || !ownerFundOperations.some((operation) => operation.type === 'salary_payout' && operation.source === 'owner_funds' && operation.amount === 6234)) {
+    throw new Error('Owner-funded salary payout did not create balanced cash operations');
+  }
   const shiftReport = pos.getShiftReport('smoke-cashier');
   if (!shiftReport || shiftReport.total_sales !== 2 || shiftReport.by_method.cash !== saleAmount
     || shiftReport.by_method.card !== orderSaleAmount) {
@@ -990,6 +1023,9 @@ async function main() {
     recordedCommissions,
     dailyPayout,
     expectedAfterSalary,
+    ownerFundsPayout,
+    expectedAfterOwnerFunds,
+    ownerFundOperations,
     movement,
     reserveReleased: true,
     writeoff,

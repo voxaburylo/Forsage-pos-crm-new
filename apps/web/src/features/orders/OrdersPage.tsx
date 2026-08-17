@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
-  Trash2, X, Check, Pencil, Copy, ArrowRight, Clock,
+  Trash2, X, Check, Pencil, Copy, ArrowRight, Clock, Camera, Loader2,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -14,6 +14,7 @@ import { startRepeatOrder, formatOrderNo } from './orderActions'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
+import { recognizeVehicleImage } from '@/lib/vehicleOcr'
 import { Menu } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
 import { Card, Badge, Button, Modal, Input } from '@/components/ui'
@@ -1434,6 +1435,50 @@ export default function OrdersPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const session = useAuthStore((s) => s.session)
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
+  const vehiclePhotoInputRef = useRef<HTMLInputElement>(null)
+  const vehiclePhotoBusyRef = useRef(false)
+  const [vehiclePhotoLoading, setVehiclePhotoLoading] = useState(false)
+  const [vehiclePhotoDragOver, setVehiclePhotoDragOver] = useState(false)
+
+  const openOrderFromVehiclePhoto = useCallback(async (file: File) => {
+    if (vehiclePhotoBusyRef.current) return
+    vehiclePhotoBusyRef.current = true
+    setVehiclePhotoLoading(true)
+    try {
+      const vehicle = await recognizeVehicleImage(file)
+      const params = new URLSearchParams()
+      if (vehicle.vin) params.set('vin', vehicle.vin)
+      if (vehicle.make) params.set('make', vehicle.make)
+      if (vehicle.model) params.set('model', vehicle.model)
+      if (vehicle.year) params.set('year', String(vehicle.year))
+      navigate(`/orders/new?${params.toString()}`)
+      const vehicleLabel = [vehicle.make, vehicle.model, vehicle.year].filter(Boolean).join(' ')
+      toast.success(vehicle.vin
+        ? `VIN розпізнано: ${vehicle.vin}`
+        : `Автомобіль розпізнано: ${vehicleLabel}`)
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Не вдалося розпізнати фото'))
+    } finally {
+      vehiclePhotoBusyRef.current = false
+      setVehiclePhotoLoading(false)
+    }
+  }, [navigate])
+
+  useEffect(() => {
+    if (chatMode) return
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+      const image = Array.from(event.clipboardData?.items ?? [])
+        .find((item) => item.type.startsWith('image/'))
+        ?.getAsFile()
+      if (!image) return
+      event.preventDefault()
+      void openOrderFromVehiclePhoto(image)
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [chatMode, openOrderFromVehiclePhoto])
 
   // bulk arrival
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1789,6 +1834,45 @@ export default function OrdersPage() {
           </div>
           {!chatMode && (
           <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+            <input
+              ref={vehiclePhotoInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              capture="environment"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) void openOrderFromVehiclePhoto(file)
+                event.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              disabled={vehiclePhotoLoading}
+              aria-busy={vehiclePhotoLoading}
+              aria-label="Створити замовлення з фото VIN або техпаспорта"
+              title="Фото, файл, перетягування або Ctrl+V"
+              onClick={() => vehiclePhotoInputRef.current?.click()}
+              onDragEnter={(event) => { event.preventDefault(); setVehiclePhotoDragOver(true) }}
+              onDragOver={(event) => { event.preventDefault(); setVehiclePhotoDragOver(true) }}
+              onDragLeave={() => setVehiclePhotoDragOver(false)}
+              onDrop={(event) => {
+                event.preventDefault()
+                setVehiclePhotoDragOver(false)
+                const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'))
+                if (file) void openOrderFromVehiclePhoto(file)
+                else toast.error('Перетягніть фото VIN або техпаспорта')
+              }}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-colors disabled:cursor-wait disabled:opacity-70 ${
+                vehiclePhotoDragOver
+                  ? 'border-yellow-500 bg-yellow-100 text-yellow-900'
+                  : 'border-yellow-300 bg-yellow-50 text-yellow-800 hover:bg-yellow-100'
+              }`}
+            >
+              {vehiclePhotoLoading ? <Loader2 size={15} className="animate-spin" /> : <Camera size={15} />}
+              <span className="hidden md:inline">{vehiclePhotoLoading ? 'Розпізнаю…' : 'Фото VIN / техпаспорта'}</span>
+              <span className="md:hidden">{vehiclePhotoLoading ? '…' : 'Фото авто'}</span>
+            </button>
             <div className="flex items-center gap-1 rounded-xl bg-gray-50 p-0.5">
               <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')} title="Нове замовлення">
                 <span className="hidden sm:inline">Нове замовлення</span><span className="sm:hidden">Нове</span>

@@ -38,6 +38,11 @@ export interface TireCashHandoverInput {
   employee_id: string; employee_name: string; work_date: string
   shift_id: string; amount: number; operation_id: string
 }
+export type SalaryFundSource = 'cashbox' | 'owner_funds'
+export interface DailyPayoutInput {
+  employee_id: string; employee_name: string; method: 'cash' | 'card' | 'transfer'
+  fund_source?: SalaryFundSource; shift_id?: string | null; work_date: string
+}
 
 function localStaff() { return desktopBridge()?.staff }
 
@@ -84,10 +89,10 @@ export const staffApi = {
     if (local) return { data: await local(body) as SalaryPayment }
     return api.post<{ data: SalaryPayment }>('/api/v1/salary', body)
   },
-  async dailyPayout(body: any): Promise<{ data: { amount: number } }> {
+  async dailyPayout(body: DailyPayoutInput): Promise<{ data: { amount: number; fund_source?: SalaryFundSource } }> {
     const local = localStaff()?.dailyPayout
-    if (local) return { data: await local(body) as { amount: number } }
-    return api.post<{ data: { amount: number } }>('/api/v1/salary/daily-payout', body)
+    if (local) return { data: await local({ ...body, user_id: useAuthStore.getState().session?.user?.id }) as { amount: number; fund_source?: SalaryFundSource } }
+    return api.post<{ data: { amount: number; fund_source?: SalaryFundSource } }>('/api/v1/salary/daily-payout', body)
   },
   async deleteSalary(id: string): Promise<void> {
     const local = localStaff()?.deleteSalary

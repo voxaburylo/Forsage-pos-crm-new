@@ -10,7 +10,7 @@ router.use(requireAuth)
 const itemSchema = z.object({
   product_id:   z.string().uuid().optional().nullable(),
   product_name: z.string().min(1).max(500),
-  sku:          z.string().max(100).optional().nullable(),
+  sku:          z.string().max(200).optional().nullable(),
   qty:          z.number().int().min(1),
   buy_price:    z.number().int().min(0),
 })

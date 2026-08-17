@@ -167,7 +167,7 @@ const customerPayload = z.object({
   car_year: z.number().int().min(1900).max(2100).optional().nullable(),
 })
 const productPayload = z.object({
-  sku: z.string().min(1).max(100),
+  sku: z.string().min(1).max(200),
   name: z.string().min(1).max(500),
   description: optionalText(5000),
   retail_price_uah: optionalMoney,

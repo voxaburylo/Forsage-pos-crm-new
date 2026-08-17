@@ -113,6 +113,7 @@ export const reportApi = {
       const report = summarize(salesInRange(allSales, today(), today()), payments)
       const { sales: _sales, ...summary } = report
       return { data: summary as SalesSummary }
+      void _sales
     }
     return api.get<{ data: SalesSummary }>('/api/v1/reports/sales/today')
   },

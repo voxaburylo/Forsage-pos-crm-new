@@ -266,7 +266,7 @@ export function ImportModal({ onClose, onImported }: Props) {
       const rows = headerRowIndex >= 0 ? allRows.slice(headerRowIndex) : allRows
       const tsv = rows.map((r) => r.map((c) => String(c ?? '')).join('\t')).join('\n')
       processRawText(tsv)
-    } catch (e) {
+    } catch {
       toast.error('Помилка читання Excel файлу')
     }
   }

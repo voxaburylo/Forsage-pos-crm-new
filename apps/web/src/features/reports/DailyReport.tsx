@@ -14,7 +14,7 @@ import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import { businessDateKey } from '@/lib/businessDate'
 import { useAuthStore } from '@/stores/authStore'
 import { staffApi } from '@/features/staff/staffApi'
-import type { TireServiceReceipt, TireServiceReportRow } from '@/features/staff/staffApi'
+import type { SalaryFundSource, TireServiceReceipt, TireServiceReportRow } from '@/features/staff/staffApi'
 import { shiftApi } from '@/features/pos/shiftApi'
 
 type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
@@ -86,6 +86,7 @@ export default function DailyReport() {
   const [tireRows, setTireRows] = useState<TireServiceReportRow[]>([])
   const [tireReceipts, setTireReceipts] = useState<TireServiceReceipt[]>([])
   const [tireHandoverEmployee, setTireHandoverEmployee] = useState<string | null>(null)
+  const [tirePayoutEmployee, setTirePayoutEmployee] = useState<string | null>(null)
   const [tireLoading, setTireLoading] = useState(false)
 
   useEffect(() => {
@@ -241,6 +242,29 @@ export default function DailyReport() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося внести касу шиномонтажу')
     } finally { setTireHandoverEmployee(null) }
   }, [loadTireReport, tireDate, tireHandoverEmployee])
+
+  const payTireSalary = useCallback(async (row: TireServiceReportRow, fundSource: SalaryFundSource) => {
+    if (!canSeeFullReports || !row.salary_ready || row.payable_due <= 0 || tirePayoutEmployee) return
+    try {
+      const { data: shift } = await shiftApi.current({ silent: true })
+      if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
+      const question = fundSource === 'owner_funds'
+        ? `Внести ${formatMoney(row.payable_due)} власних коштів власника та одразу виплатити зарплату ${row.employee_name} за ${tireDate}? Залишок каси не зміниться.`
+        : `Видати ${formatMoney(row.payable_due)} зарплати ${row.employee_name} за ${tireDate} з поточної каси?`
+      if (!window.confirm(question)) return
+      setTirePayoutEmployee(row.employee_id)
+      const result = await staffApi.dailyPayout({
+        employee_id: row.employee_id, employee_name: row.employee_name, method: 'cash',
+        fund_source: fundSource, shift_id: shift.id, work_date: tireDate,
+      })
+      toast.success(fundSource === 'owner_funds'
+        ? `Виплачено ${formatMoney(result.data.amount)} власними коштами власника`
+        : `Виплачено з каси ${formatMoney(result.data.amount)}`)
+      await loadTireReport()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося виплатити зарплату')
+    } finally { setTirePayoutEmployee(null) }
+  }, [canSeeFullReports, loadTireReport, tireDate, tirePayoutEmployee])
 
   const exportToExcel = useCallback(() => {
     try {
@@ -674,7 +698,15 @@ export default function DailyReport() {
                   <td className="px-4 py-3">{row.cash_pending > 0 ?
                     <button onClick={() => handOverTireCash(row)} disabled={tireHandoverEmployee === row.employee_id} className="rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300 disabled:opacity-50">
                       {tireHandoverEmployee === row.employee_id ? 'Вносимо…' : `+ Внести ${formatMoney(row.cash_pending)}`}</button> :
-                    row.salary_ready ? <span className="font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span> :
+                    row.salary_ready && row.payable_due > 0 ? (canSeeFullReports ?
+                      <div className="flex min-w-[250px] flex-col gap-1.5">
+                        <span className="text-xs font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span>
+                        <div className="flex gap-1.5">
+                          <button onClick={() => payTireSalary(row, 'cashbox')} disabled={Boolean(tirePayoutEmployee)} className="rounded-lg bg-gray-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-gray-700 disabled:opacity-50">З каси</button>
+                          <button onClick={() => payTireSalary(row, 'owner_funds')} disabled={Boolean(tirePayoutEmployee)} className="rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-bold text-black hover:bg-amber-300 disabled:opacity-50">Кошти власника</button>
+                        </div>
+                      </div> : <span className="font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span>) :
+                    row.salary_ready ? <span className="text-xs font-semibold text-gray-500">Виплачено</span> :
                     <span className="text-xs font-medium text-blue-700">Очікує до {formatDate(row.salary_available_on)}</span>}</td>
                 </tr>)}</tbody>
                 <tfoot className="border-t-2 border-gray-200 bg-amber-50"><tr><td colSpan={8} className="px-4 py-4 text-right text-base font-bold">Усього зарплати, яку можна видати:</td><td className="px-4 py-4 text-xl font-black text-amber-800">{formatMoney(tireTotals.payable)}</td></tr></tfoot>

@@ -142,7 +142,8 @@ function rendererIndexPath(): string {
 async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
   const target = rendererIndexPath()
   let lastError: unknown = null
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const retryDelaysMs = [250, 500, 1_000, 2_000, 3_000]
+  for (let attempt = 1; attempt <= retryDelaysMs.length + 1; attempt += 1) {
     if (!existsSync(target)) {
       lastError = new Error(`Файл інтерфейсу не знайдено: ${target}`)
     } else {
@@ -154,7 +155,9 @@ async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
       }
     }
     writeDesktopDiagnostic('renderer-load-retry', { attempt, target, error: diagnosticValue(lastError) })
-    if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 250))
+    if (attempt <= retryDelaysMs.length) {
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]))
+    }
   }
   throw lastError instanceof Error ? lastError : new Error('Не вдалося завантажити інтерфейс Forsage')
 }

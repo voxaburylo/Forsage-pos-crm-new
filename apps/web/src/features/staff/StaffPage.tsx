@@ -129,7 +129,7 @@ export default function StaffPage() {
   async function handleSetPin(){if(pinInput.length!==4){toast.error('PIN-код має складатися з 4 цифр');return}if(!selectedUser)return;try{await staffApi.setPin(selectedUser.id,pinInput);toast.success('PIN-код збережено');setPinInput('')}catch(err){toast.error(err instanceof Error?err.message:'Помилка PIN')}}
   async function handleDeleteUser(){if(!deleteConfirmUser)return;setSaving(true);try{await adminApi.deleteUser(deleteConfirmUser.id);toast.success('Співробітника видалено');setDeleteConfirmUser(null);if(selectedUser?.id===deleteConfirmUser.id)setSelectedUser(null);loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка при видаленні')}finally{setSaving(false)}}
   async function handleAddTransaction(){if(!selectedUser)return;const amount=Math.round(parseFloat(actionForm.amount||'0')*100);if(amount<=0){toast.error('Вкажіть коректну суму');return}setSaving(true);try{const shift=actionForm.type==='advance'&&actionForm.method==='cash'?await shiftApi.current():null;const shiftId=(shift as any)?.data?.id??null;if(actionForm.type==='advance'&&actionForm.method==='cash'&&!shiftId)throw new Error('Спочатку відкрийте касову зміну');await staffApi.createSalary({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,amount,type:actionForm.type,method:actionForm.method,period:actionForm.period||period,note:actionForm.note||null,shift_id:shiftId,work_date:localDate()});toast.success('Операцію збережено');setActionForm({...actionForm,amount:'',note:''});loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка')}finally{setSaving(false)}}
-  async function handleDailyPayout(){if(!selectedUser)return;setSaving(true);try{const shift=await shiftApi.current();const shiftId=(shift as any)?.data?.id??null;if(!shiftId)throw new Error('Спочатку відкрийте касову зміну');const result=await staffApi.dailyPayout({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',shift_id:shiftId,work_date:localDate()});toast.success(`Видано з каси ${formatMoney(result.data.amount)}`);await loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка виплати')}finally{setSaving(false)}}
+  async function handleDailyPayout(fundSource:'cashbox'|'owner_funds'){if(!selectedUser)return;setSaving(true);try{const shift=await shiftApi.current();const shiftId=(shift as any)?.data?.id??null;if(!shiftId)throw new Error('Спочатку відкрийте касову зміну');if(fundSource==='owner_funds'&&!window.confirm(`Внести власні кошти власника та виплатити заробіток ${selectedUser.full_name}? Залишок каси не зміниться.`))return;const result=await staffApi.dailyPayout({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',fund_source:fundSource,shift_id:shiftId,work_date:localDate()});toast.success(fundSource==='owner_funds'?`Видано власними коштами ${formatMoney(result.data.amount)}`:`Видано з каси ${formatMoney(result.data.amount)}`);await loadData()}catch(err){toast.error(err instanceof Error?err.message:'Помилка виплати')}finally{setSaving(false)}}
   async function handleDeleteTransaction(id:string){try{await staffApi.deleteSalary(id);toast.success('Операцію видалено');loadData()}catch{toast.error('Помилка видалення')}}
 
   const columns = [
@@ -262,10 +262,15 @@ export default function StaffPage() {
                         <div><p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Заробіток сьогодні</p><p className="mt-1 text-xs text-emerald-700">Ставка за день + автоматичний відсоток</p></div>
                         <p className="text-xl font-bold text-emerald-800">{formatMoney(employeeToday?.balance??0)}</p>
                       </div>
-                      <Button type="button" onClick={handleDailyPayout} loading={saving} disabled={(employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day')} className="w-full">
-                        Видати заробіток за сьогодні з каси
-                      </Button>
-                      <p className="mt-2 text-[10px] text-emerald-700">Сума буде вилучена з відкритої касової зміни та з’явиться в історії виплат.</p>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <Button type="button" onClick={()=>handleDailyPayout('cashbox')} loading={saving} disabled={(employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day')} className="w-full">
+                          Видати з каси
+                        </Button>
+                        <button type="button" onClick={()=>handleDailyPayout('owner_funds')} disabled={saving || ((employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day'))} className="w-full rounded-lg bg-amber-400 px-3 py-2 text-sm font-bold text-black hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50">
+                          Кошти власника
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[10px] text-emerald-700">Для коштів власника програма одночасно зафіксує внесення та виплату. Залишок каси не зміниться.</p>
                     </div>
                   </div>
                 </div>

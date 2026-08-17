@@ -156,7 +156,7 @@ const createOrderSchema = z.object({
   parent_draft_id:       z.string().uuid().optional().nullable(),
   exchange_source_order_id: z.string().uuid().optional().nullable(),
   items: z.array(z.object({
-    sku:          z.string().max(100).optional().nullable(),
+    sku:          z.string().max(200).optional().nullable(),
     name:         z.string().min(1).max(500),
     product_id:   z.string().uuid().optional().nullable(),
     supplier_id:  z.string().uuid().optional().nullable(),
@@ -573,7 +573,7 @@ router.post('/:id/convert', requireRole('owner', 'admin', 'manager'), async (req
         selected_variant: z.object({
           brand: z.string().max(200).optional().nullable(),
           price: z.number().int().min(0),
-          sku: z.string().max(100).optional().nullable(),
+          sku: z.string().max(200).optional().nullable(),
           product_id: z.string().uuid().optional().nullable(),
         })
       })).min(1),

@@ -240,7 +240,7 @@ async function recognizeVinImage(dataUrl: string): Promise<{ data: { vin: string
   try {
     return await api.post<{ data: { vin: string } }>('/api/v1/vin/ocr', {
       storage_path: uploaded.path,
-    })
+    }, undefined, { timeoutMs: 180_000, silent: true })
   } finally {
     await removeProcessingUploads([uploaded.path]).catch(() => {})
   }

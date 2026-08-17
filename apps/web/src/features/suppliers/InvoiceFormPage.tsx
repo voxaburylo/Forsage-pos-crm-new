@@ -511,7 +511,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
       const url = await uploadToStorage(blob, productId)
       onPhotoUpdated(url)   // лише в позицію; у товар — при проведенні накладної
       toast.success('Фото додано')
-    } catch (err) {
+    } catch {
       toast.error('Не вдалося завантажити фото')
     } finally {
       setUploading(false)
@@ -533,7 +533,7 @@ function RowPhotoCell({ photoUrl, productId, onPhotoUpdated }: RowPhotoCellProps
         }
       }
       toast.error('У буфері обміну немає зображення')
-    } catch (err) {
+    } catch {
       toast.error('Будь ласка, натисніть Ctrl+V при фокусі на кнопці або надайте доступ')
     }
   }
@@ -1489,7 +1489,7 @@ export default function InvoiceFormPage() {
       setSupplierModal(false)
       setNewSupplierName('')
       setNewSupplierPhone('')
-    } catch (err) {
+    } catch {
       toast.error('Помилка створення постачальника')
     } finally {
       setCreatingSupplier(false)

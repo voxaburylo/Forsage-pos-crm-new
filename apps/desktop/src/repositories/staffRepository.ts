@@ -5,6 +5,7 @@ import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
 type SalaryType = 'salary' | 'bonus' | 'advance' | 'penalty'
 type SalaryMethod = 'cash' | 'card' | 'transfer'
+type SalaryFundSource = 'cashbox' | 'owner_funds'
 
 function nowIso(): string { return new Date().toISOString() }
 function commissionReversalId(returnId: string, employeeId: string): string {
@@ -541,7 +542,7 @@ export class LocalStaffRepository {
     const handovers = this.db.prepare(`
       SELECT employee_id, COALESCE(SUM(amount), 0) AS amount
       FROM cash_operations
-      WHERE tenant_id = ? AND type = 'cash_in' AND work_date = ?
+      WHERE tenant_id = ? AND type = 'cash_in' AND source = 'cashbox' AND work_date = ?
         AND employee_id IS NOT NULL AND deleted_at IS NULL
       GROUP BY employee_id
     `).all(tenantId, workDate) as any[]
@@ -668,6 +669,7 @@ export class LocalStaffRepository {
     employee_id: string
     employee_name?: string
     method: SalaryMethod
+    fund_source?: SalaryFundSource
     shift_id?: string | null
     work_date: string
     user_id?: string | null
@@ -710,7 +712,7 @@ export class LocalStaffRepository {
         amount, type: 'advance', method: input.method,
         period: input.work_date.slice(0, 7), workDate: input.work_date, source: 'daily_payout',
         note: `Виплата заробітку за ${input.work_date}`, shiftId: input.shift_id ?? null,
-        userId: input.user_id ?? null, timestamp,
+        userId: input.user_id ?? null, timestamp, fundSource: input.fund_source ?? 'cashbox',
       })
       return { payment, amount, earned, previously_paid: paid, penalty }
     })
@@ -896,6 +898,7 @@ export class LocalStaffRepository {
     type: SalaryType; method: SalaryMethod; period: string; workDate: string; source: string
     note: string | null; shiftId: string | null; userId: string | null; timestamp: string
     commissionSaleId?: string | null; commissionOrderId?: string | null; commissionReturnId?: string | null
+    fundSource?: SalaryFundSource
     id?: string
   }): any {
     let cashOperationId: string | null = null
@@ -916,21 +919,44 @@ export class LocalStaffRepository {
         WHERE s.id = ? AND s.tenant_id = ?
         GROUP BY s.id, s.opening_cash
       `).get(input.shiftId, input.tenantId) as { available: number } | undefined
-      if (input.amount > money(cash?.available)) throw new Error('У касі недостатньо готівки для цієї виплати')
+      const fundSource = input.fundSource ?? 'cashbox'
+      if (fundSource === 'cashbox' && input.amount > money(cash?.available)) {
+        throw new Error('У касі недостатньо готівки для цієї виплати')
+      }
+      if (fundSource === 'owner_funds') {
+        const ownerContributionId = randomUUID()
+        const contributionNote = `Внесення власних коштів власника для зарплати за ${input.workDate}: ${input.employeeName}`
+        this.db.prepare(`
+          INSERT INTO cash_operations (
+            id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
+            dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'cash_in', 'owner_funds', ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          ownerContributionId, input.tenantId, input.shiftId, input.userId, input.amount,
+          input.employeeId, input.workDate, contributionNote,
+          input.timestamp, input.timestamp, input.timestamp,
+        )
+        this.addOutbox(input.tenantId, 'cash_operation', ownerContributionId, 'cash_operation.created', {
+          id: ownerContributionId, shift_id: input.shiftId, type: 'in', amount: input.amount,
+          employee_id: input.employeeId, work_date: input.workDate, source: 'owner_funds',
+          note: contributionNote, user_id: input.userId, created_at: input.timestamp,
+        }, input.timestamp)
+      }
       cashOperationId = randomUUID()
       this.db.prepare(`
         INSERT INTO cash_operations (
-          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, notes,
+          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
           dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'salary_payout', 'cashbox', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, 'salary_payout', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        cashOperationId, input.tenantId, input.shiftId, input.userId, input.amount,
-        input.employeeId, input.note || `Виплата зарплати: ${input.employeeName}`,
+        cashOperationId, input.tenantId, input.shiftId, input.userId, fundSource, input.amount,
+        input.employeeId, input.workDate, input.note || `Виплата зарплати: ${input.employeeName}`,
         input.timestamp, input.timestamp, input.timestamp,
       )
       this.addOutbox(input.tenantId, 'cash_operation', cashOperationId, 'cash_operation.created', {
         id: cashOperationId, shift_id: input.shiftId, type: 'out', amount: input.amount,
-        employee_id: input.employeeId, source: 'cashbox', note: input.note,
+        employee_id: input.employeeId, work_date: input.workDate, source: fundSource,
+        note: input.note, user_id: input.userId, created_at: input.timestamp,
       }, input.timestamp)
     }
     const id = input.id ?? randomUUID()

@@ -119,7 +119,7 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     pool.query(`
       SELECT employee_id::text, COALESCE(SUM(amount), 0)::bigint AS amount
       FROM cash_operations
-      WHERE tenant_id = $1 AND type = 'in' AND work_date = $2
+      WHERE tenant_id = $1 AND type = 'in' AND source = 'cashbox' AND work_date = $2
         AND employee_id = ANY($3::uuid[])
       GROUP BY employee_id
     `, [tenantId, date, workerIds]),
@@ -173,6 +173,7 @@ const dailyPayoutSchema = z.object({
   employee_id:   z.string().uuid(),
   employee_name: z.string().min(1).max(200),
   method:        z.enum(['cash', 'card', 'transfer']).default('cash'),
+  fund_source:   z.enum(['cashbox', 'owner_funds']).default('cashbox'),
   shift_id:      z.string().uuid().optional().nullable(),
   work_date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 })
@@ -314,7 +315,7 @@ router.post('/tire-cash-handover', requireRole('owner', 'admin', 'cashier'), asy
           ))::bigint ELSE 0 END),0)::bigint AS amount FROM service_sales
         ), handed AS (
           SELECT COALESCE(SUM(amount),0)::bigint AS amount FROM cash_operations
-          WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3 AND type='in'
+          WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3 AND type='in' AND source='cashbox'
         )
         SELECT GREATEST(0, required.amount-handed.amount)::bigint AS pending FROM required, handed
       `, [req.user!.tenant_id, input.employee_id, input.work_date])
@@ -365,6 +366,9 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
     const period = input.work_date.slice(0, 7)
 
     const result = await runTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `salary-payout:${req.user!.tenant_id}:${input.employee_id}:${input.work_date}`,
+      ])
       if (dailyRate > 0) {
         await client.query(
           `INSERT INTO salary_payments
@@ -392,12 +396,36 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
 
       let cashOperationId: string | null = null
       if (input.method === 'cash') {
-        await assertCashAvailable(client, input.shift_id!, req.user!.tenant_id, amount)
+        if (input.fund_source === 'cashbox') {
+          await assertCashAvailable(client, input.shift_id!, req.user!.tenant_id, amount)
+        } else {
+          const shift = await client.query(
+            `SELECT id FROM shifts
+             WHERE id=$1 AND tenant_id=$2 AND status='open'
+             LIMIT 1 FOR UPDATE`,
+            [input.shift_id, req.user!.tenant_id],
+          )
+          if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Касова зміна не відкрита', 409)
+          await client.query(
+            `INSERT INTO cash_operations
+             (tenant_id, shift_id, type, amount, note, created_by, source, employee_id, work_date)
+             VALUES ($1,$2,'in',$3,$4,$5,'owner_funds',$6,$7)`,
+            [
+              req.user!.tenant_id, input.shift_id, amount,
+              `Внесення власних коштів власника для зарплати за ${input.work_date}: ${input.employee_name}`,
+              req.user!.id, input.employee_id, input.work_date,
+            ],
+          )
+        }
         const cash = await client.query(
           `INSERT INTO cash_operations
-           (tenant_id, shift_id, type, amount, note, created_by, source)
-           VALUES ($1,$2,'out',$3,$4,$5,'cashbox') RETURNING id`,
-          [req.user!.tenant_id, input.shift_id, amount, `Зарплата за ${input.work_date}: ${input.employee_name}`, req.user!.id],
+           (tenant_id, shift_id, type, amount, note, created_by, source, employee_id, work_date)
+           VALUES ($1,$2,'out',$3,$4,$5,$6,$7,$8) RETURNING id`,
+          [
+            req.user!.tenant_id, input.shift_id, amount,
+            `Зарплата за ${input.work_date}: ${input.employee_name}`,
+            req.user!.id, input.fund_source, input.employee_id, input.work_date,
+          ],
         )
         cashOperationId = cash.rows[0].id
       }
@@ -412,7 +440,7 @@ router.post('/daily-payout', requireRole('owner', 'admin'), async (req, res, nex
           period, input.work_date, `Виплата заробітку за ${input.work_date}`, req.user!.id, cashOperationId,
         ],
       )
-      return { payment: payout.rows[0], amount, earned, previously_paid: paid, penalty }
+      return { payment: payout.rows[0], amount, earned, previously_paid: paid, penalty, fund_source: input.fund_source }
     })
     res.status(201).json({ data: result })
   } catch (err) { next(err) }

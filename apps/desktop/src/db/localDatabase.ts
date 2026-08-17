@@ -13,6 +13,7 @@ export interface LocalDatabaseInfo {
 
 export class LocalDatabase {
   private readonly database: DatabaseSync
+  private readonly statements = new Map<string, StatementSync>()
   readonly databasePath: string
   readonly backupsPath: string
   readonly deviceId: string
@@ -90,7 +91,11 @@ export class LocalDatabase {
   }
 
   prepare(sql: string): StatementSync {
-    return this.database.prepare(sql)
+    const cached = this.statements.get(sql)
+    if (cached) return cached
+    const statement = this.database.prepare(sql)
+    this.statements.set(sql, statement)
+    return statement
   }
 
   transaction<T>(work: () => T): T {
@@ -157,6 +162,7 @@ export class LocalDatabase {
   close(): void {
     if (!this.database.isOpen) return
     this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    this.statements.clear()
     this.database.close()
   }
 }
