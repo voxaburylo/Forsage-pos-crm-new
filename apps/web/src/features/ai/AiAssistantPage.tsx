@@ -508,8 +508,10 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
           notes: payload.notes ?? null,
           rows: Array.isArray(payload.products) ? payload.products : [],
         })
+        let invoiceDraftKey = ''
         if (result.invoice?.id && Array.isArray(result.draft_items)) {
-          localStorage.setItem(`forsage:supply-invoice:edit-${result.invoice.id}:draft:v2`, JSON.stringify({
+          invoiceDraftKey = `forsage:supply-invoice:edit-${result.invoice.id}:draft:v2`
+          localStorage.setItem(invoiceDraftKey, JSON.stringify({
             supplierId: result.invoice.supplier_id ?? '', invoiceNumber: result.invoice.invoice_number ?? '',
             notes: result.invoice.notes ?? '', items: result.draft_items, paidAmount: '', cashboxPaidAmount: '',
             payFullNow: false, paymentMethod: 'cash', fundSource: 'cashbox', postImmediately: false,
@@ -526,7 +528,11 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         setApplyStatus((prev) => ({ ...prev, [action.id]: result.unresolved.length ? 'warn' : 'ok' }))
         setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
         toast.success(msg)
-        if (result.invoice?.id) navigate(`/suppliers/invoices/${result.invoice.id}/edit`)
+        // The AI bridge has already persisted a draft invoice, but the user is
+        // still completing its initial creation. Open the normal new-invoice
+        // flow with that draft instead of edit mode: edit mode intentionally
+        // hides initial payment controls and would skip recording a payment.
+        if (invoiceDraftKey) navigate(`/suppliers/invoices/new?resume=${encodeURIComponent(invoiceDraftKey)}`)
         return
       }
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload })
