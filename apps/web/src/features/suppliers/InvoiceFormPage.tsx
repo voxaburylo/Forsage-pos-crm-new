@@ -689,6 +689,7 @@ export default function InvoiceFormPage() {
   const [paymentMethod, setPaymentMethod] = useState<InvoicePaymentMethod>('cash')
   const [fundSource, setFundSource] = useState<InvoiceFundSource>('cashbox')
   const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
+  const [initialPaymentAvailable, setInitialPaymentAvailable] = useState(!isEdit)
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
   const itemsRef = useRef(items)
   const invoiceDraftSnapshotRef = useRef<SupplyInvoiceDraftData>({
@@ -918,6 +919,7 @@ export default function InvoiceFormPage() {
           navigate(`/suppliers/invoices/new?clone=${id}`, { replace: true })
           return
         }
+        setInitialPaymentAvailable(Number(inv.paid_amount ?? 0) <= 0)
         const serverDraft = draftFromServerInvoice(inv)
         const localDraft = loadSupplyInvoiceDraft(invoiceDraftKey)
         const draft = newestSupplyInvoiceDraft(localDraft, serverDraft)
@@ -1733,8 +1735,8 @@ export default function InvoiceFormPage() {
       // Перевіряємо касу до створення нових карток товарів. Інакше при відмові
       // оплати накладна не створювалась, а її товари вже лишались у базі.
       const submittedTotal = submittedItems.reduce((sum, item) => sum + item.total, 0)
-      const paidKopecks = !isEdit ? Math.min(payFullNow ? submittedTotal : parseMoneyToKopecks(paidAmount), submittedTotal) : 0
-      const paymentParts = !isEdit ? buildSupplierPaymentParts(paidKopecks) : []
+      const paidKopecks = initialPaymentAvailable ? Math.min(payFullNow ? submittedTotal : parseMoneyToKopecks(paidAmount), submittedTotal) : 0
+      const paymentParts = initialPaymentAvailable ? buildSupplierPaymentParts(paidKopecks) : []
       const cashboxPart = paymentParts.find((part) => part.fund_source === 'cashbox')?.amount ?? 0
       const shiftId = cashboxPart > 0 ? await requireCashboxFunds(cashboxPart) : null
       if (cashboxPart > 0 && !shiftId) return
@@ -1932,7 +1934,7 @@ export default function InvoiceFormPage() {
         const updated = await supplierApi.updateInvoice(existingDraftId, { ...body, draft_payload: null })
         const invoiceId = updated.data.id
 
-        if (!isEdit && paymentParts.length > 0) {
+        if (initialPaymentAvailable && paymentParts.length > 0) {
           await recordInitialPayments(invoiceId)
         }
 
@@ -1955,7 +1957,7 @@ export default function InvoiceFormPage() {
           shift_id: null,
         })
 
-        if (!isEdit && created?.data?.id && paymentParts.length > 0) {
+        if (initialPaymentAvailable && created?.data?.id && paymentParts.length > 0) {
           await recordInitialPayments(created.data.id)
         }
 
@@ -2633,8 +2635,8 @@ export default function InvoiceFormPage() {
           )}
         </Card>
 
-        {/* Оплата постачальнику (тільки при створенні) */}
-        {!isEdit && (
+        {/* Початкова оплата доступна при створенні та для ще не оплаченого чернетника. */}
+        {initialPaymentAvailable && (
           <Card className="mb-6">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-sm font-bold text-gray-800">💵 Оплата постачальнику</span>
