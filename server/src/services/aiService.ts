@@ -10,6 +10,7 @@ import { listCategories, listBrands, createCategory } from './adminService.js'
 import { listCustomers, updateCustomer } from './customerService.js'
 import { normalizePhone } from '../validators/customerSchema.js'
 import { normalizeArticle } from '../validators/productValidator.js'
+import { parseAiJsonObject } from './aiInvoiceResponse.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
 // Значення орієнтовні (тарифи Google можуть змінюватись) — лічильник показуємо
@@ -1076,33 +1077,98 @@ export async function recognizeSupplyInvoicePhoto(
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: SUPPLY_INVOICE_PHOTO_SCHEMA as any,
-      maxOutputTokens: 8192,
+      // Gemini 2.5 may spend part of the response budget on internal reasoning.
+      // 8192 tokens truncated larger invoices and left invalid JSON.
+      maxOutputTokens: cfg.model.startsWith('gemini-2.0') ? 8192 : 32768,
+      temperature: 0,
     },
   })
 
-  let response
-  try {
-    const parts: Part[] = [
-      { text: params.message?.trim() || 'Розпізнай усі товарні рядки цієї накладної.' },
-      ...params.images.slice(0, 4).map((image): Part => ({
-        inlineData: { mimeType: image.mime_type, data: image.data_base64 },
-      })),
-    ]
-    response = (await model.generateContent(parts)).response
-  } catch (error: any) {
-    if (isQuotaError(error)) throw new AppError('AI_QUOTA_EXCEEDED', 'Вичерпано ліміт Gemini. Спробуйте пізніше.', 429)
-    logger.warn({ err: error?.message }, '[ai] supply invoice photo recognition failed')
-    throw new AppError('AI_UPSTREAM_UNAVAILABLE', 'Не вдалося розпізнати фото накладної. Спробуйте ще раз.', 503)
+  let promptTokens = 0
+  let completionTokens = 0
+  const parsedPages: any[] = []
+
+  for (const [imageIndex, image] of params.images.slice(0, 4).entries()) {
+    let parsedPage: any = null
+    let lastFailure: 'invalid_json' | 'no_rows' | 'max_tokens' = 'invalid_json'
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let response: any
+      try {
+        const requestText = attempt === 0
+          ? (params.message?.trim() || 'Розпізнай усі товарні рядки цієї накладної.')
+          : 'Повтори OCR цього фото. Поверни тільки компактний JSON без Markdown. Не пропусти жодного товарного рядка.'
+        const parts: Part[] = [
+          { text: requestText },
+          { inlineData: { mimeType: image.mime_type, data: image.data_base64 } },
+        ]
+        response = (await model.generateContent(parts)).response
+      } catch (error: any) {
+        if (isQuotaError(error)) throw new AppError('AI_QUOTA_EXCEEDED', 'Вичерпано ліміт Gemini. Спробуйте пізніше.', 429)
+        if (attempt === 0 && isTransientGeminiError(error)) {
+          logger.warn({ err: error?.message, imageIndex, attempt }, '[ai] transient invoice OCR error, retrying')
+          continue
+        }
+        logger.warn({ err: error?.message, imageIndex, attempt }, '[ai] supply invoice photo recognition failed')
+        throw new AppError('AI_UPSTREAM_UNAVAILABLE', 'Не вдалося розпізнати фото накладної. Спробуйте ще раз.', 503)
+      }
+
+      const usage = response.usageMetadata
+      const currentPromptTokens = usage?.promptTokenCount ?? 0
+      promptTokens += currentPromptTokens
+      completionTokens += usage?.totalTokenCount != null
+        ? Math.max(usage.totalTokenCount - currentPromptTokens, 0)
+        : (usage?.candidatesTokenCount ?? 0)
+
+      const candidate = response?.candidates?.[0]
+      const finishReason = String(candidate?.finishReason ?? '')
+      const candidateText = (candidate?.content?.parts ?? [])
+        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+        .filter(Boolean)
+        .join('\n')
+      let responseText = candidateText
+      if (!responseText) {
+        try { responseText = response.text() }
+        catch { responseText = '' }
+      }
+
+      const candidatePayload = parseAiJsonObject(responseText)
+      const candidateRows = Array.isArray(candidatePayload?.products) ? candidatePayload.products : []
+      if (candidateRows.some((row: any) => String(row?.name ?? '').trim())) {
+        parsedPage = candidatePayload
+        break
+      }
+
+      lastFailure = finishReason === 'MAX_TOKENS'
+        ? 'max_tokens'
+        : candidatePayload ? 'no_rows' : 'invalid_json'
+      logger.warn({
+        imageIndex,
+        attempt,
+        finishReason,
+        responseChars: responseText.length,
+        hasJsonObject: Boolean(candidatePayload),
+      }, '[ai] invoice OCR returned no usable table, retrying')
+    }
+
+    if (!parsedPage) {
+      await recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
+      if (lastFailure === 'max_tokens') {
+        throw new AppError('AI_RESPONSE_TOO_LARGE', 'На фото забагато рядків для однієї відповіді. Сфотографуйте накладну двома частинами.', 422)
+      }
+      if (lastFailure === 'no_rows') {
+        throw new AppError('AI_NO_ROWS', `На фото ${imageIndex + 1} не знайдено товарних рядків. Перевірте фото і повторіть.`, 422)
+      }
+      throw new AppError('AI_INVALID_RESPONSE', 'Gemini двічі повернув пошкоджену таблицю. Повторіть фото без нахилу або розділіть його на дві частини.', 502)
+    }
+    parsedPages.push(parsedPage)
   }
 
-  const usage = response.usageMetadata
-  const promptTokens = usage?.promptTokenCount ?? 0
-  const completionTokens = usage?.totalTokenCount != null
-    ? Math.max(usage.totalTokenCount - promptTokens, 0)
-    : (usage?.candidatesTokenCount ?? 0)
-  let parsed: any
-  try { parsed = JSON.parse(response.text()) }
-  catch { throw new AppError('AI_INVALID_RESPONSE', 'AI не повернув таблицю товарів. Спробуйте чіткіше фото.', 502) }
+  const parsed: any = {
+    supplier_name: parsedPages.map((page) => page?.supplier_name).find((value) => String(value ?? '').trim()) ?? '',
+    invoice_number: parsedPages.map((page) => page?.invoice_number).find((value) => String(value ?? '').trim()) ?? '',
+    products: parsedPages.flatMap((page) => Array.isArray(page?.products) ? page.products : []),
+  }
   const products = (Array.isArray(parsed?.products) ? parsed.products : [])
     .filter((product: any) => String(product?.name ?? '').trim())
     .map((product: any) => ({
