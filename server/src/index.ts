@@ -52,6 +52,7 @@ import jobsRouter from './routes/jobs.js'
 import { pool } from './db/pg.js'
 import vinRouter from './routes/vin.js'
 import aiRouter from './routes/ai.js'
+import internalAiRouter from './routes/internalAi.js'
 import { startImportWorkers, stopImportWorkers } from './workers/importWorker.js' // used in startup and shutdown
 import { shutdownQueues } from './lib/bullmq.js'
 import { processImport } from './services/supplierImportService.js'
@@ -142,6 +143,7 @@ app.get('/api/v1/version', (_req, res) => {
 app.use('/api/v1/auth/login', loginLimiter)
 
 // Роуты
+app.use('/api/v1/internal', internalAiRouter)
 app.use('/api/v1/auth', authRouter)
 app.use('/api/v1/products', productsRouter)
 app.use('/api/v1/customers', customersRouter)

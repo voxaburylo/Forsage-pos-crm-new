@@ -118,7 +118,7 @@ export async function testKey(apiKey: string, model: string): Promise<{ ok: bool
 }
 
 // ─── Облік використання ──────────────────────────────────────────────────────
-async function logUsage(
+export async function recordAiUsage(
   tenantId: string, userId: string | null, model: string,
   promptTokens: number, completionTokens: number,
 ): Promise<void> {
@@ -1123,7 +1123,7 @@ export async function recognizeSupplyInvoicePhoto(
     supplier_name: String(parsed?.supplier_name ?? '').trim() || null,
     invoice_number: String(parsed?.invoice_number ?? '').trim() || null,
   }
-  await logUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
+  await recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
   return {
     reply: `Розпізнано ${products.length} позицій. Перевірте таблицю та натисніть «Застосувати».`,
     actions: [action],
@@ -1298,7 +1298,7 @@ export async function runChat(
     }
   }
 
-  await logUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
+  await recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
 
   if (!reply) {
     reply = actions.length > 0 ? 'Підготував пропозицію нижче.' : 'Готово.'
