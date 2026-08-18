@@ -19,6 +19,7 @@
   "dependencies": {
     "@crm-forsage/shared": "file:../shared",
     "@google-cloud/vision": "^5.3.6",
+    "@google/genai": "2.17.1",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.112.3",
     "@types/cors": "^2.8.17",
