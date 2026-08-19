@@ -13,10 +13,12 @@ const router = Router()
 router.use(requireAuth)
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper'] as const
 const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'] as const
-// Касиру відкрито лише шлях накладних; керування постачальниками та боргами залишається для складу.
+// Касир може приймати товар і швидко створити постачальника прямо з накладної.
+// Редагування, злиття, видалення та перегляд боргів лишаються для складу.
 router.use((req, res, next) => {
   const isInvoiceRoute = req.path === '/invoices' || req.path.startsWith('/invoices/')
-  return requireRole(...(isInvoiceRoute ? RECEIVING_ROLES : SUPPLIER_ROLES))(req, res, next)
+  const isQuickCreate = req.method === 'POST' && req.path === '/'
+  return requireRole(...(isInvoiceRoute || isQuickCreate ? RECEIVING_ROLES : SUPPLIER_ROLES))(req, res, next)
 })
 
 // ===================== Приходні накладні =====================
@@ -143,7 +145,7 @@ router.get('/:id', async (req, res, next) => {
 })
 
 // POST /api/v1/suppliers
-router.post('/', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+router.post('/', requireRole(...RECEIVING_ROLES), async (req, res, next) => {
   try {
     const parsed = createSupplierSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані постачальника', 422, parsed.error.flatten())

@@ -14,6 +14,8 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:staff:tire-service-report', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:staff:tire-cash-handover', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:supply:post-invoice', 'cashier')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:supply:save-supplier', 'cashier')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:supply:delete-supplier', 'cashier')).toBe(false)
     expect(isDesktopChannelAllowed('desktop:catalog:save-product', 'cashier')).toBe(true)
   })
 

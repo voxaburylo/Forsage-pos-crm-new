@@ -37,6 +37,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:catalog:generate-barcode', RECEIVING_ROLES],
   ['desktop:supply:list-suppliers', RECEIVING_ROLES],
   ['desktop:supply:get-supplier', RECEIVING_ROLES],
+  ['desktop:supply:save-supplier', RECEIVING_ROLES],
   ['desktop:supply:list-invoices', RECEIVING_ROLES],
   ['desktop:supply:get-invoice', RECEIVING_ROLES],
   ['desktop:supply:create-invoice', RECEIVING_ROLES],
