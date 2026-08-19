@@ -1491,13 +1491,15 @@ export default function InvoiceFormPage() {
       setSupplierModal(false)
       setNewSupplierName('')
       setNewSupplierPhone('')
-    } catch {
-      toast.error('Помилка створення постачальника')
+    } catch (error) {
+      const detail = error instanceof Error
+        ? error.message.replace(/^Error invoking remote method .*?:\s*Error:\s*/i, '').trim()
+        : ''
+      toast.error(detail || 'Не вдалося створити постачальника. Перевірте назву й телефон.')
     } finally {
       setCreatingSupplier(false)
     }
   }
-
   function removeItem(index: number) {
     setMoneyDrafts({})
     const key = items[index]?.client_key
