@@ -12,7 +12,10 @@
     "build:desktop": "pnpm --filter=desktop dist",
     "desktop:smoke": "pnpm --filter=desktop smoke:db",
     "desktop:dist": "pnpm --filter=desktop dist",
-    "lint": "pnpm --recursive lint"
+    "lint": "pnpm --recursive lint",
+    "typecheck": "pnpm --filter=web typecheck && pnpm --filter=desktop typecheck && pnpm --filter=server typecheck",
+    "test": "pnpm --filter=web test && pnpm --filter=desktop test && pnpm --filter=server test",
+    "verify": "pnpm typecheck && pnpm --filter=web lint && pnpm test"
   },
   "packageManager": "pnpm@10.0.0",
   "pnpm": {
