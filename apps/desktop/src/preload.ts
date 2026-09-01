@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     test: () => ipcRenderer.invoke('desktop:lan:test'),
   },
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
+  listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
+  restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
   bootstrap: {
     importSnapshot: (snapshot: unknown) =>
       ipcRenderer.invoke('desktop:bootstrap:import-snapshot', snapshot),

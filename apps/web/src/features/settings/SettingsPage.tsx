@@ -13,6 +13,7 @@ import { formatMoney } from '@/lib/utils'
 import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
+import { BackupSettingsCard } from './BackupSettingsCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
@@ -439,6 +440,8 @@ export default function SettingsPage() {
               )}
             </Card>
           )}
+
+          {isDesktopRuntime() && <BackupSettingsCard />}
 
           {isDesktopRuntime() && <LanSettingsCard />}
 

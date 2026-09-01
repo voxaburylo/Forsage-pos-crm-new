@@ -132,6 +132,9 @@ export function isLanProxyChannel(channel: string): boolean {
     'desktop:bootstrap:',
     'desktop:get-runtime-info',
     'desktop:backup-now',
+    // Бекапи й відкат бази — завжди про ЦЕЙ компʼютер. Проксіювати їх на
+    // головний ПК не можна: людина відновлювала б чужу базу.
+    'desktop:backup:',
   ].some((prefix) => channel.startsWith(prefix))
 }
 

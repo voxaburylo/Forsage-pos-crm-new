@@ -16,6 +16,9 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:backup-now', OWNER_ROLES],
+  // Відкат бази затирає роботу, зроблену після копії — тільки власник.
+  ['desktop:backup:list', OWNER_ROLES],
+  ['desktop:backup:restore', OWNER_ROLES],
   ['desktop:lan:get-status', OWNER_ROLES],
   ['desktop:lan:update', OWNER_ROLES],
   ['desktop:lan:test', OWNER_ROLES],

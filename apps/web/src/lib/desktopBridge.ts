@@ -16,6 +16,13 @@ export interface DesktopLanStatus {
   lastError: string | null
 }
 
+export interface DesktopDatabaseBackup {
+  fileName: string
+  filePath: string
+  sizeBytes: number
+  createdAt: string
+}
+
 export interface DesktopRuntimeInfo {
   databasePath: string
   deviceId: string
@@ -433,6 +440,9 @@ interface ForsageDesktopBridge {
     test: () => Promise<DesktopLanStatus>
   }
   backupNow: () => Promise<string>
+  listBackups?: () => Promise<DesktopDatabaseBackup[]>
+  /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
+  restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   bootstrap: {
     importSnapshot: (snapshot: DesktopBootstrapSnapshot) => Promise<DesktopBootstrapImportResult>
   }

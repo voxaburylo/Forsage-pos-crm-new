@@ -4,7 +4,7 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
-import { LocalDatabase } from './db/localDatabase'
+import { LocalDatabase, type LocalDatabaseRecovery } from './db/localDatabase'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -165,6 +165,51 @@ async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
 function requireLocalDatabase(): LocalDatabase {
   if (!localDatabase) throw new Error('LOCAL_DATABASE_NOT_READY')
   return localDatabase
+}
+
+/**
+ * Каса піднялася не зі своєї бази. Це не можна проковтнути тихо: власник має
+ * дізнатись про це ДО того, як почне звіряти виручку й недорахується чеків.
+ * Тому — модальне вікно перед відкриттям каси, а не тост усередині інтерфейсу.
+ */
+function reportLocalDatabaseRecovery(recovery: LocalDatabaseRecovery): void {
+  writeDesktopDiagnostic('local-database-recovered', recovery)
+  const shared = [
+    `Причина: ${recovery.reason}`,
+    '',
+    `Пошкоджений файл збережено: ${recovery.quarantinedPath}`,
+    'Не видаляйте його — з нього ще можна дістати дані.',
+  ]
+  const message = recovery.kind === 'backup'
+    ? [
+      `Каса відновлена з резервної копії від ${formatRecoveryMoment(recovery.backupCreatedAt)}.`,
+      '',
+      'Продажі, зроблені ПІСЛЯ цього часу і ще не відправлені на сервер,',
+      'у цій копії відсутні. Звірте останні чеки перед роботою.',
+      '',
+      ...shared,
+    ].join('\n')
+    : [
+      'Жодна резервна копія не відкрилася, тому касу запущено з порожньою базою.',
+      '',
+      'Увійдіть із інтернетом і натисніть «Завантажити дані» в налаштуваннях,',
+      'щоб забрати каталог і клієнтів із сервера.',
+      '',
+      ...shared,
+    ].join('\n')
+
+  dialog.showMessageBoxSync({
+    type: 'warning',
+    title: 'Локальну базу відновлено',
+    message: 'Попередня база не відкрилася',
+    detail: message,
+    buttons: ['Зрозуміло'],
+  })
+}
+
+function formatRecoveryMoment(value: string): string {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('uk-UA')
 }
 
 function requireLocalCatalog(): LocalCatalogRepository {
@@ -784,7 +829,9 @@ app.whenReady().then(async () => {
     ? path.join(process.env.LOCALAPPDATA, 'Forsage')
     : app.getPath('userData')
   desktopDataRoot = dataRoot
-  localDatabase = new LocalDatabase(dataRoot)
+  const opened = LocalDatabase.open(dataRoot)
+  localDatabase = opened.database
+  if (opened.recovery) reportLocalDatabaseRecovery(opened.recovery)
   void localDatabase.backupIfDue().catch((error) => {
     console.error('[desktop] Automatic local backup failed', error)
   })
@@ -807,6 +854,32 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:lan:update', (_event, input) => localNetwork?.update(input))
   handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
   handleDesktopIpc('desktop:backup-now', () => requireLocalDatabase().backupNow())
+  handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
+  handleDesktopIpc('desktop:backup:restore', (_event, fileName: string) => {
+    // Підміняти файл під відкритими репозиторіями не можна, тому працюємо
+    // так: закрили базу → поставили копію на місце → перезапустили програму.
+    // Відкат — рідка й важка дія, чесний перезапуск тут безпечніший за
+    // спробу перепідключити півтора десятка репозиторіїв на льоту.
+    const dataRoot = desktopDataRoot
+    if (!dataRoot) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    const database = requireLocalDatabase()
+    database.close()
+    localDatabase = null
+    try {
+      const restored = LocalDatabase.stageBackupForRestart(dataRoot, String(fileName))
+      writeDesktopDiagnostic('local-database-restored-manually', restored)
+      app.relaunch()
+      app.exit(0)
+      return restored
+    } catch (error) {
+      writeDesktopDiagnostic('local-database-restore-failed', error)
+      // Не лишаємо касу без бази: піднімаємо те, що є (або відновлюємо
+      // автоматично тим самим шляхом, що й при пошкодженні).
+      const reopened = LocalDatabase.open(dataRoot)
+      localDatabase = reopened.database
+      throw error
+    }
+  })
   handleDesktopIpc('desktop:bootstrap:import-snapshot', (_event, snapshot: LocalBootstrapSnapshot) =>
     requireLocalSync().importSnapshotChunked(snapshot),
   )
