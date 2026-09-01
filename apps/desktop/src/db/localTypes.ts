@@ -303,6 +303,21 @@ export interface LocalSyncOutboxOperation {
   last_error: string | null
 }
 
+/**
+ * Застрягла операція для екрана «Не синхронізовано». Без payload — для показу
+ * людині вистачає типу, часу й помилки, а payload накладної важить сотні КБ.
+ */
+export interface LocalSyncStuckOperation {
+  sequence: number
+  operation_id: string
+  aggregate_type: string
+  aggregate_id: string
+  operation_type: string
+  created_at: string
+  attempts: number
+  last_error: string | null
+}
+
 export interface LocalSyncPushResult {
   sequence: number
   operation_id: string

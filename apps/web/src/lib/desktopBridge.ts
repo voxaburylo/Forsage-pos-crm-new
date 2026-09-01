@@ -283,6 +283,18 @@ export interface DesktopSyncStatus {
   pull_last_error: string | null
 }
 
+/** Операція, що вичерпала спроби. Показується людині в «Не синхронізовано». */
+export interface DesktopSyncStuckOperation {
+  sequence: number
+  operation_id: string
+  aggregate_type: string
+  aggregate_id: string
+  operation_type: string
+  created_at: string
+  attempts: number
+  last_error: string | null
+}
+
 export interface DesktopFiscalConfig {
   enabled: boolean
   cashalotDir: string
@@ -645,6 +657,8 @@ interface ForsageDesktopBridge {
     listPending: (limit?: number) => Promise<DesktopSyncOutboxOperation[]>
     getPullState: () => Promise<DesktopSyncPullState>
     status?: () => Promise<DesktopSyncStatus>
+    listStuck?: (limit?: number) => Promise<DesktopSyncStuckOperation[]>
+    retryStuck?: (sequences?: number[]) => Promise<{ retried: number }>
     applyPullChanges: (changes: DesktopSyncPullChanges) => Promise<DesktopSyncPullResult>
     markPullFailed: (error: string) => Promise<void>
     applyPushResults: (results: DesktopSyncPushResult[]) => Promise<void>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { SyncHealthIndicator } from './SyncHealthIndicator'
 import { useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import {
@@ -88,6 +89,9 @@ export function Layout({ children, title, actions, onBack }: Props) {
               <h1 className="font-bold text-gray-900 text-base md:text-lg truncate">{title}</h1>
             )}
           </div>
+
+          {/* Несинхронізовані операції видно з будь-якого екрана, а не лише з каси. */}
+          <SyncHealthIndicator className="shrink-0" />
 
           {actions && (
             <div className="flex items-center gap-1.5 shrink-0 overflow-visible relative">{actions}</div>

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
-import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult } from '../db/localTypes'
+import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult, type LocalSyncStuckOperation } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
 import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
@@ -150,6 +150,53 @@ export class LocalSyncRepository {
       pull_last_success_at: pull.last_success_at,
       pull_last_error: pull.last_error,
     }
+  }
+
+  /**
+   * Операції, які вичерпали ліміт спроб і самі вже ніколи не поїдуть.
+   * Це те, що людина має побачити списком і вирішити, що з ним робити.
+   * Payload навмисно НЕ віддаємо: у накладній чи чеку він на сотні кілобайт,
+   * а для екрана «застрягло» потрібні лише тип, час і текст помилки.
+   */
+  listStuck(limit = 100): LocalSyncStuckOperation[] {
+    const maxRows = Math.max(1, Math.min(500, limit))
+    return this.db.prepare(`
+      SELECT sequence, operation_id, aggregate_type, aggregate_id,
+             operation_type, created_at, attempts, last_error
+      FROM sync_outbox
+      WHERE status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS}
+      ORDER BY sequence ASC
+      LIMIT ?
+    `).all(maxRows) as unknown as LocalSyncStuckOperation[]
+  }
+
+  /**
+   * Ручний повтор для застряглих операцій: скидаємо лічильник спроб, і рядок
+   * знову потрапляє у звичайну чергу. Викликається людиною з UI після того,
+   * як усунено причину (роль, звʼязок, виправлені дані на сервері).
+   *
+   * Свідомо чіпаємо ЛИШЕ status='failed' з вичерпаними спробами. Рядки, які
+   * ще ретраяться самі, чіпати не можна — скидання їхнього next_attempt_at
+   * зламало б експоненційний backoff і влаштувало б шторм запитів.
+   */
+  retryStuck(sequences?: number[]): { retried: number } {
+    const selected = Array.isArray(sequences)
+      ? sequences.filter((value) => Number.isSafeInteger(value))
+      : null
+    if (selected && selected.length === 0) return { retried: 0 }
+
+    return this.db.transaction(() => {
+      const scope = selected
+        ? `AND sequence IN (${selected.map(() => '?').join(',')})`
+        : ''
+      const statement = this.db.prepare(`
+        UPDATE sync_outbox
+        SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+        WHERE status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS} ${scope}
+      `)
+      const result = selected ? statement.run(...selected) : statement.run()
+      return { retried: Number(result.changes ?? 0) }
+    })
   }
 
   applyPullChanges(changes: LocalSyncPullChanges): LocalSyncPullResult {
