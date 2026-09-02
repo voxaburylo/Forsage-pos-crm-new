@@ -19,6 +19,13 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   // Відкат бази затирає роботу, зроблену після копії — тільки власник.
   ['desktop:backup:list', OWNER_ROLES],
   ['desktop:backup:restore', OWNER_ROLES],
+  // Журнал проблем читає той, хто стоїть за касою: саме він бачить збій першим
+  // і має що сказати. Закривати й вивантажувати список — справа власника.
+  ['desktop:problems:list', RECEIVING_ROLES],
+  ['desktop:problems:summary', RECEIVING_ROLES],
+  ['desktop:problems:resolve', OWNER_ROLES],
+  ['desktop:problems:resolve-all', OWNER_ROLES],
+  ['desktop:problems:export', OWNER_ROLES],
   ['desktop:lan:get-status', OWNER_ROLES],
   ['desktop:lan:update', OWNER_ROLES],
   ['desktop:lan:test', OWNER_ROLES],

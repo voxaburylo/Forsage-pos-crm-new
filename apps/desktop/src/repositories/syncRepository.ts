@@ -3,6 +3,7 @@ import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult, type LocalSyncStuckOperation } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
 import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
+import { LocalProblemRepository } from './problemRepository'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
 import { readServerResetGeneration } from './localTenantReset'
 
@@ -11,6 +12,22 @@ const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
 const CORRUPT_OUTBOX_RETRY_MS = 5 * 60_000
 function nowIso(): string {
   return new Date().toISOString()
+}
+
+/**
+ * Каса свідомо працює без інтернету, тож обрив зв'язку — очікуваний стан, а не
+ * проблема для журналу. Інакше журнал заповнився б однією й тією ж подією
+ * за кожен магазинний день без мережі.
+ */
+const OFFLINE_ERROR_MARKERS = [
+  'fetch failed', 'ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN',
+  'ETIMEDOUT', 'network', 'Немає зв', 'офлайн',
+]
+
+function isOfflineError(error: string | null | undefined): boolean {
+  if (!error) return false
+  const text = String(error).toLowerCase()
+  return OFFLINE_ERROR_MARKERS.some((marker) => text.includes(marker.toLowerCase()))
 }
 
 function parseStoredString(valueJson: string | undefined): string | null {
@@ -64,7 +81,10 @@ function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
 }
 
 export class LocalSyncRepository {
+  private readonly problems: LocalProblemRepository
+
   constructor(private readonly db: LocalDatabase) {
+    this.problems = new LocalProblemRepository(db)
     this.coalesceSupersededProductOperations()
     this.recoverLegacyReturnOutbox()
     this.recoverMissingCustomerVehicleOutbox()
@@ -251,6 +271,17 @@ export class LocalSyncRepository {
         last_error = excluded.last_error,
         updated_at = excluded.updated_at
     `).run(SERVER_PULL_SCOPE, timestamp, error, timestamp)
+    // Вимкнений інтернет — це нормальна робота офлайн-каси, а не проблема.
+    // У журнал потрапляє лише те, що не лікується відновленням зв'язку.
+    if (!isOfflineError(error)) {
+      this.problems.record({
+        source: 'sync',
+        code: 'sync.pull_failed',
+        severity: 'warning',
+        title: 'Каса не змогла завантажити зміни з сервера',
+        detail: error,
+      })
+    }
   }
 
   listPending(limit = 50): LocalSyncOutboxOperation[] {
@@ -337,6 +368,7 @@ export class LocalSyncRepository {
   }
   applyPushResults(results: LocalSyncPushResult[]): void {
     const timestamp = nowIso()
+    const rejected: number[] = []
     this.db.transaction(() => {
       const acknowledged: Array<{
         tenant_id: string
@@ -386,11 +418,54 @@ export class LocalSyncRepository {
           WHERE sequence = ?
             AND operation_id = ?
         `).run(result.error ?? 'Помилка синхронізації', nextAttemptAt, result.sequence, result.operation_id)
+        rejected.push(result.sequence)
       }
       // All statuses must be final before dirty flags are inspected. Otherwise
       // a reverse-ordered acknowledgement batch can leave a newer dirty_at orphaned.
       for (const operation of acknowledged) this.clearDirtyAfterPush(operation)
     })
+    // Пишемо після коміту: журнал фіксує те, що вже реально сталося з чергою.
+    this.recordRejectedOperations(rejected)
+  }
+
+  /**
+   * Відхилена сервером операція — це або незбережений товар, або незарахований
+   * прихід. На касі це видно лише як «кількість не та», тому кожне відхилення
+   * лишає слід у журналі, а вичерпані спроби підвищують його до окремої проблеми.
+   */
+  private recordRejectedOperations(sequences: number[]): void {
+    if (sequences.length === 0) return
+    for (const sequence of sequences) {
+      const row = this.db.prepare(`
+        SELECT tenant_id, aggregate_type, aggregate_id, operation_type, attempts, last_error
+        FROM sync_outbox
+        WHERE sequence = ?
+        LIMIT 1
+      `).get(sequence) as {
+        tenant_id: string
+        aggregate_type: string
+        aggregate_id: string
+        operation_type: string
+        attempts: number
+        last_error: string | null
+      } | undefined
+      if (!row) continue
+
+      const exhausted = row.attempts >= MAX_OUTBOX_ATTEMPTS
+      this.problems.record({
+        source: 'sync',
+        code: exhausted ? 'sync.operation_stuck' : 'sync.operation_rejected',
+        severity: exhausted ? 'error' : 'warning',
+        title: exhausted
+          ? `Операцію «${row.operation_type}» сервер так і не прийняв`
+          : `Сервер відхилив операцію «${row.operation_type}»`,
+        detail: row.last_error,
+        entity_type: row.aggregate_type,
+        entity_id: row.aggregate_id,
+        context: { sequence, attempts: row.attempts, operation_type: row.operation_type },
+        tenant_id: row.tenant_id,
+      })
+    }
   }
 
   markBatchFailed(sequences: number[], error: string): void {
@@ -409,6 +484,7 @@ export class LocalSyncRepository {
         `).run(error, timestamp, sequence)
       }
     })
+    this.recordRejectedOperations(sequences)
   }
 
 

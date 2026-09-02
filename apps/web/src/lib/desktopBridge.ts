@@ -23,6 +23,29 @@ export interface DesktopDatabaseBackup {
   createdAt: string
 }
 
+/** Запис журналу проблем каси: один рядок — одна проблема, повтори згорнуті. */
+export interface DesktopProblem {
+  id: string
+  source: 'sync' | 'print' | 'fiscal' | 'database' | 'app'
+  code: string
+  severity: 'error' | 'warning'
+  title: string
+  detail: string | null
+  entity_type: string | null
+  entity_id: string | null
+  context: Record<string, unknown> | null
+  occurrences: number
+  first_seen_at: string
+  last_seen_at: string
+  resolved_at: string | null
+}
+
+export interface DesktopProblemSummary {
+  errors: number
+  warnings: number
+  last_seen_at: string | null
+}
+
 export interface DesktopRuntimeInfo {
   databasePath: string
   deviceId: string
@@ -438,6 +461,13 @@ interface ForsageDesktopBridge {
     getStatus: () => Promise<DesktopLanStatus>
     update: (input: Partial<Pick<DesktopLanStatus, 'mode' | 'port' | 'hubAddress' | 'accessKey' | 'allowedUserId'>>) => Promise<DesktopLanStatus>
     test: () => Promise<DesktopLanStatus>
+  }
+  problems?: {
+    list: (options?: { includeResolved?: boolean; limit?: number }) => Promise<DesktopProblem[]>
+    summary: () => Promise<DesktopProblemSummary>
+    resolve: (id: string) => Promise<{ ok: true }>
+    resolveAll: () => Promise<{ resolved: number }>
+    export: () => Promise<{ path: string }>
   }
   backupNow: () => Promise<string>
   listBackups?: () => Promise<DesktopDatabaseBackup[]>

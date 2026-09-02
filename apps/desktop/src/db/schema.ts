@@ -1341,6 +1341,53 @@ const MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL = `
     AND last_error LIKE '%сторнувати комісію%';
 `;
 
+const MIGRATION_023_PROBLEM_LOG_SQL = `
+  -- Каса мовчала про свої збої: помилки синхронізації, друку й ПРРО жили тільки
+  -- в консолі розробника, а після 30 спроб операція ставала dead-letter без сліду.
+  -- Журнал збирає їх в одному місці, згортаючи повтори однієї й тієї ж проблеми.
+  CREATE TABLE IF NOT EXISTS problem_log (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    code TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'error',
+    title TEXT NOT NULL,
+    detail TEXT,
+    entity_type TEXT,
+    entity_id TEXT,
+    context_json TEXT,
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+
+  -- Одна відкрита проблема на сутність: повтор інкрементує лічильник,
+  -- а не засмічує список тисячею однакових рядків.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_problem_log_open
+    ON problem_log(tenant_id, source, code, COALESCE(entity_type, ''), COALESCE(entity_id, ''))
+    WHERE resolved_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_problem_log_recent
+    ON problem_log(tenant_id, resolved_at, last_seen_at DESC);
+
+  -- Оживлення ланцюжка, який стояв через заборонений касиру brand.upsert:
+  -- бренд не долітав -> товар падав на products_brand_id_fkey -> прихід падав
+  -- на товарі -> проведення не знаходило накладну. Усі ці операції на сервері
+  -- НЕ застосовувались жодного разу, тому повтор нічого не подвоїть.
+  UPDATE sync_outbox
+  SET status = 'pending', attempts = 0, next_attempt_at = NULL
+  WHERE status = 'failed'
+    AND last_error IS NOT NULL
+    AND (
+      (operation_type IN ('brand.upsert', 'category.upsert')
+        AND last_error LIKE '%Недостатньо прав%')
+      OR last_error LIKE '%products_brand_id_fkey%'
+      OR last_error LIKE '%products_category_id_fkey%'
+      OR last_error LIKE '%supply_invoice_items_product_id_fkey%'
+      OR (operation_type LIKE 'supplier_invoice.%' AND last_error LIKE '%Накладну не знайдено%')
+    );
+`;
+
 export interface LocalMigration {
   version: number
   sql: string
@@ -1369,4 +1416,5 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 20, sql: MIGRATION_020_SYNC_QUEUE_RECOVERY_SQL },
   { version: 21, sql: MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL },
   { version: 22, sql: MIGRATION_022_TIRE_CASH_HANDOVER_SQL },
+  { version: 23, sql: MIGRATION_023_PROBLEM_LOG_SQL },
 ]
