@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult, type LocalSyncStuckOperation } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
-import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
+import { MAX_OUTBOX_ATTEMPTS, STUCK_OUTBOX_RETRY_MS } from './outboxPolicy'
 import { LocalProblemRepository } from './problemRepository'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
 import { readServerResetGeneration } from './localTenantReset'
@@ -60,13 +60,20 @@ function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
   const keys = new Set<string>([
     `${prefix}:aggregate:${row.aggregate_type}:${row.aggregate_id}`,
   ])
-  const addReference = (type: 'supplier' | 'product' | 'invoice', value: unknown) => {
+  const addReference = (type: 'supplier' | 'product' | 'invoice' | 'brand' | 'category', value: unknown) => {
     if (typeof value === 'string' && value) keys.add(`${prefix}:reference:${type}:${value}`)
   }
 
   if (row.aggregate_type === 'supplier') addReference('supplier', row.aggregate_id)
   if (row.aggregate_type === 'product') addReference('product', row.aggregate_id)
   if (row.aggregate_type === 'supply_invoice') addReference('invoice', row.aggregate_id)
+  // Бренд і категорія — такі самі залежності товару, як постачальник для
+  // накладної. Без цього товар летить попереду свого бренда і падає на
+  // зовнішньому ключі, а за ним валиться прихід і ревізія.
+  if (row.aggregate_type === 'brand') addReference('brand', row.aggregate_id)
+  if (row.aggregate_type === 'category') addReference('category', row.aggregate_id)
+  addReference('brand', payload?.brand_id)
+  addReference('category', payload?.category_id)
 
   addReference('supplier', payload?.supplier_id)
   addReference('supplier', payload?.primary_supplier_id)
@@ -121,9 +128,11 @@ export class LocalSyncRepository {
   /**
    * Здоров'я синхронізації для індикатора в UI:
    *  - pending  — щойно створені, ще не відправлені;
-   *  - retrying — впали, але ще будуть повторені (attempts < MAX);
-   *  - stuck    — вичерпали спроби (attempts >= MAX): самі вже не поїдуть,
-   *               потрібна увага людини. Саме їх треба підсвічувати.
+   *  - retrying — впали, але ще будуть повторені швидко (attempts < MAX);
+   *  - stuck    — вичерпали швидкі спроби (attempts >= MAX). Каса й далі
+   *               пробує їх сама раз на STUCK_OUTBOX_RETRY_MS, тож зазвичай
+   *               вони розсмоктуються без людини; лічильник потрібен власнику
+   *               для звірки, а не касиру для чергування біля значка.
    */
   getSyncStatus(): {
     pending: number
@@ -173,8 +182,9 @@ export class LocalSyncRepository {
   }
 
   /**
-   * Операції, які вичерпали ліміт спроб і самі вже ніколи не поїдуть.
-   * Це те, що людина має побачити списком і вирішити, що з ним робити.
+   * Операції, які вичерпали швидкі спроби. Каса повертається до них сама раз
+   * на кілька годин, але список потрібен власнику: якщо рядок висить довго,
+   * причина не лікується повтором і про неї треба знати.
    * Payload навмисно НЕ віддаємо: у накладній чи чеку він на сотні кілобайт,
    * а для екрана «застрягло» потрібні лише тип, час і текст помилки.
    */
@@ -292,7 +302,7 @@ export class LocalSyncRepository {
              aggregate_id, operation_type, payload_json, created_at,
              attempts, last_error, next_attempt_at, status
       FROM sync_outbox
-      WHERE status = 'failed' AND attempts < ${MAX_OUTBOX_ATTEMPTS}
+      WHERE status = 'failed'
       ORDER BY sequence ASC
     `).all() as unknown as OutboxCandidateRow[]
 
@@ -319,10 +329,7 @@ export class LocalSyncRepository {
              aggregate_id, operation_type, payload_json, created_at,
              attempts, last_error, next_attempt_at, status
       FROM sync_outbox
-      WHERE (
-          status = 'pending'
-          OR (status = 'failed' AND attempts < ${MAX_OUTBOX_ATTEMPTS})
-        )
+      WHERE status IN ('pending', 'failed')
         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, sequence ASC
     `).all(currentTime) as unknown as OutboxCandidateRow[]
@@ -470,9 +477,11 @@ export class LocalSyncRepository {
 
   markBatchFailed(sequences: number[], error: string): void {
     if (sequences.length === 0) return
-    const timestamp = new Date(Date.now() + 15_000).toISOString()
     this.db.transaction(() => {
       for (const sequence of sequences) {
+        // Затримку рахуємо по кожному рядку окремо: давно застрягле не має
+        // повертатися через 15 секунд і ганяти сервер по колу.
+        const nextAttemptAt = new Date(Date.now() + this.retryDelayMs(sequence)).toISOString()
         this.db.prepare(`
           UPDATE sync_outbox
           SET status = 'failed',
@@ -481,7 +490,7 @@ export class LocalSyncRepository {
               next_attempt_at = ?
           WHERE sequence = ?
             AND status <> 'synced'
-        `).run(error, timestamp, sequence)
+        `).run(error, nextAttemptAt, sequence)
       }
     })
     this.recordRejectedOperations(sequences)
@@ -1039,6 +1048,12 @@ export class LocalSyncRepository {
   private retryDelayMs(sequence: number): number {
     const row = this.db.prepare('SELECT attempts FROM sync_outbox WHERE sequence = ?').get(sequence) as { attempts: number } | undefined
     const attempts = Math.max(0, row?.attempts ?? 0)
+    // Рахуємо за станом ПІСЛЯ цієї невдачі: інакше на самому переході в
+    // «застрягло» операція ще раз пішла б за швидким розкладом.
+    // Після вичерпання швидких спроб не здаємось, а переходимо на рідкісні:
+    // причина відмови часто на сервері, і коли її виправлять, черга має
+    // розібратися сама, без участі касира.
+    if (attempts + 1 >= MAX_OUTBOX_ATTEMPTS) return STUCK_OUTBOX_RETRY_MS
     return Math.min(5 * 60_000, 15_000 * (2 ** attempts))
   }
 

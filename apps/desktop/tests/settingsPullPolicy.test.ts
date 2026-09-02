@@ -110,6 +110,22 @@ describe('desktop settings pull conflict policy', () => {
     expect(readSettings()).toEqual(stored)
   })
 
+  it('keeps local settings while a stuck but readable change is still queued', () => {
+    // Вичерпані спроби більше не означають смерть операції: каса повертається
+    // до неї сама. Тому серверна версія не має права затерти зміну, яка ще поїде.
+    const stored = {
+      id: 'local-shop',
+      shop_phone: 'local-phone',
+      label_settings: { source: 'local' },
+    }
+    storeSettings(stored)
+    insertSettingsOutbox(JSON.stringify({ shop_phone: 'local-phone' }), 'failed', MAX_OUTBOX_ATTEMPTS)
+
+    pullSettings({ shop_phone: 'server-phone', label_settings: { source: 'server' } })
+
+    expect(readSettings().shop_phone).toBe('local-phone')
+  })
+
   it('lets the server become canonical after a failed row reaches the retry limit', () => {
     storeSettings({
       id: 'local-shop',

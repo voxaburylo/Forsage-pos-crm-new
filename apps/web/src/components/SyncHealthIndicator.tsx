@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle, CloudUpload } from 'lucide-react'
 import { SyncHealthModal } from './SyncHealthModal'
 import { syncHealthLabel, useDesktopSyncHealth } from '@/hooks/useDesktopSyncHealth'
+import { useAuthStore } from '@/stores/authStore'
 
 interface Props {
   /** `dark` — для темної каси, `light` — для звичайної шапки. */
@@ -9,17 +10,28 @@ interface Props {
   className?: string
 }
 
+/** Черга — не робота касира: значок бачить лише той, хто звіряє дані. */
+const SYNC_WATCHER_ROLES = new Set(['owner', 'admin'])
+
 /**
- * Показує, скільки локальних операцій ще не доїхало на сервер.
+ * Показує власнику, скільки локальних операцій ще не доїхало на сервер.
  *
- * Свідомо НЕ показуємо нічого, коли все синхронізовано: постійний зелений
+ * Касиру значок не показуємо свідомо: за чергою не можна «чергувати», вона
+ * має розсмоктуватись сама, а зайвий тривожний значок на робочому екрані лише
+ * відволікає від покупця. Якщо щось не лікується повторами — це видно власнику
+ * тут і в журналі проблем при вечірній звірці.
+ *
+ * Так само нічого не показуємо, коли все синхронізовано: постійний зелений
  * значок швидко стає фоном, і тоді червоний теж перестають помічати.
  */
 export function SyncHealthIndicator({ theme = 'light', className = '' }: Props) {
-  const { status, severity, refresh } = useDesktopSyncHealth()
+  const session = useAuthStore((s) => s.session)
+  const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
+  const watching = SYNC_WATCHER_ROLES.has(role)
+  const { status, severity, refresh } = useDesktopSyncHealth(watching)
   const [open, setOpen] = useState(false)
 
-  if (!status || severity === 'clean') return null
+  if (!watching || !status || severity === 'clean') return null
 
   const stuck = severity === 'stuck'
   const palette = stuck

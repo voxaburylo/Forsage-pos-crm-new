@@ -3,8 +3,8 @@ import type { LocalDatabase } from '../db/localDatabase'
 import type { LocalBootstrapImportResult, LocalBootstrapSnapshot, LocalSyncPullChanges, LocalSyncPullResult } from '../db/localTypes'
 import { normalizeSearchText } from './catalogRepository'
 import { LocalSecondarySyncImporter } from './secondarySyncImporter'
-import { LocalSupplierCatalogRepository } from './supplierCatalogRepository'
 import { MAX_OUTBOX_ATTEMPTS } from './outboxPolicy'
+import { LocalSupplierCatalogRepository } from './supplierCatalogRepository'
 import {
   mergePulledShopSettingsPreservingPending,
   parseStoredSettings,
@@ -572,10 +572,13 @@ export class LocalBootstrapRepository {
       WHERE aggregate_type = 'settings'
         AND aggregate_id = 'shop'
         AND operation_type = 'settings.updated'
-        AND (
-          status = 'pending'
-          OR (status = 'failed' AND attempts < ${MAX_OUTBOX_ATTEMPTS})
-        )
+        -- Застрягла зміна налаштувань лишається в черзі й поїде пізніше, тому
+        -- затирати її серверною версією не можна. Безнадійним вважаємо лише
+        -- рядок, який і спроби вичерпав, і має побитий payload: застосувати
+        -- його вже нічим, і тримати через нього локальні значення означало б
+        -- назавжди ігнорувати сервер.
+        AND status IN ('pending', 'failed')
+        AND (json_valid(payload_json) OR attempts < ${MAX_OUTBOX_ATTEMPTS})
       ORDER BY sequence ASC
     `).all() as Array<{ payload_json: string | null }>
 
