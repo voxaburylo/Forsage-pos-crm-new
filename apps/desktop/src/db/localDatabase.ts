@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { backup, DatabaseSync, type StatementSync } from 'node:sqlite'
 import { LOCAL_MIGRATIONS } from './schema'
@@ -11,31 +11,231 @@ export interface LocalDatabaseInfo {
   pendingOperations: number
 }
 
+export interface LocalDatabaseBackup {
+  fileName: string
+  filePath: string
+  sizeBytes: number
+  createdAt: string
+}
+
+/**
+ * Що саме сталося, коли базу не вдалося відкрити. Показуємо власнику: він має
+ * розуміти, за який період дані могли не долетіти на сервер.
+ */
+export type LocalDatabaseRecovery = {
+  /** Куди відклали пошкоджений файл — його ще можна віддати розробнику. */
+  quarantinedPath: string
+  /** Початкова помилка відкриття. */
+  reason: string
+} & (
+  | { kind: 'backup'; restoredFrom: string; backupCreatedAt: string }
+  | { kind: 'empty' }
+)
+
+export interface LocalDatabaseOpenResult {
+  database: LocalDatabase
+  /** `null` — база відкрилася звичайно, нічого відновлювати не довелося. */
+  recovery: LocalDatabaseRecovery | null
+}
+
+const DATABASE_FILE = 'forsage.db'
+/** WAL і SHM — частина стану бази. Їх не можна лишати від старого файлу. */
+const SIDECAR_SUFFIXES = ['-wal', '-shm']
+const BACKUP_FILE_PATTERN = /^Forsage-\d{4}-\d{2}-\d{2}_.+\.db$/
+
 export class LocalDatabase {
   private readonly database: DatabaseSync
   private readonly statements = new Map<string, StatementSync>()
+  readonly dataRoot: string
   readonly databasePath: string
   readonly backupsPath: string
   readonly deviceId: string
 
   constructor(dataRoot: string) {
+    this.dataRoot = dataRoot
     const dataPath = path.join(dataRoot, 'data')
     this.backupsPath = path.join(dataRoot, 'backups')
     mkdirSync(dataPath, { recursive: true })
     mkdirSync(this.backupsPath, { recursive: true })
 
-    this.databasePath = path.join(dataPath, 'forsage.db')
+    this.databasePath = path.join(dataPath, DATABASE_FILE)
     this.database = new DatabaseSync(this.databasePath, { timeout: 5_000 })
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = 5000;
-      PRAGMA synchronous = FULL;
-    `)
 
-    this.migrate()
-    this.assertIntegrity()
-    this.deviceId = this.getOrCreateDeviceId()
+    // Якщо база бита, впаде щось із наступного — і тоді дескриптор ОБОВʼЯЗКОВО
+    // треба закрити. Інакше Windows тримає файл заблокованим, і відновлення не
+    // може навіть перейменувати його: `EBUSY: resource busy or locked`.
+    let deviceId: string
+    try {
+      this.database.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA synchronous = FULL;
+      `)
+      this.migrate()
+      this.assertIntegrity()
+      deviceId = this.getOrCreateDeviceId()
+    } catch (error) {
+      try { this.database.close() } catch { /* уже закрита або не відкривалась */ }
+      throw error
+    }
+    this.deviceId = deviceId
+  }
+
+  /**
+   * Єдина точка відкриття локальної бази при старті каси.
+   *
+   * Раніше пошкоджений файл означав мертву касу: конструктор кидав виняток,
+   * Electron показував «Forsage не запустився» — і це при тому, що поруч
+   * лежало до 14 добових бекапів, якими ніхто не міг скористатися.
+   *
+   * Тепер: відкладаємо биту базу вбік (не видаляємо — там можуть бути
+   * невідправлені чеки, які ще дістане розробник) і піднімаємо найсвіжіший
+   * бекап, що реально відкривається. Якщо не відкривається жоден — стартуємо
+   * з порожньою базою, щоб касир зміг увійти онлайн і завантажити дані заново.
+   * Порожня каса — погано, але мертва каса гірша.
+   */
+  static open(dataRoot: string): LocalDatabaseOpenResult {
+    try {
+      return { database: new LocalDatabase(dataRoot), recovery: null }
+    } catch (error) {
+      return LocalDatabase.recover(dataRoot, error)
+    }
+  }
+
+  private static recover(dataRoot: string, error: unknown): LocalDatabaseOpenResult {
+    const reason = error instanceof Error ? error.message : String(error)
+    const quarantinedPath = LocalDatabase.quarantineBroken(dataRoot)
+
+    for (const candidate of LocalDatabase.listBackups(dataRoot)) {
+      try {
+        LocalDatabase.stageDatabaseFile(dataRoot, candidate.filePath)
+        const database = new LocalDatabase(dataRoot)
+        return {
+          database,
+          recovery: {
+            kind: 'backup',
+            quarantinedPath,
+            reason,
+            restoredFrom: candidate.fileName,
+            backupCreatedAt: candidate.createdAt,
+          },
+        }
+      } catch {
+        // Цей бекап теж не відкривається — прибираємо його спробу й беремо
+        // наступний за свіжістю.
+        LocalDatabase.removeDatabaseFiles(dataRoot)
+      }
+    }
+
+    return {
+      database: new LocalDatabase(dataRoot),
+      recovery: { kind: 'empty', quarantinedPath, reason },
+    }
+  }
+
+  /** Бекапи від найсвіжішого до найстарішого. */
+  static listBackups(dataRoot: string): LocalDatabaseBackup[] {
+    const backupsPath = path.join(dataRoot, 'backups')
+    if (!existsSync(backupsPath)) return []
+    return readdirSync(backupsPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && BACKUP_FILE_PATTERN.test(entry.name))
+      .map((entry) => {
+        const filePath = path.join(backupsPath, entry.name)
+        const stats = statSync(filePath)
+        return {
+          fileName: entry.name,
+          filePath,
+          sizeBytes: stats.size,
+          createdAt: new Date(stats.mtimeMs).toISOString(),
+        }
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  }
+
+  /**
+   * Ставить обраний бекап на місце робочої бази. Викликається при старті
+   * (автовідновлення) і з налаштувань перед перезапуском програми.
+   *
+   * База МАЄ бути закрита. Далі програма перезапускається — тримати відкриті
+   * репозиторії на підмінений файл не можна.
+   */
+  static stageBackupForRestart(dataRoot: string, fileName: string): LocalDatabaseBackup {
+    const candidate = LocalDatabase.listBackups(dataRoot)
+      .find((entry) => entry.fileName === fileName)
+    if (!candidate) throw new Error('LOCAL_BACKUP_NOT_FOUND')
+
+    // Спершу переконуємось, що копія взагалі відкривається, і лише потім
+    // чіпаємо робочу базу. Інакше невдалий відкат залишив би касу без даних.
+    LocalDatabase.assertBackupIsUsable(candidate.filePath)
+
+    const quarantinedPath = LocalDatabase.quarantineBroken(dataRoot)
+    try {
+      LocalDatabase.stageDatabaseFile(dataRoot, candidate.filePath)
+      return candidate
+    } catch (error) {
+      // Копіювання зірвалось (немає місця, файл зайнято) — повертаємо робочу
+      // базу на місце, щоб каса лишилась працездатною.
+      LocalDatabase.restoreQuarantined(dataRoot, quarantinedPath)
+      throw error
+    }
+  }
+
+  private static assertBackupIsUsable(sourcePath: string): void {
+    const probe = new DatabaseSync(sourcePath, { readOnly: true, timeout: 5_000 })
+    try {
+      const row = probe.prepare('PRAGMA quick_check').get() as { quick_check: string } | undefined
+      if (row?.quick_check !== 'ok') throw new Error('LOCAL_BACKUP_CORRUPT')
+    } finally {
+      probe.close()
+    }
+  }
+
+  private static restoreQuarantined(dataRoot: string, quarantinedPath: string): void {
+    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
+    LocalDatabase.removeDatabaseFiles(dataRoot)
+    if (existsSync(quarantinedPath)) renameSync(quarantinedPath, databasePath)
+    for (const suffix of SIDECAR_SUFFIXES) {
+      const sidecar = `${quarantinedPath}${suffix}`
+      if (existsSync(sidecar)) renameSync(sidecar, `${databasePath}${suffix}`)
+    }
+  }
+
+  /**
+   * Відкладає поточні файли бази у `corrupt/`. Нічого не видаляє: у битій базі
+   * можуть лишатись невідправлені продажі.
+   */
+  private static quarantineBroken(dataRoot: string): string {
+    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
+    const quarantinePath = path.join(dataRoot, 'corrupt')
+    mkdirSync(quarantinePath, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const destination = path.join(quarantinePath, `forsage-${stamp}.db`)
+
+    if (existsSync(databasePath)) renameSync(databasePath, destination)
+    for (const suffix of SIDECAR_SUFFIXES) {
+      const sidecar = `${databasePath}${suffix}`
+      if (existsSync(sidecar)) renameSync(sidecar, `${destination}${suffix}`)
+    }
+    return destination
+  }
+
+  private static stageDatabaseFile(dataRoot: string, sourcePath: string): void {
+    const dataPath = path.join(dataRoot, 'data')
+    mkdirSync(dataPath, { recursive: true })
+    LocalDatabase.removeDatabaseFiles(dataRoot)
+    copyFileSync(sourcePath, path.join(dataPath, DATABASE_FILE))
+  }
+
+  /**
+   * Прибирає базу разом із WAL/SHM. Без цього SQLite накотить залишковий WAL
+   * від попереднього файлу на щойно відновлений — і зіпсує його вдруге.
+   */
+  private static removeDatabaseFiles(dataRoot: string): void {
+    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
+    for (const target of [databasePath, ...SIDECAR_SUFFIXES.map((suffix) => `${databasePath}${suffix}`)]) {
+      if (existsSync(target)) unlinkSync(target)
+    }
   }
 
   private migrate(): void {
@@ -130,14 +330,14 @@ export class LocalDatabase {
   }
 
 
+  /** Бекапи цієї бази — від найсвіжішого. */
+  listBackups(): LocalDatabaseBackup[] {
+    return LocalDatabase.listBackups(this.dataRoot)
+  }
+
   async backupIfDue(maxAgeMs = 24 * 60 * 60_000, retain = 14): Promise<string | null> {
-    const backupFiles = () => readdirSync(this.backupsPath, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && /^Forsage-\d{4}-\d{2}-\d{2}_.+\.db$/.test(entry.name))
-      .map((entry) => {
-        const filePath = path.join(this.backupsPath, entry.name)
-        return { filePath, modifiedAt: statSync(filePath).mtimeMs }
-      })
-      .sort((left, right) => right.modifiedAt - left.modifiedAt)
+    const backupFiles = () => this.listBackups()
+      .map((entry) => ({ filePath: entry.filePath, modifiedAt: Date.parse(entry.createdAt) }))
 
     const existing = backupFiles()
     if (existing[0] && Date.now() - existing[0].modifiedAt < Math.max(60_000, maxAgeMs)) {

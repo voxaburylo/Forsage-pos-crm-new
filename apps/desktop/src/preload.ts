@@ -24,7 +24,17 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     update: (input: unknown) => ipcRenderer.invoke('desktop:lan:update', input),
     test: () => ipcRenderer.invoke('desktop:lan:test'),
   },
+  problems: {
+    list: (options?: { includeResolved?: boolean; limit?: number }) =>
+      ipcRenderer.invoke('desktop:problems:list', options),
+    summary: () => ipcRenderer.invoke('desktop:problems:summary'),
+    resolve: (id: string) => ipcRenderer.invoke('desktop:problems:resolve', id),
+    resolveAll: () => ipcRenderer.invoke('desktop:problems:resolve-all'),
+    export: () => ipcRenderer.invoke('desktop:problems:export'),
+  },
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
+  listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
+  restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
   bootstrap: {
     importSnapshot: (snapshot: unknown) =>
       ipcRenderer.invoke('desktop:bootstrap:import-snapshot', snapshot),
@@ -230,6 +240,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:sync:get-pull-state'),
     status: () =>
       ipcRenderer.invoke('desktop:sync:status'),
+    listStuck: (limit?: number) =>
+      ipcRenderer.invoke('desktop:sync:list-stuck', limit),
+    retryStuck: (sequences?: number[]) =>
+      ipcRenderer.invoke('desktop:sync:retry-stuck', sequences),
     applyPullChanges: (changes: unknown) =>
       ipcRenderer.invoke('desktop:sync:apply-pull-changes', changes),
     markPullFailed: (error: string) =>

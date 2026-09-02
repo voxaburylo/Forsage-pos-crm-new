@@ -65,7 +65,9 @@ router.get('/categories', async (req, res, next) => {
   try { res.json({ data: await adminService.listCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
-router.post('/categories', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+// Cashiers create product cards (POST /products), so they must be able to create
+// the brand and category those cards point at. Editing and deleting stay restricted.
+router.post('/categories', requireRole('owner', 'admin', 'manager', 'storekeeper', 'cashier'), async (req, res, next) => {
   try {
     const parsed = categorySchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані категорії', 422, parsed.error.flatten())
@@ -103,7 +105,7 @@ router.get('/brands', async (req, res, next) => {
   try { res.json({ data: await adminService.listBrands(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
-router.post('/brands', requireRole('owner', 'admin', 'manager', 'storekeeper'), async (req, res, next) => {
+router.post('/brands', requireRole('owner', 'admin', 'manager', 'storekeeper', 'cashier'), async (req, res, next) => {
   try {
     const parsed = brandSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані бренду', 422, parsed.error.flatten())

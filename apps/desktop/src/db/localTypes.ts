@@ -303,6 +303,61 @@ export interface LocalSyncOutboxOperation {
   last_error: string | null
 }
 
+/**
+ * Застрягла операція для екрана «Не синхронізовано». Без payload — для показу
+ * людині вистачає типу, часу й помилки, а payload накладної важить сотні КБ.
+ */
+export interface LocalSyncStuckOperation {
+  sequence: number
+  operation_id: string
+  aggregate_type: string
+  aggregate_id: string
+  operation_type: string
+  created_at: string
+  attempts: number
+  last_error: string | null
+}
+
+/**
+ * Джерело проблеми. Каса працює автономно, тому мусить сама пам'ятати, що в неї
+ * зламалось, — інакше збій видно лише в консолі розробника, якої на касі немає.
+ */
+export type LocalProblemSource = 'sync' | 'print' | 'fiscal' | 'database' | 'app'
+
+export interface LocalProblem {
+  id: string
+  source: LocalProblemSource
+  code: string
+  severity: 'error' | 'warning'
+  title: string
+  detail: string | null
+  entity_type: string | null
+  entity_id: string | null
+  context: Record<string, unknown> | null
+  occurrences: number
+  first_seen_at: string
+  last_seen_at: string
+  resolved_at: string | null
+}
+
+export interface LocalProblemInput {
+  source: LocalProblemSource
+  code: string
+  title: string
+  severity?: 'error' | 'warning'
+  detail?: string | null
+  entity_type?: string | null
+  entity_id?: string | null
+  context?: Record<string, unknown> | null
+  tenant_id?: string
+}
+
+export interface LocalProblemSummary {
+  errors: number
+  warnings: number
+  last_seen_at: string | null
+}
+
 export interface LocalSyncPushResult {
   sequence: number
   operation_id: string

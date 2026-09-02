@@ -1,10 +1,10 @@
 import path from 'node:path'
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
-import { LocalDatabase } from './db/localDatabase'
+import { LocalDatabase, type LocalDatabaseRecovery } from './db/localDatabase'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -30,6 +30,7 @@ import { LocalStaffRepository } from './repositories/staffRepository'
 import { LocalWarehouseRepository } from './repositories/warehouseRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
 import { LocalSupplierCatalogRepository } from './repositories/supplierCatalogRepository'
+import { LocalProblemRepository } from './repositories/problemRepository'
 import {
   CashalotService,
   type CashalotConfigUpdate,
@@ -86,6 +87,7 @@ let localStaff: LocalStaffRepository | null = null
 let localWarehouse: LocalWarehouseRepository | null = null
 let localSync: LocalSyncRepository | null = null
 let localSupplierCatalog: LocalSupplierCatalogRepository | null = null
+let localProblems: LocalProblemRepository | null = null
 let localNetwork: LocalNetworkCoordinator | null = null
 type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
 const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
@@ -165,6 +167,56 @@ async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
 function requireLocalDatabase(): LocalDatabase {
   if (!localDatabase) throw new Error('LOCAL_DATABASE_NOT_READY')
   return localDatabase
+}
+
+function requireLocalProblems(): LocalProblemRepository {
+  if (!localProblems) throw new Error('LOCAL_DATABASE_NOT_READY')
+  return localProblems
+}
+
+/**
+ * Каса піднялася не зі своєї бази. Це не можна проковтнути тихо: власник має
+ * дізнатись про це ДО того, як почне звіряти виручку й недорахується чеків.
+ * Тому — модальне вікно перед відкриттям каси, а не тост усередині інтерфейсу.
+ */
+function reportLocalDatabaseRecovery(recovery: LocalDatabaseRecovery): void {
+  writeDesktopDiagnostic('local-database-recovered', recovery)
+  const shared = [
+    `Причина: ${recovery.reason}`,
+    '',
+    `Пошкоджений файл збережено: ${recovery.quarantinedPath}`,
+    'Не видаляйте його — з нього ще можна дістати дані.',
+  ]
+  const message = recovery.kind === 'backup'
+    ? [
+      `Каса відновлена з резервної копії від ${formatRecoveryMoment(recovery.backupCreatedAt)}.`,
+      '',
+      'Продажі, зроблені ПІСЛЯ цього часу і ще не відправлені на сервер,',
+      'у цій копії відсутні. Звірте останні чеки перед роботою.',
+      '',
+      ...shared,
+    ].join('\n')
+    : [
+      'Жодна резервна копія не відкрилася, тому касу запущено з порожньою базою.',
+      '',
+      'Увійдіть із інтернетом і натисніть «Завантажити дані» в налаштуваннях,',
+      'щоб забрати каталог і клієнтів із сервера.',
+      '',
+      ...shared,
+    ].join('\n')
+
+  dialog.showMessageBoxSync({
+    type: 'warning',
+    title: 'Локальну базу відновлено',
+    message: 'Попередня база не відкрилася',
+    detail: message,
+    buttons: ['Зрозуміло'],
+  })
+}
+
+function formatRecoveryMoment(value: string): string {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('uk-UA')
 }
 
 function requireLocalCatalog(): LocalCatalogRepository {
@@ -393,6 +445,46 @@ function validateTenantArguments(value: unknown, tenantId: string, depth = 0): v
   for (const nested of Object.values(record)) validateTenantArguments(nested, tenantId, depth + 1)
 }
 
+/**
+ * Звичайна відмова («вкажіть назву», «недостатньо прав») — не збій програми, а
+ * робота перевірок. У журналі має лишатись те, що справді треба чинити.
+ */
+const EXPECTED_COMMAND_FAILURES = [
+  'Недостатньо прав', 'Неприпустиме джерело', 'Сесія', 'вже існує',
+  'Вкажіть', 'Введіть', 'Оберіть', 'DESKTOP_SESSION', 'Невірний пароль',
+]
+
+function isExpectedCommandFailure(message: string): boolean {
+  return EXPECTED_COMMAND_FAILURES.some((marker) => message.includes(marker))
+}
+
+/**
+ * Друк і ПРРО ламаються найчастіше і по-своєму, тому в журналі вони мають бути
+ * окремими темами, а не однією купою «щось у програмі».
+ */
+function problemSourceForChannel(channel: string): 'sync' | 'print' | 'fiscal' | 'app' {
+  if (channel.startsWith('desktop:print:')) return 'print'
+  if (channel.startsWith('desktop:fiscal:')) return 'fiscal'
+  if (channel.startsWith('desktop:sync:') || channel.startsWith('desktop:bootstrap:')) return 'sync'
+  return 'app'
+}
+
+function commandFailureTitle(channel: string): string {
+  if (channel.startsWith('desktop:print:')) return 'Друк'
+  if (channel.startsWith('desktop:fiscal:')) return 'Операція ПРРО'
+  if (channel.startsWith('desktop:sync:')) return 'Синхронізація'
+  return `Команда каси «${channel}»`
+}
+
+/** Журнал не має права зламати команду, під час якої його викликали. */
+function recordDesktopProblem(input: Parameters<LocalProblemRepository['record']>[0]): void {
+  try {
+    localProblems?.record(input)
+  } catch (error) {
+    console.error('[desktop] Problem log write failed', error)
+  }
+}
+
 function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
   desktopCommandHandlers.set(channel, listener)
   ipcMain.handle(channel, async (event, ...args) => {
@@ -406,6 +498,21 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
         return await localNetwork.invoke(channel, args, session)
       }
       return await executeDesktopCommand(channel, listener, event, args, session)
+    } catch (error) {
+      // Кожна кнопка каси проходить тут. Без цього запису збій бачив лише той,
+      // хто відкрив консоль розробника, — тобто ніхто.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!isExpectedCommandFailure(message)) {
+        recordDesktopProblem({
+          source: problemSourceForChannel(channel),
+          code: `ipc.${channel}`,
+          title: `${commandFailureTitle(channel)} завершилась помилкою`,
+          detail: message,
+          entity_type: 'channel',
+          entity_id: channel,
+        })
+      }
+      throw error
     } finally {
       const durationMs = Date.now() - startedAt
       if (durationMs >= 2_000) {
@@ -784,7 +891,9 @@ app.whenReady().then(async () => {
     ? path.join(process.env.LOCALAPPDATA, 'Forsage')
     : app.getPath('userData')
   desktopDataRoot = dataRoot
-  localDatabase = new LocalDatabase(dataRoot)
+  const opened = LocalDatabase.open(dataRoot)
+  localDatabase = opened.database
+  if (opened.recovery) reportLocalDatabaseRecovery(opened.recovery)
   void localDatabase.backupIfDue().catch((error) => {
     console.error('[desktop] Automatic local backup failed', error)
   })
@@ -798,6 +907,20 @@ app.whenReady().then(async () => {
   localWarehouse = new LocalWarehouseRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase)
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
+  localProblems = new LocalProblemRepository(localDatabase)
+  if (opened.recovery) {
+    localProblems.record({
+      source: 'database',
+      code: 'database.recovered_from_backup',
+      title: opened.recovery.kind === 'backup'
+        ? 'Локальну базу відновлено з резервної копії'
+        : 'Локальну базу створено заново — жодна копія не відкрилась',
+      detail: opened.recovery.kind === 'backup'
+        ? `Копія: ${opened.recovery.restoredFrom} від ${opened.recovery.backupCreatedAt}. Дані, введені після неї, втрачено. Причина: ${opened.recovery.reason}`
+        : `Причина: ${opened.recovery.reason}. Пошкоджений файл збережено: ${opened.recovery.quarantinedPath}`,
+      context: opened.recovery as unknown as Record<string, unknown>,
+    })
+  }
   cashalot = new CashalotService(dataRoot)
   localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession)
 
@@ -806,7 +929,47 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:lan:get-status', () => localNetwork?.getStatus())
   handleDesktopIpc('desktop:lan:update', (_event, input) => localNetwork?.update(input))
   handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
+  handleDesktopIpc('desktop:problems:list', (_event, options?: { includeResolved?: boolean; limit?: number }) =>
+    requireLocalProblems().list({ includeResolved: options?.includeResolved, limit: options?.limit }))
+  handleDesktopIpc('desktop:problems:summary', () => requireLocalProblems().summary())
+  handleDesktopIpc('desktop:problems:resolve', (_event, id: string) => requireLocalProblems().resolve(String(id)))
+  handleDesktopIpc('desktop:problems:resolve-all', () => requireLocalProblems().resolveAll())
+  handleDesktopIpc('desktop:problems:export', () => {
+    // Файл кладемо поруч із базою: власник знає цю папку з резервних копій.
+    const root = desktopDataRoot
+    if (!root) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    const fileName = `Forsage-проблеми-${new Date().toISOString().slice(0, 10)}.txt`
+    const filePath = path.join(root, fileName)
+    writeFileSync(filePath, requireLocalProblems().exportText(), 'utf8')
+    return { path: filePath }
+  })
   handleDesktopIpc('desktop:backup-now', () => requireLocalDatabase().backupNow())
+  handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
+  handleDesktopIpc('desktop:backup:restore', (_event, fileName: string) => {
+    // Підміняти файл під відкритими репозиторіями не можна, тому працюємо
+    // так: закрили базу → поставили копію на місце → перезапустили програму.
+    // Відкат — рідка й важка дія, чесний перезапуск тут безпечніший за
+    // спробу перепідключити півтора десятка репозиторіїв на льоту.
+    const dataRoot = desktopDataRoot
+    if (!dataRoot) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    const database = requireLocalDatabase()
+    database.close()
+    localDatabase = null
+    try {
+      const restored = LocalDatabase.stageBackupForRestart(dataRoot, String(fileName))
+      writeDesktopDiagnostic('local-database-restored-manually', restored)
+      app.relaunch()
+      app.exit(0)
+      return restored
+    } catch (error) {
+      writeDesktopDiagnostic('local-database-restore-failed', error)
+      // Не лишаємо касу без бази: піднімаємо те, що є (або відновлюємо
+      // автоматично тим самим шляхом, що й при пошкодженні).
+      const reopened = LocalDatabase.open(dataRoot)
+      localDatabase = reopened.database
+      throw error
+    }
+  })
   handleDesktopIpc('desktop:bootstrap:import-snapshot', (_event, snapshot: LocalBootstrapSnapshot) =>
     requireLocalSync().importSnapshotChunked(snapshot),
   )
@@ -1259,6 +1422,12 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:sync:status', () =>
     requireLocalSync().getSyncStatus(),
+  )
+  handleDesktopIpc('desktop:sync:list-stuck', (_event, limit?: number) =>
+    requireLocalSync().listStuck(limit),
+  )
+  handleDesktopIpc('desktop:sync:retry-stuck', (_event, sequences?: number[]) =>
+    requireLocalSync().retryStuck(sequences),
   )
   handleDesktopIpc('desktop:sync:apply-pull-changes', (_event, changes: LocalSyncPullChanges) =>
     requireLocalSync().applyPullChangesChunked(changes),

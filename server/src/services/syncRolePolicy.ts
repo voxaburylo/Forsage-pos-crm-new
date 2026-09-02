@@ -44,6 +44,11 @@ const CASHIER_SYNC_OPERATIONS = new Set([
   // Cashiers are explicitly allowed to receive goods and complete stock counts.
   // These operations must follow the same permission model as the HTTP routes/UI.
   'product.upsert', 'supplier_invoice.created', 'supplier_invoice.updated',
+  // A product card carries a brand and a category. Allowing product.upsert while
+  // denying its reference books breaks the whole chain: the brand never reaches
+  // the server, the product then fails on products_brand_id_fkey, and every
+  // receipt and stock count referencing that product fails after it.
+  'brand.upsert', 'category.upsert',
   'supplier_invoice.posted', 'supplier_invoice.payment_added', 'supplier_invoice.deleted',
   'inventory.created', 'inventory.started', 'inventory.completed', 'inventory.deleted',
 ])

@@ -40,6 +40,7 @@ import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } 
 import { OfflineSalesModal } from './OfflineSalesModal'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { SyncHealthIndicator } from '@/components/SyncHealthIndicator'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -832,6 +833,9 @@ export default function POSPage() {
             <Zap className="text-yellow-400 size-3.5 md:size-4" />
             <span className="text-white font-semibold text-xs md:text-sm tracking-wide">Форсаж</span>
           </div>
+          {/* Ліворуч, а не в меню «Ще»: якщо чеки не їдуть на сервер, касир має
+              побачити це без жодного кліку — і на вузькому екрані теж. */}
+          <SyncHealthIndicator theme="dark" />
         </div>
 
         {/* Desktop права частина — щоденні дії з підписами, решта в меню «Ще» */}

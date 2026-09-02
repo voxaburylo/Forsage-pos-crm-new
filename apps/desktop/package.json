@@ -6,7 +6,9 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "node scripts/verify-web-env.cjs && tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "dev": "tsc -p tsconfig.json --watch",
     "smoke:db": "cross-env FORSAGE_DESKTOP_BUILD=1 VITE_API_URL=https://forsage-pos-crm-new-web.vercel.app pnpm --filter=web build && pnpm build && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-local-db.cjs",
     "pack": "pnpm build && electron-builder --dir",
@@ -18,7 +20,8 @@
     "cross-env": "^10.1.0",
     "electron": "43.1.0",
     "electron-builder": "26.15.3",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
   },
   "build": {
     "appId": "ua.forsage.crm",

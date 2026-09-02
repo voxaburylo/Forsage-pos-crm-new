@@ -44,6 +44,22 @@ describe('sync role policy', () => {
     }
     expect(isSyncOperationAllowed('cashier', 'supplier_invoice.cancelled')).toBe(false)
   })
+  it('lets every role that can push a product also push the brand and category it points at', () => {
+    // Denying the reference book while allowing product.upsert used to strand the
+    // product on products_brand_id_fkey, and every receipt after it on the product.
+    for (const role of ['owner', 'admin', 'manager', 'storekeeper', 'cashier']) {
+      expect(isSyncOperationAllowed(role, 'product.upsert')).toBe(true)
+      expect(isSyncOperationAllowed(role, 'brand.upsert')).toBe(true)
+      expect(isSyncOperationAllowed(role, 'category.upsert')).toBe(true)
+    }
+    for (const role of ['tire_worker', 'sto_viewer']) {
+      expect(isSyncOperationAllowed(role, 'brand.upsert')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'category.upsert')).toBe(false)
+    }
+    // Renaming or removing a shared reference stays with the owner.
+    expect(isSyncOperationAllowed('cashier', 'brand.deleted')).toBe(false)
+    expect(isSyncOperationAllowed('cashier', 'category.deleted')).toBe(false)
+  })
   it('allows storekeepers to synchronize the supply and inventory operations they can perform', () => {
     for (const operation of [
       'supplier_invoice.created',

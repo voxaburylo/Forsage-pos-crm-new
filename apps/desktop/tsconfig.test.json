@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Тести — ESM (vitest) і користуються import.meta, тому тут module ES2022.
+    // Продакшн-збірка лишається CommonJS через tsconfig.json — Electron main
+    // вантажиться саме як CJS.
+    "module": "ES2022",
+    // Нічого не емітимо, тому rootDir розширюємо на пакет — інакше tsc не пускає
+    // tests/ поруч із src/ (TS6059). Збірка й далі йде через tsconfig.json.
+    "rootDir": ".",
+    "types": ["node", "electron", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

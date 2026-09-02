@@ -3797,6 +3797,31 @@ async function applyBrandDeleted(tenantId: string, operation: SyncOutboxOperatio
   })
 }
 
+/**
+ * Products point at brands and categories by foreign key. When the reference row
+ * has not reached the server yet, Postgres answers with a constraint name that is
+ * meaningless to the person at the till, so translate it into the actual problem.
+ */
+async function assertProductReferenceExists(
+  client: { query: (sql: string, params: any[]) => Promise<{ rowCount: number | null }> },
+  tenantId: string,
+  table: 'brands' | 'categories',
+  referenceId: string | null,
+  label: string,
+): Promise<void> {
+  if (!referenceId || !isUuid(referenceId)) return
+  const found = await client.query(
+    `SELECT 1 FROM ${table} WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+    [referenceId, tenantId],
+  )
+  if (found.rowCount) return
+  throw new AppError(
+    'SYNC_PRODUCT_REFERENCE_MISSING',
+    `${label} товару ще не синхронізовано з сервером. Товар буде надіслано разом із нею.`,
+    409,
+  )
+}
+
 async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const productId = String(payload.id ?? operation.aggregate_id)
@@ -3869,14 +3894,22 @@ async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperati
       : requestedPhotoUrl
 
     const updatedAt = operation.applied_at ?? operation.created_at
+    const brandId = fromPayload('brand_id', existing?.brand_id ?? null) || null
+    const categoryId = fromPayload('category_id', existing?.category_id ?? null) || null
+    // A missing reference used to surface as a raw `products_brand_id_fkey`
+    // violation, which says nothing to the cashier watching the queue and hides
+    // the fact that the fix is simply to let the brand through first. The
+    // reference always precedes the product in the outbox, so retrying works.
+    await assertProductReferenceExists(client, tenantId, 'brands', brandId, 'Бренд')
+    await assertProductReferenceExists(client, tenantId, 'categories', categoryId, 'Категорію')
     const productValues = [
       productId,
       tenantId,
       sku,
       name,
       primaryBarcode,
-      fromPayload('brand_id', existing?.brand_id ?? null) || null,
-      fromPayload('category_id', existing?.category_id ?? null) || null,
+      brandId,
+      categoryId,
       String(fromPayload('unit', existing?.unit ?? 'шт') ?? 'шт'),
       toMoney(fromPayload('purchase_price', existing?.purchase_price ?? 0), Number(existing?.purchase_price ?? 0), 'Ціна закупівлі'),
       toMoney(fromPayload('retail_price', existing?.retail_price ?? 0), Number(existing?.retail_price ?? 0), 'Ціна продажу'),
