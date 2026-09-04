@@ -48,6 +48,9 @@ describe('migration 23 — оживлення черги, що стояла че
     const invoice = insert('supplier_invoice.created', 'supply_invoice',
       'insert or update on table "supply_invoice_items" violates foreign key constraint "supply_invoice_items_product_id_fkey"')
     const posted = insert('supplier_invoice.posted', 'supply_invoice', 'Накладну не знайдено')
+    // Оновлений сервер називає ту саму причину словами, а не іменем constraint.
+    const explained = insert('product.upsert', 'product',
+      'Бренд товару ще не синхронізовано з сервером. Товар буде надіслано разом із нею.')
 
     // Чужі відмови: ревізія переписала б залишки заднім числом, а продаж
     // упав із власної причини — обидва мають лишитись у dead-letter.
@@ -63,7 +66,7 @@ describe('migration 23 — оживлення черги, що стояла че
       SELECT status, attempts FROM sync_outbox WHERE operation_id = ?
     `).get(operationId) as { status: string; attempts: number }
 
-    for (const operationId of [brand, category, product, invoice, posted]) {
+    for (const operationId of [brand, category, product, invoice, posted, explained]) {
       expect(statusOf(operationId)).toMatchObject({ status: 'pending', attempts: 0 })
     }
     for (const operationId of [inventory, sale]) {

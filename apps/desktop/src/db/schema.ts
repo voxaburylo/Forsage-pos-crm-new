@@ -1383,6 +1383,9 @@ const MIGRATION_023_PROBLEM_LOG_SQL = `
         AND last_error LIKE '%Недостатньо прав%')
       OR last_error LIKE '%products_brand_id_fkey%'
       OR last_error LIKE '%products_category_id_fkey%'
+      -- Той самий випадок, але вже новим текстом: оновлений сервер пояснює
+      -- причину словами замість імені constraint.
+      OR last_error LIKE '%ще не синхронізовано з сервером%'
       OR last_error LIKE '%supply_invoice_items_product_id_fkey%'
       OR (operation_type LIKE 'supplier_invoice.%' AND last_error LIKE '%Накладну не знайдено%')
     );
