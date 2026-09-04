@@ -332,6 +332,8 @@ export interface DesktopFiscalConfig {
   certificateDir: string | null
   hasPassword: boolean
   comRegistered: boolean
+  /** Чи знайдено CashalotApi64.dll у вказаній папці. */
+  dllFound: boolean
 }
 
 export interface DesktopFiscalConfigUpdate {

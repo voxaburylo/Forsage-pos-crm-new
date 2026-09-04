@@ -205,6 +205,11 @@ export function FiscalSettingsCard() {
               <FolderOpen size={16} className="text-gray-500" />
             </button>
           </div>
+          {!config.dllFound && (
+            <p className="mt-1 text-xs text-amber-700">
+              У цій папці нема CashalotApi64.dll — фіскальний чек не пройде. Вкажіть папку, куди встановлено Кашалот.
+            </p>
+          )}
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Папка файлового ключа касира (КЕП)</label>

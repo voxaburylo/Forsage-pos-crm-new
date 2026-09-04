@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { safeStorage } from 'electron'
+import { detectCashalotDir, hasCashalotDll, resolveCashalotDir } from './cashalotPaths'
 
 // Інтеграція з ПРРО Cashalot через COM API (AddIn.CashaLotApi).
 // COM недоступний із Node напряму, тому тримаємо довгоживучий PowerShell-процес,
@@ -25,6 +26,8 @@ export interface CashalotPublicConfig {
   certificateDir: string | null
   hasPassword: boolean
   comRegistered: boolean
+  /** Чи лежить CashalotApi64.dll у вказаній папці — інакше фіскалізація не піде. */
+  dllFound: boolean
 }
 
 export interface CashalotConfigUpdate {
@@ -189,7 +192,6 @@ while ($true) {
 `
 
 const CALL_TIMEOUT_MS = 180_000
-const DEFAULT_CASHALOT_DIR = 'C:\\Users\\neo\\AppData\\Local\\Cashalot'
 
 function kopecksToDecimal(kopecks: number): string {
   return (Math.round(kopecks) / 100).toFixed(2)
@@ -208,6 +210,23 @@ export class CashalotService {
     this.configPath = path.join(dataRoot, 'fiscal.json')
     this.workerScriptPath = path.join(dataRoot, 'cashalot-worker.ps1')
     this.config = this.loadConfig()
+    this.healCashalotDir()
+  }
+
+  /**
+   * Стара версія зберігала в fiscal.json шлях із профілю розробника. На касі
+   * такої папки нема, тож фіскалізація падала на «файл не знайдено». Підміняємо
+   * її на знайдену автоматично — мовчки, без дій касира.
+   */
+  private healCashalotDir(): void {
+    const healed = resolveCashalotDir(this.config.cashalotDir)
+    if (healed === this.config.cashalotDir) return
+    this.config.cashalotDir = healed
+    try {
+      this.saveConfig()
+    } catch {
+      // Не змогли записати — працюємо з виправленим шляхом у памʼяті.
+    }
   }
 
   private loadConfig(): CashalotConfig {
@@ -215,7 +234,7 @@ export class CashalotService {
       const raw = JSON.parse(fs.readFileSync(this.configPath, 'utf8'))
       return {
         enabled: raw.enabled === true,
-        cashalotDir: typeof raw.cashalotDir === 'string' && raw.cashalotDir ? raw.cashalotDir : DEFAULT_CASHALOT_DIR,
+        cashalotDir: resolveCashalotDir(typeof raw.cashalotDir === 'string' ? raw.cashalotDir : null),
         fiscalNumberRRO: typeof raw.fiscalNumberRRO === 'string' ? raw.fiscalNumberRRO : '',
         certificateDir: typeof raw.certificateDir === 'string' && raw.certificateDir ? raw.certificateDir : null,
         encryptedKeyPassword: typeof raw.encryptedKeyPassword === 'string' ? raw.encryptedKeyPassword : null,
@@ -223,7 +242,7 @@ export class CashalotService {
     } catch {
       return {
         enabled: false,
-        cashalotDir: DEFAULT_CASHALOT_DIR,
+        cashalotDir: detectCashalotDir(),
         fiscalNumberRRO: '',
         certificateDir: null,
         encryptedKeyPassword: null,
@@ -258,12 +277,13 @@ export class CashalotService {
       certificateDir: this.config.certificateDir,
       hasPassword: this.config.encryptedKeyPassword !== null,
       comRegistered: this.isComRegistered(),
+      dllFound: hasCashalotDll(this.config.cashalotDir),
     }
   }
 
   updateConfig(update: CashalotConfigUpdate): CashalotPublicConfig {
     if (update.enabled !== undefined) this.config.enabled = update.enabled === true
-    if (update.cashalotDir !== undefined) this.config.cashalotDir = String(update.cashalotDir || DEFAULT_CASHALOT_DIR)
+    if (update.cashalotDir !== undefined) this.config.cashalotDir = String(update.cashalotDir || detectCashalotDir())
     if (update.fiscalNumberRRO !== undefined) this.config.fiscalNumberRRO = String(update.fiscalNumberRRO || '').trim()
     if (update.certificateDir !== undefined) {
       this.config.certificateDir = update.certificateDir ? String(update.certificateDir) : null
