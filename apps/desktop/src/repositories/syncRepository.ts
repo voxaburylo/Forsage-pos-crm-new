@@ -273,37 +273,19 @@ export class LocalSyncRepository {
   }
 
   /**
-   * Відмова від операції, яку сервер не прийме ніколи.
-   *
-   * Такі справді бувають: ревізія з серпня, яку сервер відхиляє, бо відтоді
-   * залишок уже змінили інші проведені документи. Повтор тут не допоможе —
-   * а поки рядок висить у черзі, він тримає за собою всі наступні операції по
-   * тому самому товару. Досі вихід був один: лізти в базу руками.
-   *
-   * Ціна рішення реальна: сервер про цю операцію не дізнається ніколи, тому
-   * слід лишається в журналі проблем, а кнопка доступна лише власнику.
-   *
-   * Чіпаємо ЛИШЕ вичерпані спроби. Рядок, який ще ретраїться сам, міг би
-   * пройти наступної спроби — відмовлятися від нього рано.
-   */
-  discardStuck(sequences: number[]): { discarded: number; corrected: number } {
-    const selected = [...new Set((Array.isArray(sequences) ? sequences : [])
-      .filter((value) => Number.isSafeInteger(value)))]
-    if (selected.length === 0) return { discarded: 0, corrected: 0 }
-    return this.dropFromQueue(selected, 'owner')
-  }
-
-  /**
    * Зняти операції з черги і вирівняти залишок сервера своїм.
    *
-   * `reason` — хто вирішив: власник кнопкою чи сама каса за правилом. Текст
-   * у черзі й у журналі проблем різний, бо через місяць це єдине, за чим
-   * можна зрозуміти, чому документа немає на сервері.
+   * Йдеться про операції, яких сервер не прийме ніколи: наприклад ревізію з
+   * серпня, відхилену тому, що відтоді залишок змінили інші проведені
+   * документи. Повтор тут не допоможе, а поки рядок висить у черзі, він
+   * тримає за собою все наступне по тих самих товарах.
+   *
+   * Викликається лише правилами самої каси. Кнопки для цього свідомо немає:
+   * власник не має розбирати чергу руками — програма мусить давати раду
+   * сама, як це роблять 1С та інші облікові системи. Слід лишається в
+   * журналі проблем: сервер про цю операцію не дізнається ніколи.
    */
-  private dropFromQueue(
-    sequences: number[],
-    reason: 'owner' | 'auto',
-  ): { discarded: number; corrected: number } {
+  private dropFromQueue(sequences: number[]): { discarded: number; corrected: number } {
     const timestamp = nowIso()
     const dropped: OutboxDropCandidate[] = []
     let corrected = 0
@@ -325,9 +307,7 @@ export class LocalSyncRepository {
           WHERE sequence = ?
         `).run(
           timestamp,
-          reason === 'owner'
-            ? `Не надсилаємо за рішенням власника. Остання відповідь сервера: ${row.last_error ?? 'без пояснення'}`
-            : `Знято з черги автоматично: сервер не прийме її ніколи. Остання відповідь: ${row.last_error ?? 'без пояснення'}`,
+          `Знято з черги: сервер не прийме її ніколи. Остання відповідь: ${row.last_error ?? 'без пояснення'}`,
           sequence,
         )
         dropped.push(row)
@@ -347,12 +327,8 @@ export class LocalSyncRepository {
         source: 'sync',
         code: 'sync.operation_discarded',
         severity: 'warning',
-        title: reason === 'owner'
-          ? `Операцію «${row.operation_type}» вирішено не надсилати`
-          : 'Застарілу ревізію знято з черги — залишок вирівняно з каси',
-        detail: reason === 'owner'
-          ? `Сервер її так і не прийняв: ${row.last_error ?? 'без пояснення'}. На сервері цієї зміни не буде — звірте залишки й суми за цим документом.`
-          : `Сервер відхиляв її як застарілу: ${row.last_error ?? 'без пояснення'}. Каса надіслала свій залишок — рахувати наново не треба.`,
+        title: 'Застарілу ревізію знято з черги — залишок вирівняно з каси',
+        detail: `Сервер відхиляв її як застарілу: ${row.last_error ?? 'без пояснення'}. Каса надіслала свій залишок — рахувати наново не треба.`,
         entity_type: row.aggregate_type,
         entity_id: row.aggregate_id,
         context: { sequence: row.sequence, attempts: row.attempts, operation_type: row.operation_type },
@@ -404,28 +380,42 @@ export class LocalSyncRepository {
         // Видаленого товару на сервері вирівнювати нічого.
         if (!product) continue
 
-        this.db.prepare(`
-          INSERT INTO sync_outbox (
-            operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
-            operation_type, payload_json, status, created_at
-          )
-          VALUES (?, ?, ?, 'product', ?, 'product.upsert', ?, 'pending', ?)
-        `).run(
-          randomUUID(), tenantId, this.db.deviceId, product.id,
-          JSON.stringify({
-            id: product.id,
-            tenant_id: tenantId,
-            sku: product.sku,
-            name: product.name,
-            qty_on_hand: Number(product.qty_on_hand ?? 0),
-            stock_correction: true,
-          }),
-          timestamp,
-        )
-        queued += 1
+        queued += this.queueStockCorrection(tenantId, product, Number(product.qty_on_hand ?? 0))
       }
     }
     return queued
+  }
+
+  /**
+   * Один рядок «ось стільки товару насправді» для сервера. Надсилаємо лише
+   * кількість: решту полів сервер бере зі свого рядка, щоб ціна, змінена у
+   * вебі, не поїхала назад разом зі складом.
+   */
+  private queueStockCorrection(
+    tenantId: string,
+    product: { id: string; sku: string; name: string },
+    qtyOnHand: number,
+  ): number {
+    const timestamp = nowIso()
+    this.db.prepare(`
+      INSERT INTO sync_outbox (
+        operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
+        operation_type, payload_json, status, created_at
+      )
+      VALUES (?, ?, ?, 'product', ?, 'product.upsert', ?, 'pending', ?)
+    `).run(
+      randomUUID(), tenantId, this.db.deviceId, product.id,
+      JSON.stringify({
+        id: product.id,
+        tenant_id: tenantId,
+        sku: product.sku,
+        name: product.name,
+        qty_on_hand: qtyOnHand,
+        stock_correction: true,
+      }),
+      timestamp,
+    )
+    return 1
   }
 
   /**
@@ -467,7 +457,81 @@ export class LocalSyncRepository {
     })
     if (ready.length === 0) return 0
 
-    return this.dropFromQueue(ready.map((candidate) => candidate.sequence), 'auto').discarded
+    return this.dropFromQueue(ready.map((candidate) => candidate.sequence)).discarded
+  }
+
+  /**
+   * Продаж, який сервер не пускає через відʼємний залишок.
+   *
+   * Це не помилка каси: товар зі складу пішов, чек надрукований, гроші в
+   * касі. Сервер просто не знає про якийсь прихід і думає, що товару менше.
+   * Викидати такий чек не можна — зникне виторг; лишати в черзі теж не
+   * можна — він тримає все наступне по цих товарах.
+   *
+   * Правило однозначне, тому робимо мовчки: спершу надсилаємо серверу
+   * залишок, який був ДО цього чека (нинішній касовий плюс продане), потім
+   * повертаємо чек у чергу. Сервер прийме продаж і сам відніме кількість —
+   * і зійдеться рівно з касою.
+   */
+  private autoResolveBlockedSales(): number {
+    const candidates = this.db.prepare(`
+      SELECT sequence, tenant_id, payload_json
+      FROM sync_outbox
+      WHERE status = 'failed'
+        AND attempts >= ${MAX_OUTBOX_ATTEMPTS}
+        AND operation_type = 'sale.completed'
+        AND last_error LIKE '%NEGATIVE_STOCK_BLOCKED%'
+    `).all() as Array<{ sequence: number; tenant_id: string; payload_json: string | null }>
+    if (candidates.length === 0) return 0
+
+    let repaired = 0
+    for (const candidate of candidates) {
+      let payload: any = null
+      try { payload = candidate.payload_json ? JSON.parse(candidate.payload_json) : null } catch { continue }
+      const items = Array.isArray(payload?.items) ? payload.items : []
+      if (items.length === 0) continue
+
+      // Тільки коли по цих товарах більше нічого не стоїть у черзі: інакше
+      // порядок документів ще може змінити залишок на сервері сам.
+      const sold = new Map<string, number>()
+      let blocked = false
+      for (const item of items) {
+        const productId = typeof item?.product_id === 'string' ? item.product_id : ''
+        if (!productId) continue
+        if (this.hasOtherUnsyncedWork(productId, candidate.sequence)) { blocked = true; break }
+        sold.set(productId, (sold.get(productId) ?? 0) + Math.max(0, Number(item?.qty ?? 0)))
+      }
+      if (blocked || sold.size === 0) continue
+
+      const queued = this.db.transaction(() => {
+        let corrections = 0
+        for (const [productId, qty] of sold) {
+          const product = this.db.prepare(`
+            SELECT id, sku, name, COALESCE(qty_on_hand, 0) AS qty_on_hand
+            FROM products
+            WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+            LIMIT 1
+          `).get(productId, candidate.tenant_id) as
+            { id: string; sku: string; name: string; qty_on_hand: number } | undefined
+          if (!product) continue
+          corrections += this.queueStockCorrection(
+            candidate.tenant_id,
+            product,
+            Number(product.qty_on_hand ?? 0) + qty,
+          )
+        }
+        if (corrections === 0) return 0
+        // Чек піде слідом за виправленням — черга тримає порядок за sequence.
+        this.db.prepare(`
+          UPDATE sync_outbox
+          SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+          WHERE sequence = ?
+        `).run(candidate.sequence)
+        return corrections
+      })
+      if (queued > 0) repaired += 1
+    }
+    return repaired
   }
 
   /** Чи тримає цей товар ще якась невідправлена операція, крім названої. */
@@ -701,6 +765,7 @@ export class LocalSyncRepository {
     this.recordRejectedOperations(rejected)
     // Черга лікує себе сама: власник не має розбирати її вручну.
     this.autoResolveStaleInventories()
+    this.autoResolveBlockedSales()
   }
 
   /**

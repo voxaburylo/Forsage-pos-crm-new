@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Ban, RefreshCw } from 'lucide-react'
-import { Button, ConfirmDialog, Modal } from '@/components/ui'
+import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import {
-  discardDesktopStuckOperations,
   listDesktopStuckOperations,
   retryDesktopStuckOperations,
   syncDesktopNow,
 } from '@/lib/desktopSyncApi'
-import { useAuthStore } from '@/stores/authStore'
 import type { DesktopSyncStatus, DesktopSyncStuckOperation } from '@/lib/desktopBridge'
 
 interface Props {
@@ -50,15 +48,16 @@ function formatMoment(value: string): string {
     : parsed.toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
+/**
+ * Вікно тільки показує стан. Жодних рішень власник тут не приймає: те, що
+ * розв'язується правилом, каса розв'язує сама й мовчки — застаріла ревізія
+ * знімається з черги, залишок вирівнюється з каси. Єдина кнопка — не питання,
+ * а «зроби це зараз, не чекаючи таймера».
+ */
 export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
   const [operations, setOperations] = useState<DesktopSyncStuckOperation[]>([])
   const [loading, setLoading] = useState(false)
-  const [busySequence, setBusySequence] = useState<number | null>(null)
-  const [retryingAll, setRetryingAll] = useState(false)
-  const [discardTarget, setDiscardTarget] = useState<DesktopSyncStuckOperation | null>(null)
-  // Відмова від операції — рішення про гроші й залишки, а не про техніку.
-  const role = useAuthStore((state) => (state.session?.user?.app_metadata?.role as string) ?? 'cashier')
-  const canDiscard = role === 'owner' || role === 'admin'
+  const [syncing, setSyncing] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -73,44 +72,12 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
     if (open) void load()
   }, [open, load])
 
-  async function handleRetry(sequences?: number[]) {
-    const single = sequences?.length === 1 ? sequences[0] : null
-    if (single !== null) setBusySequence(single)
-    else setRetryingAll(true)
-    try {
-      const { retried } = await retryDesktopStuckOperations(sequences)
-      if (retried === 0) toast.error('Не вдалося поставити операції в чергу')
-      else toast.success(`Поставлено в чергу: ${retried}. Перевіряємо звʼязок…`)
-      await load()
-      onChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося повторити відправку')
-    } finally {
-      setBusySequence(null)
-      setRetryingAll(false)
-    }
-  }
-
-  async function handleDiscard(operation: DesktopSyncStuckOperation) {
-    setBusySequence(operation.sequence)
-    try {
-      const { discarded, corrected } = await discardDesktopStuckOperations([operation.sequence])
-      if (discarded === 0) toast.error('Операцію не знайдено — можливо, вона вже пройшла')
-      else toast.success(corrected > 0
-        ? `Операцію знято з черги. Залишок з каси надіслано на сервер: товарів ${corrected}`
-        : 'Операцію знято з черги. Слід залишився в журналі проблем')
-      await load()
-      onChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося зняти операцію з черги')
-    } finally {
-      setBusySequence(null)
-    }
-  }
-
   async function handleSyncNow() {
-    setRetryingAll(true)
+    setSyncing(true)
     try {
+      // Спершу повертаємо в чергу те, що вже вичерпало спроби: інакше кнопка
+      // «зараз» нічого не міняла б саме для тих рядків, через які її натиснули.
+      await retryDesktopStuckOperations()
       const result = await syncDesktopNow()
       toast.success(result.pushed > 0
         ? `Відправлено операцій: ${result.pushed}`
@@ -120,7 +87,7 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Синхронізація не вдалася')
     } finally {
-      setRetryingAll(false)
+      setSyncing(false)
     }
   }
 
@@ -145,30 +112,23 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
           </p>
         )}
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={handleSyncNow} loading={retryingAll} icon={<RefreshCw size={16} />}>
-            Синхронізувати зараз
-          </Button>
-          {operations.length > 0 && (
-            <Button variant="secondary" onClick={() => handleRetry()} disabled={retryingAll}>
-              Повторити всі ({operations.length})
-            </Button>
-          )}
-        </div>
+        <Button onClick={handleSyncNow} loading={syncing} icon={<RefreshCw size={16} />}>
+          Синхронізувати зараз
+        </Button>
 
         {operations.length === 0 ? (
           <p className="rounded-lg bg-gray-50 px-3 py-6 text-center text-sm text-gray-500">
             {loading
               ? 'Завантаження…'
               : waiting > 0
-                ? 'Застряглих операцій немає — решта поїде автоматично.'
+                ? 'Усе в дорозі — решта поїде автоматично.'
                 : 'Усе синхронізовано.'}
           </p>
         ) : (
           <div>
             <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-red-700">
               <AlertTriangle size={16} />
-              Ці операції вичерпали спроби і самі вже не відправляться
+              Сервер поки не прийняв ці операції
             </p>
             <div className="max-h-80 overflow-y-auto rounded-lg border border-gray-200">
               <table className="w-full text-sm">
@@ -176,8 +136,7 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
                   <tr>
                     <th className="px-3 py-2">Операція</th>
                     <th className="px-3 py-2">Створено</th>
-                    <th className="px-3 py-2">Помилка</th>
-                    <th className="px-3 py-2" />
+                    <th className="px-3 py-2">Причина</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -190,61 +149,19 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
                           {operation.last_error ?? '—'}
                         </span>
                       </td>
-                      <td className="px-3 py-2 text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={busySequence === operation.sequence || retryingAll}
-                            onClick={() => handleRetry([operation.sequence])}
-                          >
-                            Повторити
-                          </Button>
-                          {canDiscard && (
-                            <Button
-                              size="sm"
-                              variant="danger-outline"
-                              icon={<Ban size={14} />}
-                              disabled={busySequence === operation.sequence || retryingAll}
-                              onClick={() => setDiscardTarget(operation)}
-                            >
-                              Не надсилати
-                            </Button>
-                          )}
-                        </div>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <p className="mt-2 text-xs text-gray-500">
-              Дані не втрачені — вони збережені на цьому компʼютері. «Повторити» ставить операцію
-              в чергу заново; якщо помилка повториться, покажіть її текст розробнику.
-              {canDiscard && ' «Не надсилати» — для операцій, які сервер не прийме ніколи: вона зникне з черги, і сервер про неї не дізнається.'}
+              Дані не втрачені — вони збережені на цьому компʼютері, і каса повторює відправку сама.
+              Те, що сервер не прийме ніколи, вона знімає з черги теж сама і вирівнює залишок зі свого
+              боку. Робити тут нічого не треба; якщо рядок висить тиждень — покажіть його розробнику.
             </p>
           </div>
         )}
       </div>
-
-      <ConfirmDialog
-        open={discardTarget !== null}
-        onClose={() => setDiscardTarget(null)}
-        danger
-        title="Не надсилати цю операцію?"
-        confirmLabel="Так, не надсилати"
-        message={discardTarget && (
-          <span>
-            <b>{operationLabel(discardTarget)}</b> від {formatMoment(discardTarget.created_at)} зникне з черги.
-            Сервер про цю зміну не дізнається ніколи, тому суми за цим документом доведеться
-            звірити вручну. Залишки товарів з цієї операції каса надішле на сервер зі свого
-            боку — щоб склад не розʼїхався. Локальні дані на касі лишаються як є.
-            <br />
-            <span className="text-gray-500">Відповідь сервера: {discardTarget.last_error ?? '—'}</span>
-          </span>
-        )}
-        onConfirm={() => discardTarget ? handleDiscard(discardTarget) : undefined}
-      />
     </Modal>
   )
 }

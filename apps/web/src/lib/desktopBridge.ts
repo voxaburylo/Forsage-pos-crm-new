@@ -701,7 +701,6 @@ interface ForsageDesktopBridge {
     status?: () => Promise<DesktopSyncStatus>
     listStuck?: (limit?: number) => Promise<DesktopSyncStuckOperation[]>
     retryStuck?: (sequences?: number[]) => Promise<{ retried: number }>
-    discardStuck?: (sequences: number[]) => Promise<{ discarded: number; corrected: number }>
     applyPullChanges: (changes: DesktopSyncPullChanges) => Promise<DesktopSyncPullResult>
     markPullFailed: (error: string) => Promise<void>
     applyPushResults: (results: DesktopSyncPushResult[]) => Promise<void>

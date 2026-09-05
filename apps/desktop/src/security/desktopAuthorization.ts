@@ -23,9 +23,6 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   // і має що сказати. Закривати й вивантажувати список — справа власника.
   ['desktop:problems:list', RECEIVING_ROLES],
   ['desktop:problems:summary', RECEIVING_ROLES],
-  // Відмова від операції означає, що сервер про неї не дізнається ніколи.
-  // Таке рішення приймає власник, не касир.
-  ['desktop:sync:discard-stuck', OWNER_ROLES],
   ['desktop:problems:resolve', OWNER_ROLES],
   ['desktop:problems:resolve-all', OWNER_ROLES],
   ['desktop:problems:export', OWNER_ROLES],

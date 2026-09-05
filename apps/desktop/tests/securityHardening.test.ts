@@ -19,17 +19,15 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:catalog:save-product', 'cashier')).toBe(true)
   })
 
-  it('дає касиру бачити чергу, але відмовитись від операції може лише власник', () => {
-    // Читати стан синхронізації має той, хто стоїть за касою: збій він бачить першим.
+  it('лишає синхронізацію технічним каналом, а не правом щось вирішувати', () => {
+    // Стан черги читає той, хто стоїть за касою: збій він бачить першим.
     expect(isDesktopChannelAllowed('desktop:sync:status', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:sync:list-stuck', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:sync:retry-stuck', 'cashier')).toBe(true)
-    // А ось відмова означає, що сервер про операцію не дізнається ніколи.
-    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'cashier')).toBe(false)
-    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'storekeeper')).toBe(false)
-    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'manager')).toBe(false)
-    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'owner')).toBe(true)
-    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'admin')).toBe(true)
+    // Каналу «зняти операцію з черги» більше немає взагалі: те, що сервер не
+    // прийме ніколи, каса вирішує сама, а не питає людину. Що його не існує,
+    // стежить тест відповідності preload↔main.
+    expect(isDesktopChannelAllowed('desktop:staff:list-users', 'cashier')).toBe(false)
   })
 
   it('identifies standalone tenant arguments that cannot be checked recursively', () => {
