@@ -4,7 +4,7 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
-import { LocalDatabase, type LocalDatabaseRecovery } from './db/localDatabase'
+import { LocalDatabase, OutdatedBuildError, type LocalDatabaseOpenResult, type LocalDatabaseRecovery } from './db/localDatabase'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -885,13 +885,43 @@ app.on('second-instance', () => {
   mainWindow.focus()
 })
 
+/**
+ * Стару збірку каси не пускаємо до новішої бази. Мовчазний старт коштував
+ * магазину 137 незакритих операцій: з вигляду каса працювала, а черга стояла.
+ * Тому тут не «помилка запуску», а зрозуміла вказівка, чим запускати касу.
+ */
+function openLocalDatabaseOrExplain(dataRoot: string): LocalDatabaseOpenResult | null {
+  try {
+    return LocalDatabase.open(dataRoot)
+  } catch (error) {
+    if (!(error instanceof OutdatedBuildError)) throw error
+    writeDesktopDiagnostic('outdated-build', {
+      message: error.message,
+      databaseVersion: error.databaseVersion,
+      buildVersion: error.buildVersion,
+      executable: process.execPath,
+    })
+    dialog.showErrorBox('Запущено стару версію Форсажу', [
+      error.message,
+      '',
+      `Запущено: ${process.execPath}`,
+      '',
+      'Дані магазину цілі. Закрийте це вікно і запустіть касу ярликом',
+      '«ФОРСАЖ → 1. ЛОКАЛЬНА каса — ЗАПУСК».',
+    ].join('\n'))
+    app.exit(1)
+    return null
+  }
+}
+
 app.whenReady().then(async () => {
   app.setName('Forsage')
   const dataRoot = process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'Forsage')
     : app.getPath('userData')
   desktopDataRoot = dataRoot
-  const opened = LocalDatabase.open(dataRoot)
+  const opened = openLocalDatabaseOrExplain(dataRoot)
+  if (!opened) return
   localDatabase = opened.database
   if (opened.recovery) reportLocalDatabaseRecovery(opened.recovery)
   void localDatabase.backupIfDue().catch((error) => {

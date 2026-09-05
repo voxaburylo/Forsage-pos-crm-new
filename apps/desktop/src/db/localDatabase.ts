@@ -32,6 +32,27 @@ export type LocalDatabaseRecovery = {
   | { kind: 'empty' }
 )
 
+/**
+ * База новіша за програму: на цьому компʼютері запустили стару збірку каси.
+ *
+ * Так уже було 05.09.2026 — касу відкрили резервною копією exe від 19.08, і
+ * черга тієї збірки мовчки перестала повторювати 137 застряглих операцій, з
+ * них 113 продажів. Ззовні каса виглядала цілком справною.
+ *
+ * Стара збірка не знає ні нових таблиць, ні нових правил черги, тому далі не
+ * йдемо. Це НЕ пошкодження бази: відновлювати з бекапу тут не можна, інакше
+ * старий exe відкотить магазин на добу назад.
+ */
+export class OutdatedBuildError extends Error {
+  constructor(readonly databaseVersion: number, readonly buildVersion: number) {
+    super(
+      `Ця копія Форсажу старіша за локальну базу: база має версію ${databaseVersion}, `
+      + `а програма знає лише ${buildVersion}. Запустіть актуальну версію каси.`,
+    )
+    this.name = 'OutdatedBuildError'
+  }
+}
+
 export interface LocalDatabaseOpenResult {
   database: LocalDatabase
   /** `null` — база відкрилася звичайно, нічого відновлювати не довелося. */
@@ -99,6 +120,8 @@ export class LocalDatabase {
     try {
       return { database: new LocalDatabase(dataRoot), recovery: null }
     } catch (error) {
+      // Стару збірку бекапом не лікують: база ціла, помилилися з ярликом.
+      if (error instanceof OutdatedBuildError) throw error
       return LocalDatabase.recover(dataRoot, error)
     }
   }
@@ -246,6 +269,7 @@ export class LocalDatabase {
         'SELECT version FROM schema_migrations',
       ).all() as Array<{ version: number }>
       const applied = new Set(appliedRows.map((row) => row.version))
+      this.assertBuildIsNotOlderThanDatabase(applied)
 
       for (const migration of LOCAL_MIGRATIONS) {
         if (applied.has(migration.version)) continue
@@ -260,6 +284,16 @@ export class LocalDatabase {
       this.database.exec('ROLLBACK')
       throw error
     }
+  }
+
+  /**
+   * Міграції котяться лише вперед, тому версія бази, більша за найновішу
+   * відому програмі, означає рівно одне: цей exe старіший за дані.
+   */
+  private assertBuildIsNotOlderThanDatabase(applied: ReadonlySet<number>): void {
+    const databaseVersion = Math.max(0, ...applied)
+    const buildVersion = Math.max(0, ...LOCAL_MIGRATIONS.map((migration) => migration.version))
+    if (databaseVersion > buildVersion) throw new OutdatedBuildError(databaseVersion, buildVersion)
   }
 
   private assertIntegrity(): void {
