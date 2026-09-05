@@ -244,6 +244,19 @@ export async function retryDesktopStuckOperations(
   return result
 }
 
+/**
+ * Відмова від операції, яку сервер не прийме ніколи. На відміну від повтору,
+ * це рішення без вороття: сервер про цю зміну не дізнається, тому кличемо
+ * тільки з явного підтвердження власника.
+ */
+export async function discardDesktopStuckOperations(
+  sequences: number[],
+): Promise<{ discarded: number }> {
+  const local = desktopBridge()?.sync.discardStuck
+  if (!isDesktopRuntime() || !local) return { discarded: 0 }
+  return local(sequences)
+}
+
 async function executeDesktopSyncCycle(options: DesktopSyncOptions): Promise<DesktopSyncCycleResult> {
   // Локальна база є джерелом робочих змін. Спочатку підтверджуємо outbox,
   // а вже потім рухаємо pull-cursor: інакше втрачена HTTP-відповідь могла

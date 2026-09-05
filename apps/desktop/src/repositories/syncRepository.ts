@@ -229,6 +229,78 @@ export class LocalSyncRepository {
     })
   }
 
+  /**
+   * Відмова від операції, яку сервер не прийме ніколи.
+   *
+   * Такі справді бувають: ревізія з серпня, яку сервер відхиляє, бо відтоді
+   * залишок уже змінили інші проведені документи. Повтор тут не допоможе —
+   * а поки рядок висить у черзі, він тримає за собою всі наступні операції по
+   * тому самому товару. Досі вихід був один: лізти в базу руками.
+   *
+   * Ціна рішення реальна: сервер про цю операцію не дізнається ніколи, тому
+   * слід лишається в журналі проблем, а кнопка доступна лише власнику.
+   *
+   * Чіпаємо ЛИШЕ вичерпані спроби. Рядок, який ще ретраїться сам, міг би
+   * пройти наступної спроби — відмовлятися від нього рано.
+   */
+  discardStuck(sequences: number[]): { discarded: number } {
+    const selected = [...new Set((Array.isArray(sequences) ? sequences : [])
+      .filter((value) => Number.isSafeInteger(value)))]
+    if (selected.length === 0) return { discarded: 0 }
+
+    const timestamp = nowIso()
+    const dropped: Array<{
+      sequence: number
+      tenant_id: string
+      aggregate_type: string
+      aggregate_id: string
+      operation_type: string
+      attempts: number
+      last_error: string | null
+    }> = []
+
+    this.db.transaction(() => {
+      for (const sequence of selected) {
+        const row = this.db.prepare(`
+          SELECT sequence, tenant_id, aggregate_type, aggregate_id,
+                 operation_type, attempts, last_error
+          FROM sync_outbox
+          WHERE sequence = ? AND status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS}
+          LIMIT 1
+        `).get(sequence) as typeof dropped[number] | undefined
+        if (!row) continue
+
+        this.db.prepare(`
+          UPDATE sync_outbox
+          SET status = 'synced', synced_at = ?, next_attempt_at = NULL, last_error = ?
+          WHERE sequence = ?
+        `).run(
+          timestamp,
+          `Не надсилаємо за рішенням власника. Остання відповідь сервера: ${row.last_error ?? 'без пояснення'}`,
+          sequence,
+        )
+        dropped.push(row)
+      }
+    })
+
+    // Журнал пишемо після коміту: він фіксує те, що вже сталося з чергою.
+    for (const row of dropped) {
+      this.problems.record({
+        source: 'sync',
+        code: 'sync.operation_discarded',
+        severity: 'warning',
+        title: `Операцію «${row.operation_type}» вирішено не надсилати`,
+        detail: `Сервер її так і не прийняв: ${row.last_error ?? 'без пояснення'}. На сервері цієї зміни не буде — звірте залишки й суми за цим документом.`,
+        entity_type: row.aggregate_type,
+        entity_id: row.aggregate_id,
+        context: { sequence: row.sequence, attempts: row.attempts, operation_type: row.operation_type },
+        tenant_id: row.tenant_id,
+      })
+    }
+
+    return { discarded: dropped.length }
+  }
+
   applyPullChanges(changes: LocalSyncPullChanges): LocalSyncPullResult {
     if (!changes.cursor) throw new Error('LOCAL_PULL_CURSOR_REQUIRED')
     const timestamp = nowIso()

@@ -244,6 +244,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:sync:list-stuck', limit),
     retryStuck: (sequences?: number[]) =>
       ipcRenderer.invoke('desktop:sync:retry-stuck', sequences),
+    discardStuck: (sequences: number[]) =>
+      ipcRenderer.invoke('desktop:sync:discard-stuck', sequences),
     applyPullChanges: (changes: unknown) =>
       ipcRenderer.invoke('desktop:sync:apply-pull-changes', changes),
     markPullFailed: (error: string) =>

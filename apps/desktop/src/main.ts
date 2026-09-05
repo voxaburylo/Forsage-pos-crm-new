@@ -1459,6 +1459,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:sync:retry-stuck', (_event, sequences?: number[]) =>
     requireLocalSync().retryStuck(sequences),
   )
+  handleDesktopIpc('desktop:sync:discard-stuck', (_event, sequences: number[]) =>
+    requireLocalSync().discardStuck(sequences),
+  )
   handleDesktopIpc('desktop:sync:apply-pull-changes', (_event, changes: LocalSyncPullChanges) =>
     requireLocalSync().applyPullChangesChunked(changes),
   )

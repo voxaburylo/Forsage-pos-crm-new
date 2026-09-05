@@ -113,6 +113,57 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
     expect(repository.listStuck()).toHaveLength(1)
   })
 
+  it('відмовляється від застряглої операції і лишає слід у журналі проблем', () => {
+    insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed', operationType: 'inventory.completed' })
+
+    expect(repository.discardStuck([1])).toEqual({ discarded: 1 })
+    expect(repository.listStuck()).toHaveLength(0)
+
+    const row = db.prepare(
+      'SELECT status, synced_at, next_attempt_at, last_error FROM sync_outbox WHERE sequence = 1',
+    ).get() as { status: string; synced_at: string | null; next_attempt_at: string | null; last_error: string | null }
+    expect(row.status).toBe('synced')
+    expect(row.synced_at).toBeTruthy()
+    expect(row.next_attempt_at).toBeNull()
+    // Причину відмови видно прямо в черзі: інакше через місяць ніхто не згадає.
+    expect(row.last_error).toContain('за рішенням власника')
+    expect(row.last_error).toContain('boom')
+
+    const problems = db.prepare(
+      "SELECT code, severity, entity_id FROM problem_log WHERE code = 'sync.operation_discarded'",
+    ).all() as Array<{ code: string; severity: string; entity_id: string | null }>
+    expect(problems).toHaveLength(1)
+    expect(problems[0].severity).toBe('warning')
+    expect(problems[0].entity_id).toBe('aggregate-1')
+  })
+
+  it('не дає відмовитись від операції, яка ще ретраїться сама', () => {
+    insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS - 1, status: 'failed' })
+
+    // Наступна спроба ще може пройти — відмовлятися рано.
+    expect(repository.discardStuck([1])).toEqual({ discarded: 0 })
+
+    const row = db.prepare('SELECT status, attempts FROM sync_outbox WHERE sequence = 1')
+      .get() as { status: string; attempts: number }
+    expect(row.status).toBe('failed')
+    expect(row.attempts).toBe(MAX_OUTBOX_ATTEMPTS - 1)
+  })
+
+  it('порожній список нічого не знімає з черги', () => {
+    insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
+
+    expect(repository.discardStuck([])).toEqual({ discarded: 0 })
+    expect(repository.listStuck()).toHaveLength(1)
+  })
+
+  it('знімає з черги лише вибрані рядки', () => {
+    insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
+    insertOperation({ sequence: 2, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
+
+    expect(repository.discardStuck([2])).toEqual({ discarded: 1 })
+    expect(repository.listStuck().map((operation) => operation.sequence)).toEqual([1])
+  })
+
   it('counts exhausted operations as stuck in the health summary', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
     insertOperation({ sequence: 2, attempts: 2, status: 'failed' })

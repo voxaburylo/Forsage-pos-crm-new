@@ -19,6 +19,19 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:catalog:save-product', 'cashier')).toBe(true)
   })
 
+  it('дає касиру бачити чергу, але відмовитись від операції може лише власник', () => {
+    // Читати стан синхронізації має той, хто стоїть за касою: збій він бачить першим.
+    expect(isDesktopChannelAllowed('desktop:sync:status', 'cashier')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:sync:list-stuck', 'cashier')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:sync:retry-stuck', 'cashier')).toBe(true)
+    // А ось відмова означає, що сервер про операцію не дізнається ніколи.
+    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'cashier')).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'storekeeper')).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'manager')).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'owner')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:sync:discard-stuck', 'admin')).toBe(true)
+  })
+
   it('identifies standalone tenant arguments that cannot be checked recursively', () => {
     expect(desktopTenantArgumentPositions('desktop:orders:get')).toEqual([1])
     expect(desktopTenantArgumentPositions('desktop:pos:check-sale-after-payment')).toEqual([2])
