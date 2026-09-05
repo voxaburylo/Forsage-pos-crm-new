@@ -55,6 +55,38 @@ type OutboxCandidateRow = {
   status: 'pending' | 'failed'
 }
 
+/**
+ * Чи лишилася по цьому товару невідправлена робота — байдуже, під яким
+ * документом. Ревізія, прихід і продаж міняють залишок товару, але живуть у
+ * черзі під власним aggregate_type, тому перевірка «немає операції по товару»
+ * їх не бачила: позначку «змінено локально» знімали з товару, поки його
+ * підрахунок ще не доїхав на сервер.
+ *
+ * Умова свідомо в SQL: payload накладної важить сотні кілобайт, і розбирати
+ * його в JS на кожне підтвердження було б дорожче, ніж дати це зробити SQLite.
+ */
+function unsyncedProductWorkExists(productExpression: string, tenantExpression: string): string {
+  return `EXISTS (
+    SELECT 1 FROM sync_outbox o
+    WHERE o.status <> 'synced'
+      AND o.tenant_id = ${tenantExpression}
+      AND (
+        (o.aggregate_type = 'product' AND o.aggregate_id = ${productExpression})
+        OR (
+          json_valid(o.payload_json)
+          AND (
+            json_extract(o.payload_json, '$.product_id') = ${productExpression}
+            OR EXISTS (
+              SELECT 1 FROM json_each(o.payload_json, '$.items') item
+              WHERE json_valid(item.value)
+                AND json_extract(item.value, '$.product_id') = ${productExpression}
+            )
+          )
+        )
+      )
+  )`
+}
+
 function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
   const prefix = row.tenant_id
   const keys = new Set<string>([
@@ -945,10 +977,13 @@ export class LocalSyncRepository {
         ? [...new Set<string>(payload.items.map((item: any) => item?.product_id).filter((id: any): id is string => typeof id === 'string' && id.length > 0))]
         : []
       for (const productId of ids) {
+        // Підтвердили продаж — це ще не привід віддавати серверу залишок,
+        // який щойно порахувала ревізія і який досі стоїть у черзі.
         this.db.prepare(`
           UPDATE products
           SET dirty_at = NULL
           WHERE id = ? AND (dirty_at IS NULL OR dirty_at <= ?)
+            AND NOT ${unsyncedProductWorkExists('products.id', 'products.tenant_id')}
         `).run(productId, operation.created_at)
       }
     } catch {
@@ -1041,18 +1076,17 @@ export class LocalSyncRepository {
     // already been acknowledged. Such a row then rejected every newer server
     // stock value forever. Clear only proven orphans and request a canonical
     // reference snapshot on the next pull.
+    //
+    // «Робота по товару» — це не лише product.upsert. Ревізія, прихід і продаж
+    // теж міняють залишок, і поки вони стоять у черзі, локальна кількість —
+    // єдина правильна. Стара перевірка їх не бачила: на кожному старті каси
+    // позначку знімало, наступний pull повертав серверний залишок, і
+    // перерахунок власника зникав. Саме тому ревізію доводилося робити знову.
     const result = this.db.prepare(`
       UPDATE products
       SET dirty_at = NULL
       WHERE dirty_at IS NOT NULL
-        AND NOT EXISTS (
-          SELECT 1
-          FROM sync_outbox o
-          WHERE o.tenant_id = products.tenant_id
-            AND o.aggregate_type = 'product'
-            AND o.aggregate_id = products.id
-            AND o.status <> 'synced'
-        )
+        AND NOT ${unsyncedProductWorkExists('products.id', 'products.tenant_id')}
     `).run()
     if (result.changes > 0) {
       this.db.prepare('DELETE FROM app_meta WHERE key = ?').run(LAST_REFERENCE_SYNC_KEY)
