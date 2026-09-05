@@ -243,10 +243,10 @@ export class LocalSyncRepository {
    * Чіпаємо ЛИШЕ вичерпані спроби. Рядок, який ще ретраїться сам, міг би
    * пройти наступної спроби — відмовлятися від нього рано.
    */
-  discardStuck(sequences: number[]): { discarded: number } {
+  discardStuck(sequences: number[]): { discarded: number; corrected: number } {
     const selected = [...new Set((Array.isArray(sequences) ? sequences : [])
       .filter((value) => Number.isSafeInteger(value)))]
-    if (selected.length === 0) return { discarded: 0 }
+    if (selected.length === 0) return { discarded: 0, corrected: 0 }
 
     const timestamp = nowIso()
     const dropped: Array<{
@@ -257,13 +257,15 @@ export class LocalSyncRepository {
       operation_type: string
       attempts: number
       last_error: string | null
+      payload_json: string | null
     }> = []
+    let corrected = 0
 
     this.db.transaction(() => {
       for (const sequence of selected) {
         const row = this.db.prepare(`
           SELECT sequence, tenant_id, aggregate_type, aggregate_id,
-                 operation_type, attempts, last_error
+                 operation_type, attempts, last_error, payload_json
           FROM sync_outbox
           WHERE sequence = ? AND status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS}
           LIMIT 1
@@ -281,6 +283,13 @@ export class LocalSyncRepository {
         )
         dropped.push(row)
       }
+
+      // Черга розблокована, але сервер лишився з чужим залишком: саме ця
+      // операція мала його вирівняти. Каса — джерело правди для залишків
+      // (веб для вечірньої звірки), тому надсилаємо свій залишок як
+      // виправлення. Без цього «не надсилати» лікує чергу і залишає
+      // розбіжність, через яку її й довелося чіпати.
+      corrected = this.enqueueStockCorrections(dropped)
     })
 
     // Журнал пишемо після коміту: він фіксує те, що вже сталося з чергою.
@@ -298,7 +307,72 @@ export class LocalSyncRepository {
       })
     }
 
-    return { discarded: dropped.length }
+    return { discarded: dropped.length, corrected }
+  }
+
+  /**
+   * Залишок з каси як виправлення для сервера. Надсилаємо тільки кількість:
+   * решту полів сервер бере зі свого рядка, щоб ціна, змінена у вебі, не
+   * поїхала назад разом зі складом.
+   */
+  private enqueueStockCorrections(operations: Array<{
+    tenant_id: string
+    aggregate_type: string
+    aggregate_id: string
+    payload_json: string | null
+  }>): number {
+    const byTenant = new Map<string, Set<string>>()
+    for (const operation of operations) {
+      let payload: any = null
+      try { payload = operation.payload_json ? JSON.parse(operation.payload_json) : null } catch { payload = null }
+      const ids = new Set<string>()
+      if (operation.aggregate_type === 'product') ids.add(operation.aggregate_id)
+      if (typeof payload?.product_id === 'string') ids.add(payload.product_id)
+      for (const item of Array.isArray(payload?.items) ? payload.items : []) {
+        if (typeof item?.product_id === 'string') ids.add(item.product_id)
+      }
+      if (ids.size === 0) continue
+      const bucket = byTenant.get(operation.tenant_id) ?? new Set<string>()
+      for (const id of ids) bucket.add(id)
+      byTenant.set(operation.tenant_id, bucket)
+    }
+
+    const timestamp = nowIso()
+    let queued = 0
+    for (const [tenantId, productIds] of byTenant) {
+      for (const productId of productIds) {
+        const product = this.db.prepare(`
+          SELECT id, sku, name, COALESCE(qty_on_hand, 0) AS qty_on_hand
+          FROM products
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+          LIMIT 1
+        `).get(productId, tenantId) as
+          { id: string; sku: string; name: string; qty_on_hand: number } | undefined
+        // Видаленого товару на сервері вирівнювати нічого.
+        if (!product) continue
+
+        this.db.prepare(`
+          INSERT INTO sync_outbox (
+            operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
+            operation_type, payload_json, status, created_at
+          )
+          VALUES (?, ?, ?, 'product', ?, 'product.upsert', ?, 'pending', ?)
+        `).run(
+          randomUUID(), tenantId, this.db.deviceId, product.id,
+          JSON.stringify({
+            id: product.id,
+            tenant_id: tenantId,
+            sku: product.sku,
+            name: product.name,
+            qty_on_hand: Number(product.qty_on_hand ?? 0),
+            stock_correction: true,
+          }),
+          timestamp,
+        )
+        queued += 1
+      }
+    }
+    return queued
   }
 
   applyPullChanges(changes: LocalSyncPullChanges): LocalSyncPullResult {

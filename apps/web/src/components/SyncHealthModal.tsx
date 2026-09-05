@@ -94,9 +94,11 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
   async function handleDiscard(operation: DesktopSyncStuckOperation) {
     setBusySequence(operation.sequence)
     try {
-      const { discarded } = await discardDesktopStuckOperations([operation.sequence])
+      const { discarded, corrected } = await discardDesktopStuckOperations([operation.sequence])
       if (discarded === 0) toast.error('Операцію не знайдено — можливо, вона вже пройшла')
-      else toast.success('Операцію знято з черги. Слід залишився в журналі проблем')
+      else toast.success(corrected > 0
+        ? `Операцію знято з черги. Залишок з каси надіслано на сервер: товарів ${corrected}`
+        : 'Операцію знято з черги. Слід залишився в журналі проблем')
       await load()
       onChanged()
     } catch (error) {
@@ -234,8 +236,9 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
         message={discardTarget && (
           <span>
             <b>{operationLabel(discardTarget)}</b> від {formatMoment(discardTarget.created_at)} зникне з черги.
-            Сервер про цю зміну не дізнається ніколи, тому залишки й суми за цим документом
-            доведеться звірити вручну. Локальні дані на касі лишаються як є.
+            Сервер про цю зміну не дізнається ніколи, тому суми за цим документом доведеться
+            звірити вручну. Залишки товарів з цієї операції каса надішле на сервер зі свого
+            боку — щоб склад не розʼїхався. Локальні дані на касі лишаються як є.
             <br />
             <span className="text-gray-500">Відповідь сервера: {discardTarget.last_error ?? '—'}</span>
           </span>

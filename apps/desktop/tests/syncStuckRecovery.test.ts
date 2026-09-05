@@ -31,18 +31,20 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
     attempts: number
     status: 'pending' | 'failed'
     operationType?: string
+    payload?: unknown
   }): void {
     db.prepare(`
       INSERT INTO sync_outbox(
         sequence, operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
         operation_type, payload_json, status, attempts, next_attempt_at, created_at, last_error
-      ) VALUES (?, ?, ?, 'device-1', 'sale', ?, ?, '{}', ?, ?, ?, '2026-01-01T00:00:00.000Z', 'boom')
+      ) VALUES (?, ?, ?, 'device-1', 'sale', ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', 'boom')
     `).run(
       options.sequence,
       `operation-${options.sequence}`,
       DEFAULT_TENANT_ID,
       `aggregate-${options.sequence}`,
       options.operationType ?? 'sale.created',
+      JSON.stringify(options.payload ?? {}),
       options.status,
       options.attempts,
       BACKOFF_AT,
@@ -116,7 +118,7 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
   it('відмовляється від застряглої операції і лишає слід у журналі проблем', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed', operationType: 'inventory.completed' })
 
-    expect(repository.discardStuck([1])).toEqual({ discarded: 1 })
+    expect(repository.discardStuck([1])).toEqual({ discarded: 1, corrected: 0 })
     expect(repository.listStuck()).toHaveLength(0)
 
     const row = db.prepare(
@@ -141,7 +143,7 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS - 1, status: 'failed' })
 
     // Наступна спроба ще може пройти — відмовлятися рано.
-    expect(repository.discardStuck([1])).toEqual({ discarded: 0 })
+    expect(repository.discardStuck([1])).toEqual({ discarded: 0, corrected: 0 })
 
     const row = db.prepare('SELECT status, attempts FROM sync_outbox WHERE sequence = 1')
       .get() as { status: string; attempts: number }
@@ -152,7 +154,7 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
   it('порожній список нічого не знімає з черги', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
 
-    expect(repository.discardStuck([])).toEqual({ discarded: 0 })
+    expect(repository.discardStuck([])).toEqual({ discarded: 0, corrected: 0 })
     expect(repository.listStuck()).toHaveLength(1)
   })
 
@@ -160,8 +162,52 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
     insertOperation({ sequence: 2, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
 
-    expect(repository.discardStuck([2])).toEqual({ discarded: 1 })
+    expect(repository.discardStuck([2])).toEqual({ discarded: 1, corrected: 0 })
     expect(repository.listStuck().map((operation) => operation.sequence)).toEqual([1])
+  })
+
+  it('після відмови надсилає на сервер залишок з каси', () => {
+    const productId = 'ffffffff-0000-4000-8000-000000000001'
+    db.prepare(`
+      INSERT INTO products(id, tenant_id, sku, name, qty_on_hand, created_at, updated_at)
+      VALUES (?, ?, 'SKU-1', 'Олива тестова', 7, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+    `).run(productId, DEFAULT_TENANT_ID)
+    insertOperation({
+      sequence: 1,
+      attempts: MAX_OUTBOX_ATTEMPTS,
+      status: 'failed',
+      operationType: 'inventory.completed',
+      payload: { items: [{ product_id: productId, counted_stock: 3 }] },
+    })
+
+    expect(repository.discardStuck([1])).toEqual({ discarded: 1, corrected: 1 })
+
+    const correction = db.prepare(`
+      SELECT operation_type, status, payload_json FROM sync_outbox
+      WHERE aggregate_id = ? AND operation_type = 'product.upsert'
+    `).get(productId) as { operation_type: string; status: string; payload_json: string }
+    expect(correction.status).toBe('pending')
+    const payload = JSON.parse(correction.payload_json)
+    // Кількість — з каси, а не з відкинутої ревізії.
+    expect(payload.qty_on_hand).toBe(7)
+    expect(payload.stock_correction).toBe(true)
+    // Ціни свідомо не чіпаємо: у вебі вони могли змінитися.
+    expect(payload).not.toHaveProperty('retail_price')
+    expect(payload).not.toHaveProperty('purchase_price')
+  })
+
+  it('не вигадує виправлення для товару, якого на касі вже немає', () => {
+    insertOperation({
+      sequence: 1,
+      attempts: MAX_OUTBOX_ATTEMPTS,
+      status: 'failed',
+      operationType: 'sale.completed',
+      payload: { items: [{ product_id: 'ffffffff-0000-4000-8000-000000000009' }] },
+    })
+
+    expect(repository.discardStuck([1])).toEqual({ discarded: 1, corrected: 0 })
+    expect(db.prepare("SELECT COUNT(*) n FROM sync_outbox WHERE operation_type = 'product.upsert'").get())
+      .toEqual({ n: 0 })
   })
 
   it('counts exhausted operations as stuck in the health summary', () => {

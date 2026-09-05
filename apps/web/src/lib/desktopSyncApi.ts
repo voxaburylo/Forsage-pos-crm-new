@@ -251,10 +251,14 @@ export async function retryDesktopStuckOperations(
  */
 export async function discardDesktopStuckOperations(
   sequences: number[],
-): Promise<{ discarded: number }> {
+): Promise<{ discarded: number; corrected: number }> {
   const local = desktopBridge()?.sync.discardStuck
-  if (!isDesktopRuntime() || !local) return { discarded: 0 }
-  return local(sequences)
+  if (!isDesktopRuntime() || !local) return { discarded: 0, corrected: 0 }
+  const result = await local(sequences)
+  // Виправлення залишку вже стоїть у черзі — не змушуємо власника чекати
+  // наступного тика таймера, щоб побачити результат.
+  if (result.discarded > 0) await syncDesktopNow().catch(() => undefined)
+  return result
 }
 
 async function executeDesktopSyncCycle(options: DesktopSyncOptions): Promise<DesktopSyncCycleResult> {
