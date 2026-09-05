@@ -44,6 +44,11 @@ const CASHIER_SYNC_OPERATIONS = new Set([
   // Cashiers are explicitly allowed to receive goods and complete stock counts.
   // These operations must follow the same permission model as the HTTP routes/UI.
   'product.upsert', 'supplier_invoice.created', 'supplier_invoice.updated',
+  // Накладна тримається за постачальника зовнішнім ключем. POST /suppliers
+  // касиру дозволений, тому заборона на sync ламала той самий ланцюжок, що й
+  // бренд: постачальник не долітав, накладна падала на
+  // supply_invoices_supplier_id_fkey, а проведення й оплата — слідом за нею.
+  'supplier.created',
   // A product card carries a brand and a category. Allowing product.upsert while
   // denying its reference books breaks the whole chain: the brand never reaches
   // the server, the product then fails on products_brand_id_fkey, and every
@@ -53,7 +58,7 @@ const CASHIER_SYNC_OPERATIONS = new Set([
   'inventory.created', 'inventory.started', 'inventory.completed', 'inventory.deleted',
 ])
 const STOREKEEPER_SYNC_OPERATIONS = new Set([
-  'product.upsert', 'category.upsert', 'brand.upsert', 'supplier_invoice.created',
+  'product.upsert', 'category.upsert', 'brand.upsert', 'supplier.created', 'supplier_invoice.created',
   'supplier_invoice.updated', 'supplier_invoice.posted', 'supplier_invoice.payment_added',
   'order.item_status_updated', 'order.items_arrived',
   'reserve.created', 'reserve.released', 'warehouse_movement.created', 'writeoff.created',
