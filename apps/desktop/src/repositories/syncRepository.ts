@@ -7,6 +7,7 @@ import { outboxDependencyKeys, type OutboxDependencyRow } from './outboxDependen
 import { LocalProblemRepository } from './problemRepository'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
 import { readServerResetGeneration } from './localTenantReset'
+import { recoverInventoryDocumentCopies } from './inventoryCopyRecovery'
 
 const SERVER_PULL_SCOPE = 'desktop_server_pull'
 const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
@@ -105,6 +106,7 @@ export class LocalSyncRepository {
 
   constructor(private readonly db: LocalDatabase) {
     this.problems = new LocalProblemRepository(db)
+    recoverInventoryDocumentCopies(db)
     this.coalesceSupersededProductOperations()
     this.recoverLegacyReturnOutbox()
     this.recoverMissingCustomerVehicleOutbox()
