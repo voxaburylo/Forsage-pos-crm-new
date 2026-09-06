@@ -24,7 +24,32 @@ function readSyncModule(): string {
       parts.push(readFileSync(path.join(syncDir, entry.name), 'utf8'))
     }
   }
-  return parts.join('\n')
+  // Файли лежать із CRLF. Без нормалізації рядок «}» ніколи не збігається
+  // точно, і межа функції їде далі, захоплюючи половину модуля.
+  return parts.join('\n').replace(/\r\n/g, '\n')
 }
 
 export const syncModuleSource = readSyncModule()
+
+/**
+ * Тіло однієї функції синхронізації — від оголошення до закривної дужки на
+ * початку рядка.
+ *
+ * Раніше тести різали код «від функції X до функції Y», спираючись на те, що
+ * вони сусіди в одному файлі. Після поділу на модулі сусідство змінилося, і
+ * перевірки почали падати на порожньому місці, хоча код той самий. Тепер межа
+ * не залежить від того, де саме лежить функція.
+ */
+export function syncFunctionBody(name: string): string {
+  const declaration = new RegExp(`^(?:export )?(?:async )?function ${name}\\b`, 'm')
+  const match = declaration.exec(syncModuleSource)
+  if (!match) throw new Error(`не знайдено функцію синхронізації: ${name}`)
+
+  const lines = syncModuleSource.slice(match.index).split('\n')
+  const body: string[] = []
+  for (const line of lines) {
+    body.push(line)
+    if (line === '}') break
+  }
+  return body.join('\n')
+}

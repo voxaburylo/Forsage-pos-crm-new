@@ -1,18 +1,9 @@
-import { syncModuleSource as source } from './helpers/syncSource.js'
+import { syncFunctionBody } from './helpers/syncSource.js'
 import { describe, expect, it } from 'vitest'
 
-const productSource = source.slice(
-  source.indexOf('async function applyProductUpsert'),
-  source.indexOf('async function applyProductDeleted'),
-)
-const inventorySource = source.slice(
-  source.indexOf('async function applyInventoryCompleted'),
-  source.indexOf('async function applyCustomerDebtPaid'),
-)
-const writeoffSource = source.slice(
-  source.indexOf('async function applyWriteoffCreated'),
-  source.indexOf('async function applyReturnCreated'),
-)
+const productSource = syncFunctionBody('applyProductUpsert')
+const inventorySource = syncFunctionBody('applyInventoryCompleted')
+const writeoffSource = syncFunctionBody('applyWriteoffCreated')
 
 describe('offline stock sync safety', () => {
   it('preserves server stock on ordinary product edits', () => {

@@ -1,10 +1,7 @@
-import { syncModuleSource as source } from './helpers/syncSource.js'
+import { syncFunctionBody } from './helpers/syncSource.js'
 import { describe, expect, it } from 'vitest'
 
-const completionSource = source.slice(
-  source.indexOf('export async function applyOrderCompleted'),
-  source.indexOf('function normalizePaymentMethod'),
-)
+const completionSource = syncFunctionBody('applyOrderCompleted')
 
 describe('offline order completion sync regression', () => {
   it('selects every non-canceled line when the order has no linked sale', () => {

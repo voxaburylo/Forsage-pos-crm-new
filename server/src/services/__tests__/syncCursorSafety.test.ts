@@ -1,4 +1,4 @@
-import { syncModuleSource as source } from './helpers/syncSource.js'
+import { syncFunctionBody, syncModuleSource as source } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
@@ -50,10 +50,7 @@ describe('desktop sync cursor safety', () => {
   })
 
   it('restamps every product and counted row at the end of a large inventory transaction', () => {
-    const inventory = source.slice(
-      source.indexOf('async function applyInventoryCompleted'),
-      source.indexOf('async function applyCustomerDebtPaid'),
-    )
+    const inventory = syncFunctionBody('applyInventoryCompleted')
     const loop = inventory.indexOf('for (const item of items)')
     const productTouch = inventory.indexOf('UPDATE products SET updated_at = clock_timestamp()')
     const itemTouch = inventory.indexOf('UPDATE inventory_items SET updated_at = clock_timestamp()')
