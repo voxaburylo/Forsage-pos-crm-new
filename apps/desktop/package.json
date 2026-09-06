@@ -15,7 +15,6 @@
     "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 VITE_API_URL=https://forsage-pos-crm-new-web.vercel.app pnpm --filter=web build && pnpm build && node scripts/embed-renderer.cjs && electron-builder --win portable --x64"
   },
   "devDependencies": {
-    "@crm-forsage/shared": "workspace:^",
     "@types/node": "^24.0.0",
     "cross-env": "^10.1.0",
     "electron": "43.1.0",

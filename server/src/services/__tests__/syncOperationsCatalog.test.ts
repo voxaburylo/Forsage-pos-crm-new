@@ -6,7 +6,7 @@ import {
   isSyncOperationAllowed,
   operationsCreating,
   type SyncEntity,
-} from '@crm-forsage/shared'
+} from '../sync/operationsCatalog.js'
 
 /**
  * Двічі за два тижні магазин втратив дані через одну й ту саму помилку: ролі

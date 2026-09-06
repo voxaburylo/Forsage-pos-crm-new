@@ -1,4 +1,4 @@
-import { isSyncOperationAllowed as isSyncOperationAllowedByCatalog } from '@crm-forsage/shared'
+import { isSyncOperationAllowed as isSyncOperationAllowedByCatalog } from './sync/operationsCatalog.js'
 
 const STAFF_DIRECTORY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker'])
 const SUPPLY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper'])

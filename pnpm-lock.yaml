@@ -33,9 +33,6 @@ importers:
 
   apps/desktop:
     devDependencies:
-      '@crm-forsage/shared':
-        specifier: workspace:^
-        version: link:../../shared
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3

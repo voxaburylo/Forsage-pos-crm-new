@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { SYNC_OPERATIONS, type SyncEntity } from '@crm-forsage/shared'
+import { readFileSync } from 'node:fs'
 import { outboxDependencyKeys } from '../src/repositories/outboxDependencies'
+
+/**
+ * Каталог операцій живе на сервері (`server/src/services/sync/operationsCatalog.ts`)
+ * і саме там йому місце: серверу він потрібен у рантаймі, касі — лише тут, у
+ * тесті. Імпортувати його через межу пакета не можна: у каси свій `rootDir`.
+ * Тому читаємо як текст і дістаємо самі залежності — цього досить, щоб
+ * помітити розʼїзд двох описів, а саме заради цього тест і існує.
+ */
+type SyncEntity = 'brand' | 'category' | 'supplier' | 'product' | 'customer'
+  | 'invoice' | 'sale' | 'order' | 'inventory_session' | 'shift'
+
+function catalogReferences(): Array<{ operation: string; entity: SyncEntity }> {
+  const source = readFileSync(
+    new URL('../../../server/src/services/sync/operationsCatalog.ts', import.meta.url),
+    'utf8',
+  )
+  const rows: Array<{ operation: string; entity: SyncEntity }> = []
+  for (const match of source.matchAll(/'([a-z_.]+)': \{[^}]*references: \[([^\]]*)\]/g)) {
+    const operation = match[1]
+    for (const entity of match[2].matchAll(/'([a-z_]+)'/g)) {
+      rows.push({ operation, entity: entity[1] as SyncEntity })
+    }
+  }
+  if (rows.length === 0) throw new Error('не вдалося прочитати залежності з каталогу операцій')
+  return rows
+}
 
 /**
  * Каталог операцій каже, що операція тягне за собою по зовнішньому ключу.
@@ -38,17 +64,15 @@ describe('залежності черги і каталог операцій', (
   it('кожна залежність із каталогу стає бар\'єром у черзі', () => {
     const missing: string[] = []
 
-    for (const [operationType, spec] of Object.entries(SYNC_OPERATIONS)) {
-      for (const entity of spec.references ?? []) {
-        if (!ORDERED.includes(entity as SyncEntity)) continue
-        const id = `${entity}-id`
-        const keys = outboxDependencyKeys(
-          { tenant_id: TENANT, aggregate_type: 'unrelated', aggregate_id: 'self' },
-          payloadFor(entity as SyncEntity, id),
-        )
-        if (!keys.includes(`${TENANT}:reference:${entity}:${id}`)) {
-          missing.push(`${operationType} → ${entity}`)
-        }
+    for (const { operation, entity } of catalogReferences()) {
+      if (!ORDERED.includes(entity)) continue
+      const id = `${entity}-id`
+      const keys = outboxDependencyKeys(
+        { tenant_id: TENANT, aggregate_type: 'unrelated', aggregate_id: 'self' },
+        payloadFor(entity, id),
+      )
+      if (!keys.includes(`${TENANT}:reference:${entity}:${id}`)) {
+        missing.push(`${operation} → ${entity}`)
       }
     }
 
