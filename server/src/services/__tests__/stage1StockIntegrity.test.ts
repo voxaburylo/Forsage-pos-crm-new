@@ -1,7 +1,7 @@
+import { syncModuleSource as syncSource } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const migration = readFileSync(
   new URL('../../../../supabase/migrations/20260729094409_stage1_stock_integrity.sql', import.meta.url),
   'utf8',

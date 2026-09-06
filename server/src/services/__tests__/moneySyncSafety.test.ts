@@ -1,7 +1,7 @@
+import { syncModuleSource as syncSource } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const customerSource = readFileSync(new URL('../customerService.ts', import.meta.url), 'utf8')
 const saleSource = readFileSync(new URL('../saleService.ts', import.meta.url), 'utf8')
 const commissionSource = readFileSync(new URL('../commissionService.ts', import.meta.url), 'utf8')

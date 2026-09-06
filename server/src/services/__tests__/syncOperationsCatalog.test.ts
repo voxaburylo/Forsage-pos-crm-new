@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { syncModuleSource as source } from './helpers/syncSource.js'
 import { describe, expect, it } from 'vitest'
 import {
   SYNC_OPERATIONS,
@@ -38,8 +38,7 @@ describe('каталог операцій синхронізації', () => {
   })
 
   it('кожна операція, яку сервер уміє застосувати, описана в каталозі', () => {
-    const source = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
-    const handled = new Set(
+        const handled = new Set(
       [...source.matchAll(/operation\.operation_type === '([a-z_.]+)'/g)].map((match) => match[1]),
     )
 

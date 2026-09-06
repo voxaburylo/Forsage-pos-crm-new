@@ -1,7 +1,7 @@
+import { syncModuleSource as source } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const source = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const keysetSource = readFileSync(new URL('../syncKeyset.ts', import.meta.url), 'utf8')
 
 describe('desktop sync cursor safety', () => {

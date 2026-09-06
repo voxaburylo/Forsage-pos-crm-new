@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { syncModuleSource as source } from './helpers/syncSource.js'
 import { describe, expect, it } from 'vitest'
 
-const source = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const productSource = source.slice(
   source.indexOf('async function applyProductUpsert'),
   source.indexOf('async function applyProductDeleted'),

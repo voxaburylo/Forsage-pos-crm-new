@@ -1,10 +1,10 @@
+import { syncModuleSource as syncSource } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const bulkArrivalSource = readFileSync(new URL('../orderBulkArrivalService.ts', import.meta.url), 'utf8')
 const cancellationSource = readFileSync(new URL('../orderCancellationService.ts', import.meta.url), 'utf8')
 const returnSource = readFileSync(new URL('../returnService.ts', import.meta.url), 'utf8')
-const syncSource = readFileSync(new URL('../syncService.ts', import.meta.url), 'utf8')
 const customerOrdersSource = readFileSync(new URL('../../routes/customerOrders.ts', import.meta.url), 'utf8')
 const coreReturnsSource = readFileSync(new URL('../../routes/coreReturns.ts', import.meta.url), 'utf8')
 
