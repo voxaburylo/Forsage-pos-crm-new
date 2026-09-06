@@ -48,7 +48,7 @@ describe('локальна каса відправляє резервну коп
   it('ділить один фоновий upload між одночасними таймерами', () => {
     expect(syncApiSource).toContain('let syncCycleInProgress: Promise<DesktopSyncCycleResult> | null = null')
     expect(syncApiSource).toContain('if (syncCycleInProgress) return syncCycleInProgress')
-    expect(syncApiSource).toContain('const cycle = executeDesktopSyncCycle(options)')
+    expect(syncApiSource).toContain('const cycle = executeDesktopSyncCycle()')
     expect(syncApiSource).toContain('if (pushInProgress) return pushInProgress')
   })
 
@@ -63,8 +63,8 @@ describe('локальна каса відправляє резервну коп
     expect(browserSyncHookSource).not.toContain("'X-Sync-Reset-Generation': String(syncState.reset_generation)")
     expect(browserSyncHookSource).toContain('if (response.data.reset_required === true)')
     expect(syncApiSource).toContain('reset_generation: state.reset_generation')
-    expect(syncApiSource).toContain("params.set('reset_generation', String(state.reset_generation))")
-    expect(syncApiSource).toContain('if (response.data.reset_required === true)')
+    expect(syncApiSource).toContain('resetRequired: response.data.reset_required === true')
+    expect(syncApiSource).not.toContain('await desktop.sync.applyPullChanges')
     expect(offlineDbSource).toContain('export async function resetOfflineSyncData')
   })
 
@@ -115,8 +115,9 @@ describe('локальна каса відправляє резервну коп
     expect(posPageSource).toContain('scope_key:      scopeKey')
   })
 
-  it('leaves server pull available only as an explicit recovery function', () => {
-    expect(syncApiSource).toContain('export async function pullDesktopChanges')
-    expect(syncApiSource).toContain('Відновлення з серверної копії')
+  it('has no server pull or bootstrap path left in the desktop client', () => {
+    expect(syncApiSource).not.toContain('export async function pullDesktopChanges')
+    expect(syncApiSource).not.toContain('applyPullChanges(')
+    expect(syncApiSource).not.toContain('/api/v1/sync/bootstrap')
   })
 })

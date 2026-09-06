@@ -44,9 +44,7 @@ describe('catalog synchronization consistency', () => {
     expect(regularCycle).not.toContain('await pullDesktopChanges')
     expect(desktopSyncAgentSource).not.toContain('referenceRepairIsIdle')
     expect(desktopSyncAgentSource).not.toContain('desktopReferencesNeedRepair')
-    // Окремий механізм відновлення лишається в коді, але не викликається
-    // таймером каси: сервер — це копія для аварійного відновлення.
-    expect(desktopSyncSource).toContain('export async function pullDesktopChanges')
+    expect(desktopSyncSource).not.toContain('export async function pullDesktopChanges')
   })
 
   it('marks category snapshots only when a complete reference snapshot is returned', () => {

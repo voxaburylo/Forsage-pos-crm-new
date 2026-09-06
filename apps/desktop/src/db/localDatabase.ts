@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { backup, DatabaseSync, type StatementSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { LOCAL_MIGRATIONS } from './schema'
+import { createVerifiedBackup } from './verifiedBackup'
+import { backupsToPrune } from './backupPolicy'
 
 export interface LocalDatabaseInfo {
   databasePath: string
@@ -18,19 +20,13 @@ export interface LocalDatabaseBackup {
   createdAt: string
 }
 
-/**
- * Що саме сталося, коли базу не вдалося відкрити. Показуємо власнику: він має
- * розуміти, за який період дані могли не долетіти на сервер.
- */
-export type LocalDatabaseRecovery = {
-  /** Куди відклали пошкоджений файл — його ще можна віддати розробнику. */
-  quarantinedPath: string
-  /** Початкова помилка відкриття. */
-  reason: string
-} & (
-  | { kind: 'backup'; restoredFrom: string; backupCreatedAt: string }
-  | { kind: 'empty' }
-)
+export class LocalDatabaseOpenError extends Error {
+  constructor(readonly databasePath: string, cause: unknown) {
+    super('Не вдалося відкрити робочу локальну базу. Автоматичний відкат або створення порожньої бази заборонено. '
+      + 'Дані залишено на місці. Потрібно перевірити причину; не відновлюйте стару копію без звірки останніх документів.', { cause })
+    this.name = 'LocalDatabaseOpenError'
+  }
+}
 
 /**
  * База новіша за програму: на цьому компʼютері запустили стару збірку каси.
@@ -55,18 +51,20 @@ export class OutdatedBuildError extends Error {
 
 export interface LocalDatabaseOpenResult {
   database: LocalDatabase
-  /** `null` — база відкрилася звичайно, нічого відновлювати не довелося. */
-  recovery: LocalDatabaseRecovery | null
+  /** Відкриття НІКОЛИ не підміняє робочу базу резервною копією. */
+  recovery: null
 }
 
 const DATABASE_FILE = 'forsage.db'
 /** WAL і SHM — частина стану бази. Їх не можна лишати від старого файлу. */
 const SIDECAR_SUFFIXES = ['-wal', '-shm']
 const BACKUP_FILE_PATTERN = /^Forsage-\d{4}-\d{2}-\d{2}_.+\.db$/
+const DATABASE_IDENTITY_FILE = 'database-identity.json'
 
 export class LocalDatabase {
   private readonly database: DatabaseSync
   private readonly statements = new Map<string, StatementSync>()
+  private backupInProgress: Promise<string> | null = null
   readonly dataRoot: string
   readonly databasePath: string
   readonly backupsPath: string
@@ -103,57 +101,30 @@ export class LocalDatabase {
     this.deviceId = deviceId
   }
 
-  /**
-   * Єдина точка відкриття локальної бази при старті каси.
-   *
-   * Раніше пошкоджений файл означав мертву касу: конструктор кидав виняток,
-   * Electron показував «Forsage не запустився» — і це при тому, що поруч
-   * лежало до 14 добових бекапів, якими ніхто не міг скористатися.
-   *
-   * Тепер: відкладаємо биту базу вбік (не видаляємо — там можуть бути
-   * невідправлені чеки, які ще дістане розробник) і піднімаємо найсвіжіший
-   * бекап, що реально відкривається. Якщо не відкривається жоден — стартуємо
-   * з порожньою базою, щоб касир зміг увійти онлайн і завантажити дані заново.
-   * Порожня каса — погано, але мертва каса гірша.
-   */
+  /** Помилка відкриття не є дозволом відкотити продажі, приходи й ревізії. */
   static open(dataRoot: string): LocalDatabaseOpenResult {
+    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
+    const identityPath = path.join(dataRoot, DATABASE_IDENTITY_FILE)
     try {
-      return { database: new LocalDatabase(dataRoot), recovery: null }
-    } catch (error) {
-      // Стару збірку бекапом не лікують: база ціла, помилилися з ярликом.
-      if (error instanceof OutdatedBuildError) throw error
-      return LocalDatabase.recover(dataRoot, error)
-    }
-  }
-
-  private static recover(dataRoot: string, error: unknown): LocalDatabaseOpenResult {
-    const reason = error instanceof Error ? error.message : String(error)
-    const quarantinedPath = LocalDatabase.quarantineBroken(dataRoot)
-
-    for (const candidate of LocalDatabase.listBackups(dataRoot)) {
-      try {
-        LocalDatabase.stageDatabaseFile(dataRoot, candidate.filePath)
-        const database = new LocalDatabase(dataRoot)
-        return {
-          database,
-          recovery: {
-            kind: 'backup',
-            quarantinedPath,
-            reason,
-            restoredFrom: candidate.fileName,
-            backupCreatedAt: candidate.createdAt,
-          },
-        }
-      } catch {
-        // Цей бекап теж не відкривається — прибираємо його спробу й беремо
-        // наступний за свіжістю.
-        LocalDatabase.removeDatabaseFiles(dataRoot)
+      const missing = !existsSync(databasePath) || statSync(databasePath).size === 0
+      if (missing && (existsSync(identityPath) || LocalDatabase.listBackups(dataRoot).length > 0
+        || existsSync(path.join(dataRoot, 'corrupt'))
+        || SIDECAR_SUFFIXES.some((suffix) => existsSync(`${databasePath}${suffix}`)))) {
+        throw new Error('Робочий файл бази відсутній або порожній, але на ПК уже були дані магазину')
       }
-    }
-
-    return {
-      database: new LocalDatabase(dataRoot),
-      recovery: { kind: 'empty', quarantinedPath, reason },
+      const database = new LocalDatabase(dataRoot)
+      try {
+        if (!existsSync(identityPath)) {
+          writeFileSync(identityPath, JSON.stringify({ deviceId: database.deviceId }), { flag: 'wx' })
+        }
+      } catch (error) {
+        database.close()
+        throw error
+      }
+      return { database, recovery: null }
+    } catch (error) {
+      if (error instanceof OutdatedBuildError) throw error
+      throw new LocalDatabaseOpenError(databasePath, error)
     }
   }
 
@@ -177,8 +148,7 @@ export class LocalDatabase {
   }
 
   /**
-   * Ставить обраний бекап на місце робочої бази. Викликається при старті
-   * (автовідновлення) і з налаштувань перед перезапуском програми.
+   * Ставить ЯВНО обраний власником бекап на місце робочої бази.
    *
    * База МАЄ бути закрита. Далі програма перезапускається — тримати відкриті
    * репозиторії на підмінений файл не можна.
@@ -204,11 +174,17 @@ export class LocalDatabase {
     }
   }
 
-  private static assertBackupIsUsable(sourcePath: string): void {
+  static assertBackupIsUsable(sourcePath: string): void {
     const probe = new DatabaseSync(sourcePath, { readOnly: true, timeout: 5_000 })
     try {
       const row = probe.prepare('PRAGMA quick_check').get() as { quick_check: string } | undefined
       if (row?.quick_check !== 'ok') throw new Error('LOCAL_BACKUP_CORRUPT')
+      const version = probe.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number }
+      const buildVersion = Math.max(...LOCAL_MIGRATIONS.map((migration) => migration.version))
+      if (version.version > buildVersion) throw new OutdatedBuildError(version.version, buildVersion)
+      if (!probe.prepare("SELECT value_json FROM app_meta WHERE key = 'device_id'").get()) {
+        throw new Error('LOCAL_BACKUP_NOT_FORSAGE_DATABASE')
+      }
     } finally {
       probe.close()
     }
@@ -233,12 +209,19 @@ export class LocalDatabase {
     const quarantinePath = path.join(dataRoot, 'corrupt')
     mkdirSync(quarantinePath, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const destination = path.join(quarantinePath, `forsage-${stamp}.db`)
-
-    if (existsSync(databasePath)) renameSync(databasePath, destination)
-    for (const suffix of SIDECAR_SUFFIXES) {
-      const sidecar = `${databasePath}${suffix}`
-      if (existsSync(sidecar)) renameSync(sidecar, `${destination}${suffix}`)
+    const destination = path.join(quarantinePath, `forsage-${stamp}-${randomUUID().slice(0, 8)}.db`)
+    const moved: Array<{ from: string; to: string }> = []
+    try {
+      for (const suffix of ['', ...SIDECAR_SUFFIXES]) {
+        const from = `${databasePath}${suffix}`
+        const to = `${destination}${suffix}`
+        if (existsSync(from)) { renameSync(from, to); moved.push({ from, to }) }
+      }
+    } catch (error) {
+      // Наприклад, антивірус утримує WAL: не лишаємо головний файл окремо
+      // від його транзакцій через часткове переміщення.
+      for (const entry of moved.reverse()) renameSync(entry.to, entry.from)
+      throw error
     }
     return destination
   }
@@ -369,34 +352,50 @@ export class LocalDatabase {
     return LocalDatabase.listBackups(this.dataRoot)
   }
 
-  async backupIfDue(maxAgeMs = 24 * 60 * 60_000, retain = 14): Promise<string | null> {
-    const backupFiles = () => this.listBackups()
-      .map((entry) => ({ filePath: entry.filePath, modifiedAt: Date.parse(entry.createdAt) }))
-
-    const existing = backupFiles()
-    if (existing[0] && Date.now() - existing[0].modifiedAt < Math.max(60_000, maxAgeMs)) {
+  async backupIfDue(maxAgeMs = 60 * 60_000, retain = 24): Promise<string | null> {
+    if (this.backupInProgress) return this.backupInProgress
+    const existing = this.listBackups()
+    if (existing[0] && Date.now() - Date.parse(existing[0].createdAt) < Math.max(60_000, maxAgeMs)) {
       return null
     }
 
     const destination = await this.backupNow()
-    const keepCount = Math.max(1, Math.floor(retain))
-    for (const stale of backupFiles().slice(keepCount)) {
+    for (const stale of backupsToPrune(this.listBackups(), retain)) {
       unlinkSync(stale.filePath)
     }
     return destination
   }
 
-  async backupNow(): Promise<string> {
+  backupNow(): Promise<string> {
+    if (this.backupInProgress) return this.backupInProgress
+    if (!this.database.isOpen) return Promise.reject(new Error('LOCAL_DATABASE_NOT_READY'))
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
-    const destination = path.join(this.backupsPath, `Forsage-${stamp}.db`)
-    await backup(this.database, destination)
-    return destination
+    const destination = path.join(this.backupsPath, `Forsage-${stamp}-${randomUUID().slice(0, 8)}.db`)
+    const partial = `${destination}.partial`
+    const operation = createVerifiedBackup(this.databasePath, partial).then(() => {
+      // Неповний або неперевірений файл ніколи не потрапляє до списку копій.
+      renameSync(partial, destination)
+      return destination
+    }).catch((error) => {
+      if (existsSync(partial)) unlinkSync(partial)
+      throw error
+    })
+    this.backupInProgress = operation
+    const release = () => { if (this.backupInProgress === operation) this.backupInProgress = null }
+    operation.then(release, release)
+    return operation
+  }
+
+  async waitForBackup(): Promise<void> {
+    await this.backupInProgress
   }
 
   close(): void {
     if (!this.database.isOpen) return
-    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-    this.statements.clear()
-    this.database.close()
+    try { this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)') }
+    finally {
+      this.statements.clear()
+      this.database.close()
+    }
   }
 }

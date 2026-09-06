@@ -5,6 +5,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { searchProductsOffline } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
+import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge } from '@/lib/desktopBridge'
 
 type Kind = 'tire_service' | 'free_sale'
@@ -55,49 +56,34 @@ export function QuickChargeModal({
     try {
       const sku = isTire ? 'POS-TIRE-SERVICE' : 'POS-FREE-SALE'
       let data: { id: string; sku: string; name: string; unit: string; retail_price: number } | null = null
-      const cached = await searchProductsOffline(sku, 10, scopeKey).catch(() => [])
-      data = cached.find((product) => product.sku === sku) ?? null
-      if (!data) {
-        const desktop = desktopBridge()
-        if (desktop) {
-          data = {
-            id: 'local-' + sku.toLowerCase(),
-            sku,
+      const desktop = desktopBridge()
+      if (desktop) {
+        if (!desktop.catalog.findBySku || !desktop.catalog.saveProduct) {
+          throw new Error('Локальний каталог недоступний. Запустіть актуальну версію програми.')
+        }
+        // Службова позиція теж береться лише з SQLite, не з браузерного кешу.
+        data = await desktop.catalog.findBySku(sku)
+        if (!data) {
+          data = await desktop.catalog.saveProduct({
+            id: crypto.randomUUID(), sku,
             name: isTire ? 'Шиномонтажні послуги' : 'Вільний продаж',
-            unit: 'посл.',
-            retail_price: price,
-          }
-        } else if (!offline) {
+            unit: 'посл.', retail_price: 0, qty_on_hand: 0,
+            is_service: true, is_active: true,
+          }, { reuseExistingSku: true })
+          requestDesktopSync()
+        }
+      } else {
+        const cached = await searchProductsOffline(sku, 10, scopeKey).catch(() => [])
+        data = cached.find((product) => product.sku === sku) ?? null
+        if (!data && !offline) {
           const response = await api.post<{ data: NonNullable<typeof data> }>(
-            '/api/v1/sales/quick-item',
-            { kind },
-            undefined,
+            '/api/v1/sales/quick-item', { kind }, undefined,
             { timeoutMs: 8_000, silent: true },
           )
           data = response.data
         }
-      }      if (!data) {
-        throw new Error('Не вдалося створити службову позицію')
       }
-
-      // Desktop: гарантуємо, що службовий товар (POS-FREE-SALE / POS-TIRE-SERVICE)
-      // є в локальній SQLite-базі, інакше локальний продаж впаде з LOCAL_PRODUCT_NOT_FOUND
-      // (його могло не бути в бутстрапі, бо він створюється на сервері на вимогу).
-      const desktop = desktopBridge()
-      if (desktop) {
-        await desktop.catalog.upsertProduct({
-          id: data.id,
-          sku: data.sku,
-          name: data.name,
-          unit: data.unit,
-          retail_price: data.retail_price,
-          qty_on_hand: 0,
-          is_service: true,
-          is_active: true,
-        }).catch((err) => {
-          console.error('Failed to cache service product locally', err)
-        })
-      }
+      if (!data) throw new Error('Не вдалося створити службову позицію')
 
       // У чеку має бути одна підсумкова сума такого типу. Повторне введення
       // замінює її, а не множить попередню ціну на кількість.

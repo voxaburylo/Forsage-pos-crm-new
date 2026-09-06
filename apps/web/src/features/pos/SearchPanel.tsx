@@ -12,7 +12,7 @@ import { findProductByScanOffline, searchCustomersOffline, searchProductsOffline
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
-import { mirrorProductToDesktop, productApi } from '@/features/products/productApi'
+import { productApi } from '@/features/products/productApi'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -429,7 +429,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         playSuccessBeep()
         reportScannerStage('added', normalizedCode, c.full_name ?? c.phone)
       } else if (result?.type === 'product' && result?.data) {
-        void mirrorProductToDesktop(result.data as Product)
         addProductToScanIndex(scanProductIndex.current, result.data as Product)
         addToReceipt(result.data)
         saveRecentItem('recent_scans', normalizedCode)

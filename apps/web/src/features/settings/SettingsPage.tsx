@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database, DownloadCloud } from 'lucide-react'
+import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
 import { aiApi, AI_MODELS, AI_MODEL_LABELS } from '@/features/ai/aiApi'
@@ -10,7 +10,6 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
-import { bootstrapDesktopFromServer } from '@/lib/localBootstrapApi'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { BackupSettingsCard } from './BackupSettingsCard'
@@ -36,8 +35,6 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving]   = useState(false)
   const [desktopRuntime, setDesktopRuntime] = useState<DesktopRuntimeInfo | null>(null)
-  const [bootstrapLoading, setBootstrapLoading] = useState(false)
-  const [bootstrapCounts, setBootstrapCounts] = useState<Record<string, number> | null>(null)
 
   // Принтер чеків цієї станції (desktop): список системних принтерів + вибір.
   const [desktopPrinters, setDesktopPrinters] = useState<Array<{ name: string; displayName: string }>>([])
@@ -132,35 +129,6 @@ export default function SettingsPage() {
       toast.error(e instanceof Error ? e.message : 'Помилка')
     } finally {
       setAiSaving(false)
-    }
-  }
-
-  async function handleBootstrapDesktop() {
-    if (!isDesktopRuntime()) {
-      toast.error('Локальна база доступна тільки у desktop-додатку')
-      return
-    }
-    const confirmed = window.confirm(
-      'Відновити локальну базу з серверної резервної копії?\n\n' +
-      'Це аварійна дія: серверна копія може бути старішою. Перед відновленням програма збереже поточну локальну базу у резервну копію на цьому ПК.',
-    )
-    if (!confirmed) return
-    setBootstrapLoading(true)
-    try {
-      const safetyBackup = await desktopBridge()?.backupNow()
-      const result = await bootstrapDesktopFromServer()
-      setBootstrapCounts(result.counts)
-      const info = await desktopBridge()?.getRuntimeInfo()
-      if (info) setDesktopRuntime(info)
-      window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
-      toast.success(
-        `Локальну базу відновлено: ${result.counts.products ?? 0} товарів.` +
-        (safetyBackup ? ` Поточну локальну копію збережено: ${safetyBackup}` : ''),
-      )
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити локальну базу')
-    } finally {
-      setBootstrapLoading(false)
     }
   }
 
@@ -413,8 +381,8 @@ export default function SettingsPage() {
                   </div>
                   <p className="text-xs text-emerald-700">
                     SQLite-база цього ПК — основне джерело для каси, товарів, пошуку, накладних і ревізії.
-                    Сервер отримує резервну копію локальних даних. Кнопка праворуч — аварійне відновлення,
-                    якщо локальна база фізично пошкоджена; для звичайної роботи вона не потрібна.
+                    Сервер отримує дані для перегляду. Зворотне завантаження в робочу базу заборонене.
+                    Перевірені резервні копії локальної бази — в окремому блоці нижче.
                   </p>
                   {desktopRuntime && (
                     <p className="mt-2 truncate rounded-lg bg-white/70 px-2 py-1 font-mono text-[11px] text-emerald-800">
@@ -422,33 +390,7 @@ export default function SettingsPage() {
                     </p>
                   )}
                 </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  loading={bootstrapLoading}
-                  icon={<DownloadCloud size={16} />}
-                  onClick={handleBootstrapDesktop}
-                  className="shrink-0"
-                >
-                  Відновити з копії
-                </Button>
               </div>
-
-              {bootstrapCounts && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-emerald-100">
-                  {[
-                    ['Товари', bootstrapCounts.products ?? 0],
-                    ['Штрихкоди', bootstrapCounts.product_barcodes ?? 0],
-                    ['Категорії', bootstrapCounts.categories ?? 0],
-                    ['Клієнти', bootstrapCounts.customers ?? 0],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-lg bg-white/80 px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-500">{label}</p>
-                      <p className="text-lg font-bold text-emerald-950">{value}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
             </Card>
           )}
 

@@ -1,117 +1,83 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { LocalDatabase } from '../src/db/localDatabase'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { LocalDatabase, LocalDatabaseOpenError } from '../src/db/localDatabase'
 
-describe('LocalDatabase.open recovery', () => {
+describe('LocalDatabase.open never rolls back local truth', () => {
   let root = ''
-
   beforeEach(() => {
     root = path.join(tmpdir(), `forsage-recovery-${Date.now()}-${Math.random().toString(16).slice(2)}`)
     mkdirSync(root, { recursive: true })
   })
-
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true })
-  })
-
-  const databaseFile = () => path.join(root, 'data', 'forsage.db')
-  const corruptDir = () => path.join(root, 'corrupt')
-
-  function seedWorkingDatabase(): string {
-    const database = new LocalDatabase(root)
-    const deviceId = database.deviceId
-    database.close()
-    return deviceId
-  }
-
-  function corruptDatabaseFile(): void {
-    writeFileSync(databaseFile(), 'це не база даних, а сміття', 'utf8')
-  }
-
-  it('opens normally and reports no recovery when the database is healthy', () => {
-    const deviceId = seedWorkingDatabase()
-
-    const opened = LocalDatabase.open(root)
-
-    expect(opened.recovery).toBeNull()
-    expect(opened.database.deviceId).toBe(deviceId)
-    opened.database.close()
-    expect(existsSync(corruptDir())).toBe(false)
-  })
-
-  it('restores the newest backup instead of refusing to start', async () => {
-    const deviceId = seedWorkingDatabase()
-    const database = new LocalDatabase(root)
-    await database.backupNow()
-    database.close()
-
-    corruptDatabaseFile()
-    const opened = LocalDatabase.open(root)
-
-    expect(opened.recovery?.kind).toBe('backup')
-    // Той самий device_id доводить, що піднялася саме наша база, а не порожня.
-    expect(opened.database.deviceId).toBe(deviceId)
-    opened.database.close()
-  })
-
-  it('keeps the broken file instead of deleting it', async () => {
-    seedWorkingDatabase()
-    const database = new LocalDatabase(root)
-    await database.backupNow()
-    database.close()
-
-    corruptDatabaseFile()
-    const opened = LocalDatabase.open(root)
-    opened.database.close()
-
-    const quarantined = opened.recovery?.quarantinedPath ?? ''
-    expect(existsSync(quarantined)).toBe(true)
-    // У битій базі можуть лишатись невідправлені чеки — її не можна видаляти.
-    expect(readFileSync(quarantined, 'utf8')).toContain('сміття')
-  })
-
-  it('never leaves a stale WAL next to the restored database', async () => {
-    seedWorkingDatabase()
-    const database = new LocalDatabase(root)
-    await database.backupNow()
-    database.close()
-
-    corruptDatabaseFile()
-    writeFileSync(`${databaseFile()}-wal`, 'залишковий wal', 'utf8')
-    writeFileSync(`${databaseFile()}-shm`, 'залишковий shm', 'utf8')
-
-    const opened = LocalDatabase.open(root)
-    opened.database.close()
-
-    // Старий WAL містить закомічені транзакції побитої бази. Якщо лишити його
-    // поруч із відновленою — SQLite накотить його зверху й зіпсує її вдруге.
-    // Куди саме він подівся (карантин чи прибирання самою SQLite при закритті)
-    // не важливо — важливо, що біля відновленої бази його вмісту немає.
-    for (const suffix of ['-wal', '-shm']) {
-      const sidecar = `${databaseFile()}${suffix}`
-      const content = existsSync(sidecar) ? readFileSync(sidecar, 'utf8') : ''
-      expect(content).not.toContain('залишковий')
+    vi.restoreAllMocks()
+    if (path.dirname(root) === tmpdir() && path.basename(root).startsWith('forsage-recovery-')) {
+      rmSync(root, { recursive: true, force: true })
     }
-    // А сама бита база при цьому збережена.
-    expect(readdirSync(corruptDir()).length).toBeGreaterThan(0)
+  })
+  const databaseFile = () => path.join(root, 'data', 'forsage.db')
+  const quarantine = () => path.join(root, 'corrupt')
+
+  it('opens healthy local data without recovery', () => {
+    const first = LocalDatabase.open(root)
+    const id = first.database.deviceId
+    first.database.close()
+    const opened = LocalDatabase.open(root)
+    expect(opened.recovery).toBeNull()
+    expect(opened.database.deviceId).toBe(id)
+    opened.database.close()
+    expect(existsSync(quarantine())).toBe(false)
   })
 
-  it('falls back to an empty database when no backup can be opened', () => {
-    seedWorkingDatabase()
-    const backupsPath = path.join(root, 'backups')
-    mkdirSync(backupsPath, { recursive: true })
-    writeFileSync(path.join(backupsPath, 'Forsage-2026-01-01_00-00-00.db'), 'теж сміття', 'utf8')
+  it.each(['database is locked', 'disk I/O error', 'database or disk is full', 'permission denied', 'migration bug'])(
+    'does not restore an older backup after %s', async (message) => {
+      const db = new LocalDatabase(root)
+      db.exec('CREATE TABLE probe(value INTEGER); INSERT INTO probe VALUES(1)')
+      await db.backupNow()
+      db.exec('UPDATE probe SET value = 2')
+      db.close()
+      vi.spyOn(LocalDatabase.prototype as any, 'migrate').mockImplementationOnce(() => { throw new Error(message) })
+      expect(() => LocalDatabase.open(root)).toThrow(LocalDatabaseOpenError)
+      expect(existsSync(quarantine())).toBe(false)
+      const opened = LocalDatabase.open(root)
+      expect(opened.database.prepare('SELECT value FROM probe').get()).toEqual({ value: 2 })
+      opened.database.close()
+    },
+  )
 
-    corruptDatabaseFile()
-    const opened = LocalDatabase.open(root)
+  it.each([true, false])('does not replace a corrupt database, backup present = %s', async (withBackup) => {
+    const db = new LocalDatabase(root)
+    if (withBackup) await db.backupNow()
+    db.close()
+    writeFileSync(databaseFile(), 'пошкоджена база — останні документи ще можуть бути тут', 'utf8')
+    const before = readFileSync(databaseFile())
+    expect(() => LocalDatabase.open(root)).toThrow(LocalDatabaseOpenError)
+    expect(readFileSync(databaseFile())).toEqual(before)
+    expect(existsSync(quarantine())).toBe(false)
+  })
 
-    // Порожня каса погана, але мертва каса гірша: касир зможе увійти онлайн
-    // і завантажити дані заново.
-    expect(opened.recovery?.kind).toBe('empty')
-    expect(opened.database.info().schemaVersion).toBeGreaterThan(0)
-    opened.database.close()
+  it('never creates an empty replacement when the working file disappears', () => {
+    LocalDatabase.open(root).database.close()
+    unlinkSync(databaseFile())
+    expect(() => LocalDatabase.open(root)).toThrow(LocalDatabaseOpenError)
+    expect(existsSync(databaseFile())).toBe(false)
+  })
+
+  it('detects a missing old-install database by its backups, even before the identity marker exists', async () => {
+    const db = new LocalDatabase(root)
+    await db.backupNow()
+    db.close()
+    unlinkSync(databaseFile())
+    expect(() => LocalDatabase.open(root)).toThrow(LocalDatabaseOpenError)
+    expect(existsSync(databaseFile())).toBe(false)
+  })
+
+  it('refuses a zero-byte working file instead of showing zero stock', () => {
+    LocalDatabase.open(root).database.close()
+    writeFileSync(databaseFile(), '')
+    expect(() => LocalDatabase.open(root)).toThrow(LocalDatabaseOpenError)
+    expect(readFileSync(databaseFile()).length).toBe(0)
   })
 })
 

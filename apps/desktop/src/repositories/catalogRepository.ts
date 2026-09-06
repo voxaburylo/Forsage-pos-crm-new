@@ -211,6 +211,12 @@ export class LocalCatalogRepository {
     }
   }
   saveProduct(input: LocalProductUpsert, options: LocalProductSaveOptions = {}): LocalProduct {
+    // Картка та запис на відправлення — одна транзакція, навіть при помилці
+    // outbox. Застарілий відкритий редактор не читає залишок до блокування.
+    return this.db.transaction(() => this.saveProductInTransaction(input, options))
+  }
+
+  private saveProductInTransaction(input: LocalProductUpsert, options: LocalProductSaveOptions): LocalProduct {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const storedById = this.findStoredProductById(input.id, tenantId)
 

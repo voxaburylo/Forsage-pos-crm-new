@@ -3,12 +3,11 @@ import { describe, expect, it } from 'vitest'
 
 const page = readFileSync(new URL('./SettingsPage.tsx', import.meta.url), 'utf8')
 
-describe('аварійне відновлення локальної бази', () => {
-  it('вимагає підтвердження та спершу робить локальну копію', () => {
-    const start = page.indexOf('async function handleBootstrapDesktop')
-    const body = page.slice(start, page.indexOf('async function testAiKey'))
-    expect(body).toContain('window.confirm')
-    expect(body).toContain('backupNow()')
-    expect(body.indexOf('backupNow()')).toBeLessThan(body.indexOf('bootstrapDesktopFromServer()'))
+describe('захист робочої локальної бази', () => {
+  it('не пропонує підміняти робочу базу серверною копією', () => {
+    expect(page).not.toContain('handleBootstrapDesktop')
+    expect(page).not.toContain('bootstrapDesktopFromServer')
+    expect(page).toContain('Зворотне завантаження в робочу базу заборонене')
+    expect(page).toContain('<BackupSettingsCard />')
   })
 })

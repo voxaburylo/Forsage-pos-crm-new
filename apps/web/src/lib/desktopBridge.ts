@@ -475,9 +475,6 @@ interface ForsageDesktopBridge {
   listBackups?: () => Promise<DesktopDatabaseBackup[]>
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
-  bootstrap: {
-    importSnapshot: (snapshot: DesktopBootstrapSnapshot) => Promise<DesktopBootstrapImportResult>
-  }
   catalog: {
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
@@ -497,31 +494,6 @@ interface ForsageDesktopBridge {
     getSettings?: () => Promise<any>
     updateSettings?: (input: any) => Promise<any>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
-    upsertProduct: (product: {
-      id: string
-      sku: string
-      name: string
-      unit?: string
-      retail_price?: number
-      purchase_price?: number
-      qty_on_hand?: number
-      reorder_point?: number
-      notes?: string | null
-      brand_id?: string | null
-      category_id?: string | null
-      is_service?: boolean
-      is_active?: boolean
-      requires_core_return?: boolean
-      core_deposit_amount?: number
-      is_favorite?: boolean
-      barcode?: string | null
-      additional_barcodes?: string[]
-      stock_correction?: boolean
-      cross_numbers?: string[]
-      storage_bin?: string | null
-      photo_url?: string | null
-      specs?: Record<string, string>
-    }) => Promise<DesktopProduct>
     saveProduct?: (product: {
       id: string
       sku: string
@@ -700,7 +672,6 @@ interface ForsageDesktopBridge {
     getPullState: () => Promise<DesktopSyncPullState>
     status?: () => Promise<DesktopSyncStatus>
     listStuck?: (limit?: number) => Promise<DesktopSyncStuckOperation[]>
-    applyPullChanges: (changes: DesktopSyncPullChanges) => Promise<DesktopSyncPullResult>
     markPullFailed: (error: string) => Promise<void>
     applyPushResults: (results: DesktopSyncPushResult[]) => Promise<void>
     markBatchFailed: (sequences: number[], error: string) => Promise<void>

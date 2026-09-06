@@ -1,7 +1,7 @@
 import { request } from '@/lib/api'
 import { removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
-import { mirrorProductToDesktop, productApi, requestDesktopSync } from '@/features/products/productApi'
+import { productApi, requestDesktopSync } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { useAuthStore } from '@/stores/authStore'
 import type { Product, ProductFormData } from '@/types/product'
@@ -310,7 +310,6 @@ export const supplierImportsApi = {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
     })
     if (response.data) {
-      await mirrorProductToDesktop(response.data)
       requestDesktopSync()
     }
     return response

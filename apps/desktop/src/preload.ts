@@ -35,10 +35,6 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
   listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
   restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
-  bootstrap: {
-    importSnapshot: (snapshot: unknown) =>
-      ipcRenderer.invoke('desktop:bootstrap:import-snapshot', snapshot),
-  },
   catalog: {
     findByBarcode: (barcode: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
@@ -76,8 +72,6 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:update-settings', input),
     searchProducts: (query: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
-    upsertProduct: (product: unknown) =>
-      ipcRenderer.invoke('desktop:catalog:upsert-product', product),
     saveProduct: (product: unknown, options?: { reuseExistingSku?: boolean }) =>
       ipcRenderer.invoke('desktop:catalog:save-product', product, options),
     savePhoto: (folder: string, bytes: ArrayBuffer) =>
@@ -242,8 +236,6 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:sync:status'),
     listStuck: (limit?: number) =>
       ipcRenderer.invoke('desktop:sync:list-stuck', limit),
-    applyPullChanges: (changes: unknown) =>
-      ipcRenderer.invoke('desktop:sync:apply-pull-changes', changes),
     markPullFailed: (error: string) =>
       ipcRenderer.invoke('desktop:sync:mark-pull-failed', error),
     applyPushResults: (results: unknown[]) =>

@@ -71,37 +71,6 @@ function cleanSpecs(raw: Record<string, string> | undefined | null): Record<stri
   return Object.keys(specs).length > 0 ? specs : null
 }
 
-export async function mirrorProductToDesktop(product: Product): Promise<void> {
-  const desktopCatalog = desktopBridge()?.catalog
-  if (!desktopCatalog?.upsertProduct) return
-  try {
-    await desktopCatalog.upsertProduct({
-      id: product.id,
-      sku: product.sku,
-      name: product.name,
-      barcode: product.barcode,
-      ...(Array.isArray(product.additional_barcodes) ? { additional_barcodes: product.additional_barcodes } : {}),
-      brand_id: product.brand_id,
-      category_id: product.category_id,
-      unit: product.unit,
-      purchase_price: product.purchase_price,
-      retail_price: product.retail_price,
-      qty_on_hand: product.qty_on_hand,
-      reorder_point: product.reorder_point,
-      notes: product.notes,
-      is_active: product.is_active,
-      is_service: product.is_service,
-      requires_core_return: product.requires_core_return === true,
-      core_deposit_amount: Number(product.core_deposit_amount ?? 0),
-      storage_bin: product.storage_bin,
-      is_favorite: product.is_favorite === true,
-      photo_url: product.photo_url,
-      specs: product.specs ?? {},
-    })
-  } catch {
-    // API вже зберіг товар; локальний каталог підтягнеться наступною синхронізацією.
-  }
-}
 // Create — требует ВСЕ поля формы, маппит с дефолтами.
 function formToCreatePayload(form: ProductFormData) {
   return {
@@ -277,7 +246,6 @@ export const productApi = {
     }
 
     const response = await api.post<{ data: Product }>('/api/v1/products', formToCreatePayload(form), undefined, opts)
-    await mirrorProductToDesktop(response.data)
     return response
   },
 
@@ -292,7 +260,6 @@ export const productApi = {
     }
 
     const response = await api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts)
-    await mirrorProductToDesktop(response.data)
     return response
   },
 
@@ -337,7 +304,6 @@ export const productApi = {
       return { data: desktopProductToProduct(saved) }
     }
     const response = await api.post<{ data: Product }>(`/api/v1/products/${id}/generate-barcode`, {})
-    await mirrorProductToDesktop(response.data)
     return response
   },
 

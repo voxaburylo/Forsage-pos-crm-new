@@ -2,26 +2,13 @@ import { api } from '@/lib/api'
 import {
   desktopBridge,
   isDesktopRuntime,
-  type DesktopBootstrapSnapshot,
-  type DesktopSyncPullChanges,
   type DesktopSyncPullResult,
-  type DesktopSyncPullState,
   type DesktopSyncPushResult,
   type DesktopSyncStatus,
   type DesktopSyncStuckOperation,
 } from '@/lib/desktopBridge'
 
 const DESKTOP_PUSH_BATCH_SIZE = 10
-
-interface DesktopSyncOptions {
-  /**
-   * Залишено для сумісності з ручним аварійним відновленням. Звичайний цикл
-   * синхронізації його не використовує: сервер є резервною копією, а не
-   * другим джерелом залишків.
-   */
-  includeReferences?: boolean
-  canStartPull?: () => boolean
-}
 
 interface PushResponse {
   data: {
@@ -32,10 +19,6 @@ interface PushResponse {
   }
 }
 
-interface PullResponse {
-  data: DesktopSyncPullChanges
-}
-
 type DesktopPushResult = {
   pushed: number
   failed: number
@@ -44,7 +27,6 @@ type DesktopPushResult = {
 }
 let pushExecutionActive = false
 let pushInProgress: Promise<DesktopPushResult> | null = null
-let pullInProgress = false
 type DesktopSyncCycleResult = {
   pushed: number
   failed: number
@@ -105,111 +87,6 @@ export function pushDesktopOutbox(limit = 50): Promise<DesktopPushResult> {
   return operation
 }
 
-type DesktopRuntimeApi = NonNullable<ReturnType<typeof desktopBridge>>
-
-async function resetDesktopGenerationIfNeeded(
-  desktop: DesktopRuntimeApi,
-  state: DesktopSyncPullState,
-  payload: DesktopBootstrapSnapshot | DesktopSyncPullChanges,
-): Promise<void> {
-  if (!Number.isSafeInteger(payload.reset_generation)) return
-  const generation = Number(payload.reset_generation)
-  if (generation === state.reset_generation) return
-  const cursor = 'exported_at' in payload ? payload.exported_at : payload.cursor
-  await desktop.sync.applyPullChanges({
-    tenant_id: payload.tenant_id,
-    cursor,
-    reset_required: true,
-    reset_generation: generation,
-    reset_at: payload.reset_at,
-  })
-}
-
-async function loadInitialDesktopData(
-  desktop: DesktopRuntimeApi,
-  state: DesktopSyncPullState,
-): Promise<DesktopSyncPullResult> {
-  try {
-    const snapshotResponse = await api.get<{ data: DesktopBootstrapSnapshot }>('/api/v1/sync/bootstrap', {
-      silent: true,
-      timeoutMs: 180_000,
-    })
-    await resetDesktopGenerationIfNeeded(desktop, state, snapshotResponse.data)
-    const imported = await desktop.bootstrap.importSnapshot(snapshotResponse.data)
-    return {
-      applied_at: imported.imported_at,
-      cursor: snapshotResponse.data.exported_at,
-      counts: imported.counts,
-    }
-  } catch (bootstrapError) {
-    if ((bootstrapError as { status?: number })?.status !== 403) throw bootstrapError
-    // Restricted roles receive the role-filtered full snapshot.
-    const fetchInitial = (generation: number) => api.get<PullResponse>(
-      `/api/v1/sync/changes?include_references=true&reset_generation=${generation}`,
-      {
-        silent: true,
-        timeoutMs: 180_000,
-      },
-    )
-    let currentState = state
-    let initialResponse = await fetchInitial(currentState.reset_generation)
-    if (initialResponse.data.reset_required === true) {
-      await desktop.sync.applyPullChanges(initialResponse.data)
-      currentState = await desktop.sync.getPullState()
-      initialResponse = await fetchInitial(currentState.reset_generation)
-      if (initialResponse.data.reset_required === true) {
-        throw new Error('DESKTOP_SYNC_RESET_LOOP')
-      }
-    }
-    await resetDesktopGenerationIfNeeded(desktop, currentState, initialResponse.data)
-    return desktop.sync.applyPullChanges(initialResponse.data)
-  }
-}
-
-export async function pullDesktopChanges(options: DesktopSyncOptions = {}): Promise<DesktopSyncPullResult | null> {
-  if (!isDesktopRuntime() || pullInProgress) return null
-  const desktop = desktopBridge()
-  if (!desktop) return null
-  if (options.canStartPull && !options.canStartPull()) return null
-
-  pullInProgress = true
-  try {
-    const state = await desktop.sync.getPullState()
-    if (!state.cursor) {
-      return loadInitialDesktopData(desktop, state)
-    }
-
-    const params = new URLSearchParams()
-    params.set('since', state.cursor)
-    params.set('reset_generation', String(state.reset_generation))
-    // Повний довідник тепер застосовується в Electron порціями. Прапорець
-    // залишається явним, доки сервер не почне віддавати звичайні дельти
-    // довідників разом із tombstone-ідентифікаторами.
-    if (options.includeReferences === true) {
-      params.set('include_references', 'true')
-    }
-
-    const query = params.size > 0 ? `?${params.toString()}` : ''
-    const response = await api.get<PullResponse>(`/api/v1/sync/changes${query}`, {
-      silent: true,
-      timeoutMs: 120_000,
-    })
-    if (response.data.reset_required === true) {
-      await desktop.sync.applyPullChanges(response.data)
-      const resetState = await desktop.sync.getPullState()
-      return loadInitialDesktopData(desktop, resetState)
-    }
-    return desktop.sync.applyPullChanges(response.data)
-  } catch (error) {
-    await desktop.sync.markPullFailed(
-      error instanceof Error ? error.message : 'Помилка завантаження змін у desktop базу',
-    )
-    throw error
-  } finally {
-    pullInProgress = false
-  }
-}
-
 export async function getDesktopSyncStatus(): Promise<DesktopSyncStatus | null> {
   if (!isDesktopRuntime()) return null
   const desktop = desktopBridge()
@@ -230,27 +107,20 @@ export async function listDesktopStuckOperations(limit = 100): Promise<DesktopSy
     return []
   }
 }
-
-
-
-async function executeDesktopSyncCycle(options: DesktopSyncOptions): Promise<DesktopSyncCycleResult> {
-  // Робоча база одна — локальна база каси. Сервер одержує лише її резервну
-  // копію через outbox. Автоматичний pull тут заборонено: навіть «акуратний»
-  // pull здатен повернути старий серверний залишок і знову створити другу
-  // точку правди. Відновлення з серверної копії можливе лише окремою,
-  // усвідомленою дією власника, не цим фоновим циклом.
+async function executeDesktopSyncCycle(): Promise<DesktopSyncCycleResult> {
+  // Локальна база — єдине джерело. Це вигрузка документів, не відновлення
+  // або повна перевірена резервна копія. Серверні дані назад не застосовуємо.
   const pushed = await pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE)
-  void options
   return { ...pushed, pulled: null }
 }
 
-export function syncDesktopNow(options: DesktopSyncOptions = {}): Promise<DesktopSyncCycleResult> {
+export function syncDesktopNow(): Promise<DesktopSyncCycleResult> {
   // Timers, visibility events and explicit UI requests may fire together.
-  // Every caller joins the same backup upload, so one call never overtakes
+  // Every caller joins the same document upload, so one call never overtakes
   // another and the local working database is never read back from the server.
   if (syncCycleInProgress) return syncCycleInProgress
 
-  const cycle = executeDesktopSyncCycle(options)
+  const cycle = executeDesktopSyncCycle()
   syncCycleInProgress = cycle
   const release = () => {
     if (syncCycleInProgress === cycle) syncCycleInProgress = null
