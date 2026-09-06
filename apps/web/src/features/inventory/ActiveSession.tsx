@@ -261,7 +261,10 @@ export default function ActiveSession() {
   const [printingLabels, setPrintingLabels] = useState<string | null>(null)
   const [labelRows, setLabelRows] = useState<InventoryItem[] | null>(null)
   const [labelQtys, setLabelQtys] = useState<Record<string, number>>({})
-  const scanQueue = useRef<Array<{ code: string; qty: number }>>([])
+  const scanQueue = useRef<Array<{ sessionId: string; code: string; qty: number; operationId?: string }>>([])
+  const [recoverableScans, setRecoverableScans] = useState(0)
+  const [scanJournalError, setScanJournalError] = useState('')
+  const [recoveringScans, setRecoveringScans] = useState(false)
   const scanQueueRunning = useRef(false)
   const completingRef = useRef(false)
   const scanFailuresRef = useRef(0)
@@ -347,6 +350,40 @@ export default function ActiveSession() {
   const countedWindow = inventoryPage(countedRows.length, countedPage)
   const priceWindow = inventoryPage(session?.price_issues.length ?? 0, pricePage)
   useEffect(() => { setCountedPage(0); setPricePage(0) }, [id])
+
+  useEffect(() => {
+    const refresh = () => {
+      if (!id) return
+      try { setRecoverableScans(inventoryApi.pendingScans(id).length); setScanJournalError('') }
+      catch { setScanJournalError('Не вдалося прочитати журнал сканувань. Потрібна перевірка перед завершенням.') }
+    }
+    refresh()
+    window.addEventListener('forsage:inventory-scans', refresh)
+    return () => window.removeEventListener('forsage:inventory-scans', refresh)
+  }, [id])
+
+  async function recoverScans() {
+    if (!id || completingRef.current || recoveringScans || inventoryHasPendingWrites(pendingRowWritesRef.current, scanQueueRunning.current, scanQueue.current.length)) return
+    setRecoveringScans(true)
+    try {
+      await trackRowWrite(async () => {
+        for (const request of inventoryApi.pendingScans(id)) {
+          const response = await inventoryApi.scan(id, request)
+          mergeFastScannedItem(response.data.item)
+        }
+        load(true)
+      })
+      toast.success('Незавершені сканування відновлено')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося відновити сканування') }
+    finally { setRecoveringScans(false) }
+  }
+
+  function discardScans() {
+    if (!id || completingRef.current || recoveringScans || inventoryHasPendingWrites(pendingRowWritesRef.current, scanQueueRunning.current, scanQueue.current.length)) return
+    if (!window.confirm('Прибрати незавершені сканування з черги? Уже записані кількості НЕ зміняться. Незаписані скани потрібно буде перевірити вручну.')) return
+    try { inventoryApi.discardPendingScans(id) }
+    catch { toast.error('Не вдалося очистити чергу') }
+  }
 
   useEffect(() => {
     inventoryDraftReadyRef.current = false
@@ -845,9 +882,11 @@ export default function ActiveSession() {
     }
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
-    const tail = scanQueue.current[scanQueue.current.length - 1]
-    if (tail?.code === normalizedCode) tail.qty += 1
-    else scanQueue.current.push({ code: normalizedCode, qty: 1 })
+    if (!id) return
+    try {
+      const request = inventoryApi.prepareScan(id, { barcode: normalizedCode, qty: 1 })
+      scanQueue.current.push({ sessionId: id, code: normalizedCode, qty: 1, operationId: request.operation_id })
+    } catch { playErrorTone(); toast.error('Скан не прийнято: не вдалося зберегти його в чергу. Перевірте вільне місце.'); return }
     void drainInventoryScanQueue()
   }
 
@@ -857,7 +896,7 @@ export default function ActiveSession() {
     try {
       while (scanQueue.current.length > 0) {
         const pending = scanQueue.current.shift()
-        if (pending) await scanCodeFast(pending.code, { fromHardware: true, qty: pending.qty })
+        if (pending && pending.sessionId === id) await scanCodeFast(pending.code, { fromHardware: true, qty: pending.qty, operationId: pending.operationId })
       }
     } finally {
       scanQueueRunning.current = false
@@ -865,14 +904,14 @@ export default function ActiveSession() {
     }
   }
 
-  async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean; qty?: number } = {}) {
+  async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean; qty?: number; operationId?: string } = {}) {
     if (!id) return
     if (completingRef.current && !options.fromHardware) { toast.error('Дочекайтеся завершення ревізії'); return }
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
     initAudio()
     try {
-      const response = await trackRowWrite(() => inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }), true) as { data: { item: InventoryItem } }
+      const response = await trackRowWrite(() => inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1, operation_id: options.operationId }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }), true) as { data: { item: InventoryItem } }
       const item = response.data.item
       mergeFastScannedItem(item)
       setShowRecent(true)
@@ -1114,6 +1153,7 @@ export default function ActiveSession() {
       try { if (activeElement instanceof HTMLElement) activeElement.blur() }
       finally { flushingInputRef.current = false }
       await waitForPendingRowWrites()
+      if (inventoryApi.pendingScans(id).length) throw new Error('Є незавершені сканування. Відновіть або перевірте чергу перед завершенням ревізії.')
       if (inputGuardRef.current.hasErrors(id)) throw new Error('Виправте незаповнену або некоректну кількість чи ціну в рядках ревізії перед завершенням.')
       if (scanFailuresRef.current !== scanFailuresBefore) throw new Error('Не всі сканування збережено. Перевірте повідомлення та товари перед завершенням ревізії.')
       if (writeFailuresRef.current !== writeFailuresBefore) throw new Error('Не всі правки збережено. Виправте помилку перед завершенням ревізії.')
@@ -1180,6 +1220,15 @@ export default function ActiveSession() {
           )}
         </Card>
 
+        {(recoverableScans > 0 || scanJournalError) && pendingRowWrites === 0 && (
+          <Card>
+            <p role="status">{scanJournalError || `Незавершені сканування: ${recoverableScans}. Уже записані скани повторно не додаються.`}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button onClick={recoverScans} loading={recoveringScans} disabled={Boolean(scanJournalError)}>Відновити сканування</Button>
+              <Button variant="outline" onClick={discardScans} disabled={recoveringScans}>Прибрати чергу після перевірки</Button>
+            </div>
+          </Card>
+        )}
         {isActive && (
           <Card>
             <p className="mb-2 text-sm font-semibold text-gray-900">Знайти товар</p>

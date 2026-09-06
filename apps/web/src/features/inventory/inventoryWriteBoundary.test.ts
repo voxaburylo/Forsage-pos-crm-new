@@ -12,6 +12,15 @@ function visit(node: ts.Node) {
 visit(tree)
 
 describe('all manual inventory writes participate in completion', () => {
+  it('journals hardware scans before queueing and blocks completion with pending recovery', () => {
+    const queue = functions.get('queueInventoryScan')!.getText(tree)
+    expect(queue).toContain('inventoryApi.prepareScan(')
+    expect(queue.indexOf('inventoryApi.prepareScan(')).toBeLessThan(queue.indexOf('scanQueue.current.push('))
+    expect(functions.get('drainInventoryScanQueue')!.getText(tree)).toContain('pending.sessionId === id')
+    const complete = functions.get('completeSession')!.getText(tree)
+    expect(complete).toContain('inventoryApi.pendingScans(id).length')
+    expect(complete.indexOf('inventoryApi.pendingScans(id).length')).toBeLessThan(complete.indexOf('await inventoryApi.complete'))
+  })
   it('persists a retry ID before calling the atomic creation API', () => {
     const handler = functions.get('createProductFromInventory')!.getText(tree)
     expect(handler).toContain('draft.operation_id || crypto.randomUUID()')

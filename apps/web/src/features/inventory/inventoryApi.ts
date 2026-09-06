@@ -4,6 +4,11 @@ import { desktopCreatePayload, requestDesktopSync } from '@/features/products/pr
 import type { ProductFormData } from '@/types/product'
 import { useAuthStore } from '@/stores/authStore'
 import { requestInventoryScan } from './inventoryScanRequest'
+import type { ScanRequest } from './inventoryScanRequest'
+import { InventoryScanJournal } from './inventoryScanJournal'
+
+function scanJournal() { return new InventoryScanJournal(localStorage) }
+function notifyScanJournal() { window.dispatchEvent(new Event('forsage:inventory-scans')) }
 
 const DEFAULT_READ_TIMEOUT_MS = 10_000
 const DEFAULT_WRITE_TIMEOUT_MS = 15_000
@@ -33,6 +38,14 @@ function withUser<T extends Record<string, unknown>>(input: T = {} as T): T & { 
 }
 
 export const inventoryApi = {
+  prepareScan: (id: string, body: ScanRequest): ScanRequest => {
+    if (!localInventory()?.scanOperationIds) return body
+    const saved = scanJournal().add(id, body)
+    notifyScanJournal()
+    return saved
+  },
+  pendingScans: (id: string): ScanRequest[] => localInventory()?.scanOperationIds ? scanJournal().list(id) : [],
+  discardPendingScans: (id: string) => { scanJournal().clear(id); notifyScanJournal() },
   createProduct: async (sessionId: string, operationId: string, form: ProductFormData, qty: number): Promise<{ data: any; session: any }> => {
     const local = localInventory()
     if (!local?.createProduct) throw new Error('Створення товару в ревізії доступне в актуальній локальній програмі.')
@@ -121,9 +134,22 @@ export const inventoryApi = {
     })
   },
 
-  scan: async (id: string, body: { barcode?: string; product_id?: string; qty?: number }, opts: RequestOptions = {}): Promise<ApiResponse<{ item: any }>> => {
+  scan: async (id: string, body: ScanRequest, opts: RequestOptions = {}): Promise<ApiResponse<{ item: any }>> => {
     const local = localInventory()
-    if (local?.scan) return { data: await requestInventoryScan(input => local.scan(id, input), withUser(body), local.scanOperationIds === true) }
+    if (local?.scan) {
+      const request = inventoryApi.prepareScan(id, { ...body, user_id: userId() })
+      try {
+        const data = await requestInventoryScan(input => local.scan(id, input), request, local.scanOperationIds === true)
+        if (request.operation_id && local.scanOperationIds) { scanJournal().acknowledge(id, request.operation_id); notifyScanJournal() }
+        return { data }
+      } catch (error) {
+        // A definite missing-product rejection did not count anything. Other failures remain recoverable.
+        if (request.operation_id && local.scanOperationIds && error instanceof Error && error.message.includes('Товар не знайдено')) {
+          scanJournal().acknowledge(id, request.operation_id); notifyScanJournal()
+        }
+        throw error
+      }
+    }
     return api.post<ApiResponse<{ item: any }>>(`/api/v1/inventory/${id}/scan`, body, undefined, {
       silent: opts.silent ?? true,
       timeoutMs: opts.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
