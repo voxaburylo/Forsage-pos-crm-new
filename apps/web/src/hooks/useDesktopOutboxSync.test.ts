@@ -1,10 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import {
-  DESKTOP_REFERENCE_REPAIR_INTERVAL_MS,
-  desktopReferencesNeedRepair,
-  hasMeaningfulDesktopSyncChanges,
-} from './useDesktopOutboxSync'
+import { hasMeaningfulDesktopSyncChanges } from './useDesktopOutboxSync'
 
 const syncApiSource = readFileSync(new URL('../lib/desktopSyncApi.ts', import.meta.url), 'utf8')
 const offlineDbSource = readFileSync(new URL('../lib/offlineDB.ts', import.meta.url), 'utf8')
@@ -13,8 +9,8 @@ const browserSyncHookSource = readFileSync(new URL('./useOfflineSync.ts', import
 const localSyncAgentSource = readFileSync(new URL('../components/LocalSyncAgent.tsx', import.meta.url), 'utf8')
 const posPageSource = readFileSync(new URL('../features/pos/POSPage.tsx', import.meta.url), 'utf8')
 
-describe('desktop sync UI notifications', () => {
-  it('does not reload visible lists for unchanged periodic snapshots', () => {
+describe('локальна каса відправляє резервну копію, але не забирає стан із сервера', () => {
+  it('повідомляє лише про відправлені локальні зміни', () => {
     expect(hasMeaningfulDesktopSyncChanges({
       pushed: 0,
       pulled: {
@@ -27,9 +23,6 @@ describe('desktop sync UI notifications', () => {
         },
       },
     })).toBe(false)
-  })
-
-  it('notifies after an outbox push or a real delta pull', () => {
     expect(hasMeaningfulDesktopSyncChanges({
       pushed: 1,
       pulled: { counts: {} },
@@ -37,14 +30,10 @@ describe('desktop sync UI notifications', () => {
     expect(hasMeaningfulDesktopSyncChanges({
       pushed: 0,
       pulled: { counts: { products: 1 } },
-    })).toBe(true)
-    expect(hasMeaningfulDesktopSyncChanges({
-      pushed: 0,
-      pulled: { counts: { deleted_categories: 1 } },
-    })).toBe(true)
+    })).toBe(false)
   })
 
-  it('confirms local outbox before advancing the pull cursor', () => {
+  it('у звичайному циклі надсилає outbox і не викликає pull', () => {
     const syncNowSource = syncApiSource.slice(
       syncApiSource.indexOf('async function executeDesktopSyncCycle'),
     )
@@ -52,33 +41,26 @@ describe('desktop sync UI notifications', () => {
     const pull = syncNowSource.indexOf('await pullDesktopChanges')
 
     expect(push).toBeGreaterThanOrEqual(0)
-    expect(pull).toBeGreaterThan(push)
+    expect(pull).toBe(-1)
+    expect(syncNowSource).toContain('return { ...pushed, pulled: null }')
   })
 
-  it('shares one complete push-then-pull cycle across overlapping timers', () => {
+  it('ділить один фоновий upload між одночасними таймерами', () => {
     expect(syncApiSource).toContain('let syncCycleInProgress: Promise<DesktopSyncCycleResult> | null = null')
     expect(syncApiSource).toContain('if (syncCycleInProgress) return syncCycleInProgress')
     expect(syncApiSource).toContain('const cycle = executeDesktopSyncCycle(options)')
     expect(syncApiSource).toContain('if (pushInProgress) return pushInProgress')
   })
 
-  it('never starts a full reference refresh in a visible working window', () => {
-    const pullSource = syncApiSource.slice(
-      syncApiSource.indexOf('export async function pullDesktopChanges'),
-      syncApiSource.indexOf('export async function getDesktopSyncStatus'),
-    )
-    expect(pullSource).toContain("if (options.includeReferences === true)")
-    expect(pullSource).not.toContain('referencesAreStale')
-  })
   it('does not rebuild the browser catalogue on a periodic timer', () => {
     expect(browserSyncHookSource).toContain("if (!cursor) params.set('include_references', 'true')")
     expect(browserSyncHookSource).not.toContain('REFERENCE_REFRESH_INTERVAL_MS')
     expect(browserSyncHookSource).not.toContain('Date.now() - localState.last_reference_sync_at')
   })
 
-  it('checks the reset generation before browser and desktop mutations', () => {
+  it('checks the reset generation for browser cache reads and desktop backup upload', () => {
     expect(browserSyncHookSource).toContain("params.set('reset_generation', String(state.reset_generation))")
-    expect(browserSyncHookSource).toContain("'X-Sync-Reset-Generation': String(syncState.reset_generation)")
+    expect(browserSyncHookSource).not.toContain("'X-Sync-Reset-Generation': String(syncState.reset_generation)")
     expect(browserSyncHookSource).toContain('if (response.data.reset_required === true)')
     expect(syncApiSource).toContain('reset_generation: state.reset_generation')
     expect(syncApiSource).toContain("params.set('reset_generation', String(state.reset_generation))")
@@ -86,12 +68,12 @@ describe('desktop sync UI notifications', () => {
     expect(offlineDbSource).toContain('export async function resetOfflineSyncData')
   })
 
-  it('pulls the generation before sending pending browser receipts', () => {
+  it('web cache only reads a server snapshot and never sends browser receipts', () => {
     const syncNowSource = browserSyncHookSource.slice(browserSyncHookSource.indexOf('const syncNow'))
     const pull = syncNowSource.indexOf('await pullChanges(options.forceSnapshot)')
     const push = syncNowSource.indexOf('await pushPendingSales()')
     expect(pull).toBeGreaterThanOrEqual(0)
-    expect(push).toBeGreaterThan(pull)
+    expect(push).toBe(-1)
   })
 
   it('keeps the last usable browser snapshot until its replacement is complete', () => {
@@ -106,15 +88,12 @@ describe('desktop sync UI notifications', () => {
 
 
 
-  it('pushes outbox during user activity and never discards an already downloaded large pull', () => {
+  it('does not use reference repair or server pull in the desktop hook', () => {
     const syncNowSource = syncHookSource.slice(syncHookSource.indexOf('const syncNow'))
-    expect(syncNowSource).toContain('syncDesktopNow({ includeReferences, canStartPull })')
-    expect(syncNowSource).not.toContain('if (!canStartPull())')
-    expect(syncApiSource).toContain('if (options.canStartPull && !options.canStartPull()) return null')
-    expect(syncApiSource).not.toContain('MAX_FOREGROUND_PULL_ROWS')
-    expect(syncApiSource).not.toContain('canApplyPull(response.data)')
-    expect(syncApiSource).toContain('const OUTBOX_HEARTBEAT_MS = 10_000')
-    expect(syncApiSource).toContain('pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE).catch')
+    expect(syncNowSource).toContain('syncDesktopNow()')
+    expect(syncNowSource).not.toContain('includeReferences')
+    expect(syncHookSource).not.toContain('desktopReferencesNeedRepair')
+    expect(syncHookSource).not.toContain('referenceRepairIsIdle')
   })
 
   it('keeps synchronization in the background without a floating panel', () => {
@@ -127,33 +106,17 @@ describe('desktop sync UI notifications', () => {
     expect(posPageSource).toContain('ОФЛАЙН — продажі зберігаються локально')
   })
 
-  it('repairs historical reference drift only after the repair interval', () => {
-    const now = Date.UTC(2026, 7, 1, 12)
-    expect(desktopReferencesNeedRepair(null, now)).toBe(true)
-    expect(desktopReferencesNeedRepair('not-a-date', now)).toBe(true)
-    expect(desktopReferencesNeedRepair(
-      new Date(now - DESKTOP_REFERENCE_REPAIR_INTERVAL_MS + 1).toISOString(),
-      now,
-    )).toBe(false)
-    expect(desktopReferencesNeedRepair(
-      new Date(now - DESKTOP_REFERENCE_REPAIR_INTERVAL_MS).toISOString(),
-      now,
-    )).toBe(true)
-    expect(syncHookSource).toContain('referenceRepairIsIdle')
-    expect(syncHookSource).toContain('desktopReferencesNeedRepair(state.last_reference_sync_at)')
-    expect(syncApiSource).toContain("desktopBridge()?.sync.listPending(1)")
-  })
-
-  it('isolates browser receipt queues and history by signed-in user', () => {
+  it('keeps old browser receipt history isolated, without sending it to the server', () => {
     expect(offlineDbSource).toContain("store.createIndex('by_scope', 'scope_key'")
     expect(offlineDbSource).toContain("index('by_scope').getAll(scopeKey)")
     expect(offlineDbSource).toContain("index('by_scope').count(scopeKey)")
-    expect(browserSyncHookSource).toContain('getPendingSales(scopeKey)')
-    expect(browserSyncHookSource).toContain('completePendingSaleSync(sale.offline_id, response.data, scopeKey)')
+    expect(browserSyncHookSource).not.toContain('getPendingSales(scopeKey)')
+    expect(browserSyncHookSource).not.toContain('completePendingSaleSync(sale.offline_id, response.data, scopeKey)')
     expect(posPageSource).toContain('scope_key:      scopeKey')
   })
 
-  it('bypasses the foreground gate when the server requires a generation reset', () => {
-    expect(syncApiSource).toContain('? { ...pullOptions, canStartPull: undefined }')
+  it('leaves server pull available only as an explicit recovery function', () => {
+    expect(syncApiSource).toContain('export async function pullDesktopChanges')
+    expect(syncApiSource).toContain('Відновлення з серверної копії')
   })
 })

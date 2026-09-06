@@ -12,12 +12,14 @@ import {
 } from '@/lib/desktopBridge'
 
 const DESKTOP_PUSH_BATCH_SIZE = 10
-const OUTBOX_HEARTBEAT_MS = 10_000
 
 interface DesktopSyncOptions {
+  /**
+   * Залишено для сумісності з ручним аварійним відновленням. Звичайний цикл
+   * синхронізації його не використовує: сервер є резервною копією, а не
+   * другим джерелом залишків.
+   */
   includeReferences?: boolean
-  // Обмежуємо лише початок pull. Outbox push завжди виконується, а вже
-  // завантажена відповідь застосовується порціями без повторного HTTP-запиту.
   canStartPull?: () => boolean
 }
 
@@ -232,35 +234,20 @@ export async function listDesktopStuckOperations(limit = 100): Promise<DesktopSy
 
 
 async function executeDesktopSyncCycle(options: DesktopSyncOptions): Promise<DesktopSyncCycleResult> {
-  // Локальна база є джерелом робочих змін. Спочатку підтверджуємо outbox,
-  // а вже потім рухаємо pull-cursor: інакше втрачена HTTP-відповідь могла
-  // залишити dirty-рядок локально та назавжди перескочити серверний результат.
+  // Робоча база одна — локальна база каси. Сервер одержує лише її резервну
+  // копію через outbox. Автоматичний pull тут заборонено: навіть «акуратний»
+  // pull здатен повернути старий серверний залишок і знову створити другу
+  // точку правди. Відновлення з серверної копії можливе лише окремою,
+  // усвідомленою дією власника, не цим фоновим циклом.
   const pushed = await pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE)
-  const includeReferences = options.includeReferences === true
-    ? (await desktopBridge()?.sync.listPending(1))?.length === 0
-    : false
-  const pullOptions = { ...options, includeReferences }
-
-  // Великий bootstrap може застосовуватися хвилину, хоча Electron уже не
-  // зависає між порціями. Нові продажі в цей час усе одно відправляємо кожні
-  // десять секунд, не чекаючи фінального pull-cursor.
-  const heartbeat = globalThis.setInterval(() => {
-    void pushDesktopOutbox(DESKTOP_PUSH_BATCH_SIZE).catch(() => undefined)
-  }, OUTBOX_HEARTBEAT_MS)
-  try {
-    const pulled = await pullDesktopChanges(pushed.resetRequired
-      ? { ...pullOptions, canStartPull: undefined }
-      : pullOptions)
-    return { ...pushed, pulled }
-  } finally {
-    globalThis.clearInterval(heartbeat)
-  }
+  void options
+  return { ...pushed, pulled: null }
 }
 
 export function syncDesktopNow(options: DesktopSyncOptions = {}): Promise<DesktopSyncCycleResult> {
   // Timers, visibility events and explicit UI requests may fire together.
-  // Every caller joins the same complete push-then-pull cycle; a second pull
-  // can therefore never overtake an outbox push that is still being applied.
+  // Every caller joins the same backup upload, so one call never overtakes
+  // another and the local working database is never read back from the server.
   if (syncCycleInProgress) return syncCycleInProgress
 
   const cycle = executeDesktopSyncCycle(options)

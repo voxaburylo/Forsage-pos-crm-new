@@ -36,15 +36,17 @@ describe('catalog synchronization consistency', () => {
     expect(offlineProductMatchesQuery(product, 'OEM77')).toBe(true)
   })
 
-  it('runs a bounded catalogue repair only while idle and after outbox drain', () => {
-    expect(desktopSyncSource).not.toContain('referencesAreStale')
-    expect(desktopSyncSource).toContain('options.includeReferences === true')
-    expect(desktopSyncSource).toContain('options.canStartPull && !options.canStartPull()')
-    expect(desktopSyncSource).toContain("desktopBridge()?.sync.listPending(1)")
-    expect(desktopSyncAgentSource).toContain('referenceRepairIsIdle')
-    expect(desktopSyncAgentSource).toContain('document.visibilityState !== \'visible\'')
-    expect(desktopSyncAgentSource).not.toContain('schedule(1_000, true)')
-    expect(desktopSyncAgentSource).toContain('schedule(1_000)')
+  it('never repairs the local catalogue automatically from the server backup', () => {
+    const regularCycle = desktopSyncSource.slice(
+      desktopSyncSource.indexOf('async function executeDesktopSyncCycle'),
+    )
+    expect(regularCycle).toContain('return { ...pushed, pulled: null }')
+    expect(regularCycle).not.toContain('await pullDesktopChanges')
+    expect(desktopSyncAgentSource).not.toContain('referenceRepairIsIdle')
+    expect(desktopSyncAgentSource).not.toContain('desktopReferencesNeedRepair')
+    // Окремий механізм відновлення лишається в коді, але не викликається
+    // таймером каси: сервер — це копія для аварійного відновлення.
+    expect(desktopSyncSource).toContain('export async function pullDesktopChanges')
   })
 
   it('marks category snapshots only when a complete reference snapshot is returned', () => {

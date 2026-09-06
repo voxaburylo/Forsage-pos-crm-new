@@ -140,14 +140,23 @@ export default function SettingsPage() {
       toast.error('Локальна база доступна тільки у desktop-додатку')
       return
     }
+    const confirmed = window.confirm(
+      'Відновити локальну базу з серверної резервної копії?\n\n' +
+      'Це аварійна дія: серверна копія може бути старішою. Перед відновленням програма збереже поточну локальну базу у резервну копію на цьому ПК.',
+    )
+    if (!confirmed) return
     setBootstrapLoading(true)
     try {
+      const safetyBackup = await desktopBridge()?.backupNow()
       const result = await bootstrapDesktopFromServer()
       setBootstrapCounts(result.counts)
       const info = await desktopBridge()?.getRuntimeInfo()
       if (info) setDesktopRuntime(info)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
-      toast.success(`Локальну базу оновлено: ${result.counts.products ?? 0} товарів`)
+      toast.success(
+        `Локальну базу відновлено: ${result.counts.products ?? 0} товарів.` +
+        (safetyBackup ? ` Поточну локальну копію збережено: ${safetyBackup}` : ''),
+      )
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити локальну базу')
     } finally {
@@ -404,7 +413,8 @@ export default function SettingsPage() {
                   </div>
                   <p className="text-xs text-emerald-700">
                     SQLite-база цього ПК — основне джерело для каси, товарів, пошуку, накладних і ревізії.
-                    Кнопка праворуч потрібна тільки для ручного оновлення локальної бази з резервної хмарної копії.
+                    Сервер отримує резервну копію локальних даних. Кнопка праворуч — аварійне відновлення,
+                    якщо локальна база фізично пошкоджена; для звичайної роботи вона не потрібна.
                   </p>
                   {desktopRuntime && (
                     <p className="mt-2 truncate rounded-lg bg-white/70 px-2 py-1 font-mono text-[11px] text-emerald-800">
@@ -420,7 +430,7 @@ export default function SettingsPage() {
                   onClick={handleBootstrapDesktop}
                   className="shrink-0"
                 >
-                  Завантажити дані
+                  Відновити з копії
                 </Button>
               </div>
 

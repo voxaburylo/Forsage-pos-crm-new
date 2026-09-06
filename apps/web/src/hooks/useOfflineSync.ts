@@ -4,12 +4,9 @@ import { toast } from '@/components/ui/Toast'
 import {
   applySyncChanges,
   cacheStaff,
-  completePendingSaleSync,
   countPendingSales,
   ensurePersistentStorage,
   getLocalSyncState,
-  getPendingSales,
-  markPendingSaleFailed,
   markSyncAttempt,
   markSyncError,
   type SyncChanges,
@@ -45,52 +42,6 @@ export function useOfflineSync(serverOnline: boolean) {
     }
   }, [desktopRuntime, scopeKey])
 
-  const pushPendingSales = useCallback(async () => {
-    const pending = await getPendingSales(scopeKey)
-    const syncState = await getLocalSyncState(scopeKey)
-    let successCount = 0
-    let failCount = 0
-
-    for (const sale of pending) {
-      try {
-        const response = await api.post<{ data: any }>('/api/v1/sales', {
-          shift_id: sale.shift_id,
-          customer_id: sale.customer_id,
-          customer_order_id: sale.customer_order_id,
-          manager_id: sale.manager_id,
-          items: sale.items,
-          payment_method: sale.payment_method,
-          notes: sale.notes ?? undefined,
-          is_fiscal: sale.is_fiscal,
-          terminal_auth_code: sale.terminal_auth_code,
-          discount: sale.discount,
-          bonuses_spent: sale.bonuses_spent,
-          cash_amount: sale.cash_amount,
-          card_amount: sale.card_amount,
-        }, {
-          'X-Idempotency-Key': sale.idempotency_key,
-          'X-Sync-Reset-Generation': String(syncState.reset_generation),
-        }, {
-          silent: true,
-          timeoutMs: 30_000,
-        })
-
-        await completePendingSaleSync(sale.offline_id, response.data, scopeKey)
-        successCount++
-      } catch (error) {
-        await markPendingSaleFailed(
-          sale.offline_id,
-          error instanceof Error ? error.message : 'Невідома помилка синхронізації',
-          scopeKey,
-        )
-        failCount++
-      }
-    }
-
-    setPendingCount(await countPendingSales(scopeKey))
-    return { successCount, failCount }
-  }, [scopeKey])
-
   const pullChanges = useCallback(async (forceSnapshot = false) => {
     if (!scopeKey || desktopRuntime) return
     let localState = await getLocalSyncState(scopeKey)
@@ -100,15 +51,6 @@ export function useOfflineSync(serverOnline: boolean) {
       state: Awaited<ReturnType<typeof getLocalSyncState>>,
       cursor: string | null,
     ) => {
-      if (!cursor) {
-        const generationHeader = {
-          'X-Sync-Reset-Generation': String(state.reset_generation),
-        }
-        await Promise.allSettled([
-          api.post('/api/v1/sales/quick-item', { kind: 'tire_service' }, generationHeader),
-          api.post('/api/v1/sales/quick-item', { kind: 'free_sale' }, generationHeader),
-        ])
-      }
       const params = new URLSearchParams()
       if (cursor) params.set('since', cursor)
       if (!cursor) params.set('include_references', 'true')
@@ -154,20 +96,9 @@ export function useOfflineSync(serverOnline: boolean) {
 
     try {
       await pullChanges(options.forceSnapshot)
-      const pushed = await pushPendingSales()
-      if (pushed.successCount > 0) {
-        await pullChanges(false)
-      }
       retryAttemptRef.current = 0
       if (options.notify) {
-        toast.success(pushed.successCount > 0
-          ? `Синхронізовано чеків: ${pushed.successCount}`
-          : 'Локальні дані синхронізовано')
-      }
-      if (pushed.failCount > 0) {
-        const message = `Не вдалося синхронізувати чеків: ${pushed.failCount}`
-        setLastSyncError(message)
-        if (options.notify) toast.warning(message)
+        toast.success('Дані для перегляду оновлено')
       }
     } catch (error) {
       retryAttemptRef.current += 1
@@ -180,7 +111,7 @@ export function useOfflineSync(serverOnline: boolean) {
       setSyncing(false)
       setPendingCount(await countPendingSales(scopeKey).catch(() => 0))
     }
-  }, [desktopRuntime, serverOnline, scopeKey, pushPendingSales, pullChanges])
+  }, [desktopRuntime, serverOnline, scopeKey, pullChanges])
 
   useEffect(() => {
     if (desktopRuntime) return

@@ -2,6 +2,19 @@ import { isDesktopRuntime } from './desktopBridge'
 import { API_BASE_URL } from './apiBaseUrl'
 
 const DEFAULT_API_REQUEST_TIMEOUT_MS = 60_000
+const SAFE_API_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const WEB_SESSION_PATHS = new Set([
+  '/api/v1/auth/login',
+  '/api/v1/auth/refresh',
+  '/api/v1/auth/logout',
+])
+
+export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
+  if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false
+  // Вхід і відновлення сесії потрібні навіть у веб-перегляді. Решта записів
+  // належать тільки локальній касі й сервер додатково їх відхиляє.
+  return !WEB_SESSION_PATHS.has(path)
+}
 
 export interface RequestOptions extends Omit<RequestInit, 'headers'> {
   headers?: Record<string, string>
@@ -48,6 +61,12 @@ async function refreshToken(): Promise<string | null> {
 }
 
 export async function request<T>(path: string, options?: RequestOptions): Promise<T> {
+  if (isWebReadOnlyRequest(path, options?.method)) {
+    const error = new Error('Через веб можна тільки дивитися. Зміни робіть у локальній програмі на касі.')
+    ;(error as any).code = 'WEB_IS_READ_ONLY'
+    ;(error as any).status = 403
+    throw error
+  }
   const token = await getAccessToken()
   const { silent, _retry, timeoutMs = DEFAULT_API_REQUEST_TIMEOUT_MS, ...fetchOptions } = options ?? {}
 

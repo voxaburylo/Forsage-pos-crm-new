@@ -25,8 +25,13 @@ describe('екрани змін не відкриваються у вебі', ()
     '/suppliers/invoices/new',
     '/suppliers/invoices/:id/edit',
     '/receiving',
+    '/inventory',
     '/orders/new',
+    '/orders',
+    '/orders/:id',
     '/orders/:id/edit',
+    '/suppliers',
+    '/suppliers/invoices',
     '/quotes/new',
     '/inventory/:id',
     '/inventory/picking',
@@ -42,7 +47,7 @@ describe('екрани змін не відкриваються у вебі', ()
     })
   }
 
-  const mustStayOpen = ['/analytics', '/sales', '/products', '/customers', '/suppliers', '/orders', '/reports']
+  const mustStayOpen = ['/analytics', '/sales', '/products', '/customers', '/reports']
   for (const path of mustStayOpen) {
     it(`${path} — дивитися можна`, () => {
       const route = new RegExp(`<Route\\s+path="${path}"[^\\n]*`).exec(app)

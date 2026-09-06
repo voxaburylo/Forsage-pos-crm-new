@@ -48,13 +48,23 @@ describe('веб тільки дивиться, пише лише каса', () 
     }
   })
 
-  it('черга з каси проходить завжди — заради неї сервер і існує', () => {
-    expect(isWriteAllowed(req('POST', '/api/v1/sync/push'))).toBe(true)
-    expect(isWriteAllowed(req('POST', '/api/v1/sync/bootstrap'))).toBe(true)
+  it('черга синхронізації приймається лише від каси', () => {
+    expect(isWriteAllowed(req('POST', '/api/v1/sync/push'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/sync/bootstrap'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/sync/push', 'desktop'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/sync/bootstrap', 'desktop'))).toBe(true)
   })
 
-  it('вхід, вебхуки й службові задачі — не дані магазину, їх не чіпаємо', () => {
+  it('веб може лише керувати своєю сесією; решта auth-змін — тільки з каси', () => {
     expect(isWriteAllowed(req('POST', '/api/v1/auth/login'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/auth/refresh'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/auth/logout'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/auth/set-pin'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/auth/change-password'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/auth/set-pin', 'desktop'))).toBe(true)
+  })
+
+  it('вебхуки й службові задачі — не дані магазину, їх не чіпаємо', () => {
     expect(isWriteAllowed(req('POST', '/api/v1/telegram/webhook'))).toBe(true)
     expect(isWriteAllowed(req('POST', '/api/v1/internal/ai-cross-enrichment'))).toBe(true)
     expect(isWriteAllowed(req('POST', '/api/v1/jobs/run'))).toBe(true)

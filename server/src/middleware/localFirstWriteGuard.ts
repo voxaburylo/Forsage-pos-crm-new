@@ -13,8 +13,8 @@ import type { NextFunction, Request, Response } from 'express'
  * Одна точка запису прибирає цілий клас проблем.
  *
  * Тому сервер приймає зміну лише тоді, коли вона:
- *   • прийшла чергою синхронізації з каси (`/sync/*`), або
- *   • надіслана самою касою (заголовок `X-Forsage-Client: desktop`), або
+ *   • надіслана самою касою, включно з її чергою синхронізації
+ *     (заголовок `X-Forsage-Client: desktop`), або
  *   • стосується входу, вебхуків і службових задач, які взагалі не про дані
  *     магазину.
  *
@@ -24,14 +24,16 @@ import type { NextFunction, Request, Response } from 'express'
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const WEB_SESSION_PATHS = new Set([
+  '/api/v1/auth/login',
+  '/api/v1/auth/refresh',
+  '/api/v1/auth/logout',
+])
 
 /**
- * Шляхи, де запис дозволений завжди: вони або не про дані магазину, або є
- * єдиним каналом, яким каса передає свою роботу.
+ * Шляхи, де запис дозволений завжди: вони не стосуються даних магазину.
  */
 const ALWAYS_WRITABLE = [
-  '/api/v1/sync/',        // черга з каси — саме те, заради чого сервер існує
-  '/api/v1/auth/',        // вхід і оновлення сесії
   '/api/v1/telegram/',    // вебхук Telegram: пише не людина, а месенджер
   '/api/v1/internal/',    // щоденні службові задачі за секретом
   '/api/v1/jobs/',        // те саме
@@ -42,6 +44,7 @@ export const DESKTOP_CLIENT_VALUE = 'desktop'
 
 export function isWriteAllowed(req: Pick<Request, 'method' | 'path' | 'get'>): boolean {
   if (SAFE_METHODS.has(req.method)) return true
+  if (WEB_SESSION_PATHS.has(req.path)) return true
   if (ALWAYS_WRITABLE.some((prefix) => req.path.startsWith(prefix))) return true
   return req.get(DESKTOP_CLIENT_HEADER) === DESKTOP_CLIENT_VALUE
 }
