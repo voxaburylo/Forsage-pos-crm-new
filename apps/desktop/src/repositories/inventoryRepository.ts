@@ -234,12 +234,10 @@ export class LocalInventoryRepository {
         INSERT INTO inventory_items (
           id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
           price_checked, observed_retail_price, last_counted_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, NULL, ?, ?, ?)
         ON CONFLICT(session_id, product_id) DO UPDATE SET
           counted_stock = excluded.counted_stock,
           was_counted = 1,
-          price_checked = 1,
-          observed_retail_price = NULL,
           last_counted_by = excluded.last_counted_by,
           updated_at = excluded.updated_at,
           deleted_at = NULL
@@ -258,7 +256,7 @@ export class LocalInventoryRepository {
         INSERT INTO inventory_count_entries (
           id, tenant_id, session_id, inventory_item_id, product_id, counted_by,
           qty, price_checked, observed_retail_price, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
       `).run(randomUUID(), tenantId, sessionId, itemId, product.id, userId || 'local', qty, timestamp)
       this.touchSession(sessionId, tenantId, timestamp)
     })

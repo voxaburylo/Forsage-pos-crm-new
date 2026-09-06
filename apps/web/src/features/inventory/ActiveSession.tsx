@@ -261,6 +261,9 @@ export default function ActiveSession() {
   const scanQueueRunning = useRef(false)
   const completingRef = useRef(false)
   const scanFailuresRef = useRef(0)
+  const writeFailuresRef = useRef(0)
+  const flushingInputRef = useRef(false)
+  const refreshAfterWritesRef = useRef(false)
   const sessionReadGuard = useRef(new InventoryReadGuard())
   const inventoryDraftReadyRef = useRef(false)
   const inventoryDraftPersistenceDisabledRef = useRef(false)
@@ -276,16 +279,26 @@ export default function ActiveSession() {
     applyNewPrice: true,
   })
 
-  async function trackRowWrite<T>(work: () => Promise<T>): Promise<T> {
+  async function trackRowWrite<T>(work: () => Promise<T>, acceptedScan = false): Promise<T> {
+    if (inventoryCompletedRef.current || (completingRef.current && !flushingInputRef.current && !acceptedScan)) {
+      throw new Error('Ревізія завершується. Дочекайтеся завершення операції.')
+    }
     sessionReadGuard.current.invalidate()
     pendingRowWritesRef.current += 1
     setPendingRowWrites(pendingRowWritesRef.current)
     try {
       return await work()
+    } catch (error) {
+      writeFailuresRef.current += 1
+      throw error
     } finally {
       sessionReadGuard.current.invalidate()
       pendingRowWritesRef.current = Math.max(0, pendingRowWritesRef.current - 1)
       setPendingRowWrites(pendingRowWritesRef.current)
+      if (pendingRowWritesRef.current === 0 && refreshAfterWritesRef.current) {
+        refreshAfterWritesRef.current = false
+        void load(true)
+      }
     }
   }
 
@@ -481,11 +494,13 @@ export default function ActiveSession() {
     if (!Number.isFinite(purchase) || purchase < 0) { toast.error('Некоректна закупівельна ціна'); return }
     setSavingPrice(true)
     try {
-      await productApi.update(selected.id, { retail_price: money2(retail), purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      toast.success('Ціни товару оновлено')
-      setSelected((cur) => cur ? { ...cur, retail_price: retail, purchase_price: purchase } : cur)
-      playSuccessBeep()
-      load(true)
+      await trackRowWrite(async () => {
+        await productApi.update(selected.id, { retail_price: money2(retail), purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        toast.success('Ціни товару оновлено')
+        setSelected((cur) => cur ? { ...cur, retail_price: retail, purchase_price: purchase } : cur)
+        playSuccessBeep()
+        load(true)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося оновити ціни')
     } finally {
@@ -528,21 +543,23 @@ export default function ActiveSession() {
     if (!id) return
     initAudio()
     try {
-      // Швидкий скан рахує ЛИШЕ кількість, ціну не перевіряє — інакше статистика
-      // «Ціну перевірено» роздувалась до всіх порахованих і не відповідала дійсності.
-      const response = await inventoryApi.count(id, { product_id: product.id, qty: 1, price_checked: false, observed_retail_price: null }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: unknown; session: SessionData }
-      setSession(response.session)
-      const updatedItem = response.session.items.find((item) => item.product_id === product.id)
-      const counted = Number(updatedItem?.counted_stock ?? 1)
-      if (updatedItem?.id) {
-        setShowRecent(true)
-        setHighlightedItemId(updatedItem.id)
-      }
-      toast.success(product.name + ' × ' + (Number.isFinite(counted) ? counted : 1))
-      playSuccessBeep()
-      setQuickCreateOpen(false)
-      setQuery(''); setSearchResults([])
-      window.setTimeout(() => inputRef.current?.focus(), 0)
+      await trackRowWrite(async () => {
+        // Швидкий скан рахує ЛИШЕ кількість, ціну не перевіряє — інакше статистика
+        // «Ціну перевірено» роздувалась до всіх порахованих і не відповідала дійсності.
+        const response = await inventoryApi.scan(id, { product_id: product.id, qty: 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: { item: InventoryItem } }
+        const updatedItem = response.data.item
+        mergeFastScannedItem(updatedItem)
+        const counted = Number(updatedItem?.counted_stock ?? 1)
+        if (updatedItem?.id) {
+          setShowRecent(true)
+          setHighlightedItemId(updatedItem.id)
+        }
+        toast.success(product.name + ' × ' + (Number.isFinite(counted) ? counted : 1))
+        playSuccessBeep()
+        setQuickCreateOpen(false)
+        setQuery(''); setSearchResults([])
+        window.setTimeout(() => inputRef.current?.focus(), 0)
+      })
     } catch (error) {
       playErrorTone()
       toast.error(error instanceof Error ? error.message : 'Не вдалося додати товар')
@@ -568,14 +585,16 @@ export default function ActiveSession() {
   async function removeItem(item: InventoryItem) {
     if (!id) return
     try {
-      await inventoryApi.removeItem(id, item.id, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      setSelectedIds((prev) => {
-        const next = new Set(prev)
-        if (item.product?.id) next.delete(item.product.id)
-        return next
+      await trackRowWrite(async () => {
+        await inventoryApi.removeItem(id, item.id, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          if (item.product?.id) next.delete(item.product.id)
+          return next
+        })
+        toast.success('Товар прибрано з ревізії')
+        load(true)
       })
-      toast.success('Товар прибрано з ревізії')
-      load(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося прибрати товар')
     }
@@ -584,12 +603,15 @@ export default function ActiveSession() {
   // Встановити роздрібну ціну товару прямо з рядка.
   async function setItemRetail(item: InventoryItem, value: string) {
     if (!item.product || !canEditPrice) return
+    const product = item.product
     const retail = kopecksFromInput(value)
     if (retail === null) { toast.error('Некоректна ціна'); return }
-    if (retail === item.product.retail_price) return
+    if (retail === product.retail_price) return
     try {
-      await productApi.update(item.product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      load(true)
+      await trackRowWrite(async () => {
+        await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        load(true)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
     }
@@ -598,12 +620,15 @@ export default function ActiveSession() {
   // Встановити закупівельну ціну товару прямо з рядка.
   async function setItemPurchase(item: InventoryItem, value: string) {
     if (!item.product || !canEditPrice) return
+    const product = item.product
     const purchase = kopecksFromInput(value)
     if (purchase === null) { toast.error('Некоректна закупівельна ціна'); return }
-    if (purchase === (item.product.purchase_price ?? 0)) return
+    if (purchase === (product.purchase_price ?? 0)) return
     try {
-      await productApi.update(item.product.id, { purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      load(true)
+      await trackRowWrite(async () => {
+        await productApi.update(product.id, { purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        load(true)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити закупку')
     }
@@ -611,25 +636,28 @@ export default function ActiveSession() {
 
   async function updateItemProduct(item: InventoryItem, patch: Partial<Pick<ProductInfo, 'sku' | 'name'>>) {
     if (!item.product || !canEditPrice) return
+    const product = item.product
     const payload: Partial<Pick<ProductInfo, 'sku' | 'name'>> = {}
     if (patch.sku !== undefined) {
       const sku = patch.sku.trim()
       if (!sku) { toast.error('Артикул не може бути порожнім'); return }
-      if (sku === item.product.sku) return
+      if (sku === product.sku) return
       payload.sku = sku
     }
     if (patch.name !== undefined) {
       const name = patch.name.trim()
       if (name.length < 2) { toast.error('Назва товару закоротка'); return }
-      if (name === item.product.name) return
+      if (name === product.name) return
       payload.name = name
     }
     if (Object.keys(payload).length === 0) return
     try {
-      const response = await productApi.update(item.product.id, payload as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: ProductInfo }
-      setSelected((cur) => cur?.id === item.product?.id ? { ...cur, ...response.data } : cur)
-      toast.success('Товар оновлено')
-      load(true)
+      await trackRowWrite(async () => {
+        const response = await productApi.update(product.id, payload as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: ProductInfo }
+        setSelected((cur) => cur?.id === product?.id ? { ...cur, ...response.data } : cur)
+        toast.success('Товар оновлено')
+        load(true)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося оновити товар')
       load(true)
@@ -647,7 +675,8 @@ export default function ActiveSession() {
   // Націнка на рядок: швидкий % від закупки або за матрицею націнок.
   async function applyRowMarkup(item: InventoryItem, kind: 'percent' | 'table', pct?: number) {
     if (!item.product || !canEditPrice) return
-    const purchase = item.product.purchase_price ?? 0
+    const product = item.product
+    const purchase = product.purchase_price ?? 0
     if (purchase <= 0) { toast.error('У товару нема закупівельної ціни'); return }
     let retail: number
     if (kind === 'percent' && pct != null) {
@@ -660,8 +689,10 @@ export default function ActiveSession() {
       } catch { toast.error('Не вдалося порахувати за таблицею'); return }
     }
     try {
-      await productApi.update(item.product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      load(true)
+      await trackRowWrite(async () => {
+        await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        load(true)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Помилка націнки')
     }
@@ -674,26 +705,28 @@ export default function ActiveSession() {
     if (rows.length === 0) { toast.error('Вибрані товари не знайдено в ревізії'); return }
     setMassBusy(true)
     try {
-      let updated = 0
-      for (const row of rows) {
-        const product = row.product!
-        const purchase = Number(product.purchase_price ?? 0)
-        const currentRetail = Number(product.retail_price ?? 0)
-        let nextRetail: number | null = null
-        if (action.type === 'percent') nextRetail = Math.round(currentRetail * (1 + action.value / 100))
-        else if (action.type === 'amount') nextRetail = currentRetail + Math.round(action.value)
-        else if (action.type === 'markup') nextRetail = Math.round(purchase * (1 + action.value / 100))
-        else if (action.type === 'markup_table') {
-          const { data } = await pricingApi.autoRetail(purchase)
-          nextRetail = Number(data?.retail_price ?? 0)
+      await trackRowWrite(async () => {
+        let updated = 0
+        for (const row of rows) {
+          const product = row.product!
+          const purchase = Number(product.purchase_price ?? 0)
+          const currentRetail = Number(product.retail_price ?? 0)
+          let nextRetail: number | null = null
+          if (action.type === 'percent') nextRetail = Math.round(currentRetail * (1 + action.value / 100))
+          else if (action.type === 'amount') nextRetail = currentRetail + Math.round(action.value)
+          else if (action.type === 'markup') nextRetail = Math.round(purchase * (1 + action.value / 100))
+          else if (action.type === 'markup_table') {
+            const { data } = await pricingApi.autoRetail(purchase)
+            nextRetail = Number(data?.retail_price ?? 0)
+          }
+          if (nextRetail === null || !Number.isFinite(nextRetail) || nextRetail < 0) continue
+          await productApi.update(product.id, { retail_price: money2(nextRetail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+          updated += 1
         }
-        if (nextRetail === null || !Number.isFinite(nextRetail) || nextRetail < 0) continue
-        await productApi.update(product.id, { retail_price: money2(nextRetail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-        updated += 1
-      }
-      toast.success(`Оновлено ${updated} товар(ів)`)
-      setSelectedIds(new Set())
-      load(true)
+        toast.success(`Оновлено ${updated} товар(ів)`)
+        setSelectedIds(new Set())
+        load(true)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося оновити масово')
     } finally {
@@ -703,6 +736,7 @@ export default function ActiveSession() {
 
   async function load(silent = false) {
     if (!id) return
+    if (pendingRowWritesRef.current > 0) { refreshAfterWritesRef.current = true; return }
     const readToken = sessionReadGuard.current.begin()
     if (!silent) setLoading(true)
     try {
@@ -835,7 +869,7 @@ export default function ActiveSession() {
     if (!normalizedCode) return
     initAudio()
     try {
-      const response = await trackRowWrite(() => inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })) as { data: { item: InventoryItem } }
+      const response = await trackRowWrite(() => inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }), true) as { data: { item: InventoryItem } }
       const item = response.data.item
       mergeFastScannedItem(item)
       setShowRecent(true)
@@ -921,33 +955,36 @@ export default function ActiveSession() {
 
     setSaving(true)
     try {
-      const willApplyPrice = priceStatus === 'mismatch' && applyNewPrice && canEditPrice && observedKopecks != null
-      const response = await inventoryApi.count(id, {
-        product_id: selected.id,
-        qty: parsedQty,
-        // якщо ціну одразу міняємо в програмі — розбіжності більше нема
-        price_checked: priceStatus === 'match' || willApplyPrice,
-        observed_retail_price: willApplyPrice ? null : observedKopecks,
-      }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      let freshSession = response.session
-      if (willApplyPrice) {
-        try {
-          const applied = await inventoryApi.applyPrice(id, { product_id: selected.id, retail_price: observedKopecks! }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-          freshSession = applied.session
-          toast.success(`Ціну змінено: ${selected.name} → ${formatMoney(observedKopecks!)}`)
-        } catch (error) {
-          toast.error(error instanceof Error ? error.message : 'Кількість збережено, але ціну оновити не вдалося')
+      await trackRowWrite(async () => {
+        const willApplyPrice = priceStatus === 'mismatch' && applyNewPrice && canEditPrice && observedKopecks != null
+        const response = await inventoryApi.count(id, {
+          product_id: selected.id,
+          qty: parsedQty,
+          // Keep the observed discrepancy until applying the price actually succeeds.
+          price_checked: priceStatus === 'match',
+          observed_retail_price: observedKopecks,
+        }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        let freshSession = response.session
+        if (willApplyPrice) {
+          try {
+            const applied = await inventoryApi.applyPrice(id, { product_id: selected.id, retail_price: observedKopecks! }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+            freshSession = applied.session
+            toast.success(`Ціну змінено: ${selected.name} → ${formatMoney(observedKopecks!)}`)
+          } catch (error) {
+            writeFailuresRef.current += 1
+            toast.error(error instanceof Error ? error.message : 'Кількість збережено, але ціну оновити не вдалося')
+          }
         }
-      }
-      setSession(freshSession)
-      toast.success(`Додано ${parsedQty} ${selected.unit ?? 'шт'} · ${selected.name}`)
-      playSuccessBeep()
-      setSelected(null)
-      setQty('1')
-      setPriceStatus('unchecked')
-      setObservedPrice('')
-      if (id) clearInventoryLocalDraft(id)
-      inputRef.current?.focus()
+        setSession(freshSession)
+        toast.success(`Додано ${parsedQty} ${selected.unit ?? 'шт'} · ${selected.name}`)
+        playSuccessBeep()
+        setSelected(null)
+        setQty('1')
+        setPriceStatus('unchecked')
+        setObservedPrice('')
+        if (id) clearInventoryLocalDraft(id)
+        inputRef.current?.focus()
+      })
     } catch (error) {
       playErrorTone()
       toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти підрахунок')
@@ -981,36 +1018,38 @@ export default function ActiveSession() {
     if (!Number.isFinite(countedQty) || countedQty <= 0) { toast.error('Кількість має бути більше 0'); return }
     setCreatingProduct(true)
     try {
-      const created = await productApi.create({
-        sku,
-        name,
-        barcode: draft.barcode.trim(),
-        brand_id: '',
-        category_id: draft.category_id || '',
-        unit: (draft.unit as any) || 'шт',
-        purchase_price: draft.purchase_price,
-        retail_price: draft.retail_price,
-        qty_on_hand: '0',
-        reorder_point: '0',
-        notes: 'Створено під час інвентаризації',
-        is_active: true,
-        is_service: false,
-        storage_bin: draft.storage_bin.trim(),
-        is_favorite: false,
-        photo_url: null,
-        specs: {},
-        requires_core_return: false,
-        core_deposit_amount: '',
-      }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      const response = await inventoryApi.count(id, { product_id: created.data.id, qty: countedQty, price_checked: true, observed_retail_price: null }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      setSession(response.session)
-      setQuickProduct(emptyQuickProduct)
-      setQuickCreateOpen(false)
-      setQuery('')
-      toast.success(`Створено і додано: ${name} × ${countedQty}`)
-      playSuccessBeep()
-      if (id) clearInventoryLocalDraft(id)
-      inputRef.current?.focus()
+      await trackRowWrite(async () => {
+        const created = await productApi.create({
+          sku,
+          name,
+          barcode: draft.barcode.trim(),
+          brand_id: '',
+          category_id: draft.category_id || '',
+          unit: (draft.unit as any) || 'шт',
+          purchase_price: draft.purchase_price,
+          retail_price: draft.retail_price,
+          qty_on_hand: '0',
+          reorder_point: '0',
+          notes: 'Створено під час інвентаризації',
+          is_active: true,
+          is_service: false,
+          storage_bin: draft.storage_bin.trim(),
+          is_favorite: false,
+          photo_url: null,
+          specs: {},
+          requires_core_return: false,
+          core_deposit_amount: '',
+        }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        const response = await inventoryApi.count(id, { product_id: created.data.id, qty: countedQty, price_checked: true, observed_retail_price: null }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        setSession(response.session)
+        setQuickProduct(emptyQuickProduct)
+        setQuickCreateOpen(false)
+        setQuery('')
+        toast.success(`Створено і додано: ${name} × ${countedQty}`)
+        playSuccessBeep()
+        if (id) clearInventoryLocalDraft(id)
+        inputRef.current?.focus()
+      })
     } catch (error) {
       playErrorTone()
       toast.error(error instanceof Error ? error.message : 'Не вдалося створити товар')
@@ -1022,11 +1061,14 @@ export default function ActiveSession() {
   // Швидка зміна ціни зі списку розбіжностей: ставимо в програму ціну з цінника
   async function applyIssuePrice(issue: SessionData['price_issues'][number]) {
     if (!id || !issue.product?.id) return
-    setApplyingPriceId(issue.product.id)
+    const product = issue.product
+    setApplyingPriceId(product.id)
     try {
-      const response = await inventoryApi.applyPrice(id, { product_id: issue.product.id, retail_price: issue.observed_retail_price }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-      setSession(response.session)
-      toast.success(`Ціну змінено: ${issue.product.name} → ${formatMoney(issue.observed_retail_price)}`)
+      await trackRowWrite(async () => {
+        const response = await inventoryApi.applyPrice(id, { product_id: product.id, retail_price: issue.observed_retail_price }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        setSession(response.session)
+        toast.success(`Ціну змінено: ${product.name} → ${formatMoney(issue.observed_retail_price)}`)
+      })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
     } finally {
@@ -1055,13 +1097,17 @@ export default function ActiveSession() {
     if (!id || !session || !canComplete || completingRef.current) return
     completingRef.current = true
     const scanFailuresBefore = scanFailuresRef.current
+    const writeFailuresBefore = writeFailuresRef.current
     setCompleting(true)
     toast.success('Застосовую залишки ревізії...')
     try {
       const activeElement = document.activeElement
-      if (activeElement instanceof HTMLElement) activeElement.blur()
+      flushingInputRef.current = true
+      try { if (activeElement instanceof HTMLElement) activeElement.blur() }
+      finally { flushingInputRef.current = false }
       await waitForPendingRowWrites()
       if (scanFailuresRef.current !== scanFailuresBefore) throw new Error('Не всі сканування збережено. Перевірте повідомлення та товари перед завершенням ревізії.')
+      if (writeFailuresRef.current !== writeFailuresBefore) throw new Error('Не всі правки збережено. Виправте помилку перед завершенням ревізії.')
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       const updated = Number((response.data as any)?.items_updated ?? 0)
       setCompleteOpen(false)
