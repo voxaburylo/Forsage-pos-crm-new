@@ -3,6 +3,7 @@ import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult, type LocalSyncStuckOperation } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
 import { MAX_OUTBOX_ATTEMPTS, STUCK_OUTBOX_RETRY_MS } from './outboxPolicy'
+import { outboxDependencyKeys, type OutboxDependencyRow } from './outboxDependencies'
 import { LocalProblemRepository } from './problemRepository'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
 import { readServerResetGeneration } from './localTenantReset'
@@ -98,37 +99,6 @@ interface OutboxDropCandidate {
   payload_json: string | null
 }
 
-function outboxDependencyKeys(row: OutboxCandidateRow, payload: any): string[] {
-  const prefix = row.tenant_id
-  const keys = new Set<string>([
-    `${prefix}:aggregate:${row.aggregate_type}:${row.aggregate_id}`,
-  ])
-  const addReference = (type: 'supplier' | 'product' | 'invoice' | 'brand' | 'category', value: unknown) => {
-    if (typeof value === 'string' && value) keys.add(`${prefix}:reference:${type}:${value}`)
-  }
-
-  if (row.aggregate_type === 'supplier') addReference('supplier', row.aggregate_id)
-  if (row.aggregate_type === 'product') addReference('product', row.aggregate_id)
-  if (row.aggregate_type === 'supply_invoice') addReference('invoice', row.aggregate_id)
-  // Бренд і категорія — такі самі залежності товару, як постачальник для
-  // накладної. Без цього товар летить попереду свого бренда і падає на
-  // зовнішньому ключі, а за ним валиться прихід і ревізія.
-  if (row.aggregate_type === 'brand') addReference('brand', row.aggregate_id)
-  if (row.aggregate_type === 'category') addReference('category', row.aggregate_id)
-  addReference('brand', payload?.brand_id)
-  addReference('category', payload?.category_id)
-
-  addReference('supplier', payload?.supplier_id)
-  addReference('supplier', payload?.primary_supplier_id)
-  addReference('supplier', payload?.duplicate_supplier_id)
-  addReference('supplier', payload?.import?.supplier_id)
-  addReference('product', payload?.product_id)
-  addReference('invoice', payload?.invoice_id)
-  for (const item of Array.isArray(payload?.items) ? payload.items : []) {
-    addReference('product', item?.product_id)
-  }
-  return [...keys]
-}
 
 export class LocalSyncRepository {
   private readonly problems: LocalProblemRepository

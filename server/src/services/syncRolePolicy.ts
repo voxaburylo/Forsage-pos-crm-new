@@ -1,3 +1,5 @@
+import { isSyncOperationAllowed as isSyncOperationAllowedByCatalog } from '@crm-forsage/shared'
+
 const STAFF_DIRECTORY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker'])
 const SUPPLY_ROLES = new Set(['owner', 'admin', 'manager', 'cashier', 'storekeeper'])
 const PRIVILEGED_SETTINGS_ROLES = new Set(['owner', 'admin'])
@@ -22,60 +24,17 @@ const CASHDESK_SETTINGS_KEYS = new Set([
 ])
 const COMMERCIAL_FIELDS = new Set(['buy_price', 'purchase_price', 'cost_price'])
 
-const MANAGER_SYNC_OPERATIONS = new Set([
-  'shift.opened', 'shift.closed', 'sale.completed', 'sale.suspended',
-  'sale.suspended_resumed', 'sale.suspended_deleted', 'product.upsert',
-  'category.upsert', 'brand.upsert', 'order.payment_added', 'order.completed',
-  'customer.debt_paid', 'customer.deposit_changed', 'customer.bonus_adjusted', 'supplier_invoice.created',
-  'supplier_invoice.updated', 'supplier_invoice.posted', 'supplier_invoice.payment_added',
-  'customer.created', 'customer.updated', 'customer_vehicle.created',
-  'customer_vehicle.updated', 'customer_vehicle.deleted', 'supplier.created',
-  'supplier.updated', 'order.created', 'order.updated', 'order.status_updated',
-  'order.item_status_updated', 'order.items_arrived', 'order.canceled',
-  'cash_operation.created', 'reserve.created', 'reserve.released',
-  'warehouse_movement.created', 'writeoff.created', 'return.created',
-])
-const CASHIER_SYNC_OPERATIONS = new Set([
-  'shift.opened', 'shift.closed', 'sale.completed', 'sale.suspended',
-  'sale.suspended_resumed', 'sale.suspended_deleted', 'customer.created', 'customer.updated',
-  'customer_vehicle.created', 'customer_vehicle.updated', 'customer_vehicle.deleted',
-  'customer.debt_paid', 'customer.deposit_changed', 'return.created',
-  'order.payment_added', 'order.completed', 'cash_operation.created',
-  // Cashiers are explicitly allowed to receive goods and complete stock counts.
-  // These operations must follow the same permission model as the HTTP routes/UI.
-  'product.upsert', 'supplier_invoice.created', 'supplier_invoice.updated',
-  // Накладна тримається за постачальника зовнішнім ключем. POST /suppliers
-  // касиру дозволений, тому заборона на sync ламала той самий ланцюжок, що й
-  // бренд: постачальник не долітав, накладна падала на
-  // supply_invoices_supplier_id_fkey, а проведення й оплата — слідом за нею.
-  'supplier.created',
-  // A product card carries a brand and a category. Allowing product.upsert while
-  // denying its reference books breaks the whole chain: the brand never reaches
-  // the server, the product then fails on products_brand_id_fkey, and every
-  // receipt and stock count referencing that product fails after it.
-  'brand.upsert', 'category.upsert',
-  'supplier_invoice.posted', 'supplier_invoice.payment_added', 'supplier_invoice.deleted',
-  'inventory.created', 'inventory.started', 'inventory.completed', 'inventory.deleted',
-])
-const STOREKEEPER_SYNC_OPERATIONS = new Set([
-  'product.upsert', 'category.upsert', 'brand.upsert', 'supplier.created', 'supplier_invoice.created',
-  'supplier_invoice.updated', 'supplier_invoice.posted', 'supplier_invoice.payment_added',
-  'order.item_status_updated', 'order.items_arrived',
-  'reserve.created', 'reserve.released', 'warehouse_movement.created', 'writeoff.created',
-  'inventory.created', 'inventory.started', 'inventory.deleted',
-])
-
+/**
+ * Права на надсилання операцій живуть у спільному каталозі
+ * (`shared/src/syncOperations.ts`) разом із тим, що кожна операція тягне за
+ * собою по зовнішньому ключу. Тримати їх окремо від залежностей уже двічі
+ * коштувало магазину даних: дозволили товар без бренда, потім накладну без
+ * постачальника. Тест каталогу не дає забути втретє.
+ */
 export function isSyncOperationAllowed(role: string, operationType: string): boolean {
-  if (role === 'owner' || role === 'admin') return true
-  const allowed = role === 'manager'
-    ? MANAGER_SYNC_OPERATIONS
-    : role === 'cashier'
-      ? CASHIER_SYNC_OPERATIONS
-      : role === 'storekeeper'
-        ? STOREKEEPER_SYNC_OPERATIONS
-        : null
-  return allowed?.has(operationType) === true
+  return isSyncOperationAllowedByCatalog(role, operationType)
 }
+
 export function canPullStaffDirectory(role: string): boolean {
   return STAFF_DIRECTORY_ROLES.has(role)
 }
