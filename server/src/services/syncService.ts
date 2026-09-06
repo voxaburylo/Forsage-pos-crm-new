@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { hashSecret, isSupportedSecretHash, secretHashNeedsUpgrade } from '../lib/secretHash.js'
+import { hashSecret, isSupportedSecretHash } from '../lib/secretHash.js'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
-import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeOemValue } from '../validators/productValidator.js'
 import { clearCatalogReferenceCaches, listUsers } from './adminService.js'
@@ -38,13 +37,15 @@ import {
   captureDatabaseAppliedAt,
   isUuid,
   uuidOr,
-  normalizedPhoneEmail,
   pickShopSettingsPayload,
   fetchShopSettings,
   loadAvailability,
   assertSyncOperationAllowed,
 } from './sync/syncCore.js'
 import type { SyncChangesInput, SyncOutboxOperation, SyncPushResult } from './sync/syncCore.js'
+import { invoiceLineTotal, normalizePaymentMethod, sumPayments } from './sync/syncMath.js'
+import { applyStaffPinUpdated, applyStaffUserUpsert, applyStaffUserDeleted, applyCommissionRuleCreated, applyCommissionRuleDeleted, applySalaryPaymentCreated, applySalaryPaymentDeleted } from './sync/staffHandlers.js'
+import { assertProductReferenceExists, assertSyncCashboxHasFunds, ensureFreeAmountProduct } from './sync/syncGuards.js'
 async function fetchSecondarySyncData(params: {
   since?: string
   upperBound: string
@@ -1958,212 +1959,11 @@ async function applyOrderCanceled(
   })
 }
 
-async function applyStaffPinUpdated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  const payload = operation.payload ?? {}
-  const userId = String(payload.user_id ?? operation.aggregate_id)
-  const pinHash = String(payload.pin_hash ?? '')
-  if (!isUuid(userId) || !isSupportedSecretHash(pinHash) || secretHashNeedsUpgrade(pinHash)) {
-    throw new AppError('SYNC_STAFF_PIN_INVALID', 'Некоректний захищений PIN співробітника', 400)
-  }
 
-  const { data: existing, error } = await supabaseAdmin.auth.admin.getUserById(userId)
-  if (error || !existing.user) throw new AppError('SYNC_STAFF_NOT_FOUND', 'Співробітника не знайдено', 404)
-  if (existing.user.app_metadata?.tenant_id !== tenantId) {
-    throw new AppError('SYNC_TENANT_MISMATCH', 'Співробітник належить іншому магазину', 403)
-  }
 
-  await runTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO staff_pins (user_id, pin_code, updated_at)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (user_id) DO UPDATE SET
-         pin_code = EXCLUDED.pin_code,
-         updated_at = EXCLUDED.updated_at`,
-      [userId, pinHash, payload.updated_at ?? operation.created_at],
-    )
-  })
-}
-async function applyStaffUserUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  const payload = operation.payload ?? {}
-  const userId = String(payload.id ?? operation.aggregate_id)
-  if (!isUuid(userId)) throw new AppError('SYNC_STAFF_INVALID', 'Некоректний ідентифікатор співробітника', 400)
 
-  const { data: existing, error: readError } = await supabaseAdmin.auth.admin.getUserById(userId)
-  if (readError && !/not found/i.test(readError.message)) throw new AppError('AUTH_ERROR', readError.message, 500)
-  if (existing.user) {
-    if (existing.user.app_metadata?.tenant_id !== tenantId) {
-      throw new AppError('SYNC_TENANT_MISMATCH', 'Співробітник належить іншому магазину', 403)
-    }
-    const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-      email: normalizedPhoneEmail(payload.phone),
-      user_metadata: {
-        ...existing.user.user_metadata,
-        phone: payload.phone ?? null,
-        full_name: payload.full_name ?? '',
-      },
-      app_metadata: {
-        ...existing.user.app_metadata,
-        tenant_id: tenantId,
-        role: payload.role ?? 'cashier',
-        is_active: payload.is_active !== false,
-        base_rate: Number(payload.base_rate ?? 0),
-        rate_period: payload.rate_period === 'month' ? 'month' : 'day',
-      },
-    })
-    if (error) throw new AppError('AUTH_ERROR', error.message, 500)
-    return
-  }
 
-  const { error } = await supabaseAdmin.auth.admin.createUser({
-    id: userId,
-    email: normalizedPhoneEmail(payload.phone),
-    password: `${randomUUID()}-${randomUUID()}`,
-    email_confirm: true,
-    user_metadata: {
-      phone: payload.phone ?? null,
-      full_name: payload.full_name ?? '',
-    },
-    app_metadata: {
-      tenant_id: tenantId,
-      role: payload.role ?? 'cashier',
-      is_active: payload.is_active !== false,
-      base_rate: Number(payload.base_rate ?? 0),
-      rate_period: payload.rate_period === 'month' ? 'month' : 'day',
-    },
-  } as any)
-  if (error) throw new AppError('AUTH_ERROR', error.message, 500)
-}
 
-async function applyStaffUserDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  const { data: existing, error: readError } = await supabaseAdmin.auth.admin.getUserById(operation.aggregate_id)
-  if (readError && /not found/i.test(readError.message)) return
-  if (readError) throw new AppError('AUTH_ERROR', readError.message, 500)
-  if (!existing.user || existing.user.app_metadata?.tenant_id !== tenantId) return
-  const { error } = await supabaseAdmin.auth.admin.updateUserById(operation.aggregate_id, {
-    app_metadata: { ...existing.user.app_metadata, is_active: false },
-  })
-  if (error) throw new AppError('AUTH_ERROR', error.message, 500)
-}
-
-async function applyCommissionRuleCreated(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  const payload = operation.payload ?? {}
-  const id = String(payload.id ?? operation.aggregate_id)
-  if (!isUuid(id)) throw new AppError('SYNC_COMMISSION_INVALID', 'Некоректне правило комісії', 400)
-  await runTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO commission_rules (
-        id, tenant_id, user_id, brand_id, category_id, pct_from_revenue,
-        pct_from_profit, rule_type, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
-      ON CONFLICT (id) DO UPDATE SET
-        user_id = EXCLUDED.user_id,
-        brand_id = EXCLUDED.brand_id,
-        category_id = EXCLUDED.category_id,
-        pct_from_revenue = EXCLUDED.pct_from_revenue,
-        pct_from_profit = EXCLUDED.pct_from_profit,
-        rule_type = EXCLUDED.rule_type,
-        updated_at = EXCLUDED.updated_at
-      WHERE commission_rules.tenant_id = EXCLUDED.tenant_id`,
-      [
-        id,
-        tenantId,
-        isUuid(payload.user_id) ? payload.user_id : null,
-        isUuid(payload.brand_id) ? payload.brand_id : null,
-        isUuid(payload.category_id) ? payload.category_id : null,
-        Number(payload.pct_from_revenue ?? 0),
-        Number(payload.pct_from_profit ?? 0),
-        payload.rule_type ?? 'personal_sales',
-        operation.created_at,
-      ],
-    )
-  })
-}
-
-async function applyCommissionRuleDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  await runTransaction(async (client) => {
-    await client.query('DELETE FROM commission_rules WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
-  })
-}
-
-async function applySalaryPaymentCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
-  const payload = operation.payload ?? {}
-  const id = String(payload.id ?? operation.aggregate_id)
-  if (!isUuid(id) || !isUuid(payload.employee_id)) {
-    throw new AppError('SYNC_SALARY_INVALID', 'Некоректне нарахування зарплати', 400)
-  }
-  const source = String(payload.source ?? 'manual')
-  const rawAmount = Math.round(Number(payload.amount ?? 0))
-  if (!Number.isFinite(rawAmount) || rawAmount === 0 || (source === 'commission_reversal' ? rawAmount >= 0 : rawAmount < 0)) {
-    throw new AppError('SYNC_SALARY_AMOUNT_INVALID', 'Некоректна сума нарахування зарплати', 400)
-  }
-  const amount = rawAmount
-  const createdAt = payload.created_at ?? operation.created_at
-  const appliedAt = operation.applied_at ?? operation.created_at
-  await runTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO salary_payments (
-        id, tenant_id, employee_id, employee_name, amount, type, method, period,
-        work_date, source, note, cash_operation_id, commission_source_sale_id,
-        commission_source_order_id, commission_source_return_id, created_by, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      ON CONFLICT DO NOTHING`,
-      [
-        id,
-        tenantId,
-        payload.employee_id,
-        payload.employee_name ?? 'Співробітник',
-        amount,
-        payload.type ?? 'salary',
-        payload.method ?? 'cash',
-        payload.period ?? String(createdAt).slice(0, 7),
-        payload.work_date ?? String(createdAt).slice(0, 10),
-        source,
-        payload.note ?? null,
-        isUuid(payload.cash_operation_id) ? payload.cash_operation_id : null,
-        isUuid(payload.commission_source_sale_id) ? payload.commission_source_sale_id : null,
-        isUuid(payload.commission_source_order_id) ? payload.commission_source_order_id : null,
-        isUuid(payload.commission_source_return_id) ? payload.commission_source_return_id : null,
-        uuidOr(payload.created_by, userId),
-        createdAt,
-        appliedAt,
-      ],
-    )
-  })
-}
-
-async function applySalaryPaymentDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  await runTransaction(async (client) => {
-    const payment = await client.query(
-      'SELECT cash_operation_id, source FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
-      [operation.aggregate_id, tenantId],
-    )
-    if (!payment.rowCount) return
-    if (payment.rows[0].source !== 'manual') {
-      throw new AppError('SYNC_AUTOMATIC_SALARY_IMMUTABLE', 'Автоматичне нарахування зарплати не можна видалити', 409)
-    }
-    const cashOperationId = payment.rows[0]?.cash_operation_id
-    await client.query('DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
-    if (cashOperationId) {
-      await client.query('DELETE FROM cash_operations WHERE id = $1 AND tenant_id = $2', [cashOperationId, tenantId])
-    }
-    await client.query(
-      `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-       VALUES ($1, 'salary_payment', $2, clock_timestamp())
-       ON CONFLICT (tenant_id, entity_type, entity_id)
-       DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-      [tenantId, operation.aggregate_id],
-    )
-    if (cashOperationId) {
-      await client.query(
-        `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-         VALUES ($1, 'cash_operation', $2, clock_timestamp())
-         ON CONFLICT (tenant_id, entity_type, entity_id)
-         DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-        [tenantId, cashOperationId],
-      )
-    }
-  })
-}
 
 async function applyCashOperationCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
@@ -2803,64 +2603,7 @@ async function applySuspendedSaleClosed(tenantId: string, operation: SyncOutboxO
   })
 }
 
-function invoiceLineTotal(item: any): number {
-  const itemQty = Number(item?.qty ?? 0)
-  if (!Number.isFinite(itemQty) || itemQty <= 0) {
-    throw new AppError('SYNC_INVOICE_ITEM_INVALID', 'Некоректна кількість у накладній', 422)
-  }
-  try {
-    const purchasePrice = checkedSyncMoney(item?.purchase_price ?? 0, 'Ціна закупівлі')
-    return checkedSyncMoney(itemQty * purchasePrice, 'Сума позиції накладної')
-  } catch (error: any) {
-    throw new AppError('SYNC_INVOICE_ITEM_INVALID', error?.message ?? 'Некоректна ціна у накладній', 422)
-  }
-}
 
-async function assertSyncCashboxHasFunds(
-  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }> },
-  tenantId: string,
-  shiftId: string,
-  amount: number,
-  occurredAt: string,
-): Promise<void> {
-  const shift = await client.query(
-    `SELECT id, opening_cash, status, opened_at, closed_at FROM shifts
-     WHERE id = $1 AND tenant_id = $2
-       AND opened_at <= $3::timestamptz
-       AND (closed_at IS NULL OR closed_at >= $3::timestamptz)
-     FOR UPDATE`,
-    [shiftId, tenantId, occurredAt],
-  )
-  if (!shift.rowCount) {
-    throw new AppError('SHIFT_REQUIRED', 'Касова зміна не знайдена або оплата не належить до часу її роботи', 409)
-  }
-  const balance = await client.query(
-    `SELECT GREATEST(0,
-       COALESCE($3::bigint, 0)
-       + COALESCE((SELECT SUM(CASE
-           WHEN sale.payment_method = 'cash' THEN COALESCE(NULLIF(sale.cash_amount, 0), sale.total)
-           ELSE COALESCE(sale.cash_amount, 0)
-         END)
-         FROM sales sale
-         WHERE sale.shift_id = $1 AND sale.tenant_id = $2 AND sale.status = 'completed'
-           AND NOT EXISTS (
-             SELECT 1 FROM customer_orders order_row
-             WHERE order_row.tenant_id = $2 AND order_row.sale_id = sale.id
-           )), 0)
-       + COALESCE((SELECT SUM(CASE WHEN op.type = 'in' THEN op.amount ELSE -op.amount END)
-         FROM cash_operations op WHERE op.shift_id = $1 AND op.tenant_id = $2), 0)
-     )::bigint AS available`,
-    [shiftId, tenantId, Number(shift.rows[0].opening_cash ?? 0)],
-  )
-  const available = Number(balance.rows[0]?.available ?? 0)
-  if (available < amount) {
-    throw new AppError(
-      'CASHBOX_INSUFFICIENT_FUNDS',
-      `У касі недостатньо грошей. Доступно ${(available / 100).toFixed(2)} грн, потрібно ${(amount / 100).toFixed(2)} грн.`,
-      409,
-    )
-  }
-}
 async function applySupplierInvoiceCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
   const invoiceId = String(payload.id || operation.aggregate_id)
@@ -3627,30 +3370,6 @@ async function applyBrandDeleted(tenantId: string, operation: SyncOutboxOperatio
   })
 }
 
-/**
- * Products point at brands and categories by foreign key. When the reference row
- * has not reached the server yet, Postgres answers with a constraint name that is
- * meaningless to the person at the till, so translate it into the actual problem.
- */
-async function assertProductReferenceExists(
-  client: { query: (sql: string, params: any[]) => Promise<{ rowCount: number | null }> },
-  tenantId: string,
-  table: 'brands' | 'categories',
-  referenceId: string | null,
-  label: string,
-): Promise<void> {
-  if (!referenceId || !isUuid(referenceId)) return
-  const found = await client.query(
-    `SELECT 1 FROM ${table} WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
-    [referenceId, tenantId],
-  )
-  if (found.rowCount) return
-  throw new AppError(
-    'SYNC_PRODUCT_REFERENCE_MISSING',
-    `${label} товару ще не синхронізовано з сервером. Товар буде надіслано разом із нею.`,
-    409,
-  )
-}
 
 async function applyProductUpsert(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
@@ -4711,43 +4430,5 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
   })
 }
 
-function normalizePaymentMethod(value: unknown): 'cash' | 'card' | 'debt' | 'mixed' | 'transfer' {
-  return value === 'cash' || value === 'card' || value === 'debt' || value === 'mixed' || value === 'transfer'
-    ? value
-    : 'cash'
-}
 
-function sumPayments(payments: any[], method: string): number {
-  return payments
-    .filter((payment) => payment?.method === method)
-    .reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0)
-}
 
-async function ensureFreeAmountProduct(
-  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, any>>, rowCount: number | null }> },
-  tenantId: string,
-): Promise<string> {
-  const sku = 'LOCAL-FREE-AMOUNT'
-  const existing = await client.query(
-    'SELECT id FROM products WHERE tenant_id = $1 AND sku = $2 AND deleted_at IS NULL LIMIT 1',
-    [tenantId, sku],
-  )
-  if (existing.rowCount && existing.rowCount > 0) return String(existing.rows[0].id)
-
-  const inserted = await client.query(
-    `INSERT INTO products (
-      tenant_id, sku, name, barcode, retail_price, purchase_price, qty_on_hand,
-      unit, is_active, is_service, notes, created_at, updated_at
-    )
-    VALUES ($1, $2, 'Вільна сума офлайн-каси', NULL, 0, 0, 0, 'шт', true, true, $3, now(), now())
-    ON CONFLICT (tenant_id, sku) DO UPDATE SET
-      is_service = true,
-      is_active = true,
-      deleted_at = NULL,
-      updated_at = now()
-    RETURNING id`,
-    [tenantId, sku, 'Службовий товар для чеків з довільною сумою, створений синхронізацією'],
-  )
-
-  return String(inserted.rows[0].id)
-}
