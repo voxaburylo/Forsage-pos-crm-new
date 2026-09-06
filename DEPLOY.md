@@ -1,122 +1,61 @@
-# Розгортання CRM-Forsage в Production
+# Як воно потрапляє до магазину
 
-## Вимоги
+Три частини оновлюються по-різному. Плутанина тут дорого коштує: одного разу
+каса два дні працювала зі старої збірки, і сотня продажів мовчки не доїхала на
+сервер.
 
-- Node.js 20+
-- PM2 (`npm i -g pm2`)
-- Supabase project (активний)
+## Веб і бекенд — самі, після `git push`
 
----
+| Що | Куди | Як |
+|---|---|---|
+| Бекенд (`server/`) | https://forsage-pos-crm-new.onrender.com | Render, `autoDeploy: true` з гілки `main` (`render.yaml`) |
+| Веб-інтерфейс (`apps/web`) | https://forsage-pos-crm-new-web.vercel.app | Vercel з `main` (`vercel.json`) |
+| Хмарна база | Supabase `zuhanlspejgizjbwbnda` | міграції з `supabase/migrations` застосовуються окремо |
 
-## 1. Підготовка змінних середовища
+Vercel заразом піднімає `/api/v1/*` як serverless-функцію (`api/index.ts` — це
+той самий Express із `server/src`, лише інша точка входу). Тобто бекенд живе у
+двох місцях; робочий для каси — Render.
+
+**Отже: `git push origin main` — і за кілька хвилин веб та бекенд оновлені.**
+Перевірити: https://forsage-pos-crm-new.onrender.com/api/v1/health має віддати 200.
+
+## Каса — руками, однією командою
 
 ```bash
-cp server/.env.example server/.env
-cp apps/web/.env.example apps/web/.env
+pnpm --filter=desktop dist
 ```
 
-Заповнити всі значення у `server/.env` і `apps/web/.env`.
+Збирає `apps/desktop/release/Forsage-0.1.0-portable.exe`. **Копіювати нікуди не
+треба:** ярлик «ФОРСАЖ — КАСА» на робочому столі веде прямо на цей файл, тому
+наступний запуск підхопить нову версію сам.
 
-**Обов'язкові:**
-- `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` — з Supabase → Settings → API
-- `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` — анонімний ключ
-- `VITE_API_URL` — публічний URL вашого сервера (напр. `https://api.yoursite.com`)
-- `CORS_ORIGIN` — URL фронтенду (напр. `https://yoursite.com`)
-- `TELEGRAM_BOT_TOKEN` — якщо потрібен Telegram-бот
+Власник свідомо відмовився від авто-оновлення (06.09.2026) — оновлює сам.
 
----
+**Перед перезбіркою каса має бути закрита**, інакше файл зайнятий.
 
-## 2. Міграції бази даних
+### Перевірка, що каса справді нова
 
-Перед запуском повинні бути застосовані всі міграції з `supabase/migrations` у порядку їхніх версій.
-
-Перевірити список застосованих міграцій:
 ```sql
-SELECT version, name FROM supabase_migrations.schema_migrations ORDER BY version;
+-- у %LOCALAPPDATA%\Forsage\data\forsage.db
+SELECT MAX(version) FROM schema_migrations;
 ```
 
----
+Має збігатися з останньою міграцією в `apps/desktop/src/db/schema.ts`. Якщо
+менше — запущено стару збірку. Свіжа збірка на новішій базі не стартує і сама
+про це скаже.
 
-## 3. Перший запуск (seed)
-
-Seed призначений лише для нової тестової або порожньої бази. Він заблокований без явного підтвердження та не містить стандартних паролів:
+## Перед деплоєм
 
 ```bash
-cd server
-ALLOW_DESTRUCTIVE_SEED=YES \
-SEED_OWNER_PHONE=+380XXXXXXXXX \
-SEED_OWNER_PASSWORD='use-a-long-random-password' \
-pnpm exec tsx src/seed.ts
+pnpm --filter=server typecheck && pnpm --filter=server test
+pnpm --filter=web typecheck && pnpm --filter=web lint && pnpm --filter=web test
+pnpm --filter=desktop typecheck && pnpm --filter=desktop test
 ```
 
-Необов’язкового тестового касира можна створити лише з окремо заданими `SEED_CASHIER_PHONE`, `SEED_CASHIER_PASSWORD` та, за бажанням, `SEED_CASHIER_NAME`. Паролі seed не виводить у консоль.
+## Змінні середовища
 
----
+Ключі Supabase і адреси API вшиті у `vercel.json` (для збірки веба) та в
+налаштуваннях Render. Локальні ключі — у `server/.env`, у git їх немає.
 
-## 4. Збірка і запуск
-
-```bash
-# Build server
-cd server && npm run build && cd ..
-
-# Build frontend
-cd apps/web && npm run build && cd ..
-
-# Запустити PM2
-pm2 start ecosystem.config.cjs --env production
-pm2 save
-pm2 startup   # авто-запуск при перезавантаженні
-```
-
----
-
-## 5. Nginx (proxy)
-
-```nginx
-# /etc/nginx/sites-available/crm-forsage
-
-server {
-    listen 80;
-    server_name yoursite.com;
-
-    # Frontend (статика)
-    root /path/to/crm-forsage/apps/web/dist;
-    index index.html;
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Backend API
-    location /api/ {
-        proxy_pass http://localhost:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
----
-
-## 6. Feature flags (рекомендовані для prod)
-
-```env
-USE_RESERVE_AWARE_SALE=true   # process_sale_v2
-USE_BONUS_ATOMIC_SALE=true    # process_sale_v3
-USE_ATOMIC_COMPLETION=true    # complete_customer_order
-```
-
----
-
-## 7. Оновлення (rolling update)
-
-```bash
-git pull
-cd server && npm run build && cd ..
-cd apps/web && npm run build && cd ..
-pm2 restart crm-forsage-api
-```
+Старий опис розгортання на власному сервері через PM2 лежить у
+`docs/archive/DEPLOY_pm2.md` — він більше не описує дійсність.

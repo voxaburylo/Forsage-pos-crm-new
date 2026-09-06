@@ -35,6 +35,8 @@ google-key.json
 # Тимчасові test-скрипти з хардкодженими credentials (НЕ комітити)
 server/test_*.cjs
 server/test_*.js
+# Разові діагностичні скрипти з паролями — тільки локально
+local-scripts/
 test_*.cjs
 apps/desktop/release-next*/
 test_*.js
