@@ -10,6 +10,7 @@ import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import { money, nowIso } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosFiscalGuards } from './fiscalGuards'
+import { readOpenCashBalance } from '../cashBalance'
 
 export class LocalPosShifts extends LocalPosFiscalGuards {
   openShift(input: {
@@ -106,6 +107,10 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     note?: string | null
     source?: string
   }): any {
+    return this.db.transaction(() => this.createCashOperationInTransaction(input))
+  }
+
+  private createCashOperationInTransaction(input: Parameters<LocalPosShifts['createCashOperation']>[0]): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть суму більше нуля')
@@ -117,6 +122,7 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     const timestamp = nowIso()
     const id = randomUUID()
     const dbType = input.type === 'in' ? 'cash_in' : 'cash_out'
+    this.assertCashOperationAllowed(tenantId, input.shift_id, dbType, amount)
     this.db.prepare(`
       INSERT INTO cash_operations (
         id, tenant_id, shift_id, user_id, type, source, amount, notes,
@@ -202,7 +208,7 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
       cash_returns,
       cash_in,
       cash_out,
-      expected_amount: Math.max(0, expected),
+      expected_amount: expected,
     }
   }
 
@@ -349,6 +355,14 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     })
   }
 
+  protected assertCashOperationAllowed(tenantId: string, shiftId: string | null, type: string, amount: number): void {
+    const available = readOpenCashBalance(this.db, tenantId, shiftId)
+    if (!Number.isFinite(amount) || amount < 0) throw new Error('Некоректна сума касової операції')
+    if (type !== 'cash_in' && amount > available) {
+      throw new Error(`У касі недостатньо готівки. Доступно ${(available / 100).toFixed(2)} грн. Спочатку внесіть кошти або виберіть інший спосіб виплати.`)
+    }
+  }
+
   protected addCashOperation(
     tenantId: string,
     shiftId: string | null,
@@ -359,6 +373,7 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     timestamp: string,
     operationId: string = randomUUID(),
   ): void {
+    this.assertCashOperationAllowed(tenantId, shiftId, type, amount)
     this.db.prepare(`
       INSERT INTO cash_operations (
         id, tenant_id, shift_id, user_id, type, source, amount, notes,

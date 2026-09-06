@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
+import { readOpenCashBalance } from './cashBalance'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -657,7 +658,23 @@ export class LocalSupplyRepository {
     return this.getInvoice(id, tenantId)
   }
   payInvoice(id: string, input: PaymentInput): any {
+    return this.db.transaction(() => this.payInvoiceInTransaction(id, input))
+  }
+
+  private payInvoiceInTransaction(id: string, input: PaymentInput): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    if (input.payment_id) {
+      const existing = this.db.prepare('SELECT * FROM supplier_payments WHERE id = ?').get(input.payment_id) as any
+      if (existing) {
+        if (existing.tenant_id !== tenantId || existing.invoice_id !== id || existing.deleted_at
+          || existing.amount !== checkedMoney(input.amount, 'Сума оплати')
+          || existing.payment_method !== input.payment_method || existing.fund_source !== input.fund_source
+          || (existing.shift_id ?? null) !== (input.shift_id ?? null)) {
+          throw new Error('Ідентифікатор оплати вже використано іншою операцією')
+        }
+        return this.getInvoice(id, tenantId)
+      }
+    }
     const invoice = this.getInvoice(id, tenantId)
     if (invoice.status === 'cancelled') throw new Error('Не можна оплатити скасовану накладну')
     const remaining = Number(invoice.total ?? 0) - Number(invoice.paid_amount ?? 0)
@@ -828,27 +845,7 @@ export class LocalSupplyRepository {
   }
 
   private getCashboxAvailable(tenantId: string, shiftId: string | null | undefined): number {
-    if (!shiftId) throw new Error('Щоб платити з каси, спочатку відкрийте касову зміну')
-    const shift = this.db.prepare(`
-      SELECT id, opening_cash
-      FROM shifts
-      WHERE id = ? AND tenant_id = ? AND status = 'open'
-      LIMIT 1
-    `).get(shiftId, tenantId) as { id: string; opening_cash: number } | undefined
-    if (!shift) throw new Error('Щоб платити з каси, спочатку відкрийте касову зміну')
-    const rows = this.db.prepare(`
-      SELECT type, COALESCE(SUM(amount), 0) AS total
-      FROM cash_operations
-      WHERE tenant_id = ? AND shift_id = ? AND deleted_at IS NULL
-      GROUP BY type
-    `).all(tenantId, shift.id) as Array<{ type: string; total: number }>
-    const by: Record<string, number> = {}
-    for (const row of rows) by[row.type] = Number(row.total ?? 0) || 0
-    const cashSales = by.sale_cash ?? 0
-    const cashReturns = by.return_cash ?? 0
-    const cashIn = by.cash_in ?? 0
-    const cashOut = (by.cash_out ?? 0) + (by.salary_payout ?? 0) + (by.supplier_payment ?? 0)
-    return Number(shift.opening_cash ?? 0) + cashSales + cashIn - cashReturns - cashOut
+    return readOpenCashBalance(this.db, tenantId, shiftId)
   }
 
   private ensureCashboxPaymentAllowed(tenantId: string, input: PaymentInput, amount: number): void {

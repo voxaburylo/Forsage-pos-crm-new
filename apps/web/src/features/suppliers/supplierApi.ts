@@ -2,10 +2,13 @@ import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
+import { PaymentAttempts } from './paymentAttempts'
 import type {
   Supplier, PaginatedSuppliers,
   SupplyInvoice, PaginatedInvoices, SupplierDebtsResult,
 } from '@/types/supplier'
+
+const localPaymentAttempts = new PaymentAttempts<SupplyInvoice>()
 
 export interface SupplierFilters {
   search?: string
@@ -205,7 +208,9 @@ export const supplierApi = {
   }) => {
     const local = localSupply()
     if (local?.payInvoice) {
-      const data = await local.payInvoice(id, { ...body, user_id: currentUserId() })
+      const userId = currentUserId()
+      const key = JSON.stringify([id, userId, body.amount, body.payment_method, body.fund_source, body.shift_id ?? null, body.note ?? null])
+      const data = await localPaymentAttempts.run(key, paymentId => local.payInvoice(id, { ...body, user_id: userId, payment_id: paymentId }))
       requestDesktopSync()
       return { data } as { data: SupplyInvoice }
     }
