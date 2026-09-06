@@ -88,6 +88,7 @@ export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
   'customer_vehicle.deleted': { scope: 'shop' },
   'customer_vehicle.updated': { scope: 'shop' },
   'inventory.completed': { references: ['product', 'inventory_session'], scope: 'shop' },
+  'inventory.document_copied': { references: ['product', 'inventory_session'], scope: 'shop' },
   'inventory.created': { creates: 'inventory_session', scope: 'shop' },
   'inventory.deleted': { scope: 'shop' },
   'inventory.started': { references: ['inventory_session'], scope: 'shop' },

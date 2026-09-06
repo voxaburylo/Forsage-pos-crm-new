@@ -242,7 +242,7 @@ export class LocalSyncRepository {
   }
 
   /**
-   * Зняти операції з черги і вирівняти залишок сервера своїм.
+   * Копіювати документ окремо від актуального залишку.
    *
    * Йдеться про операції, яких сервер не прийме ніколи: наприклад ревізію з
    * серпня, відхилену тому, що відтоді залишок змінили інші проведені
@@ -252,10 +252,9 @@ export class LocalSyncRepository {
    * Викликається лише правилами самої каси. Кнопки для цього свідомо немає:
    * власник не має розбирати чергу руками — програма мусить давати раду
    * сама, як це роблять 1С та інші облікові системи. Слід лишається в
-   * журналі проблем: сервер про цю операцію не дізнається ніколи.
+   * журналі проблем. Успіх фіксуємо тільки після відповіді сервера.
    */
-  private dropFromQueue(sequences: number[]): { discarded: number; corrected: number } {
-    const timestamp = nowIso()
+  private queueInventoryCopies(sequences: number[]): { queued: number; corrected: number } {
     const dropped: OutboxDropCandidate[] = []
     let corrected = 0
 
@@ -272,17 +271,17 @@ export class LocalSyncRepository {
 
         this.db.prepare(`
           UPDATE sync_outbox
-          SET status = 'synced', synced_at = ?, next_attempt_at = NULL, last_error = ?
+          SET operation_type = 'inventory.document_copied', status = 'pending',
+              synced_at = NULL, attempts = 0, next_attempt_at = NULL, last_error = ?
           WHERE sequence = ?
         `).run(
-          timestamp,
-          `Знято з черги: сервер не прийме її ніколи. Остання відповідь: ${row.last_error ?? 'без пояснення'}`,
+          `Очікує копіювання документа без повторного перерахунку залишків. Остання відповідь: ${row.last_error ?? 'без пояснення'}`,
           sequence,
         )
         dropped.push(row)
       }
 
-      // Черга розблокована, але сервер лишився з чужим залишком: саме ця
+      // Документ поставлено в чергу, але сервер лишився з чужим залишком: саме ця
       // операція мала його вирівняти. Каса — джерело правди для залишків
       // (веб для вечірньої звірки), тому надсилаємо свій залишок як
       // виправлення. Без цього зняття з черги лікує чергу і залишає
@@ -294,10 +293,10 @@ export class LocalSyncRepository {
     for (const row of dropped) {
       this.problems.record({
         source: 'sync',
-        code: 'sync.operation_discarded',
+        code: 'sync.inventory_copy_queued',
         severity: 'warning',
-        title: 'Застарілу ревізію знято з черги — залишок вирівняно з каси',
-        detail: `Сервер відхиляв її як застарілу: ${row.last_error ?? 'без пояснення'}. Каса надіслала свій залишок — рахувати наново не треба.`,
+        title: 'Ревізія очікує копіювання на сервер',
+        detail: `Сервер відхиляв її як застарілу: ${row.last_error ?? 'без пояснення'}. Документ і актуальний залишок поставлено в чергу окремо. Локальні дані не змінено.`,
         entity_type: row.aggregate_type,
         entity_id: row.aggregate_id,
         context: { sequence: row.sequence, attempts: row.attempts, operation_type: row.operation_type },
@@ -305,7 +304,7 @@ export class LocalSyncRepository {
       })
     }
 
-    return { discarded: dropped.length, corrected }
+    return { queued: dropped.length, corrected }
   }
 
   /**
@@ -395,7 +394,7 @@ export class LocalSyncRepository {
    * рахувати ще раз, бо кількість «знову не та».
    *
    * Це правило, а не вибір, тому питати нікого не треба: каса — джерело
-   * правди для залишків. Знімаємо рядок і надсилаємо серверу свою кількість.
+   * правди для залишків. Копіюємо документ і окремо надсилаємо свою кількість.
    *
    * Свідомо чекаємо, поки вичерпаються всі спроби, і тільки якщо по тих самих
    * товарах більше нічого не стоїть у черзі: конфлікт буває й тимчасовим —
@@ -426,7 +425,7 @@ export class LocalSyncRepository {
     })
     if (ready.length === 0) return 0
 
-    return this.dropFromQueue(ready.map((candidate) => candidate.sequence)).discarded
+    return this.queueInventoryCopies(ready.map((candidate) => candidate.sequence)).queued
   }
 
   /**
@@ -982,6 +981,11 @@ export class LocalSyncRepository {
       return
     }
     if (operation.operation_type === 'inventory.deleted') {
+      return
+    }
+
+    if (operation.operation_type === 'inventory.document_copied') {
+      clearRow('inventory_sessions', operation.aggregate_id)
       return
     }
 

@@ -252,15 +252,23 @@ export async function applyInventoryDeleted(tenantId: string, operation: SyncOut
 }
 
 export async function applyInventoryCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  // A historical document copy must never reapply an old physical count.
+  const documentOnly = operation.operation_type === 'inventory.document_copied'
   const payload = operation.payload ?? {}
   const sessionId = String(payload.id ?? operation.aggregate_id)
   const items = (Array.isArray(payload.items) ? payload.items : [])
     .filter((item: any) => {
-      const countedStock = Number(item?.counted_stock ?? 0)
-      return Boolean(item?.product_id) && Number.isFinite(countedStock) && countedStock >= 0
+      const raw = item?.counted_stock
+      const countedStock = Number(raw)
+      return Boolean(item?.product_id) && raw !== null && raw !== undefined
+        && typeof raw !== 'boolean' && String(raw).trim() !== ''
+        && Number.isFinite(countedStock) && countedStock >= 0
     })
   if (items.length === 0) {
     throw new AppError('SYNC_INVENTORY_EMPTY', 'Неможливо завершити порожню ревізію', 422)
+  }
+  if (items.length !== payload.items.length || new Set(items.map((item: any) => item.product_id)).size !== items.length) {
+    throw new AppError('SYNC_INVENTORY_INVALID_ITEMS', 'Ревізія містить некоректні або повторні товари', 422)
   }
   const createdBy = payload.created_by ?? userId
   const createdAt = payload.created_at ?? operation.created_at
@@ -309,7 +317,7 @@ export async function applyInventoryCompleted(tenantId: string, userId: string, 
       if (!Number.isFinite(expectedStock)) {
         throw new AppError('SYNC_INVENTORY_BASE_MISSING', 'Стара ревізія не містить базового залишку. Відкрийте її та перерахуйте товар.', 409)
       }
-      if (serverStock !== expectedStock && serverStock !== countedStock) {
+      if (!documentOnly && serverStock !== expectedStock && serverStock !== countedStock) {
         throw new AppError('SYNC_INVENTORY_CONFLICT', 'Залишок товару змінився після початку ревізії: було ' + expectedStock + ', зараз ' + serverStock + '. Оновіть ревізію і перерахуйте позицію.', 409)
       }
 
@@ -343,11 +351,13 @@ export async function applyInventoryCompleted(tenantId: string, userId: string, 
         )
       }
 
-      await client.query(
-        'UPDATE products SET qty_on_hand = $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-        [countedStock, appliedAt, productId, tenantId],
-      )
-      touchedProductIds.push(productId)
+      if (!documentOnly) {
+        await client.query(
+          'UPDATE products SET qty_on_hand = $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
+          [countedStock, appliedAt, productId, tenantId],
+        )
+        touchedProductIds.push(productId)
+      }
     }
     if (touchedProductIds.length > 0) {
       await client.query(

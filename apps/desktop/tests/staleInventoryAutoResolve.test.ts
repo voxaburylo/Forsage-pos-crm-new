@@ -10,9 +10,9 @@ import { MAX_OUTBOX_ATTEMPTS } from '../src/repositories/outboxPolicy'
 
 /**
  * Власник не має розбирати чергу руками: «я не бачив, щоб так працювало 1С».
- * Застаріла ревізія — не вибір, а правило: сервер не прийме її ніколи, а каса
- * є джерелом правди для залишків. Тому каса знімає її сама й надсилає свою
- * кількість.
+ * Каса є джерелом правди для залишків. Конфліктну ревізію копіюємо як
+ * документ, а актуальну кількість передаємо окремо. Без відповіді сервера
+ * документ не можна позначати доставленим.
  */
 describe('застаріла ревізія лікується без участі власника', () => {
   let root = ''
@@ -63,8 +63,8 @@ describe('застаріла ревізія лікується без участ
     sync.applyPushResults([])
   }
 
-  it('знімає застарілу ревізію з черги і ставить виправлення залишку', () => {
-    queueOperation({
+  it('чекає підтвердження копії документа і ставить актуальний залишок окремо', () => {
+    const operationId = queueOperation({
       sequence: 100, operationType: 'inventory.completed', aggregateType: 'inventory',
       status: 'failed', attempts: MAX_OUTBOX_ATTEMPTS, error: staleError,
     })
@@ -80,12 +80,21 @@ describe('застаріла ревізія лікується без участ
     expect(correction?.status).toBe('pending')
     expect(JSON.parse(correction!.payload_json)).toMatchObject({ qty_on_hand: 6, stock_correction: true })
 
-    // Слід лишається: документа на сервері не буде, і це має бути видно.
+    const copy = db.prepare('SELECT status, synced_at, operation_type, payload_json FROM sync_outbox WHERE sequence = 100').get() as any
+    expect(copy).toMatchObject({ status: 'pending', synced_at: null, operation_type: 'inventory.document_copied' })
+    expect(JSON.parse(copy.payload_json).items).toEqual([{ product_id: productId, counted_stock: 6, expected_stock: 6 }])
+    pushCycle(sync)
+    expect(db.prepare('SELECT COUNT(*) n FROM sync_outbox').get()).toEqual({ n: 2 })
+    expect(db.prepare('SELECT qty_on_hand FROM products WHERE id = ?').get(productId)).toEqual({ qty_on_hand: 6 })
+    sync.applyPushResults([{ sequence: 100, operation_id: operationId, status: 'synced' }])
+    expect(db.prepare('SELECT status FROM sync_outbox WHERE sequence = 100').get()).toEqual({ status: 'synced' })
+
+    // A queued copy is not a successful delivery.
     const problem = db.prepare(`
-      SELECT title, detail FROM problem_log WHERE code = 'sync.operation_discarded'
+      SELECT title, detail FROM problem_log WHERE code = 'sync.inventory_copy_queued'
     `).get() as { title: string; detail: string }
-    expect(problem.title).toContain('Застарілу ревізію знято з черги')
-    expect(problem.detail).toContain('рахувати наново не треба')
+    expect(problem.title).toContain('очікує копіювання')
+    expect(problem.detail).toContain('Локальні дані не змінено')
   })
 
   it('чекає, поки вичерпаються спроби: конфлікт буває тимчасовим', () => {

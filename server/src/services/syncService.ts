@@ -201,7 +201,7 @@ async function applyLocalOperation(params: {
     await applyInventoryDeleted(tenantId, operation)
     return
   }
-  if (operation.operation_type === 'inventory.completed') {
+  if (operation.operation_type === 'inventory.completed' || operation.operation_type === 'inventory.document_copied') {
     await applyInventoryCompleted(tenantId, userId, operation)
     return
   }
