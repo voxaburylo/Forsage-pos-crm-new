@@ -22,6 +22,7 @@ import { hasSuspiciousInventorySku, inventoryQuickCreateSeed } from './inventory
 import { InventoryPager } from './InventoryPager'
 import { inventoryPage, INVENTORY_PAGE_SIZE } from './inventoryPaging'
 import { InventoryReadGuard, inventoryHasPendingWrites, updateScanSummary } from './inventoryScanState'
+import { InventoryWriteQueue } from './inventoryWriteQueue'
 
 interface ProductInfo {
   id: string
@@ -262,6 +263,7 @@ export default function ActiveSession() {
   const completingRef = useRef(false)
   const scanFailuresRef = useRef(0)
   const writeFailuresRef = useRef(0)
+  const writeQueueRef = useRef(new InventoryWriteQueue())
   const flushingInputRef = useRef(false)
   const refreshAfterWritesRef = useRef(false)
   const sessionReadGuard = useRef(new InventoryReadGuard())
@@ -287,7 +289,7 @@ export default function ActiveSession() {
     pendingRowWritesRef.current += 1
     setPendingRowWrites(pendingRowWritesRef.current)
     try {
-      return await work()
+      return await writeQueueRef.current.run(work)
     } catch (error) {
       writeFailuresRef.current += 1
       throw error
@@ -571,7 +573,6 @@ export default function ActiveSession() {
     if (!id) return
     const qty = Number(String(value).replace(',', '.'))
     if (!Number.isFinite(qty) || qty < 0) { toast.error('Некоректна кількість'); return }
-    if (qty === item.counted_stock) return
     try {
       await trackRowWrite(async function () {
         await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
@@ -606,7 +607,6 @@ export default function ActiveSession() {
     const product = item.product
     const retail = kopecksFromInput(value)
     if (retail === null) { toast.error('Некоректна ціна'); return }
-    if (retail === product.retail_price) return
     try {
       await trackRowWrite(async () => {
         await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
@@ -623,7 +623,6 @@ export default function ActiveSession() {
     const product = item.product
     const purchase = kopecksFromInput(value)
     if (purchase === null) { toast.error('Некоректна закупівельна ціна'); return }
-    if (purchase === (product.purchase_price ?? 0)) return
     try {
       await trackRowWrite(async () => {
         await productApi.update(product.id, { purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
@@ -641,13 +640,11 @@ export default function ActiveSession() {
     if (patch.sku !== undefined) {
       const sku = patch.sku.trim()
       if (!sku) { toast.error('Артикул не може бути порожнім'); return }
-      if (sku === product.sku) return
       payload.sku = sku
     }
     if (patch.name !== undefined) {
       const name = patch.name.trim()
       if (name.length < 2) { toast.error('Назва товару закоротка'); return }
-      if (name === product.name) return
       payload.name = name
     }
     if (Object.keys(payload).length === 0) return

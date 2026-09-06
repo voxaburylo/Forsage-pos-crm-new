@@ -26,6 +26,7 @@ describe('all manual inventory writes participate in completion', () => {
     expect(complete.indexOf('writeFailuresRef.current !== writeFailuresBefore')).toBeLessThan(complete.indexOf('await inventoryApi.complete'))
     const tracker = functions.get('trackRowWrite')!.getText(tree)
     expect(tracker).toContain('writeFailuresRef.current += 1')
+    expect(tracker).toContain('await writeQueueRef.current.run(work)')
     expect(tracker).toContain('pendingRowWritesRef.current === 0 && refreshAfterWritesRef.current')
   })
   it('does not erase an observed mismatch before the new price is saved', () => {
@@ -33,5 +34,14 @@ describe('all manual inventory writes participate in completion', () => {
     expect(count).toContain("price_checked: priceStatus === 'match'")
     expect(count).toContain('observed_retail_price: observedKopecks')
     expect(count).not.toContain('observed_retail_price: willApplyPrice ? null')
+  })
+  it('does not discard edits by comparing with an outdated rendered value', () => {
+    for (const [name, stale] of [
+      ['setItemQty', 'qty === item.counted_stock'],
+      ['setItemRetail', 'retail === product.retail_price'],
+      ['setItemPurchase', 'purchase === (product.purchase_price'],
+      ['updateItemProduct', 'sku === product.sku'],
+      ['updateItemProduct', 'name === product.name'],
+    ]) expect(functions.get(name)!.getText(tree)).not.toContain(stale)
   })
 })
