@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import { localFirstWriteGuard } from './middleware/localFirstWriteGuard.js'
 import { rateLimit } from 'express-rate-limit'
 import { logger } from './lib/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
@@ -141,6 +142,9 @@ app.get('/api/v1/version', (_req, res) => {
 
 // Rate limit на login — підключаємо ДО роутера
 app.use('/api/v1/auth/login', loginLimiter)
+
+// Єдина точка запису — каса. Через веб дані тільки дивляться.
+app.use(localFirstWriteGuard)
 
 // Роуты
 app.use('/api/v1/internal', internalAiRouter)

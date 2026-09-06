@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useEffect, type ErrorInfo, type ReactNode } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
+import { TillOnly } from '@/components/TillOnly'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
 import { LocalSyncAgent } from '@/components/LocalSyncAgent'
@@ -181,18 +182,18 @@ function App() {
           <Route path="/analytics/payroll"    element={<ProtectedRoute roles={ADMIN_ROLES}><PayrollPage /></ProtectedRoute>} />
           <Route path="/dashboard"             element={<Navigate to="/analytics/statistics" replace />} />
           <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
-          <Route path="/products/new"       element={<ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute>} />
+          <Route path="/products/new"       element={<TillOnly what="Створення товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/products/:id"       element={<ProtectedRoute><ProductDetailPage /></ProtectedRoute>} />
-          <Route path="/products/:id/edit"  element={<ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute>} />
+          <Route path="/products/:id/edit"  element={<TillOnly what="Редагування товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/customers"           element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
-          <Route path="/customers/new"       element={<ProtectedRoute><CustomerFormPage /></ProtectedRoute>} />
+          <Route path="/customers/new"       element={<TillOnly what="Створення клієнта"><ProtectedRoute><CustomerFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
-          <Route path="/customers/:id/edit"  element={<ProtectedRoute roles={OFFICE_ROLES}><CustomerFormPage /></ProtectedRoute>} />
+          <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={OFFICE_ROLES}><CustomerFormPage /></ProtectedRoute></TillOnly>} />
 
-          <Route path="/pos"      element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
+          <Route path="/pos"      element={<TillOnly what="Каса"><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
-          <Route path="/returns"  element={<ProtectedRoute><ReturnForm /></ProtectedRoute>} />
+          <Route path="/returns"  element={<TillOnly what="Повернення"><ProtectedRoute><ReturnForm /></ProtectedRoute></TillOnly>} />
           <Route path="/cashflow" element={<ProtectedRoute><CashflowPage /></ProtectedRoute>} />
           <Route path="/reports"  element={<Navigate to="/analytics/sales" replace />} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
@@ -202,19 +203,19 @@ function App() {
           <Route path="/admin"    element={<ProtectedRoute roles={ADMIN_ROLES}><AdminPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute roles={ADMIN_ROLES}><SettingsPage /></ProtectedRoute>} />
           <Route path="/settings/draft-nomenclature" element={<ProtectedRoute roles={ADMIN_ROLES}><SupplierPricesPage /></ProtectedRoute>} />
-          <Route path="/settings/draft-nomenclature/import" element={<ProtectedRoute roles={ADMIN_ROLES}><BulkImportPage /></ProtectedRoute>} />
+          <Route path="/settings/draft-nomenclature/import" element={<TillOnly what="Імпорт номенклатури"><ProtectedRoute roles={ADMIN_ROLES}><BulkImportPage /></ProtectedRoute></TillOnly>} />
           
           <Route path="/suppliers" element={<ProtectedRoute roles={SUPPLIER_ROLES}><SuppliersPage /></ProtectedRoute>} />
-          <Route path="/suppliers/new" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
+          <Route path="/suppliers/new" element={<TillOnly what="Створення постачальника"><ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/:id" element={<ProtectedRoute roles={SUPPLIER_ROLES}><SupplierDetailPage /></ProtectedRoute>} />
-          <Route path="/suppliers/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute>} />
-          <Route path="/receiving" element={<ProtectedRoute roles={RECEIVING_ROLES}><ReceivingPage /></ProtectedRoute>} />
-          <Route path="/receiving/ai" element={<ProtectedRoute roles={RECEIVING_ROLES}><AiAssistantPage invoiceOnly /></ProtectedRoute>} />
+          <Route path="/suppliers/:id/edit" element={<TillOnly what="Редагування постачальника"><ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/receiving" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><ReceivingPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/receiving/ai" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><AiAssistantPage invoiceOnly /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/invoices" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoicesPage /></ProtectedRoute>} />
           <Route path="/suppliers/pos" element={<ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute>} />
-          <Route path="/suppliers/invoices/new" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
+          <Route path="/suppliers/invoices/new" element={<TillOnly what="Прихідна накладна"><ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/invoices/:id" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceDetailPage /></ProtectedRoute>} />
-          <Route path="/suppliers/invoices/:id/edit" element={<ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute>} />
+          <Route path="/suppliers/invoices/:id/edit" element={<TillOnly what="Редагування накладної"><ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/staff"          element={<ProtectedRoute roles={ADMIN_ROLES}><StaffPage /></ProtectedRoute>} />
           
@@ -228,23 +229,23 @@ function App() {
           <Route path="/ai-assistant"   element={<ProtectedRoute roles={OFFICE_ROLES}><AiAssistantPage /></ProtectedRoute>} />
 
           <Route path="/inventory"               element={<ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><InventoryPage /></ProtectedRoute>} />
-          <Route path="/inventory/picking"       element={<ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><WarehousePicking /></ProtectedRoute>} />
-          <Route path="/inventory/:id"          element={<ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><ActiveSession /></ProtectedRoute>} />
+          <Route path="/inventory/picking"       element={<TillOnly what="Збірка замовлень"><ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><WarehousePicking /></ProtectedRoute></TillOnly>} />
+          <Route path="/inventory/:id"          element={<TillOnly what="Ревізія"><ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><ActiveSession /></ProtectedRoute></TillOnly>} />
           <Route path="/inventory/reserves"      element={<ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><ReservesList /></ProtectedRoute>} />
-          <Route path="/inventory/movements"     element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WarehouseMovementPage /></ProtectedRoute>} />
+          <Route path="/inventory/movements"     element={<TillOnly what="Переміщення складу"><ProtectedRoute roles={WAREHOUSE_ROLES}><WarehouseMovementPage /></ProtectedRoute></TillOnly>} />
           <Route path="/inventory/writeoffs"     element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffsPage /></ProtectedRoute>} />
-          <Route path="/inventory/writeoffs/new" element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffFormPage /></ProtectedRoute>} />
+          <Route path="/inventory/writeoffs/new" element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/inventory/writeoffs/:id" element={<ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffDetailPage /></ProtectedRoute>} />
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
           <Route path="/chats" element={<ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute>} />
           <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute>} />
-          <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute>} />
+          <Route path="/orders/new"      element={<TillOnly what="Створення замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><OrderDetailPage /></ProtectedRoute>} />
-          <Route path="/orders/:id/edit" element={<ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute>} />
+          <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/quotes"          element={<Navigate to="/orders" replace />} />
-          <Route path="/quotes/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute>} />
+          <Route path="/quotes/new"      element={<TillOnly what="Створення прорахунку"><ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute></TillOnly>} />
           <Route path="/quotes/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute>} />
 
           <Route path="/" element={<Navigate to="/analytics" replace />} />

@@ -71,6 +71,10 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        // Каса представляється серверу: зміни приймаються лише від неї. Через
+        // веб дані тільки дивляться — щоб не було двох точок запису в одну
+        // базу й розбіжностей за ними.
+        ...(isDesktopRuntime() ? { 'X-Forsage-Client': 'desktop' } : {}),
         ...fetchOptions.headers,
       },
     })
