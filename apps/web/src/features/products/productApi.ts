@@ -136,7 +136,7 @@ type DesktopProductSavePayload = NonNullable<NonNullable<ReturnType<typeof deskt
   ? Product
   : never
 
-function desktopCreatePayload(id: string, form: ProductFormData): DesktopProductSavePayload {
+export function desktopCreatePayload(id: string, form: ProductFormData): DesktopProductSavePayload {
   const payload = formToCreatePayload(form)
   return { id, ...payload } as DesktopProductSavePayload
 }

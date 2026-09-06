@@ -140,6 +140,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getSession: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:get-session', sessionId, input),
     findProduct: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:find-product', sessionId, input),
     count: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:count', sessionId, input),
+    createProduct: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:create-product', sessionId, input),
     scan: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:scan', sessionId, input),
     setItemQty: (sessionId: string, itemId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:set-item-qty', sessionId, itemId, input),
     removeItem: (sessionId: string, itemId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:remove-item', sessionId, itemId, tenantId),

@@ -100,6 +100,7 @@ const INVENTORY_WRITE_TIMEOUT_MS = 15_000
 const INVENTORY_COMPLETE_TIMEOUT_MS = 120_000
 
 const emptyQuickProduct = {
+  operation_id: '',
   sku: '',
   name: '',
   barcode: '',
@@ -152,11 +153,12 @@ function loadInventoryLocalDraft(sessionId: string): InventoryLocalDraft | null 
   }
 }
 
-function saveInventoryLocalDraft(sessionId: string, draft: InventoryDraftPayload) {
+function saveInventoryLocalDraft(sessionId: string, draft: InventoryDraftPayload, strict = false) {
   try {
     localStorage.setItem(inventoryDraftKey(sessionId), JSON.stringify({ ...draft, savedAt: new Date().toISOString() }))
   } catch {
     // Перехід між сторінками не повинен падати, якщо сховище браузера недоступне або переповнене.
+    if (strict) throw new Error('Не вдалося зберегти чернетку створення товару. Звільніть місце та повторіть; товар не створено.')
   }
 }
 
@@ -266,6 +268,7 @@ export default function ActiveSession() {
   const writeFailuresRef = useRef(0)
   const writeQueueRef = useRef(new InventoryWriteQueue())
   const inputGuardRef = useRef(new InventoryInputGuard())
+  const creatingProductRef = useRef(false)
   const flushingInputRef = useRef(false)
   const refreshAfterWritesRef = useRef(false)
   const sessionReadGuard = useRef(new InventoryReadGuard())
@@ -419,6 +422,7 @@ export default function ActiveSession() {
     setQuickProduct({
       ...emptyQuickProduct,
       ...initial,
+      operation_id: crypto.randomUUID(),
     })
   }
 
@@ -1003,7 +1007,7 @@ export default function ActiveSession() {
   }
 
   async function createProductFromInventory() {
-    if (!id) return
+    if (!id || creatingProductRef.current) return
     const draft = quickProduct
     const sku = draft.sku.trim()
     const name = draft.name.trim()
@@ -1016,9 +1020,14 @@ export default function ActiveSession() {
     }
     if (countedQty === null || countedQty <= 0) { toast.error('Кількість має бути більше 0'); return }
     setCreatingProduct(true)
+    creatingProductRef.current = true
     try {
       await trackRowWrite(async () => {
-        const created = await productApi.create({
+        const operationId = draft.operation_id || crypto.randomUUID()
+        const durableDraft = { ...draft, operation_id: operationId }
+        setQuickProduct(durableDraft)
+        saveInventoryLocalDraft(id, { ...inventoryDraftSnapshotRef.current, quickProduct: durableDraft, quickCreateOpen: true }, true)
+        const response = await inventoryApi.createProduct(id, operationId, {
           sku,
           name,
           barcode: draft.barcode.trim(),
@@ -1038,8 +1047,7 @@ export default function ActiveSession() {
           specs: {},
           requires_core_return: false,
           core_deposit_amount: '',
-        }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-        const response = await inventoryApi.count(id, { product_id: created.data.id, qty: countedQty, price_checked: true, observed_retail_price: null }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        }, countedQty)
         setSession(response.session)
         setQuickProduct(emptyQuickProduct)
         setQuickCreateOpen(false)
@@ -1054,6 +1062,7 @@ export default function ActiveSession() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося створити товар')
     } finally {
       setCreatingProduct(false)
+      creatingProductRef.current = false
     }
   }
 

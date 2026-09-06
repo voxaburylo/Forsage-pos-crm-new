@@ -1176,6 +1176,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:inventory:count', (_event, sessionId: string, input: any) =>
     requireLocalInventory().countProduct(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
+  handleDesktopIpc('desktop:inventory:create-product', (_event, sessionId: string, input: any) =>
+    requireLocalInventory().createAndCountProduct(sessionId, { ...input, product: { ...input.product, tenant_id: requireDesktopSession().tenant_id }, user_id: requireDesktopSession().id }),
+  )
   handleDesktopIpc('desktop:inventory:scan', (_event, sessionId: string, input: any) =>
     requireLocalInventory().scan(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )

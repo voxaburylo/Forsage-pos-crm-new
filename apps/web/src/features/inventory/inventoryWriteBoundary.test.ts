@@ -12,6 +12,14 @@ function visit(node: ts.Node) {
 visit(tree)
 
 describe('all manual inventory writes participate in completion', () => {
+  it('persists a retry ID before calling the atomic creation API', () => {
+    const handler = functions.get('createProductFromInventory')!.getText(tree)
+    expect(handler).toContain('draft.operation_id || crypto.randomUUID()')
+    expect(handler).toContain('saveInventoryLocalDraft(')
+    expect(handler.indexOf('saveInventoryLocalDraft(')).toBeLessThan(handler.indexOf('await inventoryApi.createProduct('))
+    expect(handler).not.toContain('productApi.create(')
+    expect(handler).not.toContain('inventoryApi.count(')
+  })
   it.each(['savePrice', 'addProduct', 'setItemQty', 'removeItem', 'setItemRetail', 'setItemPurchase',
     'updateItemProduct', 'applyRowMarkup', 'applyMassPrice', 'saveCount', 'createProductFromInventory', 'applyIssuePrice'])(
     '%s tracks the whole write operation', name => {

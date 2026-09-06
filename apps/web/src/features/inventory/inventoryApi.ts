@@ -1,6 +1,7 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { requestDesktopSync } from '@/features/products/productApi'
+import { desktopCreatePayload, requestDesktopSync } from '@/features/products/productApi'
+import type { ProductFormData } from '@/types/product'
 import { useAuthStore } from '@/stores/authStore'
 
 const DEFAULT_READ_TIMEOUT_MS = 10_000
@@ -31,6 +32,13 @@ function withUser<T extends Record<string, unknown>>(input: T = {} as T): T & { 
 }
 
 export const inventoryApi = {
+  createProduct: async (sessionId: string, operationId: string, form: ProductFormData, qty: number): Promise<{ data: any; session: any }> => {
+    const local = localInventory()
+    if (!local?.createProduct) throw new Error('Створення товару в ревізії доступне в актуальній локальній програмі.')
+    const result = await local.createProduct(sessionId, { operation_id: operationId, product: desktopCreatePayload(operationId, form), qty })
+    requestDesktopSync()
+    return result
+  },
   listSessions: async (
     params: { page?: number; per_page?: number } = {},
     opts: RequestOptions = {},

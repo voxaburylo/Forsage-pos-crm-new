@@ -579,6 +579,7 @@ interface ForsageDesktopBridge {
     getSession: (sessionId: string, input?: { tenant_id?: string; user_id?: string }) => Promise<any>
     findProduct: (sessionId: string, input: { tenant_id?: string; code?: string; product_id?: string }) => Promise<any>
     count: (sessionId: string, input: any) => Promise<any>
+    createProduct?: (sessionId: string, input: any) => Promise<any>
     scan: (sessionId: string, input: any) => Promise<any>
     setItemQty: (sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) => Promise<any>
     removeItem: (sessionId: string, itemId: string, tenantId?: string) => Promise<{ ok: true }>

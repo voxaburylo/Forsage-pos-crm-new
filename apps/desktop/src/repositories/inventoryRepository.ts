@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
-import { DEFAULT_TENANT_ID } from '../db/localTypes'
+import { DEFAULT_TENANT_ID, type LocalProductUpsert } from '../db/localTypes'
+import { LocalCatalogRepository } from './catalogRepository'
 
 function checkedNonnegative(value: unknown): number {
   const parsed = Number(value)
@@ -35,6 +36,31 @@ interface InventoryCountInput {
 
 export class LocalInventoryRepository {
   constructor(private readonly db: LocalDatabase) {}
+
+  createAndCountProduct(sessionId: string, input: { operation_id: string; product: LocalProductUpsert; qty: number; user_id?: string }): { data: any; session: any } {
+    if (!/^[0-9a-f-]{36}$/i.test(input.operation_id)) throw new Error('Некоректний ідентифікатор створення товару')
+    const tenantId = input.product.tenant_id ?? DEFAULT_TENANT_ID
+    const qty = checkedNonnegative(input.qty)
+    if (qty <= 0) throw new Error('Кількість має бути більше 0')
+    const product = { ...input.product, id: input.operation_id, tenant_id: tenantId, qty_on_hand: 0, stock_correction: false }
+    const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId, product, qty })).digest('hex')
+    const key = `inventory-create:${tenantId}:${input.operation_id}`
+    return this.db.transaction(() => {
+      const receipt = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (receipt) {
+        const saved = JSON.parse(receipt.value_json) as { fingerprint: string; productId: string }
+        if (saved.fingerprint !== fingerprint) throw new Error('Цей товар уже створено. Відкрийте рядок ревізії для редагування; повтор зі зміненими даними заборонено.')
+        return { data: this.findItemByProduct(sessionId, saved.productId, tenantId), session: this.getSessionData(sessionId, tenantId, input.user_id) }
+      }
+      this.requireActiveSession(sessionId, tenantId)
+      if (this.db.prepare('SELECT id FROM products WHERE id = ?').get(product.id)) throw new Error('Ідентифікатор товару вже використано')
+      const created = new LocalCatalogRepository(this.db).saveProduct(product)
+      const result = this.countProduct(sessionId, { tenant_id: tenantId, user_id: input.user_id, product_id: created.id, qty, price_checked: true })
+      this.db.prepare('INSERT INTO app_meta (key, value_json, updated_at) VALUES (?, ?, ?)')
+        .run(key, JSON.stringify({ fingerprint, productId: created.id }), nowIso())
+      return result
+    })
+  }
 
   listSessions(
     tenantId = DEFAULT_TENANT_ID,
