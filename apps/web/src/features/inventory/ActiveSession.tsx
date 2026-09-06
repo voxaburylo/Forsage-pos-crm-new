@@ -21,6 +21,7 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { hasSuspiciousInventorySku, inventoryQuickCreateSeed } from './inventoryQuickCreate'
 import { InventoryPager } from './InventoryPager'
 import { inventoryPage, INVENTORY_PAGE_SIZE } from './inventoryPaging'
+import { InventoryReadGuard, inventoryHasPendingWrites, updateScanSummary } from './inventoryScanState'
 
 interface ProductInfo {
   id: string
@@ -258,6 +259,9 @@ export default function ActiveSession() {
   const [labelQtys, setLabelQtys] = useState<Record<string, number>>({})
   const scanQueue = useRef<Array<{ code: string; qty: number }>>([])
   const scanQueueRunning = useRef(false)
+  const completingRef = useRef(false)
+  const scanFailuresRef = useRef(0)
+  const sessionReadGuard = useRef(new InventoryReadGuard())
   const inventoryDraftReadyRef = useRef(false)
   const inventoryDraftPersistenceDisabledRef = useRef(false)
   const inventoryCompletedRef = useRef(false)
@@ -272,12 +276,14 @@ export default function ActiveSession() {
     applyNewPrice: true,
   })
 
-  async function trackRowWrite(work: () => Promise<void>): Promise<void> {
+  async function trackRowWrite<T>(work: () => Promise<T>): Promise<T> {
+    sessionReadGuard.current.invalidate()
     pendingRowWritesRef.current += 1
     setPendingRowWrites(pendingRowWritesRef.current)
     try {
-      await work()
+      return await work()
     } finally {
+      sessionReadGuard.current.invalidate()
       pendingRowWritesRef.current = Math.max(0, pendingRowWritesRef.current - 1)
       setPendingRowWrites(pendingRowWritesRef.current)
     }
@@ -285,7 +291,7 @@ export default function ActiveSession() {
 
   async function waitForPendingRowWrites(): Promise<void> {
     const deadline = Date.now() + INVENTORY_WRITE_TIMEOUT_MS
-    while (pendingRowWritesRef.current !== 0) {
+    while (inventoryHasPendingWrites(pendingRowWritesRef.current, scanQueueRunning.current, scanQueue.current.length)) {
       if (Date.now() >= deadline) {
         throw new Error('Не всі зміни кількості встигли зберегтися. Перевірте рядки та повторіть завершення ревізії.')
       }
@@ -697,12 +703,13 @@ export default function ActiveSession() {
 
   async function load(silent = false) {
     if (!id) return
+    const readToken = sessionReadGuard.current.begin()
     if (!silent) setLoading(true)
     try {
       const { data } = await inventoryApi.getSession(id, { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS }) as { data: SessionData }
-      setSession(data)
+      if (sessionReadGuard.current.isCurrent(readToken) && pendingRowWritesRef.current === 0) setSession(data)
     } catch (error) {
-      if (!silent) {
+      if (!silent && sessionReadGuard.current.isCurrent(readToken)) {
         toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити ревізію')
         navigate('/inventory')
       }
@@ -711,7 +718,7 @@ export default function ActiveSession() {
     }
   }
 
-  useEffect(() => { load() }, [id])
+  useEffect(() => { load(); return () => sessionReadGuard.current.invalidate() }, [id])
 
   useEffect(() => {
     if (!highlightedItemId || !showRecent) return
@@ -777,23 +784,28 @@ export default function ActiveSession() {
   }, [countedRows, session?.summary?.total_counted_units])
 
   function mergeFastScannedItem(item: InventoryItem) {
+    sessionReadGuard.current.invalidate()
     setSession((current) => {
-      if (!current) return current
+      if (!current || current.id !== id) return current
       const previous = current.items.find((row) => row.id === item.id)
-      const previousCount = Number(previous?.counted_stock ?? 0)
       const nextItems = [item, ...current.items.filter((row) => row.id !== item.id)]
       const nextSummary = current.summary
-        ? {
-            ...current.summary,
-            counted_products: current.summary.counted_products + (!previous && Number(item.counted_stock) === 1 ? 1 : 0),
-            total_counted_units: Number(current.summary.total_counted_units ?? 0) + Math.max(0, Number(item.counted_stock ?? 0) - previousCount || 1),
-          }
+        ? updateScanSummary(current.summary, previous, item)
         : current.summary
-      return { ...current, items: nextItems, summary: nextSummary }
+      const priceIssues = current.price_issues.filter(issue => issue.id !== item.id)
+      if (item.product && item.observed_retail_price !== null && item.observed_retail_price !== item.product.retail_price) {
+        priceIssues.unshift({ id: item.id, product_id: item.product_id, observed_retail_price: item.observed_retail_price, product: item.product })
+      }
+      return { ...current, items: nextItems, summary: nextSummary, price_issues: priceIssues }
     })
   }
 
   function queueInventoryScan(code: string) {
+    if (completingRef.current || inventoryCompletedRef.current) {
+      playErrorTone()
+      toast.error('Ревізія завершується. Нові сканування не приймаються.')
+      return
+    }
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
     const tail = scanQueue.current[scanQueue.current.length - 1]
@@ -818,11 +830,12 @@ export default function ActiveSession() {
 
   async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean; qty?: number } = {}) {
     if (!id) return
+    if (completingRef.current && !options.fromHardware) { toast.error('Дочекайтеся завершення ревізії'); return }
     const normalizedCode = normalizeScanCode(code)
     if (!normalizedCode) return
     initAudio()
     try {
-      const response = await inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: { item: InventoryItem } }
+      const response = await trackRowWrite(() => inventoryApi.scan(id, { barcode: normalizedCode, qty: options.qty ?? 1 }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })) as { data: { item: InventoryItem } }
       const item = response.data.item
       mergeFastScannedItem(item)
       setShowRecent(true)
@@ -836,6 +849,7 @@ export default function ActiveSession() {
       window.setTimeout(() => inputRef.current?.focus(), 0)
     } catch (error) {
       playErrorTone()
+      scanFailuresRef.current += 1
       if (isNotFoundError(error) && canEditPrice) {
         if (options.fromCamera) setCameraOpen(false)
         toast.error('Товар не знайдено — можна створити його тут')
@@ -1038,13 +1052,16 @@ export default function ActiveSession() {
   }
 
   async function completeSession() {
-    if (!id || !session || !canComplete || completing) return
+    if (!id || !session || !canComplete || completingRef.current) return
+    completingRef.current = true
+    const scanFailuresBefore = scanFailuresRef.current
     setCompleting(true)
     toast.success('Застосовую залишки ревізії...')
     try {
       const activeElement = document.activeElement
       if (activeElement instanceof HTMLElement) activeElement.blur()
       await waitForPendingRowWrites()
+      if (scanFailuresRef.current !== scanFailuresBefore) throw new Error('Не всі сканування збережено. Перевірте повідомлення та товари перед завершенням ревізії.')
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       const updated = Number((response.data as any)?.items_updated ?? 0)
       setCompleteOpen(false)
@@ -1057,6 +1074,7 @@ export default function ActiveSession() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завершити ревізію')
       load(true)
     } finally {
+      completingRef.current = false
       setCompleting(false)
     }
   }
