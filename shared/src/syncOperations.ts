@@ -24,6 +24,26 @@ export type SyncEntity =
 export type SyncRole =
   | 'owner' | 'admin' | 'manager' | 'cashier' | 'storekeeper' | 'sto_viewer' | 'tire_worker'
 
+/**
+ * Хто має право надіслати операцію.
+ *
+ * `shop` — звичайна робота магазину: чек, накладна, ревізія, картка клієнта.
+ * Приймається від будь-якого працівника, бо **черга спільна на весь пристрій**.
+ * Менеджер створив замовлення вранці, чергу відправила сесія касира ввечері —
+ * і операція має пройти. Перевірка «за тим, хто натиснув» ламала саме це: до
+ * 06.09.2026 такий рядок відхилявся, а за ним ставало все, що на нього
+ * спиралося. Право робити дію стережеться там, де дія робиться — у самій касі
+ * (`desktopAuthorization.ts`, 177 каналів, fail-closed), а не на виході черги.
+ *
+ * `admin` — адміністративна зміна: працівники, ПІН-коди, налаштування,
+ * правила комісії, зарплати, видалення довідників. Тут перевірка сесії
+ * лишається: такі операції не робляться «принагідно» під час зміни.
+ */
+export type SyncOperationScope = 'shop' | 'admin'
+
+/** Ролі, яким дозволена звичайна робота магазину. */
+export const SYNC_SHOP_ROLES: readonly SyncRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
+
 export interface SyncOperationSpec {
   /** Яку сутність операція народжує — якщо народжує. */
   creates?: SyncEntity
@@ -34,83 +54,84 @@ export interface SyncOperationSpec {
    * на замовлення, але створює його менеджер окремою дією).
    */
   references?: SyncEntity[]
-  /** Хто може надсилати. owner та admin можуть усе — їх тут не перелічуємо. */
-  roles: SyncRole[]
+  /** Область: звичайна робота магазину чи адміністративна зміна. */
+  scope: SyncOperationScope
 }
 
 /** Ролі, яким дозволено все: власник і адміністратор магазину. */
 export const SYNC_SUPERUSER_ROLES: readonly SyncRole[] = ['owner', 'admin']
 
 export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
-  'brand.deleted': { roles: [] },
-  'brand.upsert': { creates: 'brand', roles: ['manager', 'cashier', 'storekeeper'] },
-  'cash_operation.created': { references: ['shift'], roles: ['manager', 'cashier'] },
-  'category.deleted': { roles: [] },
-  'category.upsert': { creates: 'category', roles: ['manager', 'cashier', 'storekeeper'] },
-  'commission_rule.created': { references: ['brand', 'category'], roles: [] },
-  'commission_rule.deleted': { roles: [] },
-  'customer.bonus_adjusted': { roles: ['manager'] },
-  'customer.created': { creates: 'customer', roles: ['manager', 'cashier'] },
-  'customer.debt_paid': { references: ['customer', 'shift'], roles: ['manager', 'cashier'] },
-  'customer.deleted': { roles: [] },
-  'customer.deposit_changed': { references: ['customer', 'shift'], roles: ['manager', 'cashier'] },
-  'customer.updated': { roles: ['manager', 'cashier'] },
-  'customer_vehicle.created': { references: ['customer'], roles: ['manager', 'cashier'] },
-  'customer_vehicle.deleted': { roles: ['manager', 'cashier'] },
-  'customer_vehicle.updated': { roles: ['manager', 'cashier'] },
-  'inventory.completed': { references: ['product', 'inventory_session'], roles: ['cashier'] },
-  'inventory.created': { creates: 'inventory_session', roles: ['cashier', 'storekeeper'] },
-  'inventory.deleted': { roles: ['cashier', 'storekeeper'] },
-  'inventory.started': { references: ['inventory_session'], roles: ['cashier', 'storekeeper'] },
-  'order.canceled': { roles: ['manager'] },
-  'order.completed': { roles: ['manager', 'cashier'] },
-  'order.created': { creates: 'order', references: ['customer', 'product'], roles: ['manager'] },
-  'order.deleted': { roles: [] },
-  'order.item_status_updated': { roles: ['manager', 'storekeeper'] },
-  'order.items_arrived': { roles: ['manager', 'storekeeper'] },
-  'order.payment_added': { roles: ['manager', 'cashier'] },
-  'order.status_updated': { roles: ['manager'] },
-  'order.updated': { references: ['customer', 'product'], roles: ['manager'] },
-  'product.deleted': { roles: [] },
-  'product.upsert': { creates: 'product', references: ['brand', 'category'], roles: ['manager', 'cashier', 'storekeeper'] },
-  'reserve.created': { references: ['product'], roles: ['manager', 'storekeeper'] },
-  'reserve.released': { roles: ['manager', 'storekeeper'] },
-  'return.created': { references: ['product', 'sale'], roles: ['manager', 'cashier'] },
-  'salary_payment.created': { roles: [] },
-  'salary_payment.deleted': { roles: [] },
-  'sale.completed': { creates: 'sale', references: ['product', 'customer', 'shift'], roles: ['manager', 'cashier'] },
-  'sale.suspended': { references: ['product', 'customer', 'shift'], roles: ['manager', 'cashier'] },
-  'sale.suspended_deleted': { roles: ['manager', 'cashier'] },
-  'sale.suspended_resumed': { roles: ['manager', 'cashier'] },
-  'settings.updated': { roles: [] },
-  'shift.closed': { roles: ['manager', 'cashier'] },
-  'shift.opened': { creates: 'shift', roles: ['manager', 'cashier'] },
-  'staff_pin.updated': { roles: [] },
-  'staff_user.created': { roles: [] },
-  'staff_user.deleted': { roles: [] },
-  'staff_user.updated': { roles: [] },
-  'supplier.created': { creates: 'supplier', roles: ['manager', 'cashier', 'storekeeper'] },
-  'supplier.deleted': { roles: [] },
-  'supplier.merged': { roles: [] },
-  'supplier.updated': { roles: ['manager'] },
-  'supplier_catalog.imported': { roles: [] },
-  'supplier_catalog.item_deleted': { roles: [] },
-  'supplier_catalog.item_upserted': { roles: [] },
-  'supplier_invoice.cancelled': { roles: [] },
-  'supplier_invoice.created': { creates: 'invoice', references: ['supplier', 'product'], roles: ['manager', 'cashier', 'storekeeper'] },
-  'supplier_invoice.deleted': { roles: ['cashier'] },
-  'supplier_invoice.payment_added': { roles: ['manager', 'cashier', 'storekeeper'] },
-  'supplier_invoice.posted': { roles: ['manager', 'cashier', 'storekeeper'] },
-  'supplier_invoice.updated': { references: ['supplier', 'product'], roles: ['manager', 'cashier', 'storekeeper'] },
-  'warehouse_movement.created': { references: ['product'], roles: ['manager', 'storekeeper'] },
-  'writeoff.created': { references: ['product'], roles: ['manager', 'storekeeper'] },
+  'brand.deleted': { scope: 'admin' },
+  'brand.upsert': { creates: 'brand', scope: 'shop' },
+  'cash_operation.created': { references: ['shift'], scope: 'shop' },
+  'category.deleted': { scope: 'admin' },
+  'category.upsert': { creates: 'category', scope: 'shop' },
+  'commission_rule.created': { references: ['brand', 'category'], scope: 'admin' },
+  'commission_rule.deleted': { scope: 'admin' },
+  'customer.bonus_adjusted': { scope: 'shop' },
+  'customer.created': { creates: 'customer', scope: 'shop' },
+  'customer.debt_paid': { references: ['customer', 'shift'], scope: 'shop' },
+  'customer.deleted': { scope: 'admin' },
+  'customer.deposit_changed': { references: ['customer', 'shift'], scope: 'shop' },
+  'customer.updated': { scope: 'shop' },
+  'customer_vehicle.created': { references: ['customer'], scope: 'shop' },
+  'customer_vehicle.deleted': { scope: 'shop' },
+  'customer_vehicle.updated': { scope: 'shop' },
+  'inventory.completed': { references: ['product', 'inventory_session'], scope: 'shop' },
+  'inventory.created': { creates: 'inventory_session', scope: 'shop' },
+  'inventory.deleted': { scope: 'shop' },
+  'inventory.started': { references: ['inventory_session'], scope: 'shop' },
+  'order.canceled': { scope: 'shop' },
+  'order.completed': { scope: 'shop' },
+  'order.created': { creates: 'order', references: ['customer', 'product'], scope: 'shop' },
+  'order.deleted': { scope: 'admin' },
+  'order.item_status_updated': { scope: 'shop' },
+  'order.items_arrived': { scope: 'shop' },
+  'order.payment_added': { scope: 'shop' },
+  'order.status_updated': { scope: 'shop' },
+  'order.updated': { references: ['customer', 'product'], scope: 'shop' },
+  'product.deleted': { scope: 'admin' },
+  'product.upsert': { creates: 'product', references: ['brand', 'category'], scope: 'shop' },
+  'reserve.created': { references: ['product'], scope: 'shop' },
+  'reserve.released': { scope: 'shop' },
+  'return.created': { references: ['product', 'sale'], scope: 'shop' },
+  'salary_payment.created': { scope: 'admin' },
+  'salary_payment.deleted': { scope: 'admin' },
+  'sale.completed': { creates: 'sale', references: ['product', 'customer', 'shift'], scope: 'shop' },
+  'sale.suspended': { references: ['product', 'customer', 'shift'], scope: 'shop' },
+  'sale.suspended_deleted': { scope: 'shop' },
+  'sale.suspended_resumed': { scope: 'shop' },
+  'settings.updated': { scope: 'admin' },
+  'shift.closed': { scope: 'shop' },
+  'shift.opened': { creates: 'shift', scope: 'shop' },
+  'staff_pin.updated': { scope: 'admin' },
+  'staff_user.created': { scope: 'admin' },
+  'staff_user.deleted': { scope: 'admin' },
+  'staff_user.updated': { scope: 'admin' },
+  'supplier.created': { creates: 'supplier', scope: 'shop' },
+  'supplier.deleted': { scope: 'admin' },
+  'supplier.merged': { scope: 'admin' },
+  'supplier.updated': { scope: 'shop' },
+  'supplier_catalog.imported': { scope: 'admin' },
+  'supplier_catalog.item_deleted': { scope: 'admin' },
+  'supplier_catalog.item_upserted': { scope: 'admin' },
+  'supplier_invoice.cancelled': { scope: 'admin' },
+  'supplier_invoice.created': { creates: 'invoice', references: ['supplier', 'product'], scope: 'shop' },
+  'supplier_invoice.deleted': { scope: 'shop' },
+  'supplier_invoice.payment_added': { scope: 'shop' },
+  'supplier_invoice.posted': { scope: 'shop' },
+  'supplier_invoice.updated': { references: ['supplier', 'product'], scope: 'shop' },
+  'warehouse_movement.created': { references: ['product'], scope: 'shop' },
+  'writeoff.created': { references: ['product'], scope: 'shop' },
 }
 
 /** Чи можна цій ролі надсилати таку операцію. Невідомий тип — ні. */
 export function isSyncOperationAllowed(role: string, operationType: string): boolean {
   if (SYNC_SUPERUSER_ROLES.includes(role as SyncRole)) return true
   const spec = SYNC_OPERATIONS[operationType]
-  return spec ? spec.roles.includes(role as SyncRole) : false
+  if (!spec) return false
+  return spec.scope === 'shop' && SYNC_SHOP_ROLES.includes(role as SyncRole)
 }
 
 /** Операції, які народжують саме цю сутність. */

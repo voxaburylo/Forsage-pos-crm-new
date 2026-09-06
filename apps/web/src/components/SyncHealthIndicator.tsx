@@ -59,9 +59,10 @@ export function SyncHealthIndicator({ theme = 'light', className = '' }: Props) 
       </button>
       <SyncHealthModal
         open={open}
-        onClose={() => setOpen(false)}
+        // Вікно нічого не змінює — оновлюємо стан на його закритті, щоб цифри
+        // на значку не відставали, поки власник у нього дивився.
+        onClose={() => { setOpen(false); void refresh() }}
         status={status}
-        onChanged={() => { void refresh() }}
       />
     </>
   )

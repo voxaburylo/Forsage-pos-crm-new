@@ -111,6 +111,7 @@ export class LocalSyncRepository {
     this.recoverOrphanProductDirtyFlags()
     this.recoverOrphanReturnedSaleDirtyFlags()
     this.recoverAcknowledgedDirtyFlags()
+    this.wakeStuckOperations()
   }
 
   getPullState(): LocalSyncPullState {
@@ -214,32 +215,30 @@ export class LocalSyncRepository {
   }
 
   /**
-   * Ручний повтор для застряглих операцій: скидаємо лічильник спроб, і рядок
-   * знову потрапляє у звичайну чергу. Викликається людиною з UI після того,
-   * як усунено причину (роль, звʼязок, виправлені дані на сервері).
+   * Розбудити застрягле при старті каси.
    *
-   * Свідомо чіпаємо ЛИШЕ status='failed' з вичерпаними спробами. Рядки, які
-   * ще ретраяться самі, чіпати не можна — скидання їхнього next_attempt_at
-   * зламало б експоненційний backoff і влаштувало б шторм запитів.
+   * Раніше це робила людина кнопкою «Повторити»: усунули причину на сервері —
+   * натиснули. Кнопки більше немає й не буде: власник не має розбирати чергу
+   * (див. `REFACTOR_PLAN.md`, ітерація 5). Натомість кожен запуск програми —
+   * природний привід спробувати ще раз: між учора і сьогодні міг зʼявитися
+   * інтернет, доїхати деплой, виправитися дані.
+   *
+   * Скидаємо ЛИШЕ час наступної спроби, не лічильник: рядок пробує один раз
+   * зараз і, якщо знову не вийшло, повертається до рідкісного розкладу раз на
+   * шість годин. Інакше кожен перезапуск давав би тридцять марних звернень
+   * поспіль по кожній безнадійній операції.
+   *
+   * Рядки, які ще ретраяться самі, не чіпаємо — скидання їхнього
+   * next_attempt_at зламало б експоненційні паузи й влаштувало шторм.
    */
-  retryStuck(sequences?: number[]): { retried: number } {
-    const selected = Array.isArray(sequences)
-      ? sequences.filter((value) => Number.isSafeInteger(value))
-      : null
-    if (selected && selected.length === 0) return { retried: 0 }
-
-    return this.db.transaction(() => {
-      const scope = selected
-        ? `AND sequence IN (${selected.map(() => '?').join(',')})`
-        : ''
-      const statement = this.db.prepare(`
-        UPDATE sync_outbox
-        SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
-        WHERE status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS} ${scope}
-      `)
-      const result = selected ? statement.run(...selected) : statement.run()
-      return { retried: Number(result.changes ?? 0) }
-    })
+  wakeStuckOperations(): { woken: number } {
+    const result = this.db.prepare(`
+      UPDATE sync_outbox
+      SET next_attempt_at = NULL
+      WHERE status = 'failed' AND attempts >= ${MAX_OUTBOX_ATTEMPTS}
+        AND next_attempt_at IS NOT NULL
+    `).run()
+    return { woken: Number(result.changes ?? 0) }
   }
 
   /**

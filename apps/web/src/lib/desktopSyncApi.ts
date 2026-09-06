@@ -229,20 +229,6 @@ export async function listDesktopStuckOperations(limit = 100): Promise<DesktopSy
   }
 }
 
-/**
- * Ручний повтор застряглих операцій. Одразу після скидання лічильника
- * запускаємо синхронізацію, щоб людина побачила результат, а не чекала
- * наступного тика таймера.
- */
-export async function retryDesktopStuckOperations(
-  sequences?: number[],
-): Promise<{ retried: number }> {
-  const local = desktopBridge()?.sync.retryStuck
-  if (!isDesktopRuntime() || !local) return { retried: 0 }
-  const result = await local(sequences)
-  if (result.retried > 0) await syncDesktopNow()
-  return result
-}
 
 
 async function executeDesktopSyncCycle(options: DesktopSyncOptions): Promise<DesktopSyncCycleResult> {

@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, RefreshCw } from 'lucide-react'
-import { Button, Modal } from '@/components/ui'
-import { toast } from '@/components/ui/Toast'
-import {
-  listDesktopStuckOperations,
-  retryDesktopStuckOperations,
-  syncDesktopNow,
-} from '@/lib/desktopSyncApi'
+import { AlertTriangle } from 'lucide-react'
+import { Modal } from '@/components/ui'
+import { listDesktopStuckOperations } from '@/lib/desktopSyncApi'
 import type { DesktopSyncStatus, DesktopSyncStuckOperation } from '@/lib/desktopBridge'
 
 interface Props {
   open: boolean
   onClose: () => void
   status: DesktopSyncStatus | null
-  onChanged: () => void
 }
 
 /** Технічні назви операцій — людською мовою. */
@@ -49,15 +43,16 @@ function formatMoment(value: string): string {
 }
 
 /**
- * Вікно тільки показує стан. Жодних рішень власник тут не приймає: те, що
- * розв'язується правилом, каса розв'язує сама й мовчки — застаріла ревізія
- * знімається з черги, залишок вирівнюється з каси. Єдина кнопка — не питання,
- * а «зроби це зараз, не чекаючи таймера».
+ * Вікно тільки показує стан — жодної кнопки.
+ *
+ * Черга розбирається сама: відправка йде кожні десять секунд, застрягле
+ * повторюється, а те, що сервер не прийме ніколи, каса знімає й вирівнює
+ * залишок зі свого боку. Натискати тут нічого не треба, і саме тому нема чого.
+ * Власник заглядає сюди, тільки якщо хоче побачити, що саме ще в дорозі.
  */
-export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
+export function SyncHealthModal({ open, onClose, status }: Props) {
   const [operations, setOperations] = useState<DesktopSyncStuckOperation[]>([])
   const [loading, setLoading] = useState(false)
-  const [syncing, setSyncing] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -71,25 +66,6 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
   useEffect(() => {
     if (open) void load()
   }, [open, load])
-
-  async function handleSyncNow() {
-    setSyncing(true)
-    try {
-      // Спершу повертаємо в чергу те, що вже вичерпало спроби: інакше кнопка
-      // «зараз» нічого не міняла б саме для тих рядків, через які її натиснули.
-      await retryDesktopStuckOperations()
-      const result = await syncDesktopNow()
-      toast.success(result.pushed > 0
-        ? `Відправлено операцій: ${result.pushed}`
-        : 'Нових операцій для відправки немає')
-      await load()
-      onChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Синхронізація не вдалася')
-    } finally {
-      setSyncing(false)
-    }
-  }
 
   const waiting = (status?.pending ?? 0) + (status?.retrying ?? 0)
 
@@ -111,10 +87,6 @@ export function SyncHealthModal({ open, onClose, status, onChanged }: Props) {
             <span className="font-semibold">Остання помилка: </span>{status.last_error}
           </p>
         )}
-
-        <Button onClick={handleSyncNow} loading={syncing} icon={<RefreshCw size={16} />}>
-          Синхронізувати зараз
-        </Button>
 
         {operations.length === 0 ? (
           <p className="rounded-lg bg-gray-50 px-3 py-6 text-center text-sm text-gray-500">

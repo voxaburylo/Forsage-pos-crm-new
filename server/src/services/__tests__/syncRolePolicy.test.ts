@@ -55,11 +55,14 @@ describe('sync role policy', () => {
     for (const role of ['tire_worker', 'sto_viewer']) {
       expect(isSyncOperationAllowed(role, 'supplier.created')).toBe(false)
     }
-    // Перейменування постачальника лишається за тими, кому це дозволено в вебі.
-    expect(isSyncOperationAllowed('cashier', 'supplier.updated')).toBe(false)
-    expect(isSyncOperationAllowed('storekeeper', 'supplier.updated')).toBe(false)
-    expect(isSyncOperationAllowed('manager', 'supplier.updated')).toBe(true)
+    // Перейменування постачальника — звичайна робота магазину, тому черга
+    // приймає його від будь-якого працівника: право робити цю дію стережеться
+    // в самій касі, а не на виході черги (див. syncOperations.ts, scope).
+    expect(isSyncOperationAllowed('cashier', 'supplier.updated')).toBe(true)
+    // А видалення довідника — адміністративна зміна, і тут перевірка лишається.
     expect(isSyncOperationAllowed('cashier', 'supplier.deleted')).toBe(false)
+    expect(isSyncOperationAllowed('manager', 'supplier.deleted')).toBe(false)
+    expect(isSyncOperationAllowed('owner', 'supplier.deleted')).toBe(true)
   })
 
   it('lets every role that can push a product also push the brand and category it points at', () => {
@@ -90,8 +93,13 @@ describe('sync role policy', () => {
     ]) {
       expect(isSyncOperationAllowed('storekeeper', operation)).toBe(true)
     }
-    expect(isSyncOperationAllowed('storekeeper', 'inventory.completed')).toBe(false)
+    // Завершення ревізії теж їде з тієї самої черги: якщо перерахунок зробив
+    // касир, а відправила зміна комірника, операція має пройти.
+    expect(isSyncOperationAllowed('storekeeper', 'inventory.completed')).toBe(true)
     expect(isSyncOperationAllowed('owner', 'inventory.completed')).toBe(true)
+    // Персонал і налаштування — ні: це не робота зміни.
+    expect(isSyncOperationAllowed('storekeeper', 'staff_user.created')).toBe(false)
+    expect(isSyncOperationAllowed('storekeeper', 'settings.updated')).toBe(false)
   })
   it('syncs the safe staff directory to every local workstation role', () => {
     for (const role of ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer', 'tire_worker']) {

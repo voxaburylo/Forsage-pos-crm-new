@@ -66,53 +66,48 @@ describe('LocalSyncRepository stuck-operation recovery', () => {
     expect(stuck[0]).not.toHaveProperty('payload')
   })
 
-  it('requeues stuck operations and reports how many moved', () => {
+  it('на старті каси будить застрягле — одну спробу зараз, не тридцять', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
     insertOperation({ sequence: 2, attempts: MAX_OUTBOX_ATTEMPTS + 5, status: 'failed' })
 
-    expect(repository.retryStuck()).toEqual({ retried: 2 })
-    expect(repository.listStuck()).toHaveLength(0)
+    expect(repository.wakeStuckOperations()).toEqual({ woken: 2 })
 
     const rows = db.prepare(
-      'SELECT status, attempts, next_attempt_at, last_error FROM sync_outbox ORDER BY sequence',
-    ).all() as Array<{ status: string; attempts: number; next_attempt_at: string | null; last_error: string | null }>
+      'SELECT status, attempts, next_attempt_at FROM sync_outbox ORDER BY sequence',
+    ).all() as Array<{ status: string; attempts: number; next_attempt_at: string | null }>
     for (const row of rows) {
-      expect(row.status).toBe('pending')
-      expect(row.attempts).toBe(0)
+      // Час наступної спроби знято — рядок піде вже в найближчому обміні.
       expect(row.next_attempt_at).toBeNull()
-      expect(row.last_error).toBeNull()
+      // А лічильник лишився: якщо знову не вийде, повернеться до розкладу раз
+      // на шість годин, а не влаштує тридцять марних звернень поспіль.
+      expect(row.status).toBe('failed')
+      expect(row.attempts).toBeGreaterThanOrEqual(MAX_OUTBOX_ATTEMPTS)
     }
   })
 
-  it('never resets operations that are still retrying on their own', () => {
+  it('не чіпає те, що ще ретраїться саме', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS - 1, status: 'failed' })
 
-    expect(repository.retryStuck()).toEqual({ retried: 0 })
+    expect(repository.wakeStuckOperations()).toEqual({ woken: 0 })
 
     const row = db.prepare(
       'SELECT status, attempts, next_attempt_at FROM sync_outbox WHERE sequence = 1',
     ).get() as { status: string; attempts: number; next_attempt_at: string | null }
-    // Скидання backoff у рядка, який ще ретраїться сам, влаштувало б шторм запитів.
+    // Скидання пауз у рядка, який ще ретраїться сам, влаштувало б шторм запитів.
     expect(row.status).toBe('failed')
     expect(row.attempts).toBe(MAX_OUTBOX_ATTEMPTS - 1)
     expect(row.next_attempt_at).toBe(BACKOFF_AT)
   })
 
-  it('retries only the selected operation when the user picks one row', () => {
-    insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
-    insertOperation({ sequence: 2, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
-
-    expect(repository.retryStuck([2])).toEqual({ retried: 1 })
-
-    const remaining = repository.listStuck()
-    expect(remaining.map((operation) => operation.sequence)).toEqual([1])
-  })
-
-  it('ignores an empty selection instead of requeuing everything', () => {
+  it('будиться сама, щойно каса відкрила базу', () => {
     insertOperation({ sequence: 1, attempts: MAX_OUTBOX_ATTEMPTS, status: 'failed' })
 
-    expect(repository.retryStuck([])).toEqual({ retried: 0 })
-    expect(repository.listStuck()).toHaveLength(1)
+    // Новий репозиторій — це і є старт програми.
+    new LocalSyncRepository(db)
+
+    const row = db.prepare('SELECT next_attempt_at FROM sync_outbox WHERE sequence = 1')
+      .get() as { next_attempt_at: string | null }
+    expect(row.next_attempt_at).toBeNull()
   })
 
   it('counts exhausted operations as stuck in the health summary', () => {

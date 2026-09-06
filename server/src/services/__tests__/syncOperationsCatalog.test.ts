@@ -2,6 +2,7 @@ import { syncModuleSource as source } from './helpers/syncSource.js'
 import { describe, expect, it } from 'vitest'
 import {
   SYNC_OPERATIONS,
+  SYNC_SHOP_ROLES,
   isSyncOperationAllowed,
   operationsCreating,
   type SyncEntity,
@@ -25,7 +26,8 @@ describe('каталог операцій синхронізації', () => {
         const creators = operationsCreating(entity as SyncEntity)
         expect(creators.length, `нікому не дозволено створювати «${entity}»`).toBeGreaterThan(0)
 
-        for (const role of spec.roles) {
+        for (const role of SYNC_SHOP_ROLES) {
+          if (!isSyncOperationAllowed(role, operationType)) continue
           const canCreate = creators.some((creator) => isSyncOperationAllowed(role, creator))
           if (!canCreate) {
             gaps.push(`${role}: може «${operationType}», але не може створити «${entity}» (${creators.join(' / ')})`)
@@ -55,6 +57,15 @@ describe('каталог операцій синхронізації', () => {
     }
     for (const role of ['manager', 'cashier', 'storekeeper', 'tire_worker', 'sto_viewer']) {
       expect(isSyncOperationAllowed(role, 'operation.that.does.not.exist')).toBe(false)
+      // Адміністративна зміна не проходить під звичайною зміною — і це єдине,
+      // що перевірка на виході черги тепер стереже.
+      expect(isSyncOperationAllowed(role, 'staff_user.created')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'settings.updated')).toBe(false)
+    }
+    // А шинники й спостерігачі не надсилають нічого взагалі.
+    for (const role of ['tire_worker', 'sto_viewer']) {
+      expect(isSyncOperationAllowed(role, 'sale.completed')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'product.upsert')).toBe(false)
     }
   })
 
