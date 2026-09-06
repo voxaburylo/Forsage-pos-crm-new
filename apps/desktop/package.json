@@ -10,9 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "tsc -p tsconfig.json --watch",
-    "smoke:db": "cross-env FORSAGE_DESKTOP_BUILD=1 VITE_API_URL=https://forsage-pos-crm-new-web.vercel.app pnpm --filter=web build && pnpm build && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-local-db.cjs",
+    "smoke:db": "cross-env FORSAGE_DESKTOP_BUILD=1 VITE_API_URL=https://forsage-pos-crm-new.onrender.com pnpm --filter=web build && pnpm build && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-local-db.cjs",
     "pack": "pnpm build && electron-builder --dir",
-    "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 VITE_API_URL=https://forsage-pos-crm-new-web.vercel.app pnpm --filter=web build && pnpm build && node scripts/embed-renderer.cjs && electron-builder --win portable --x64"
+    "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 VITE_API_URL=https://forsage-pos-crm-new.onrender.com pnpm --filter=web build && pnpm build && node scripts/embed-renderer.cjs && electron-builder --win portable --x64"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
