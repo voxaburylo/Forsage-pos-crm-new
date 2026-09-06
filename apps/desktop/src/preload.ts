@@ -133,6 +133,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     createWriteoff: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-writeoff', input),
   },
   inventory: {
+    scanOperationIds: true,
     listSessions: (input?: unknown) => ipcRenderer.invoke('desktop:inventory:list-sessions', input),
     createSession: (input: unknown) => ipcRenderer.invoke('desktop:inventory:create-session', input),
     startSession: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:start-session', sessionId, input),

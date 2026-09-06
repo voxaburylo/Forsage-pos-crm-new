@@ -34,6 +34,15 @@ interface InventoryCountInput {
   observed_retail_price?: number | null
 }
 
+interface InventoryScanInput {
+  tenant_id?: string
+  user_id?: string
+  barcode?: string
+  product_id?: string
+  qty?: number
+  operation_id?: string
+}
+
 export class LocalInventoryRepository {
   constructor(private readonly db: LocalDatabase) {}
 
@@ -239,7 +248,29 @@ export class LocalInventoryRepository {
     return { data: { item_id: itemId }, session: this.getSessionData(sessionId, tenantId, userId) }
   }
 
-  scan(sessionId: string, input: { tenant_id?: string; user_id?: string; barcode?: string; product_id?: string; qty?: number }): { item: any } {
+  scan(sessionId: string, input: InventoryScanInput): { item: any } {
+    if (input.operation_id === undefined) return this.scanOnce(sessionId, input)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.operation_id)) throw new Error('Некоректний ідентифікатор сканування')
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const key = `inventory-scan:${tenantId}:${input.operation_id}`
+    const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId, barcode: input.barcode ?? '', product_id: input.product_id ?? '', qty: input.qty ?? 1 })).digest('hex')
+    return this.db.transaction(() => {
+      const receipt = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (receipt) {
+        const saved = JSON.parse(receipt.value_json) as { fingerprint: string; productId: string }
+        if (saved.fingerprint !== fingerprint) throw new Error('Повтор сканування містить інші дані')
+        const item = this.findItemByProduct(sessionId, saved.productId, tenantId)
+        if (!item?.was_counted || item.deleted_at) throw new Error('Рядок раніше збереженого сканування видалено. Повтор не додано.')
+        return { item: this.decorateItem(item, tenantId) }
+      }
+      const result = this.scanOnce(sessionId, input)
+      this.db.prepare('INSERT INTO app_meta (key, value_json, updated_at) VALUES (?, ?, ?)')
+        .run(key, JSON.stringify({ fingerprint, productId: result.item.product_id }), nowIso())
+      return result
+    })
+  }
+
+  private scanOnce(sessionId: string, input: InventoryScanInput): { item: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const userId = input.user_id ?? ''
     this.requireActiveSession(sessionId, tenantId)

@@ -3,6 +3,7 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { desktopCreatePayload, requestDesktopSync } from '@/features/products/productApi'
 import type { ProductFormData } from '@/types/product'
 import { useAuthStore } from '@/stores/authStore'
+import { requestInventoryScan } from './inventoryScanRequest'
 
 const DEFAULT_READ_TIMEOUT_MS = 10_000
 const DEFAULT_WRITE_TIMEOUT_MS = 15_000
@@ -122,7 +123,7 @@ export const inventoryApi = {
 
   scan: async (id: string, body: { barcode?: string; product_id?: string; qty?: number }, opts: RequestOptions = {}): Promise<ApiResponse<{ item: any }>> => {
     const local = localInventory()
-    if (local?.scan) return { data: await local.scan(id, withUser(body)) }
+    if (local?.scan) return { data: await requestInventoryScan(input => local.scan(id, input), withUser(body), local.scanOperationIds === true) }
     return api.post<ApiResponse<{ item: any }>>(`/api/v1/inventory/${id}/scan`, body, undefined, {
       silent: opts.silent ?? true,
       timeoutMs: opts.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
