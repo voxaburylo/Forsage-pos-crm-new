@@ -1,4 +1,5 @@
 import { db } from '../db/supabase.js'
+import { catalogListQuery } from '../repositories/catalogListQuery.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -15,12 +16,10 @@ import type {
 
 const TABLE = 'products'
 
-// Кеш пошукових запитів (30 сек TTL) — для POS касира
-const searchCache = new SimpleCache<string, any>(30_000)
+// Аналоги кешуються окремо; залишки у списку читаються свіжими.
 const analogCache = new SimpleCache<string, any>(30_000)
 
 export async function clearProductSearchCache(): Promise<void> {
-  await searchCache.clear()
   await analogCache.clear()
 }
 function cleanProductSearchTerm(value: string): string {
@@ -95,118 +94,6 @@ function productListSearchTerms(search: string): string[] {
   return [...values].filter(Boolean).slice(0, 16)
 }
 
-function productIdCondition(productIds: string[]): string[] {
-  const ids = [...new Set(productIds)].filter(Boolean)
-  return ids.length > 0 ? [`id.in.(${ids.join(',')})`] : []
-}
-
-function productListSearchOr(search: string, relatedProductIds: string[] = []): string {
-  const conditions: string[] = []
-  for (const term of productListSearchTerms(search)) {
-    const normalized = normalizeArticle(term)
-    conditions.push(`sku.ilike.%${term}%`)
-    if (normalized) conditions.push(`sku.ilike.%${normalized}%`)
-    conditions.push(`name.ilike.%${term}%`)
-    conditions.push(`barcode.ilike.%${term}%`)
-    if (normalized) {
-      conditions.push(`normalized_oem.ilike.%${normalized}%`)
-      conditions.push(`normalized_supplier_article.ilike.%${normalized}%`)
-      conditions.push(`oem_number.ilike.%${normalized}%`)
-    }
-  }
-  conditions.push(...productIdCondition(relatedProductIds))
-  return [...new Set(conditions)].join(',')
-}
-
-function productListOemSearchOr(search: string, relatedProductIds: string[] = []): string {
-  const normalized = normalizeOemValue(search)
-  const conditions = normalized
-    ? [`normalized_oem.ilike.%${normalized}%`, `normalized_supplier_article.ilike.%${normalized}%`, `oem_number.ilike.%${normalized}%`]
-    : []
-  conditions.push(...productIdCondition(relatedProductIds))
-  return [...new Set(conditions)].join(',')
-}
-
-async function collectProductIdsFromRelatedSearch(search: string, tenantId: string): Promise<string[]> {
-  const source = search.startsWith('oem:') ? search.slice(4).trim() : search
-  const terms = productListSearchTerms(source)
-  const normalizedTerms = [...new Set(terms.map((term) => normalizeArticle(term)).filter(Boolean))]
-  const normalizedOem = normalizeOemValue(source)
-  const compactBarcode = String(source ?? '').replace(/[\s\u00a0\u202f-]/g, '').trim()
-  const ids = new Set<string>()
-
-  const addRows = (rows: any[] | null | undefined) => {
-    for (const row of rows ?? []) {
-      if (row?.product_id) ids.add(row.product_id)
-    }
-  }
-
-  const queries: Array<PromiseLike<void>> = []
-
-  if (terms.length > 0) {
-    const aliasOr = terms.map((term) => `alias.ilike.%${term}%`).join(',')
-    queries.push(db
-      .from('product_aliases')
-      .select('product_id')
-      .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-      .or(aliasOr)
-      .limit(500)
-      .then(({ data, error }) => {
-        if (error) logger.warn({ error: error.message }, '[productService] alias list search error')
-        else addRows(data)
-      }))
-  }
-
-  if (normalizedTerms.length > 0) {
-    const supplierOr = normalizedTerms
-      .flatMap((term) => [`supplier_code.ilike.%${term}%`, `normalized_supplier_article.ilike.%${term}%`])
-      .join(',')
-    queries.push(db
-      .from('product_supplier_codes')
-      .select('product_id')
-      .eq('tenant_id', tenantId)
-      .or(supplierOr)
-      .limit(500)
-      .then(({ data, error }) => {
-        if (error) logger.warn({ error: error.message }, '[productService] supplier-code list search error')
-        else addRows(data)
-      }))
-  }
-
-  if (normalizedOem) {
-    queries.push(db
-      .from('product_cross_numbers')
-      .select('product_id')
-      .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-      .ilike('normalized_number', `%${normalizedOem}%`)
-      .limit(500)
-      .then(({ data, error }) => {
-        if (error) logger.warn({ error: error.message }, '[productService] cross-number list search error')
-        else addRows(data)
-      }))
-  }
-
-  const barcodeTerms = [...new Set([compactBarcode, ...normalizedTerms].filter((term) => term.length >= 4))]
-  if (barcodeTerms.length > 0) {
-    const barcodeOr = barcodeTerms.flatMap((term) => [`barcode.eq.${term}`, `barcode.ilike.%${term}%`]).join(',')
-    queries.push(db
-      .from('product_barcodes')
-      .select('product_id')
-      .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-      .or(barcodeOr)
-      .limit(500)
-      .then(({ data, error }) => {
-        if (error) logger.warn({ error: error.message }, '[productService] barcode list search error')
-        else addRows(data)
-      }))
-  }
-
-  await Promise.all(queries)
-  return [...ids].slice(0, 500)
-}
 
 async function enrichWithAvailability(products: any[]): Promise<any[]> {
   if (!products || products.length === 0) return products
@@ -242,152 +129,19 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
 }
 
 export async function listProducts(query: ProductListQuery, tenantId: string) {
-  const { search, category_id, brand_id, is_active, low_stock, stock_filter, page, per_page, sort_field, sort_dir } = query
-  const offset = (page - 1) * per_page
-
-  // Звичайний запит — перевіряємо кеш (тільки для пошукових запитів)
-  const isCacheable = !!search && !category_id && !brand_id && is_active === undefined && low_stock !== 'true' && !stock_filter
-  const cacheKey = isCacheable ? JSON.stringify({ tenantId, search, page, per_page, sort_field, sort_dir }) : null
-  if (cacheKey) {
-    const cached = await searchCache.get(cacheKey)
-    if (cached) return cached
-  }
-
-  const relatedProductIds = search ? await collectProductIdsFromRelatedSearch(search, tenantId) : []
-
-  // Фільтр "мало на складі": PostgREST не вміє порівнювати дві колонки →
-  // завантажуємо всі відфільтровані записи, фільтруємо в JS, пагінуємо вручну
-  if (low_stock === 'true') {
-    let allQ = db
-      .from(TABLE)
-      .select('*, brand:brands(id,name), category:categories(id,name)')
-      .eq('tenant_id', tenantId)
-      .is('deleted_at', null)
-
-    if (search) {
-      const searchOr = search.startsWith('oem:')
-        ? productListOemSearchOr(search.slice(4).trim(), relatedProductIds)
-        : productListSearchOr(search, relatedProductIds)
-      if (searchOr) allQ = allQ.or(searchOr)
-    }
-    if (category_id === '__uncategorized') allQ = allQ.is('category_id', null)
-    else if (category_id) allQ = allQ.eq('category_id', category_id)
-    if (brand_id) allQ = allQ.eq('brand_id', brand_id)
-    if (is_active !== undefined) allQ = allQ.eq('is_active', is_active === 'true')
-
-    const { data: allData, error: allError } = await allQ
-    if (allError) throw new AppError('DB_ERROR', allError.message, 500)
-
-    const filtered = (allData ?? [])
-      .filter((p) => p.qty_on_hand <= p.reorder_point)
-      .sort((a, b) => a.qty_on_hand - b.qty_on_hand)
-
-    const total = filtered.length
-    const paginated = filtered.slice(offset, offset + per_page)
-    const enriched = await enrichWithAvailability(paginated)
-
-    return {
-      data: enriched,
-      pagination: {
-        page,
-        per_page,
-        total,
-        total_pages: Math.ceil(total / per_page) || 1,
-      },
-    }
-  }
-
-
-  const orderCol = sort_field ?? 'name'
-  const orderAsc = sort_dir !== 'desc'
-
-  let q = db
-    .from(TABLE)
-    .select('*, brand:brands(id,name), category:categories(id,name)', { count: 'exact' })
-    .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
-
-  if (search && !sort_field) {
-    q = q
-      .order('qty_on_hand', { ascending: false })
-      .order('is_service', { ascending: false })
-      .order('is_favorite', { ascending: false })
-      .order('name', { ascending: true })
-      .order('id', { ascending: true })
-  } else {
-    q = q.order(orderCol, { ascending: orderAsc })
-    if (orderCol !== 'name') q = q.order('name', { ascending: true })
-    q = q.order('id', { ascending: true })
-  }
-  q = q.range(offset, offset + per_page - 1)
-
-  if (search) {
-    const searchOr = search.startsWith('oem:')
-      ? productListOemSearchOr(search.slice(4).trim(), relatedProductIds)
-      : productListSearchOr(search, relatedProductIds)
-    if (searchOr) q = q.or(searchOr)
-  }
-  if (category_id === '__uncategorized') q = q.is('category_id', null)
-  else if (category_id) q = q.eq('category_id', category_id)
-  if (brand_id) q = q.eq('brand_id', brand_id)
-  if (is_active !== undefined) q = q.eq('is_active', is_active === 'true')
-  if (stock_filter === 'negative') q = q.lt('qty_on_hand', 0)
-  if (stock_filter === 'no_price') q = q.eq('retail_price', 0)
-
-  const { data, error, count } = await q
-  if (error) {
-    const status = Number((error as any).status ?? 0)
-    const message = String((error as any).message ?? '')
-    if (status === 416 || /Requested range not satisfiable/i.test(message)) {
-      if (page > 1) {
-        return listProducts({ ...query, page: 1 }, tenantId)
-      }
-      return {
-        data: [],
-        pagination: {
-          page: 1,
-          per_page,
-          total: 0,
-          total_pages: 1,
-        },
-      }
-    }
-    throw new AppError('DB_ERROR', error.message, 500)
-  }
-
-  const enriched = await enrichWithAvailability(data ?? [])
-  if (sort_field === 'qty_on_hand') {
-    enriched.sort((left: any, right: any) => {
-      const leftQty = Number(left.qty_available ?? left.qty_on_hand ?? 0)
-      const rightQty = Number(right.qty_available ?? right.qty_on_hand ?? 0)
-      const qtyDiff = leftQty - rightQty
-      if (qtyDiff !== 0) return sort_dir === 'desc' ? -qtyDiff : qtyDiff
-      return String(left.name ?? '').localeCompare(String(right.name ?? ''), 'uk', { sensitivity: 'base' })
-        || String(left.id ?? '').localeCompare(String(right.id ?? ''))
-    })
-  } else if (search && !sort_field) {
-    enriched.sort((left: any, right: any) => {
-      const leftAvailable = Number(left.qty_available ?? left.qty_on_hand ?? 0) > 0 || left.is_service === true
-      const rightAvailable = Number(right.qty_available ?? right.qty_on_hand ?? 0) > 0 || right.is_service === true
-      return Number(rightAvailable) - Number(leftAvailable)
-        || Number(right.is_favorite === true) - Number(left.is_favorite === true)
-        || String(left.name ?? '').localeCompare(String(right.name ?? ''), 'uk', { sensitivity: 'base' })
-        || String(left.id ?? '').localeCompare(String(right.id ?? ''))
-    })
-  }
-
-  const result = {
-    data: enriched,
+  const { pool } = await import('../db/pg.js')
+  const sql = catalogListQuery(query, tenantId, productListSearchTerms(query.search ?? ''))
+  const { rows } = await pool.query(sql)
+  const total = Number(rows[0]?.total ?? 0)
+  return {
+    data: rows[0]?.data ?? [],
     pagination: {
-      page,
-      per_page,
-      total: count ?? 0,
-      total_pages: Math.ceil((count ?? 0) / per_page) || 1,
+      page: query.page,
+      per_page: query.per_page,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / query.per_page)),
     },
   }
-
-  if (cacheKey) await searchCache.set(cacheKey, result)
-  return result
 }
 
 export async function getProduct(id: string, tenantId: string) {
@@ -503,7 +257,6 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
 
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
-    await searchCache.clear()
   await analogCache.clear()
     return data
   }
@@ -526,7 +279,6 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
     throw new AppError('DB_ERROR', error.message, 500)
   }
   if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
-  await searchCache.clear()
   await analogCache.clear()
   return data
 }
@@ -619,7 +371,6 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
   }
 
   if (crossNumbers !== undefined) await setProductCrossNumbers(id, crossNumbers, existing.tenant_id, userId)
-  await searchCache.clear()
   await analogCache.clear()
   return data
 }
@@ -635,7 +386,6 @@ export async function deleteProduct(id: string, tenantId: string) {
     .is('deleted_at', null)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  await searchCache.clear()
   await analogCache.clear()
 }
 
@@ -890,7 +640,6 @@ export async function addProductCrossNumbers(
       })),
       note: `Додано номерів: ${rows.length}`,
     })
-    await searchCache.clear()
   await analogCache.clear()
   }
 
@@ -939,7 +688,6 @@ export async function removeProductCrossNumber(
     oldValue: crossNumber,
     note: `Видалено номер ${crossNumber.number}`,
   })
-  await searchCache.clear()
   await analogCache.clear()
 }
 
@@ -1030,7 +778,6 @@ export async function importCrossNumbersBulk(
     skippedDup += chunk.length - (data ?? []).length
   }
 
-  await searchCache.clear()
   await analogCache.clear()
   logger.info({ linked, products: productBySku.size, notFound: notFound.length }, '[cross-import] масовий імпорт кросів')
 
@@ -1513,7 +1260,6 @@ export async function importFromCatalog(
     }
   }
 
-  await searchCache.clear()
   await analogCache.clear()
 
   return newProd

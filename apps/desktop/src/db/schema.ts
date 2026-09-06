@@ -1420,4 +1420,17 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
   { version: 21, sql: MIGRATION_021_LEGACY_QUEUE_CLEANUP_SQL },
   { version: 22, sql: MIGRATION_022_TIRE_CASH_HANDOVER_SQL },
   { version: 23, sql: MIGRATION_023_PROBLEM_LOG_SQL },
+  { version: 24, sql: `
+    -- Синоніми перевіряються для кожного кандидата: індекс лише за текстом
+    -- змушував повторно читати всі синоніми магазину тисячі разів.
+    CREATE INDEX IF NOT EXISTS idx_product_aliases_active_product
+      ON product_aliases(tenant_id, product_id) WHERE deleted_at IS NULL;
+    -- Вибираємо сторінку без читання фото й великих описів кожного товару.
+    CREATE INDEX IF NOT EXISTS idx_products_active_listing
+      ON products(tenant_id, is_active, qty_on_hand, is_service, is_favorite, name, id)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_products_active_search
+      ON products(tenant_id, is_active, search_text, sku, barcode, name, id)
+      WHERE deleted_at IS NULL;
+  ` },
 ]

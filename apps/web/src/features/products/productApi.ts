@@ -31,7 +31,7 @@ export interface ProductFilters {
   stock_filter?: 'negative' | 'no_price'
   page?: number
   per_page?: number
-  sort_field?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'created_at'
+  sort_field?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'created_at' | 'brand'
   sort_dir?: 'asc' | 'desc'
 }
 
@@ -242,9 +242,9 @@ export const productApi = {
       return await api.get<PaginatedProducts>(`/api/v1/products${buildQuery(filters)}`)
     } catch (err: any) {
       if (err?.status === 416 || /Requested range not satisfiable/i.test(String(err?.message ?? ''))) {
-        if (Math.max(1, filters.page ?? 1) > 1) return productApi.list({ ...filters, page: 1 })
         const perPage = Math.max(1, Math.min(500, filters.per_page ?? 50))
-        return { data: [], pagination: { page: 1, per_page: perPage, total: 0, total_pages: 1 } }
+        const page = Math.max(1, filters.page ?? 1)
+        return { data: [], pagination: { page, per_page: perPage, total: 0, total_pages: 1 } }
       }
       throw err
     }

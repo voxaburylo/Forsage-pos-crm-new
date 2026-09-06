@@ -20,7 +20,8 @@ import { Button, Badge, Modal, ConfirmDialog, SplitButton } from '@/components/u
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
-import { desktopBridge, desktopProductToProduct, isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { loadCatalogPage, type CatalogSource } from './catalogPaging'
 import {
   printLabels,
   loadProductLabelSettings,
@@ -75,6 +76,7 @@ export default function ProductsPage() {
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const loadRequestRef             = useRef(0)
+  const catalogSourceRef           = useRef<CatalogSource | null>(null)
   const skipNextLoadRef            = useRef(false)
   const [search, setSearch]         = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -87,6 +89,7 @@ export default function ProductsPage() {
   const [pages, setPages]           = useState<Record<number, Product[]>>({})
   const loadMoreRef                 = useRef<HTMLDivElement | null>(null)
   const [loading, setLoading]       = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
   const [categories, setCategories] = useState<Category[]>([])
   const [brandFilter, setBrandFilter] = useState('')
@@ -209,202 +212,55 @@ export default function ProductsPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  // Завантаження товарів (серверне сортування, крім 'brand' — передається окремо).
-  // Пише результат сторінки в мапу pages, щоб накопичувати для нескінченного скролу.
+  // Одна пагінована вибірка для пошуку й каталогу, без ліміту 500 збігів.
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current
     const isCurrentRequest = () => requestId === loadRequestRef.current
     setLoading(true)
-    const desktopCatalog = desktopBridge()?.catalog
-    if (desktopCatalog) {
-      try {
-        // Для введеного запиту використовуємо той самий перевірений локальний
-        // пошук, що й каса. Він одразу знаходить точний штрихкод, артикул або
-        // слова назви незалежно від активної папки та інших фільтрів.
-        if (debouncedSearch.trim()) {
-          const desktopProducts = (
-            await desktopCatalog.searchProducts(debouncedSearch.trim(), 500)
-          ).map(desktopProductToProduct)
-
-          if (!isCurrentRequest()) return
-          setResult({
-            data: desktopProducts,
-            pagination: {
-              page: 1,
-              per_page: 500,
-              total: desktopProducts.length,
-              total_pages: 1,
-            },
-          })
-          setPages({ 1: desktopProducts })
-          setLoading(false)
-          return
-        }
-
-        if (typeof desktopCatalog.listProducts === 'function') {
-          const desktopResult = await desktopCatalog.listProducts({
-            categoryId: categoryFilter || undefined,
-            brandId: brandFilter || undefined,
-            lowStock,
-            stockFilter,
-            limit: PRODUCTS_PER_PAGE,
-            offset: (page - 1) * PRODUCTS_PER_PAGE,
-            sortField: sort?.field,
-            sortDir: sort?.dir,
-          })
-          if (!isCurrentRequest()) return
-          const desktopProducts = desktopResult.data.map(desktopProductToProduct)
-          setResult({
-            data: desktopProducts,
-            pagination: {
-              page,
-              per_page: PRODUCTS_PER_PAGE,
-              total: desktopResult.total,
-              total_pages: Math.max(1, Math.ceil(desktopResult.total / PRODUCTS_PER_PAGE)),
-            },
-          })
-          setPages((prev) => page === 1 ? { 1: desktopProducts } : { ...prev, [page]: desktopProducts })
-          setLoading(false)
-          return
-        }
-
-        if (page === 1) {
-          let desktopProducts = (debouncedSearch
-            ? await desktopCatalog.searchProducts(debouncedSearch, PRODUCTS_PER_PAGE)
-            : await desktopCatalog.listPopular(PRODUCTS_PER_PAGE)
-          ).map(desktopProductToProduct)
-          if (!isCurrentRequest()) return
-          if (sort?.field && sort.field !== 'brand') {
-            desktopProducts = [...desktopProducts].sort((a, b) => {
-              const av = a[sort.field]
-              const bv = b[sort.field]
-              const cmp = typeof av === 'number' && typeof bv === 'number'
-                ? av - bv
-                : String(av ?? '').localeCompare(String(bv ?? ''), 'uk')
-              return sort.dir === 'desc' ? -cmp : cmp
-            })
-          }
-          setResult({
-            data: desktopProducts,
-            pagination: {
-              page: 1,
-              per_page: PRODUCTS_PER_PAGE,
-              total: desktopProducts.length,
-              total_pages: 1,
-            },
-          })
-          setPages({ 1: desktopProducts })
-          setLoading(false)
-          return
-        }
-
-        setResult({
-          data: [],
-          pagination: { page, per_page: PRODUCTS_PER_PAGE, total: 0, total_pages: 1 },
-        })
-        setPages((prev) => page === 1 ? { 1: [] } : { ...prev, [page]: [] })
-        setLoading(false)
-        return
-      } catch (e) {
-        if (!isCurrentRequest()) return
-        toast.error(e instanceof Error ? e.message : 'Помилка локального каталогу')
-        setLoading(false)
-        return
-      }
-    }
-    const activeSearch = debouncedSearch.trim()
-    if (activeSearch) {
-      let localSearch: PaginatedProducts | null = null
-      localSearch = await listProductsOffline({
-        search: activeSearch,
-        lowStock: false,
-        stockFilter: '',
-        categoryId: undefined,
-        brandId: undefined,
-        page: 1,
-        perPage: 200,
-        sortField: sort?.field,
-        sortDir: sort?.dir,
-        scopeKey,
-      }).catch(() => null)
-      if (!isCurrentRequest()) return
-      if (localSearch?.data.length || localSearch?.pagination.total) {
-        setResult(localSearch)
-        setPages({ 1: localSearch.data })
-        setLoading(false)
-      }
-      try {
-        const response = await productApi.search(activeSearch, 200)
-        if (!isCurrentRequest()) return
-        const found = response.data ?? []
-        setResult({
-          data: found,
-          pagination: {
-            page: 1,
-            per_page: Math.max(found.length, 1),
-            total: found.length,
-            total_pages: 1,
-          },
-        })
-        setPages({ 1: found })
-      } catch (e) {
-        if (!localSearch?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка пошуку')
-      } finally {
-        if (isCurrentRequest()) setLoading(false)
-      }
-      return
-    }
-
-    const local = await listProductsOffline({
-      search: debouncedSearch || undefined,
-      lowStock: debouncedSearch ? false : lowStock,
-      stockFilter: debouncedSearch ? '' : stockFilter,
-      categoryId: debouncedSearch ? undefined : categoryFilter || undefined,
-      brandId: debouncedSearch ? undefined : brandFilter || undefined,
+    setLoadFailed(false)
+    const filters: ProductFilters = {
+      search: debouncedSearch.trim() || undefined,
+      low_stock: debouncedSearch ? undefined : lowStock ? 'true' : undefined,
+      stock_filter: debouncedSearch ? undefined : stockFilter || undefined,
+      category_id: debouncedSearch ? undefined : categoryFilter || undefined,
+      brand_id: debouncedSearch ? undefined : brandFilter || undefined,
       page,
-      perPage: PRODUCTS_PER_PAGE,
-      sortField: sort?.field,
-      sortDir: sort?.dir,
-      scopeKey,
-    }).catch(() => null)
-    if (!isCurrentRequest()) return
-    if (local?.data.length || local?.pagination.total) {
-      setResult(local as PaginatedProducts)
-      setPages((prev) => ({ ...prev, [page]: local!.data }))
-      setLoading(false)
+      per_page: PRODUCTS_PER_PAGE,
+      sort_field: sort?.field,
+      sort_dir: sort?.dir,
     }
     try {
-      const serverSortField = sort?.field !== 'brand' ? sort?.field as ProductFilters['sort_field'] : undefined
-      const data = await productApi.list({
-        search: debouncedSearch || undefined,
-        low_stock: debouncedSearch ? undefined : lowStock ? 'true' : undefined,
-        stock_filter: debouncedSearch ? undefined : stockFilter || undefined,
-        category_id: debouncedSearch ? undefined : categoryFilter || undefined,
-        brand_id: debouncedSearch ? undefined : brandFilter || undefined,
-        page,
-        per_page: PRODUCTS_PER_PAGE,
-        sort_field: serverSortField,
-        sort_dir: sort?.dir,
+      const loaded = await loadCatalogPage(filters, isDesktopRuntime(), catalogSourceRef.current, {
+        list: productApi.list,
+        cache: (f) => listProductsOffline({
+          search: f.search,
+          lowStock: f.low_stock === 'true',
+          stockFilter: f.stock_filter,
+          categoryId: f.category_id,
+          brandId: f.brand_id,
+          page: f.page,
+          perPage: f.per_page,
+          sortField: f.sort_field,
+          sortDir: f.sort_dir,
+          scopeKey,
+        }),
       })
       if (!isCurrentRequest()) return
-      setResult(data)
-      setPages((prev) => ({ ...prev, [page]: data.data }))
+      catalogSourceRef.current = loaded.source
+      setResult(loaded.result)
+      setPages((prev) => page === 1
+        ? { 1: loaded.result.data }
+        : { ...prev, [page]: loaded.result.data })
     } catch (e) {
-      if (!local?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
+      if (!isCurrentRequest()) return
+      setLoadFailed(true)
+      toast.error(e instanceof Error ? e.message : 'Помилка завантаження товарів')
     } finally {
       if (isCurrentRequest()) setLoading(false)
     }
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
-
-  useEffect(() => {
-    if (!isDesktopRuntime()) return
-    const refreshVisibleData = () => {
-      void loadMeta()
-      void load()
-    }
-    window.addEventListener('forsage:desktop-sync-completed', refreshVisibleData)
-    return () => window.removeEventListener('forsage:desktop-sync-completed', refreshVisibleData)
-  }, [load, loadMeta])
+  // Upload acknowledgements don't change local catalog contents. Reloading
+  // on every background upload used to reorder the list during scrolling.
   const filterKey = useMemo(() => JSON.stringify({
     debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort,
   }), [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])
@@ -416,6 +272,7 @@ export default function ProductsPage() {
     if (previousFilterKeyRef.current === filterKey) return
     previousFilterKeyRef.current = filterKey
     loadRequestRef.current++
+    catalogSourceRef.current = null
     if (page !== 1) skipNextLoadRef.current = true
     setPage(1)
     setPages({})
@@ -441,16 +298,7 @@ export default function ProductsPage() {
     return out
   }, [pages])
 
-  // Клієнтське сортування тільки для поля 'brand' (JOIN-колонку не можна сортувати на сервері)
-  const products = useMemo(() => {
-    const data = accumulated
-    if (sort?.field !== 'brand') return data
-    return [...data].sort((a, b) => {
-      const va = a.brand?.name ?? ''
-      const vb = b.brand?.name ?? ''
-      return sort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va)
-    })
-  }, [accumulated, sort])
+  const products = accumulated
 
   const totalCount = result?.pagination.total ?? 0
   const hasMore = accumulated.length < totalCount
@@ -458,7 +306,7 @@ export default function ProductsPage() {
   // Автопідвантаження наступних 100 при докручуванні донизу
   useEffect(() => {
     const node = loadMoreRef.current
-    if (!node || !hasMore) return
+    if (!node || !hasMore || loadFailed) return
     const observer = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting && !loading && hasMore) {
         setPage((p) => p + 1)
@@ -466,7 +314,7 @@ export default function ProductsPage() {
     }, { rootMargin: '400px' })
     observer.observe(node)
     return () => observer.disconnect()
-  }, [hasMore, loading])
+  }, [hasMore, loading, loadFailed])
 
   function toggleSort(field: SortField) {
     setSort((prev) => {
@@ -1087,6 +935,11 @@ export default function ProductsPage() {
 
             {/* Нескінченний скрол: сентинел + лічильник */}
             <div ref={loadMoreRef} />
+            {loadFailed && (
+              <div className="px-4 py-3 text-center">
+                <Button variant="secondary" onClick={() => void load()}>Повторити завантаження</Button>
+              </div>
+            )}
             {totalCount > 0 && (
               <div className="border-t border-gray-100 px-4 py-3 text-center text-sm text-gray-500 bg-gray-50">
                 {hasMore

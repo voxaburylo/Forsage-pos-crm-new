@@ -17,6 +17,7 @@
  * касир побачить одразу, ніж зниклий чек, який знайдеться через місяць.
  */
 import { isDesktopRuntime } from './desktopBridge'
+import { catalogComparator } from './catalogOrder'
 
 /** Одна перевірка на всі входи в чергу продажів — щоб не покладатися на памʼять. */
 function assertBrowserQueueUsable(action: string): void {
@@ -254,17 +255,12 @@ export async function searchProductsOffline(
         return
       }
       const rawQuery = query.trim()
-      const normalized = compactOfflineLookupCode(rawQuery)
       const results = (req.result as any[])
         .filter((p) => {
-          if (p.is_active === false || (categoryName && p.category?.name !== categoryName)) return false
+          if (p.deleted_at || p.is_active === false || p.is_active === 0 || (categoryName && p.category?.name !== categoryName)) return false
           return offlineProductMatchesQuery(p, rawQuery)
         })
-        .sort((a, b) => {
-          const exactA = String(a.barcode ?? '') === query || compactOfflineLookupCode(String(a.sku ?? '')) === normalized
-          const exactB = String(b.barcode ?? '') === query || compactOfflineLookupCode(String(b.sku ?? '')) === normalized
-          return Number(exactB) - Number(exactA)
-        })
+        .sort(catalogComparator({ search: rawQuery }))
         .slice(0, limit)
       resolve(results)
     }
@@ -796,9 +792,10 @@ export async function listProductsOffline(options: {
 
   const search = String(options.search ?? '').trim()
   const filtered = all.filter((product) => {
-    if (product.is_active === false) return false
-    if (options.categoryId === '__uncategorized' && product.category_id) return false
-    else if (options.categoryId && product.category_id !== options.categoryId) return false
+    if (product.deleted_at || product.is_active === false || product.is_active === 0) return false
+    if (options.categoryId === '__uncategorized') {
+      if (product.category_id) return false
+    } else if (options.categoryId && product.category_id !== options.categoryId) return false
     if (options.brandId && product.brand_id !== options.brandId) return false
     if (options.lowStock && Number(product.qty_on_hand ?? 0) > Number(product.reorder_point ?? 0)) return false
     if (options.stockFilter === 'negative' && Number(product.qty_on_hand ?? 0) >= 0) return false
@@ -806,17 +803,7 @@ export async function listProductsOffline(options: {
     return offlineProductMatchesQuery(product, search)
   })
 
-  const field = options.sortField ?? 'name'
-  const direction = options.sortDir === 'desc' ? -1 : 1
-  filtered.sort((a, b) => {
-    const left = field === 'brand' ? a.brand?.name : a[field]
-    const right = field === 'brand' ? b.brand?.name : b[field]
-    if (typeof left === 'number' || typeof right === 'number') {
-      return (Number(left ?? 0) - Number(right ?? 0)) * direction
-    }
-    return String(left ?? '').localeCompare(String(right ?? ''), 'uk') * direction
-  })
-
+  filtered.sort(catalogComparator(options))
   const page = Math.max(1, options.page ?? 1)
   const perPage = Math.max(1, options.perPage ?? 25)
   const total = filtered.length

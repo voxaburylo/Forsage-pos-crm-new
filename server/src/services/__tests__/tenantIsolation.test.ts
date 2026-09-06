@@ -10,6 +10,7 @@ import { getProduct, listProducts } from '../productService.js'
 import { getSalesToday } from '../reportService.js'
 import { getBalance, getTransactions } from '../loyaltyService.js'
 import { db } from '../../db/supabase.js'
+import { pool } from '../../db/pg.js'
 import jwt from 'jsonwebtoken'
 import { supabaseAdmin } from '../../db/supabaseAdmin.js'
 
@@ -351,8 +352,8 @@ describe('Multi-Tenant Data Isolation Tests', () => {
     it('should apply tenant_id query filter when listing products', async () => {
       const tenantId = 'store-abc-tenant-id'
       await listProducts({ page: 1, per_page: 20, sort_dir: 'asc' }, tenantId)
-      expect(db.from).toHaveBeenCalledWith('products')
-      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+      const query = vi.mocked(pool.query).mock.calls.at(-1)?.[0] as unknown as { values: unknown[] }
+      expect(query.values[0]).toBe(tenantId)
     })
 
     it('should apply tenant_id query filter when getting a product', async () => {

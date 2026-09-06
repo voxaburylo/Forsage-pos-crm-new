@@ -766,11 +766,12 @@ export class LocalCatalogRepository {
     const compact = compactLookupCode(raw)
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500))
     const offset = Math.max(0, Number(options.offset ?? 0) || 0)
+    const availableQty = 'p.qty_on_hand - COALESCE(r.qty_reserved, 0)'
     const sortColumns: Record<LocalProductSortField, string> = {
       sku: 'p.sku COLLATE NOCASE',
       name: 'p.name COLLATE NOCASE',
       retail_price: 'p.retail_price',
-      qty_on_hand: 'p.qty_on_hand',
+      qty_on_hand: `(${availableQty})`,
       brand: 'br.name COLLATE NOCASE',
     }
     const sortField = options.sortField && sortColumns[options.sortField]
@@ -800,7 +801,14 @@ export class LocalCatalogRepository {
       where.push('p.retail_price = 0')
     }
     if (raw) {
+      const indexedClauses = needles.map(() => 'p.search_text LIKE ?')
+      const indexedParams = needles.map(needle => `%${needle}%`)
+      if (tokens.length > 1) {
+        indexedClauses.push(`(${tokens.map(() => 'p.search_text LIKE ?').join(' AND ')})`)
+        indexedParams.push(...tokens.map(token => `%${token}%`))
+      }
       const searchClauses = [
+        ...indexedClauses,
         'p.sku = ?',
         'p.sku = ?',
         'p.barcode = ?',
@@ -830,6 +838,7 @@ export class LocalCatalogRepository {
         )`,
       ]
       const searchParams: Array<string | number> = [
+        ...indexedParams,
         raw,
         compact,
         raw,
@@ -845,29 +854,24 @@ export class LocalCatalogRepository {
         compact,
         `%${raw}%`,
       ]
-      for (const needle of needles) {
-        searchClauses.push('p.search_text LIKE ?')
-        searchParams.push(`%${needle}%`)
-      }
-      if (tokens.length > 1) {
-        searchClauses.push(`(${tokens.map(() => 'p.search_text LIKE ?').join(' AND ')})`)
-        searchParams.push(...tokens.map((token) => `%${token}%`))
-      }
       where.push(`(${searchClauses.join(' OR ')})`)
       params.push(...searchParams)
     }
 
     const whereSql = where.join(' AND ')
-    const orderParts: string[] = []
+    // Наявність визначаємо ДО LIMIT/OFFSET, за тим самим доступним
+    // залишком, який показуємо касиру. Інакше кожна сторінка має власну
+    // групу «нема», після якої знову з'являються наявні товари.
+    const orderParts: string[] = [`CASE WHEN (${availableQty}) > 0 OR p.is_service = 1 THEN 0 ELSE 1 END`]
     const dataParams = [...params]
     if (raw) {
-      orderParts.push('CASE WHEN p.sku = ? OR p.barcode = ? THEN 0 ELSE 1 END')
-      dataParams.push(raw, raw)
+      orderParts.push('CASE WHEN p.sku IN (?, ?) OR p.barcode IN (?, ?) THEN 0 ELSE 1 END')
+      dataParams.push(raw, compact, raw, compact)
     }
     if (sortField) {
       orderParts.push(`${sortColumns[sortField]} ${sortDir}`)
     } else {
-      orderParts.push('CASE WHEN p.qty_on_hand > 0 OR p.is_service = 1 THEN 0 ELSE 1 END', 'p.is_favorite DESC', 'p.name COLLATE NOCASE ASC')
+      orderParts.push('p.is_favorite DESC')
     }
     if (sortField !== 'name') orderParts.push('p.name COLLATE NOCASE ASC')
     orderParts.push('p.id ASC')
@@ -879,32 +883,35 @@ export class LocalCatalogRepository {
     `).get(...params) as { total?: number } | undefined
 
     const data = this.db.prepare(`
+      WITH active_reserves AS (
+        SELECT product_id, SUM(qty) AS qty_reserved
+        FROM stock_reserves
+        WHERE tenant_id = ? AND released_at IS NULL AND deleted_at IS NULL
+          AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+        GROUP BY product_id
+      ), matching_page AS MATERIALIZED (
+        SELECT p.id, COALESCE(r.qty_reserved, 0) AS qty_reserved
+        FROM products p
+        LEFT JOIN active_reserves r ON r.product_id = p.id
+        LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
+        WHERE ${whereSql}
+        ORDER BY ${orderParts.join(', ')}
+        LIMIT ? OFFSET ?
+      )
       SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode,
              p.brand_id, br.name AS brand_name, p.category_id, c.name AS category_name,
              p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
+             COALESCE(r.qty_reserved, 0) AS qty_reserved, (${availableQty}) AS qty_available,
              p.notes, p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
              p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
-      FROM products p
+      FROM matching_page r
+      JOIN products p ON p.id = r.id
       LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
       LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL
-      WHERE ${whereSql}
       ORDER BY ${orderParts.join(', ')}
-      LIMIT ? OFFSET ?
-    `).all(...dataParams, limit, offset) as unknown as LocalProduct[]
+    `).all(tenantId, ...dataParams, limit, offset, ...(raw ? [raw, compact, raw, compact] : [])) as unknown as LocalProduct[]
 
-    const availableData = this.attachAvailability(data, tenantId)
-    if (sortField === 'qty_on_hand') {
-      availableData.sort((left, right) => {
-        const difference = Number(left.qty_available ?? left.qty_on_hand) - Number(right.qty_available ?? right.qty_on_hand)
-        return sortDir === 'DESC' ? -difference : difference
-      })
-    } else if (!sortField) {
-      availableData.sort((left, right) =>
-        Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
-        - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1),
-      )
-    }
-    return { data: availableData, total: Number(totalRow?.total ?? data.length) }
+    return { data, total: Number(totalRow?.total ?? data.length) }
   }
 
   listCategories(tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory[] {
@@ -1133,25 +1140,9 @@ export class LocalCatalogRepository {
     this.addCatalogOutbox('settings', 'shop', 'settings.updated', input, tenantId, timestamp)
     return settings
   }
-  // Перші N активних товарів (обране — вперед). Для показу «популярних» у касі
-  // до вводу назви, коли поле пошуку порожнє.
+  // Усі підбори використовують той самий порядок, що й повний каталог.
   listPopular(tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
-    const products = this.db.prepare(`
-      SELECT id, tenant_id, sku, name, barcode, brand_id,
-             (SELECT br.name FROM brands br WHERE br.id = products.brand_id AND br.tenant_id = products.tenant_id AND br.deleted_at IS NULL) AS brand_name,
-             category_id,
-             (SELECT c.name FROM categories c WHERE c.id = products.category_id AND c.tenant_id = products.tenant_id AND c.deleted_at IS NULL) AS category_name,
-             unit, purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active, is_service, requires_core_return,
-             core_deposit_amount, storage_bin, is_favorite, photo_url, specs_json, created_at, updated_at
-      FROM products
-      WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1
-      ORDER BY is_favorite DESC, name ASC
-      LIMIT ?
-    `).all(tenantId, limit) as unknown as LocalProduct[]
-    return this.attachAvailability(products, tenantId).sort((left, right) =>
-      Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
-      - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1),
-    )
+    return this.listProducts({ limit }, tenantId).data
   }
 
   searchProducts(query: string, tenantId = DEFAULT_TENANT_ID, limit = 20): LocalProduct[] {
@@ -1161,71 +1152,7 @@ export class LocalCatalogRepository {
     const exact = this.findByBarcode(raw, tenantId)
     if (exact) return [exact]
 
-    const needles = productSearchNeedles(raw)
-    const tokens = productSearchTokens(raw)
-    const compact = compactLookupCode(raw)
-    const clauses = [
-      'sku = ?',
-      'sku = ?',
-      'barcode = ?',
-      'barcode = ?',
-      'barcode LIKE ?',
-      'name LIKE ?',
-      `EXISTS (
-        SELECT 1 FROM product_barcodes b
-        WHERE b.tenant_id = products.tenant_id
-          AND b.product_id = products.id
-          AND b.deleted_at IS NULL
-          AND (b.barcode = ? OR b.barcode = ? OR b.barcode LIKE ?)
-      )`,
-      `EXISTS (
-        SELECT 1 FROM product_aliases a
-        WHERE a.tenant_id = products.tenant_id
-          AND a.product_id = products.id
-          AND a.deleted_at IS NULL
-          AND (a.alias LIKE ? OR a.alias LIKE ?)
-      )`,
-      `EXISTS (
-        SELECT 1 FROM product_cross_numbers x
-        WHERE x.tenant_id = products.tenant_id
-          AND x.product_id = products.id
-          AND x.deleted_at IS NULL
-          AND (x.cross_number = ? OR x.cross_number = ? OR x.cross_number LIKE ?)
-      )`,
-    ]
-    const params: Array<string | number> = [tenantId, raw, compact, raw, compact, `%${raw}%`, `%${raw}%`, raw, compact, `%${raw}%`, `%${raw}%`, `%${compact}%`, raw, compact, `%${raw}%`]
-    for (const needle of needles) {
-      clauses.push('search_text LIKE ?')
-      params.push(`%${needle}%`)
-    }
-    if (tokens.length > 1) {
-      clauses.push(`(${tokens.map(() => 'search_text LIKE ?').join(' AND ')})`)
-      params.push(...tokens.map((token) => `%${token}%`))
-    }
-
-    const products = this.db.prepare(`
-      SELECT id, tenant_id, sku, name, barcode, brand_id,
-             (SELECT br.name FROM brands br WHERE br.id = products.brand_id AND br.tenant_id = products.tenant_id AND br.deleted_at IS NULL) AS brand_name,
-             category_id,
-             (SELECT c.name FROM categories c WHERE c.id = products.category_id AND c.tenant_id = products.tenant_id AND c.deleted_at IS NULL) AS category_name,
-             unit, purchase_price, retail_price, qty_on_hand, reorder_point, notes, is_active, is_service, requires_core_return,
-             core_deposit_amount, storage_bin, is_favorite, photo_url, specs_json, created_at, updated_at
-      FROM products
-      WHERE tenant_id = ?
-        AND deleted_at IS NULL
-        AND is_active = 1
-        AND (${clauses.join(' OR ')})
-      ORDER BY
-        CASE WHEN sku = ? OR sku = ? OR barcode = ? OR barcode = ? THEN 0 ELSE 1 END,
-        CASE WHEN qty_on_hand > 0 OR is_service = 1 THEN 0 ELSE 1 END,
-        is_favorite DESC,
-        name ASC
-      LIMIT ?
-    `).all(...params, raw, compact, raw, compact, limit) as unknown as LocalProduct[]
-    return this.attachAvailability(products, tenantId).sort((left, right) =>
-      Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
-      - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1),
-    )
+    return this.listProducts({ query: raw, limit }, tenantId).data
   }
   private attachAvailability(products: LocalProduct[], tenantId: string): LocalProduct[] {
     if (products.length === 0) return products

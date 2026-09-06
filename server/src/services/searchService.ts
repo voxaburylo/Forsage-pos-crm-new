@@ -95,6 +95,7 @@ async function enrichWithAnalogs(results: SearchResult[]): Promise<SearchResult[
  */
 async function enrichWithAvailability(results: SearchResult[]): Promise<SearchResult[]> {
   if (!results || results.length === 0) return results
+  if (results.every(r => Number.isFinite(r.qty_available) && Number.isFinite(r.qty_reserved))) return results
 
   const productIds = results.map((r) => r.id)
 
@@ -120,7 +121,9 @@ async function enrichWithAvailability(results: SearchResult[]): Promise<SearchRe
       qty_reserved: a?.qty_reserved ?? 0,
       qty_available: a?.qty_available ?? r.qty_on_hand,
     }
-  })
+  }).sort((a, b) =>
+    Number(b.qty_available > 0 || b.is_service === true) - Number(a.qty_available > 0 || a.is_service === true),
+  )
 }
 function addCyrillicVariants(target: Set<string>, value: string) {
   const clean = value.replace(/\s+/g, ' ').trim().toLocaleLowerCase('uk-UA')
@@ -257,45 +260,16 @@ async function crossNumberSearch(code: string, limit: number, tenantId: string):
 
 /** [1] Прямий пошук по товарах (sku, name, barcode, oem_number) */
 async function directProductSearch(terms: string[], originalQ: string, limit: number, tenantId: string): Promise<SearchResult[]> {
-  const fullTerms = terms
-    .map((term) => term.replace(/[,()*%]/g, ' ').replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-  const wordTerms = fullTerms
-    .flatMap((term) => term.split(/\s+/))
-    .filter((term) => term.length >= 2)
-    .sort((a, b) => b.length - a.length)
-  const conditionTerms = [...new Set([...fullTerms, ...wordTerms])].slice(0, 16)
-
-  const conditions = conditionTerms.flatMap((safeTerm) => {
-    // Commas and parentheses are PostgREST OR grammar, not search text.
-    const normalized = normalizeArticle(safeTerm)
-    return [
-      `sku.ilike.*${safeTerm}*`,
-      `sku.ilike.*${normalized}*`,
-      `name.ilike.*${safeTerm}*`,
-      `barcode.eq.${safeTerm}`,
-      // additional_barcodes виключено з OR — JSONB contains некоректно в or() рядку
-      // обробляється окремо в barcodeSearch через product_barcodes таблицю
-      `normalized_oem.eq.${normalized}`,
-      `oem_number.ilike.*${normalized}*`,
-    ]
-  })
-
-  const orString = conditions.join(',')
-  if (!orString) return []
-
-  const { data, error } = await db
-    .from(PRODUCTS_TABLE)
-    .select('*, brand:brands(id,name), category:categories(id,name)')
-    .eq('tenant_id', tenantId)
-    .is('deleted_at', null)
-    .eq('is_active', true)
-    .or(orString)
-    .order('qty_on_hand', { ascending: false })
-    .limit(Math.min(limit * 5, 500))
-
-  if (error) { logger.warn({ error: error.message }, '[search] directProductSearch error'); return [] }
-  if (!data || data.length === 0) return []
+  // Use the same global stock-first query as the catalog. Ranking a small
+  // arbitrary PostgREST page could hide available matches behind absent ones.
+  const { listProducts } = await import('./productService.js')
+  const { data } = await listProducts({
+    search: originalQ,
+    page: 1,
+    per_page: Math.min(limit * 5, 1000),
+    sort_dir: 'asc',
+  }, tenantId)
+  if (!data?.length) return []
 
   const normalizedOriginal = normalizeArticle(originalQ)
   const lowerTerms = terms.map((term) => term.toLocaleLowerCase('uk-UA'))
@@ -338,9 +312,14 @@ async function directProductSearch(terms: string[], originalQ: string, limit: nu
 
   return data
     .map((p: any) => ({ product: p, rank: score(p) }))
-    .sort((a, b) => b.rank.value - a.rank.value || Number(b.product.qty_on_hand ?? 0) - Number(a.product.qty_on_hand ?? 0))
+    .sort((a: any, b: any) =>
+      Number(b.product.qty_available > 0 || b.product.is_service === true)
+      - Number(a.product.qty_available > 0 || a.product.is_service === true)
+      || b.rank.value - a.rank.value
+      || String(a.product.id).localeCompare(String(b.product.id)),
+    )
     .slice(0, limit)
-    .map(({ product, rank }): SearchResult => ({
+    .map(({ product, rank }: { product: any; rank: { field: string; match: string } }): SearchResult => ({
       ...product,
       match_field: rank.field,
       match_value: rank.match,
