@@ -130,6 +130,10 @@ export class LocalWarehouseRepository {
     expires_at?: string | null
     user_id?: string | null
   }): any {
+    return this.db.transaction(() => this.createReserveInTransaction(input))
+  }
+
+  private createReserveInTransaction(input: Parameters<LocalWarehouseRepository['createReserve']>[0]): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const qty = numberValue(input.qty)
     if (qty <= 0) throw new Error('Кількість резерву має бути більше нуля')
@@ -167,6 +171,10 @@ export class LocalWarehouseRepository {
   }
 
   releaseReserve(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    return this.db.transaction(() => this.releaseReserveInTransaction(id, tenantId))
+  }
+
+  private releaseReserveInTransaction(id: string, tenantId: string): { ok: true } {
     const timestamp = nowIso()
     const result = this.db.prepare(`
       UPDATE stock_reserves

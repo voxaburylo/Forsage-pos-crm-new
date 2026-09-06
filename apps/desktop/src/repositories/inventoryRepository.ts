@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
+function checkedNonnegative(value: unknown): number {
+  const parsed = Number(value)
+  if (value === null || value === undefined || typeof value === 'boolean'
+    || String(value).trim() === '' || !Number.isFinite(parsed) || parsed < 0) {
+    throw new Error('Некоректна кількість або ціна')
+  }
+  return parsed
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -75,7 +84,8 @@ export class LocalInventoryRepository {
     const timestamp = nowIso()
     const row = this.getSessionRow(sessionId, tenantId)
     if (!row) throw new Error('Ревізію не знайдено')
-    if (row.status === 'completed') throw new Error('Ревізію вже завершено')
+    if (row.status === 'in_progress') return { total_products: this.totalProducts(tenantId) }
+    if (row.status !== 'draft') throw new Error('Ревізію вже завершено або скасовано')
     return this.db.transaction(() => {
       this.db.prepare(`
         UPDATE inventory_sessions
@@ -156,14 +166,14 @@ export class LocalInventoryRepository {
     this.requireActiveSession(sessionId, tenantId)
     const product = this.findProductById(input.product_id, tenantId)
     if (!product) throw new Error('Товар не знайдено')
-    const qty = num(input.qty)
+    const qty = checkedNonnegative(input.qty)
     if (qty < 0) throw new Error('Некоректна кількість')
     const timestamp = nowIso()
     let itemId = ''
     this.db.transaction(() => {
       const existing = this.findItemByProduct(sessionId, product.id, tenantId)
       itemId = existing?.id ?? randomUUID()
-      const nextQty = num(existing?.counted_stock) + qty
+      const nextQty = checkedNonnegative(num(existing?.counted_stock) + qty)
       this.db.prepare(`
         INSERT INTO inventory_items (
           id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
@@ -206,7 +216,8 @@ export class LocalInventoryRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const userId = input.user_id ?? ''
     this.requireActiveSession(sessionId, tenantId)
-    const qty = Math.max(1, Math.floor(num(input.qty) || 1))
+    const qty = checkedNonnegative(input.qty === undefined ? 1 : input.qty)
+    if (qty < 1 || !Number.isInteger(qty)) throw new Error('Кількість сканування має бути додатним цілим числом')
     const product = input.product_id
       ? this.findProductById(input.product_id, tenantId)
       : this.findProductByCode(input.barcode ?? '', tenantId)
@@ -217,7 +228,7 @@ export class LocalInventoryRepository {
     this.db.transaction(() => {
       const existing = this.findItemByProduct(sessionId, product.id, tenantId)
       itemId = existing?.id ?? randomUUID()
-      const nextQty = num(existing?.counted_stock) + qty
+      const nextQty = checkedNonnegative(num(existing?.counted_stock) + qty)
       this.db.prepare(`
         INSERT INTO inventory_items (
           id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
@@ -256,16 +267,21 @@ export class LocalInventoryRepository {
   }
 
   setItemQty(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }): any {
+    return this.db.transaction(() => this.setItemQtyInTransaction(sessionId, itemId, input))
+  }
+
+  private setItemQtyInTransaction(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     this.requireActiveSession(sessionId, tenantId)
-    const qty = num(input.counted_stock)
+    const qty = checkedNonnegative(input.counted_stock)
     if (qty < 0) throw new Error('Некоректна кількість')
     const timestamp = nowIso()
-    this.db.prepare(`
+    const result = this.db.prepare(`
       UPDATE inventory_items
       SET counted_stock = ?, was_counted = 1, updated_at = ?, deleted_at = NULL
-      WHERE id = ? AND session_id = ? AND tenant_id = ?
+      WHERE id = ? AND session_id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(qty, timestamp, itemId, sessionId, tenantId)
+    if (Number(result.changes) !== 1) throw new Error('Рядок ревізії не знайдено')
     this.touchSession(sessionId, tenantId, timestamp)
     return this.findItemById(itemId, tenantId)
   }
@@ -292,11 +308,14 @@ export class LocalInventoryRepository {
 
   applyPrice(sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }): { data: any; session: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    this.requireSession(sessionId, tenantId)
+    this.requireActiveSession(sessionId, tenantId)
+    const item = this.findItemByProduct(sessionId, input.product_id, tenantId)
+    if (!item?.was_counted || !this.findProductById(input.product_id, tenantId)) throw new Error('Товар ревізії не знайдено або видалений')
+    const price = checkedNonnegative(input.retail_price)
     const timestamp = nowIso()
     this.db.transaction(() => {
       this.db.prepare('UPDATE products SET retail_price = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
-        .run(num(input.retail_price), timestamp, timestamp, input.product_id, tenantId)
+        .run(price, timestamp, timestamp, input.product_id, tenantId)
       this.db.prepare('UPDATE inventory_items SET price_checked = 1, observed_retail_price = NULL, updated_at = ? WHERE session_id = ? AND product_id = ? AND tenant_id = ?')
         .run(timestamp, sessionId, input.product_id, tenantId)
       const product = this.productOutboxPayload(input.product_id, tenantId)
@@ -306,55 +325,63 @@ export class LocalInventoryRepository {
   }
 
   complete(sessionId: string, input: { tenant_id?: string; user_id?: string | null } = {}): { items_updated: number } {
+    return this.db.transaction(() => this.completeInTransaction(sessionId, input))
+  }
+
+  private completeInTransaction(sessionId: string, input: { tenant_id?: string; user_id?: string | null }): { items_updated: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const session = this.requireActiveSession(sessionId, tenantId)
+    const session = this.requireSession(sessionId, tenantId)
+    if (session.status === 'completed') {
+      const count = this.db.prepare('SELECT COUNT(*) AS n FROM inventory_items WHERE session_id = ? AND tenant_id = ? AND was_counted = 1 AND deleted_at IS NULL')
+        .get(sessionId, tenantId) as { n: number }
+      return { items_updated: count.n }
+    }
+    if (session.status !== 'in_progress') throw new Error('Ревізія не активна')
     const timestamp = nowIso()
     const items = this.listCountedItems(sessionId, tenantId, -1)
     if (items.length === 0) throw new Error('Неможливо завершити порожню ревізію. Спочатку додайте хоча б один порахований товар.')
     let updated = 0
-    this.db.transaction(() => {
-      for (const item of items) {
-        if (!item.product_id) continue
-        const counted = num(item.counted_stock)
-        const prevRow = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
-          .get(item.product_id, tenantId) as { qty_on_hand?: number } | undefined
-        const prevQty = num(prevRow?.qty_on_hand ?? 0)
-        this.db.prepare('UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
-          .run(counted, timestamp, timestamp, item.product_id, tenantId)
-        // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,
-        // і списання ревізією було невидиме в історії товару).
-        const delta = counted - prevQty
-        if (delta !== 0) {
-          this.db.prepare(`
-            INSERT INTO inventory_movements (
-              id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
-              unit_cost, notes, dirty_at, created_at, updated_at
-            ) VALUES (?, ?, ?, 'inventory', ?, ?, ?, 0, ?, ?, ?, ?)
-          `).run(
-            randomUUID(), tenantId, item.product_id, sessionId, delta, counted,
-            `Ревізія ${session.name ?? sessionId}`, timestamp, timestamp, timestamp,
-          )
-        }
-        updated += 1
+    for (const item of items) {
+      if (!item.product_id || !item.product) throw new Error(`Товар ревізії ${item.product_id ?? item.id} видалений або неактивний. Видаліть рядок або відновіть товар.`)
+      const counted = checkedNonnegative(item.counted_stock)
+      const prevRow = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
+        .get(item.product_id, tenantId) as { qty_on_hand?: number } | undefined
+      const prevQty = num(prevRow?.qty_on_hand ?? 0)
+      this.db.prepare('UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
+        .run(counted, timestamp, timestamp, item.product_id, tenantId)
+      // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,
+      // і списання ревізією було невидиме в історії товару).
+      const delta = counted - prevQty
+      if (delta !== 0) {
+        this.db.prepare(`
+          INSERT INTO inventory_movements (
+            id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
+            unit_cost, notes, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 'inventory', ?, ?, ?, 0, ?, ?, ?, ?)
+        `).run(
+          randomUUID(), tenantId, item.product_id, sessionId, delta, counted,
+          `Ревізія ${session.name ?? sessionId}`, timestamp, timestamp, timestamp,
+        )
       }
-      this.db.prepare(`
-        UPDATE inventory_sessions
-        SET status = 'completed', completed_at = ?, dirty_at = ?, updated_at = ?
-        WHERE id = ? AND tenant_id = ?
-      `).run(timestamp, timestamp, timestamp, sessionId, tenantId)
-      this.addOutbox(tenantId, 'inventory_session', sessionId, 'inventory.completed', {
-        id: sessionId,
-        name: session.name,
-        created_by: session.created_by ?? input.user_id ?? null,
-        created_at: session.created_at,
-        completed_at: timestamp,
-        items: items.map((item) => ({
-          product_id: item.product_id,
-          expected_stock: num(item.expected_stock),
-          counted_stock: num(item.counted_stock),
-        })),
-      }, timestamp)
-    })
+      updated += 1
+    }
+    this.db.prepare(`
+      UPDATE inventory_sessions
+      SET status = 'completed', completed_at = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(timestamp, timestamp, timestamp, sessionId, tenantId)
+    this.addOutbox(tenantId, 'inventory_session', sessionId, 'inventory.completed', {
+      id: sessionId,
+      name: session.name,
+      created_by: session.created_by ?? input.user_id ?? null,
+      created_at: session.created_at,
+      completed_at: timestamp,
+      items: items.map((item) => ({
+        product_id: item.product_id,
+        expected_stock: num(item.expected_stock),
+        counted_stock: num(item.counted_stock),
+      })),
+    }, timestamp)
     return { items_updated: updated }
   }
 
