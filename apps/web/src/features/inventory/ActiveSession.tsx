@@ -19,6 +19,8 @@ import { useAuthStore } from '@/stores/authStore'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { hasSuspiciousInventorySku, inventoryQuickCreateSeed } from './inventoryQuickCreate'
+import { InventoryPager } from './InventoryPager'
+import { inventoryPage, INVENTORY_PAGE_SIZE } from './inventoryPaging'
 
 interface ProductInfo {
   id: string
@@ -227,10 +229,8 @@ export default function ActiveSession() {
   const [pendingRowWrites, setPendingRowWrites] = useState(0)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [showRecent, setShowRecent] = useState(true)
-  // На великих ревізіях рендеримо лише останні рядки, щоб не тримати тисячі
-  // DOM-вузлів (важкий скрол/ввід). Решту — за «показати всі».
-  const [showAllCounted, setShowAllCounted] = useState(false)
-  const COUNTED_RENDER_CAP = 150
+  const [countedPage, setCountedPage] = useState(0)
+  const [pricePage, setPricePage] = useState(0)
   // Швидкі відсотки націнки з налаштувань — для випадачки біля ціни в рядку.
   const [quickPercents, setQuickPercents] = useState<number[]>([])
   useEffect(() => {
@@ -321,6 +321,9 @@ export default function ActiveSession() {
         (b.first_counted_at ?? b.updated_at ?? '').localeCompare(a.first_counted_at ?? a.updated_at ?? '')),
     [sessionItems],
   )
+  const countedWindow = inventoryPage(countedRows.length, countedPage)
+  const priceWindow = inventoryPage(session?.price_issues.length ?? 0, pricePage)
+  useEffect(() => { setCountedPage(0); setPricePage(0) }, [id])
 
   useEffect(() => {
     inventoryDraftReadyRef.current = false
@@ -712,6 +715,9 @@ export default function ActiveSession() {
 
   useEffect(() => {
     if (!highlightedItemId || !showRecent) return
+    const index = countedRows.findIndex(item => item.id === highlightedItemId)
+    const targetPage = index < 0 ? countedPage : Math.floor(index / INVENTORY_PAGE_SIZE)
+    if (targetPage !== countedPage) { setCountedPage(targetPage); return }
     const timer = window.setTimeout(() => {
       document.getElementById(`inventory-row-${highlightedItemId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       window.setTimeout(() => inputRef.current?.focus(), 250)
@@ -721,7 +727,7 @@ export default function ActiveSession() {
       window.clearTimeout(timer)
       window.clearTimeout(clearTimer)
     }
-  }, [highlightedItemId, showRecent])
+  }, [highlightedItemId, showRecent, countedPage, countedRows])
   useEffect(() => {
     if (!session || session.status !== 'in_progress' || desktopRuntime) return
     const timer = window.setInterval(() => load(true), 8_000)
@@ -1506,7 +1512,7 @@ export default function ActiveSession() {
                 <p className="py-8 text-center text-sm text-gray-400">
                   Скануйте штрихкод або знайдіть товар — він з'явиться тут рядком.
                 </p>
-              ) : (showAllCounted ? countedRows : countedRows.slice(0, COUNTED_RENDER_CAP)).map((item) => (
+              ) : countedRows.slice(countedWindow.start, countedWindow.end).map((item) => (
                 <InventoryRow
                   key={item.id}
                   item={item}
@@ -1527,15 +1533,7 @@ export default function ActiveSession() {
                   onRemove={() => removeItem(item)}
                 />
               ))}
-              {!showAllCounted && countedRows.length > COUNTED_RENDER_CAP && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllCounted(true)}
-                  className="w-full py-3 text-center text-sm font-semibold text-gray-500 hover:bg-gray-50"
-                >
-                  Показати всі ({countedRows.length}) — зараз видно останні {COUNTED_RENDER_CAP}
-                </button>
-              )}
+              <InventoryPager total={countedRows.length} page={countedPage} onChange={setCountedPage} />
             </div>
           )}
         </Card>
@@ -1548,7 +1546,7 @@ export default function ActiveSession() {
               </p>
             </div>
             <div className="divide-y divide-gray-100">
-              {session.price_issues.map((issue) => (
+              {session.price_issues.slice(priceWindow.start, priceWindow.end).map((issue) => (
                 <div key={issue.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
                   <div className="min-w-0">
                     <p className="truncate font-medium text-gray-900">{issue.product?.name ?? 'Товар'}</p>
@@ -1584,6 +1582,8 @@ export default function ActiveSession() {
             </div>
           </Card>
         )}
+
+        {session.price_issues.length > INVENTORY_PAGE_SIZE && <InventoryPager total={session.price_issues.length} page={pricePage} onChange={setPricePage} />}
 
         {isActive && canComplete && (
           <div className="space-y-2">

@@ -131,21 +131,22 @@ export class LocalInventoryRepository {
   getSessionData(sessionId: string, tenantId = DEFAULT_TENANT_ID, userId = ''): any {
     const session = this.getSessionRow(sessionId, tenantId)
     if (!session) throw new Error('Ревізію не знайдено')
+    const items = this.listCountedItems(sessionId, tenantId)
+    const priceIssues = items
+      .filter((item) => item.product && item.observed_retail_price !== null && item.observed_retail_price !== item.product.retail_price)
+      .map((item) => ({ id: item.id, product_id: item.product_id, observed_retail_price: item.observed_retail_price, product: item.product }))
     return {
       ...session,
-      // Раніше було 100 — на великих ревізіях половина порахованих не показувалась
-      // (і екран «було→стане» їх не бачив). 1000 покриває реальні ревізії; веб-рендер
-      // усе одно обмежений (150 + «показати всі»), тож DOM легкий.
-      items: this.listCountedItems(sessionId, tenantId, 1000),
-      price_issues: this.listPriceIssues(sessionId, tenantId),
+      items,
+      price_issues: priceIssues,
       my_entries: this.listEntries(sessionId, tenantId, userId),
-      summary: this.summary(sessionId, tenantId),
+      summary: { ...this.summary(sessionId, tenantId), price_mismatch_products: priceIssues.length },
     }
   }
 
   getLabels(sessionId: string, tenantId = DEFAULT_TENANT_ID): any[] {
     this.requireSession(sessionId, tenantId)
-    return this.listCountedItems(sessionId, tenantId, 10000)
+    return this.listCountedItems(sessionId, tenantId)
       .filter((item) => num(item.counted_stock) > 0)
   }
 
@@ -338,7 +339,7 @@ export class LocalInventoryRepository {
     }
     if (session.status !== 'in_progress') throw new Error('Ревізія не активна')
     const timestamp = nowIso()
-    const items = this.listCountedItems(sessionId, tenantId, -1)
+    const items = this.listCountedItems(sessionId, tenantId)
     if (items.length === 0) throw new Error('Неможливо завершити порожню ревізію. Спочатку додайте хоча б один порахований товар.')
     let updated = 0
     for (const item of items) {
@@ -520,31 +521,33 @@ export class LocalInventoryRepository {
     }
   }
 
-  private listCountedItems(sessionId: string, tenantId: string, limit: number): any[] {
+  private listCountedItems(sessionId: string, tenantId: string): any[] {
     const rows = this.db.prepare(`
-      SELECT id, product_id, expected_stock, counted_stock, price_checked,
-             observed_retail_price, updated_at, was_counted
-      FROM inventory_items
-      WHERE session_id = ? AND tenant_id = ? AND deleted_at IS NULL AND was_counted = 1
-      ORDER BY updated_at DESC
-      LIMIT ?
-    `).all(sessionId, tenantId, limit) as any[]
-    return rows.map((row) => ({
+      SELECT i.id, i.product_id, i.expected_stock, i.counted_stock, i.price_checked,
+             i.observed_retail_price, i.updated_at, i.was_counted,
+             CASE WHEN p.id IS NULL THEN NULL ELSE json_object(
+               'id', p.id, 'tenant_id', p.tenant_id, 'sku', p.sku, 'name', p.name,
+               'barcode', p.barcode, 'brand_id', p.brand_id, 'brand_name', b.name,
+               'category_id', p.category_id, 'category_name', c.name, 'unit', p.unit,
+               'qty_on_hand', p.qty_on_hand, 'retail_price', p.retail_price,
+               'purchase_price', p.purchase_price, 'reorder_point', p.reorder_point,
+               'notes', p.notes, 'is_active', p.is_active, 'is_service', p.is_service,
+               'storage_bin', p.storage_bin, 'is_favorite', p.is_favorite,
+               'photo_url', p.photo_url, 'specs_json', p.specs_json
+             ) END AS product_json
+      FROM inventory_items i
+      LEFT JOIN products p ON p.id = i.product_id AND p.tenant_id = i.tenant_id
+        AND p.deleted_at IS NULL AND p.is_active = 1
+      LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+      LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+      WHERE i.session_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL AND i.was_counted = 1
+      ORDER BY i.updated_at DESC, i.id DESC
+    `).all(sessionId, tenantId) as any[]
+    return rows.map(({ product_json, ...row }) => ({
       ...row,
       price_checked: row.price_checked === 1,
-      product: this.findProductById(row.product_id, tenantId),
+      product: product_json === null ? null : JSON.parse(product_json),
     }))
-  }
-
-  private listPriceIssues(sessionId: string, tenantId: string): any[] {
-    return this.listCountedItems(sessionId, tenantId, 200)
-      .filter((item) => item.observed_retail_price !== null && item.observed_retail_price !== item.product?.retail_price)
-      .map((item) => ({
-        id: item.id,
-        product_id: item.product_id,
-        observed_retail_price: item.observed_retail_price,
-        product: item.product,
-      }))
   }
 
   private listEntries(sessionId: string, tenantId: string, userId: string): any[] {
@@ -571,7 +574,6 @@ export class LocalInventoryRepository {
         SUM(CASE WHEN counted_stock = expected_stock THEN 1 ELSE 0 END) AS matching_products,
         SUM(CASE WHEN counted_stock <> expected_stock THEN 1 ELSE 0 END) AS discrepancy_products,
         SUM(CASE WHEN price_checked = 1 THEN 1 ELSE 0 END) AS price_checked_products,
-        SUM(CASE WHEN observed_retail_price IS NOT NULL THEN 1 ELSE 0 END) AS price_mismatch_products,
         SUM(expected_stock) AS total_expected_units,
         SUM(counted_stock) AS total_counted_units
       FROM inventory_items
@@ -583,7 +585,6 @@ export class LocalInventoryRepository {
       matching_products: num(row?.matching_products),
       discrepancy_products: num(row?.discrepancy_products),
       price_checked_products: num(row?.price_checked_products),
-      price_mismatch_products: num(row?.price_mismatch_products),
       participants: 1,
       total_expected_units: num(row?.total_expected_units),
       total_counted_units: num(row?.total_counted_units),
