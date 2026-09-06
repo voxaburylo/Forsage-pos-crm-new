@@ -9,7 +9,23 @@
  *   brands        — локальний довідник брендів
  *   sync_log      — журнал останніх синхронізацій/помилок
  *   meta          — час кешування та остання відкрита зміна
+ *
+ * УВАГА: це черга ТІЛЬКИ для браузерної версії. На касі (Electron) працює
+ * власна черга в SQLite, і чек, покладений сюди, не потрапив би на сервер
+ * ніколи — його б ніхто не читав. Тому записи в чергу продажів на касі
+ * падають з помилкою, а не тихо спрацьовують: краще гучна відмова, яку
+ * касир побачить одразу, ніж зниклий чек, який знайдеться через місяць.
  */
+import { isDesktopRuntime } from './desktopBridge'
+
+/** Одна перевірка на всі входи в чергу продажів — щоб не покладатися на памʼять. */
+function assertBrowserQueueUsable(action: string): void {
+  if (!isDesktopRuntime()) return
+  throw new Error(
+    `Черга браузера недоступна на касі (${action}): у каси власна локальна база. `
+    + 'Чек треба зберігати через неї, інакше він не потрапить на сервер.',
+  )
+}
 
 const DB_NAME    = 'forsage_offline'
 const DB_VERSION = 7
@@ -1123,6 +1139,7 @@ export async function commitLocalSale(
   receipt: Omit<LocalSaleRecord, 'local_id' | 'server_id' | 'sync_status' | 'sync_error' | 'synced_at'>,
   scopeKey: string,
 ): Promise<void> {
+  assertBrowserQueueUsable('commitLocalSale')
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['pending_sales', 'sales', 'products', 'meta'], 'readwrite')
@@ -1165,6 +1182,7 @@ export async function completePendingSaleSync(
   serverSale: any,
   scopeKey: string,
 ): Promise<void> {
+  assertBrowserQueueUsable('completePendingSaleSync')
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['pending_sales', 'sales'], 'readwrite')
@@ -1229,6 +1247,7 @@ export async function getLocalSale(id: string, scopeKey: string): Promise<LocalS
 }
 
 export async function enqueueSale(sale: PendingSale): Promise<void> {
+  assertBrowserQueueUsable('enqueueSale')
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx  = db.transaction('pending_sales', 'readwrite')
@@ -1257,6 +1276,7 @@ export async function markPendingSaleFailed(
   error: string,
   scopeKey: string,
 ): Promise<void> {
+  assertBrowserQueueUsable('markPendingSaleFailed')
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['pending_sales', 'sales'], 'readwrite')
@@ -1286,6 +1306,7 @@ export async function markPendingSaleFailed(
 }
 
 export async function removePendingSale(offlineId: string, scopeKey: string): Promise<void> {
+  assertBrowserQueueUsable('removePendingSale')
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction('pending_sales', 'readwrite')
