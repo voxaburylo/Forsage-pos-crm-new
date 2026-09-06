@@ -24,6 +24,8 @@ describe('all manual inventory writes participate in completion', () => {
     const complete = functions.get('completeSession')!.getText(tree)
     expect(complete.indexOf('flushingInputRef.current = true')).toBeLessThan(complete.indexOf('activeElement.blur()'))
     expect(complete.indexOf('writeFailuresRef.current !== writeFailuresBefore')).toBeLessThan(complete.indexOf('await inventoryApi.complete'))
+    expect(complete).toContain('inputGuardRef.current.hasErrors(id)')
+    expect(complete.indexOf('inputGuardRef.current.hasErrors(id)')).toBeLessThan(complete.indexOf('await inventoryApi.complete'))
     const tracker = functions.get('trackRowWrite')!.getText(tree)
     expect(tracker).toContain('writeFailuresRef.current += 1')
     expect(tracker).toContain('await writeQueueRef.current.run(work)')

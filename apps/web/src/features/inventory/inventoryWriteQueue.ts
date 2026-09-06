@@ -10,3 +10,11 @@ export class InventoryWriteQueue {
     return result
   }
 }
+/** Event-handler wait, kept outside React render analysis. */
+export async function waitForInventoryWrites(hasPending: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (hasPending()) {
+    if (Date.now() >= deadline) throw new Error('Не всі зміни встигли зберегтися. Перевірте рядки та повторіть завершення ревізії.')
+    await new Promise<void>(resolve => { setTimeout(resolve, 50) })
+  }
+}

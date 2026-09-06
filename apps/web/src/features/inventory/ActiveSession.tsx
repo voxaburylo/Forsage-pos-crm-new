@@ -22,7 +22,8 @@ import { hasSuspiciousInventorySku, inventoryQuickCreateSeed } from './inventory
 import { InventoryPager } from './InventoryPager'
 import { inventoryPage, INVENTORY_PAGE_SIZE } from './inventoryPaging'
 import { InventoryReadGuard, inventoryHasPendingWrites, updateScanSummary } from './inventoryScanState'
-import { InventoryWriteQueue } from './inventoryWriteQueue'
+import { InventoryWriteQueue, waitForInventoryWrites } from './inventoryWriteQueue'
+import { InventoryInputGuard, parseInventoryNumber } from './inventoryInput'
 
 interface ProductInfo {
   id: string
@@ -264,6 +265,7 @@ export default function ActiveSession() {
   const scanFailuresRef = useRef(0)
   const writeFailuresRef = useRef(0)
   const writeQueueRef = useRef(new InventoryWriteQueue())
+  const inputGuardRef = useRef(new InventoryInputGuard())
   const flushingInputRef = useRef(false)
   const refreshAfterWritesRef = useRef(false)
   const sessionReadGuard = useRef(new InventoryReadGuard())
@@ -305,13 +307,10 @@ export default function ActiveSession() {
   }
 
   async function waitForPendingRowWrites(): Promise<void> {
-    const deadline = Date.now() + INVENTORY_WRITE_TIMEOUT_MS
-    while (inventoryHasPendingWrites(pendingRowWritesRef.current, scanQueueRunning.current, scanQueue.current.length)) {
-      if (Date.now() >= deadline) {
-        throw new Error('Не всі зміни кількості встигли зберегтися. Перевірте рядки та повторіть завершення ревізії.')
-      }
-      await new Promise<void>((resolve) => { window.setTimeout(resolve, 50) })
-    }
+    await waitForInventoryWrites(
+      () => inventoryHasPendingWrites(pendingRowWritesRef.current, scanQueueRunning.current, scanQueue.current.length),
+      INVENTORY_WRITE_TIMEOUT_MS,
+    )
   }
 
   const isCurrentSessionCompleted = Boolean(session && session.id === id && session.status === 'completed')
@@ -406,8 +405,8 @@ export default function ActiveSession() {
   }
 
   function kopecksFromInput(value: string): number | null {
-    const parsed = Number(String(value).replace(',', '.'))
-    if (!Number.isFinite(parsed) || parsed < 0) return null
+    const parsed = parseInventoryNumber(value)
+    if (parsed === null) return null
     return Math.round(parsed * 100)
   }
 
@@ -571,8 +570,8 @@ export default function ActiveSession() {
   // Встановити абсолютну кількість рядка (редагування прямо в рядку).
   async function setItemQty(item: InventoryItem, value: string) {
     if (!id) return
-    const qty = Number(String(value).replace(',', '.'))
-    if (!Number.isFinite(qty) || qty < 0) { toast.error('Некоректна кількість'); return }
+    const qty = inputGuardRef.current.validate(id, item.id, 'qty', value)
+    if (qty === null) { toast.error('Вкажіть кількість числом. Для нульового залишку введіть 0.'); return }
     try {
       await trackRowWrite(async function () {
         await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
@@ -588,6 +587,7 @@ export default function ActiveSession() {
     try {
       await trackRowWrite(async () => {
         await inventoryApi.removeItem(id, item.id, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        inputGuardRef.current.removeItem(id, item.id)
         setSelectedIds((prev) => {
           const next = new Set(prev)
           if (item.product?.id) next.delete(item.product.id)
@@ -603,8 +603,9 @@ export default function ActiveSession() {
 
   // Встановити роздрібну ціну товару прямо з рядка.
   async function setItemRetail(item: InventoryItem, value: string) {
-    if (!item.product || !canEditPrice) return
+    if (!id || !item.product || !canEditPrice) return
     const product = item.product
+    inputGuardRef.current.validate(id, item.id, 'retail', value)
     const retail = kopecksFromInput(value)
     if (retail === null) { toast.error('Некоректна ціна'); return }
     try {
@@ -619,8 +620,9 @@ export default function ActiveSession() {
 
   // Встановити закупівельну ціну товару прямо з рядка.
   async function setItemPurchase(item: InventoryItem, value: string) {
-    if (!item.product || !canEditPrice) return
+    if (!id || !item.product || !canEditPrice) return
     const product = item.product
+    inputGuardRef.current.validate(id, item.id, 'purchase', value)
     const purchase = kopecksFromInput(value)
     if (purchase === null) { toast.error('Некоректна закупівельна ціна'); return }
     try {
@@ -931,9 +933,9 @@ export default function ActiveSession() {
 
   async function saveCount() {
     if (!id || !selected) return
-    const parsedQty = Number(String(qty).replace(',', '.'))
-    if (!Number.isFinite(parsedQty) || parsedQty < 0) {
-      toast.error('Кількість не може бути від’ємною')
+    const parsedQty = parseInventoryNumber(qty)
+    if (parsedQty === null) {
+      toast.error('Вкажіть коректну кількість. Для нульового залишку введіть 0.')
       return
     }
     let observedKopecks: number | null = null
@@ -942,8 +944,8 @@ export default function ActiveSession() {
       return
     }
     if (priceStatus === 'mismatch') {
-      const parsedPrice = Number(String(observedPrice).replace(',', '.'))
-      if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+      const parsedPrice = parseInventoryNumber(observedPrice)
+      if (parsedPrice === null) {
         toast.error('Вкажіть фактичну ціну з цінника')
         return
       }
@@ -1005,14 +1007,14 @@ export default function ActiveSession() {
     const draft = quickProduct
     const sku = draft.sku.trim()
     const name = draft.name.trim()
-    const countedQty = Number(String(draft.qty).replace(',', '.'))
+    const countedQty = parseInventoryNumber(draft.qty)
     if (!sku) { toast.error('Вкажіть артикул або код'); return }
     if (name.length < 2) { toast.error('Вкажіть назву товару'); return }
     if (hasSuspiciousInventorySku(sku, name)) {
       toast.error('Схоже, назва товару потрапила в поле артикулу. Перенесіть опис у поле «Назва», а в артикулі залиште лише код.')
       return
     }
-    if (!Number.isFinite(countedQty) || countedQty <= 0) { toast.error('Кількість має бути більше 0'); return }
+    if (countedQty === null || countedQty <= 0) { toast.error('Кількість має бути більше 0'); return }
     setCreatingProduct(true)
     try {
       await trackRowWrite(async () => {
@@ -1103,6 +1105,7 @@ export default function ActiveSession() {
       try { if (activeElement instanceof HTMLElement) activeElement.blur() }
       finally { flushingInputRef.current = false }
       await waitForPendingRowWrites()
+      if (inputGuardRef.current.hasErrors(id)) throw new Error('Виправте незаповнену або некоректну кількість чи ціну в рядках ревізії перед завершенням.')
       if (scanFailuresRef.current !== scanFailuresBefore) throw new Error('Не всі сканування збережено. Перевірте повідомлення та товари перед завершенням ревізії.')
       if (writeFailuresRef.current !== writeFailuresBefore) throw new Error('Не всі правки збережено. Виправте помилку перед завершенням ревізії.')
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })

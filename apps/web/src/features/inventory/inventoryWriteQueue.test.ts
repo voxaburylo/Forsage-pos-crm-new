@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { InventoryWriteQueue } from './inventoryWriteQueue'
+import { describe, expect, it, vi } from 'vitest'
+import { InventoryWriteQueue, waitForInventoryWrites } from './inventoryWriteQueue'
 
 function gate() {
   let resolve!: () => void
@@ -8,6 +8,28 @@ function gate() {
 }
 
 describe('inventory write ordering', () => {
+  it('waits until pending writes drain', async () => {
+    vi.useFakeTimers()
+    try {
+      let pending = true
+      let finished = false
+      const wait = waitForInventoryWrites(() => pending, 500).then(() => { finished = true })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(finished).toBe(false)
+      pending = false
+      await vi.advanceTimersByTimeAsync(50)
+      await wait
+      expect(finished).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
+  it('rejects a timed-out wait rather than authorizing completion', async () => {
+    vi.useFakeTimers()
+    try {
+      const rejection = expect(waitForInventoryWrites(() => true, 100)).rejects.toThrow('Не всі зміни')
+      await vi.advanceTimersByTimeAsync(100)
+      await rejection
+    } finally { vi.useRealTimers() }
+  })
   it('keeps 3 → 8 → 3 even while the first save is delayed', async () => {
     const queue = new InventoryWriteQueue()
     const first = gate()
