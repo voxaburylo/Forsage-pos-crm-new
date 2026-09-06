@@ -40,7 +40,28 @@ function isNetworkFailure(err: unknown): boolean {
 
 const ONLINE_LOGIN_TIMEOUT_MS = 8_000
 
-const DESKTOP_SERVER_RETRY_MS = [5_000, 15_000, 60_000]
+/**
+ * Паузи між спробами підняти серверну сесію після локального входу.
+ *
+ * Раніше цей список закінчувався — три спроби, приблизно 80 секунд, і каса
+ * лишалася в офлайн-режимі до перезапуску. 06.09.2026 це коштувало магазину
+ * цілого дня: 31 операція, з них 27 чеків, не поїхала на сервер, і жодної
+ * спроби відправки навіть не було — синхронізатор у офлайн-режимі не працює.
+ *
+ * Тепер список не закінчується: останнє значення повторюється, поки сесія не
+ * піднімється. Ранковий Render прокидається 20-25 секунд, інтернет у магазині
+ * зникає й повертається — програма мусить дочекатися сама.
+ */
+const DESKTOP_SERVER_RETRY_MS = [5_000, 15_000, 60_000, 300_000]
+
+/**
+ * Пауза перед наступною спробою підняти серверну сесію. Після останнього
+ * значення повертає його ж — спроби не закінчуються ніколи.
+ */
+export function desktopServerRetryDelay(attempt: number): number {
+  const index = Math.min(Math.max(0, attempt), DESKTOP_SERVER_RETRY_MS.length - 1)
+  return DESKTOP_SERVER_RETRY_MS[index]
+}
 let desktopServerLoginGeneration = 0
 
 async function connectDesktopToServer(
@@ -52,8 +73,7 @@ async function connectDesktopToServer(
   if (generation !== desktopServerLoginGeneration) return
 
   const retry = () => {
-    if (attempt >= DESKTOP_SERVER_RETRY_MS.length) return
-    const delay = DESKTOP_SERVER_RETRY_MS[attempt]
+    const delay = desktopServerRetryDelay(attempt)
     window.setTimeout(() => {
       void connectDesktopToServer(email, password, attempt + 1, generation)
     }, delay)
