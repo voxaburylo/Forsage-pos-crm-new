@@ -11,10 +11,7 @@ describe('desktop sync cursor safety', () => {
     expect(source).not.toContain("(error as { code?: string } | null)?.code === '42P01'")
     expect(source).not.toContain('Date.now() - CURSOR_OVERLAP_MS')
 
-    const pull = source.slice(
-      source.indexOf('export async function getSyncChanges'),
-      source.indexOf('export async function getBootstrapSnapshot'),
-    )
+    const pull = syncFunctionBody('getSyncChanges')
     expect(pull.indexOf('const syncState = await captureSyncState')).toBeLessThan(pull.indexOf('await Promise.all'))
     expect(pull).toContain('upperBound: nextCursor')
   })
@@ -26,20 +23,14 @@ describe('desktop sync cursor safety', () => {
     expect(keysetSource).toContain('.order(options.timestampColumn, { ascending: true })')
     expect(keysetSource).toContain('.order(tieBreaker, { ascending: true })')
 
-    const pullAndBootstrap = source.slice(
-      source.indexOf('export async function getSyncChanges'),
-      source.indexOf('export async function pushLocalOperations'),
-    )
+    const pullAndBootstrap = syncFunctionBody('getSyncChanges') + syncFunctionBody('getBootstrapSnapshot')
     expect(pullAndBootstrap).not.toContain('.range(')
     expect(pullAndBootstrap).toContain('fetchAllByTimestamp')
     expect(pullAndBootstrap).toContain('fetchAllById')
   })
 
   it('does not truncate full salary and reserve snapshots to the incremental cursor', () => {
-    const secondary = source.slice(
-      source.indexOf('async function fetchSecondarySyncData'),
-      source.indexOf('export async function getSyncChanges'),
-    )
+    const secondary = syncFunctionBody('fetchSecondarySyncData')
     expect(secondary).toContain('const changed = (buildQuery: () => any, fullSnapshot = false)')
     expect(secondary).toContain('lowerBound: fullSnapshot ? undefined : since')
     expect(secondary).toMatch(/salary_payments[\s\S]*?fullSnapshots,/)
@@ -62,10 +53,7 @@ describe('desktop sync cursor safety', () => {
   })
 
   it('captures the bounded bootstrap cursor before reading the snapshot', () => {
-    const bootstrap = source.slice(
-      source.indexOf('export async function getBootstrapSnapshot'),
-      source.indexOf('export async function pushLocalOperations'),
-    )
+    const bootstrap = syncFunctionBody('getBootstrapSnapshot')
     const cursor = bootstrap.indexOf('const snapshotCursor = syncState.cursor')
     const queries = bootstrap.indexOf('await Promise.all')
     expect(cursor).toBeGreaterThanOrEqual(0)
