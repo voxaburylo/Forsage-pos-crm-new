@@ -21,7 +21,7 @@ import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
-import { loadCatalogPage, type CatalogSource } from './catalogPaging'
+import { canAdvanceCatalogPage, loadCatalogPage, type CatalogSource } from './catalogPaging'
 import {
   printLabels,
   loadProductLabelSettings,
@@ -88,6 +88,7 @@ export default function ProductsPage() {
   // щоб при докручуванні донизу дозавантажувати наступні 100, а не гортати сторінками.
   const [pages, setPages]           = useState<Record<number, Product[]>>({})
   const loadMoreRef                 = useRef<HTMLDivElement | null>(null)
+  const pageAdvanceLockedRef = useRef(false)
   const [loading, setLoading]       = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -215,6 +216,7 @@ export default function ProductsPage() {
   // Одна пагінована вибірка для пошуку й каталогу, без ліміту 500 збігів.
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current
+    pageAdvanceLockedRef.current = true
     const isCurrentRequest = () => requestId === loadRequestRef.current
     setLoading(true)
     setLoadFailed(false)
@@ -256,7 +258,7 @@ export default function ProductsPage() {
       setLoadFailed(true)
       toast.error(e instanceof Error ? e.message : 'Помилка завантаження товарів')
     } finally {
-      if (isCurrentRequest()) setLoading(false)
+      if (isCurrentRequest()) { pageAdvanceLockedRef.current = false; setLoading(false) }
     }
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
   // Upload acknowledgements don't change local catalog contents. Reloading
@@ -271,11 +273,13 @@ export default function ProductsPage() {
   useEffect(() => {
     if (previousFilterKeyRef.current === filterKey) return
     previousFilterKeyRef.current = filterKey
+    pageAdvanceLockedRef.current = true
     loadRequestRef.current++
     catalogSourceRef.current = null
     if (page !== 1) skipNextLoadRef.current = true
     setPage(1)
     setPages({})
+    setResult(null)
   }, [filterKey, page])
 
   useEffect(() => {
@@ -301,20 +305,21 @@ export default function ProductsPage() {
   const products = accumulated
 
   const totalCount = result?.pagination.total ?? 0
-  const hasMore = accumulated.length < totalCount
+  const hasMore = canAdvanceCatalogPage(page, result, accumulated.length, Object.prototype.hasOwnProperty.call(pages, page))
 
   // Автопідвантаження наступних 100 при докручуванні донизу
   useEffect(() => {
     const node = loadMoreRef.current
     if (!node || !hasMore || loadFailed) return
     const observer = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && !loading && hasMore) {
+      if (entries[0]?.isIntersecting && !loading && hasMore && !pageAdvanceLockedRef.current && previousFilterKeyRef.current === filterKey) {
+        pageAdvanceLockedRef.current = true
         setPage((p) => p + 1)
       }
     }, { rootMargin: '400px' })
     observer.observe(node)
     return () => observer.disconnect()
-  }, [hasMore, loading, loadFailed])
+  }, [hasMore, loading, loadFailed, filterKey])
 
   function toggleSort(field: SortField) {
     setSort((prev) => {

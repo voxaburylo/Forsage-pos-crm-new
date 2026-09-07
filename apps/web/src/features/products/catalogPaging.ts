@@ -3,6 +3,11 @@ import type { PaginatedProducts } from '@/types/product'
 
 export type CatalogSource = 'desktop' | 'server' | 'cache'
 
+export function canAdvanceCatalogPage(page: number, response: PaginatedProducts | null, loaded: number, hasPage: boolean): boolean {
+  return Boolean(response && hasPage && response.pagination.page === page && response.data.length > 0
+    && page < response.pagination.total_pages && loaded < response.pagination.total)
+}
+
 // A scrolling list must not combine pages from different snapshots/sources.
 // Desktop never falls back to the browser cache or the server.
 export async function loadCatalogPage(

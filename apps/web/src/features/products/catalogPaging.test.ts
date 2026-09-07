@@ -1,8 +1,25 @@
 import { describe, expect, it, vi } from 'vitest'
-import { loadCatalogPage } from './catalogPaging'
+import { canAdvanceCatalogPage, loadCatalogPage } from './catalogPaging'
 import type { PaginatedProducts } from '@/types/product'
 
 const result: PaginatedProducts = { data: [], pagination: { page: 6, per_page: 100, total: 780, total_pages: 8 } }
+describe('catalog scroll boundary', () => {
+  const response = (page: number, rows: number, total = 90): PaginatedProducts => ({
+    data: Array.from({ length: rows }, (_, id) => ({ id: String(id) })) as PaginatedProducts['data'],
+    pagination: { page, per_page: 100, total, total_pages: Math.ceil(total / 100) },
+  })
+  it('waits for the current search page', () => {
+    expect(canAdvanceCatalogPage(1, response(4, 100, 1000), 0, false)).toBe(false)
+    expect(canAdvanceCatalogPage(2, response(1, 100, 300), 100, true)).toBe(false)
+  })
+  it('stops on empty or final pages even with stale totals', () => {
+    expect(canAdvanceCatalogPage(1, response(1, 90), 90, true)).toBe(false)
+    expect(canAdvanceCatalogPage(2, response(2, 0, 1000), 30, true)).toBe(false)
+  })
+  it('continues only after a loaded non-final page', () => {
+    expect(canAdvanceCatalogPage(2, response(2, 100, 300), 200, true)).toBe(true)
+  })
+})
 describe('catalog page source', () => {
   it('uses the paginated local API for named searches beyond the former 500-result cap', async () => {
     const list = vi.fn().mockResolvedValue(result)
