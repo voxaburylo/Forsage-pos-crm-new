@@ -28,6 +28,7 @@ import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSupplyRepository } from './repositories/supplyRepository'
 import { LocalStaffRepository } from './repositories/staffRepository'
 import { LocalWarehouseRepository } from './repositories/warehouseRepository'
+import { LocalPurchaseRepository } from './repositories/localPurchaseRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
 import { LocalSupplierCatalogRepository } from './repositories/supplierCatalogRepository'
 import { LocalProblemRepository } from './repositories/problemRepository'
@@ -42,6 +43,7 @@ import { withPrintTimeout } from './print/printTimeout'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { customerWritePayload } from './security/customerWritePolicy'
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
@@ -266,6 +268,10 @@ function requireLocalStaff(): LocalStaffRepository {
 function requireLocalWarehouse(): LocalWarehouseRepository {
   if (!localWarehouse) throw new Error('LOCAL_WAREHOUSE_NOT_READY')
   return localWarehouse
+}
+function requireLocalPurchases(): LocalPurchaseRepository {
+  if (!localDatabase) throw new Error('LOCAL_DATABASE_NOT_READY')
+  return new LocalPurchaseRepository(localDatabase)
 }
 
 function requireLocalSync(): LocalSyncRepository {
@@ -1193,6 +1199,12 @@ app.whenReady().then(async () => {
     return { success: true }
   })
   handleDesktopIpc('desktop:staff:list-users', () => requireLocalStaff().listUsers())
+  handleDesktopIpc('desktop:purchases:list-rules', () => requireLocalPurchases().listRules(requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:purchases:create-rule', (_event, input: any) => requireLocalPurchases().createRule(input))
+  handleDesktopIpc('desktop:purchases:delete-rule', (_event, id: string) => requireLocalPurchases().deleteRule(id, requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:purchases:suggestions', () => requireLocalPurchases().suggestions(requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:purchases:generate-invoices', (_event, input: any) => requireLocalPurchases().generateInvoices({ ...input, user_id: requireDesktopSession().id }))
+  handleDesktopIpc('desktop:purchases:supplier-needs', () => requireLocalPurchases().supplierNeeds(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password?: string) =>
     requireLocalStaff().saveServerUser(input, password))
   handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
@@ -1213,23 +1225,23 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
   handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
   handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover(input))
-  handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary(input))
-  handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout(input))
+  handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary({ ...input, user_id: requireDesktopSession().id }))
+  handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
   handleDesktopIpc('desktop:warehouse:list-movements', (_event, input?: any) =>
     requireLocalWarehouse().listMovements(input),
   )
   handleDesktopIpc('desktop:warehouse:create-movement', (_event, input: any) =>
-    requireLocalWarehouse().createMovement(input),
+    requireLocalWarehouse().createMovement({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:warehouse:list-reserves', (_event, tenantId?: string) =>
     requireLocalWarehouse().listReserves(tenantId),
   )
   handleDesktopIpc('desktop:warehouse:create-reserve', (_event, input: any) =>
-    requireLocalWarehouse().createReserve(input),
+    requireLocalWarehouse().createManualReserve({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:warehouse:release-reserve', (_event, id: string, tenantId?: string) =>
-    requireLocalWarehouse().releaseReserve(id, tenantId),
+    requireLocalWarehouse().releaseManualReserve(id, tenantId),
   )
   handleDesktopIpc('desktop:warehouse:list-writeoffs', (_event, input?: any) =>
     requireLocalWarehouse().listWriteoffs(input),
@@ -1238,7 +1250,7 @@ app.whenReady().then(async () => {
     requireLocalWarehouse().getWriteoff(id, tenantId),
   )
   handleDesktopIpc('desktop:warehouse:create-writeoff', (_event, input: any) =>
-    requireLocalWarehouse().createWriteoff(input),
+    requireLocalWarehouse().createWriteoff({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:inventory:list-sessions', (_event, input?: { tenant_id?: string; page?: number; per_page?: number }) => {
     const page = Math.max(1, Math.trunc(Number(input?.page) || 1))
@@ -1273,6 +1285,8 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:inventory:count', (_event, sessionId: string, input: any) =>
     requireLocalInventory().countProduct(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
+  handleDesktopIpc('desktop:warehouse:list-consumptions', (_event, input: any) => requireLocalWarehouse().listConsumptions(input))
+  handleDesktopIpc('desktop:warehouse:create-consumption', (_event, input: any) => requireLocalWarehouse().createConsumption({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:inventory:create-product', (_event, sessionId: string, input: any) =>
     requireLocalInventory().createAndCountProduct(sessionId, { ...input, product: { ...input.product, tenant_id: requireDesktopSession().tenant_id }, user_id: requireDesktopSession().id }),
   )
@@ -1404,7 +1418,7 @@ app.whenReady().then(async () => {
     requireLocalPos().getCustomerSales(id, tenantId),
   )
   handleDesktopIpc('desktop:pos:save-customer', (_event, input, id?: string) =>
-    requireLocalPos().saveCustomer(input, id),
+    requireLocalPos().saveCustomer(customerWritePayload(input, requireDesktopSession()), id),
   )
   handleDesktopIpc('desktop:pos:delete-customer', (_event, id: string, tenantId?: string) =>
     requireLocalPos().deleteCustomer(id, tenantId),

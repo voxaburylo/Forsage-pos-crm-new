@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
 import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download, Wrench, ClipboardCopy } from 'lucide-react'
@@ -7,7 +8,7 @@ import { reportApi } from './reportApi'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
 import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
-import { Layout } from '@/components/Layout'
+import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
@@ -16,6 +17,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { staffApi } from '@/features/staff/staffApi'
 import type { SalaryFundSource, TireServiceReceipt, TireServiceReportRow } from '@/features/staff/staffApi'
 import { shiftApi } from '@/features/pos/shiftApi'
+import { SoldItemsMobile } from './SoldItemsMobile'
 
 type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
@@ -89,8 +91,29 @@ export default function DailyReport() {
   const [tireHandoverEmployee, setTireHandoverEmployee] = useState<string | null>(null)
   const [tirePayoutEmployee, setTirePayoutEmployee] = useState<string | null>(null)
   const [tireLoading, setTireLoading] = useState(false)
+  const reportRequests = useLatestRequest([tab, dateFrom, dateTo])
+  const tireRequests = useLatestRequest([tab, tireDate])
+
+  // A changed filter is not a report: do not export previous rows under new dates.
+  useEffect(() => {
+    setReport(null)
+    setWeekly([])
+    setLowStock([])
+    setDebtors([])
+    setWriteoffs(null)
+    setProfit(null)
+    setLoading(false)
+  }, [tab, dateFrom, dateTo])
 
   useEffect(() => {
+    setTireRows([])
+    setTireReceipts([])
+    setTireLoading(false)
+  }, [tab, tireDate])
+
+  useEffect(() => {
+    setSoldItems([])
+    setSoldLoading(false)
     if (tab !== 'sold' || !soldFrom || !soldTo || soldFrom > soldTo) return
     let cancelled = false
     setSoldLoading(true)
@@ -107,6 +130,7 @@ export default function DailyReport() {
   }, [tab, soldFrom, soldTo])
 
   async function copySoldItems() {
+    if (soldLoading || !soldFrom || !soldTo || soldFrom > soldTo) return
     if (soldItems.length === 0) {
       toast.error('Немає товарів для копіювання')
       return
@@ -123,6 +147,7 @@ export default function DailyReport() {
   }
 
   function printSoldItems() {
+    if (soldLoading || !soldFrom || !soldTo || soldFrom > soldTo) return
     const escapeHtml = (value: unknown) => String(value ?? '')
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const period = soldFrom === soldTo ? soldFrom : `${soldFrom} — ${soldTo}`
@@ -147,81 +172,98 @@ export default function DailyReport() {
   }
 
   const loadToday = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const [{ data: period }, { data: items }] = await Promise.all([
         reportApi.salesPeriod(todayKey, todayKey),
         reportApi.soldItems(todayKey, todayKey),
       ])
+      if (!isCurrent()) return
       setReport(period)
       setSoldItems(items ?? [])
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [todayKey])
 
   const loadWeekly = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const { data } = await reportApi.weekly()
+      if (!isCurrent()) return
       setWeekly(data)
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   const loadPeriod = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const { data } = await reportApi.salesPeriod(dateFrom || undefined, dateTo || undefined)
+      if (!isCurrent()) return
       setReport(data)
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [dateFrom, dateTo])
 
   const loadProfit = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const now = new Date()
       const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
       const to   = now.toISOString()
       const { data } = await reportApi.profit(from, to)
+      if (!isCurrent()) return
       setProfit(data)
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   const loadLowStock = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const { data } = await reportApi.lowStock()
+      if (!isCurrent()) return
       setLowStock(data)
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   const loadDebtors = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const { data } = await reportApi.debtors()
+      if (!isCurrent()) return
       setDebtors(data)
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   const loadWriteoffs = useCallback(async () => {
+    const isCurrent = reportRequests.begin()
     setLoading(true)
     try {
       const { data } = await reportApi.writeoffsSummary()
+      if (!isCurrent()) return
       setWriteoffs(data)
-    } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
+    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   const loadTireReport = useCallback(async () => {
     if (!canSeeTireReport) return
+    const isCurrent = tireRequests.begin()
     setTireLoading(true)
     try {
       const report = await staffApi.tireServiceReport(tireDate)
+      if (!isCurrent()) return
       setTireRows(report.data ?? [])
       setTireReceipts(report.receipts ?? [])
     } catch {
+      if (!isCurrent()) return
       setTireRows([])
       setTireReceipts([])
       toast.error('Не вдалося завантажити звіт шиномонтажу')
     } finally {
-      setTireLoading(false)
+      if (isCurrent()) setTireLoading(false)
     }
   }, [canSeeTireReport, tireDate])
 
@@ -267,6 +309,7 @@ export default function DailyReport() {
   }, [canSeeFullReports, loadTireReport, tireDate, tirePayoutEmployee])
 
   const exportToExcel = useCallback(() => {
+    if (loading || soldLoading || tireLoading || (tab === 'sold' && (!soldFrom || !soldTo || soldFrom > soldTo))) { toast.error('Дочекайтеся коректного звіту за обраний період'); return }
     try {
       let dataToExport: any[] = []
       let fileName = 'zvit'
@@ -403,7 +446,7 @@ export default function DailyReport() {
     } catch (err) {
       toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, tireRows, tireDate])
+  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, tireRows, tireDate, loading, soldLoading, tireLoading])
 
   useEffect(() => {
     if (tab === 'today')         loadToday()
@@ -450,7 +493,12 @@ export default function DailyReport() {
   return (
     <Layout title="Продажі та звіти">
       <div className="flex justify-between items-center gap-2 mb-6 flex-wrap">
-        <div className="flex gap-2 flex-wrap">
+        <label className="w-full min-w-0 md:hidden text-sm text-gray-600">Звіт
+          <select value={tab} onChange={e => setTab(e.target.value as Tab)} className="mt-1 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-3 text-base text-gray-900">
+            {TABS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </label>
+        <div className="hidden md:flex gap-2 flex-wrap">
           {TABS.map((t) => (
             <button key={t.id} onClick={() => setTab(t.id as Tab)}
               className={
@@ -474,7 +522,7 @@ export default function DailyReport() {
       {/* Сьогодні */}
       {tab === 'today' && report && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 mb-3">
             {[
               { label: 'Товарних позицій', value: String(soldItems.length) },
               { label: 'Продано одиниць', value: String(Number(soldQty.toFixed(3))) },
@@ -485,9 +533,9 @@ export default function DailyReport() {
               { label: 'Переказ', value: formatMoney(report.by_method.transfer) },
               { label: 'З рахунку клієнта', value: formatMoney(report.by_method.account) },
             ].map(({ label, value }) => (
-              <Card key={label}>
+              <Card key={label} padding="none" className="min-w-0 p-3 md:p-6">
                 <p className="text-xs text-gray-400 mb-1">{label}</p>
-                <p className="text-xl font-bold text-gray-900">{value}</p>
+                <p className="text-lg md:text-xl font-bold text-gray-900 [overflow-wrap:anywhere]">{value}</p>
               </Card>
             ))}
           </div>
@@ -497,12 +545,12 @@ export default function DailyReport() {
           </p>
 
           <Card padding="none">
-            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-              <div>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b border-gray-100 px-4 py-3">
+              <div className="min-w-0">
                 <h3 className="font-bold text-gray-900">Продані товари за сьогодні</h3>
                 <p className="text-xs text-gray-500">Один товар — один рядок, незалежно від кількості чеків</p>
               </div>
-              <div className="text-right">
+              <div className="min-w-0 md:text-right">
                 <p className="text-xs text-gray-500">Сума товарів за день</p>
                 <p className="text-lg font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
               </div>
@@ -510,7 +558,9 @@ export default function DailyReport() {
             {soldItems.length === 0 ? (
               <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
             ) : (
-              <div className="max-h-[55vh] overflow-auto">
+              <>
+              <SoldItemsMobile items={soldItems} />
+              <div className="hidden md:block max-h-[55vh] overflow-auto">
                 <table className="w-full min-w-[620px] text-sm">
                   <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
                     <tr>
@@ -523,15 +573,16 @@ export default function DailyReport() {
                   <tbody className="divide-y divide-gray-100">
                     {soldItems.map((item) => (
                       <tr key={item.product_id} className="hover:bg-gray-50">
-                        <td className="px-4 py-2 font-medium text-gray-900">{item.name}</td>
-                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
-                        <td className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
-                        <td className="px-4 py-2 text-right font-semibold text-gray-900">{formatMoney(item.net_revenue)}</td>
+                        <td data-label="Назва товару" className="px-4 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td data-label="Артикул" className="px-2 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td data-label="Продано" className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
+                        <td data-label="Сума" className="px-4 py-2 text-right font-semibold text-gray-900">{formatMoney(item.net_revenue)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </Card>
 
@@ -547,8 +598,8 @@ export default function DailyReport() {
                 <h2 className="text-lg font-bold text-gray-900">Продані товари за період</h2>
                 <p className="mt-1 text-sm text-gray-500">Однакові товари з усіх чеків зібрані в один рядок — готовий список для повторного замовлення.</p>
               </div>
-              <div className="flex flex-wrap items-end gap-2">
-                <label className="text-xs font-medium text-gray-600">
+              <div className="grid min-w-0 grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-end">
+                <label className="min-w-0 text-xs font-medium text-gray-600">
                   Від
                   <input type="date" value={soldFrom} max={soldTo}
                     onChange={(e) => {
@@ -556,9 +607,9 @@ export default function DailyReport() {
                       setSoldFrom(value)
                       if (value > soldTo) setSoldTo(value)
                     }}
-                    className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+                    className="mt-1 block w-full min-w-0 max-w-full rounded-lg border border-gray-200 px-2 py-2 text-base md:text-sm text-gray-800" />
                 </label>
-                <label className="text-xs font-medium text-gray-600">
+                <label className="min-w-0 text-xs font-medium text-gray-600">
                   До
                   <input type="date" value={soldTo} min={soldFrom} max={todayKey}
                     onChange={(e) => {
@@ -566,10 +617,10 @@ export default function DailyReport() {
                       setSoldTo(value)
                       if (value < soldFrom) setSoldFrom(value)
                     }}
-                    className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
+                    className="mt-1 block w-full min-w-0 max-w-full rounded-lg border border-gray-200 px-2 py-2 text-base md:text-sm text-gray-800" />
                 </label>
                 <button onClick={copySoldItems} disabled={soldItems.length === 0 || soldLoading}
-                  className="flex h-[38px] items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+                  className="flex min-h-[44px] min-w-0 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40">
                   <ClipboardCopy size={14} /> Копіювати список
                 </button>
                 <button onClick={printSoldItems} disabled={soldItems.length === 0 || soldLoading}
@@ -616,7 +667,9 @@ export default function DailyReport() {
                 За вибраний період проданих товарів немає
               </div>
             ) : (
-              <div className="max-h-[65vh] overflow-auto">
+              <>
+              <SoldItemsMobile items={soldItems} />
+              <div className="hidden md:block max-h-[65vh] overflow-auto">
                 <table className="w-full min-w-[900px] text-sm">
                   <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
                     <tr>
@@ -632,20 +685,21 @@ export default function DailyReport() {
                   <tbody className="divide-y divide-gray-100">
                     {soldItems.map((item) => (
                       <tr key={item.product_id} className={item.qty_on_hand <= 0 ? 'bg-red-50/60' : 'hover:bg-gray-50'}>
-                        <td className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
-                        <td className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
-                        <td className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
-                        <td className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
-                        <td className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
-                        <td className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                        <td data-label="Артикул" className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
+                        <td data-label="Штрихкод" className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
+                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td data-label="Полиця" className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
+                        <td data-label="Чисто продано" className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
+                        <td data-label="Залишок" className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
                           {item.qty_on_hand} {item.unit}
                         </td>
-                        <td className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
+                        <td data-label="Сума" className="px-4 py-2 text-right text-gray-600">{formatMoney(item.net_revenue)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </Card>
         </>
@@ -677,11 +731,11 @@ export default function DailyReport() {
               <div className="overflow-auto"><table className="w-full min-w-[780px] text-sm">
                 <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Чек / час</th><th className="px-3 py-3 text-left">Шиномонтажник</th><th className="px-3 py-3 text-right">Послуг</th><th className="px-3 py-3 text-right">Сума робіт</th><th className="px-3 py-3 text-left">Оплата</th><th className="px-4 py-3 text-right">Готівка</th></tr></thead>
                 <tbody className="divide-y divide-gray-100">{tireReceipts.map((receipt) => <tr key={receipt.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3"><div className="font-semibold text-gray-900">#{receipt.sale_number}</div><div className="text-xs text-gray-500">{formatDateTime(receipt.completed_at)}</div></td>
-                  <td className="px-3 py-3">{receipt.employee_name}</td><td className="px-3 py-3 text-right">{Number(receipt.services_qty.toFixed(3))}</td>
-                  <td className="px-3 py-3 text-right font-semibold">{formatMoney(receipt.service_revenue)}</td>
-                  <td className="px-3 py-3"><Badge color={PAYMENT_COLOR[receipt.payment_method] ?? 'gray'}>{PAYMENT_LABELS[receipt.payment_method] ?? receipt.payment_method}</Badge></td>
-                  <td className="px-4 py-3 text-right">{formatMoney(receipt.cash_revenue)}</td></tr>)}</tbody>
+                  <td data-label="Чек / час" className="px-4 py-3"><div className="font-semibold text-gray-900">#{receipt.sale_number}</div><div className="text-xs text-gray-500">{formatDateTime(receipt.completed_at)}</div></td>
+                  <td data-label="Шиномонтажник" className="px-3 py-3">{receipt.employee_name}</td><td data-label="Послуг" className="px-3 py-3 text-right">{Number(receipt.services_qty.toFixed(3))}</td>
+                  <td data-label="Сума робіт" className="px-3 py-3 text-right font-semibold">{formatMoney(receipt.service_revenue)}</td>
+                  <td data-label="Оплата" className="px-3 py-3"><Badge color={PAYMENT_COLOR[receipt.payment_method] ?? 'gray'}>{PAYMENT_LABELS[receipt.payment_method] ?? receipt.payment_method}</Badge></td>
+                  <td data-label="Готівка" className="px-4 py-3 text-right">{formatMoney(receipt.cash_revenue)}</td></tr>)}</tbody>
               </table></div>}
           </Card>
           <Card padding="none">
@@ -691,11 +745,11 @@ export default function DailyReport() {
               <div className="overflow-auto"><table className="w-full min-w-[1100px] text-sm">
                 <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Працівник</th><th className="px-2 py-3 text-right">Каса</th><th className="px-2 py-3 text-right">Готівкою</th><th className="px-2 py-3 text-right">Внесено</th><th className="px-2 py-3 text-right">Ще внести</th><th className="px-2 py-3 text-right">Нараховано</th><th className="px-2 py-3 text-right">Виплачено</th><th className="px-2 py-3 text-right">Залишок</th><th className="px-4 py-3 text-left">Статус / дія</th></tr></thead>
                 <tbody className="divide-y divide-gray-100">{tireRows.map((row) => <tr key={row.employee_id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td><td className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
-                  <td className="px-2 py-3 text-right">{formatMoney(row.cash_revenue)}</td><td className="px-2 py-3 text-right text-green-700">{formatMoney(row.cash_handed_over)}</td>
-                  <td className="px-2 py-3 text-right font-semibold text-orange-700">{formatMoney(row.cash_pending)}</td><td className="px-2 py-3 text-right">{formatMoney(row.earned)}</td>
-                  <td className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td><td className="px-2 py-3 text-right font-bold">{formatMoney(row.due)}</td>
-                  <td className="px-4 py-3">{row.cash_pending > 0 ?
+                  <td data-label="Працівник" className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td><td data-label="Каса" className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
+                  <td data-label="Готівкою" className="px-2 py-3 text-right">{formatMoney(row.cash_revenue)}</td><td data-label="Внесено" className="px-2 py-3 text-right text-green-700">{formatMoney(row.cash_handed_over)}</td>
+                  <td data-label="Ще внести" className="px-2 py-3 text-right font-semibold text-orange-700">{formatMoney(row.cash_pending)}</td><td data-label="Нараховано" className="px-2 py-3 text-right">{formatMoney(row.earned)}</td>
+                  <td data-label="Виплачено" className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td><td data-label="Залишок" className="px-2 py-3 text-right font-bold">{formatMoney(row.due)}</td>
+                  <td data-label="Статус / дія" className="px-4 py-3">{row.cash_pending > 0 ?
                     <button onClick={() => handOverTireCash(row)} disabled={tireHandoverEmployee === row.employee_id} className="rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300 disabled:opacity-50">
                       {tireHandoverEmployee === row.employee_id ? 'Вносимо…' : `+ Внести ${formatMoney(row.cash_pending)}`}</button> :
                     row.salary_ready && row.payable_due > 0 ? (canSeeFullReports ?
@@ -709,7 +763,7 @@ export default function DailyReport() {
                     row.salary_ready ? <span className="text-xs font-semibold text-gray-500">Виплачено</span> :
                     <span className="text-xs font-medium text-blue-700">Очікує до {formatDate(row.salary_available_on)}</span>}</td>
                 </tr>)}</tbody>
-                <tfoot className="border-t-2 border-gray-200 bg-amber-50"><tr><td colSpan={8} className="px-4 py-4 text-right text-base font-bold">Усього зарплати, яку можна видати:</td><td className="px-4 py-4 text-xl font-black text-amber-800">{formatMoney(tireTotals.payable)}</td></tr></tfoot>
+                <tfoot className="border-t-2 border-gray-200 bg-amber-50"><tr><td colSpan={8} className="px-4 py-4 text-right text-base font-bold">Усього зарплати, яку можна видати:</td><td data-label="Статус / дія" className="px-4 py-4 text-xl font-black text-amber-800">{formatMoney(tireTotals.payable)}</td></tr></tfoot>
               </table></div>}
           </Card>
         </>
@@ -757,9 +811,9 @@ export default function DailyReport() {
               <tbody>
                 {weekly.map((d) => (
                   <tr key={d.date} className="border-b border-gray-50 hover:bg-gray-50/50">
-                    <td className="px-4 py-2">{formatDate(d.date)}</td>
-                    <td className="px-4 py-2 text-right">{d.sales}</td>
-                    <td className="px-4 py-2 text-right font-mono font-medium">{formatMoney(d.revenue)}</td>
+                    <td data-label="Дата" className="px-4 py-2">{formatDate(d.date)}</td>
+                    <td data-label="Продажів" className="px-4 py-2 text-right">{d.sales}</td>
+                    <td data-label="Виручка" className="px-4 py-2 text-right font-mono font-medium">{formatMoney(d.revenue)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -894,10 +948,10 @@ export default function DailyReport() {
                   const cost = w.items.reduce((s, i) => s + i.cost_kopecks, 0)
                   return (
                     <tr key={w.id} className="border-b border-gray-50 hover:bg-gray-50/50">
-                      <td className="px-4 py-2">{formatDate(w.created_at)}</td>
-                      <td className="px-4 py-2 text-gray-600">{REASON_LABEL[w.reason as WriteoffReason] ?? w.reason}</td>
-                      <td className="px-4 py-2 text-right">{w.items.length}</td>
-                      <td className="px-4 py-2 text-right font-mono text-red-600">{formatMoney(cost)}</td>
+                      <td data-label="Дата" className="px-4 py-2">{formatDate(w.created_at)}</td>
+                      <td data-label="Причина" className="px-4 py-2 text-gray-600">{REASON_LABEL[w.reason as WriteoffReason] ?? w.reason}</td>
+                      <td data-label="Позицій" className="px-4 py-2 text-right">{w.items.length}</td>
+                      <td data-label="Собівартість" className="px-4 py-2 text-right font-mono text-red-600">{formatMoney(cost)}</td>
                     </tr>
                   )
                 })}

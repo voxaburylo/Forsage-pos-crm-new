@@ -57,6 +57,42 @@ describe('AI invoice import into local supply draft', () => {
     expect(result.invoice.items.find((item: any) => item.product_id === created?.id)?.qty).toBe(2)
   })
 
+  it.each([undefined, '', 'text', '1шт', 0, -2, '1.2345'])('rejects unrecognized quantity %s instead of saving one', (qty) => {
+    expect(() => supply.createInvoiceFromAiRows({ rows: [{ name: 'Wrong quantity', sku: 'BAD-QTY', qty, purchase_price_uah: 10 }] })).toThrow('кількість')
+    expect(catalog.findBySku('BAD-QTY')).toBeNull()
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+
+  it.each([undefined, '', 'wrong', -10, Infinity])('rejects unrecognized price %s instead of saving zero', (price) => {
+    expect(() => supply.createInvoiceFromAiRows({ rows: [{ name: 'Wrong price', sku: 'BAD-PRICE', qty: 2, purchase_price_uah: price }] })).toThrow('цін')
+    expect(catalog.findBySku('BAD-PRICE')).toBeNull()
+  })
+
+  it('accepts decimal comma quantities and explicit zero cost without changing stock', () => {
+    const result = supply.createInvoiceFromAiRows({ rows: [{ name: 'Fraction', qty: '2,5', purchase_price_uah: 0 }] })
+    expect(result.invoice.items[0].qty).toBe(2.5)
+    expect(catalog.findById(result.invoice.items[0].product_id)?.qty_on_hand).toBe(0)
+  })
+
+  it('rolls back earlier cards when a later recognized row is invalid', () => {
+    expect(() => supply.createInvoiceFromAiRows({ rows: [
+      { name: 'Good', sku: 'ROLLBACK-GOOD', qty: 8, purchase_price_uah: 10 },
+      { name: '', qty: 3, purchase_price_uah: 10 },
+    ] })).toThrow('назва')
+    expect(catalog.findBySku('ROLLBACK-GOOD')).toBeNull()
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+
+  it('replays the same recognized action after restart without a second invoice', () => {
+    const input = { operation_id: 'recognized-action-1', rows: [{ name: 'Repeat', sku: 'REPEAT-AI', qty: 8, purchase_price_uah: 10 }] }
+    const first = supply.createInvoiceFromAiRows(input)
+    db.close(); db = new LocalDatabase(root); supply = new LocalSupplyRepository(db); catalog = new LocalCatalogRepository(db)
+    expect(supply.createInvoiceFromAiRows(input)).toEqual(first)
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 1 })
+    expect(catalog.findBySku('REPEAT-AI')?.qty_on_hand).toBe(0)
+    expect(() => supply.createInvoiceFromAiRows({ ...input, rows: [{ ...input.rows[0], qty: 3 }] })).toThrow('інші дані')
+  })
+
   it('loads name candidates once for the whole photo and reuses a new exact-name card', () => {
     const prepare = vi.spyOn(db, 'prepare')
     const result = supply.createInvoiceFromAiRows({ rows: Array.from({ length: 20 }, () => ({

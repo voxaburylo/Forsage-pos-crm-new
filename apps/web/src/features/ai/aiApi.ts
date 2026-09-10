@@ -1,4 +1,6 @@
 import { api } from '@/lib/api'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { applyLocalAiAction } from './localAiAction'
 
 export const AI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] as const
 export type AiModel = (typeof AI_MODELS)[number]
@@ -84,6 +86,6 @@ export const aiApi = {
   recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[] }) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 180000, silent: true }),
 
-  applyAction: (body: { tool: string; payload: Record<string, any> }) =>
-    api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
+  applyAction: (body: { tool: string; payload: Record<string, any> }): Promise<{ data: AiApplyResult }> =>
+    isDesktopRuntime() ? applyLocalAiAction(body.tool, body.payload) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
 }

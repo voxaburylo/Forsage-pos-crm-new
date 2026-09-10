@@ -8,6 +8,8 @@ import { useAuthStore } from '@/stores/authStore'
 import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import { TAGS } from '@/types/customer'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { canManageCustomerFinancials } from './customerEditPermissions'
 
 interface Props {
   open: boolean
@@ -41,8 +43,11 @@ function getRecentItems(key: string): string[] {
   }
 }
 
-export function QuickCustomerModal({ open, offline = false, onClose, onCreated, onEdit, onPayDebt }: Props) {
+export function QuickCustomerModal({ open, offline: networkOffline = false, onClose, onCreated, onEdit, onPayDebt }: Props) {
+  const offline = networkOffline && !desktopBridge()
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
+  const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
+  const canManageFinancials = canManageCustomerFinancials(role)
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
   const [results, setResults]       = useState<Customer[]>([])
@@ -97,27 +102,31 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated, 
 
   // Debounced search
   useEffect(() => {
-    if (mode !== 'search' || query.trim().length < 2) {
+    if (!open || mode !== 'search' || query.trim().length < 2) {
       setResults([])
+      setSearching(false)
       return
     }
+    let active = true
+    setSearching(true)
     const t = setTimeout(async () => {
       setSearching(true)
       try {
         if (offline) {
-          setResults(await searchCustomersOffline(query.trim(), 6, scopeKey) as Customer[])
+          const rows = await searchCustomersOffline(query.trim(), 6, scopeKey) as Customer[]
+          if (active) setResults(rows)
         } else {
           const r = await customerApi.list({ search: query.trim(), per_page: 6 })
-          setResults((r as { data: Customer[] }).data ?? [])
+          if (active) setResults((r as { data: Customer[] }).data ?? [])
         }
       } catch {
-        setResults(await searchCustomersOffline(query.trim(), 6, scopeKey).catch(() => []) as Customer[])
+        if (active) { setResults([]); toast.error('Не вдалося знайти клієнтів. Повторіть пошук.') }
       } finally {
-        setSearching(false)
+        if (active) setSearching(false)
       }
     }, 300)
-    return () => clearTimeout(t)
-  }, [query, mode, offline, scopeKey])
+    return () => { active = false; clearTimeout(t) }
+  }, [query, mode, offline, scopeKey, open])
 
   function selectCustomer(c: Customer) {
     saveRecentItem('recent_phones', c.phone)
@@ -146,9 +155,7 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated, 
         email: email.trim() || undefined,
         notes: notes.trim() || undefined,
         tags,
-        price_tier_id: priceTierId || null,
-        discount_pct: Number(discountPct) || 0,
-        client_status: clientStatus,
+        ...(canManageFinancials ? { price_tier_id: priceTierId || null, discount_pct: Number(discountPct) || 0, client_status: clientStatus } : {}),
         card_barcode: cardBarcode.trim() || null,
         ...(hasVehicle ? {
           vehicle: {
@@ -362,15 +369,15 @@ export function QuickCustomerModal({ open, offline = false, onClose, onCreated, 
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">Статус клієнта</label>
-              <select value={clientStatus} onChange={(e) => setClientStatus(e.target.value)}
+              <select disabled={!canManageFinancials} value={clientStatus} onChange={(e) => setClientStatus(e.target.value)}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
                 <option value="client">Звичайний клієнт</option>
                 <option value="sto">СТО</option>
               </select>
             </div>
-            <Input label="Персональна знижка (%)" type="number" min="0" max="100" step="0.1"
+            <Input disabled={!canManageFinancials} label="Персональна знижка (%)" type="number" min="0" max="100" step="0.1"
               value={discountPct} onChange={(e) => setDiscountPct(e.target.value)} />
-            {tiers.length > 0 && (
+            {canManageFinancials && tiers.length > 0 && (
               <div className="sm:col-span-2">
                 <label className="mb-1 block text-sm font-medium text-gray-700">Ціновий рівень</label>
                 <select value={priceTierId} onChange={(e) => setPriceTierId(e.target.value)}

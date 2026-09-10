@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ShoppingBag, RefreshCw, Trash2, AlertTriangle, Plus, Search } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal, Input, ConfirmDialog } from '@/components/ui'
-import { api } from '@/lib/api'
+import { purchaseApi } from './purchaseApi'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { stockQuantity } from '@/features/inventory/documentInput'
 import { toast } from '@/components/ui/Toast'
 import { productApi } from '@/features/products/productApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
@@ -36,6 +38,7 @@ export default function AutoPurchasePage() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [rules, setRules] = useState<Rule[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
 
   // Створення накладних
   const [generatingInvoices, setGeneratingInvoices] = useState(false)
@@ -51,41 +54,54 @@ export default function AutoPurchasePage() {
   const [minQty, setMinQty]               = useState('1')
   const [maxQty, setMaxQty]               = useState('10')
   const [creating, setCreating]           = useState(false)
+  const busy = useRef(false)
+  const requests = useLatestRequest(tab)
+  const searches = useLatestRequest([searchQ, createOpen, pickedProduct?.id])
 
   const loadSuggestions = useCallback(async () => {
+    const isCurrent = requests.begin()
     setLoading(true)
+    setSuggestions([])
+    setLoadError('')
     try {
-      const { data } = await api.get<{ data: Suggestion[] }>('/api/v1/auto-purchase/suggestions')
+      const { data } = await purchaseApi.suggestions()
+      if (!isCurrent()) return
       setSuggestions(data ?? [])
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити пропозиції')
-    } finally { setLoading(false) }
+      if (isCurrent()) { const message = e instanceof Error ? e.message : 'Не вдалося завантажити пропозиції'; setLoadError(message); toast.error(message) }
+    } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   const [confirmGenOpen, setConfirmGenOpen] = useState(false)
 
   const handleGenerateInvoices = async () => {
-    if (suggestions.length === 0) return
+    if (busy.current || suggestions.length === 0 || loading) return
+    busy.current = true
     setGeneratingInvoices(true)
     try {
-      const { data } = await api.post<{ data: { count: number; invoices: any[] } }>('/api/v1/auto-purchase/generate-invoices', {})
+      const { data } = await purchaseApi.generateInvoices()
       toast.success(`Успішно створено ${data.count} чернеток накладних`)
       loadSuggestions()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не вдалося згенерувати накладні')
     } finally {
+      busy.current = false
       setGeneratingInvoices(false)
     }
   }
 
   const loadRules = useCallback(async () => {
+    const isCurrent = requests.begin()
     setLoading(true)
+    setRules([])
+    setLoadError('')
     try {
-      const { data } = await api.get<{ data: Rule[] }>('/api/v1/auto-purchase/rules')
+      const { data } = await purchaseApi.listRules()
+      if (!isCurrent()) return
       setRules(data ?? [])
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити правила')
-    } finally { setLoading(false) }
+      if (isCurrent()) { const message = e instanceof Error ? e.message : 'Не вдалося завантажити правила'; setLoadError(message); toast.error(message) }
+    } finally { if (isCurrent()) setLoading(false) }
   }, [])
 
   useEffect(() => {
@@ -94,73 +110,89 @@ export default function AutoPurchasePage() {
   }, [tab, loadSuggestions, loadRules])
 
   // Подгрузка списка постачальників один раз при открытии модалки
-  async function openCreate() {
+  function openCreate() {
     setCreateOpen(true)
     setPickedProduct(null)
     setSearchQ(''); setSearchResults([])
     setSupplierId(''); setMinQty('1'); setMaxQty('10')
-    if (suppliers.length === 0) {
-      try {
-        const { data } = await supplierApi.list({ is_active: 'true', per_page: 500 })
-        setSuppliers(data.map((s) => ({ id: s.id, name: s.name })))
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити постачальників')
-      }
-    }
   }
+
+  useEffect(() => {
+    if (!createOpen) return
+    let active = true
+    setSuppliers([])
+    void (async () => {
+      const rows = new Map<string, SupplierOption>()
+      for (let page = 1; active; page++) {
+        const response = await supplierApi.list({ is_active: 'true', per_page: 100, page })
+        if (!active) return
+        const previous = rows.size
+        for (const s of response.data) rows.set(s.id, { id: s.id, name: s.name })
+        if (page >= response.pagination.total_pages) break
+        if (rows.size === previous) throw new Error('Неповний список постачальників')
+      }
+      if (active) setSuppliers([...rows.values()])
+    })().catch(() => { if (active) toast.error('Не вдалося завантажити постачальників') })
+    return () => { active = false }
+  }, [createOpen])
 
   // Debounce пошуку товара
   useEffect(() => {
-    if (!createOpen) return
-    if (!searchQ.trim()) { setSearchResults([]); return }
+    const isCurrent = searches.begin()
+    setSearchResults([]); setSearchLoading(false)
+    if (!createOpen || pickedProduct || !searchQ.trim()) return
     const t = setTimeout(async () => {
       setSearchLoading(true)
       try {
         const { data } = await productApi.search(searchQ.trim(), 8)
-        setSearchResults(data)
-      } catch { setSearchResults([]) }
-      finally { setSearchLoading(false) }
+        if (isCurrent()) setSearchResults(data)
+      } catch { if (isCurrent()) setSearchResults([]) }
+      finally { if (isCurrent()) setSearchLoading(false) }
     }, 300)
     return () => clearTimeout(t)
-  }, [searchQ, createOpen])
+  }, [searchQ, createOpen, pickedProduct, searches])
 
   async function handleCreate() {
+    if (busy.current) return
     if (!pickedProduct) { toast.error('Виберіть товар'); return }
-    const minN = parseFloat(minQty), maxN = parseFloat(maxQty)
-    if (isNaN(minN) || minN <= 0) { toast.error('Невірне мін. значення'); return }
-    if (isNaN(maxN) || maxN <= 0) { toast.error('Невірне макс. значення'); return }
+    const minN = stockQuantity(minQty), maxN = stockQuantity(maxQty)
+    if (minN === null) { toast.error('Невірне мін. значення'); return }
+    if (maxN === null) { toast.error('Невірне макс. значення'); return }
     if (maxN < minN) { toast.error('Макс має бути ≥ Мін'); return }
 
+    busy.current = true
     setCreating(true)
     try {
-      await api.post('/api/v1/auto-purchase/rules', {
+      await purchaseApi.createRule({
         product_id:  pickedProduct.id,
         supplier_id: supplierId || null,
         min_qty:     minN,
         max_qty:     maxN,
-        is_active:   true,
       })
       toast.success('Правило створено')
       setCreateOpen(false)
       loadRules()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка створення')
-    } finally { setCreating(false) }
+    } finally { busy.current = false; setCreating(false) }
   }
 
   const [confirmDelRuleId, setConfirmDelRuleId] = useState<string | null>(null)
 
   async function doDeleteRule() {
-    if (!confirmDelRuleId) return
+    if (!confirmDelRuleId || busy.current) return
+    busy.current = true
     try {
-      await api.delete(`/api/v1/auto-purchase/rules/${confirmDelRuleId}`)
+      await purchaseApi.deleteRule(confirmDelRuleId)
       toast.success('Правило видалено')
       loadRules()
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
+    finally { busy.current = false }
   }
 
   return (
     <Layout title="Автозакупки">
+      <p className="mb-4 text-sm text-gray-500">Правила та залишки — з локальної бази. Враховуються відкриті чернетки приходу. Створення закупівлі не проводить накладну, не змінює залишок і не виконує оплату.</p>
       <div className="flex gap-2 mb-6">
         {(['suggestions', 'rules'] as const).map((t) => (
           <button
@@ -197,7 +229,7 @@ export default function AutoPurchasePage() {
 
       {loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Завантаження...</div>
-      ) : tab === 'suggestions' ? (
+      ) : loadError ? <p className="py-8 text-center text-red-700">{loadError}. Натисніть «Оновити» для повтору.</p> : tab === 'suggestions' ? (
         suggestions.length === 0 ? (
           <div className="text-center py-16 text-gray-400">
             <ShoppingBag size={40} className="mx-auto mb-3 opacity-30" />
@@ -274,11 +306,11 @@ export default function AutoPurchasePage() {
       {/* Модалка створення правила */}
       <Modal
         open={createOpen}
-        onClose={() => { if (!creating) setCreateOpen(false) }}
+        onClose={() => { if (!busy.current) setCreateOpen(false) }}
         title="Нове правило автозакупки"
         size="md"
       >
-        <div className="space-y-4">
+        <fieldset disabled={creating} className="space-y-4">
           {/* Вибір товара */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Товар *</label>
@@ -383,7 +415,7 @@ export default function AutoPurchasePage() {
               Скасувати
             </Button>
           </div>
-        </div>
+        </fieldset>
       </Modal>
 
       <ConfirmDialog

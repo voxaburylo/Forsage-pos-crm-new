@@ -6,6 +6,7 @@ import {
   isOlderSharedLabelSettings,
   labelSettingsContentSignature,
   labelSettingsSyncTimestamp,
+  labelProductMatchesQuery,
 } from './LabelDesigner'
 
 vi.mock('@/lib/barcodeSvg', () => ({
@@ -24,6 +25,13 @@ function product(name = 'Тестовий товар') {
 }
 
 describe('label print document', () => {
+  it('searches queue names in both languages without requiring both spellings', () => {
+    expect(labelProductMatchesQuery(product('Ремінь генератора'), 'ремень')).toBe(true)
+    expect(labelProductMatchesQuery(product('Пускові дроти Joba BOOSTER'), 'бустер')).toBe(true)
+    expect(labelProductMatchesQuery(product('Пускові дроти Joba BOOSTER'), 'Joba BOOSTER')).toBe(true)
+    expect(labelProductMatchesQuery(product(), '2003093555486')).toBe(true)
+    expect(labelProductMatchesQuery(product('Ремінь генератора'), 'масляний фільтр')).toBe(false)
+  })
   it('uses the current print geometry and creates exactly one section per label', () => {
     const settings = {
       ...DEFAULT_LABEL,

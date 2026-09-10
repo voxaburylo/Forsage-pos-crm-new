@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { Link } from 'react-router-dom'
 import { Plus, Search, Trash2, Calendar, ShieldAlert, User, ShoppingBag, Box } from 'lucide-react'
 import { warehouseApi } from './warehouseApi'
@@ -65,23 +66,28 @@ export default function ReservesList() {
   const [customerSearch, setCustomerSearch] = useState('')
   const [customerResults, setCustomerResults] = useState<Customer[]>([])
   
-  const [orderId, setOrderId] = useState('')
   const [expiresAt, setExpiresAt] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() + 3)
-    return d.toISOString().substring(0, 16) // Format as YYYY-MM-DDTHH:MM
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+    return d.toISOString().substring(0, 16)
   })
+  const busy = useRef(false)
+  const requests = useLatestRequest('reserves')
+  const productRequests = useLatestRequest([productSearch, createModalOpen, selectedProduct?.id])
+  const customerRequests = useLatestRequest([customerSearch, createModalOpen, selectedCustomer?.id])
 
   // Load active reserves
   async function loadReserves() {
+    const isCurrent = requests.begin()
     setLoading(true)
     try {
       const { data } = await warehouseApi.listReserves()
-      setReserves(data)
+      if (isCurrent()) setReserves(data)
     } catch {
-      toast.error('Помилка завантаження списку резервів')
+      if (isCurrent()) toast.error('Помилка завантаження списку резервів')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
@@ -91,38 +97,42 @@ export default function ReservesList() {
 
   // Product autocomplete search
   const handleProductSearch = useCallback(async (q: string) => {
-    if (!q.trim()) {
+    const isCurrent = productRequests.begin()
+    if (!q.trim() || !createModalOpen || selectedProduct) {
       setProductResults([])
       return
     }
     try {
       const res = await productApi.list({ search: q, per_page: 5 })
-      setProductResults(res.data)
+      if (isCurrent()) setProductResults(res.data)
     } catch {
-      setProductResults([])
+      if (isCurrent()) setProductResults([])
     }
-  }, [])
+  }, [productRequests, createModalOpen, selectedProduct])
 
   useEffect(() => {
+    setProductResults([])
     const t = setTimeout(() => handleProductSearch(productSearch), 300)
     return () => clearTimeout(t)
   }, [productSearch, handleProductSearch])
 
   // Customer autocomplete search
   const handleCustomerSearch = useCallback(async (q: string) => {
-    if (!q.trim()) {
+    const isCurrent = customerRequests.begin()
+    if (!q.trim() || !createModalOpen || selectedCustomer) {
       setCustomerResults([])
       return
     }
     try {
       const res = await customerApi.list({ search: q, per_page: 5 })
-      setCustomerResults(res.data)
+      if (isCurrent()) setCustomerResults(res.data)
     } catch {
-      setCustomerResults([])
+      if (isCurrent()) setCustomerResults([])
     }
-  }, [])
+  }, [customerRequests, createModalOpen, selectedCustomer])
 
   useEffect(() => {
+    setCustomerResults([])
     const t = setTimeout(() => handleCustomerSearch(customerSearch), 300)
     return () => clearTimeout(t)
   }, [customerSearch, handleCustomerSearch])
@@ -142,25 +152,28 @@ export default function ReservesList() {
   // Submit manual reserve
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (busy.current) return
     if (!selectedProduct) {
       toast.error('Будь ласка, виберіть товар')
       return
     }
 
-    const numQty = parseFloat(qty)
-    if (isNaN(numQty) || numQty <= 0) {
+    const numQty = Number(qty.replace(',', '.'))
+    if (!Number.isFinite(numQty) || numQty <= 0) {
       toast.error('Вкажіть коректну кількість')
       return
     }
 
+    const expires = new Date(expiresAt)
+    if (!Number.isFinite(expires.getTime()) || expires.getTime() <= Date.now()) { toast.error('Термін резерву має бути в майбутньому'); return }
+    busy.current = true
     setCreating(true)
     try {
       await warehouseApi.createReserve({
         product_id: selectedProduct.id,
         qty: numQty,
         customer_id: selectedCustomer?.id || null,
-        order_id: orderId.trim() || null,
-        expires_at: new Date(expiresAt).toISOString()
+        expires_at: expires.toISOString()
       })
 
       toast.success('Резерв успішно створено')
@@ -171,11 +184,11 @@ export default function ReservesList() {
       setQty('1')
       setSelectedCustomer(null)
       setCustomerSearch('')
-      setOrderId('')
       loadReserves()
     } catch (err: any) {
       toast.error(err?.response?.data?.error?.message || err?.message || 'Помилка при створенні резерву')
     } finally {
+      busy.current = false
       setCreating(false)
     }
   }
@@ -284,9 +297,10 @@ export default function ReservesList() {
       className: 'w-20 text-right',
       render: (r: Reserve) => (
         <button
+          disabled={!!r.order_id}
           onClick={() => handleCancelReserve(r.id)}
           className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-all"
-          title="Скасувати бронь"
+          title={r.order_id ? 'Змініть резерв у картці замовлення' : 'Скасувати ручний резерв'}
         >
           <Trash2 size={16} />
         </button>
@@ -348,11 +362,12 @@ export default function ReservesList() {
       {/* Create Reserve Modal */}
       <Modal
         open={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
+        onClose={() => { if (!busy.current) setCreateModalOpen(false) }}
         title="Створення ручного резерву"
         size="md"
       >
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
+          <fieldset disabled={creating} className="space-y-4">
           {/* Product Search */}
           <div className="space-y-1 relative">
             <label className="block text-sm font-semibold text-gray-700">Товар *</label>
@@ -480,13 +495,7 @@ export default function ReservesList() {
             )}
           </div>
 
-          {/* Order ID */}
-          <Input
-            label="ID Замовлення (необов'язково)"
-            value={orderId}
-            onChange={(e) => setOrderId(e.target.value)}
-            placeholder="Введіть UUID замовлення якщо є"
-          />
+          <p className="text-xs text-gray-500">Резерв під замовлення створюється в картці замовлення. Тут можна відкласти товар окремо для клієнта.</p>
 
           <div className="flex gap-3 pt-3 border-t border-gray-100">
             <Button
@@ -509,6 +518,7 @@ export default function ReservesList() {
               Скасувати
             </Button>
           </div>
+          </fieldset>
         </form>
       </Modal>
     </Layout>

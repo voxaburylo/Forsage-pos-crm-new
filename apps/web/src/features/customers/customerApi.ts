@@ -28,13 +28,11 @@ function buildQuery(filters: CustomerFilters): string {
 
 export const customerApi = {
   list: async (filters: CustomerFilters = {}) => {
-    // Групи клієнтів поки зберігаються на сервері; з реальною онлайн-сесією
-    // desktop використовує той самий відфільтрований список, що й браузер.
-    if (filters.group_id && desktopBridge() && !useAuthStore.getState().offlineMode) {
-      return api.get<PaginatedCustomers>(`/api/v1/customers${buildQuery(filters)}`)
-    }
     const local = desktopBridge()?.pos.listCustomers
-    if (local) return local(filters) as Promise<PaginatedCustomers>
+    if (local) {
+      if (filters.group_id) throw new Error('Групи клієнтів із вебверсії недоступні в локальній базі. Виберіть усіх клієнтів.')
+      return local(filters) as Promise<PaginatedCustomers>
+    }
     return api.get<PaginatedCustomers>(`/api/v1/customers${buildQuery(filters)}`)
   },
 
@@ -70,10 +68,10 @@ export const customerApi = {
     return api.post<CustomerCreateResponse>('/api/v1/customers/quick', { phone, full_name })
   },
 
-  update: async (id: string, body: Partial<{ phone: string; full_name: string; email: string; notes: string; tags: string[]; price_tier_id: string | null; vip_level: string; risk_profile: string; birth_date: string | null; discount_pct: number; bonus_balance: number; loyalty_mode: 'discount' | 'cashback'; client_status: string; card_barcode: string | null }>) => {
+  update: async (id: string, body: Partial<{ phone: string; full_name: string; email: string; notes: string; tags: string[]; price_tier_id: string | null; vip_level: string; risk_profile: string; birth_date: string | null; discount_pct: number; bonus_balance: number; expected_bonus_balance: number; expected_updated_at: string; bonus_description: string; loyalty_mode: 'discount' | 'cashback'; client_status: string; card_barcode: string | null }>) => {
     const local = desktopBridge()?.pos.saveCustomer
     if (local) {
-      const result = await local(body, id)
+      const result = await local({ ...body, user_id: useAuthStore.getState().session?.user.id }, id)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return { data: result.data as Customer }
     }
@@ -87,7 +85,7 @@ export const customerApi = {
       const targetBalance = Number(current.bonus_balance ?? 0) + amount
       if (targetBalance < 0) throw new Error('Недостатньо бонусів у клієнта')
       const userId = useAuthStore.getState().session?.user?.id ?? null
-      const result = await bridge.saveCustomer({ bonus_balance: targetBalance, user_id: userId }, id)
+      const result = await bridge.saveCustomer({ bonus_balance: targetBalance, expected_bonus_balance: Number(current.bonus_balance ?? 0), bonus_description: description, user_id: userId }, id)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return { data: result.data as Customer }
     }
@@ -103,13 +101,4 @@ export const customerApi = {
     return api.delete<void>(`/api/v1/customers/${id}`)
   },
 
-  payDebt: async (id: string, amount: number, note?: string) => {
-    const local = desktopBridge()?.pos.payDebt
-    if (local) {
-      const result = await local({ customer_id: id, amount, method: 'cash', notes: note ?? null })
-      window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
-      return result as { data: Customer }
-    }
-    return api.post<{ data: Customer }>(`/api/v1/customers/${id}/pay-debt`, { amount, note })
-  },
 }

@@ -8,6 +8,8 @@ import { TAGS } from '@/types/customer'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
+import { canManageCustomerFinancials } from './customerEditPermissions'
 
 interface FormData {
   phone:         string
@@ -35,6 +37,9 @@ export default function CustomerFormPage() {
   const navigate = useNavigate()
   const { id }   = useParams<{ id: string }>()
   const isEdit   = !!id && id !== 'new'
+  const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
+  const canManageFinancials = canManageCustomerFinancials(role)
+  const [version, setVersion] = useState<string | undefined>()
 
   const [form, setForm]     = useState<FormData>(EMPTY)
   const [tiers, setTiers]   = useState<PriceTier[]>([])
@@ -50,6 +55,7 @@ export default function CustomerFormPage() {
     setLoading(true)
     customerApi.get(id).then(({ data }) => {
       const d = data as typeof data & { price_tier_id?: string | null }
+      setVersion(d.updated_at)
       setForm({
         phone:         d.phone,
         full_name:     d.full_name ?? '',
@@ -84,19 +90,18 @@ export default function CustomerFormPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (saving || loading) return
     if (!form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
 
     setSaving(true)
     try {
       const body = {
         phone:         form.phone || undefined,
-        full_name:     form.full_name || undefined,
-        email:         form.email || undefined,
-        notes:         form.notes || undefined,
+        full_name:     form.full_name.trim(),
+        email:         form.email.trim(),
+        notes:         form.notes.trim(),
         tags:          form.tags,
-        price_tier_id: (form.price_tier_id || null) as string | null | undefined,
-        discount_pct:  Number(form.discount_pct) || 0,
-        client_status: form.client_status,
+        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null, discount_pct: Number(form.discount_pct), client_status: form.client_status } : {}),
         card_barcode:  form.card_barcode.trim() || null,
         ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
@@ -108,7 +113,7 @@ export default function CustomerFormPage() {
         } : {}),
       }
       if (isEdit) {
-        await customerApi.update(id, body)
+        await customerApi.update(id, { ...body, expected_updated_at: version })
         toast.success('Клієнта оновлено')
         navigate('/customers')
       } else {
@@ -180,13 +185,13 @@ export default function CustomerFormPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
-                <input type="number" min="0" max="100" step="0.1"
+                <input disabled={!canManageFinancials} type="number" min="0" max="100" step="0.1"
                   value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
-                <select value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
+                <select disabled={!canManageFinancials} value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
                   <option value="client">Звичайний клієнт</option>
                   <option value="sto">СТО</option>
@@ -210,7 +215,7 @@ export default function CustomerFormPage() {
               </div>
             </div>
 
-            {tiers.length > 0 && (
+            {canManageFinancials && tiers.length > 0 && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Ціновий рівень</label>
                 <select value={form.price_tier_id} onChange={(e) => set('price_tier_id', e.target.value)}

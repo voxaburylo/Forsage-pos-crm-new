@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Save, Wand2, Plus } from 'lucide-react'
 import { productApi } from './productApi'
@@ -31,6 +32,7 @@ export default function ProductFormPage() {
   const [form, setForm] = useState<ProductFormData>(EMPTY)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const markupRequests = useLatestRequest([id, form.purchase_price, form.retail_price, form.category_id])
   // Швидкі відсотки націнки з налаштувань (для випадачки біля ціни).
   const [quickPercents, setQuickPercents] = useState<number[]>([])
 
@@ -71,18 +73,20 @@ export default function ProductFormPage() {
 
   // Розрахунок роздрібної: «За таблицею» (правила націнки) або швидкий відсоток від закупки.
   async function applyRetailMarkup(value: string) {
+    const isCurrent = markupRequests.begin()
     const purchase = Math.round(parseFloat((form.purchase_price || '0').replace(',', '.')) * 100)
     if (!purchase) { toast.error('Спершу вкажіть закупівельну ціну'); return }
     if (value === 'table') {
       try {
         const res = await pricingApi.autoRetail(purchase, form.category_id || undefined)
+        if (!isCurrent()) return
         if (res.data.retail_price !== null) {
           set('retail_price', (res.data.retail_price / 100).toFixed(2))
           toast.success('Ціну розраховано за таблицею націнки')
         } else {
           toast.warning('Націнка для цього товару не налаштована')
         }
-      } catch { toast.error('Помилка розрахунку') }
+      } catch { if (isCurrent()) toast.error('Помилка розрахунку') }
       return
     }
     if (value.startsWith('pct:')) {
@@ -94,11 +98,13 @@ export default function ProductFormPage() {
 
   useEffect(() => {
     if (!isEdit) return
+    let active = true
     setLoading(true)
     Promise.all([
       productApi.get(id),
-      productApi.getCrossNumbers(id).catch(() => ({ data: [] })),
+      productApi.getCrossNumbers(id),
     ]).then(([{ data }, crossRes]) => {
+      if (!active) return
       setForm({
         sku: data.sku,
         name: data.name,
@@ -122,9 +128,11 @@ export default function ProductFormPage() {
         cross_numbers: (crossRes.data ?? []).map((c) => c.number).join(', '),
       })
     }).catch(() => {
-      toast.error('Товар не знайдено')
+      if (!active) return
+      toast.error('Не вдалося повністю завантажити товар і крос-номери. Редагування не розпочато.')
       navigate('/products')
-    }).finally(() => setLoading(false))
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [id, isEdit, navigate])
 
   // Дублювання: /products/new?clone=<id> — копіюємо все, крім унікальних
@@ -177,6 +185,7 @@ export default function ProductFormPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (saving || loading) return
     if (!form.sku.trim())        { toast.error('Артикул обов\'язковий'); return }
     if (form.name.trim().length < 2) { toast.error('Назва мінімум 2 символи'); return }
     const retailNum = parseFloat(form.retail_price.replace(',', '.'))

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
@@ -244,6 +244,21 @@ export default function POSPage() {
   const [reconcileOpen, setReconcileOpen] = useState(false)
   const [debtPayOpen, setDebtPayOpen] = useState(false)
   const [debtCustomer, setDebtCustomer] = useState<Customer | null>(null)
+  const [customerParams, setCustomerParams] = useSearchParams()
+  useEffect(() => {
+    const customerId = customerParams.get('customerMoney')
+    if (!customerId) return
+    let active = true
+    customerApi.get(customerId).then(({ data }) => {
+      if (!active) return
+      setDebtCustomer(data)
+      setDebtPayOpen(true)
+      const next = new URLSearchParams(customerParams)
+      next.delete('customerMoney')
+      setCustomerParams(next, { replace: true })
+    }).catch(() => { if (active) toast.error('Не вдалося відкрити рахунок клієнта') })
+    return () => { active = false }
+  }, [customerParams, setCustomerParams])
   const [suspendOpen, setSuspendOpen]   = useState(false)
   const [suspendedOpen, setSuspendedOpen] = useState(false)
   const [, setSuspendedCount] = useState(0)

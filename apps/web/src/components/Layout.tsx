@@ -23,9 +23,10 @@ interface Props {
   title?: string
   actions?: React.ReactNode
   onBack?: () => void
+  contentClassName?: string
 }
 
-export function Layout({ children, title, actions, onBack }: Props) {
+export function Layout({ children, title, actions, onBack, contentClassName = '' }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
   const session = useAuthStore((s) => s.session)
@@ -64,7 +65,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <header className="bg-white border-b border-gray-100 px-4 md:px-6 py-3 flex items-center gap-2 pt-safe">
+        <header className="shrink-0 bg-white border-b border-gray-100 px-4 md:px-6 py-3 flex items-center gap-2 pt-safe">
           {/* Hamburger — mobile only */}
           <button
             className="md:hidden shrink-0 p-1.5 -ml-1 rounded-lg text-gray-500 hover:bg-gray-100 active:bg-gray-200 transition-colors"
@@ -98,7 +99,7 @@ export function Layout({ children, title, actions, onBack }: Props) {
           )}
         </header>
 
-        <main id="app-main-scroll" className="flex-1 p-4 md:p-6 overflow-auto pb-safe">
+        <main id="app-main-scroll" className={`min-h-0 min-w-0 flex-1 p-4 md:p-6 overflow-auto pb-safe ${contentClassName}`}>
           {activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}
           {children}
         </main>

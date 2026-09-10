@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useNavigate } from 'react-router-dom'
 import { Plus, FileText, Sparkles } from 'lucide-react'
 import { supplierApi } from './supplierApi'
@@ -22,15 +23,19 @@ export default function InvoicesPage() {
   const [page, setPage]         = useState(1)
   const [loading, setLoading]   = useState(false)
 
+  const requests = useLatestRequest([status, page])
   const load = useCallback(async () => {
+    const isCurrent = requests.begin()
+    setResult(null)
     setLoading(true)
     try {
       const data = await supplierApi.listInvoices({ status: status || undefined, page, per_page: 20 })
+      if (!isCurrent()) return
       setResult(data)
     } catch {
-      toast.error('Помилка завантаження накладних')
+      if (isCurrent()) toast.error('Помилка завантаження накладних')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [status, page])
 

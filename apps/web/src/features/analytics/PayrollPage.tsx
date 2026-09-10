@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react'
-import { Layout } from '@/components/Layout'
+import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { adminApi, ROLE_LABELS } from '@/features/admin/adminApi'
@@ -60,7 +61,10 @@ export default function PayrollPage() {
     note: '',
   })
 
+  const requests = useLatestRequest(period)
   const load = useCallback(async () => {
+    const isCurrent = requests.begin()
+    setSummary([]); setPayments([]); setDaily([])
     setLoading(true)
     try {
       const [usersResult, summaryResult, paymentsResult, dailyResult] = await Promise.all([
@@ -69,14 +73,15 @@ export default function PayrollPage() {
         staffApi.listSalary(period),
         staffApi.dailySummary(localDate()),
       ])
+      if (!isCurrent()) return
       setUsers((usersResult.data ?? []).filter((user) => user.is_active && user.role !== 'owner'))
       setSummary(summaryResult.data ?? [])
       setPayments(paymentsResult.data ?? [])
       setDaily(dailyResult.data ?? [])
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити зарплату')
+      if (isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити зарплату')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [period])
 
@@ -182,7 +187,7 @@ export default function PayrollPage() {
     <Layout title="Зарплата та виплати">
       <div className="mb-4 flex items-center gap-2">
         <button onClick={() => shiftPeriod(-1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronLeft size={16} /></button>
-        <strong className="min-w-[170px] text-center capitalize">{periodLabel(period)}</strong>
+        <strong className="analytics-month-label text-center capitalize">{periodLabel(period)}</strong>
         <button onClick={() => shiftPeriod(1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronRight size={16} /></button>
       </div>
 
@@ -207,12 +212,12 @@ export default function PayrollPage() {
                 const row = summaryByEmployee.get(user.id)
                 return (
                   <tr key={user.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-semibold text-gray-900">{user.full_name || user.email}</td>
-                    <td className="px-2 py-3 text-gray-500">{ROLE_LABELS[user.role as UserRole] ?? user.role}</td>
-                    <td className="px-2 py-3 text-right">{formatMoney(row?.earned ?? 0)}</td>
-                    <td className="px-2 py-3 text-right">{formatMoney(row?.paid ?? 0)}</td>
-                    <td className="px-2 py-3 text-right font-bold text-amber-700">{formatMoney(row?.balance ?? 0)}</td>
-                    <td className="px-4 py-3 text-right"><Button size="sm" variant="secondary" onClick={() => setSelected(user)}><CreditCard size={14} /> Операції</Button></td>
+                    <td data-label="Працівник" className="px-4 py-3 font-semibold text-gray-900">{user.full_name || user.email}</td>
+                    <td data-label="Роль" className="px-2 py-3 text-gray-500">{ROLE_LABELS[user.role as UserRole] ?? user.role}</td>
+                    <td data-label="Нараховано" className="px-2 py-3 text-right">{formatMoney(row?.earned ?? 0)}</td>
+                    <td data-label="Виплачено" className="px-2 py-3 text-right">{formatMoney(row?.paid ?? 0)}</td>
+                    <td data-label="До виплати" className="px-2 py-3 text-right font-bold text-amber-700">{formatMoney(row?.balance ?? 0)}</td>
+                    <td data-label="" className="px-4 py-3 text-right"><Button size="sm" variant="secondary" onClick={() => setSelected(user)}><CreditCard size={14} /> Операції</Button></td>
                   </tr>
                 )
               })}
@@ -243,11 +248,11 @@ export default function PayrollPage() {
             </div>
             <div>
               <h3 className="mb-2 text-sm font-bold text-gray-900">Операції за місяць</h3>
-              <div className="max-h-64 divide-y divide-gray-100 overflow-auto rounded-xl border border-gray-200">
+              <div className="analytics-operation-history max-h-64 divide-y divide-gray-100 overflow-auto rounded-xl border border-gray-200">
                 {selectedPayments.length === 0 ? (
                   <p className="px-4 py-8 text-center text-sm text-gray-400">Операцій за цей місяць немає</p>
                 ) : selectedPayments.map((payment) => (
-                  <div key={payment.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                  <div key={payment.id} className="analytics-payment-row flex items-center justify-between gap-3 px-4 py-3 text-sm">
                     <div className="min-w-0">
                       <p className="font-semibold text-gray-900">{OPERATION_LABELS[payment.type]}</p>
                       <p className="text-xs text-gray-400">

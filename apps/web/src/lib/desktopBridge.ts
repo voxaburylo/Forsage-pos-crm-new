@@ -567,6 +567,8 @@ interface ForsageDesktopBridge {
     deleteSalary: (id: string) => Promise<{ success: true }>
   }
   warehouse?: {
+    listConsumptions: (input: { month: string }) => Promise<any>
+    createConsumption: (input: any) => Promise<any>
     listMovements: (input?: any) => Promise<any>
     createMovement: (input: any) => Promise<any>
     listReserves: (tenantId?: string) => Promise<any[]>
@@ -575,6 +577,14 @@ interface ForsageDesktopBridge {
     listWriteoffs: (input?: any) => Promise<any>
     getWriteoff: (id: string, tenantId?: string) => Promise<any>
     createWriteoff: (input: any) => Promise<any>
+  }
+  purchases?: {
+    listRules: () => Promise<any[]>
+    createRule: (input: any) => Promise<any>
+    deleteRule: (id: string) => Promise<any>
+    suggestions: () => Promise<any[]>
+    generateInvoices: (input: any) => Promise<any>
+    supplierNeeds: () => Promise<any[]>
   }
   inventory?: {
     scanOperationIds?: boolean
@@ -619,7 +629,7 @@ interface ForsageDesktopBridge {
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
-    createInvoiceFromAi?: (input: { tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{
+    createInvoiceFromAi?: (input: { operation_id?: string; tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{
       invoice: any
       matched: number
       created: number
@@ -663,8 +673,8 @@ interface ForsageDesktopBridge {
     saveCustomerVehicle?: (customerId: string, input: any, vehicleId?: string) => Promise<any>
     deleteCustomerVehicle?: (customerId: string, vehicleId: string, tenantId?: string) => Promise<{ ok: true }>
     getCustomerDeposit?: (customerId: string, tenantId?: string) => Promise<{ balance: number; transactions: unknown[] }>
-    payDebt?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
-    addCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>
+    payDebt?: (input: { operation_id?: string; tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: unknown }>
+    addCustomerDeposit?: (input: { operation_id?: string; tenant_id?: string; customer_id: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number } }>
     payOutCustomerDeposit?: (input: { tenant_id?: string; customer_id: string; payout_id?: string; amount: number; method: 'cash' | 'card' | 'transfer'; shift_id?: string | null; user_id?: string | null; notes?: string | null }) => Promise<{ data: { balance: number; replayed: boolean } }>
     createCashOperation?: (input: any) => Promise<any>
     listCashOperations?: (shiftId: string, tenantId?: string) => Promise<any[]>

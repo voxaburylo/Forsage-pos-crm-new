@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Truck, GitMerge } from 'lucide-react'
 import { supplierApi } from './supplierApi'
@@ -28,17 +29,22 @@ export default function SuppliersPage() {
   const [mergeDuplicate, setMergeDuplicate] = useState('')
   const [merging, setMerging] = useState(false)
   const [allSuppliers, setAllSuppliers] = useState<Supplier[]>([])
+  const [mergeLoading, setMergeLoading] = useState(false)
   const canManage = role === 'owner' || role === 'admin'
 
+  const requests = useLatestRequest([search, page])
   const load = useCallback(async () => {
+    const isCurrent = requests.begin()
+    setResult(null)
     setLoading(true)
     try {
       const data = await supplierApi.list({ search: search || undefined, page, per_page: 20 })
+      if (!isCurrent()) return
       setResult(data)
     } catch {
-      toast.error('Помилка завантаження постачальників')
+      if (isCurrent()) toast.error('Помилка завантаження постачальників')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [search, page])
 
@@ -46,11 +52,32 @@ export default function SuppliersPage() {
   useEffect(() => { setPage(1) }, [search])
 
   // Повний список для вибору в злитті дублів
-  function loadAllSuppliers() {
-    supplierApi.list({ per_page: 500 }).then((r) => setAllSuppliers(r.data)).catch(() => {})
-  }
+  useEffect(() => {
+    if (!mergeOpen) return
+    let active = true
+    setAllSuppliers([])
+    setMergePrimary('')
+    setMergeDuplicate('')
+    setMergeLoading(true)
+    void (async () => {
+      const rows = new Map<string, Supplier>()
+      for (let nextPage = 1; active; nextPage++) {
+        const response = await supplierApi.list({ page: nextPage, per_page: 100 })
+        if (!active) return
+        const previousSize = rows.size
+        for (const row of response.data) rows.set(row.id, row)
+        if (nextPage >= response.pagination.total_pages) break
+        if (rows.size === previousSize) throw new Error('Список постачальників завантажено не повністю. Повторіть відкриття.')
+      }
+      if (active) setAllSuppliers([...rows.values()])
+    })().catch((error) => {
+      if (active) toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити постачальників')
+    }).finally(() => { if (active) setMergeLoading(false) })
+    return () => { active = false }
+  }, [mergeOpen])
 
   async function handleMerge() {
+    if (merging || mergeLoading) return
     if (!mergePrimary || !mergeDuplicate) { toast.error('Оберіть обох постачальників'); return }
     if (mergePrimary === mergeDuplicate) { toast.error('Це той самий постачальник'); return }
     setMerging(true)
@@ -132,7 +159,7 @@ export default function SuppliersPage() {
         <div className="flex gap-2">
           {canManage && (
             <Button variant="outline" icon={<GitMerge size={16} />} className="hidden sm:inline-flex"
-              onClick={() => { setMergeOpen(true); loadAllSuppliers() }}>
+              onClick={() => setMergeOpen(true)}>
               Об’єднати дублі
             </Button>
           )}
@@ -197,7 +224,7 @@ export default function SuppliersPage() {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setMergeOpen(false)}>Скасувати</Button>
-            <Button loading={merging} onClick={handleMerge} disabled={!mergePrimary || !mergeDuplicate}>
+            <Button loading={merging || mergeLoading} onClick={handleMerge} disabled={!mergePrimary || !mergeDuplicate || mergeLoading}>
               Об’єднати
             </Button>
           </div>

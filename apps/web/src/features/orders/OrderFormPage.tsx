@@ -16,6 +16,11 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
 import { toast } from '@/components/ui/Toast'
+import { OrderProductResults } from './OrderProductResults'
+import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
+import { readOrderFormDraft, writeOrderFormDraft } from './orderFormDraft'
+import { saveOrderForm } from './orderFormSave'
+import { useAuthStore } from '@/stores/authStore'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -90,10 +95,7 @@ function SupplierQuickPicker({
   const listId = `supplier-list-${reactListId.replace(/:/g, '')}`
 
   useEffect(() => {
-    if (!value) {
-      setText('')
-      return
-    }
+    if (!value) return
     const selected = suppliers.find((supplier) => supplier.id === value)
     if (selected) setText(selected.name)
   }, [value, suppliers])
@@ -140,7 +142,7 @@ function SupplierQuickPicker({
       <datalist id={listId}>
         {suppliers.map((supplier) => <option key={supplier.id} value={supplier.name} />)}
       </datalist>
-      <button
+      {text.trim() && !suppliers.some((supplier) => normalizeSupplierName(supplier.name) === normalizeSupplierName(text)) && <button
         type="button"
         onClick={handleCreate}
         disabled={creating}
@@ -148,12 +150,13 @@ function SupplierQuickPicker({
         className="shrink-0 rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-600 hover:border-yellow-300 hover:bg-yellow-50 hover:text-yellow-700 disabled:opacity-60"
       >
         {creating ? '...' : <Plus size={16} />}
-      </button>
+      </button>}
     </div>
   )
 }
 
 interface ItemRow {
+  local_key?: string
   id?:         string
   name:        string
   sku:         string
@@ -166,18 +169,44 @@ interface ItemRow {
   item_type?:  'product' | 'service'
   item_status?: CustomerOrder['items'][number]['item_status']
   buy_price?:  string
-  manual_edit?: boolean
   source_type?: 'warehouse' | 'supplier'
 }
 
 const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product', buy_price: '0', source_type: 'supplier' }
 
+interface FormBackup {
+  items: ItemRow[]; customerId: string; selectedCustomer: Customer | null
+  selectedVehicle: CustomerVehicle | null; vehicles: CustomerVehicle[]
+  loadedVehicleInfo: { make?: string; model?: string; year?: number; vin?: string } | null
+  loadedOrderVersion?: string; comment: string; isUrgent: boolean; step: 1 | 2 | 3 | 4
+  newCustName: string; newCustPhone: string; newVehBrand: string; newVehModel: string
+  newVehYear: string; newVehVin: string; showAddCustomer: boolean; showAddVehicle: boolean
+  draftHint: CustomerOrder | null; totalPaid: number; loadedStatus: string
+}
+
 export default function OrderFormPage() {
+  const { id } = useParams()
+  const [params] = useSearchParams()
+  const user = useAuthStore((state) => state.session?.user)
+  const key = `forsage:order-form:v1:${user?.app_metadata?.tenant_id ?? 'local'}:${user?.id ?? 'anonymous'}:${id ?? 'new'}:${params.toString()}`
+  const [revision, setRevision] = useState(0)
+  return <OrderFormEditor key={`${key}:${revision}`} backupKey={key} onReset={() => setRevision((value) => value + 1)} />
+}
+
+function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: () => void }) {
+  const [backup] = useState(() => readOrderFormDraft<FormBackup>(backupKey))
+  const backupFinished = useRef(false)
+  const [backupState, setBackupState] = useState('')
+  const [discardPrompt, setDiscardPrompt] = useState(false)
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { id } = useParams()
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(!backup && Boolean(id || searchParams.get('draftId')))
+  const [loadError, setLoadError] = useState('')
   const sourceDraftId = !id ? searchParams.get('draftId') : null
+  const [formReady, setFormReady] = useState(!id && !sourceDraftId)
+  const [totalPaid, setTotalPaid] = useState(0)
+  const [loadedStatus, setLoadedStatus] = useState('lead')
   const [draftHint, setDraftHint] = useState<CustomerOrder | null>(null)
   const [draftHintOpen, setDraftHintOpen] = useState(!!sourceDraftId)
 
@@ -225,7 +254,7 @@ export default function OrderFormPage() {
   const [addingVehicle, setAddingVehicle] = useState(false)
 
   useEffect(() => {
-    if (id) return
+    if (id || backup) return
     const vin = searchParams.get('vin')?.trim().toUpperCase() ?? ''
     const make = searchParams.get('make')?.trim() ?? ''
     const model = searchParams.get('model')?.trim() ?? ''
@@ -248,7 +277,7 @@ export default function OrderFormPage() {
 
   // Duplicate order initialization (P1 Fix 9)
   useEffect(() => {
-    if (id) return
+    if (id || backup) return
     const raw = sessionStorage.getItem('duplicate_order_payload')
     if (raw) {
       sessionStorage.removeItem('duplicate_order_payload')
@@ -290,7 +319,7 @@ export default function OrderFormPage() {
   // Чернетка не перетворюється на напівготове замовлення автоматично.
   // Вона висить поруч як список-підказка, а менеджер заповнює нормальну накладну.
   useEffect(() => {
-    if (!sourceDraftId) return
+    if (!sourceDraftId || backup) return
     orderApi.get(sourceDraftId)
       .then(({ data: draft }) => {
         setDraftHint(draft)
@@ -316,17 +345,20 @@ export default function OrderFormPage() {
         toast.error('Чернетку не знайдено')
         navigate('/orders?tab=drafts')
       })
+      .finally(() => { setFormReady(true); setLoading(false) })
   }, [sourceDraftId, navigate])
 
   // Load existing order details for editing (P0 Fix 1)
   useEffect(() => {
-    if (!id) return
+    if (!id || backup) return
     setLoading(true)
     orderApi.get(id)
       .then((r) => {
         const o = r.data
         if (!o) return
         setLoadedOrderVersion(o.updated_at)
+        setTotalPaid(o.total_paid ?? o.prepayment ?? 0)
+        setLoadedStatus(o.status)
         
         // Load customer
         if (o.customer) {
@@ -406,14 +438,14 @@ export default function OrderFormPage() {
             item_status: item.item_status,
             buy_price: item.buy_price ? (item.buy_price / 100).toString() : '0',
             source_type: item.source_type ?? (item.product_id ? 'warehouse' : 'supplier'),
-            manual_edit: true,
           })))
         }
         // Редагування: клієнт і авто вже відомі — одразу переходимо до позицій,
         // щоб не показувати екран вибору клієнта «з нуля» (плутало користувачів)
         setStep(3)
+        setFormReady(true)
       })
-      .catch(() => toast.error('Помилка завантаження замовлення'))
+      .catch(() => setLoadError('Не вдалося завантажити замовлення. Нічого не змінено.'))
       .finally(() => setLoading(false))
   }, [id])
 
@@ -444,9 +476,48 @@ export default function OrderFormPage() {
   const [comment, setComment] = useState('')
   const [isUrgent, setIsUrgent] = useState(false)
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+
+  useEffect(() => {
+    if (!backup) return
+    setItems(backup.items); setCustomerId(backup.customerId); setSelectedCustomer(backup.selectedCustomer)
+    setSelectedVehicle(backup.selectedVehicle); setVehicles(backup.vehicles ?? [])
+    setLoadedVehicleInfo(backup.loadedVehicleInfo); setLoadedOrderVersion(backup.loadedOrderVersion)
+    setComment(backup.comment); setIsUrgent(backup.isUrgent); setStep(backup.step)
+    setNewCustName(backup.newCustName); setNewCustPhone(backup.newCustPhone)
+    setNewVehBrand(backup.newVehBrand); setNewVehModel(backup.newVehModel); setNewVehYear(backup.newVehYear); setNewVehVin(backup.newVehVin)
+    setShowAddCustomer(backup.showAddCustomer); setShowAddVehicle(backup.showAddVehicle)
+    setDraftHint(backup.draftHint); setTotalPaid(backup.totalPaid ?? 0); setLoadedStatus(backup.loadedStatus ?? 'lead')
+    setFormReady(true)
+  }, [backup])
+
+  const snapshot: FormBackup = { items, customerId, selectedCustomer, selectedVehicle, vehicles, loadedVehicleInfo, loadedOrderVersion, comment, isUrgent, step,
+    newCustName, newCustPhone, newVehBrand, newVehModel, newVehYear, newVehVin, showAddCustomer, showAddVehicle, draftHint, totalPaid, loadedStatus }
+  const snapshotRef = useRef(snapshot)
+  snapshotRef.current = snapshot
+  const readyRef = useRef(formReady)
+  readyRef.current = formReady
+  const snapshotJson = JSON.stringify(snapshot)
+  useEffect(() => {
+    if (!formReady || backupFinished.current) return
+    const timer = window.setTimeout(() => {
+      if (backupFinished.current) return
+      const ok = writeOrderFormDraft(backupKey, snapshotRef.current)
+      setBackupState(ok ? 'Введені дані збережено на цьому пристрої' : 'Не вдалося зберегти форму на пристрої. Збережіть замовлення перед виходом.')
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [backupKey, formReady, snapshotJson])
+  useEffect(() => {
+    const flush = () => {
+      if (readyRef.current && !backupFinished.current) writeOrderFormDraft(backupKey, snapshotRef.current)
+    }
+    window.addEventListener('pagehide', flush)
+    return () => { window.removeEventListener('pagehide', flush); flush() }
+  }, [backupKey])
 
   // Query parameter support
   useEffect(() => {
+    if (backup) return
     const qCustomerId = searchParams.get('customer_id')
     if (qCustomerId) {
       customerApi.get(qCustomerId)
@@ -505,14 +576,22 @@ export default function OrderFormPage() {
   }, [newVehVin])
 
   // Selection handlers
+  const customerVehicleRequest = useRef(0)
   function handleSkipCustomer() {
+    customerVehicleRequest.current++
     setSelectedCustomer(null)
     setCustomerId('')
     setSelectedVehicle(null)
+    setLoadedVehicleInfo(null)
+    setVehicles([])
     setStep(3)
   }
 
   function handleCustomerSelect(c: Customer) {
+    const request = ++customerVehicleRequest.current
+    if (customerId && customerId !== c.id) setLoadedVehicleInfo(null)
+    setSelectedVehicle(null)
+    setVehicles([])
     setSelectedCustomer(c)
     setCustomerId(c.id)
     setCustomerSearch('')
@@ -521,6 +600,7 @@ export default function OrderFormPage() {
     // Load customer vehicles
     customerVehiclesApi.list(c.id)
       .then((r) => {
+        if (request !== customerVehicleRequest.current) return
         const list = (r as any).data ?? []
         setVehicles(list)
         // ORD-4: якщо авто рівно одне — підставляємо й одразу до товарів
@@ -532,12 +612,14 @@ export default function OrderFormPage() {
         }
       })
       .catch(() => {
+        if (request !== customerVehicleRequest.current) return
         setStep(2)
       })
   }
 
   function handleVehicleSelect(v: CustomerVehicle | null) {
     setSelectedVehicle(v)
+    setLoadedVehicleInfo(null)
     setShowAddVehicle(false)
     setStep(3)
   }
@@ -654,6 +736,16 @@ export default function OrderFormPage() {
   const [searchResults, setSearchResults] = useState<Product[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
+  const [replaceIndex, setReplaceIndex] = useState<number | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  function startReplacement(index: number) {
+    setReplaceIndex(index)
+    setSearch(items[index].sku || items[index].name)
+    searchInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    searchInputRef.current?.focus()
+    searchInputRef.current?.select()
+  }
 
   useEffect(() => {
     const q = search.trim()
@@ -664,7 +756,7 @@ export default function OrderFormPage() {
     const t = window.setTimeout(async () => {
       try {
         const r = await productApi.search(q, 50)
-        if (!cancelled) setSearchResults(r.data ?? [])
+        if (!cancelled) setSearchResults(stockFirst(r.data ?? []))
       } catch {
         if (!cancelled) {
           setSearchResults([])
@@ -686,30 +778,34 @@ export default function OrderFormPage() {
   }
   function addProductAsItem(p: Product) {
     setItems((rows) => {
-      const base = rows.filter((r) => r.name.trim())
-      const stock = p.qty_available ?? p.qty_on_hand ?? 0
+      const stock = availableStock(p)
+      if (replaceIndex !== null) {
+        return rows.map((row, index) => index !== replaceIndex ? row : replaceOrderProduct(row, p))
+      }
+      const base = rows
       const existingIndex = base.findIndex((row) => row.product_id === p.id)
       if (existingIndex >= 0) {
         return base.map((row, index) => index === existingIndex
-          ? { ...row, qty: String((parseFloat(row.qty) || 0) + 1) }
+          ? { ...row, qty: String((orderNumber(row.qty) || 0) + 1) }
           : row)
       }
       return [...base, {
         ...EMPTY_ITEM,
+        local_key: crypto.randomUUID(),
         name: p.name,
         sku: p.sku ?? '',
         sell_price: kopecksToHryvnia(p.retail_price),
         buy_price: p.purchase_price ? kopecksToHryvnia(p.purchase_price) : '0',
         product_id: p.id,
         stock,
-        source_type: stock > 0 ? 'warehouse' : 'supplier',
-        manual_edit: stock <= 0,
+        source_type: stock > 0 || p.is_service ? 'warehouse' : 'supplier',
         item_type: p.is_service ? 'service' : 'product',
       }]
     })
     setSearch('')
     setSearchResults([])
-    toast.success(`Додано: ${p.name}`)
+    toast.success(replaceIndex !== null ? 'Товар замінено. Кількість і ціна продажу збережені.' : `Додано: ${p.name}`)
+    setReplaceIndex(null)
   }
 
   // Копіювання списку для месенджера (підтвердження клієнту)
@@ -727,10 +823,10 @@ export default function OrderFormPage() {
       car: car || null,
       lines: validItems.map((r) => ({
         name: r.name.trim(),
-        qty: parseFloat(r.qty) || 1,
-        unitHrn: parseFloat((r.sell_price || '0').replace(',', '.')) || 0,
+        qty: orderNumber(r.qty) || 0,
+        unitHrn: orderNumber(r.sell_price) || 0,
       })),
-      fullyPaid: false,
+      fullyPaid: totalPaid >= totalKop && totalKop > 0,
     })
     try {
       await navigator.clipboard.writeText(text)
@@ -754,14 +850,14 @@ export default function OrderFormPage() {
       vehicle_info: veh,
       created_at: new Date().toISOString(),
       total_amount: totalKop,
-      total_paid: 0,
-      prepayment: 0,
+      total_paid: totalPaid,
+      prepayment: totalPaid,
       items: validItems.map((r, i) => ({
         id: r.id ?? String(i),
         name: r.name.trim(),
         sku: r.sku.trim() || null,
-        qty: parseFloat(r.qty) || 1,
-        sell_price: Math.round(parseFloat((r.sell_price || '0').replace(',', '.')) * 100),
+        qty: orderNumber(r.qty) || 0,
+        sell_price: Math.round(orderNumber(r.sell_price) * 100),
         buy_price: 0,
         product_id: r.product_id ?? null,
         supplier_id: r.supplier_id || null,
@@ -784,13 +880,13 @@ export default function OrderFormPage() {
   }
 
   // Items manipulation
-  function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)) }
+  function removeItem(i: number) { setItems((p) => p.filter((_, idx) => idx !== i)); setReplaceIndex(null) }
   function updateItem<K extends keyof ItemRow>(i: number, key: K, val: ItemRow[K]) {
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
   function addManualItemRow(name = '') {
-    setItems((rows) => [...rows, { ...EMPTY_ITEM, manual_edit: true, source_type: 'supplier', name }])
+    setItems((rows) => [...rows, { ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier', name }])
   }
 
   // Швидка націнка: рахує ціну продажу від закупки за обраним відсотком,
@@ -800,7 +896,7 @@ export default function OrderFormPage() {
   function applyMarkup(index: number, pct: number) {
     setItems((rows) => rows.map((row, i) => {
       if (i !== index) return row
-      const buy = parseFloat((row.buy_price || '0').replace(',', '.')) || 0
+      const buy = orderNumber(row.buy_price ?? '0') || 0
       if (buy <= 0) {
         toast.error('Спершу вкажіть ціну закупки')
         return row
@@ -821,11 +917,15 @@ export default function OrderFormPage() {
   // «За таблицею»: роздрібна за правилами націнки від закупки (як у картці товару/накладній).
   async function applyMarkupTable(index: number) {
     const row = items[index]
-    const buy = Math.round((parseFloat((row?.buy_price || '0').replace(',', '.')) || 0) * 100)
+    const buy = Math.round((orderNumber(row?.buy_price ?? '0') || 0) * 100)
     if (!buy) { toast.error('Спершу вкажіть ціну закупки'); return }
     try {
       const res = await pricingApi.autoRetail(buy)
-      if (res.data.retail_price != null) updateItem(index, 'sell_price', String(res.data.retail_price / 100))
+      const retailPrice = res.data.retail_price
+      if (retailPrice != null) setItems((current) => current.map((item) => {
+        const same = item === row || (row.id && item.id === row.id) || (row.local_key && item.local_key === row.local_key)
+        return same && Math.round(orderNumber(item.buy_price ?? '0') * 100) === buy ? { ...item, sell_price: String(retailPrice / 100) } : item
+      }))
       else toast.warning('Націнка за таблицею не налаштована')
     } catch { toast.error('Помилка розрахунку за таблицею') }
   }
@@ -849,123 +949,62 @@ export default function OrderFormPage() {
 
   const totalKop = useMemo(() => {
     return items.reduce((s, row) => {
-      const price = parseFloat(row.sell_price || '0') || 0
-      const qty = parseFloat(row.qty || '1') || 1
-      return s + Math.round(price * 100) * qty
+      if (!row.name.trim() || row.item_status === 'canceled' || row.item_status === 'returned') return s
+      const price = orderNumber(row.sell_price) || 0
+      const qty = orderNumber(row.qty) || 0
+      return s + Math.round(Math.round(price * 100) * qty)
     }, 0)
   }, [items])
 
   // Сума до сплати: знижка береться з картки клієнта у касі, у замовленні її не дублюємо.
-  const toPayKop = Math.max(0, totalKop)
-  // Дві дії збереження:
-  //  • 'save'  — лишити ВІДКРИТИМ (клієнт ще думає); статус не форсуємо.
-  //  • 'order' — «В замовлення»: закрити накладну як «Замовлено» (status='ordered',
-  //              резерв складу НЕ виконується, тож не впаде на позиціях під замовлення).
+  const toPayKop = Math.max(0, totalKop - totalPaid)
+  // Save a draft without advancing supply status. Only explicit registration activates it.
   async function handleSave(action: 'save' | 'order' = 'save') {
+    if (savingRef.current) return
     const validItems = items.filter((row) => row.name.trim())
-    if (validItems.length === 0) {
-      toast.error('Додайте хоча б одну позицію з назвою')
-      setStep(3)
-      return
-    }
-
-    // ORD-5: не дати випадково оформити замовлення на 0 грн (лише при «В замовлення»)
-    if (action === 'order' && toPayKop === 0) {
-      if (!confirm('Сума замовлення 0 ₴. Оформити замовлення без вартості?')) {
-        setStep(3)
-        return
-      }
-    }
-
-    // ORD-27: попередження про можливий дубль (той самий клієнт+сума за короткий проміжок)
-    if (!id && customerId && totalKop > 0) {
-      try {
-        const recent = await orderApi.list()
-        const cutoff = Date.now() - 30 * 60 * 1000
-        const dup = ((recent as any).data ?? []).filter((o: any) => o.customer_id === customerId).find((o: any) =>
-          o.status !== 'canceled' &&
-          o.total_amount === totalKop &&
-          new Date(o.created_at).getTime() > cutoff,
-        )
-        if (dup) {
-          const noLabel = dup.order_number != null ? `#${dup.order_number} ` : ''
-          if (!confirm(`Можливий дубль: у клієнта вже є замовлення ${noLabel}на ${formatMoney(totalKop)} за останні 30 хв.\nВсе одно створити нове?`)) {
-            return
-          }
-        }
-      } catch { /* помилка перевірки не блокує створення */ }
-    }
-
+    if (!validItems.length) { toast.error('Додайте хоча б одну позицію з назвою'); setStep(3); return }
+    const error = validateOrderRows(validItems)
+    if (error) { toast.error(error); setStep(3); return }
+    savingRef.current = true
+    setSaving(true)
     const vehicleInfo = selectedVehicle
-      ? {
-          make:  selectedVehicle.brand,
-          model: selectedVehicle.model,
-          year:  selectedVehicle.year ?? undefined,
-          vin:   selectedVehicle.vin ?? undefined,
-        }
-      : loadedVehicleInfo // при редагуванні зберігаємо авто, якого немає в гаражі
-
-    const finalComment = [
-      isUrgent ? '[ТЕРМІНОВО]' : '',
-      comment.trim(),
-    ].filter(Boolean).join(' ')
-
+      ? { make: selectedVehicle.brand, model: selectedVehicle.model, year: selectedVehicle.year ?? undefined, vin: selectedVehicle.vin ?? undefined }
+      : loadedVehicleInfo
     const payload: CreateOrderPayload = {
       customer_id: customerId || null,
-      source: 'walk_in',
-      parent_draft_id: null,
+      ...(!id ? { source: action === 'save' ? 'mobile_draft' as const : 'walk_in' as const } : {}),
       vehicle_info: vehicleInfo,
-      comment: finalComment || null,
-      // Гроші приймаються тільки через касу: там є зміна, ПРРО, борги і журнал дій.
-      prepayment: 0,
-      prepayment_method: null,
-      prepayment_is_fiscal: false,
+      comment: [isUrgent ? '[ТЕРМІНОВО]' : '', comment.trim()].filter(Boolean).join(' ') || null,
       items: validItems.map((row) => ({
-        id:          row.id,
-        name:        row.name.trim(),
-        sku:         row.sku.trim() || null,
-        product_id:  row.product_id || null,
-        qty:         parseFloat(row.qty) || 1,
-        sell_price:  Math.round(parseFloat(row.sell_price || '0') * 100),
-        buy_price:   Math.round(parseFloat(row.buy_price || '0') * 100),
-        supplier_id: row.supplier_id || null,
+        id: row.id, name: row.name.trim(), sku: row.sku.trim() || null,
+        product_id: row.product_id || null,
+        qty: orderNumber(row.qty),
+        sell_price: Math.round(orderNumber(row.sell_price) * 100),
+        buy_price: Math.round(orderNumber(row.buy_price ?? '0') * 100),
+        supplier_id: row.source_type === 'supplier' ? row.supplier_id || null : null,
         source_type: row.source_type ?? (row.product_id ? 'warehouse' : 'supplier'),
-        item_type:   row.item_type ?? 'product',
-        item_status: row.item_status,
-        expected_date: row.supplier_id && row.expected_date ? row.expected_date : null,
+        item_type: row.item_type ?? 'product', item_status: row.item_status,
+        expected_date: row.source_type === 'supplier' && row.expected_date ? row.expected_date : null,
       })),
     }
-
-    setSaving(true)
     try {
-      let orderId = id
-      if (id) {
-        const updated = await orderApi.update(id, { ...payload, expected_updated_at: loadedOrderVersion })
-        setLoadedOrderVersion(updated.data.updated_at)
+      const { order: saved, activationError } = await saveOrderForm(orderApi, payload, {
+        id, version: loadedOrderVersion, activate: action === 'order',
+        onPersisted: () => {
+          backupFinished.current = true
+          try { sessionStorage.removeItem(backupKey) } catch { /* saved document remains accessible */ }
+        },
+      })
+      if (activationError) {
+        toast.warning('Чернетку збережено, але оформлення не завершено: ' + (activationError instanceof Error ? activationError.message : 'спробуйте з картки замовлення'))
       } else {
-        const result = await orderApi.create(payload)
-        orderId = (result as { data: { id: string } }).data.id
+        toast.success(action === 'order' ? 'Замовлення оформлено' : id ? 'Зміни збережено' : 'Чернетку збережено')
       }
-      if (!orderId) throw new Error('Не отримано ідентифікатор замовлення')
-
-      if (action === 'order') {
-        // «В замовлення»: закриваємо накладну як «Замовлено». Резерв складу тут
-        // не виконується (лише для new/in_progress), тож на позиціях під замовлення не впаде.
-        await orderApi.updateStatus(orderId, 'ordered').catch(() => {
-          toast.warning('Збережено, але не вдалося позначити «Замовлено»')
-        })
-        toast.success('Оформлено в замовлення')
-      } else {
-        // «Зберегти»: відкрите замовлення. Новий запис бекенд створює як lead, а
-        // вкладка «Усі активні» ліди ховає → переводимо у 'new', щоб замовлення
-        // одразу було ВИДИМЕ у списку активних (не «зникало» у вкладку «Ліди»).
-        if (!id) await orderApi.updateStatus(orderId, 'new').catch(() => {})
-        toast.success('Замовлення збережено')
-      }
-      navigate('/orders/' + orderId)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка збереження')
+      navigate('/orders/' + saved.id)
+    } catch (saveError) {
+      toast.error(saveError instanceof Error ? saveError.message : 'Помилка збереження. Введені дані залишилися у формі.')
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
@@ -974,6 +1013,7 @@ export default function OrderFormPage() {
   function addDraftHintItemToOrder(item: CustomerOrder['items'][number]) {
     const nextRow: ItemRow = {
       ...EMPTY_ITEM,
+      local_key: crypto.randomUUID(),
       name: item.name,
       sku: item.sku ?? '',
       qty: String(item.qty || 1),
@@ -983,7 +1023,6 @@ export default function OrderFormPage() {
       supplier_id: item.supplier_id ?? '',
       item_type: item.item_type ?? 'product',
       source_type: item.source_type ?? (item.product_id ? 'warehouse' : 'supplier'),
-      manual_edit: true,
     }
     setItems((current) => {
       const emptyIndex = current.findIndex((row) => !row.name.trim())
@@ -993,7 +1032,7 @@ export default function OrderFormPage() {
     setStep(3)
     toast.success(`Додано з чернетки: ${item.name}`)
   }
-  // ORD-35: гаряча клавіша Ctrl+S — зберегти (на кроці 4 оформити, інакше чернетка)
+  // Ctrl+S only saves; it never silently advances the order status.
   const saveRef = useRef(handleSave)
   saveRef.current = handleSave
   useEffect(() => {
@@ -1012,6 +1051,7 @@ export default function OrderFormPage() {
   const customerListLoading = customerSearch.trim().length >= 2 ? searchCustomersLoading : defaultCustomersLoading
   const hasValidItems = items.some((item) => item.name.trim().length > 0)
 
+  if (loadError) return <Layout title="Замовлення" onBack={() => navigate('/orders')}><p className="p-4 text-red-700">{loadError}</p><Button onClick={onReset}>Повторити завантаження</Button></Layout>
   if (loading) {
     return (
       <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
@@ -1024,7 +1064,22 @@ export default function OrderFormPage() {
 
   return (
     <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
-      <div className={`mx-auto max-w-4xl space-y-6 transition-[margin] lg:max-w-none ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
+      <fieldset disabled={saving} className={`mx-auto min-w-0 max-w-4xl space-y-4 transition-[margin] lg:max-w-none ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+          <p role="status">{backupState}</p>
+          <button type="button" onClick={() => setDiscardPrompt(true)} className="underline">Відкинути незбережені правки</button>
+        </div>
+        {discardPrompt && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+          <p>Прибрати введені зміни з цього пристрою? Збережене замовлення не буде видалено.</p>
+          <div className="mt-2 flex gap-2">
+            <Button variant="danger" onClick={() => {
+              try { sessionStorage.removeItem(backupKey) } catch { toast.error('Не вдалося очистити форму'); return }
+              backupFinished.current = true
+              onReset()
+            }}>Відкинути правки</Button>
+            <Button variant="secondary" onClick={() => setDiscardPrompt(false)}>Продовжити редагування</Button>
+          </div>
+        </div>}
         
         {/* Step Indicator — лише в покроковому (мобільному) режимі */}
         {!isDesktop && (
@@ -1394,9 +1449,14 @@ export default function OrderFormPage() {
             {/* ─── Єдине поле пошуку товару ─── */}
             <Card>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Пошук товару</label>
+              {replaceIndex !== null && <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-blue-50 p-2 text-sm text-blue-800">
+                <span>Заміна позиції {replaceIndex + 1}. Кількість і ціна продажу залишаться вашими.</span>
+                <button type="button" className="underline" onClick={() => { setReplaceIndex(null); setSearch('') }}>Скасувати заміну</button>
+              </div>}
               <div className="relative">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                 <input
+                  ref={searchInputRef}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Артикул, OEM, назва або штрихкод..."
@@ -1412,52 +1472,24 @@ export default function OrderFormPage() {
                 <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{searchError}</p>
               )}
 
-              {/* Знайдені товари зі складу */}
+              {/* Знайдені товари та їх аналоги */}
               {!searchLoading && searchResults.length > 0 && (
-                <div className="mt-3 max-h-96 divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-100">
-                  {searchResults.map((p) => {
-                    const stock = p.qty_available ?? p.qty_on_hand ?? 0
-                    return (
-                      <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-gray-50">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-gray-800 truncate">{p.name}</p>
-                          <p className="text-[11px] text-gray-400 font-mono truncate">
-                            {p.sku}
-                            {p.barcode && <> · {p.barcode}</>}
-                            {p.storage_bin && <> · полиця {p.storage_bin}</>}
-                            {' · '}
-                            <span className={stock > 0 ? 'text-green-600' : 'text-orange-500'}>
-                              {stock > 0 ? `на складі: ${stock}` : 'немає на складі'}
-                            </span>
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-sm font-bold text-yellow-600">{formatMoney(p.retail_price)}</span>
-                          <Button size="sm" onClick={() => addProductAsItem(p)} icon={<Plus size={14} />}>Додати</Button>
-                        </div>
-                      </div>
-                    )
-                  })}
-                  {searchResults.length >= 50 && (
-                    <p className="px-3 py-1.5 text-center text-[11px] text-gray-400">
-                      Показано перші 50 — уточніть запит, якщо не знайшли
-                    </p>
-                  )}
-                </div>
+                <OrderProductResults products={searchResults} onSelect={addProductAsItem} replacing={replaceIndex !== null} />
               )}
 
               {/* Не знайдено → пропонуємо додати під замовлення */}
-              {!searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && (
+              {replaceIndex === null && !searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && (
                 <button
                   type="button"
                   onClick={openBackorder}
                   className="mt-3 w-full flex flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-yellow-300 bg-yellow-50 px-4 py-6 text-center hover:bg-yellow-100 transition-colors"
                 >
-                  <span className="text-2xl">➕</span>
                   <span className="text-sm font-bold text-yellow-800">Додати товар під замовлення</span>
                   <span className="text-xs text-yellow-700">У базі не знайдено. Знайдіть у постачальника та внесіть вручну.</span>
                 </button>
               )}
+
+              {replaceIndex !== null && !searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && <p className="mt-2 text-sm text-gray-500">Товар не знайдено. Змініть запит або скасуйте заміну.</p>}
 
             </Card>
 
@@ -1474,147 +1506,72 @@ export default function OrderFormPage() {
               ) : (
                 <div className="divide-y divide-gray-100">
                   {items.map((row, idx) => {
-                    if (row.manual_edit) {
-                      return (
-                        <div key={idx} className="bg-yellow-50/60 px-3 py-3 sm:px-4">
-                          <div className="mb-2 flex items-center justify-between gap-2">
-                            <span className="text-xs font-bold text-orange-700">⏳ Запчастина під замовлення</span>
-                            <button
-                              type="button"
-                              onClick={() => removeItem(idx)}
-                              className="rounded p-1.5 text-red-500 hover:bg-red-50 hover:text-red-700"
-                              title="Видалити рядок"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-12">
-                            <label className="lg:col-span-4">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Назва запчастини *</span>
-                              <input
-                                autoFocus
-                                value={row.name}
-                                onChange={(e) => updateItem(idx, 'name', e.target.value)}
-                                placeholder="Назва запчастини"
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              />
-                            </label>
-                            <label className="lg:col-span-2">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Артикул / OEM</span>
-                              <input
-                                value={row.sku}
-                                onChange={(e) => updateItem(idx, 'sku', e.target.value)}
-                                placeholder="Артикул"
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              />
-                            </label>
-                            <label className="lg:col-span-1">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">К-сть</span>
-                              <input
-                                type="number"
-                                min="1"
-                                step="1"
-                                value={row.qty}
-                                onChange={(e) => updateItem(idx, 'qty', e.target.value)}
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              />
-                            </label>
-                            <label className="lg:col-span-3">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Постачальник</span>
-                              <SupplierQuickPicker
-                                suppliers={suppliers}
-                                value={row.supplier_id}
-                                onChange={(supplierId) => setItems((current) => current.map((item, index) => index === idx ? { ...item, supplier_id: supplierId, source_type: supplierId ? 'supplier' : item.source_type } : item))}
-                                onCreate={createSupplierFromName}
-                                placeholder="Пошук або новий"
-                              />
-                            </label>
-                            <label className="lg:col-span-2">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Очікуємо</span>
-                              <input
-                                type="date"
-                                value={row.expected_date ?? ''}
-                                onChange={(e) => updateItem(idx, 'expected_date', e.target.value)}
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              />
-                            </label>
-                            <label className="lg:col-span-2 lg:col-start-7">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Закупка, грн</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={row.buy_price ?? '0'}
-                                onChange={(e) => updateItem(idx, 'buy_price', e.target.value)}
-                                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                              />
-                            </label>
-                            <label className="lg:col-span-3">
-                              <span className="mb-1 block text-[11px] font-medium text-gray-500">Продаж, грн</span>
-                              <div className="flex gap-1">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={row.sell_price}
-                                  onChange={(e) => updateItem(idx, 'sell_price', e.target.value)}
-                                  className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                                />
-                                <select
-                                  value=""
-                                  title="Розрахувати ціну: за таблицею націнки або швидкий відсоток від закупки"
-                                  onChange={(e) => { const v = e.target.value; if (v === 'table') applyMarkupTable(idx); else if (v) applyMarkup(idx, Number(v)); e.target.value = '' }}
-                                  className="shrink-0 rounded-lg border border-gray-200 bg-white px-1.5 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                                >
-                                  <option value="">▾</option>
-                                  <option value="table">За таблицею</option>
-                                  {markupOptions.map((p) => <option key={p} value={p}>{p}%</option>)}
-                                </select>
-                              </div>
-                            </label>
-                          </div>
-                        </div>
-                      )
-                    }
-                    if (!row.name.trim()) return null
-                    const isBackorder = row.source_type === 'supplier'
-                    const supplierName = suppliers.find((s) => s.id === row.supplier_id)?.name
+                    const backorder = row.source_type === 'supplier'
+                    const locked = !!row.item_status && row.item_status !== 'pending'
+                    const shortage = !backorder && row.item_type !== 'service' && row.stock !== undefined && orderNumber(row.qty) > row.stock
+                    const fieldClass = 'w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300'
                     return (
-                      <div key={idx} className="flex items-center gap-3 px-4 py-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-sm font-semibold text-gray-800">{row.name}</span>
-                            {isBackorder ? (
-                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">⏳ Під замовлення</span>
-                            ) : (
-                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-green-100 text-green-700">✓ На складі</span>
-                            )}
+                      <div key={row.id ?? row.local_key ?? idx} className={backorder ? 'bg-amber-50/40 px-3 py-3 sm:px-4' : 'px-3 py-3 sm:px-4'}>
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold text-gray-600">Позиція {idx + 1}</span>
+                            {row.product_id && !locked ? (
+                              <select aria-label={`Джерело позиції ${idx + 1}`} value={row.source_type ?? 'warehouse'}
+                                onChange={(e) => setItems((rows) => rows.map((item, index) => index === idx ? { ...item, source_type: e.target.value as 'warehouse' | 'supplier', supplier_id: '', expected_date: '' } : item))}
+                                className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs">
+                                <option value="warehouse">Зі складу</option>
+                                <option value="supplier">Під замовлення</option>
+                              </select>
+                            ) : <span className={backorder ? 'text-xs text-orange-700' : 'text-xs text-green-700'}>{backorder ? 'Під замовлення' : 'Зі складу'}</span>}
+                            {!backorder && row.stock !== undefined && row.item_type !== 'service' && <span className="text-xs text-gray-500">Доступно: {row.stock}</span>}
                           </div>
-                          <p className="text-[11px] text-gray-400 font-mono mt-0.5">
-                            {row.sku && <>{row.sku} · </>}
-                            {formatMoney(Math.round(parseFloat(row.sell_price || '0') * 100))}
-                            {isBackorder && supplierName && <> · {supplierName}</>}
-                            {isBackorder && row.expected_date && <> · до {row.expected_date}</>}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            {!locked && <button type="button" onClick={() => startReplacement(idx)} className="rounded-lg border border-gray-200 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50">Замінити товар ▾</button>}
+                            <button type="button" onClick={() => removeItem(idx)} title="Видалити рядок" aria-label={`Видалити позицію ${idx + 1}`} className="rounded p-1.5 text-red-600 hover:bg-red-50"><Trash2 size={16} /></button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span className="text-[10px] text-gray-400">×</span>
-                          <input
-                            type="number"
-                            min="1"
-                            value={row.qty}
-                            onChange={(e) => updateItem(idx, 'qty', e.target.value)}
-                            className="w-14 bg-white border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                          />
+                        <div className="grid grid-cols-2 gap-3 lg:grid-cols-12">
+                          <label className="col-span-2 lg:col-span-4">
+                            <span className="mb-1 block text-xs text-gray-600">Назва запчастини, бренд *</span>
+                            <input value={row.name} onChange={(e) => updateItem(idx, 'name', e.target.value)} placeholder="Назва та бренд запчастини" className={fieldClass} />
+                          </label>
+                          <label className="lg:col-span-2">
+                            <span className="mb-1 block text-xs text-gray-600">Артикул / OEM</span>
+                            <input value={row.sku} onChange={(e) => updateItem(idx, 'sku', e.target.value)} className={fieldClass} />
+                          </label>
+                          <label className="lg:col-span-1">
+                            <span className="mb-1 block text-xs text-gray-600">Кількість</span>
+                            <input type="number" min="0" step="1" value={row.qty} onChange={(e) => updateItem(idx, 'qty', e.target.value)} className={fieldClass} aria-invalid={shortage} />
+                          </label>
+                          <label className="lg:col-span-3">
+                            <span className="mb-1 block text-xs text-gray-600">Закупка, грн</span>
+                            <div className="flex gap-1">
+                              <input inputMode="decimal" value={row.buy_price ?? '0'} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} className={fieldClass + ' min-w-0'} />
+                              <select value="" aria-label={`Націнка позиції ${idx + 1}`} title="Розрахувати ціну продажу"
+                                onChange={(e) => { const value = e.target.value; if (value === 'table') void applyMarkupTable(idx); else if (value) applyMarkup(idx, Number(value)) }}
+                                className="w-24 shrink-0 rounded-lg border border-gray-200 bg-white px-1 text-xs">
+                                <option value="">Націнка</option>
+                                <option value="table">За таблицею</option>
+                                {markupOptions.map((pct) => <option key={pct} value={pct}>{pct}%</option>)}
+                              </select>
+                            </div>
+                          </label>
+                          <label className="lg:col-span-2">
+                            <span className="mb-1 block text-xs text-gray-600">Продаж, грн</span>
+                            <input inputMode="decimal" value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} className={fieldClass + ' font-semibold'} />
+                          </label>
+                          {backorder && <>
+                            <div className="lg:col-span-4">
+                              <span className="mb-1 block text-xs text-gray-600">Постачальник</span>
+                              <SupplierQuickPicker suppliers={suppliers} value={row.supplier_id} onChange={(value) => updateItem(idx, 'supplier_id', value)} onCreate={createSupplierFromName} placeholder="Пошук або новий" />
+                            </div>
+                            <label className="lg:col-span-2">
+                              <span className="mb-1 block text-xs text-gray-600">Очікуємо</span>
+                              <input type="date" value={row.expected_date ?? ''} onChange={(e) => updateItem(idx, 'expected_date', e.target.value)} className={fieldClass} />
+                            </label>
+                          </>}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => removeItem(idx)}
-                          className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition-colors shrink-0"
-                          title="Видалити"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {shortage && <p role="alert" className="mt-2 text-xs font-medium text-red-700">Доступно {row.stock}, потрібно {row.qty}. Зменшіть кількість або виберіть «Під замовлення».</p>}
                       </div>
                     )
                   })}
@@ -1709,6 +1666,7 @@ export default function OrderFormPage() {
                       {formatMoney(toPayKop)}
                     </span>
                   </div>
+                  {totalPaid > 0 && <div className="flex justify-between text-green-700"><span>Вже сплачено:</span><span>{formatMoney(totalPaid)}</span></div>}
                 </div>
               </Card>
 
@@ -1757,53 +1715,34 @@ export default function OrderFormPage() {
 
             </div>
 
-            {/* Панель дій: документи + збереження */}
-            <div className="bg-white border border-gray-100 rounded-2xl p-4 md:p-6 shadow-sm space-y-4 lg:sticky lg:bottom-4">
-              {/* Документи прямо з рядків замовлення (без відкриття накладної) */}
-              <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" disabled={!hasValidItems} className="flex-1 min-w-[9rem]" onClick={() => printDoc('invoice')}>
-                  🧾 Рахунок-фактура
-                </Button>
-                <Button variant="secondary" disabled={!hasValidItems} className="flex-1 min-w-[9rem]" onClick={() => printDoc('delivery')}>
-                  📄 Видаткова накладна
-                </Button>
-                <Button variant="secondary" disabled={!hasValidItems} className="flex-1 min-w-[9rem]" onClick={copyMessengerText}>
-                  💬 Копіювати в буфер
-                </Button>
-              </div>
-
-              <div className="border-t border-gray-100" />
-
-              {/* Збереження: «Зберегти» = відкрите (клієнт думає); «В замовлення» = замовлено */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-                {!isDesktop
-                  ? <Button variant="secondary" onClick={() => setStep(3)}>Назад до деталей</Button>
-                  : <span className="text-xs text-gray-400 hidden sm:block">«Зберегти» — лишити відкритим (клієнт думає) · «В замовлення» — закрити як замовлено</span>}
-
-                <div className="flex gap-2 w-full sm:w-auto">
-                  <Button
-                    variant="secondary"
-                    disabled={saving}
-                    className="flex-1 sm:flex-initial"
-                    onClick={() => handleSave('save')}
-                  >
-                    {id ? 'Зберегти зміни' : 'Зберегти'}
+            {/* Документи — другорядні дії; основна дія — збереження. */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm space-y-3 lg:sticky lg:bottom-4 z-10">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <details className="relative">
+                  <summary className="cursor-pointer rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium">Документи</summary>
+                  <div className="absolute bottom-full left-0 mb-2 min-w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg flex flex-col gap-1">
+                    <Button variant="secondary" disabled={!hasValidItems} onClick={() => printDoc('invoice')}>Рахунок-фактура</Button>
+                    <Button variant="secondary" disabled={!hasValidItems} onClick={() => printDoc('delivery')}>Видаткова накладна</Button>
+                    <Button variant="secondary" disabled={!hasValidItems} onClick={copyMessengerText}>Копіювати для клієнта</Button>
+                  </div>
+                </details>
+                <div className="flex gap-2 flex-wrap">
+                  {!isDesktop && <Button variant="secondary" onClick={() => setStep(3)}>До деталей</Button>}
+                  <Button variant={id && !['lead', 'quoted'].includes(loadedStatus) ? 'primary' : 'secondary'} disabled={!hasValidItems || saving} onClick={() => handleSave('save')}>
+                    {saving ? 'Збереження…' : id ? 'Зберегти зміни' : 'Зберегти чернетку'}
                   </Button>
-                  <Button
-                    disabled={saving}
-                    className="flex-1 sm:flex-initial !bg-green-500 hover:!bg-green-600 text-white font-bold"
-                    onClick={() => handleSave('order')}
-                  >
-                    В замовлення
-                  </Button>
+                  {(!id || ['lead', 'quoted'].includes(loadedStatus)) && <Button disabled={!hasValidItems || saving} onClick={() => handleSave('order')}>
+                    Оформити замовлення
+                  </Button>}
                 </div>
               </div>
+              <p className="text-xs text-gray-500">Збереження оновлює резерв складських позицій. Замовлення постачальнику менеджер робить окремо.</p>
             </div>
 
           </div>
         )}
 
-      </div>
+      </fieldset>
 
       {draftHint && !draftHintOpen && (
         <button

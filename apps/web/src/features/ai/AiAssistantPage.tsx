@@ -15,6 +15,8 @@ import { parseProductsWorkbook, type ExcelImportProduct } from './excelProductIm
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { aiChatStorageKey, readAiChat } from './aiChatStorage'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
 function ChangesTable({ changes }: { changes: AiActionChange[] }) {
@@ -79,9 +81,6 @@ interface ChatEntry {
   actions?: AiPendingAction[]
   cost?: number
 }
-
-// Переписка зберігається локально, щоб не зникати при переході на іншу вкладку
-const CHAT_STORAGE_KEY = 'forsage_ai_chat_v1'
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 const MAX_AI_CHUNK_CHARS = 160_000
@@ -247,22 +246,35 @@ async function recognizeVinImage(dataUrl: string): Promise<{ data: { vin: string
 }
 
 export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?: boolean }) {
+  const user = useAuthStore(state => state.session?.user)
+  if (!user) return null
+  const storageKey = aiChatStorageKey(user.id, String(user.app_metadata?.tenant_id ?? 'local'), invoiceOnly)
+  return <AiAssistantContent key={storageKey} invoiceOnly={invoiceOnly} storageKey={storageKey} />
+}
+
+function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean; storageKey: string }) {
   const navigate = useNavigate()
   const role = useAuthStore((state) => state.session?.user.app_metadata?.role as string | undefined)
   const canConfigure = role === 'owner' || role === 'admin'
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [loadingStatus, setLoadingStatus] = useState(true)
+  const [statusError, setStatusError] = useState('')
+  const statusGate = useLatestRequest(storageKey)
 
-  const [entries, setEntries] = useState<ChatEntry[]>([])
+  const [savedChat] = useState(() => readAiChat(storageKey, localStorage))
+  const [entries, setEntries] = useState<ChatEntry[]>(savedChat.entries ?? [])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const sendBusy = useRef(false)
+  const attachmentBusy = useRef(0)
+  const [processingAttachments, setProcessingAttachments] = useState(false)
   const [attachment, setAttachment] = useState<TextAttachment | null>(null)
   const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
   const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
-  const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>({})
-  const [applyMsg, setApplyMsg] = useState<Record<string, string>>({})
-  const [applyErrors, setApplyErrors] = useState<Record<string, Array<{ item: string; error: string }>>>({})
-  const [applyStatus, setApplyStatus] = useState<Record<string, 'ok' | 'warn'>>({})
+  const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>(savedChat.applied ?? {})
+  const [applyMsg, setApplyMsg] = useState<Record<string, string>>(savedChat.applyMsg ?? {})
+  const [applyErrors, setApplyErrors] = useState<Record<string, Array<{ item: string; error: string }>>>(savedChat.applyErrors ?? {})
+  const [applyStatus, setApplyStatus] = useState<Record<string, 'ok' | 'warn'>>(savedChat.applyStatus ?? {})
   const [applyingId, setApplyingId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [modalAction, setModalAction] = useState<AiPendingAction | null>(null)
@@ -274,45 +286,36 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const storageWarned = useRef(false)
 
-  useEffect(() => {
-    aiApi.status()
-      .then(({ data }) => setStatus(data))
-      .catch(() => {})
-      .finally(() => setLoadingStatus(false))
-  }, [])
+  async function loadStatus() {
+    const isCurrent = statusGate.begin()
+    setLoadingStatus(true); setStatusError('')
+    try { const { data } = await aiApi.status(); if (isCurrent()) setStatus(data) }
+    catch { if (isCurrent()) setStatusError('Не вдалося перевірити доступність ШІ. Для розпізнавання потрібен інтернет.') }
+    finally { if (isCurrent()) setLoadingStatus(false) }
+  }
+  useEffect(() => { void loadStatus() }, [])
 
-  // ── Збереження переписки (localStorage, тримається місяцями — не лише тиждень) ──
-  const hydratedRef = useRef(false)
+  // User/tenant/mode are isolated. Do not adopt unowned legacy shared history.
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(CHAT_STORAGE_KEY)
-      if (raw) {
-        const p = JSON.parse(raw)
-        if (Array.isArray(p.entries)) setEntries(p.entries)
-        if (p.applied) setApplied(p.applied)
-        if (p.applyMsg) setApplyMsg(p.applyMsg)
-        if (p.applyStatus) setApplyStatus(p.applyStatus)
-        if (p.applyErrors) setApplyErrors(p.applyErrors)
-      }
-    } catch { /* ignore */ }
-    hydratedRef.current = true
-  }, [])
-
-  useEffect(() => {
-    // не перезаписуємо сховище порожнім до завершення завантаження
-    if (!hydratedRef.current) return
-    try {
-      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({
+      localStorage.setItem(storageKey, JSON.stringify({
         entries: entries.slice(-80), applied, applyMsg, applyStatus, applyErrors,
         savedAt: Date.now(),
       }))
-    } catch { /* quota/JSON — ігноруємо */ }
-  }, [entries, applied, applyMsg, applyStatus, applyErrors])
+      storageWarned.current = false
+    } catch {
+      if (!storageWarned.current) toast.warning('Не вдалося зберегти історію ШІ на цьому ПК. Не закривайте вікно до завершення роботи.')
+      storageWarned.current = true
+    }
+  }, [storageKey, entries, applied, applyMsg, applyStatus, applyErrors])
 
   function clearChat() {
+    if (sendBusy.current || applyBusy.current) return
     setEntries([]); setApplied({}); setApplyMsg({}); setApplyStatus({}); setApplyErrors({}); setModalAction(null)
-    try { localStorage.removeItem(CHAT_STORAGE_KEY) } catch { /* ignore */ }
+    setOrderModalAction(null)
+    try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
   }
 
   useEffect(() => {
@@ -320,7 +323,9 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
   }, [entries, sending])
 
   async function handleAttach(file: File | undefined) {
-    if (!file) return
+    if (!file || sendBusy.current || applyBusy.current) return
+    if (imageAttachments.length + attachmentBusy.current >= MAX_IMAGES) { toast.error(`Максимум ${MAX_IMAGES} фото за раз`); return }
+    attachmentBusy.current++; setProcessingAttachments(true)
     try {
       if (isImageFile(file)) {
         if (imageAttachments.length >= MAX_IMAGES) {
@@ -360,13 +365,16 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати файл')
+    } finally {
+      attachmentBusy.current--; setProcessingAttachments(attachmentBusy.current > 0)
     }
   }
 
   async function send() {
     const message = input.trim()
     if (!message && !attachment && imageAttachments.length === 0) return
-    if (sending) return
+    if (sendBusy.current || attachmentBusy.current || applyBusy.current || loadingStatus || !status || statusError || !status.enabled || !status.has_key) return
+    sendBusy.current = true
 
     const history: AiChatMessage[] = entries.map((e) => ({ role: e.role, text: e.text }))
     const attachmentNote = [
@@ -404,6 +412,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         actions,
       }])
       setAttachment(null)
+      sendBusy.current = false
       return
     }
 
@@ -494,7 +503,10 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
     }
   }
 
+  const applyBusy = useRef(false)
   async function applyAction(action: AiPendingAction, payloadOverride?: Record<string, any>) {
+    if (applyBusy.current || sendBusy.current || applied[action.id]) return false
+    applyBusy.current = true
     setApplyingId(action.id)
     try {
       if (action.tool === 'create_supply_invoice_bulk') {
@@ -502,6 +514,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         if (!createLocalInvoice) throw new Error('Локальна база недоступна — відкрийте програму Форсаж')
         const payload = payloadOverride ?? action.payload
         const result = await createLocalInvoice({
+          operation_id: `ai-action:${storageKey}:${action.id}`,
           supplier_id: payload.supplier_id ?? null,
           supplier_name: payload.supplier_name ?? null,
           invoice_number: payload.invoice_number ?? null,
@@ -533,7 +546,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         // flow with that draft instead of edit mode: edit mode intentionally
         // hides initial payment controls and would skip recording a payment.
         if (invoiceDraftKey) navigate(`/suppliers/invoices/new?resume=${encodeURIComponent(invoiceDraftKey)}`)
-        return
+        return true
       }
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload })
       const r = data.result
@@ -549,7 +562,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         setApplyStatus((prev) => ({ ...prev, [action.id]: 'ok' }))
         setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
         toast.success(msg)
-        return
+        return true
       }
 
       const errors = Array.isArray(r?.errors) ? r.errors : []
@@ -579,9 +592,13 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
         toast.success('Збережено')
       }
+      return true
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не вдалося застосувати')
+      return false
     } finally {
+      sendBusy.current = false
+      applyBusy.current = false
       setApplyingId(null)
     }
   }
@@ -613,23 +630,15 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
 
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const image = Array.from(e.clipboardData.items).find((item) => item.type.startsWith('image/'))?.getAsFile()
-    if (!image) return
+    if (!image || sending || applyingId) return
     e.preventDefault()
-    setRecognizingVin(true)
-    try {
-      const compressed = await fileToCompressedImage(image)
-      const { data } = await recognizeVinImage(compressed.dataUrl)
-      setRecognizedVin(data.vin)
-      toast.success(`VIN розпізнано: ${data.vin}`)
-    } catch {
-      await handleAttach(image)
-      toast.warning('VIN окремо не знайдено — фото додано до повідомлення')
-    } finally {
-      setRecognizingVin(false)
-    }
+    setRecognizingVin(!localInvoiceMode)
+    try { await handleAttach(image) }
+    finally { setRecognizingVin(false) }
   }
 
   const notConfigured = !loadingStatus && status && (!status.has_key || !status.enabled)
+  const unavailable = loadingStatus || !!statusError || !status || !!notConfigured
 
   return (
     <Layout title={invoiceOnly ? "Створення накладної з фото (AI)" : "Допомога АІ"}>
@@ -684,6 +693,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
               <button
                 type="button"
                 onClick={clearChat}
+                disabled={sending || !!applyingId || processingAttachments}
                 title="Очистити переписку"
                 className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
               >
@@ -693,6 +703,8 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
           </div>
         </div>
 
+        {statusError && <p role="alert" className="mb-3 text-sm text-red-700">{statusError} <button onClick={loadStatus} className="underline">Повторити</button></p>}
+        {processingAttachments && <p role="status" className="mb-2 text-xs text-gray-500">Готую вкладення…</p>}
         {notConfigured && (
           <Card className="mb-3 border-amber-200 bg-amber-50/60">
             <div className="flex items-start gap-3">
@@ -747,6 +759,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
                 {entry.actions?.map((action) => {
                   const state = applied[action.id]
                   const isOrder = action.tool === 'create_order'
+                  const supported = isDesktopRuntime() && (isOrder || action.tool === 'create_supply_invoice_bulk')
                   const isBulk = !isOrder && !!(action.items && action.columns)
                   return (
                     <Card key={action.id} className="w-full border-blue-100 bg-blue-50/40 space-y-2">
@@ -792,6 +805,8 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
                         <p className="text-xs font-medium text-gray-400 flex items-center gap-1">
                           <X size={14} /> Відхилено
                         </p>
+                      ) : !supported ? (
+                        <p className="text-xs text-amber-700">Ця дія недоступна для запису. Для товарів відкрийте звичайну накладну або режим «Фото накладної» в локальній програмі.</p>
                       ) : (
                         <div className="space-y-2">
                           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-600 bg-amber-50 rounded-md px-2 py-1">
@@ -799,11 +814,11 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
                           </div>
                           <div className="flex gap-2">
                             {isOrder ? (
-                              <Button type="button" onClick={() => setOrderModalAction(action)} className="text-xs">
+                              <Button disabled={!!applyingId || sending} type="button" onClick={() => setOrderModalAction(action)} className="text-xs">
                                 <Eye size={14} className="mr-1" /> Перевірити та створити замовлення
                               </Button>
                             ) : isBulk ? (
-                              <Button type="button" onClick={() => setModalAction(action)} className="text-xs">
+                              <Button disabled={!!applyingId || sending} type="button" onClick={() => setModalAction(action)} className="text-xs">
                                 <Eye size={14} className="mr-1" /> Переглянути та підтвердити{action.count ? ` (${action.count})` : ''}
                               </Button>
                             ) : (
@@ -811,7 +826,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
                                 <Check size={14} className="mr-1" /> Застосувати
                               </Button>
                             )}
-                            <Button type="button" variant="secondary" onClick={() => setApplied((p) => ({ ...p, [action.id]: 'rejected' }))} className="text-xs">
+                            <Button disabled={!!applyingId || sending} type="button" variant="secondary" onClick={() => setApplied((p) => ({ ...p, [action.id]: 'rejected' }))} className="text-xs">
                               Відхилити
                             </Button>
                           </div>
@@ -893,6 +908,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
             {isDesktopRuntime() && !invoiceOnly && (
               <button
                 type="button"
+                disabled={sending || !!applyingId || processingAttachments}
                 onClick={() => setLocalInvoiceMode((value) => !value)}
                 className={`px-2 py-1.5 rounded-lg text-[11px] font-medium border transition-colors shrink-0 ${localInvoiceMode ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
                 title="Фото накладної постачальника: створити локальний чернетковий прихід"
@@ -903,7 +919,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              disabled={!!notConfigured}
+              disabled={unavailable || sending || !!applyingId}
               className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 disabled:opacity-40 shrink-0"
               title="Прикріпити фото замовлення / Excel / CSV / текст"
               aria-label="Прикріпити фото замовлення, Excel, CSV або текстовий файл"
@@ -915,7 +931,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
-              disabled={!!notConfigured}
+              disabled={unavailable}
               rows={1}
               placeholder={notConfigured ? 'Спочатку налаштуйте ключ Gemini…' : recognizingVin ? 'Розпізнаємо VIN…' : 'Напишіть завдання або вставте фото VIN з буфера…'}
               className="flex-1 resize-none max-h-40 py-2 px-1 text-sm focus:outline-none disabled:bg-transparent"
@@ -923,7 +939,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
             <Button
               type="button"
               onClick={send}
-              disabled={sending || !!notConfigured || (!input.trim() && !attachment && imageAttachments.length === 0)}
+              disabled={sending || processingAttachments || !!applyingId || unavailable || (!input.trim() && !attachment && imageAttachments.length === 0)}
               className="shrink-0"
               aria-label="Надіслати повідомлення"
               title="Надіслати повідомлення"
@@ -937,7 +953,7 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
       {/* Вікно попереднього перегляду масової дії з підтвердженням унизу */}
       <Modal
         open={!!modalAction}
-        onClose={() => setModalAction(null)}
+        onClose={() => { if (!applyBusy.current) setModalAction(null) }}
         title={modalAction?.title ?? 'Попередній перегляд'}
         size="xl"
       >
@@ -957,11 +973,11 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
                 type="button"
                 className="flex-1"
                 loading={applyingId === modalAction.id}
-                onClick={async () => { await applyAction(modalAction); setModalAction(null) }}
+                onClick={async () => { if (await applyAction(modalAction)) setModalAction(null) }}
               >
                 <Check size={16} className="mr-1" /> Підтвердити та зберегти{modalAction.count ? ` (${modalAction.count})` : ''}
               </Button>
-              <Button type="button" variant="secondary" onClick={() => setModalAction(null)}>
+              <Button type="button" variant="secondary" disabled={!!applyingId} onClick={() => setModalAction(null)}>
                 Скасувати
               </Button>
             </div>
@@ -991,10 +1007,9 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
         <OrderConfirmModal
           action={orderModalAction}
           applying={applyingId === orderModalAction.id}
-          onClose={() => setOrderModalAction(null)}
+          onClose={() => { if (!applyBusy.current) setOrderModalAction(null) }}
           onConfirm={async (editedPayload) => {
-            await applyAction(orderModalAction, editedPayload)
-            setOrderModalAction(null)
+            if (await applyAction(orderModalAction, editedPayload)) setOrderModalAction(null)
           }}
         />
       )}

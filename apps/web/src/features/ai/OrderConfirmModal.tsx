@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { AlertTriangle, Check, Plus, Trash2 } from 'lucide-react'
 import { Button, Modal } from '@/components/ui'
 import type { AiPendingAction } from './aiApi'
+import { aiOrderPayload } from './localAiAction'
 
 // Редаговане підтвердження замовлення, розпізнаного ШІ з фото зошита.
 // Сумнівні поля (uncertain) підсвічуються бурштиновим — їх варто перевірити.
@@ -24,7 +25,6 @@ interface OrderDraft {
   vin: string
   plate: string
   comment: string
-  is_done: boolean
   items: OrderItemDraft[]
 }
 
@@ -39,7 +39,7 @@ const UNCERTAIN_LABELS: Record<string, string> = {
   status: 'статус',
 }
 
-function toDraft(payload: Record<string, any>): OrderDraft {
+export function toDraft(payload: Record<string, any>): OrderDraft {
   const items: any[] = Array.isArray(payload.items) ? payload.items : []
   return {
     customer_name: String(payload.customer_name ?? ''),
@@ -50,44 +50,39 @@ function toDraft(payload: Record<string, any>): OrderDraft {
     vin: String(payload.vin ?? ''),
     plate: String(payload.plate ?? ''),
     comment: String(payload.comment ?? ''),
-    is_done: !!payload.is_done,
     items: items.map((it) => ({
       name: String(it.name ?? ''),
       part_number: String(it.part_number ?? ''),
-      qty: it.qty != null ? String(it.qty) : '1',
+      qty: it.qty != null ? String(it.qty) : '',
       sell_price_uah: it.sell_price_uah != null ? String(it.sell_price_uah) : '',
       buy_price_uah: it.buy_price_uah != null ? String(it.buy_price_uah) : '',
-      arrived: !!it.arrived,
+      arrived: false,
     })),
   }
 }
 
-function toPayload(d: OrderDraft): Record<string, any> {
-  const num = (s: string): number | undefined => {
-    const n = Number(String(s).replace(',', '.'))
-    return Number.isFinite(n) && s.trim() !== '' ? n : undefined
-  }
-  return {
+export function toPayload(d: OrderDraft): Record<string, any> {
+  const payload = {
     customer_name: d.customer_name.trim() || undefined,
     customer_phone: d.customer_phone.trim() || undefined,
     car_make: d.car_make.trim() || undefined,
     car_model: d.car_model.trim() || undefined,
-    car_year: num(d.car_year) ? Math.round(num(d.car_year)!) : undefined,
+    car_year: d.car_year.trim() || undefined,
     vin: d.vin.trim() || undefined,
     plate: d.plate.trim() || undefined,
     comment: d.comment.trim() || undefined,
-    is_done: d.is_done,
     items: d.items
-      .filter((it) => it.name.trim())
       .map((it) => ({
         name: it.name.trim(),
         part_number: it.part_number.trim() || undefined,
-        qty: num(it.qty) ?? 1,
-        sell_price_uah: num(it.sell_price_uah),
-        buy_price_uah: num(it.buy_price_uah),
+        qty: it.qty.trim(),
+        sell_price_uah: it.sell_price_uah.trim(),
+        buy_price_uah: it.buy_price_uah.trim(),
         arrived: it.arrived,
       })),
   }
+  aiOrderPayload(payload)
+  return payload
 }
 
 interface Props {
@@ -99,6 +94,7 @@ interface Props {
 
 export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Props) {
   const [draft, setDraft] = useState<OrderDraft>(() => toDraft(action.payload))
+  const [validationError, setValidationError] = useState('')
   const uncertain = useMemo(() => new Set(action.uncertain ?? []), [action.uncertain])
 
   const warn = (key: string) =>
@@ -128,14 +124,14 @@ export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Prop
     return s + price * qty
   }, 0)
 
-  const canSave = draft.items.some((it) => it.name.trim())
+  const canSave = draft.items.some((it) => it.name.trim()) || !!draft.vin.trim()
 
   const inputCls = 'w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent'
   const cellCls = 'w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent'
 
   return (
-    <Modal open onClose={onClose} title={action.title} size="xl">
-      <div className="space-y-4">
+    <Modal open onClose={() => { if (!applying) onClose() }} title={action.title} size="xl">
+      <fieldset disabled={applying} className="space-y-4">
         {uncertain.size > 0 && (
           <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -266,14 +262,7 @@ export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Prop
             rows={2}
             className={`${inputCls} resize-none`}
           />
-          <label className={`flex items-center gap-2 text-sm rounded-lg border px-3 py-2.5 cursor-pointer select-none ${
-            draft.is_done ? 'border-green-300 bg-green-50 text-green-800' : 'border-gray-200 text-gray-600'
-          } ${warn('status')}`}>
-            <input type="checkbox" checked={draft.is_done}
-              onChange={(e) => set('is_done', e.target.checked)}
-              className="w-4 h-4 accent-green-600" />
-            Замовлення виконане (перекреслене в зошиті) — створити одразу в архіві як оплачене
-          </label>
+          <p className="text-sm text-gray-500">Буде створено локальну чернетку замовлення. Оплата та видача — тільки через касу.</p>
         </div>
 
         {/* Підсумок + кнопки */}
@@ -282,14 +271,15 @@ export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Prop
             Разом: <b className="text-gray-900">{totalUah.toFixed(2)} грн</b>
           </p>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" onClick={onClose}>Скасувати</Button>
+            <Button type="button" variant="secondary" disabled={applying} onClick={onClose}>Скасувати</Button>
             <Button type="button" loading={applying} disabled={!canSave}
-              onClick={() => onConfirm(toPayload(draft))}>
+              onClick={() => { try { const payload = toPayload(draft); setValidationError(''); onConfirm(payload) } catch (e) { setValidationError(e instanceof Error ? e.message : 'Перевірте розпізнані дані') } }}>
               <Check size={16} className="mr-1" /> Створити замовлення
             </Button>
           </div>
         </div>
-      </div>
+        {validationError && <p role="alert" className="text-sm text-red-700">{validationError}</p>}
+      </fieldset>
     </Modal>
   )
 }

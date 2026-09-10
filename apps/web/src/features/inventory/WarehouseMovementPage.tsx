@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { Search, Package, MapPin, Plus, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { productApi } from '@/features/products/productApi'
 import { warehouseApi } from './warehouseApi'
@@ -42,17 +43,23 @@ export default function WarehouseMovementPage() {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const busy = useRef(false)
+  const requests = useLatestRequest(page)
+  const searchRequests = useLatestRequest([searchQuery, showForm, selectedProduct?.id])
 
   const fetchMovements = useCallback(async () => {
+    const isCurrent = requests.begin()
     setLoading(true)
+    setMovements([])
     try {
       const result = await warehouseApi.listMovements({ page, per_page: 20 })
+      if (!isCurrent()) return
       setMovements(result.data ?? [])
       setTotalPages(result.pagination?.total_pages ?? 1)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити переміщення')
+      if (isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити переміщення')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page])
 
@@ -60,10 +67,13 @@ export default function WarehouseMovementPage() {
 
   // Пошук завжди читає той самий локальний каталог, що каса та інвентаризація.
   useEffect(() => {
-    if (searchQuery.trim().length < 2) { setSearchResults([]); return }
+    const isCurrent = searchRequests.begin()
+    setSearchResults([])
+    if (!showForm || selectedProduct || searchQuery.trim().length < 2) return
     const timer = setTimeout(async () => {
       try {
         const result = await productApi.list({ search: searchQuery.trim(), per_page: 8 })
+        if (!isCurrent()) return
         setSearchResults(result.data.map((product) => ({
           id: product.id,
           name: product.name,
@@ -72,14 +82,15 @@ export default function WarehouseMovementPage() {
           qty_on_hand: product.qty_on_hand ?? 0,
         })))
       } catch {
-        setSearchResults([])
+        if (isCurrent()) setSearchResults([])
       }
     }, 180)
     return () => clearTimeout(timer)
-  }, [searchQuery])
+  }, [searchQuery, showForm, selectedProduct, searchRequests])
 
   const handleSubmit = async () => {
-    if (!selectedProduct || !toBin.trim() || !qty) return
+    if (busy.current || !selectedProduct || !toBin.trim() || !qty) return
+    busy.current = true
     setSubmitting(true)
     setFormError(null)
     try {
@@ -102,6 +113,7 @@ export default function WarehouseMovementPage() {
     } catch (e: any) {
       setFormError(e.message)
     } finally {
+      busy.current = false
       setSubmitting(false)
     }
   }
@@ -114,7 +126,7 @@ export default function WarehouseMovementPage() {
       actions={<Button icon={<Plus size={16} />} onClick={() => setShowForm(true)}>Нове переміщення</Button>}
     >
       <p className="mb-4 text-sm text-gray-500">
-        Змінює місце зберігання товару на складі. Кількість товару не списується.
+        Змінює комірку всього залишку товару. Кількість не списується; облік одного товару в кількох комірках поки не підтримується.
       </p>
 
       <Card padding="none">
@@ -168,8 +180,8 @@ export default function WarehouseMovementPage() {
         </div>
       )}
 
-      <Modal open={showForm} onClose={() => setShowForm(false)} title="Нове переміщення" size="sm">
-        <div className="space-y-4">
+      <Modal open={showForm} onClose={() => { if (!busy.current) setShowForm(false) }} title="Нове переміщення" size="sm">
+        <fieldset disabled={submitting} className="space-y-4">
           {!selectedProduct ? (
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">Товар *</label>
@@ -188,7 +200,7 @@ export default function WarehouseMovementPage() {
                     <button
                       key={p.id}
                       type="button"
-                      onClick={() => { setSelectedProduct(p); setSearchResults([]) }}
+                      onClick={() => { setSelectedProduct(p); setQty(String(p.qty_on_hand)); setSearchResults([]); setFormError(null) }}
                       className="flex w-full items-center justify-between border-b border-gray-100 px-3 py-2.5 text-left text-sm last:border-0 hover:bg-yellow-50"
                     >
                       <span>{p.name} {p.sku && <span className="text-gray-400">({p.sku})</span>}</span>
@@ -218,8 +230,8 @@ export default function WarehouseMovementPage() {
               <input value={toBin} onChange={(e) => setToBin(e.target.value)} placeholder="Напр. A-5" className={inputClass} />
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">Кількість *</label>
-              <input value={qty} onChange={(e) => setQty(e.target.value)} type="number" min="0.001" step="any" placeholder="1" className={inputClass} />
+              <label className="mb-1 block text-sm font-medium text-gray-700">Увесь залишок</label>
+              <input value={qty} readOnly type="number" className={`${inputClass} bg-gray-50`} />
             </div>
           </div>
 
@@ -236,7 +248,7 @@ export default function WarehouseMovementPage() {
             </Button>
             <Button variant="secondary" onClick={() => setShowForm(false)}>Скасувати</Button>
           </div>
-        </div>
+        </fieldset>
       </Modal>
     </Layout>
   )

@@ -41,7 +41,7 @@ export function Table<T>({ columns, data, keyFn, loading, empty }: Props<T>) {
             data.map((row) => (
               <tr key={keyFn(row)} className="hover:bg-gray-50 transition-colors">
                 {columns.map((col) => (
-                  <td key={col.key} className={`px-4 py-3 ${col.className ?? ''}`}>
+                  <td key={col.key} data-label={col.header} className={`px-4 py-3 ${col.className ?? ''}`}>
                     {col.render(row)}
                   </td>
                 ))}

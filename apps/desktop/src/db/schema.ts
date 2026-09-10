@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 21
+export const LOCAL_SCHEMA_VERSION = 25
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1397,6 +1397,7 @@ export interface LocalMigration {
 }
 
 export const LOCAL_MIGRATIONS: LocalMigration[] = [
+  // Existing migrations remain unchanged; the new table is added after them below.
   { version: 1, sql: MIGRATION_001_CORE_SQL },
   { version: 2, sql: MIGRATION_002_BUSINESS_SQL },
   { version: 3, sql: MIGRATION_003_SUPPLY_INVOICES_SQL },
@@ -1432,5 +1433,34 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
     CREATE INDEX IF NOT EXISTS idx_products_active_search
       ON products(tenant_id, is_active, search_text, sku, barcode, name, id)
       WHERE deleted_at IS NULL;
+  ` },
+  { version: 25, sql: `
+    CREATE TABLE IF NOT EXISTS internal_consumptions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL REFERENCES staff_users(id) ON DELETE RESTRICT,
+      employee_name TEXT NOT NULL,
+      writeoff_id TEXT NOT NULL UNIQUE REFERENCES writeoffs(id) ON DELETE RESTRICT,
+      items_json TEXT NOT NULL,
+      total_cost INTEGER NOT NULL CHECK (total_cost >= 0),
+      note TEXT,
+      business_date TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_internal_consumptions_month
+      ON internal_consumptions(tenant_id, business_date, id);
+    CREATE TABLE IF NOT EXISTS auto_purchase_rules (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+      supplier_id TEXT REFERENCES suppliers(id) ON DELETE RESTRICT,
+      min_qty NUMERIC NOT NULL CHECK (min_qty > 0),
+      max_qty NUMERIC NOT NULL CHECK (max_qty >= min_qty),
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_purchase_product
+      ON auto_purchase_rules(tenant_id, product_id) WHERE deleted_at IS NULL;
   ` },
 ]

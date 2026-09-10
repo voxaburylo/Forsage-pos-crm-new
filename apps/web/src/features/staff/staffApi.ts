@@ -1,5 +1,6 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { useAuthStore } from '@/stores/authStore'
 
 export interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
@@ -86,12 +87,16 @@ export const staffApi = {
   },
   async createSalary(body: any): Promise<{ data: SalaryPayment }> {
     const local = localStaff()?.createSalary
-    if (local) return { data: await local(body) as SalaryPayment }
+    if (local) return { data: await durableLocalRequest('salary:' + useAuthStore.getState().session?.user?.id, body, operation_id => local({ ...body, operation_id })) as SalaryPayment }
     return api.post<{ data: SalaryPayment }>('/api/v1/salary', body)
   },
   async dailyPayout(body: DailyPayoutInput): Promise<{ data: { amount: number; fund_source?: SalaryFundSource } }> {
     const local = localStaff()?.dailyPayout
-    if (local) return { data: await local({ ...body, user_id: useAuthStore.getState().session?.user?.id }) as { amount: number; fund_source?: SalaryFundSource } }
+    if (local) {
+      const user_id = useAuthStore.getState().session?.user?.id
+      const payload = { ...body, user_id }
+      return { data: await durableLocalRequest('daily-salary:' + user_id, payload, operation_id => local({ ...payload, operation_id })) as { amount: number; fund_source?: SalaryFundSource } }
+    }
     return api.post<{ data: { amount: number; fund_source?: SalaryFundSource } }>('/api/v1/salary/daily-payout', body)
   },
   async deleteSalary(id: string): Promise<void> {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { hashSecret, secretHashNeedsUpgrade, verifySecret } from '../security/secretHash'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
+import { idempotentMutation } from './idempotentMutation'
 
 type SalaryType = 'salary' | 'bonus' | 'advance' | 'penalty'
 type SalaryMethod = 'cash' | 'card' | 'transfer'
@@ -647,6 +648,7 @@ export class LocalStaffRepository {
     return { amount, remaining: Math.max(0, pending - amount) }
   }
   createSalary(input: {
+    operation_id?: string
     tenant_id?: string
     employee_id: string
     employee_name?: string
@@ -659,11 +661,12 @@ export class LocalStaffRepository {
     work_date?: string
     user_id?: string | null
   }): any {
+    if (input.operation_id) return idempotentMutation(this.db, 'salary:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input, () => this.createSalary({ ...input, operation_id: undefined }))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const employee = this.requireUser(input.employee_id, tenantId)
     if (employee.role === 'owner') throw new Error('Власник не входить до зарплатної відомості працівників')
     const amount = money(input.amount)
-    if (amount <= 0) throw new Error('Вкажіть коректну суму')
+    if (!Number.isSafeInteger(input.amount) || amount <= 0) throw new Error('Вкажіть коректну суму')
     const timestamp = nowIso()
     return this.db.transaction(() => this.insertSalary({
       tenantId,
@@ -683,6 +686,7 @@ export class LocalStaffRepository {
   }
 
   dailyPayout(input: {
+    operation_id?: string
     tenant_id?: string
     employee_id: string
     employee_name?: string
@@ -692,6 +696,8 @@ export class LocalStaffRepository {
     work_date: string
     user_id?: string | null
   }): { payment: any; amount: number; earned: number; previously_paid: number; penalty: number } {
+    if (input.operation_id) return idempotentMutation(this.db, 'daily-salary:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input,
+      () => this.dailyPayout({ ...input, operation_id: undefined }))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const employee = this.requireUser(input.employee_id, tenantId)
     if (employee.role === 'owner') throw new Error('Власник не входить до зарплатної відомості працівників')

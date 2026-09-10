@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { businessDateKey } from '@/lib/businessDate'
 import { useNavigate } from 'react-router-dom'
 import { Plus, ClipboardList, Play, Trash2 } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
@@ -52,7 +54,7 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [name, setName] = useState('')
-  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [date, setDate] = useState(() => businessDateKey())
   const [managerId, setManagerId] = useState('')
   const [creating, setCreating] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -60,21 +62,24 @@ export default function InventoryPage() {
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
 
+  const requests = useLatestRequest(page)
   async function load() {
+    const isCurrent = requests.begin()
     setLoading(true)
     try {
       const [sessRes, usersRes] = await Promise.all([
         inventoryApi.listSessions({ page, per_page: 20 }, { silent: true, timeoutMs: INVENTORY_LIST_TIMEOUT_MS }),
         adminApi.listUsers().catch(() => ({ data: [] })),
       ])
+      if (!isCurrent()) return
       setSessions(sessRes.data)
       setTotal(sessRes.pagination.total)
       setTotalPages(sessRes.pagination.total_pages)
       setUsers(usersRes.data ?? [])
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Помилка завантаження')
+      if (isCurrent()) toast.error(error instanceof Error ? error.message : 'Помилка завантаження')
     }
-    finally { setLoading(false) }
+    finally { if (isCurrent()) setLoading(false) }
   }
 
   useEffect(() => {

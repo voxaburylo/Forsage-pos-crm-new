@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodePrintSvg, renderBarcodeSvg } from '@/lib/barcodeSvg'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { offlineProductMatchesQuery } from '@/lib/offlineDB'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { loadTsplSettings, saveTsplSettings, pickLabelPrinter, type TsplLabelPrintSettings } from './tsplPrintSettings'
 const CompatibleRnd = Rnd as unknown as ComponentType<RndProps>
@@ -19,39 +20,8 @@ const CompatibleRnd = Rnd as unknown as ComponentType<RndProps>
 
 type Tab = 'design' | 'print'
 
-function normalizeLabelSearch(value: unknown): string {
-  return String(value ?? '')
-    .toLocaleLowerCase('uk-UA')
-    .replace(/ё/g, 'е')
-    .replace(/ґ/g, 'г')
-    .replace(/ї/g, 'и')
-    .replace(/і/g, 'и')
-    .replace(/є/g, 'е')
-    .replace(/[^a-zа-я0-9]+/gi, ' ')
-    .trim()
-}
-
-function labelSearchTokens(query: string): string[] {
-  const variants = new Set<string>()
-  const normalized = normalizeLabelSearch(query)
-  if (normalized) variants.add(normalized)
-  for (const [pattern, replacement] of [
-    [/\bbooster\b/gi, 'бустер'],
-    [/\bboost\b/gi, 'бустер'],
-    [/\bwires?\b/gi, 'провода'],
-    [/бустер/gi, 'booster'],
-    [/провод/gi, 'wire'],
-  ] as Array<[RegExp, string]>) {
-    const variant = normalizeLabelSearch(query.replace(pattern, replacement))
-    if (variant) variants.add(variant)
-  }
-  return [...new Set([...variants].flatMap((variant) => variant.split(/\s+/)).filter((token) => token.length >= 2))]
-}
-
-function labelProductMatchesQuery(item: Pick<Product, 'name' | 'sku' | 'barcode'>, query: string): boolean {
-  const text = normalizeLabelSearch([item.name, item.sku, item.barcode].filter(Boolean).join(' '))
-  const tokens = labelSearchTokens(query)
-  return tokens.length === 0 || tokens.every((token) => text.includes(token))
+export function labelProductMatchesQuery(item: Pick<Product, 'name' | 'sku' | 'barcode'>, query: string): boolean {
+  return offlineProductMatchesQuery(item, query)
 }
 export interface LabelSettings {
   // Час останнього збереження спільного макета. Потрібен, щоб стара

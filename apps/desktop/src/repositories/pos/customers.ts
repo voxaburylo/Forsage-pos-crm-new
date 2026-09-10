@@ -10,6 +10,8 @@ import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import { money, nowIso } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosShifts } from './shifts'
+import { customerPhoneKey, validateCustomerChanges } from './customerValidation'
+import { idempotentMutation } from '../idempotentMutation'
 
 export class LocalPosCustomers extends LocalPosShifts {
   listDebtors(tenantId = DEFAULT_TENANT_ID, limit = 200): Array<{
@@ -41,28 +43,26 @@ export class LocalPosCustomers extends LocalPosShifts {
     const limit = Math.max(1, Math.min(200, input.limit ?? 50))
     const rawSearch = String(input.search ?? '').trim()
     const search = rawSearch.toLocaleLowerCase('uk-UA')
-    const titleSearch = search.replace(/(^|\s)\S/g, (char) => char.toLocaleUpperCase('uk-UA'))
-    const upperSearch = search.toLocaleUpperCase('uk-UA')
     const digits = search.replace(/\D/g, '')
     const params: any[] = [tenantId]
     let where = 'tenant_id = ? AND deleted_at IS NULL'
     if (input.has_debt) where += ' AND debt_balance > 0'
     if (search) {
       where += ` AND (
-        lower(COALESCE(full_name, '')) LIKE ?
-        OR COALESCE(phone, '') LIKE ?
-        OR lower(COALESCE(email, '')) LIKE ?
-        OR lower(COALESCE(card_barcode, '')) LIKE ?
+        forsage_lower(COALESCE(full_name, '')) LIKE ?
+        OR forsage_phone(phone) LIKE ?
+        OR forsage_lower(COALESCE(email, '')) LIKE ?
+        OR forsage_lower(COALESCE(card_barcode, '')) LIKE ?
       )`
       const q = `%${search}%`
-      params.push(q, `%${digits || search}%`, q, q)
+      params.push(q, `%${digits ? customerPhoneKey(digits) : search}%`, q, q)
     }
     params.push(limit)
     return this.db.prepare(`
       SELECT id, full_name, phone, debt_balance, COALESCE(deposit_balance, 0) AS deposit_balance
       FROM customers
       WHERE ${where}
-      ORDER BY ${input.has_debt ? 'debt_balance DESC,' : ''} updated_at DESC
+      ORDER BY ${input.has_debt ? 'debt_balance DESC,' : ''} updated_at DESC, id DESC
       LIMIT ?
     `).all(...params) as unknown as Array<{
       id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance: number
@@ -84,8 +84,6 @@ export class LocalPosCustomers extends LocalPosShifts {
     const offset = (page - 1) * perPage
     const rawSearch = String(input.search ?? '').trim()
     const search = rawSearch.toLocaleLowerCase('uk-UA')
-    const titleSearch = search.replace(/(^|\s)\S/g, (char) => char.toLocaleUpperCase('uk-UA'))
-    const upperSearch = search.toLocaleUpperCase('uk-UA')
     const digits = search.replace(/\D/g, '')
     const where = ['c.tenant_id = ?', 'c.deleted_at IS NULL']
     const params: any[] = [tenantId]
@@ -96,21 +94,19 @@ export class LocalPosCustomers extends LocalPosShifts {
     }
     if (search) {
       where.push(`(
-        COALESCE(c.full_name, '') LIKE ?
-        OR COALESCE(c.full_name, '') LIKE ?
-        OR COALESCE(c.full_name, '') LIKE ?
-        OR lower(COALESCE(c.email, '')) LIKE ?
-        OR COALESCE(c.phone, '') LIKE ?
-        OR lower(COALESCE(c.card_barcode, '')) LIKE ?
+        forsage_lower(COALESCE(c.full_name, '')) LIKE ?
+        OR forsage_lower(COALESCE(c.email, '')) LIKE ?
+        OR forsage_phone(c.phone) LIKE ?
+        OR forsage_lower(COALESCE(c.card_barcode, '')) LIKE ?
         OR EXISTS (
           SELECT 1 FROM customer_vehicles v
           WHERE v.customer_id = c.id AND v.tenant_id = c.tenant_id
             AND v.deleted_at IS NULL
-            AND lower(COALESCE(v.vin, '')) LIKE ?
+            AND forsage_lower(COALESCE(v.vin, '')) LIKE ?
         )
       )`)
       const q = `%${search}%`
-      params.push(`%${rawSearch}%`, `%${titleSearch}%`, `%${upperSearch}%`, q, `%${digits || search}%`, q, q)
+      params.push(q, q, `%${digits ? customerPhoneKey(digits) : search}%`, q, q)
     }
     const whereSql = where.join(' AND ')
     const totalRow = this.db.prepare(`SELECT COUNT(*) AS total FROM customers c WHERE ${whereSql}`)
@@ -129,7 +125,7 @@ export class LocalPosCustomers extends LocalPosShifts {
          WHERE v.customer_id = c.id AND v.tenant_id = c.tenant_id AND v.deleted_at IS NULL) AS car_count
       FROM customers c
       WHERE ${whereSql}
-      ORDER BY ${orderBy}
+      ORDER BY ${orderBy}, c.id DESC
       LIMIT ? OFFSET ?
     `).all(...params, perPage, offset) as any[]
     const total = Number(totalRow?.total ?? 0)
@@ -185,17 +181,18 @@ export class LocalPosCustomers extends LocalPosShifts {
   }
 
   saveCustomer(input: any, customerId?: string): { data: any; meta?: { reused: boolean; vehicle_added: boolean } } {
+    validateCustomerChanges(input)
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const timestamp = nowIso()
+    let timestamp = nowIso()
     const phone = String(input.phone ?? '').trim()
     if (!customerId && !phone) throw new Error("Телефон обов'язковий")
 
     if (!customerId) {
       const existing = this.db.prepare(`
         SELECT id FROM customers
-        WHERE tenant_id = ? AND deleted_at IS NULL AND phone = ?
+        WHERE tenant_id = ? AND deleted_at IS NULL AND forsage_phone(phone) = ?
         LIMIT 1
-      `).get(tenantId, phone) as { id: string } | undefined
+      `).get(tenantId, customerPhoneKey(phone)) as { id: string } | undefined
       if (existing) {
         const vehicleAdded = this.addCustomerVehicle(existing.id, tenantId, input.vehicle, timestamp)
         return { data: this.getCustomer(existing.id, tenantId), meta: { reused: true, vehicle_added: vehicleAdded } }
@@ -203,8 +200,17 @@ export class LocalPosCustomers extends LocalPosShifts {
     }
 
     const id = customerId ?? randomUUID()
+    if (customerId && input.phone !== undefined) {
+      const duplicate = this.db.prepare('SELECT id FROM customers WHERE tenant_id = ? AND deleted_at IS NULL AND id <> ? AND forsage_phone(phone) = ? LIMIT 1').get(tenantId, id, customerPhoneKey(input.phone))
+      if (duplicate) throw new Error('Клієнт із таким телефоном уже існує. Відкрийте його картку.')
+    }
+    if (input.card_barcode !== undefined) {
+      input = { ...input, card_barcode: String(input.card_barcode ?? '').replace(/\s/g, '') || null }
+      if (input.card_barcode && this.db.prepare('SELECT id FROM customers WHERE tenant_id = ? AND deleted_at IS NULL AND id <> ? AND card_barcode = ? LIMIT 1').get(tenantId, id, input.card_barcode)) {
+        throw new Error('Цей штрихкод уже належить іншому клієнту')
+      }
+    }
     if (customerId) {
-      const current = this.getCustomer(customerId, tenantId)
       const requestedBonus = input.bonus_balance !== undefined ? money(input.bonus_balance) : null
       if (requestedBonus !== null && requestedBonus < 0) throw new Error('Баланс бонусів не може бути від’ємним')
       const values: Record<string, any> = {
@@ -224,6 +230,10 @@ export class LocalPosCustomers extends LocalPosShifts {
       }
       const entries = Object.entries(values).filter(([, value]) => value !== undefined)
       return this.db.transaction(() => {
+        const latest = this.getCustomer(id, tenantId)
+        if (input.expected_updated_at && input.expected_updated_at !== latest.updated_at) throw new Error('Картку вже змінено. Оновіть дані перед збереженням — ваші правки ще не записані.')
+        if (input.expected_bonus_balance !== undefined && Number(input.expected_bonus_balance) !== Number(latest.bonus_balance ?? 0)) throw new Error('Бонусний баланс уже змінився. Оновіть картку перед коригуванням.')
+        timestamp = new Date(Math.max(Date.now(), (Date.parse(latest.updated_at) || 0) + 1)).toISOString()
         if (entries.length) {
           const sets = entries.map(([key]) => `${key} = ?`)
           this.db.prepare(`
@@ -237,10 +247,10 @@ export class LocalPosCustomers extends LocalPosShifts {
           ]))
           this.addOutbox(tenantId, 'customer', id, 'customer.updated', { id, ...syncPatch, updated_at: timestamp }, timestamp)
         }
-        if (requestedBonus !== null && requestedBonus !== Number(current.bonus_balance ?? 0)) {
-          const bonusAmount = requestedBonus - Number(current.bonus_balance ?? 0)
+        if (requestedBonus !== null && requestedBonus !== Number(latest.bonus_balance ?? 0)) {
+          const bonusAmount = requestedBonus - Number(latest.bonus_balance ?? 0)
           const transactionId = randomUUID()
-          const description = bonusAmount > 0 ? 'Ручне нарахування' : 'Ручне списання'
+          const description = String(input.bonus_description ?? '').trim() || (bonusAmount > 0 ? 'Ручне нарахування' : 'Ручне списання')
           this.db.prepare(`
             UPDATE customers
             SET bonus_balance = ?, dirty_at = ?, updated_at = ?
@@ -348,10 +358,11 @@ export class LocalPosCustomers extends LocalPosShifts {
     const next = {
       brand,
       model,
-      year: input.year !== undefined && input.year !== null && input.year !== '' ? Number(input.year) : existing?.year ?? null,
-      vin: String(input.vin ?? existing?.vin ?? '').trim().toUpperCase() || null,
+      year: input.year === undefined ? existing?.year ?? null : input.year === null || input.year === '' ? null : Number(input.year),
+      vin: String(input.vin === undefined ? existing?.vin ?? '' : input.vin ?? '').trim().toUpperCase() || null,
       notes: input.notes !== undefined ? (String(input.notes ?? '').trim() || null) : existing?.notes ?? null,
     }
+    if (next.year !== null && (!Number.isInteger(next.year) || next.year < 1900 || next.year > new Date().getFullYear() + 1)) throw new Error('Вкажіть коректний рік автомобіля')
     this.db.prepare(`
       INSERT INTO customer_vehicles (
         id, tenant_id, customer_id, brand, model, year, vin, notes,
@@ -409,6 +420,7 @@ export class LocalPosCustomers extends LocalPosShifts {
   }
 
   payDebt(input: {
+    operation_id?: string
     tenant_id?: string
     customer_id: string
     amount: number
@@ -417,13 +429,16 @@ export class LocalPosCustomers extends LocalPosShifts {
     user_id?: string | null
     notes?: string | null
   }): { data: any } {
+    if (input.operation_id) return idempotentMutation(this.db, 'customer-debt:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input, () => this.payDebt({ ...input, operation_id: undefined }))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    if (!Number.isSafeInteger(input.amount) || !['cash', 'card', 'transfer'].includes(input.method)) throw new Error('Некоректна сума або спосіб оплати')
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть коректну суму')
     if (input.method === 'cash' && !input.shift_id) {
       throw new Error('Для оплати готівкою потрібна відкрита касова зміна')
     }
     return this.db.transaction(() => {
+      this.assertCustomerCashShift(input, tenantId)
       const customer = this.getCustomerForMoney(input.customer_id, tenantId)
       if (customer.debt_balance <= 0) throw new Error('У клієнта немає боргу')
       if (amount > customer.debt_balance) throw new Error('Сума перевищує борг клієнта')
@@ -456,6 +471,7 @@ export class LocalPosCustomers extends LocalPosShifts {
   }
 
   addCustomerDeposit(input: {
+    operation_id?: string
     tenant_id?: string
     customer_id: string
     amount: number
@@ -464,13 +480,16 @@ export class LocalPosCustomers extends LocalPosShifts {
     user_id?: string | null
     notes?: string | null
   }): { data: { balance: number } } {
+    if (input.operation_id) return idempotentMutation(this.db, 'customer-deposit:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input, () => this.addCustomerDeposit({ ...input, operation_id: undefined }))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    if (!Number.isSafeInteger(input.amount) || !['cash', 'card', 'transfer'].includes(input.method)) throw new Error('Некоректна сума або спосіб оплати')
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть коректну суму')
     if (input.method === 'cash' && !input.shift_id) {
       throw new Error('Для поповнення готівкою потрібна відкрита касова зміна')
     }
     return this.db.transaction(() => {
+      this.assertCustomerCashShift(input, tenantId)
       const customer = this.getCustomerForMoney(input.customer_id, tenantId)
       const timestamp = nowIso()
       const balanceAfter = Number(customer.deposit_balance ?? 0) + amount
@@ -519,6 +538,7 @@ export class LocalPosCustomers extends LocalPosShifts {
     notes?: string | null
   }): { data: { balance: number; replayed: boolean } } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    if (!Number.isSafeInteger(input.amount) || !['cash', 'card', 'transfer'].includes(input.method)) throw new Error('Некоректна сума або спосіб видачі')
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть коректну суму видачі')
     if (input.method === 'cash' && !input.shift_id) {
@@ -527,18 +547,19 @@ export class LocalPosCustomers extends LocalPosShifts {
     const payoutId = input.payout_id ?? randomUUID()
     return this.db.transaction(() => {
       const existing = this.db.prepare(`
-        SELECT tenant_id, customer_id, amount, balance_after
+        SELECT tenant_id, customer_id, amount, balance_after, method, shift_id
         FROM customer_deposit_transactions
         WHERE id = ?
         LIMIT 1
-      `).get(payoutId) as { tenant_id: string; customer_id: string; amount: number; balance_after: number } | undefined
+      `).get(payoutId) as { tenant_id: string; customer_id: string; amount: number; balance_after: number; method: string; shift_id: string | null } | undefined
       if (existing) {
-        if (existing.tenant_id !== tenantId || existing.customer_id !== input.customer_id || Number(existing.amount) !== -amount) {
+        if (existing.tenant_id !== tenantId || existing.customer_id !== input.customer_id || Number(existing.amount) !== -amount || existing.method !== input.method || existing.shift_id !== (input.shift_id ?? null)) {
           throw new Error('Ідентифікатор виплати вже використано іншою операцією')
         }
         return { data: { balance: Number(existing.balance_after), replayed: true } }
       }
 
+      this.assertCustomerCashShift(input, tenantId)
       const customer = this.getCustomerForMoney(input.customer_id, tenantId)
       if (amount > Number(customer.deposit_balance ?? 0)) {
         throw new Error('Сума видачі перевищує кошти на рахунку клієнта')
@@ -595,6 +616,13 @@ export class LocalPosCustomers extends LocalPosShifts {
       )
       return { data: { balance: balanceAfter, replayed: false } }
     })
+  }
+
+  private assertCustomerCashShift(input: { method: string; shift_id?: string | null; user_id?: string | null }, tenantId: string): void {
+    if (input.method !== 'cash') return
+    const shift = this.db.prepare("SELECT cashier_id FROM shifts WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL").get(input.shift_id ?? '', tenantId) as { cashier_id: string } | undefined
+    if (!shift) throw new Error('Касова зміна не відкрита')
+    if (input.user_id && shift.cashier_id !== input.user_id) throw new Error('Операція доступна тільки у власній касовій зміні')
   }
 
   protected addCustomerVehicle(customerId: string, tenantId: string, vehicle: any, timestamp: string): boolean {

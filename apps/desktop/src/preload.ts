@@ -127,6 +127,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     dailyPayout: (input: unknown) => ipcRenderer.invoke('desktop:staff:daily-payout', input),
     deleteSalary: (id: string) => ipcRenderer.invoke('desktop:staff:delete-salary', id),
   },  warehouse: {
+    listConsumptions: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:list-consumptions', input),
+    createConsumption: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-consumption', input),
     listMovements: (input?: unknown) => ipcRenderer.invoke('desktop:warehouse:list-movements', input),
     createMovement: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-movement', input),
     listReserves: (tenantId?: string) => ipcRenderer.invoke('desktop:warehouse:list-reserves', tenantId),
@@ -135,6 +137,13 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listWriteoffs: (input?: unknown) => ipcRenderer.invoke('desktop:warehouse:list-writeoffs', input),
     getWriteoff: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:warehouse:get-writeoff', id, tenantId),
     createWriteoff: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-writeoff', input),
+  }, purchases: {
+    listRules: () => ipcRenderer.invoke('desktop:purchases:list-rules'),
+    createRule: (input: unknown) => ipcRenderer.invoke('desktop:purchases:create-rule', input),
+    deleteRule: (id: string) => ipcRenderer.invoke('desktop:purchases:delete-rule', id),
+    suggestions: () => ipcRenderer.invoke('desktop:purchases:suggestions'),
+    generateInvoices: (input: unknown) => ipcRenderer.invoke('desktop:purchases:generate-invoices', input),
+    supplierNeeds: () => ipcRenderer.invoke('desktop:purchases:supplier-needs'),
   },
   inventory: {
     scanOperationIds: true,

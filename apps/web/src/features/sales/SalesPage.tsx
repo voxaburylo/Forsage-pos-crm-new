@@ -8,7 +8,8 @@ import { Layout } from '@/components/Layout'
 import { Card, Table, Badge, SearchInput, Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
-import { getLocalSale, getLocalSales, type LocalSaleRecord } from '@/lib/offlineDB'
+import type { LocalSaleRecord } from '@/lib/offlineDB'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useAuthStore } from '@/stores/authStore'
 type SaleWithSync = Sale & {
   local_id?: string
@@ -39,62 +40,37 @@ export default function SalesPage() {
   const [detail, setDetail]   = useState<SaleWithSync | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
+  const requests = useLatestRequest([page, search, scopeKey])
+  const detailRequests = useLatestRequest(scopeKey)
   async function openDetail(id: string) {
+    const isCurrent = detailRequests.begin()
     setDetailLoading(true)
     setDetail(null)
-    const local = scopeKey ? await getLocalSale(id, scopeKey).catch(() => null) : null
-    if (local) {
-      setDetail(local as SaleWithSync)
-      setDetailLoading(false)
-    }
-    if (local && !local.server_id) return
     try {
-      const { data } = await saleApi.get(local?.server_id ?? id)
-      setDetail(data)
+      const { data } = await saleApi.get(id)
+      if (isCurrent()) setDetail(data)
     } catch (e) {
-      if (!local) toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чек')
-    } finally {
-      setDetailLoading(false)
-    }
+      if (isCurrent()) toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чек')
+    } finally { if (isCurrent()) setDetailLoading(false) }
   }
 
   const load = useCallback(async () => {
+    const isCurrent = requests.begin()
     setLoading(true)
-    const allLocal = scopeKey ? await getLocalSales(5000, scopeKey).catch(() => []) : []
-    const query = search.toLocaleLowerCase('uk-UA').trim()
-    const filteredLocal = allLocal.filter((sale) => !query
-      || sale.sale_number.toLocaleLowerCase('uk-UA').includes(query)
-      || String(sale.customer?.full_name ?? '').toLocaleLowerCase('uk-UA').includes(query)
-      || String(sale.customer?.phone ?? '').includes(query))
-    const localPage = filteredLocal.slice((page - 1) * 20, page * 20) as SaleWithSync[]
-    if (localPage.length) {
-      setSales(localPage)
-      setTotal(filteredLocal.length)
-      setPages(Math.max(1, Math.ceil(filteredLocal.length / 20)))
-      setLoading(false)
-    }
+    setSales([])
     try {
-      const params: Record<string, string | number> = { page, per_page: 20 }
-      if (search) params.search = search
-      const result = await saleApi.list(params)
-      const r = result as unknown as { data: Sale[]; pagination: { total: number; total_pages: number } }
-      const pending = filteredLocal.filter((sale) => !sale.server_id) as unknown as SaleWithSync[]
-      const serverIds = new Set((r.data ?? []).map((sale) => sale.id))
-      const pendingForPage = page === 1
-        ? pending.filter((sale) => !serverIds.has(sale.id)).slice(0, 20)
-        : []
-      const merged = [...pendingForPage, ...(r.data ?? [])].slice(0, 20)
-      setSales(merged)
-      setTotal((r.pagination?.total ?? 0) + pending.length)
-      setPages(Math.max(1, Math.ceil(((r.pagination?.total ?? 0) + pending.length) / 20)))
-    } catch {
-      if (!localPage.length) toast.error('Помилка завантаження продажів')
-    } finally {
-      setLoading(false)
-    }
-  }, [page, search, scopeKey])
+      const result = await saleApi.list({ page, per_page: 20, search: search || undefined })
+      if (!isCurrent()) return
+      const r = result as { data: Sale[]; pagination: { total: number; total_pages: number } }
+      setSales(r.data)
+      setTotal(r.pagination.total)
+      setPages(r.pagination.total_pages)
+    } catch (e) {
+      if (isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка завантаження продажів')
+    } finally { if (isCurrent()) setLoading(false) }
+  }, [page, search, scopeKey, requests])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { void load() }, [load])
   useEffect(() => { setPage(1) }, [search])
 
   const columns = [
@@ -223,7 +199,7 @@ export default function SalesPage() {
       {/* Картка продажу */}
       <Modal
         open={detailLoading || !!detail}
-        onClose={() => { setDetail(null); setDetailLoading(false) }}
+        onClose={() => { detailRequests.invalidate(); setDetail(null); setDetailLoading(false) }}
         title={detail ? `Чек #${detail.sale_number}` : 'Завантаження...'}
         size="md"
       >

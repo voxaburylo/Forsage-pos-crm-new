@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2, ArrowUp, Barcode } from 'lucide-react'
 import { customerApi } from './customerApi'
@@ -10,7 +10,8 @@ import { Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
-import { listCustomersOffline } from '@/lib/offlineDB'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { mergeCustomerPage } from './customerUi'
 
 const PER_PAGE = 50
 
@@ -20,8 +21,9 @@ export default function CustomersPage() {
   const offlineMode = useAuthStore((state) => state.offlineMode)
   const role = (session?.user.app_metadata?.role as string | undefined) ?? 'cashier'
   const scopeKey = session?.user.id ?? ''
-  const canManageCustomers = ['owner', 'admin', 'manager'].includes(role)
-  const canDeleteCustomers = ['owner', 'admin'].includes(role)
+  const writable = Boolean(desktopBridge())
+  const canManageCustomers = writable && ['owner', 'admin', 'manager'].includes(role)
+  const canDeleteCustomers = writable && ['owner', 'admin'].includes(role)
   const [sp] = useSearchParams()
 
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -62,7 +64,7 @@ export default function CustomersPage() {
   }
 
   useEffect(() => {
-    if (offlineMode) { setGroups([]); return }
+    if (offlineMode || desktopBridge()) { setGroups([]); setActiveGroup(null); return }
     customerGroupsApi.list().then((res) => {
       const seen = new Set<string>()
       const unique = (res.data ?? []).filter((g) => {
@@ -74,63 +76,50 @@ export default function CustomersPage() {
     }).catch(() => {})
   }, [offlineMode])
 
-  // Завантаження сторінки: reset=true — новий фільтр (замінюємо), інакше — дозавантаження (додаємо)
+  const requestRef = useRef(0)
+  const filterKey = JSON.stringify([search, hasDebt, activeGroup, scopeKey])
+  const currentFilter = useRef(filterKey)
+  useLayoutEffect(() => { currentFilter.current = filterKey }, [filterKey])
   const fetchPage = useCallback(async (pageToLoad: number, reset: boolean) => {
-    if (loadingRef.current) return
+    if (!reset && loadingRef.current) return
+    const request = ++requestRef.current
+    const active = () => request === requestRef.current && filterKey === currentFilter.current
     loadingRef.current = true
     if (reset) setLoading(true); else setLoadingMore(true)
-    const local = !activeGroup ? await listCustomersOffline({
-      search,
-      hasDebt,
-      page: pageToLoad,
-      perPage: PER_PAGE,
-      scopeKey,
-    }).catch(() => null) : null
-    if (local && (local.data.length > 0 || local.pagination.total > 0)) {
-      setTotal(local.pagination.total)
-      setHasMore(pageToLoad < local.pagination.total_pages)
-      setPage(pageToLoad)
-      setCustomers((prev) => reset ? local.data : [...prev, ...local.data.filter(
-        (candidate) => !prev.some((existing) => existing.id === candidate.id),
-      )])
-      if (reset) setLoading(false); else setLoadingMore(false)
-    }
     try {
+      // Desktop reads SQLite only, never a browser mirror or server fallback.
       const data = await customerApi.list({
-        search:   search || undefined,
-        has_debt: hasDebt ? 'true' : undefined,
-        sort:     hasDebt ? 'debt' : undefined,
-        group_id: activeGroup ?? undefined,
-        page:     pageToLoad,
-        per_page: PER_PAGE,
+        search: search || undefined, has_debt: hasDebt ? 'true' : undefined,
+        sort: hasDebt ? 'debt' : undefined, group_id: activeGroup ?? undefined,
+        page: pageToLoad, per_page: PER_PAGE,
       })
+      if (!active()) return
       setTotal(data.pagination.total)
       setHasMore(pageToLoad < data.pagination.total_pages)
       setPage(pageToLoad)
-      setCustomers((prev) => reset ? data.data : [
-        ...prev.filter((existing) => !data.data.some((candidate) => candidate.id === existing.id)),
-        ...data.data,
-      ])
-    } catch (e) {
-      if (!local?.data.length) toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
+      setCustomers((previous) => reset ? data.data : mergeCustomerPage(previous, data.data))
+    } catch (error) {
+      if (!active()) return
+      setHasMore(false)
+      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити клієнтів. Повторіть пошук.')
     } finally {
-      loadingRef.current = false
-      setLoading(false)
-      setLoadingMore(false)
+      if (request === requestRef.current) {
+        loadingRef.current = false
+        setLoading(false)
+        setLoadingMore(false)
+      }
     }
-  }, [search, hasDebt, activeGroup, scopeKey])
+  }, [search, hasDebt, activeGroup, filterKey])
 
   useEffect(() => {
-    const refreshFromLocalPull = () => { void fetchPage(1, true) }
-    window.addEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
-    return () => window.removeEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
-  }, [fetchPage])
-  // Скидання при зміні фільтрів/пошуку (з невеликим debounce для пошуку)
-  useEffect(() => {
     setSelectedIds(new Set())
-    const t = setTimeout(() => { fetchPage(1, true) }, 250)
-    return () => clearTimeout(t)
-  }, [search, hasDebt, activeGroup, fetchPage])
+    setCustomers([])
+    setHasMore(false)
+    setPage(1)
+    setLoading(true)
+    const timer = setTimeout(() => { void fetchPage(1, true) }, 250)
+    return () => { clearTimeout(timer); requestRef.current++; loadingRef.current = false }
+  }, [fetchPage])
 
   // Нескінченний скрол — довантажуємо, коли sentinel зʼявляється у видимій зоні
   useEffect(() => {
@@ -170,8 +159,8 @@ export default function CustomersPage() {
     }
     setSavingBarcode(true)
     try {
-      const { data } = await customerApi.update(customer.id, { card_barcode: value || null })
-      setCustomers((current) => current.map((item) => item.id === customer.id ? { ...item, card_barcode: data.card_barcode } : item))
+      const { data } = await customerApi.update(customer.id, { card_barcode: value || null, expected_updated_at: customer.updated_at })
+      setCustomers((current) => current.map((item) => item.id === customer.id ? data : item))
       setEditBarcodeId(null)
       toast.success(value ? 'Штрихкод картки збережено' : 'Штрихкод картки видалено')
     } catch (error) {
@@ -259,7 +248,7 @@ export default function CustomersPage() {
     <Layout
       title={`Клієнти${total ? ` (${total})` : ''}`}
       actions={
-        <Button icon={<Plus size={16} />} onClick={() => navigate('/customers/new')}>
+        writable && <Button icon={<Plus size={16} />} onClick={() => navigate('/customers/new')}>
           Новий клієнт
         </Button>
       }
@@ -353,7 +342,7 @@ export default function CustomersPage() {
                       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                         <span
                           className="font-semibold text-gray-900 text-sm break-words sm:truncate cursor-pointer hover:text-yellow-700"
-                          onClick={() => setQuickEditCustomer(c)}
+                          onClick={() => writable ? setQuickEditCustomer(c) : navigate('/customers/' + c.id)}
                         >
                           {c.full_name ?? <span className="text-gray-400 italic">Без імені</span>}
                         </span>
@@ -368,11 +357,15 @@ export default function CustomersPage() {
                         )}
                         {c.debt_balance > 0 && (
                           <span className="text-[10px] font-semibold text-red-500 bg-red-50 px-1.5 py-0.5 rounded">
-                            {formatMoney(c.debt_balance)}
+                            Борг: {formatMoney(c.debt_balance)}
                           </span>
                         )}
                       </div>
 
+                      {((c.deposit_balance ?? 0) > 0 || c.bonus_balance > 0) && <p className="mt-1 text-xs text-gray-600">
+                        {(c.deposit_balance ?? 0) > 0 && <span className="mr-3 text-emerald-700">Кошти: {formatMoney(c.deposit_balance!)}</span>}
+                        {c.bonus_balance > 0 && <span className="text-amber-700">Бонуси: {formatMoney(c.bonus_balance)}</span>}
+                      </p>}
                       {/* Рядок 2: телефон (якщо є) + теги */}
                       {(c.phone || (c.tags?.length ?? 0) > 0) && (
                         <div className="flex items-center flex-wrap gap-2 mt-0.5">
@@ -485,13 +478,7 @@ export default function CustomersPage() {
                           <Car size={14} />
                         </button>
                       )}
-                      {canManageCustomers && (
-                        <button onClick={() => setQuickEditCustomer(c)}
-                          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-                          title="Швидко змінити контакти">
-                          <Edit size={14} />
-                        </button>
-                      )}
+                      <button onClick={() => navigate('/customers/' + c.id)} className="rounded-lg px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50">Історія та розрахунки</button>
                       {c.phone && (
                         <button onClick={() => copyToClipboard(c.phone, `телефон ${c.full_name ?? c.phone}`)}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-yellow-50 text-gray-400 hover:text-yellow-600 transition-colors"
@@ -533,14 +520,14 @@ export default function CustomersPage() {
             <span className="hidden sm:inline">клієнтів обрано</span>
           </div>
           <div className="w-px h-6 bg-gray-200" />
-          <select value={bulkGroupId} onChange={(e) => setBulkGroupId(e.target.value)}
+          {groups.length > 0 && <><select value={bulkGroupId} onChange={(e) => setBulkGroupId(e.target.value)}
             className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400/50 max-w-[140px]">
             <option value="">➕ В групу...</option>
             {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
           </select>
           <Button size="sm" disabled={!bulkGroupId || bulkOperating} loading={bulkOperating} onClick={handleBulkAddToGroup}>
             Додати
-          </Button>
+          </Button></>}
           <div className="w-px h-6 bg-gray-200" />
           <button onClick={handleBulkExportCSV}
             className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-gray-900 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">

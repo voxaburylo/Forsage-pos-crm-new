@@ -19,6 +19,8 @@ import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDe
 import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
+import { canUseOrderCash, orderEditPath } from './orderUx'
+import { useAuthStore } from '@/stores/authStore'
 
 interface Payment {
   id: string
@@ -107,12 +109,13 @@ function itemStatusLabel(item: CustomerOrder['items'][number]): string {
 }
 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: string; icon: string }>> = {
-  pending:  [{ status: 'ordered', label: 'Замовити постачальнику', icon: '📥' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
+  pending:  [{ status: 'ordered', label: 'Замовлено постачальнику', icon: '📥' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
   ordered:  [{ status: 'arrived', label: 'Приїхало', icon: '📦' }, { status: 'canceled', label: 'Скасувати', icon: '❌' }],
   // Issuing stock is intentionally absent here: it must create a receipt in POS.
 }
 
 export default function OrderDetailPage() {
+  const canUseCash = useAuthStore((state) => canUseOrderCash(state.session?.user.app_metadata?.role))
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
 
@@ -205,7 +208,7 @@ export default function OrderDetailPage() {
   }
 
   async function handleCancel() {
-    if (!id || !order) return
+    if (!id || !order || canceling) return
     setCanceling(true)
     try {
       await orderApi.cancel(id, false, null, true, { silent: true })
@@ -296,8 +299,8 @@ export default function OrderDetailPage() {
       actions={
         <div className="flex gap-1.5 md:gap-2 items-center">
           {isDraft && (
-            <Button icon={<FilePen size={15} />} onClick={() => navigate('/quotes/' + id)}>
-              <span className="hidden sm:inline">Редагувати КП</span>
+            <Button icon={<FilePen size={15} />} onClick={() => navigate(orderEditPath(order))}>
+              <span>Редагувати чернетку</span>
             </Button>
           )}
           {canEdit && (
@@ -315,7 +318,7 @@ export default function OrderDetailPage() {
               </Button>
             </>
           )}
-          {canComplete && (
+          {canUseCash && canComplete && (
             <Button onClick={openOrderPaymentInPos} className="bg-green-600 hover:bg-green-700 text-white">
               {remaining > 0 ? <>💰<span className="hidden sm:inline">&nbsp;Оплата / видача в касі</span></> : <>📦<span className="hidden sm:inline">&nbsp;Видати товар</span></>}
             </Button>
@@ -566,7 +569,7 @@ export default function OrderDetailPage() {
           ) : (
             <div className="space-y-2.5">
               {order.items.map((item) => {
-                const actions = ITEM_STATUS_ACTIONS[item.item_status]
+                const actions = (ITEM_STATUS_ACTIONS[item.item_status] ?? []).filter((action) => !(item.source_type === 'warehouse' && action.status === 'ordered'))
                 return (
                   <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between bg-gray-50 rounded-xl p-4 text-sm gap-3 shadow-sm border border-gray-100/50">
                     <div className="flex-1 min-w-0">
@@ -610,7 +613,7 @@ export default function OrderDetailPage() {
         <Card>
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-800">Оплати</h3>
-            {!terminal && (
+            {!terminal && canUseCash && (
               <Button size="sm" variant="secondary" onClick={openOrderPaymentInPos}>
                 {canComplete && remaining <= 0 ? 'Видати товар через касу' : 'Оплата / видача через касу'}
               </Button>
@@ -721,7 +724,7 @@ export default function OrderDetailPage() {
       </div>
 
       {/* Модал скасування */}
-      <Modal open={cancelModal} onClose={() => setCancelModal(false)} title="Скасувати замовлення" size="sm">
+      <Modal open={cancelModal} onClose={() => { if (!canceling) setCancelModal(false) }} title="Скасувати замовлення" size="sm">
         {order && (
           <div className="space-y-4">
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
@@ -736,7 +739,7 @@ export default function OrderDetailPage() {
               <Button onClick={handleCancel} loading={canceling} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
                 Скасувати замовлення
               </Button>
-              <Button variant="secondary" onClick={() => setCancelModal(false)}>Назад</Button>
+              <Button variant="secondary" disabled={canceling} onClick={() => setCancelModal(false)}>Назад</Button>
             </div>
           </div>
         )}

@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
+import { durableLocalRequest } from '@/lib/durableLocalRequest'
 
 const READ_TIMEOUT_MS = 10_000
 const WRITE_TIMEOUT_MS = 20_000
@@ -60,7 +61,8 @@ export const posCustomerMoneyApi = {
   payDebt: async (customerId: string, body: { amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
     const local = localPos()
     if (local?.payDebt) {
-      const result = await local.payDebt({ ...body, customer_id: customerId, user_id: userId() })
+      const payload = { ...body, customer_id: customerId, user_id: userId() }
+      const result = await durableLocalRequest('customer-debt:' + userId(), payload, operation_id => local.payDebt!({ ...payload, operation_id }))
       requestDesktopSync()
       return result
     }
@@ -73,7 +75,8 @@ export const posCustomerMoneyApi = {
   addDeposit: async (customerId: string, body: { amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
     const local = localPos()
     if (local?.addCustomerDeposit) {
-      const result = await local.addCustomerDeposit({ ...body, customer_id: customerId, user_id: userId() })
+      const payload = { ...body, customer_id: customerId, user_id: userId() }
+      const result = await durableLocalRequest('customer-deposit:' + userId(), payload, operation_id => local.addCustomerDeposit!({ ...payload, operation_id }))
       requestDesktopSync()
       return result
     }
@@ -84,14 +87,14 @@ export const posCustomerMoneyApi = {
   },
 
   payOutDeposit: async (customerId: string, body: { payout_id?: string; amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
-    const payload = { ...body, payout_id: body.payout_id ?? crypto.randomUUID() }
     const local = localPos()
     if (local?.payOutCustomerDeposit) {
-      const result = await local.payOutCustomerDeposit({ ...payload, customer_id: customerId, user_id: userId() })
+      const payload = { ...body, customer_id: customerId, user_id: userId() }
+      const result = await durableLocalRequest('customer-payout:' + userId(), payload, payout_id => local.payOutCustomerDeposit!({ ...payload, payout_id: body.payout_id ?? payout_id }))
       requestDesktopSync()
       return result
     }
-    return api.post<{ data: { balance: number; replayed: boolean } }>(`/api/v1/customers/${customerId}/deposit/payout`, payload, undefined, {
+    return api.post<{ data: { balance: number; replayed: boolean } }>(`/api/v1/customers/${customerId}/deposit/payout`, { ...body, payout_id: body.payout_id ?? crypto.randomUUID() }, undefined, {
       silent: opts.silent ?? true,
       timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS,
     })

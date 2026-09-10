@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Truck, PackageCheck, XCircle } from 'lucide-react'
+import { Truck } from 'lucide-react'
 import { Layout } from '@/components/Layout'
-import { Card, Button, Badge } from '@/components/ui'
+import { Card, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { api } from '@/lib/api'
+import { purchaseApi } from '@/features/autoPurchase/purchaseApi'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { formatDate } from '@/lib/utils'
 
 interface POItem {
@@ -15,6 +16,7 @@ interface POItem {
 }
 
 interface SupplierPO {
+  order_id: string
   id: string
   po_number: string
   status: 'draft' | 'ordered' | 'received' | 'cancelled'
@@ -34,33 +36,23 @@ const STATUS_CONFIG: Record<SupplierPO['status'], { label: string; color: 'gray'
 export default function SupplierPOsPage() {
   const [pos, setPos] = useState<SupplierPO[]>([])
   const [filter, setFilter] = useState<'active' | 'all'>('active')
-  const [actionId, setActionId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const requests = useLatestRequest('supplier-needs')
 
   async function load() {
+    const isCurrent = requests.begin()
+    setLoading(true)
+    setLoadError('')
     try {
-      const res = await api.get<{ data: SupplierPO[] }>('/api/v1/supplier-pos')
-      setPos(res.data ?? [])
+      const res = await purchaseApi.supplierNeeds()
+      if (isCurrent()) setPos(res.data ?? [])
     } catch {
-      toast.error('Помилка завантаження замовлень постачальникам')
-    }
+      if (isCurrent()) { setLoadError('Не вдалося завантажити локальні замовлення постачальникам'); toast.error('Не вдалося завантажити локальні замовлення постачальникам') }
+    } finally { if (isCurrent()) setLoading(false) }
   }
 
   useEffect(() => { load() }, [])
-
-  async function setStatus(po: SupplierPO, status: 'received' | 'cancelled') {
-    setActionId(po.id)
-    try {
-      await api.patch(`/api/v1/supplier-pos/${po.id}/status`, { status })
-      toast.success(status === 'received'
-        ? 'Позначено отриманим. Не забудьте провести прихідну накладну!'
-        : 'Замовлення постачальнику скасовано')
-      load()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка')
-    } finally {
-      setActionId(null)
-    }
-  }
 
   const visible = filter === 'active' ? pos.filter((p) => p.status === 'draft' || p.status === 'ordered') : pos
 
@@ -68,7 +60,7 @@ export default function SupplierPOsPage() {
     <Layout title="Замовлення постачальникам">
       <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <p className="text-gray-500 text-sm">
-          Автоматично створюються з позицій замовлень клієнтів «від постачальника». Після отримання — проведіть прихідну накладну.
+          Позиції локальних замовлень клієнтів, згруповані за постачальником. Статус змінюється в картці замовлення. Для складського товару прихід оформлюється накладною.
         </p>
         <div className="flex items-center gap-2">
           <div className="flex border border-gray-200 rounded-lg overflow-hidden">
@@ -82,7 +74,7 @@ export default function SupplierPOsPage() {
         </div>
       </div>
 
-      {visible.length === 0 ? (
+      {loading ? <p className="py-12 text-center text-gray-400">Завантаження...</p> : loadError ? <p className="py-8 text-center text-red-700">{loadError}. <button onClick={load} className="underline">Повторити</button></p> : visible.length === 0 ? (
         <Card>
           <div className="text-center py-12 text-gray-400 text-sm">
             <Truck size={32} className="mx-auto mb-3 text-gray-300" />
@@ -104,16 +96,7 @@ export default function SupplierPOsPage() {
                     <span className="text-xs text-gray-400">{formatDate(po.created_at)}</span>
                   </div>
                   {(po.status === 'draft' || po.status === 'ordered') && (
-                    <div className="flex gap-2">
-                      <Button size="sm" onClick={() => setStatus(po, 'received')} disabled={actionId === po.id}
-                        className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1.5">
-                        <PackageCheck size={14} /> Отримано
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => setStatus(po, 'cancelled')} disabled={actionId === po.id}
-                        className="border-red-300 text-red-600 hover:bg-red-50 flex items-center gap-1.5">
-                        <XCircle size={14} /> Скасувати
-                      </Button>
-                    </div>
+                    <Link to={`/orders/${po.order_id}`} className="text-sm text-yellow-700 hover:underline">Відкрити замовлення</Link>
                   )}
                 </div>
                 <div className="divide-y divide-gray-50">

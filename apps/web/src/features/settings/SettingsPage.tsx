@@ -34,6 +34,8 @@ export default function SettingsPage() {
   const offlineMode = useAuthStore((state) => state.offlineMode)
   const [form, setForm]     = useState<Partial<ShopSettings>>({})
   const [loading, setLoading] = useState(true)
+  const [settingsError, setSettingsError] = useState('')
+  const [settingsRevision, setSettingsRevision] = useState(0)
   const [saving, setSaving]   = useState(false)
   const [desktopRuntime, setDesktopRuntime] = useState<DesktopRuntimeInfo | null>(null)
 
@@ -154,14 +156,19 @@ export default function SettingsPage() {
   const [childPrice, setChildPrice]       = useState('')
 
   useEffect(() => {
+    let active = true
+    setLoading(true)
+    setSettingsError('')
     adminApi.getSettings()
       .then(({ data }) => {
+        if (!active) return
         setForm(data)
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
       })
-      .catch(() => toast.error('Помилка завантаження налаштувань'))
-      .finally(() => setLoading(false))
-  }, [])
+      .catch(() => { if (active) setSettingsError('Налаштування не завантажено. Збереження вимкнене, щоб не замінити їх початковими значеннями.') })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [settingsRevision])
 
   function set<K extends keyof ShopSettings>(key: K, value: ShopSettings[K]) {
     setForm((f) => ({ ...f, [key]: value }))
@@ -169,6 +176,7 @@ export default function SettingsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (loading || saving || settingsError) return
     setSaving(true)
     try {
       await adminApi.updateSettings({
@@ -321,6 +329,7 @@ export default function SettingsPage() {
     setEditItem({ ...editItem, children: (editItem.children ?? []).filter((_, i) => i !== childIdx) })
   }
 
+  if (settingsError) return <Layout title="Налаштування"><p role="alert" className="mb-4 text-red-700">{settingsError}</p><Button onClick={() => setSettingsRevision((n) => n + 1)}>Повторити завантаження</Button></Layout>
   if (loading) return (
     <Layout title="Налаштування магазину">
       <div className="flex items-center justify-center h-64 text-gray-400 text-sm">Завантаження...</div>

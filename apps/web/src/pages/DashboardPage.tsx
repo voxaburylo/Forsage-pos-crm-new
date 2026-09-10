@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, ClipboardList, Receipt, TrendingUp } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Layout } from '@/components/Layout'
+import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Button } from '@/components/ui'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -276,13 +276,13 @@ export default function DashboardPage() {
                 <tbody className="divide-y divide-gray-100">
                   {tireWorkers.map((worker) => (
                     <tr key={worker.employee_id}>
-                      <td className="px-4 py-3 font-semibold text-gray-900">{worker.employee_name}</td>
-                      <td className="px-2 py-3 text-right">{worker.services_qty}</td>
-                      <td className="px-2 py-3 text-right">{formatMoney(worker.service_revenue)}</td>
-                      <td className="px-2 py-3 text-right">{formatMoney(worker.commission_earned)}</td>
-                      <td className="px-2 py-3 text-right">{formatMoney(worker.earned)}</td>
-                      <td className="px-2 py-3 text-right">{formatMoney(worker.paid)}</td>
-                      <td className="px-4 py-3 text-right font-bold text-cyan-700">{formatMoney(worker.due)}</td>
+                      <td data-label="Працівник" className="px-4 py-3 font-semibold text-gray-900">{worker.employee_name}</td>
+                      <td data-label="Послуг" className="px-2 py-3 text-right">{worker.services_qty}</td>
+                      <td data-label="Виручка" className="px-2 py-3 text-right">{formatMoney(worker.service_revenue)}</td>
+                      <td data-label="Відсоток" className="px-2 py-3 text-right">{formatMoney(worker.commission_earned)}</td>
+                      <td data-label="Нараховано" className="px-2 py-3 text-right">{formatMoney(worker.earned)}</td>
+                      <td data-label="Виплачено" className="px-2 py-3 text-right">{formatMoney(worker.paid)}</td>
+                      <td data-label="До виплати" className="px-4 py-3 text-right font-bold text-cyan-700">{formatMoney(worker.due)}</td>
                     </tr>
                   ))}
                 </tbody>

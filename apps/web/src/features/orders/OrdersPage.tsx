@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
+import { READY_ORDER_STATUSES, WORK_ORDER_STATUSES, isReadyOrderStatus, isWorkOrderStatus, canUseOrderCash, orderEditPath } from './orderUx'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
 import { canDeleteDraftOrder, isCompletedOrderStatus, isTerminalOrderStatus } from './orderStatus'
@@ -84,15 +85,12 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ReactNode }> = 
 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: string; label: string; icon: string }>> = {
   pending: [
-    { status: 'ordered',  label: 'Замовити', icon: '📥' },
+    { status: 'ordered',  label: 'Замовлено постачальнику', icon: '📥' },
     { status: 'canceled', label: 'Скасувати позицію', icon: '❌' },
   ],
   ordered: [
     { status: 'arrived',  label: 'Приїхало',  icon: '📦' },
     { status: 'canceled', label: 'Скасувати позицію', icon: '❌' },
-  ],
-  arrived: [
-    { status: 'handed', label: 'Видано', icon: '✅' },
   ],
 }
 
@@ -187,8 +185,8 @@ function statusFilterForTab(tab: Tab): string | undefined {
   if (tab === 'all') return 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
   if (tab === 'leads') return 'lead'
   if (tab === 'drafts') return 'lead,quoted'
-  if (tab === 'active') return 'new,in_progress,ordered,arrived,called,no_answer'
-  if (tab === 'ready') return 'ready'
+  if (tab === 'active') return WORK_ORDER_STATUSES.join(',')
+  if (tab === 'ready') return READY_ORDER_STATUSES.join(',')
   if (tab === 'completed') return 'completed,archived'
   if (tab === 'canceled') return 'canceled'
   return undefined
@@ -1020,7 +1018,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
     { id: 'all',       label: 'Усі активні' },
     { id: 'leads',     label: 'Ліди' },
     { id: 'drafts',    label: 'Чернетки' },
-    { id: 'active',    label: 'В дорозі' },
+    { id: 'active',    label: 'В роботі' },
     { id: 'ready',     label: 'До видачі', accent: true },
     { id: 'completed', label: 'Виконані' },
     { id: 'canceled',  label: 'Скасовані' },
@@ -1138,11 +1136,10 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                     {hasDebt && <div className="text-red-500 font-semibold">Борг: {formatMoney(o.total_amount - paid)}</div>}
                   </div>
                   <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                    {(isLead(o) || o.status === 'new') && (
-                      <Button size="sm" className="!bg-green-500 hover:!bg-green-600 text-white font-semibold" title="Закрити накладну як замовлено" onClick={() => onQuickOrder(o)}>В замовлення</Button>
+                    {['lead', 'quoted'].includes(o.status) && !o.items.some((item) => item.is_draft_note) && (
+                      <Button size="sm" title="Оформити замовлення клієнта" onClick={() => onQuickOrder(o)}>Оформити</Button>
                     )}
                     <Button variant="secondary" size="sm" icon={<Copy size={13} />} title="Повторити" onClick={() => startRepeatOrder(o, navigate)} />
-                    <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>Перегляд</Button>
                     {canDelete && canDeleteDraftOrder(o) && (
                       <Button variant="danger-outline" size="sm" icon={<Trash2 size={13} />} title="Видалити замовлення" onClick={() => onDelete(o)} />
                     )}
@@ -1305,9 +1302,9 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                       {/* Дії */}
                       <td className="px-5 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
-                          {(isLead(o) || o.status === 'new') && (
-                            <Button size="sm" className="!bg-green-500 hover:!bg-green-600 text-white font-semibold" title="Закрити накладну як замовлено" onClick={() => onQuickOrder(o)}>
-                              В замовлення
+                          {['lead', 'quoted'].includes(o.status) && !o.items.some((item) => item.is_draft_note) && (
+                            <Button size="sm" title="Оформити замовлення клієнта" onClick={() => onQuickOrder(o)}>
+                              Оформити
                             </Button>
                           )}
                           <Button
@@ -1522,8 +1519,8 @@ export default function OrdersPage() {
       orderCacheRef.current.set(cacheKey, next)
       setHasMoreOrders(response.meta?.has_more ?? false)
       if (tab === 'all') {
-        orderCacheRef.current.set(`active:${offset}`, next.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)))
-        orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => o.status === 'ready'))
+        orderCacheRef.current.set(`active:${offset}`, next.filter((o) => isWorkOrderStatus(o.status)))
+        orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => isReadyOrderStatus(o.status)))
         orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => isCompletedOrderStatus(o.status)))
         orderCacheRef.current.set(`canceled:${offset}`, next.filter((o) => o.status === 'canceled'))
         orderCacheRef.current.set(`drafts:${offset}`, next.filter(isDraft))
@@ -1613,8 +1610,8 @@ export default function OrdersPage() {
       if (tab === 'all')       return !isTerminalOrderStatus(o.status)
       if (tab === 'leads')     return isLead(o)
       if (tab === 'drafts')    return isDraft(o)
-      if (tab === 'active')    return ['new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)
-      if (tab === 'ready')     return o.status === 'ready'
+      if (tab === 'active')    return isWorkOrderStatus(o.status)
+      if (tab === 'ready')     return isReadyOrderStatus(o.status)
       if (tab === 'completed') return isCompletedOrderStatus(o.status)
       if (tab === 'canceled')  return o.status === 'canceled'
       return true
@@ -1656,8 +1653,8 @@ export default function OrdersPage() {
   const stats = useMemo(() => ({
     leads:     orders.filter(isLead).length,
     drafts:    orders.filter(isDraft).length,
-    active:    orders.filter((o) => ['new', 'ordered', 'arrived', 'called', 'no_answer'].includes(o.status)).length,
-    ready:     orders.filter((o) => o.status === 'ready').length,
+    active:    orders.filter((o) => isWorkOrderStatus(o.status)).length,
+    ready:     orders.filter((o) => isReadyOrderStatus(o.status)).length,
     completed: orders.filter((o) => isCompletedOrderStatus(o.status)).length,
   }), [orders, chats])
 
@@ -1669,7 +1666,7 @@ export default function OrdersPage() {
         { id: 'all',       label: 'Усі',       count: filteredOrders.length },
         { id: 'leads',     label: 'Ліди',      count: stats.leads },
         { id: 'drafts',    label: 'Чернетки',  count: stats.drafts },
-        { id: 'active',    label: 'В дорозі',  count: stats.active },
+        { id: 'active',    label: 'В роботі',  count: stats.active },
         { id: 'ready',     label: 'До видачі', count: stats.ready, accent: true },
         { id: 'completed', label: 'Завершені', count: stats.completed },
       ]
@@ -1743,30 +1740,26 @@ export default function OrdersPage() {
     navigate(`/pos?order=${encodeURIComponent(searchValue)}`)
   }
 
-  async function handleCancel(order: CustomerOrder, refund: boolean) {
-    try {
-      await orderApi.cancel(order.id, refund, undefined, undefined, { silent: true })
-      toast.success(refund ? 'Скасовано, передоплату повернено' : 'Замовлення скасовано')
-      setCancelModal(null)
-      loadOrders()
-    } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) }
-  }
-
-  async function handleCancelAsCredit(order: CustomerOrder) {
+  const [cancelingOrder, setCancelingOrder] = useState(false)
+  async function handleCancel(order: CustomerOrder) {
+    if (cancelingOrder) return
+    setCancelingOrder(true)
     try {
       await orderApi.cancel(order.id, false, null, true, { silent: true })
-      toast.success('Скасовано, передоплата залишена як кредит')
+      toast.success((order.total_paid ?? order.prepayment ?? 0) > 0
+        ? 'Замовлення скасовано. Кошти зараховано клієнту; повернення — через касу.'
+        : 'Замовлення скасовано')
       setCancelModal(null)
       loadOrders()
     } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося скасувати замовлення')) }
+    finally { setCancelingOrder(false) }
   }
 
-  // Швидке «В замовлення» прямо зі списку, без відкриття накладної:
-  // закриваємо відкрите замовлення як «Замовлено» (status='ordered', без резерву складу).
+  // Register the customer's order; supply progress is tracked separately per item.
   async function handleQuickOrder(order: CustomerOrder) {
     try {
-      await orderApi.updateStatus(order.id, 'ordered', undefined, { silent: true })
-      toast.success(`${formatOrderNo(order)} → В замовлення`)
+      await orderApi.updateStatus(order.id, 'new', undefined, { silent: true })
+      toast.success(`${formatOrderNo(order)} — оформлено`)
       loadOrders()
     } catch (error) { toast.error(getErrorMessage(error, 'Не вдалося оформити в замовлення')) }
   }
@@ -2049,7 +2042,7 @@ export default function OrdersPage() {
             ) : selectedOrder ? (
               <OrderInlineView order={selectedOrder} now={now}
                 onOpenFull={() => navigate('/orders/' + selectedOrder.id)}
-                onEditDraft={() => navigate('/quotes/' + selectedOrder.id)}
+                onEditDraft={() => navigate(orderEditPath(selectedOrder))}
                 onOpenChat={(chatId) => navigate('/chats?chat_id=' + encodeURIComponent(chatId))}
                 onChangeStatus={(s) => changeOrderStatus(selectedOrder.id, s)}
                 onItemStatus={(itemId, s) => updateItemStatus(selectedOrder.id, itemId, s)}
@@ -2108,32 +2101,18 @@ export default function OrdersPage() {
       </div>
 
       {/* ── Модал скасування ── */}
-      <Modal open={!!cancelModal} onClose={() => setCancelModal(null)} title="Скасувати замовлення" size="sm">
+      <Modal open={!!cancelModal} onClose={() => { if (!cancelingOrder) setCancelModal(null) }} title="Скасувати замовлення" size="sm">
         {cancelModal && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
               {(cancelModal.total_paid ?? cancelModal.prepayment ?? 0) > 0
-                ? `Оплачено: ${formatMoney(cancelModal.total_paid ?? cancelModal.prepayment ?? 0)}. Що робити з грошима?`
+                ? `Оплачено: ${formatMoney(cancelModal.total_paid ?? cancelModal.prepayment ?? 0)}. Кошти буде зараховано на рахунок клієнта. Касир зможе повернути їх через касу. Готівка зараз не видається.`
                 : 'Ви впевнені, що хочете скасувати це замовлення?'}
             </p>
-            {(cancelModal.total_paid ?? cancelModal.prepayment ?? 0) > 0 ? (
-              <div className="space-y-2">
-                <Button onClick={() => handleCancel(cancelModal, true)} className="w-full bg-red-600 hover:bg-red-700 text-white">
-                  💰 Повернути {formatMoney(cancelModal.total_paid ?? cancelModal.prepayment ?? 0)}
-                </Button>
-                <Button variant="secondary" onClick={() => handleCancel(cancelModal, false)} className="w-full">
-                  Залишити в магазині
-                </Button>
-                <Button variant="secondary" onClick={() => handleCancelAsCredit(cancelModal)} className="w-full border-blue-300 text-blue-700">
-                  📋 Залишити як кредит клієнту
-                </Button>
-              </div>
-            ) : (
-              <div className="flex gap-3">
-                <Button onClick={() => handleCancel(cancelModal, false)} className="flex-1 bg-red-600 hover:bg-red-700 text-white">Скасувати</Button>
-                <Button variant="secondary" onClick={() => setCancelModal(null)}>Назад</Button>
-              </div>
-            )}
+            <div className="flex gap-3">
+              <Button loading={cancelingOrder} onClick={() => handleCancel(cancelModal)} className="flex-1 bg-red-600 hover:bg-red-700 text-white">Скасувати замовлення</Button>
+              <Button variant="secondary" disabled={cancelingOrder} onClick={() => setCancelModal(null)}>Назад</Button>
+            </div>
           </div>
         )}
       </Modal>
@@ -2283,6 +2262,7 @@ function OrderInlineView({
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled'].includes(i.item_status))
   const allHanded = order.items.every((i) => ['handed', 'canceled'].includes(i.item_status))
   const terminal = isTerminalOrderStatus(order.status)
+  const canUseCash = useAuthStore((state) => canUseOrderCash(state.session?.user.app_metadata?.role))
   const canComplete = allArrived && !allHanded && !terminal
   const canCancel = !terminal
   const overdue = order.pickup_deadline_at && new Date(order.pickup_deadline_at) < now
@@ -2350,7 +2330,7 @@ function OrderInlineView({
         <div className="flex gap-2 flex-wrap">
           {draft ? (
             <Button icon={<FilePen size={14} />} onClick={onEditDraft}>Редагувати чернетку</Button>
-          ) : canComplete && (
+          ) : canUseCash && canComplete && (
             <Button onClick={onPay} className="bg-green-600 hover:bg-green-700 text-white">{remaining > 0 ? '💰 Оплата / видача в касі' : '📦 Видати товар'}</Button>
           )}
           {order.status === 'arrived' && (
@@ -2387,7 +2367,7 @@ function OrderInlineView({
           ) : (
             <div className="space-y-1.5">
               {order.items.map((item) => {
-                const actions = item.item_status === 'arrived' ? [] : ITEM_STATUS_ACTIONS[item.item_status]
+                const actions = item.item_status === 'arrived' ? [] : (ITEM_STATUS_ACTIONS[item.item_status] ?? []).filter((action) => !(item.source_type === 'warehouse' && action.status === 'ordered'))
                 const itemConf = ITEM_STATUS_CONFIG[item.item_status]
                 return (
                   <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm gap-1.5">

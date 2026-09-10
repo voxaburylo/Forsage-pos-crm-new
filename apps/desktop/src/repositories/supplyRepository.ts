@@ -3,6 +3,7 @@ import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
 import { readOpenCashBalance } from './cashBalance'
+import { idempotentMutation } from './idempotentMutation'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -294,6 +295,7 @@ export class LocalSupplyRepository {
    * нові картки створюються без штрихкоду й категорії для ручного заповнення.
    */
   createInvoiceFromAiRows(input: {
+    operation_id?: string
     tenant_id?: string
     supplier_id?: string | null
     supplier_name?: string | null
@@ -308,15 +310,19 @@ export class LocalSupplyRepository {
     unresolved: Array<{ name: string; sku: string; needs_barcode: true; needs_category: boolean }>
     draft_items: Array<Record<string, unknown>>
   } {
+    if (input.operation_id) return idempotentMutation(this.db, 'ai-invoice:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input,
+      () => this.createInvoiceFromAiRows({ ...input, operation_id: undefined }))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     if (!Array.isArray(input.rows) || input.rows.length === 0) throw new Error('AI не знайшов позицій у накладній')
     const catalog = new LocalCatalogRepository(this.db)
     const settings = catalog.getSettings()
     const normalize = (value: unknown) => String(value ?? '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
     const moneyUah = (value: unknown) => {
+      if (value == null || String(value).trim() === '') throw new Error('Не розпізнано закупівельну ціну. Перевірте накладну.')
       const normalized = typeof value === 'string' ? value.replace(/\s/g, '').replace(',', '.') : value
       const number = Number(normalized ?? 0)
-      return Number.isFinite(number) ? Math.max(0, Math.round(number * 100)) : 0
+      if (!Number.isFinite(number) || number < 0 || Math.round(number * 100) > MAX_DATABASE_MONEY) throw new Error('Перевірте закупівельну ціну розпізнаної позиції')
+      return Math.round(number * 100)
     }
     const categories = this.db.prepare(`
       SELECT id, name FROM categories
@@ -381,11 +387,15 @@ export class LocalSupplyRepository {
       }
       for (const raw of input.rows) {
         const recognizedName = String(raw.name ?? raw.title ?? raw.description ?? '').trim()
-        if (!recognizedName) continue
+        if (!recognizedName) throw new Error(`Рядок ${items.length + 1}: відсутня назва товару. Перевірте розпізнавання.`)
         const recognizedSku = String(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number ?? '').trim()
         const recognizedBarcode = String(raw.barcode ?? raw.ean ?? '').trim()
-        const qtyValue = Number(raw.qty ?? raw.quantity ?? raw.qty_on_hand ?? 1)
-        const rowQty = Number.isFinite(qtyValue) && qtyValue > 0 ? qtyValue : 1
+        const rawQty = raw.qty ?? raw.quantity ?? raw.qty_on_hand
+        const qtyText = String(rawQty ?? '').trim().replace(',', '.')
+        const rowQty = Number(qtyText)
+        if (!/^\d+(?:\.\d{1,3})?$/.test(qtyText) || !Number.isFinite(rowQty) || rowQty <= 0) {
+          throw new Error(`«${recognizedName}»: перевірте кількість. Нерозпізнане значення не замінюється на 1.`)
+        }
         const purchasePrice = moneyUah(raw.purchase_price_uah ?? raw.purchase_price ?? raw.cost_price)
 
         let product = recognizedBarcode ? catalog.findByBarcode(recognizedBarcode, tenantId) : null

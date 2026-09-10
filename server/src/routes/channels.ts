@@ -4,6 +4,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { db } from '../db/supabase.js'
 import { initMessengers, stopMessengers } from '../services/messengers/MessengerService.js'
+import { channelPublicData } from '../services/channelPublicData.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -51,8 +52,7 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
     stopMessengers()
     initMessengers()
 
-    const { credentials: _credentials, ...safeData } = data as any
-    res.status(201).json({ data: { ...safeData, credentials: { token: '********' } } })
+    res.status(201).json({ data: channelPublicData(data) })
   } catch (err) { next(err) }
 })
 
@@ -80,7 +80,7 @@ router.put('/:id', requireRole('owner', 'admin'), async (req, res, next) => {
     stopMessengers()
     initMessengers()
 
-    res.json({ data })
+    res.json({ data: channelPublicData(data) })
   } catch (err) { next(err) }
 })
 

@@ -1,0 +1,29 @@
+.analytics-content {
+  padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: 2rem;
+}
+.analytics-content > * { min-width: 0; }
+.analytics-content [role="dialog"] { min-height: 0; min-width: 0; }
+.analytics-content [role="dialog"] > :last-child { min-height: 0; padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px)); }
+
+@media (max-width: 767px) {
+  .analytics-content { overflow-x: hidden; overscroll-behavior-x: none; }
+  .analytics-content :where(p, strong, h2, h3, dd, td, button) { overflow-wrap: anywhere; }
+  .analytics-content :where(input, select, textarea) { min-width: 0; max-width: 100%; font-size: 16px; }
+  .analytics-content :where(.grid > *, .flex > *) { min-width: 0; }
+  .analytics-content :where(.grid-cols-2) { grid-template-columns: minmax(0, 1fr); }
+  .analytics-content [data-testid="sold-items-mobile"] .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analytics-content div:has(> table) { overflow: visible; max-height: none; }
+  .analytics-content table { display: block; width: 100%; min-width: 0; }
+  .analytics-content table thead { display: none; }
+  .analytics-content table :where(tbody, tfoot) { display: block; width: 100%; }
+  .analytics-content table tr { display: block; padding: .75rem 1rem; border-bottom: 1px solid #e5e7eb; }
+  .analytics-content table td { display: block; padding: .35rem 0; min-width: 0; width: 100%; text-align: left; white-space: normal; }
+  .analytics-content table td[data-label]:not([data-label=""])::before { content: attr(data-label); display: block; margin-bottom: .125rem; font: 400 .75rem/1.4 system-ui, sans-serif; color: #6b7280; }
+  .analytics-content table td:first-child { font-weight: 600; }
+  .analytics-content table td :where(div, span) { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
+  .analytics-content .analytics-operation-history { max-height: none; overflow: visible; }
+  .analytics-content .analytics-payment-row { align-items: flex-start; flex-direction: column; }
+  .analytics-content .analytics-month-label { flex: 1; min-width: 0; }
+  .analytics-content .analytics-date-range { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+}

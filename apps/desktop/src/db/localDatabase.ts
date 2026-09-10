@@ -5,6 +5,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { LOCAL_MIGRATIONS } from './schema'
 import { createVerifiedBackup } from './verifiedBackup'
 import { backupsToPrune } from './backupPolicy'
+import { customerPhoneKey } from '../repositories/pos/customerValidation'
 
 export interface LocalDatabaseInfo {
   databasePath: string
@@ -79,6 +80,8 @@ export class LocalDatabase {
 
     this.databasePath = path.join(dataPath, DATABASE_FILE)
     this.database = new DatabaseSync(this.databasePath, { timeout: 5_000 })
+    this.database.function('forsage_lower', { deterministic: true }, (value) => String(value ?? '').toLocaleLowerCase('uk-UA'))
+    this.database.function('forsage_phone', { deterministic: true }, (value) => customerPhoneKey(value))
 
     // Якщо база бита, впаде щось із наступного — і тоді дескриптор ОБОВʼЯЗКОВО
     // треба закрити. Інакше Windows тримає файл заблокованим, і відновлення не

@@ -3,7 +3,7 @@ import { AlertTriangle, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
-import { Layout } from '@/components/Layout'
+import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Badge, Table } from '@/components/ui'
 import { kopecksToHryvnia } from '@/types/product'
 

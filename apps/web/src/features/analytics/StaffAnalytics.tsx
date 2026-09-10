@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { ChartBar as Bar, ChartLegend as Legend, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
 import { api } from '@/lib/api'
-import { Layout } from '@/components/Layout'
+import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Badge } from '@/components/ui'
 import { formatMoney, localDateKey } from '@/lib/utils'
 import { TrendingUp, DollarSign, Users, Award, Calendar, AlertCircle, Download } from 'lucide-react'
@@ -240,7 +240,7 @@ export default function StaffAnalytics() {
           </div>
 
           {isCustom && (
-            <div className="flex items-center gap-2 animate-fade-in">
+            <div className="analytics-date-range flex items-center gap-2 animate-fade-in">
               <input
                 type="date"
                 value={customRange.startDate}
@@ -257,7 +257,7 @@ export default function StaffAnalytics() {
             </div>
           )}
 
-          <div className="flex items-center gap-4 text-sm text-gray-500 font-medium">
+          <div className="flex flex-wrap items-center gap-4 text-sm text-gray-500 font-medium">
             <div className="flex items-center gap-2">
               <Calendar size={16} className="text-gray-400" />
               <span>{range.startDate} — {range.endDate}</span>
@@ -430,23 +430,23 @@ export default function StaffAnalytics() {
                   
                   return (
                     <tr key={mgr.manager_id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-6 py-4">
+                      <td data-label="Співробітник" className="px-6 py-4">
                         <div className="font-semibold text-gray-900">{mgr.manager_name}</div>
                         <div className="text-[10px] text-gray-400 font-mono mt-0.5">{mgr.manager_id.slice(0, 8)}</div>
                       </td>
                       
-                      <td className="px-4 py-4 text-right">
+                      <td data-label="Виручка (POS / Замовлення)" className="px-4 py-4 text-right">
                         <div className="font-semibold text-gray-800">{formatMoney(mgr.total_revenue)}</div>
                         <div className="text-xs text-gray-400">
                           {formatMoney(mgr.sales_revenue)} / {formatMoney(mgr.orders_revenue)}
                         </div>
                       </td>
                       
-                      <td className="px-4 py-4 text-right text-gray-600 font-medium">
+                      <td data-label="Собівартість (COGS)" className="px-4 py-4 text-right text-gray-600 font-medium">
                         {formatMoney(mgr.total_cogs)}
                       </td>
                       
-                      <td className="px-4 py-4 text-right">
+                      <td data-label="Валовий прибуток" className="px-4 py-4 text-right">
                         <div className={`font-semibold ${hasGrossProfit ? 'text-teal-600' : 'text-red-500'}`}>
                           {formatMoney(mgr.gross_profit)}
                         </div>
@@ -457,14 +457,14 @@ export default function StaffAnalytics() {
                         )}
                       </td>
                       
-                      <td className="px-4 py-4 text-right">
+                      <td data-label="Виплати (ЗП / Бонуси / Інше)" className="px-4 py-4 text-right">
                         <div className="font-semibold text-rose-600">{formatMoney(mgr.total_payouts)}</div>
                         <div className="text-xs text-gray-400">
                           {formatMoney(mgr.salary_cost)} / {formatMoney(mgr.bonus_cost)} / {formatMoney(mgr.advance_cost - mgr.penalty_cost)}
                         </div>
                       </td>
                       
-                      <td className="px-6 py-4 text-right">
+                      <td data-label="Чистий результат" className="px-6 py-4 text-right">
                         <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold ${
                           hasNetProfit
                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'

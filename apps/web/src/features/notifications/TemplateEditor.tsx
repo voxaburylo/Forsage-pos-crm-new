@@ -1,4 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import { Edit2, AlertTriangle, ToggleLeft, ToggleRight } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal, Input, Table, Badge } from '@/components/ui'
@@ -41,24 +44,33 @@ export default function TemplateEditor() {
   const [editingTemplate, setEditingTemplate] = useState<NotificationTemplate | null>(null)
   const [form, setForm] = useState({ title_template: '', body_template: '', is_active: true })
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const busy = useRef(false)
+  const user = useAuthStore(state => state.session?.user)
+  const canEdit = isDesktopRuntime() && ['owner', 'admin'].includes(String(user?.app_metadata?.role))
+  const gate = useLatestRequest(user?.id)
 
   async function loadTemplates() {
+    const isCurrent = gate.begin()
     setLoading(true)
+    setLoadError('')
+    setTemplates([])
     try {
       const { data } = await api.get<{ data: NotificationTemplate[] }>('/api/v1/notifications/templates')
-      setTemplates(data ?? [])
+      if (isCurrent()) setTemplates(data ?? [])
     } catch {
-      toast.error('Помилка завантаження шаблонів')
+      if (isCurrent()) setLoadError('Не вдалося завантажити серверні шаблони')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
   useEffect(() => {
     loadTemplates()
-  }, [])
+  }, [user?.id])
 
   function startEdit(tpl: NotificationTemplate) {
+    if (busy.current || !canEdit) return
     setEditingTemplate(tpl)
     setForm({
       title_template: tpl.title_template,
@@ -69,8 +81,10 @@ export default function TemplateEditor() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!editingTemplate) return
+    if (!editingTemplate || busy.current || !canEdit) return
+    if (!form.body_template.trim() || form.body_template.trim().length > 5000 || form.title_template.trim().length > 300) { toast.error('Вкажіть текст до 5000 символів і заголовок до 300 символів'); return }
 
+    busy.current = true
     setSaving(true)
     try {
       await api.put(`/api/v1/notifications/templates/${editingTemplate.id}`, {
@@ -80,25 +94,11 @@ export default function TemplateEditor() {
       })
       toast.success('Шаблон збережено')
       setEditingTemplate(null)
-      loadTemplates()
+      await loadTemplates()
     } catch {
       toast.error('Помилка збереження шаблону')
     } finally {
-      setSaving(false)
-    }
-  }
-
-  async function toggleActive(tpl: NotificationTemplate) {
-    try {
-      await api.put(`/api/v1/notifications/templates/${tpl.id}`, {
-        title_template: tpl.title_template,
-        body_template: tpl.body_template,
-        is_active: !tpl.is_active,
-      })
-      toast.success(tpl.is_active ? 'Шаблон вимкнено' : 'Шаблон увімкнено')
-      loadTemplates()
-    } catch {
-      toast.error('Помилка оновлення статусу')
+      busy.current = false; setSaving(false)
     }
   }
 
@@ -147,7 +147,7 @@ export default function TemplateEditor() {
       header: 'Статус',
       className: 'w-24',
       render: (tpl: NotificationTemplate) => (
-        <button onClick={() => toggleActive(tpl)} className="flex items-center gap-1.5 text-left">
+        <span className="flex items-center gap-1.5 text-left">
           {tpl.is_active ? (
             <>
               <ToggleRight size={20} className="text-green-500" />
@@ -159,7 +159,7 @@ export default function TemplateEditor() {
               <span className="text-xs text-gray-400 font-medium">Вимкнено</span>
             </>
           )}
-        </button>
+        </span>
       ),
     },
     {
@@ -168,6 +168,7 @@ export default function TemplateEditor() {
       className: 'w-12 text-right',
       render: (tpl: NotificationTemplate) => (
         <button
+          disabled={!canEdit || saving || loading}
           onClick={() => startEdit(tpl)}
           className="text-gray-400 hover:text-accent p-1"
           title="Редагувати шаблон"
@@ -183,29 +184,31 @@ export default function TemplateEditor() {
       <div className="flex flex-col gap-6">
         <div className="flex justify-between items-center">
           <p className="text-sm text-gray-500 max-w-2xl">
-            Керуйте шаблонами та каналами сповіщень для різних подій у системі. Ви можете використовувати динамічні змінні {"{{змінна}}"}, які будуть замінені на реальні значення під час відправки.
+            Серверні шаблони сповіщень — потрібен інтернет. Змінні {"{{змінна}}"} замінюються під час відправки. Статус і текст змінюються в одному вікні редагування.{!canEdit ? ' Тут доступний тільки перегляд.' : ''}
           </p>
         </div>
 
         <Card padding="none">
+          {loadError && <p role="alert" className="p-4 text-sm text-red-700">{loadError}. <button onClick={loadTemplates} className="underline">Повторити</button></p>}
           <Table
             columns={columns}
             data={templates}
             keyFn={(tpl) => tpl.id}
             loading={loading}
-            empty={<p className="text-gray-400 text-sm py-12 text-center">Шаблони не знайдені</p>}
+            empty={<p className="text-gray-400 text-sm py-12 text-center">{loadError ? 'Дані не завантажено' : 'Шаблони не знайдені'}</p>}
           />
         </Card>
       </div>
 
       <Modal
         open={editingTemplate !== null}
-        onClose={() => setEditingTemplate(null)}
+        onClose={() => { if (!busy.current) setEditingTemplate(null) }}
         title={`Редагування шаблону: ${editingTemplate ? (EVENT_TYPE_LABELS[editingTemplate.event_type] ?? editingTemplate.event_type) : ''}`}
         size="md"
       >
         {editingTemplate && (
           <form onSubmit={handleSave} className="space-y-4">
+            <fieldset disabled={saving} className="space-y-4">
             <div className="bg-yellow-50 border border-yellow-100 rounded-lg p-3.5 flex gap-2.5 text-xs text-yellow-800">
               <AlertTriangle className="shrink-0 text-yellow-500 mt-0.5" size={16} />
               <div>
@@ -215,6 +218,7 @@ export default function TemplateEditor() {
             </div>
 
             <Input
+              maxLength={300}
               label="Заголовок шаблону (Title)"
               value={form.title_template}
               onChange={(e) => setForm((f) => ({ ...f, title_template: e.target.value }))}
@@ -226,6 +230,7 @@ export default function TemplateEditor() {
                 Текст повідомлення (Body) *
               </label>
               <textarea
+                maxLength={5000}
                 value={form.body_template}
                 onChange={(e) => setForm((f) => ({ ...f, body_template: e.target.value }))}
                 rows={4}
@@ -256,6 +261,7 @@ export default function TemplateEditor() {
                 Скасувати
               </Button>
             </div>
+            </fieldset>
           </form>
         )}
       </Modal>

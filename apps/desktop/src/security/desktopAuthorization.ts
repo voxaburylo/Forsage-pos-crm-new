@@ -18,6 +18,9 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
 ])
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
+  ['desktop:warehouse:list-consumptions', ['owner', 'admin', 'manager']],
+  ['desktop:warehouse:create-consumption', ['owner', 'admin', 'manager']],
+  ['desktop:pos:delete-customer', OWNER_ROLES],
   ['desktop:orders:add-payment', CASHIER_ROLES],
   ['desktop:orders:complete', CASHIER_ROLES],
   ...['checkout', 'create-return', 'open-shift', 'close-shift', 'create-cash-operation',
@@ -75,6 +78,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
 ])
 
 const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
+  ['desktop:purchases:', ['owner', 'admin', 'manager']],
   ['desktop:staff:', OWNER_ROLES],
   ['desktop:supplier-catalog:', STOCK_ROLES],
   ['desktop:supply:', STOCK_ROLES],

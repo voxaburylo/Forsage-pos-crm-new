@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { writeoffApi } from './writeoffApi'
@@ -25,15 +26,19 @@ export default function WriteoffsPage() {
   const [page, setPage]       = useState(1)
   const [loading, setLoading] = useState(false)
 
+  const requests = useLatestRequest([reason, page])
   const load = useCallback(async () => {
+    const isCurrent = requests.begin()
+    setResult(null)
     setLoading(true)
     try {
       const data = await writeoffApi.list({ reason: reason || undefined, page, per_page: 20 })
+      if (!isCurrent()) return
       setResult(data)
     } catch {
-      toast.error('Помилка завантаження')
+      if (isCurrent()) toast.error('Помилка завантаження')
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [reason, page])
 

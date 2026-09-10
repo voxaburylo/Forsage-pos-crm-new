@@ -45,7 +45,7 @@ export class LocalOrderRepository {
     this.pos = new LocalPosRepository(db)
   }
 
-  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string } = {}): any[] {
+  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string; customer_id?: string } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const offset = Math.max(0, Number(input.offset ?? 0) || 0)
     const limit = Math.max(1, Math.min(500, Number(input.limit ?? 200) || 200))
@@ -54,8 +54,9 @@ export class LocalOrderRepository {
     let searchSql = ''
     const statuses = String(input.status ?? '').split(',').map((status) => status.trim()).filter(Boolean)
     let statusSql = ''
+    if (input.customer_id) { statusSql += ' AND o.customer_id = ?'; params.push(input.customer_id) }
     if (statuses.length > 0) {
-      statusSql = ` AND o.status IN (${statuses.map(() => '?').join(',')})`
+      statusSql += ` AND o.status IN (${statuses.map(() => '?').join(',')})`
       params.push(...statuses)
     }
 

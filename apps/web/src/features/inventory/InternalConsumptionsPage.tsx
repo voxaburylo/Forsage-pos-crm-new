@@ -1,6 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { Plus, Trash2, Package, Search } from 'lucide-react'
-import { api } from '@/lib/api'
+import { warehouseApi } from './warehouseApi'
+import { productApi } from '@/features/products/productApi'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { businessDateKey } from '@/lib/businessDate'
+import { shiftMonthKey, stockQuantity } from './documentInput'
 import { Layout } from '@/components/Layout'
 import { Card, Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -19,6 +24,7 @@ interface ConsumptionItem {
 }
 
 interface Consumption {
+  writeoff_id: string
   id:            string
   employee_id:   string
   employee_name: string
@@ -35,7 +41,7 @@ interface Summary {
   items_count:   number
 }
 
-function currentMonth() { return new Date().toISOString().slice(0, 7) }
+function currentMonth() { return businessDateKey().slice(0, 7) }
 function monthLabel(m: string) {
   const [y, mo] = m.split('-')
   const months = ['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень']
@@ -48,34 +54,40 @@ export default function InternalConsumptionsPage() {
   const [summary, setSummary]           = useState<Summary[]>([])
   const [employees, setEmployees]       = useState<Employee[]>([])
   const [loading, setLoading]           = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [modal, setModal]               = useState(false)
   const [saving, setSaving]             = useState(false)
   const [filterEmp, setFilterEmp]       = useState('')
+  const busy = useRef(false)
+  const searchVersions = useRef(new Map<string, number>())
+  const requests = useLatestRequest(month)
 
   // Форма
   const [empId, setEmpId]       = useState('')
   const [note, setNote]         = useState('')
   const [formItems, setFormItems] = useState<Array<{
+    key: string
     product_id: string | null; product_name: string; sku: string | null
     qty: string; buy_price: number; search: string; results: Product[]
   }>>([])
 
   const load = useCallback(async () => {
+    const isCurrent = requests.begin()
     setLoading(true)
+    setConsumptions([]); setSummary([])
+    setLoadError('')
     try {
-      const [c, s] = await Promise.all([
-        api.get<{ data: Consumption[] }>(`/api/v1/internal-consumptions?month=${month}`),
-        api.get<{ data: Summary[] }>(`/api/v1/internal-consumptions/summary?month=${month}`),
-      ])
-      setConsumptions(c.data ?? [])
-      setSummary(s.data ?? [])
-    } catch { toast.error('Помилка завантаження') }
-    finally { setLoading(false) }
-  }, [month])
+      const result = await warehouseApi.listConsumptions(month)
+      if (!isCurrent()) return
+      setConsumptions(result.data)
+      setSummary(result.summary)
+      setEmployees(result.employees)
+    } catch { if (isCurrent()) { setLoadError('Не вдалося завантажити локальні відпуски'); toast.error('Не вдалося завантажити локальні відпуски') } }
+    finally { if (isCurrent()) setLoading(false) }
+  }, [month, requests])
 
   useEffect(() => {
     load()
-    api.get<{ data: Employee[] }>('/api/v1/admin/users').then((r) => setEmployees(r.data ?? [])).catch(() => {})
   }, [load])
 
   function getEmployeeName(id: string) {
@@ -85,30 +97,41 @@ export default function InternalConsumptionsPage() {
 
   function addFormItem() {
     setFormItems((prev) => [...prev, {
+      key: crypto.randomUUID(),
       product_id: null, product_name: '', sku: null,
       qty: '1', buy_price: 0, search: '', results: [],
     }])
   }
 
   function removeFormItem(i: number) {
+    searchVersions.current.delete(formItems[i].key)
     setFormItems((prev) => prev.filter((_, idx) => idx !== i))
   }
 
   async function searchProduct(i: number, q: string) {
-    setFormItems((prev) => prev.map((item, idx) => idx === i ? { ...item, search: q } : item))
+    const key = formItems[i].key
+    const version = (searchVersions.current.get(key) ?? 0) + 1
+    searchVersions.current.set(key, version)
+    setFormItems((prev) => prev.map(item => item.key === key ? { ...item, search: q, product_id: null, product_name: '', sku: null, buy_price: 0, results: [] } : item))
     if (q.trim().length < 2) {
       setFormItems((prev) => prev.map((item, idx) => idx === i ? { ...item, results: [] } : item))
       return
     }
     try {
-      const r = await api.get<{ data: Product[] }>(`/api/v1/products?search=${encodeURIComponent(q)}&per_page=8`)
-      setFormItems((prev) => prev.map((item, idx) => idx === i ? { ...item, results: r.data ?? [] } : item))
+      await new Promise(resolve => setTimeout(resolve, 180))
+      if (searchVersions.current.get(key) !== version) return
+      const r = await productApi.list({ search: q, per_page: 8 })
+      if (searchVersions.current.get(key) !== version) return
+      const results = r.data.map(p => ({ id: p.id, name: p.name, sku: p.sku, buy_price: p.purchase_price ?? 0, qty_on_hand: p.qty_on_hand }))
+      setFormItems((prev) => prev.map(item => item.key === key ? { ...item, results } : item))
     } catch {
       /* ignore */
     }
   }
 
   function selectProduct(i: number, p: Product) {
+    const key = formItems[i].key
+    searchVersions.current.set(key, (searchVersions.current.get(key) ?? 0) + 1)
     setFormItems((prev) => prev.map((item, idx) => idx === i ? {
       ...item,
       product_id:   p.id,
@@ -120,25 +143,20 @@ export default function InternalConsumptionsPage() {
     } : item))
   }
 
-  const totalCost = formItems.reduce((s, i) => s + i.buy_price * (parseInt(i.qty) || 1), 0)
+  const totalCost = formItems.reduce((s, i) => s + Math.round(i.buy_price * (stockQuantity(i.qty) ?? 0)), 0)
 
   async function handleCreate() {
+    if (busy.current) return
     if (!empId) { toast.error('Виберіть співробітника'); return }
-    const validItems = formItems.filter((i) => i.product_name.trim() && i.buy_price >= 0)
-    if (validItems.length === 0) { toast.error('Додайте хоча б одну позицію'); return }
+    if (!formItems.length || formItems.some(item => !item.product_id || stockQuantity(item.qty) === null)) { toast.error('Виберіть товар і вкажіть додатну кількість у кожному рядку'); return }
+    if (new Set(formItems.map(item => item.product_id)).size !== formItems.length) { toast.error('Товар повторюється. Змініть кількість в одному рядку.'); return }
 
+    busy.current = true
     setSaving(true)
     try {
-      await api.post('/api/v1/internal-consumptions', {
+      await warehouseApi.createConsumption({
         employee_id:   empId,
-        employee_name: getEmployeeName(empId),
-        items: validItems.map((i) => ({
-          product_id:   i.product_id,
-          product_name: i.product_name.trim(),
-          sku:          i.sku,
-          qty:          parseInt(i.qty) || 1,
-          buy_price:    i.buy_price,
-        })),
+        items: formItems.map(i => ({ product_id: i.product_id!, qty: stockQuantity(i.qty)! })),
         note: note.trim() || null,
       })
       toast.success('Відпуск збережено, залишки оновлено')
@@ -146,21 +164,11 @@ export default function InternalConsumptionsPage() {
       setEmpId(''); setNote(''); setFormItems([])
       load()
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
-    finally { setSaving(false) }
-  }
-
-  async function handleDelete(id: string) {
-    try {
-      await api.delete(`/api/v1/internal-consumptions/${id}`)
-      toast.success('Видалено')
-      load()
-    } catch { toast.error('Помилка') }
+    finally { busy.current = false; setSaving(false) }
   }
 
   function shiftMonth(delta: number) {
-    const [y, m] = month.split('-').map(Number)
-    const d = new Date(y, m - 1 + delta, 1)
-    setMonth(d.toISOString().slice(0, 7))
+    setMonth(shiftMonthKey(month, delta))
   }
 
   const filtered = filterEmp ? consumptions.filter((c) => c.employee_id === filterEmp) : consumptions
@@ -170,7 +178,7 @@ export default function InternalConsumptionsPage() {
     <Layout
       title="Товари для потреб магазину"
       actions={
-        <Button icon={<Plus size={16} />} onClick={() => { setFormItems([{ product_id: null, product_name: '', sku: null, qty: '1', buy_price: 0, search: '', results: [] }]); setModal(true) }}>
+        <Button disabled={loading || !!loadError} icon={<Plus size={16} />} onClick={() => { searchVersions.current.clear(); setFormItems([{ key: crypto.randomUUID(), product_id: null, product_name: '', sku: null, qty: '1', buy_price: 0, search: '', results: [] }]); setModal(true) }}>
           Видати товар
         </Button>
       }
@@ -186,7 +194,7 @@ export default function InternalConsumptionsPage() {
           <span className="font-semibold text-gray-800 text-lg">{monthLabel(month)}</span>
           <button onClick={() => shiftMonth(1)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm hover:bg-gray-50">→</button>
           <span className="ml-auto text-sm text-gray-500">
-            Собівартість за місяць: <span className="font-bold text-gray-900">{formatMoney(totalMonth)}</span>
+            Собівартість за місяць: <span className="font-bold text-gray-900">{loading || loadError ? '—' : formatMoney(totalMonth)}</span>
           </span>
         </div>
 
@@ -226,7 +234,7 @@ export default function InternalConsumptionsPage() {
 
           {loading ? (
             <p className="text-center py-10 text-gray-400 text-sm">Завантаження...</p>
-          ) : filtered.length === 0 ? (
+          ) : loadError ? <p className="py-8 text-center text-red-700">{loadError}. <button onClick={load} className="underline">Повторити</button></p> : filtered.length === 0 ? (
             <p className="text-center py-10 text-gray-400 text-sm">Відпусків за цей період немає</p>
           ) : (
             <div className="divide-y divide-gray-50">
@@ -254,9 +262,7 @@ export default function InternalConsumptionsPage() {
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       <span className="font-bold text-red-600 text-sm">{formatMoney(c.total_cost)}</span>
-                      <button onClick={() => handleDelete(c.id)} className="text-gray-300 hover:text-red-400 transition-colors">
-                        <Trash2 size={15} />
-                      </button>
+                      <Link to={`/inventory/writeoffs/${c.writeoff_id}`} className="text-xs text-yellow-700 hover:underline">Акт списання</Link>
                     </div>
                   </div>
                 </div>
@@ -267,8 +273,8 @@ export default function InternalConsumptionsPage() {
       </div>
 
       {/* Модал відпуску */}
-      <Modal open={modal} onClose={() => setModal(false)} title="Відпуск запчастин по собівартості" size="lg">
-        <div className="space-y-4">
+      <Modal open={modal} onClose={() => { if (!busy.current) setModal(false) }} title="Відпуск запчастин по собівартості" size="lg">
+        <fieldset disabled={saving} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Співробітник *</label>
             <select
@@ -295,7 +301,7 @@ export default function InternalConsumptionsPage() {
             </div>
             <div className="space-y-2">
               {formItems.map((item, i) => (
-                <div key={i} className="border border-gray-200 rounded-xl p-3 space-y-2">
+                <div key={item.key} className="border border-gray-200 rounded-xl p-3 space-y-2">
                   <div className="relative">
                     <div className="flex items-center gap-2 border border-gray-200 rounded-lg px-3 py-2">
                       <Search size={14} className="text-gray-400 shrink-0" />
@@ -336,7 +342,7 @@ export default function InternalConsumptionsPage() {
                     <div className="flex items-center gap-1">
                       <label className="text-xs text-gray-500">К-сть:</label>
                       <input
-                        type="number" min="1"
+                        type="number" min="0.001" step="0.001"
                         value={item.qty}
                         onChange={(e) => setFormItems((prev) => prev.map((it, idx) => idx === i ? { ...it, qty: e.target.value } : it))}
                         className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-accent"
@@ -344,7 +350,7 @@ export default function InternalConsumptionsPage() {
                     </div>
                     {item.buy_price > 0 && (
                       <span className="text-sm font-semibold text-red-600 w-24 text-right">
-                        {formatMoney(item.buy_price * (parseInt(item.qty) || 1))}
+                        {formatMoney(Math.round(item.buy_price * (stockQuantity(item.qty) ?? 0)))}
                       </span>
                     )}
                     <button onClick={() => removeFormItem(i)} className="text-gray-300 hover:text-red-400">
@@ -385,7 +391,7 @@ export default function InternalConsumptionsPage() {
             </Button>
             <Button variant="secondary" onClick={() => setModal(false)}>Скасувати</Button>
           </div>
-        </div>
+        </fieldset>
       </Modal>
     </Layout>
   )

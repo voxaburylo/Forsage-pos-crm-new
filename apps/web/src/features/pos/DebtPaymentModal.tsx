@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DollarSign, Wallet, X } from 'lucide-react'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { usePOSStore } from '@/stores/posStore'
 import { useAuthStore } from '@/stores/authStore'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
+import { parseCustomerMoney } from '@/features/customers/customerUi'
 
 interface MoneyCustomer {
   id: string
@@ -32,6 +33,8 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
   const [saving, setSaving] = useState(false)
+  const busy = useRef(false)
+  const safeClose = () => { if (!busy.current) onClose() }
   const role = useAuthStore((state) => (state.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canPayout = role === 'cashier' || role === 'owner' || role === 'admin'
   const currentShift = usePOSStore((state) => state.currentShift)
@@ -60,6 +63,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
       const c = (event as CustomEvent<any>).detail
       if (!c?.id) return
       event.preventDefault()
+      if (busy.current) return
       setSelected({
         id: c.id,
         full_name: c.full_name ?? null,
@@ -75,52 +79,41 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
     return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
   }, [open, mode])
 
-  // Початковий список: для боргу — боржники, для рахунку — нічого (тільки пошук)
+  // Search and initial debtors share one request lifetime.
   useEffect(() => {
+    let active = true
+    setCustomers([])
+    setLoading(false)
     if (!open) return
-    if (initialCustomer) {
-      setSelected(initialCustomer)
-      const available = mode === 'debt'
-        ? initialCustomer.debt_balance
-        : mode === 'payout' ? (initialCustomer.deposit_balance ?? 0) : 0
-      setAmount(available > 0 ? (available / 100).toFixed(2) : '')
-    } else {
-      setSelected(null)
-      setAmount('')
-    }
-    if (mode === 'debt') {
-      setLoading(true)
-      posCustomerMoneyApi.listDebtors(100)
-        .then((r) => setCustomers((r.data ?? []).filter((c) => c.debt_balance > 0)))
-        .catch(() => toast.error('Не вдалося завантажити список боргів'))
-        .finally(() => setLoading(false))
-    } else {
-      setCustomers([])
-    }
-  }, [open, mode, initialCustomer])
-
-  useEffect(() => {
-    if (!open || search.length < 2) return
+    const query = search.trim()
+    if (query.length < 2 && mode !== 'debt') return
+    setLoading(true)
     const timer = window.setTimeout(() => {
-      setLoading(true)
-      posCustomerMoneyApi.searchCustomers({ search, has_debt: mode === 'debt', limit: 50 })
-        .then((r) => setCustomers(mode === 'debt' ? (r.data?.filter((c) => c.debt_balance > 0) ?? []) : mode === 'payout' ? (r.data?.filter((c) => (c.deposit_balance ?? 0) > 0) ?? []) : (r.data ?? [])))
-        .catch(() => {})
-        .finally(() => setLoading(false))
+      const promise = query.length >= 2
+        ? posCustomerMoneyApi.searchCustomers({ search: query, has_debt: mode === 'debt', limit: 50 })
+        : posCustomerMoneyApi.listDebtors(100)
+      promise.then(({ data }) => {
+        if (!active) return
+        setCustomers(mode === 'debt' ? data.filter((c) => c.debt_balance > 0)
+          : mode === 'payout' ? data.filter((c) => (c.deposit_balance ?? 0) > 0) : data)
+      }).catch((error) => {
+        if (active) toast.error(error instanceof Error ? error.message : 'Не вдалося знайти клієнта')
+      }).finally(() => { if (active) setLoading(false) })
     }, 250)
-    return () => window.clearTimeout(timer)
+    return () => { active = false; window.clearTimeout(timer) }
   }, [search, open, mode])
 
   async function handleSubmit() {
-    if (!selected) return
-    const kopecks = Math.round(parseFloat(amount || '0') * 100)
-    if (kopecks <= 0) { toast.error('Вкажіть суму'); return }
+    if (!selected || busy.current) return
+    const kopecks = parseCustomerMoney(amount)
+    if (kopecks === null || kopecks <= 0) { toast.error('Вкажіть коректну суму'); return }
     if (mode === 'debt' && kopecks > selected.debt_balance) { toast.error('Сума перевищує борг'); return }
     if (mode === 'payout' && kopecks > (selected.deposit_balance ?? 0)) {
       toast.error('Сума видачі перевищує кошти на рахунку клієнта')
       return
     }
 
+    busy.current = true
     setSaving(true)
     try {
       const shiftId = currentShift?.id ?? null
@@ -140,7 +133,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
       onPaid()
       onClose()
     } catch (err) { toast.error(err instanceof Error ? err.message : 'Помилка') }
-    finally { setSaving(false) }
+    finally { busy.current = false; setSaving(false) }
   }
 
   if (!open) return null
@@ -149,15 +142,16 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70" onClick={safeClose} />
       <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             {isDebt ? <DollarSign size={18} className="text-red-400" /> : <Wallet size={18} className={isPayout ? 'text-yellow-400' : 'text-emerald-400'} />}
             <h2 className="text-white text-lg font-bold">Гроші клієнта</h2>
           </div>
-          <button onClick={onClose} aria-label="Закрити" className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={safeClose} disabled={saving} aria-label="Закрити" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
+        <fieldset disabled={saving}>
         <div className={`mb-4 grid ${canPayout ? 'grid-cols-3' : 'grid-cols-2'} gap-2 rounded-xl bg-[#111] p-1`}>
           {([
             { id: 'debt', label: 'Закрити борг' },
@@ -167,7 +161,11 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
             <button
               key={tab.id}
               type="button"
-              onClick={() => setMode(tab.id)}
+              onClick={() => {
+                setMode(tab.id)
+                const available = selected ? tab.id === 'debt' ? selected.debt_balance : tab.id === 'payout' ? (selected.deposit_balance ?? 0) : 0 : 0
+                setAmount(available > 0 ? (available / 100).toFixed(2) : '')
+              }}
               className={`rounded-lg px-2 py-2 text-xs font-bold transition ${
                 mode === tab.id ? 'bg-yellow-400 text-black' : 'text-gray-400 hover:bg-[#2C2C2C] hover:text-white'
               }`}
@@ -297,7 +295,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
               </div>
 
               <div className="flex gap-3">
-                <button onClick={onClose}
+                <button onClick={safeClose}
                   className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700">
                   Скасувати
                 </button>
@@ -311,6 +309,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
             </>
           )}
         </div>
+        </fieldset>
       </div>
     </div>
   )

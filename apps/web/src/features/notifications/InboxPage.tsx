@@ -1,4 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Link } from 'react-router-dom'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
+import { notificationLink } from './notificationLink'
 import { Bell, Check, CheckCheck, ExternalLink } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui'
@@ -27,29 +32,46 @@ function timeAgo(dateStr: string) {
 export default function InboxPage() {
   const [items, setItems] = useState<Notification[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const busy = useRef(false)
+  const userId = useAuthStore(state => state.session?.user.id)
+  const gate = useLatestRequest(userId)
+  const readOnly = !isDesktopRuntime()
 
   const load = useCallback(async () => {
+    const isCurrent = gate.begin()
     setLoading(true)
+    setItems([])
+    setError('')
     try {
       const { data } = await api.get<{ data: Notification[] }>('/api/v1/notifications/inbox?limit=100')
-      setItems(data ?? [])
-    } catch { /* silent */ }
-    finally { setLoading(false) }
-  }, [])
+      if (isCurrent()) setItems(data ?? [])
+    } catch { if (isCurrent()) setError('Не вдалося завантажити сповіщення з сервера. Перевірте підключення та повторіть.') }
+    finally { if (isCurrent()) setLoading(false) }
+  }, [gate, userId])
 
   useEffect(() => { load() }, [load])
 
   async function markRead(id: string) {
-    await api.patch(`/api/v1/notifications/inbox/${id}/read`, {})
-    setItems((prev) => prev.map((n) => n.id === id ? { ...n, is_read: true } : n))
+    if (busy.current || readOnly) return
+    busy.current = true; setSaving(true)
+    try {
+      await api.patch(`/api/v1/notifications/inbox/${encodeURIComponent(id)}/read`, {})
+      await load()
+    } catch { toast.error('Не вдалося позначити сповіщення прочитаним') }
+    finally { busy.current = false; setSaving(false) }
   }
 
   async function markAllRead() {
+    if (busy.current || readOnly) return
+    busy.current = true; setSaving(true)
     try {
       await api.patch('/api/v1/notifications/inbox/read-all', {})
-      setItems((prev) => prev.map((n) => ({ ...n, is_read: true })))
+      await load()
       toast.success('Всі прочитано')
-    } catch { toast.error('Помилка') }
+    } catch { toast.error('Не вдалося позначити сповіщення прочитаними') }
+    finally { busy.current = false; setSaving(false) }
   }
 
   const unread = items.filter((n) => !n.is_read).length
@@ -58,16 +80,17 @@ export default function InboxPage() {
     <Layout
       title="Сповіщення"
       actions={
-        unread > 0 ? (
-          <Button variant="secondary" size="sm" icon={<CheckCheck size={14} />} onClick={markAllRead}>
-            Прочитати всі ({unread})
+        unread > 0 && !readOnly ? (
+          <Button disabled={saving || loading} variant="secondary" size="sm" icon={<CheckCheck size={14} />} onClick={markAllRead}>
+            Позначити всі прочитаними
           </Button>
         ) : undefined
       }
     >
+      <p className="mb-3 text-xs text-gray-500">Останні 100 серверних сповіщень. Потрібен інтернет.{readOnly ? ' Веб-версія — тільки перегляд.' : ''}</p>
       {loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Завантаження...</div>
-      ) : items.length === 0 ? (
+      ) : error ? <p role="alert" className="text-sm text-red-700">{error} <button onClick={load} className="underline">Повторити</button></p> : items.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
           <Bell size={40} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm">Немає сповіщень</p>
@@ -90,13 +113,13 @@ export default function InboxPage() {
                 <p className="text-[11px] text-gray-400 mt-1">{timeAgo(n.created_at)}</p>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                {n.link && (
-                  <a href={n.link} className="p-1 text-blue-500 hover:text-blue-700 rounded">
+                {notificationLink(n.link) && (
+                  <Link to={notificationLink(n.link)!} aria-label="Відкрити пов'язаний документ" className="p-1 text-blue-500 hover:text-blue-700 rounded">
                     <ExternalLink size={14} />
-                  </a>
+                  </Link>
                 )}
-                {!n.is_read && (
-                  <button onClick={() => markRead(n.id)} className="p-1 text-gray-400 hover:text-green-600 rounded">
+                {!n.is_read && !readOnly && (
+                  <button disabled={saving || loading} aria-label="Позначити прочитаним" onClick={() => markRead(n.id)} className="p-1 text-gray-400 hover:text-green-600 rounded">
                     <Check size={14} />
                   </button>
                 )}

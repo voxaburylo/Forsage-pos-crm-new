@@ -1,5 +1,7 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { durableLocalRequest } from '@/lib/durableLocalRequest'
+import { useAuthStore } from '@/stores/authStore'
 import type { PaginatedWriteoffs, Writeoff, WriteoffReason } from '@/types/writeoff'
 
 export interface WarehouseMovementInput {
@@ -27,6 +29,13 @@ function requiredDesktopWarehouse() {
 }
 
 export const warehouseApi = {
+  async listConsumptions(month: string): Promise<any> {
+    return requiredDesktopWarehouse().listConsumptions({ month })
+  },
+  async createConsumption(body: { employee_id: string; items: Array<{ product_id: string; qty: number }>; note?: string | null }): Promise<any> {
+    return durableLocalRequest('consumption:' + useAuthStore.getState().session?.user?.id, body,
+      operation_id => requiredDesktopWarehouse().createConsumption({ ...body, operation_id }))
+  },
   async listMovements(filters: { page?: number; per_page?: number } = {}): Promise<any> {
     if (desktopBridge()) return requiredDesktopWarehouse().listMovements(filters)
     const params = new URLSearchParams()
@@ -36,7 +45,7 @@ export const warehouseApi = {
   },
 
   async createMovement(body: WarehouseMovementInput): Promise<any> {
-    if (desktopBridge()) return requiredDesktopWarehouse().createMovement(body)
+    if (desktopBridge()) return durableLocalRequest('movement:' + useAuthStore.getState().session?.user?.id, body, operation_id => requiredDesktopWarehouse().createMovement({ ...body, operation_id }))
     return api.post<any>('/api/v1/warehouse/movements', body)
   },
 
@@ -46,7 +55,7 @@ export const warehouseApi = {
   },
 
   async createReserve(body: ReserveInput): Promise<any> {
-    if (desktopBridge()) return requiredDesktopWarehouse().createReserve(body)
+    if (desktopBridge()) return durableLocalRequest('reserve:' + useAuthStore.getState().session?.user?.id, body, operation_id => requiredDesktopWarehouse().createReserve({ ...body, operation_id }))
     return api.post<any>('/api/v1/reserves', body)
   },
 
@@ -74,7 +83,7 @@ export const warehouseApi = {
     notes?: string | null
     items: Array<{ product_id: string; qty: number }>
   }): Promise<{ data: Writeoff }> {
-    if (desktopBridge()) return { data: await requiredDesktopWarehouse().createWriteoff(body) as Writeoff }
+    if (desktopBridge()) return { data: await durableLocalRequest('writeoff:' + useAuthStore.getState().session?.user?.id, body, operation_id => requiredDesktopWarehouse().createWriteoff({ ...body, operation_id })) as Writeoff }
     return api.post<{ data: Writeoff }>('/api/v1/writeoffs', body)
   },
 }

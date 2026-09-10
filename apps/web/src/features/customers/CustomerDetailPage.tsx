@@ -1,244 +1,117 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, CreditCard, ShoppingBag, Car, Plus, Copy, ClipboardList } from 'lucide-react'
+import { Edit, Trash2, ShoppingBag, Plus, Copy, ClipboardList } from 'lucide-react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { customerApi } from './customerApi'
-import { orderApi } from '@/features/orders/orderApi'
+import { orderApi, type CustomerOrder } from '@/features/orders/orderApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
-import type { CustomerVehicle } from '@/types/customer'
 import CustomerNotes from './CustomerNotes'
-import CustomerLoyalty from './CustomerLoyalty'
 import CustomerPreferences from './CustomerPreferences'
 import { startRepeatOrder, formatOrderNo } from '@/features/orders/orderActions'
-import { pricingApi } from '@/features/admin/pricingApi'
-import type { PriceTier } from '@/features/admin/pricingApi'
-import type { Customer, CustomerSale } from '@/types/customer'
+import { canUseOrderCash } from '@/features/orders/orderUx'
+import { posCustomerMoneyApi } from '@/features/pos/posCustomerMoneyApi'
+import { CustomerBalances } from './CustomerBalances'
+import { customerCashPath, customerMoneyLabel } from './customerUi'
+import type { Customer, CustomerSale, CustomerVehicle } from '@/types/customer'
 import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
 
-const PAYMENT_LABELS: Record<string, string> = {
-  cash: 'Готівка', card: 'Картка', debt: 'Борг', mixed: 'Змішана',
-}
+const PAYMENT_LABELS: Record<string, string> = { cash: 'Готівка', card: 'Картка', transfer: 'Переказ', debt: 'Борг', mixed: 'Змішана' }
 
 export default function CustomerDetailPage() {
-  const navigate    = useNavigate()
-  const { id }      = useParams<{ id: string }>()
-  const offlineMode = useAuthStore((state) => state.offlineMode)
+  const navigate = useNavigate()
+  const { id } = useParams<{ id: string }>()
+  const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
+  const local = Boolean(desktopBridge())
+  const offlineMode = useAuthStore((s) => s.offlineMode)
   const [customer, setCustomer] = useState<Customer | null>(null)
-  const [sales, setSales]       = useState<CustomerSale[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [payModal, setPayModal] = useState(false)
-  const [payAmount, setPayAmount] = useState('')
-  const [paying, setPaying]     = useState(false)
-  const [tiers, setTiers]       = useState<PriceTier[]>([])
-  const [savingTier, setSavingTier] = useState(false)
-  const [cars, setCars]         = useState<CustomerVehicle[]>([])
-  const [carModal, setCarModal] = useState(false)
-  const [carForm, setCarForm]   = useState({ brand: '', model: '', year: '', vin: '', notes: '' })
-  const [savingCar, setSavingCar] = useState(false)
-  const [deleteModal, setDeleteModal] = useState(false)
-  const [deleting, setDeleting]       = useState(false)
-  const [confirmingCarId, setConfirmingCarId] = useState<string | null>(null)
-  const [customerOrders, setCustomerOrders] = useState<any[]>([])
-  const [ordersLoading, setOrdersLoading] = useState(true)
-  const [discountModal, setDiscountModal] = useState(false)
-  const [discountVal, setDiscountVal] = useState('0')
-  const [statusVal, setStatusVal] = useState('client')
-  const [savingDiscount, setSavingDiscount] = useState(false)
-  const [bonusModal, setBonusModal] = useState(false)
-  const [bonusVal, setBonusVal] = useState('0')
-  const [savingBonus, setSavingBonus] = useState(false)
-  // Накоплено на рахунку: баланс + останні операції
+  const [sales, setSales] = useState<CustomerSale[]>([])
+  const [cars, setCars] = useState<CustomerVehicle[]>([])
+  const [customerOrders, setCustomerOrders] = useState<CustomerOrder[]>([])
   const [deposit, setDeposit] = useState<{ balance: number; transactions: any[] } | null>(null)
-  const [savingLoyaltyMode, setSavingLoyaltyMode] = useState(false)
+  const [depositError, setDepositError] = useState('')
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [ordersLoading, setOrdersLoading] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [revision, setRevision] = useState(0)
   const [editModal, setEditModal] = useState(false)
-
-  const loadDeposit = useCallback(() => {
-    if (!id) return
-    const local = desktopBridge()?.pos.getCustomerDeposit
-    if (local) {
-      local(id).then((data) => setDeposit(data as { balance: number; transactions: any[] })).catch(() => {})
-      return
-    }
-    setDeposit(null)
-  }, [id])
-  useEffect(() => { loadDeposit() }, [loadDeposit])
-
-  async function changeLoyaltyMode(mode: 'discount' | 'cashback') {
-    if (!customer || (customer as any).loyalty_mode === mode) return
-    setSavingLoyaltyMode(true)
-    try {
-      await customerApi.update(customer.id, { loyalty_mode: mode } as any)
-      setCustomer((prev) => prev ? ({ ...prev, loyalty_mode: mode } as any) : prev)
-      toast.success(mode === 'cashback'
-        ? 'Тепер процент клієнта накопичується грошима на рахунку'
-        : 'Тепер процент клієнта працює як знижка на касі')
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося змінити режим')
-    } finally {
-      setSavingLoyaltyMode(false)
-    }
-  }
-
-  const load = useCallback(async () => {
-    if (!id) return
-    try {
-      const [{ data }, { data: s }, tiersRes, { data: carsData }] = await Promise.all([
-        customerApi.get(id),
-        customerApi.getSales(id),
-        pricingApi.listTiers().catch(() => ({ data: [] as PriceTier[] })),
-        customerVehiclesApi.list(id),
-      ])
-      setCustomer(data)
-      setSales(s)
-      setTiers(tiersRes.data)
-      setCars(carsData)
-    } catch {
-      navigate('/customers')
-    } finally {
-      setLoading(false)
-    }
-  }, [id, navigate])
-
-  useEffect(() => { load() }, [load])
-
-  // Список замовлень фільтрується з усього журналу на клієнті, тож він
-  // помітно повільніший за дані самого клієнта. Вантажимо його окремо, щоб
-  // картка (і перемикач накопичення/знижки) була доступна для редагування
-  // одразу, не чекаючи на замовлення.
-  useEffect(() => {
-    if (!id) return
-    let cancelled = false
-    setOrdersLoading(true)
-    orderApi.list()
-      .then((result) => {
-        if (cancelled) return
-        setCustomerOrders(result.data.filter((order) => order.customer_id === id).slice(0, 20))
-      })
-      .catch(() => { if (!cancelled) setCustomerOrders([]) })
-      .finally(() => { if (!cancelled) setOrdersLoading(false) })
-    return () => { cancelled = true }
-  }, [id])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const request = useRef(0)
+  const orderBusy = useRef(false)
 
   useEffect(() => {
-    if (customer) {
-      setDiscountVal(String((customer as any).discount_pct ?? 0))
-      setStatusVal((customer as any).client_status ?? 'client')
-      setBonusVal(((customer.bonus_balance ?? 0) / 100).toFixed(2))
+    if (!id) return
+    const token = ++request.current
+    const active = () => request.current === token
+    const failed = (section: string) => (error: unknown) => {
+      if (active()) setErrors((old) => ({ ...old, [section]: error instanceof Error ? error.message : 'Не вдалося завантажити' }))
     }
-  }, [customer])
+    setErrors({}); setLoading(true); setCustomer(null); setSales([]); setCars([]); setCustomerOrders([])
+    setDeposit(null); setDepositError(''); setHasMore(false)
+    customerApi.get(id).then(({ data }) => { if (active()) setCustomer(data) }).catch(failed('Картка'))
+      .finally(() => { if (active()) setLoading(false) })
+    customerApi.getSales(id).then(({ data }) => { if (active()) setSales(data) }).catch(failed('Чеки'))
+    customerVehiclesApi.list(id).then(({ data }) => { if (active()) setCars(data) }).catch(failed('Автомобілі'))
+    posCustomerMoneyApi.getDeposit(id).then(({ data }) => { if (active()) setDeposit(data as typeof deposit) })
+      .catch((e) => { if (active()) setDepositError(e instanceof Error ? e.message : 'Не вдалося завантажити кошти клієнта') })
+    orderBusy.current = true; setOrdersLoading(true)
+    orderApi.list(0, {}, 25, { customer_id: id }).then(({ data, meta }) => {
+      if (active()) { setCustomerOrders(data); setHasMore(meta.has_more) }
+    }).catch(failed('Замовлення')).finally(() => { if (active()) { orderBusy.current = false; setOrdersLoading(false) } })
+    return () => { request.current++ }
+  }, [id, revision])
 
-  async function handleSaveDiscountStatus() {
-    if (!customer) return
-    setSavingDiscount(true)
+  async function moreOrders() {
+    if (!id || orderBusy.current || !hasMore) return
+    const token = request.current
+    orderBusy.current = true; setOrdersLoading(true)
     try {
-      await customerApi.update(customer.id, {
-        discount_pct: Number(discountVal) || 0,
-        client_status: statusVal,
-      } as any)
-      setCustomer((prev) => prev ? {
-        ...prev,
-        discount_pct: Number(discountVal) || 0,
-        client_status: statusVal as any
-      } : prev)
-      setDiscountModal(false)
-      toast.success('Процент клієнта та статус оновлено')
-    } catch {
-      toast.error('Помилка збереження')
-    } finally {
-      setSavingDiscount(false)
-    }
+      const { data, meta } = await orderApi.list(customerOrders.length, {}, 25, { customer_id: id })
+      if (token !== request.current) return
+      setCustomerOrders((old) => Array.from(new Map([...old, ...data].map((o) => [o.id, o])).values()))
+      setHasMore(meta.has_more)
+    } catch (e) { if (token === request.current) toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити замовлення') }
+    finally { if (token === request.current) { orderBusy.current = false; setOrdersLoading(false) } }
   }
-
-  async function handleSaveBonusBalance() {
-    if (!customer) return
-    const amount = Math.round(Number(String(bonusVal).replace(',', '.')) * 100)
-    if (!Number.isFinite(amount) || amount < 0) {
-      toast.error('Вкажіть коректну суму бонусів')
-      return
-    }
-    setSavingBonus(true)
-    try {
-      await customerApi.update(customer.id, { bonus_balance: amount } as any)
-      setCustomer((prev) => prev ? ({ ...prev, bonus_balance: amount } as Customer) : prev)
-      setBonusModal(false)
-      toast.success('Бонусний баланс оновлено')
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося зберегти бонуси')
-    } finally {
-      setSavingBonus(false)
-    }
-  }
-
-  async function handleSetTier(tierId: string) {
-    if (!customer) return
-    setSavingTier(true)
-    try {
-      await customerApi.update(customer.id, { price_tier_id: tierId || null } as Parameters<typeof customerApi.update>[1])
-      load()
-      toast.success('Ціновий рівень збережено')
-    } catch { toast.error('Помилка збереження') } finally { setSavingTier(false) }
-  }
-
   async function handleDelete() {
-    if (!customer) return
+    if (!customer || deleting) return
     setDeleting(true)
-    try {
-      await customerApi.delete(customer.id)
-      toast.success('Клієнта видалено')
-      navigate('/customers')
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка')
-      setDeleting(false)
-    }
+    try { await customerApi.delete(customer.id); toast.success('Клієнта видалено'); navigate('/customers') }
+    catch (e) { toast.error(e instanceof Error ? e.message : 'Не вдалося видалити') }
+    finally { setDeleting(false) }
   }
-
-  async function handlePayDebt() {
-    if (!customer || !payAmount) return
-    const kopecks = Math.round(parseFloat(payAmount) * 100)
-    if (kopecks <= 0) { toast.error('Вкажіть суму більше 0'); return }
-
-    setPaying(true)
-    try {
-      const { data } = await customerApi.payDebt(customer.id, kopecks)
-      setCustomer(data)
-      setPayModal(false)
-      setPayAmount('')
-      toast.success(`Борг погашено на ${formatMoney(kopecks)}`)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка')
-    } finally {
-      setPaying(false)
-    }
-  }
-
-  if (loading || !customer) return (
-    <Layout><div className="flex items-center justify-center h-64 text-gray-400 text-sm">Завантаження...</div></Layout>
-  )
+  if (loading) return <Layout title="Клієнт"><p className="p-6 text-gray-500">Завантаження картки...</p></Layout>
+  if (!customer) return <Layout title="Клієнт"><p role="alert">{errors['Картка'] || 'Клієнта не знайдено'}</p><Button onClick={() => setRevision((n) => n + 1)}>Повторити</Button></Layout>
 
   return (
     <Layout
       title={`${customer.full_name ?? customer.phone}${customer.primary_vin ? `  ${customer.primary_vin}` : ''}`}
       actions={
         <div className="flex gap-2">
-          <Button size="sm" icon={<ClipboardList size={14} />}
+          {local && <Button size="sm" icon={<ClipboardList size={14} />}
             onClick={() => navigate(`/orders/new?customer_id=${customer.id}`)}>
             Замовлення
-          </Button>
-          <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => setEditModal(true)}>
+          </Button>}
+          {local && <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => setEditModal(true)}>
             Редагувати
-          </Button>
-          <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteModal(true)}>
+          </Button>}
+          {local && ['owner', 'admin'].includes(role ?? '') && <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteModal(true)}>
             Видалити
-          </Button>
+          </Button>}
         </div>
       }
     >
       <div className="w-full max-w-6xl space-y-4">
+        {Object.keys(errors).length > 0 && <div role="alert" className="rounded-lg border border-red-200 p-3 text-sm text-red-700">
+          {Object.entries(errors).map(([key, message]) => <p key={key}>{key}: {message}</p>)}
+          <Button size="sm" variant="secondary" onClick={() => setRevision((n) => n + 1)}>Повторити завантаження</Button>
+        </div>}
 
         {/* Основна інфо */}
         <Card>
@@ -291,65 +164,10 @@ export default function CustomerDetailPage() {
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Процент клієнта</p>
-              <div className="flex items-center gap-2"><p className="text-sm font-semibold text-gray-900">{(customer as any).discount_pct ?? 0}%</p><button type="button" onClick={() => setDiscountModal(true)} className="text-xs font-semibold text-yellow-700 hover:text-yellow-800">Змінити</button></div>
+              <p className="text-sm font-semibold text-gray-900">{customer.discount_pct ?? 0}%</p>
             </div>
           </div>
-          {/* Ціновий рівень */}
-          {tiers.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-gray-100">
-              <p className="text-xs text-gray-400 mb-1">Ціновий рівень</p>
-              <select
-                disabled={savingTier}
-                value={(customer as unknown as Record<string, unknown>)['price_tier_id'] as string ?? ''}
-                onChange={(e) => handleSetTier(e.target.value)}
-                className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:opacity-60"
-              >
-                <option value="">Стандартна ціна</option>
-                {tiers.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name} (-{t.discount_pct}%)</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* VIP та Risk */}
-          <div className="flex gap-3 mt-3 pt-3 border-t border-gray-100">
-            <div className="flex-1">
-              <label className="text-xs text-gray-400 mb-1 block">VIP рівень</label>
-              <select value={customer.vip_level}
-                onChange={async (e) => {
-                  const val = e.target.value as Customer['vip_level']
-                  try {
-                    await customerApi.update(customer.id, { vip_level: val })
-                    setCustomer((prev) => prev ? { ...prev, vip_level: val } : prev)
-                    toast.success('VIP рівень оновлено')
-                  } catch { toast.error('Помилка') }
-                }}
-                className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 w-full">
-                <option value="standard">Standard</option>
-                <option value="bronze">🥉 Bronze</option>
-                <option value="silver">🥈 Silver</option>
-                <option value="gold">🥇 Gold</option>
-              </select>
-            </div>
-            <div className="flex-1">
-              <label className="text-xs text-gray-400 mb-1 block">Ризик-профіль</label>
-              <select value={customer.risk_profile}
-                onChange={async (e) => {
-                  const val = e.target.value as Customer['risk_profile']
-                  try {
-                    await customerApi.update(customer.id, { risk_profile: val })
-                    setCustomer((prev) => prev ? { ...prev, risk_profile: val } : prev)
-                    toast.success('Ризик-профіль оновлено')
-                  } catch { toast.error('Помилка') }
-                }}
-                className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 w-full">
-                <option value="low">🟢 Низький</option>
-                <option value="medium">🟡 Середній</option>
-                <option value="high">🔴 Високий</option>
-              </select>
-            </div>
-          </div>
+          <p className="mt-3 text-sm text-gray-600">{customer.loyalty_mode === 'cashback' ? 'Накопичення на рахунок' : 'Знижка в касі'}{customer.price_tier ? ' · ' + customer.price_tier.name : ''}</p>
 
           {customer.tags.length > 0 && (
             <div className="flex gap-2 mt-3">
@@ -364,143 +182,32 @@ export default function CustomerDetailPage() {
           )}
         </Card>
 
-        {/* Борг */}
-        <Card className={customer.debt_balance > 0 ? 'border-red-200 bg-red-50' : ''}>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-400 mb-0.5">Поточний борг</p>
-              <p className={`text-2xl font-bold ${customer.debt_balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                {customer.debt_balance > 0 ? formatMoney(customer.debt_balance) : 'Без боргу'}
-              </p>
+        <CustomerBalances customer={customer} deposit={deposit?.balance}/>
+        {local && canUseOrderCash(role) && <Button onClick={() => navigate(customerCashPath(customer.id))}>Розрахунки в касі</Button>}
+        <Card>
+          <h3 className="mb-3 font-semibold">Рух коштів клієнта — останні 50 операцій</h3>
+          {depositError ? <p role="alert" className="text-sm text-red-700">{depositError}</p> : deposit ? (
+            <div className="max-h-64 overflow-auto">
+              {deposit.transactions.length === 0 && <p className="text-sm text-gray-500">Операцій немає</p>}
+              {deposit.transactions.map((entry: any) => <div key={entry.id} className="flex flex-wrap justify-between gap-2 border-b py-2 text-sm">
+                <span>{formatDateTime(entry.created_at)} · {entry.notes || customerMoneyLabel(entry.method)}</span>
+                <span className={entry.amount >= 0 ? 'text-emerald-700' : 'text-red-700'}>{entry.amount > 0 ? '+' : ''}{formatMoney(entry.amount)} · залишок {formatMoney(entry.balance_after)}</span>
+              </div>)}
             </div>
-            {customer.debt_balance > 0 && (
-              <Button icon={<CreditCard size={16} />} onClick={() => setPayModal(true)}>
-                Погасити борг
-              </Button>
-            )}
-          </div>
+          ) : <p className="text-sm text-gray-500">Завантаження...</p>}
         </Card>
 
-        {/* Бонуси */}
-        <Card className={(customer.bonus_balance ?? 0) > 0 ? 'border-yellow-200 bg-yellow-50' : ''}>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs text-gray-400 mb-0.5">Бонуси клієнта</p>
-              <p className={(customer.bonus_balance ?? 0) > 0 ? 'text-2xl font-bold text-yellow-600' : 'text-2xl font-bold text-gray-500'}>
-                {formatMoney(customer.bonus_balance ?? 0)}
-              </p>
-              <p className="mt-0.5 text-[11px] text-gray-400">Цей баланс можна вручну змінити тут і списати в касі при оплаті чека.</p>
-            </div>
-            <Button variant="secondary" onClick={() => setBonusModal(true)}>Змінити</Button>
-          </div>
+        <Card>
+          <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Автомобілі ({cars.length})</h3>{local && <Button size="sm" variant="secondary" onClick={() => setEditModal(true)}>Додати / редагувати</Button>}</div>
+          {errors['Автомобілі'] ? <p role="alert" className="text-red-700">{errors['Автомобілі']}</p> : cars.length === 0 ? <p className="text-sm text-gray-500">Автомобілі ще не додані</p> : <div className="grid gap-3 md:grid-cols-2">{cars.map((car) => <div key={car.id} className="rounded-lg border p-3">
+            <p className="font-semibold">{car.brand} {car.model} {car.year || ''}</p>
+            <p className="break-all font-mono text-sm">{car.vin || 'VIN не вказано'}</p>
+            {car.notes && <p className="mt-1 text-sm text-gray-500">{car.notes}</p>}
+          </div>)}</div>}
         </Card>
 
-        {/* Накоплено на рахунку + режим лояльності */}
-        <Card className={(deposit?.balance ?? 0) > 0 ? 'border-emerald-200 bg-emerald-50' : ''}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs text-gray-400 mb-0.5">Накоплено на рахунку</p>
-              <p className={`text-2xl font-bold ${(deposit?.balance ?? 0) > 0 ? 'text-emerald-600' : 'text-gray-500'}`}>
-                {formatMoney(deposit?.balance ?? 0)}
-              </p>
-              <p className="mt-0.5 text-[11px] text-gray-400">Тут накопичуються гроші від режиму «Накопичення» та передплати з каси.</p>
-            </div>
-            <div>
-              <p className="mb-1 text-xs text-gray-400">Процент клієнта ({(customer as any).price_tier?.discount_pct ?? customer.discount_pct ?? 0}%) працює як:</p>
-              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
-                <button
-                  disabled={savingLoyaltyMode}
-                  onClick={() => changeLoyaltyMode('discount')}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
-                    (customer as any).loyalty_mode !== 'cashback' ? 'bg-yellow-400 text-black' : 'text-gray-500 hover:text-gray-800'
-                  }`}>
-                  Знижка на касі
-                </button>
-                <button
-                  disabled={savingLoyaltyMode}
-                  onClick={() => changeLoyaltyMode('cashback')}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
-                    (customer as any).loyalty_mode === 'cashback' ? 'bg-emerald-500 text-white' : 'text-gray-500 hover:text-gray-800'
-                  }`}>
-                  Накопичення на рахунок
-                </button>
-              </div>
-            </div>
-          </div>
-          {(deposit?.transactions?.length ?? 0) > 0 && (
-            <div className="mt-3 border-t border-gray-100 pt-2">
-              <p className="mb-1 text-xs font-semibold text-gray-500">Останні операції</p>
-              <div className="max-h-40 space-y-1 overflow-y-auto">
-                {deposit!.transactions.slice(0, 10).map((t: any) => (
-                  <div key={t.id} className="flex items-center justify-between text-xs">
-                    <span className="text-gray-500">
-                      {formatDateTime(t.created_at)} · {t.notes ?? t.method ?? ''}
-                    </span>
-                    <span className={`font-semibold ${t.amount > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {t.amount > 0 ? '+' : ''}{formatMoney(t.amount)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </Card>
-
-        {/* Автомобілі */}
-        <Card padding="none">
-          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Car size={16} className="text-gray-400" />
-              <h3 className="font-semibold text-gray-800 text-sm">Автомобілі ({cars.length})</h3>
-            </div>
-            <Button size="sm" variant="outline" icon={<Plus size={14} />} onClick={() => setCarModal(true)}>
-              Додати авто
-            </Button>
-          </div>
-          {cars.length === 0 ? (
-            <p className="px-6 py-8 text-center text-gray-400 text-sm">Автомобілів ще не додано</p>
-          ) : (
-            <div className="divide-y divide-gray-50">
-              {cars.map((car) => (
-                <div key={car.id} className="px-6 py-3 flex items-center justify-between text-sm">
-                  <div>
-                    <p className="font-semibold text-gray-900">{car.brand} {car.model}</p>
-                    <div className="flex gap-3 text-xs text-gray-500 mt-0.5">
-                      {car.year && <span>{car.year} р.</span>}
-                      {car.vin && (
-                        <span className="font-mono flex items-center gap-1">
-                          VIN: {car.vin}
-                          <button onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(car.vin!); toast.success('VIN скопійовано') }}
-                            className="text-gray-400 hover:text-gray-600" title="Скопіювати VIN">
-                            <Copy size={10} />
-                          </button>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    title={confirmingCarId === car.id ? 'Натисніть ще раз для підтвердження' : 'Видалити авто'}
-                    onClick={async () => {
-                      if (confirmingCarId !== car.id) { setConfirmingCarId(car.id); return }
-                      setConfirmingCarId(null)
-                      await customerVehiclesApi.delete(id!, car.id)
-                      setCars((prev) => prev.filter((c) => c.id !== car.id))
-                      toast.success('Авто видалено')
-                    }}
-                    onBlur={() => setConfirmingCarId(null)}
-                    className={confirmingCarId === car.id ? 'text-red-600' : 'text-red-300 hover:text-red-500'}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-
-        {!offlineMode && (
+        {!local && !offlineMode && (
           <>
-            <Card><CustomerLoyalty customerId={customer.id} /></Card>
             <Card><CustomerNotes customerId={customer.id} /></Card>
             <Card><CustomerPreferences customerId={customer.id} /></Card>
           </>
@@ -513,23 +220,23 @@ export default function CustomerDetailPage() {
               <ClipboardList size={16} className="text-gray-400" />
               <h3 className="font-semibold text-gray-800 text-sm">Замовлення ({customerOrders.length})</h3>
             </div>
-            <button
+            {local && <button
               onClick={() => navigate(`/orders/new?customer_id=${customer.id}`)}
               className="text-xs text-yellow-600 hover:text-yellow-700 font-medium flex items-center gap-1"
             >
               <Plus size={12} /> Нове
-            </button>
+            </button>}
           </div>
           {ordersLoading && customerOrders.length === 0 ? (
             <p className="px-6 py-6 text-center text-gray-400 text-sm">Завантаження замовлень…</p>
           ) : customerOrders.length === 0 ? (
-            <p className="px-6 py-6 text-center text-gray-400 text-sm">Замовлень ще немає</p>
+            <p className="px-6 py-6 text-center text-gray-400 text-sm">{errors['Замовлення'] ? 'Замовлення не завантажені' : 'Замовлень ще немає'}</p>
           ) : (
             <div className="divide-y divide-gray-50">
               {customerOrders.map((o: any) => {
-                const isDraft = o.status === 'lead' && ['walk_in', 'mobile_draft'].includes(o.source)
+                const isDraft = o.items.some((item: { is_draft_note?: boolean }) => item.is_draft_note)
                 const statusLabel: Record<string, string> = {
-                  lead: 'Лід', new: 'Нове', in_progress: 'В дорозі',
+                  lead: 'Чернетка', quoted: 'Пропозиція', new: 'Нове', in_progress: 'У роботі', ordered: 'Замовлено', arrived: 'Надійшло', called: 'Повідомлено', no_answer: 'Не відповідає', archived: 'Архів',
                   ready: 'До видачі', completed: 'Видано', canceled: 'Скасовано',
                 }
                 const statusColor: Record<string, string> = {
@@ -543,7 +250,7 @@ export default function CustomerDetailPage() {
                     className="w-full px-6 py-3 flex items-center justify-between text-sm hover:bg-gray-50 transition-colors gap-2"
                   >
                     <button
-                      onClick={() => navigate(isDraft ? `/quotes/${o.id}` : `/orders/${o.id}`)}
+                      onClick={() => navigate(`/orders/${o.id}`)}
                       className="flex items-center gap-2 min-w-0 flex-1 text-left"
                     >
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${statusColor[o.status] ?? 'bg-gray-100 text-gray-500'}`}>
@@ -562,8 +269,9 @@ export default function CustomerDetailPage() {
                       {o.total_amount > 0 && (
                         <span className="font-semibold text-gray-900">{formatMoney(o.total_amount)}</span>
                       )}
+                      <span className="text-xs text-emerald-700">Сплачено: {formatMoney(o.total_paid ?? o.prepayment ?? 0)}</span>
                       <span className="text-gray-400 text-xs hidden sm:inline">{new Date(o.created_at).toLocaleDateString('uk-UA')}</span>
-                      {!isDraft && o.items?.length > 0 && (
+                      {local && !isDraft && o.items?.length > 0 && (
                         <button
                           onClick={() => startRepeatOrder(o, navigate)}
                           className="text-gray-400 hover:text-yellow-600 p-1 rounded hover:bg-yellow-50 transition-colors"
@@ -581,13 +289,14 @@ export default function CustomerDetailPage() {
         </Card>
 
         {/* Історія покупок */}
+        {hasMore && <Button variant="secondary" size="sm" onClick={moreOrders} loading={ordersLoading}>Ще замовлення</Button>}
         <Card padding="none">
           <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
             <ShoppingBag size={16} className="text-gray-400" />
-            <h3 className="font-semibold text-gray-800 text-sm">Каса — чеки ({sales.length})</h3>
+            <h3 className="font-semibold text-gray-800 text-sm">Каса — останні чеки ({sales.length}, до 200)</h3>
           </div>
           {sales.length === 0 ? (
-            <p className="px-6 py-8 text-center text-gray-400 text-sm">Покупок ще немає</p>
+            <p className="px-6 py-8 text-center text-gray-400 text-sm">{errors['Чеки'] ? 'Чеки не завантажені' : 'Покупок ще немає'}</p>
           ) : (
             <div className="divide-y divide-gray-50">
               {sales.map((s) => (
@@ -614,180 +323,17 @@ export default function CustomerDetailPage() {
         onClose={() => setEditModal(false)}
         onSaved={(updated) => {
           setCustomer(updated)
-          void load()
-          loadDeposit()
-        }}
-      />
-
-      {/* Модалка бонусів */}
-      <Modal open={bonusModal} onClose={() => setBonusModal(false)} title="Бонуси клієнта" size="sm">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Бонусний баланс (грн)</label>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={bonusVal}
-              onChange={(e) => setBonusVal(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-            />
-            <p className="mt-1 text-xs text-gray-400">Це ручне коригування: впиши потрібну суму бонусів клієнта.</p>
-          </div>
-          <div className="flex gap-3">
-            <Button loading={savingBonus} onClick={handleSaveBonusBalance} className="flex-1">
-              Зберегти
-            </Button>
-            <Button variant="secondary" onClick={() => setBonusModal(false)}>Скасувати</Button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Модалка налаштування знижки та статусу */}
-      <Modal open={discountModal} onClose={() => setDiscountModal(false)} title="Процент клієнта та статус" size="sm">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Процент клієнта (%)</label>
-            <input
-              type="number"
-              min="0"
-              max="100"
-              step="0.1"
-              value={discountVal}
-              onChange={(e) => setDiscountVal(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
-            <select
-              value={statusVal}
-              onChange={(e) => setStatusVal(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-            >
-              <option value="client">Звичайний клієнт</option>
-              <option value="sto">СТО</option>
-            </select>
-          </div>
-          <div className="flex gap-3">
-            <Button loading={savingDiscount} onClick={handleSaveDiscountStatus} className="flex-1">
-              Зберегти
-            </Button>
-            <Button variant="secondary" onClick={() => setDiscountModal(false)}>Скасувати</Button>
-          </div>
-        </div>
-      </Modal>
-      <QuickCustomerEditModal
-        customer={customer}
-        open={editModal}
-        onClose={() => setEditModal(false)}
-        onSaved={(saved) => {
-          setCustomer(saved)
           setEditModal(false)
-          loadDeposit()
+          setRevision((n) => n + 1)
         }}
       />
 
 
-      <Modal open={carModal} onClose={() => setCarModal(false)} title="Додати автомобіль" size="sm">
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Марка *</label>
-              <input value={carForm.brand} onChange={(e) => setCarForm({ ...carForm, brand: e.target.value })}
-                placeholder="Toyota, BMW..."
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Модель *</label>
-              <input value={carForm.model} onChange={(e) => setCarForm({ ...carForm, model: e.target.value })}
-                placeholder="Camry, X5..."
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Рік</label>
-              <input type="number" min="1900" max="2100"
-                value={carForm.year} onChange={(e) => setCarForm({ ...carForm, year: e.target.value })}
-                placeholder="2012"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">VIN-код</label>
-              <input value={carForm.vin} onChange={(e) => setCarForm({ ...carForm, vin: e.target.value.toUpperCase() })}
-                maxLength={17} placeholder="17 символів"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent" />
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Нотатки</label>
-            <textarea value={carForm.notes} onChange={(e) => setCarForm({ ...carForm, notes: e.target.value })}
-              rows={2} placeholder="Додаткова інформація..."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent resize-none" />
-          </div>
-          <div className="flex gap-3">
-            <Button loading={savingCar} onClick={async () => {
-              if (!carForm.brand.trim() || !carForm.model.trim()) {
-                toast.error('Марка та модель обов\'язкові'); return
-              }
-              setSavingCar(true)
-              try {
-                const { data } = await customerVehiclesApi.create(id!, {
-                  brand: carForm.brand.trim(),
-                  model: carForm.model.trim(),
-                  year: carForm.year ? parseInt(carForm.year) : null,
-                  vin: carForm.vin.trim() || null,
-                  notes: carForm.notes.trim() || null,
-                })
-                setCars((prev) => [data, ...prev])
-                setCarModal(false)
-                setCarForm({ brand: '', model: '', year: '', vin: '', notes: '' })
-                toast.success('Автомобіль додано')
-              } catch (e) {
-                toast.error(e instanceof Error ? e.message : 'Помилка')
-              } finally { setSavingCar(false) }
-            }} className="flex-1">
-              Зберегти
-            </Button>
-            <Button variant="secondary" onClick={() => setCarModal(false)}>Скасувати</Button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Модалка погашення боргу */}
-      <Modal open={payModal} onClose={() => setPayModal(false)} title="Погасити борг" size="sm">
-        <div className="space-y-4">
-          <p className="text-sm text-gray-600">
-            Поточний борг: <strong className="text-red-600">{formatMoney(customer.debt_balance)}</strong>
-          </p>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Сума оплати (грн)</label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              max={(customer.debt_balance / 100).toFixed(2)}
-              value={payAmount}
-              onChange={(e) => setPayAmount(e.target.value)}
-              placeholder="0.00"
-              autoFocus
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-            />
-          </div>
-          <div className="flex gap-3">
-            <Button loading={paying} onClick={handlePayDebt} className="flex-1">
-              Підтвердити оплату
-            </Button>
-            <Button variant="secondary" onClick={() => setPayModal(false)}>Скасувати</Button>
-          </div>
-        </div>
-      </Modal>
 
       <Modal open={deleteModal} onClose={() => setDeleteModal(false)} title="Видалити клієнта?" size="sm">
         <p className="text-sm text-gray-600 mb-6">
           Клієнта <span className="font-medium">"{customer?.full_name ?? customer?.phone}"</span> буде видалено.
-          Цю дію не можна скасувати.
+          Видалення неможливе за наявності боргу, коштів, бонусів або активних замовлень. Історія операцій зберігається.
         </p>
         <div className="flex gap-3">
           <Button variant="danger" loading={deleting} onClick={handleDelete} className="flex-1">
