@@ -1,5 +1,6 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
 import type { CashOperation, CashSummary, CashOperationType } from '@/types/cashOperation'
@@ -12,7 +13,9 @@ export const cashOperationApi = {
   create: async (shiftId: string, type: CashOperationType, amount: number, note?: string, source = 'cashbox') => {
     const local = desktopBridge()?.pos.createCashOperation
     if (local) {
-      const data = await local({ shift_id: shiftId, type, amount, note, source, user_id: userId() })
+      const payload = { shift_id: shiftId, type, amount, note, source, user_id: userId() }
+      const data = await durableLocalRequest(`cash:${shiftId}:${userId()}`, payload,
+        operation_id => local({ ...payload, operation_id }))
       requestDesktopSync()
       return { data: data as CashOperation }
     }

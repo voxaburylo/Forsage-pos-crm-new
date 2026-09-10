@@ -195,6 +195,7 @@ export default function OrderFormPage() {
 
   // Step 1: Customer
   const [customerId, setCustomerId] = useState('')
+  const [loadedOrderVersion, setLoadedOrderVersion] = useState<string>()
   const [customerSearch, setCustomerSearch] = useState('')
   const [defaultCustomers, setDefaultCustomers] = useState<Customer[]>([])
   const [searchedCustomers, setSearchedCustomers] = useState<Customer[]>([])
@@ -325,6 +326,7 @@ export default function OrderFormPage() {
       .then((r) => {
         const o = r.data
         if (!o) return
+        setLoadedOrderVersion(o.updated_at)
         
         // Load customer
         if (o.customer) {
@@ -938,7 +940,8 @@ export default function OrderFormPage() {
     try {
       let orderId = id
       if (id) {
-        await orderApi.update(id, payload)
+        const updated = await orderApi.update(id, { ...payload, expected_updated_at: loadedOrderVersion })
+        setLoadedOrderVersion(updated.data.updated_at)
       } else {
         const result = await orderApi.create(payload)
         orderId = (result as { data: { id: string } }).data.id

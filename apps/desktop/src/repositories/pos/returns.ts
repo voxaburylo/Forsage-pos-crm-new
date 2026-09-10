@@ -448,6 +448,9 @@ export class LocalPosReturns extends LocalPosSales {
       if (!productId || source.product_id !== productId) {
         throw new Error('Товар не відповідає позиції чека')
       }
+      if (stockAction === 'return_to_stock' && !this.getProductForUpdate(productId, tenantId)) {
+        throw new Error(`Товар «${source.product_name}» видалений або неактивний. Спочатку відновіть картку товару. Повернення не проведено.`)
+      }
       if (
         !Number.isFinite(quantity)
         || quantity <= 0

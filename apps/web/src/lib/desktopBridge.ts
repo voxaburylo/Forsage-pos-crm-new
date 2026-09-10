@@ -55,6 +55,7 @@ export interface DesktopRuntimeInfo {
 }
 
 export interface DesktopProduct {
+  cross_numbers_count?: number
   id: string
   tenant_id: string
   sku: string
@@ -457,6 +458,10 @@ interface ForsageDesktopBridge {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
+    rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean; pinRequired?: boolean }>
+    setPinRequired?: (enabled: boolean) => Promise<{ pinRequired: boolean }>
+    remember?: (pin: string) => Promise<unknown>
+    unlockRemembered?: (pin: string) => Promise<{ id:string; tenant_id:string; role:string; phone:string; full_name:string; email:string; is_active:boolean }>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   lan?: {
@@ -760,6 +765,7 @@ export function desktopProductToProduct(product: DesktopProduct): Product {
     name: product.name,
     barcode: product.barcode,
     additional_barcodes: null,
+    cross_numbers_count: product.cross_numbers_count,
     brand_id: brandId,
     category_id: categoryId,
     unit: product.unit,

@@ -372,6 +372,13 @@ export class LocalSupplyRepository {
     const draftItems: Array<Record<string, unknown>> = []
 
     const invoice = this.db.transaction(() => {
+      // One exact-name index for the whole document, including newly created rows.
+      const names = new Map<string, string[]>()
+      for (const candidate of this.db.prepare(`SELECT id, name FROM products
+        WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1`).all(tenantId) as Array<{ id: string; name: string }>) {
+        const key = normalize(candidate.name)
+        names.set(key, [...(names.get(key) ?? []), candidate.id])
+      }
       for (const raw of input.rows) {
         const recognizedName = String(raw.name ?? raw.title ?? raw.description ?? '').trim()
         if (!recognizedName) continue
@@ -385,11 +392,9 @@ export class LocalSupplyRepository {
         if (!product && recognizedSku) product = catalog.findBySku(recognizedSku, tenantId)
         if (!product) {
           const wantedName = normalize(recognizedName)
-          const candidates = this.db.prepare(`
-            SELECT id, name FROM products WHERE tenant_id = ? AND deleted_at IS NULL
-          `).all(tenantId) as Array<{ id: string; name: string }>
-          const exact = candidates.find((candidate) => normalize(candidate.name) === wantedName)
-          if (exact) product = catalog.findById(exact.id, tenantId)
+          const exact = names.get(wantedName) ?? []
+          if (exact.length > 1) throw new Error(`Знайдено кілька карток «${recognizedName}». Уточніть артикул або штрихкод у накладній.`)
+          if (exact.length === 1) product = catalog.findById(exact[0], tenantId)
         }
 
         const wasCreated = !product
@@ -428,6 +433,7 @@ export class LocalSupplyRepository {
             brand_id: brandId,
           })
           created++
+          names.set(normalize(product.name), [product.id])
           unresolved.push({ name: recognizedName, sku: productSku, needs_barcode: true, needs_category: !categoryId })
         } else {
           matched++

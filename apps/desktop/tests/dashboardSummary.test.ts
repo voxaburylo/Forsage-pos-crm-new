@@ -75,8 +75,8 @@ describe('local dashboard summary', () => {
       payments: [{ method: 'cash', amount: 120 }],
     })
 
-    // Legacy receipts created before COGS snapshots contain zero in this field.
-    db.prepare('UPDATE sale_items SET purchase_price = 0').run()
+    // Later catalogue prices must not rewrite historical cost snapshots.
+    db.prepare('UPDATE products SET purchase_price = 999').run()
 
     const summary = pos.dashboardSummary({
       date_from: new Date(Date.now() - 60_000).toISOString(),
@@ -116,5 +116,23 @@ describe('local dashboard summary', () => {
         qty_on_hand: 8,
       }),
     ])
+  })
+
+  it('deducts full returns in their own period without inventing expenses', () => {
+    const product = catalog.upsertProduct({ id: randomUUID(), sku: 'RETURN', name: 'Return', qty_on_hand: 4, purchase_price: 40, retail_price: 100 })
+    const sale = pos.checkout({ cashier_id: cashierId, shift_id: shiftId,
+      items: [{ product_id: product.id, qty: 2, unit_price: 100 }], payments: [{ method: 'cash', amount: 200 }] })
+    const item = pos.getSaleForReturn(sale.sale_id).items[0]
+    const payload = { sale_id: sale.sale_id, approved_by: cashierId, shift_id: shiftId, reason: 'other', refund_method: 'cash', stock_action: 'return_to_stock',
+      items: [{ sale_item_id: item.id, product_id: product.id, quantity: 2, condition: 'good' }] }
+    db.prepare(`UPDATE products SET is_active = 0 WHERE id = ?`).run(product.id)
+    expect(() => pos.createReturn(payload)).toThrow(/неактивний/)
+    expect(db.prepare('SELECT COUNT(*) n FROM customer_returns').get()).toEqual({ n: 0 })
+    db.prepare(`UPDATE products SET is_active = 1 WHERE id = ?`).run(product.id)
+    pos.createReturn(payload)
+    const range = { date_from: new Date(Date.now() - 60_000).toISOString(), date_to: new Date(Date.now() + 60_000).toISOString() }
+    expect(pos.dashboardSummary(range).analytics).toMatchObject({ total_revenue: 0, cogs: 0, gross_profit: 0, refund_total: 200, expenses: null, net_profit: null })
+    db.prepare(`UPDATE sales SET completed_at = '2020-01-01T12:00:00.000Z' WHERE id = ?`).run(sale.sale_id)
+    expect(pos.dashboardSummary(range).analytics).toMatchObject({ total_revenue: -200, cogs: -80, gross_profit: -120 })
   })
 })

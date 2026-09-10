@@ -27,11 +27,13 @@ export default function QuickDraftPage() {
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(!!id)
   const [saving, setSaving] = useState(false)
+  const [loadedOrderVersion, setLoadedOrderVersion] = useState<string>()
 
   useEffect(() => {
     if (!id) return
     orderApi.get(id)
       .then(({ data }) => {
+        setLoadedOrderVersion(data.updated_at)
         setPhone(data.customer?.phone ?? '')
         setCustomerName(data.customer?.full_name ?? '')
         if (data.customer) {
@@ -133,7 +135,8 @@ export default function QuickDraftPage() {
       }
 
       if (id) {
-        await orderApi.update(id, payload)
+        const updated = await orderApi.update(id, { ...payload, expected_updated_at: loadedOrderVersion })
+        setLoadedOrderVersion(updated.data.updated_at)
         toast.success('Чернетку оновлено')
       } else {
         await orderApi.create({

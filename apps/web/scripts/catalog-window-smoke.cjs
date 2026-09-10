@@ -1,0 +1,41 @@
+// Start the web dev server on 127.0.0.1:5199 before running this isolated UI test.
+const { chromium } = require('playwright')
+const assert = require('node:assert/strict')
+;(async () => {
+  const browser = await chromium.launch({ headless: true })
+  try {
+    const page = await browser.newPage({ viewport: { width: 1100, height: 700 } })
+    const errors = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.goto('http://127.0.0.1:5199/tests/fixtures/catalog-chunk.html')
+    await page.locator('[data-product="0"]').waitFor()
+    const main = page.locator('#app-main-scroll')
+    await page.waitForTimeout(200)
+    const initial = await main.evaluate(el => el.scrollHeight)
+    await page.getByRole('checkbox', { name: 'Обрати 0', exact: true }).check()
+    for (const fraction of [0.25, 0.5, 1, 0]) {
+      await main.evaluate((el, fraction) => { el.scrollTop = fraction * el.scrollHeight }, fraction)
+      await page.waitForTimeout(200)
+      const count = await page.locator('[data-product]').count()
+      const height = await main.evaluate(el => el.scrollHeight)
+      assert(count < 200, 'Off-screen rows retained: ' + count)
+      assert(Math.abs(initial - height) < 20, 'Scroll extent changed: ' + initial + ' -> ' + height)
+      console.log(JSON.stringify({ layout: 'desktop', fraction, mountedRows: count, height }))
+    }
+    assert(await page.getByRole('checkbox', { name: 'Обрати 0', exact: true }).isChecked())
+    await page.setViewportSize({ width: 390, height: 700 })
+    await page.waitForTimeout(200)
+    assert(await page.getByRole('checkbox', { name: 'Обрати 0', exact: true }).isChecked())
+    const mobileHeight = await main.evaluate(el => el.scrollHeight)
+    await main.evaluate(el => { el.scrollTop = el.scrollHeight })
+    await page.waitForTimeout(200)
+    await page.locator('[data-product="999"]').waitFor()
+    assert(await page.locator('[data-product]').count() < 150)
+    assert(Math.abs(mobileHeight - await main.evaluate(el => el.scrollHeight)) < 20)
+    await main.evaluate(el => { el.scrollTop = 0 })
+    await page.waitForTimeout(200)
+    assert(await page.getByRole('checkbox', { name: 'Обрати 0', exact: true }).isChecked())
+    assert.deepEqual(errors, [])
+    console.log('PASS: desktop/mobile windowing, last item, scroll extent, selection and resize')
+  } finally { await browser.close() }
+})().catch(error => { console.error(error); process.exitCode = 1 })

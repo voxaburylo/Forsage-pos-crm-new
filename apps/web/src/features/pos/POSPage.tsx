@@ -41,6 +41,7 @@ import { OfflineSalesModal } from './OfflineSalesModal'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { SyncHealthIndicator } from '@/components/SyncHealthIndicator'
+import { missingSavedTabs } from './cartRecovery'
 
 const CART_KEY = 'forsage_pos_cart'
 
@@ -267,7 +268,12 @@ export default function POSPage() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити чек')
     }
   }
-  const [recoverCart, setRecoverCart]   = useState<SavedCart | null>(null)
+  const [recoverCart, setRecoverCart] = useState<SavedCart | null>(() => {
+    const saved = loadCart()
+    if (!saved) return null
+    const tabs = missingSavedTabs(saved.tabs, usePOSStore.getState().tabs)
+    return tabs.length ? { ...saved, tabs } : null
+  })
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
   const [isLockedPIN, setLockedPIN]     = useState(isLocked())
@@ -414,15 +420,6 @@ export default function POSPage() {
     }
   }, [])
 
-  // Crash Recovery — перевірка збереженого кошика при монтуванні
-  useEffect(() => {
-    const saved = loadCart()
-    if (saved && saved.tabs.length > 0) {
-      const hasItems = saved.tabs.some((t) => t.items.length > 0)
-      if (hasItems) setRecoverCart(saved)
-    }
-  }, [])
-
   // Crash Recovery — перевірка чи продаж пройшов (якщо є незавершена спроба)
   useEffect(() => {
     const raw = localStorage.getItem(PAYMENT_ATTEMPT_KEY)
@@ -442,11 +439,19 @@ export default function POSPage() {
 
   // Crash Recovery — авто-збереження всіх вкладок (зберігаємо і shift_id)
   useEffect(() => {
+    // Do not overwrite a genuine crash backup while its recovery is pending.
+    if (recoverCart) return
     // Під час серії сканів не серіалізуємо весь чек після кожного товару.
     // Останній стан зберігається одразу після короткої паузи.
     const timer = window.setTimeout(() => saveCart(store), 180)
     return () => window.clearTimeout(timer)
-  }, [store.tabs, store.currentShift])
+  }, [store.tabs, store.currentShift, recoverCart])
+
+  useEffect(() => {
+    const flush = () => { if (!recoverCart) saveCart(usePOSStore.getState()) }
+    window.addEventListener('beforeunload', flush)
+    return () => { window.removeEventListener('beforeunload', flush); flush() }
+  }, [recoverCart])
 
   // Очистити localStorage після успішного продажу або скидання
   const originalClear = useCallback(() => {
@@ -719,13 +724,14 @@ export default function POSPage() {
 
   function handleRestoreCart(cart: SavedCart) {
     try {
+      const missing = missingSavedTabs(cart.tabs, usePOSStore.getState().tabs)
       const availableTargets = store.tabs.filter((tab) => tab.items.length === 0).length + Math.max(0, 5 - store.tabs.length)
-      if (cart.tabs.length > availableTargets) {
-        toast.error(`Потрібно вільних вкладок: ${cart.tabs.length}. Закрийте зайві чеки та повторіть.`)
+      if (missing.length > availableTargets) {
+        toast.error(`Потрібно вільних вкладок: ${missing.length}. Закрийте зайві чеки та повторіть.`)
         return
       }
       let restored = 0
-      for (const savedTab of cart.tabs) {
+      for (const savedTab of missing) {
         const ok = store.restoreReceipt({
           idempotencyKey: savedTab.idempotencyKey,
           items: savedTab.items,
@@ -735,13 +741,13 @@ export default function POSPage() {
         if (!ok) break
         restored++
       }
-      if (restored !== cart.tabs.length) {
+      if (restored !== missing.length) {
         toast.error('Не вистачає вільних вкладок або кошик пошкоджений. Закрийте зайву вкладку й повторіть.')
         return
       }
       setRecoverCart(null)
-      clearSavedCart()
-      toast.success(restored > 1 ? `Відновлено вкладок: ${restored}` : 'Кошик відновлено')
+      saveCart(usePOSStore.getState())
+      if (restored) toast.success(restored > 1 ? `Відновлено вкладок: ${restored}` : 'Кошик відновлено')
     } catch (error) {
       console.error('Помилка відновлення збереженого кошика', error)
       toast.error('Кошик пошкоджений. Його можна безпечно видалити кнопкою поруч.')

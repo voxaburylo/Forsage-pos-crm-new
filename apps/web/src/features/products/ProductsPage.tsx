@@ -6,6 +6,8 @@ import {
   Trash2, GitMerge, Copy, FileText,
 } from 'lucide-react'
 import { MergeModal } from './MergeModal'
+import { CrossNumberBadge } from './CrossNumberBadge'
+import { CatalogChunk, catalogChunks, useDesktopCatalogLayout } from './CatalogChunk'
 import { CategorySidebar, UNCATEGORIZED_CATEGORY_ID } from './CategorySidebar'
 import { ImportModal } from './ImportModal'
 import { BulkEditModal } from './BulkEditModal'
@@ -67,6 +69,7 @@ function SortTh({ field, label, className, sort, onSort }: {
 const PRODUCTS_PER_PAGE = 100
 
 export default function ProductsPage() {
+  const desktopLayout = useDesktopCatalogLayout()
   const navigate = useNavigate()
   const session  = useAuthStore((s) => s.session)
   const role     = (session?.user?.app_metadata?.role as string) ?? 'cashier'
@@ -311,14 +314,15 @@ export default function ProductsPage() {
   useEffect(() => {
     const node = loadMoreRef.current
     if (!node || !hasMore || loadFailed) return
+    let active = true
     const observer = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && !loading && hasMore && !pageAdvanceLockedRef.current && previousFilterKeyRef.current === filterKey) {
+      if (active && entries[0]?.isIntersecting && !loading && hasMore && !pageAdvanceLockedRef.current && previousFilterKeyRef.current === filterKey) {
         pageAdvanceLockedRef.current = true
         setPage((p) => p + 1)
       }
     }, { rootMargin: '400px' })
     observer.observe(node)
-    return () => observer.disconnect()
+    return () => { active = false; observer.disconnect() }
   }, [hasMore, loading, loadFailed, filterKey])
 
   function toggleSort(field: SortField) {
@@ -666,7 +670,7 @@ export default function ProductsPage() {
 
           {/* Список */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-            <div className="md:hidden divide-y divide-gray-100">
+            {!desktopLayout && <div className="divide-y divide-gray-100">
               {loading && products.length === 0 ? (
                 Array.from({ length: 6 }).map((_, i) => (
                   <div key={i} className="p-3 animate-pulse">
@@ -681,7 +685,7 @@ export default function ProductsPage() {
                   <p className="text-gray-400 text-sm">Товарів не знайдено</p>
                   {search && <p className="text-gray-300 text-xs mt-1">Спробуйте інший запит</p>}
                 </div>
-              ) : products.map((p) => {
+              ) : catalogChunks(products).map((chunk) => <CatalogChunk key={chunk[0].id}>{() => chunk.map((p) => {
                 const stock = stockStatus(p)
                 const barcodes = [...new Set([
                   p.barcode,
@@ -707,6 +711,7 @@ export default function ProductsPage() {
                         </button>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
+                          <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}/edit`)} />
                           {p.category && <span className="text-[11px] text-gray-400">{p.category.name}</span>}
                           {p.brand?.name && <span className="text-[11px] text-gray-400">{p.brand.name}</span>}
                         </div>
@@ -752,10 +757,10 @@ export default function ProductsPage() {
                     </div>
                   </div>
                 )
-              })}
-            </div>
+              })}</CatalogChunk>)}
+            </div>}
 
-            <div className="hidden md:block overflow-x-auto">
+            {desktopLayout && <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="sticky top-0 z-20 bg-gray-50 border-b border-gray-200">
                   <tr>
@@ -767,6 +772,7 @@ export default function ProductsPage() {
                     <SortTh field="sku"          label="Артикул"  className="w-32"         sort={sort} onSort={toggleSort} />
                     <th className="w-40 px-3 py-3 text-left text-xs font-bold uppercase tracking-wide text-gray-500">Штрихкод</th>
                     <SortTh field="name"         label="Назва"                             sort={sort} onSort={toggleSort} />
+                    <th className="w-16 px-1 py-3 text-center text-[10px] font-semibold text-gray-500" title="Заповнення аналогів: кількість записаних крос-номерів">Кроси</th>
                     <SortTh field="brand"        label="Бренд"    className="w-32"         sort={sort} onSort={toggleSort} />
                     <th className="px-3 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide w-24">Місце</th>
                     <SortTh field="retail_price" label="Ціна"    className="w-28 text-right" sort={sort} onSort={toggleSort} />
@@ -779,20 +785,22 @@ export default function ProductsPage() {
                   {loading && products.length === 0 ? (
                     Array.from({ length: 8 }).map((_, i) => (
                       <tr key={i} className="animate-pulse">
-                        <td colSpan={10} className="px-3 py-3">
+                        <td colSpan={11} className="px-3 py-3">
                           <div className="h-4 bg-gray-100 rounded w-full" />
                         </td>
                       </tr>
                     ))
                   ) : products.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="text-center py-16">
+                      <td colSpan={11} className="text-center py-16">
                         <Package size={40} className="mx-auto text-gray-200 mb-3" />
                         <p className="text-gray-400 text-sm">Товарів не знайдено</p>
                         {search && <p className="text-gray-300 text-xs mt-1">Спробуйте інший запит</p>}
                       </td>
                     </tr>
-                  ) : products.map((p) => {
+                  ) : null}
+                </tbody>
+                {catalogChunks(products).map((chunk) => <CatalogChunk table key={chunk[0].id}>{() => chunk.map((p) => {
                     const stock = stockStatus(p)
                     const barcodes = [...new Set([
                       p.barcode,
@@ -853,6 +861,7 @@ export default function ProductsPage() {
                             </div>
                           </div>
                         </td>
+                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}/edit`)} /></td>
                         <td className="px-3 py-3 text-sm text-gray-500">{p.brand?.name ?? '—'}</td>
                         <td className="px-3 py-3">
                           {editBinId === p.id ? (
@@ -933,10 +942,9 @@ export default function ProductsPage() {
                         </td>
                       </tr>
                     )
-                  })}
-                </tbody>
+                  })}</CatalogChunk>)}
               </table>
-            </div>
+            </div>}
 
             {/* Нескінченний скрол: сентинел + лічильник */}
             <div ref={loadMoreRef} />

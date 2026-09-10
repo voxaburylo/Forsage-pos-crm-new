@@ -1,5 +1,7 @@
 import { api, type RequestOptions } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { durableLocalRequest } from '@/lib/durableLocalRequest'
+import { useAuthStore } from '@/stores/authStore'
 
 // ---------- Типи ----------
 
@@ -68,6 +70,7 @@ export interface CreateOrderItemPayload {
 }
 
 export interface CreateOrderPayload {
+  expected_updated_at?: string
   customer_id?: string | null
   chat_id?: string | null
   vehicle_info?: { make?: string; model?: string; year?: number; vin?: string } | null
@@ -121,7 +124,9 @@ export const orderApi = {
   create: async (body: CreateOrderPayload, opts: OrderRequestOptions = {}) => {
     const local = desktopBridge()?.orders?.save
     if (local) {
-      const data = await local(body)
+      const user = useAuthStore.getState().session?.user?.id ?? 'local'
+      const data = await durableLocalRequest(`order-create:${user}`, body,
+        operation_id => local({ ...body, operation_id }))
       requestOrderSync()
       return { data: data as CustomerOrder }
     }

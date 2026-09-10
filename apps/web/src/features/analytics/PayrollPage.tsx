@@ -9,6 +9,7 @@ import { staffApi } from '@/features/staff/staffApi'
 import type { DailySummary, EmployeeSummary, SalaryPayment, SalaryFundSource } from '@/features/staff/staffApi'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
+import { businessDateKey, shiftBusinessMonth } from '@/lib/businessDate'
 
 type OperationType = SalaryPayment['type']
 type PaymentMethod = SalaryPayment['method']
@@ -26,7 +27,7 @@ const PAYMENT_LABELS: Record<PaymentMethod, string> = {
 }
 
 function currentPeriod(): string {
-  return new Date().toISOString().slice(0, 7)
+  return businessDateKey().slice(0, 7)
 }
 
 function localDate(): string {
@@ -100,9 +101,7 @@ export default function PayrollPage() {
   )
 
   function shiftPeriod(delta: number) {
-    const [year, month] = period.split('-').map(Number)
-    const date = new Date(year, month - 1 + delta, 1)
-    setPeriod(date.toISOString().slice(0, 7))
+    setPeriod(shiftBusinessMonth(period, delta))
   }
 
   async function currentShiftId(): Promise<string> {

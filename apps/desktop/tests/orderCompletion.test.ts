@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../src/db/localTypes'
 import { LocalOrderRepository } from '../src/repositories/orderRepository'
@@ -60,6 +60,34 @@ describe('LocalOrderRepository.completeOrder', () => {
     return id
   }
 
+  it('restores business documents, stock and payment replay receipts together from backup', async () => {
+    const productId = insertProduct({ qty: 8, price: 500 })
+    const { orderId } = createPaidOrder({ productId, qty: 2, unitPrice: 500 })
+    const issued = repository.completeOrder(orderId, { user_id: cashierId, shift_id: shiftId })
+    const tables = ['products', 'customer_orders', 'customer_order_items', 'order_payments', 'sales', 'sale_items', 'cash_operations', 'inventory_movements', 'stock_reserves', 'sync_outbox']
+    const snapshot = () => Object.fromEntries(tables.map(table => [table, db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all()]))
+    const before = snapshot()
+    const backup = await db.backupNow()
+    db.prepare('UPDATE products SET qty_on_hand = 999 WHERE id = ?').run(productId)
+    db.close()
+    LocalDatabase.stageBackupForRestart(root, path.basename(backup))
+    db = LocalDatabase.open(root).database
+    repository = new LocalOrderRepository(db)
+    expect(snapshot()).toEqual(before)
+    expect(repository.completeOrder(orderId, { user_id: cashierId, shift_id: shiftId }).data.sale_id).toBe(issued.data.sale_id)
+    expect(db.prepare('SELECT qty_on_hand FROM products WHERE id = ?').get(productId)).toEqual({ qty_on_hand: 6 })
+  })
+
+  it('never marks an order payment or issue as fiscal without a fiscal receipt', () => {
+    const productId = insertProduct({ qty: 3, price: 500 })
+    const { orderId } = createPaidOrder({ productId, qty: 1, unitPrice: 500 })
+    const payments = db.prepare('SELECT COUNT(*) n FROM order_payments').get()
+    expect(() => repository.addPayment(orderId, { user_id: cashierId, shift_id: shiftId, amount: 100, method: 'cash', is_fiscal: true })).toThrow(/фіскаль/i)
+    expect(db.prepare('SELECT COUNT(*) n FROM order_payments').get()).toEqual(payments)
+    expect(() => repository.completeOrder(orderId, { user_id: cashierId, shift_id: shiftId, is_fiscal: true })).toThrow(/фіскаль/i)
+    expect(db.prepare('SELECT COUNT(*) n FROM sales').get()).toEqual({ n: 0 })
+  })
+
   function createPaidOrder(input: {
     productId: string
     qty: number
@@ -90,6 +118,72 @@ describe('LocalOrderRepository.completeOrder', () => {
     })
     return { orderId: order.id as string, itemId }
   }
+
+  function duplicateOrder(stock: number) {
+    const productId = insertProduct({ qty: stock, price: 500 })
+    const order = repository.saveOrder({ manager_id: cashierId, items: [1, 2].map(() => ({
+      product_id: productId, name: 'Core part', qty: 1, sell_price: 500, item_status: 'arrived',
+    })) })
+    repository.addPayment(order.id, { user_id: cashierId, shift_id: shiftId, amount: 1000, method: 'cash' })
+    return { order, productId }
+  }
+
+  it('subtracts duplicate product lines cumulatively', () => {
+    const { order, productId } = duplicateOrder(10)
+    repository.completeOrder(order.id, { user_id: cashierId, shift_id: shiftId })
+    expect(db.prepare('SELECT qty_on_hand qty FROM products WHERE id = ?').get(productId)).toEqual({ qty: 8 })
+  })
+
+  it('rejects the combined quantity above stock without issuing any line', () => {
+    const { order, productId } = duplicateOrder(2)
+    db.prepare('UPDATE products SET qty_on_hand = 1 WHERE id = ?').run(productId)
+    expect(() => repository.completeOrder(order.id, { user_id: cashierId, shift_id: shiftId })).toThrow(/Недостатньо/)
+    expect(db.prepare('SELECT qty_on_hand qty FROM products WHERE id = ?').get(productId)).toEqual({ qty: 1 })
+  })
+
+  it('does not issue into a closed or another cashiers shift', () => {
+    const { order } = duplicateOrder(10)
+    db.prepare(`UPDATE shifts SET status = 'closed' WHERE id = ?`).run(shiftId)
+    expect(() => repository.completeOrder(order.id, { user_id: cashierId, shift_id: shiftId })).toThrow(/змін/)
+    db.prepare(`UPDATE shifts SET status = 'open', cashier_id = ? WHERE id = ?`).run(randomUUID(), shiftId)
+    expect(() => repository.completeOrder(order.id, { user_id: cashierId, shift_id: shiftId })).toThrow(/змін/)
+  })
+
+  it('reserves stock, updates reservation on edit, and rejects a second order taking it', () => {
+    const { order, productId } = duplicateOrder(2)
+    expect(() => repository.saveOrder({ items: [{ product_id: productId, name: 'Part', qty: 1, sell_price: 500 }] })).toThrow(/резерв/)
+    const current = repository.getOrder(order.id)
+    const updated = repository.saveOrder({ expected_updated_at: current.updated_at, items: [order.items[0]] }, order.id)
+    expect(db.prepare('SELECT SUM(qty) qty FROM stock_reserves WHERE order_id = ? AND released_at IS NULL').get(order.id)).toEqual({ qty: 1 })
+    expect(updated.items).toHaveLength(1)
+    expect(() => repository.saveOrder({ expected_updated_at: 'old-version', items: [] }, order.id)).toThrow(/вже змінено/)
+  })
+
+  it('replays order creation without another order and rejects a changed payload', () => {
+    const input = { operation_id: randomUUID(), items: [{ name: 'Manual part', qty: 1, sell_price: 100, source_type: 'supplier' }] }
+    const first = repository.saveOrder(input)
+    expect(repository.saveOrder(input).id).toBe(first.id)
+    expect(() => repository.saveOrder({ ...input, comment: 'Changed' })).toThrow(/інші дані/)
+  })
+
+  it('advances the edit version even if the computer clock goes backwards', () => {
+    const first = repository.saveOrder({ items: [] })
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(0)
+    try {
+      const second = repository.saveOrder({ expected_updated_at: first.updated_at, comment: 'Edit one' }, first.id)
+      expect(Date.parse(second.updated_at)).toBeGreaterThan(Date.parse(first.updated_at))
+      expect(() => repository.saveOrder({ expected_updated_at: first.updated_at, comment: 'Stale edit' }, first.id)).toThrow(/вже змінено/)
+    } finally { clock.mockRestore() }
+  })
+
+  it('rejects payment of a canceled order and another cashiers shift', () => {
+    const productId = insertProduct({ qty: 10, price: 500 })
+    const order = repository.saveOrder({ manager_id: cashierId, items: [{ product_id: productId, name: 'Part', qty: 1, sell_price: 500 }] })
+    db.prepare(`UPDATE customer_orders SET status = 'canceled' WHERE id = ?`).run(order.id)
+    expect(() => repository.addPayment(order.id, { user_id: cashierId, shift_id: shiftId, amount: 100, method: 'cash' })).toThrow(/скасован/)
+    db.prepare(`UPDATE customer_orders SET status = 'new' WHERE id = ?`).run(order.id)
+    expect(() => repository.addPayment(order.id, { user_id: randomUUID(), shift_id: shiftId, amount: 100, method: 'cash' })).toThrow(/змін/)
+  })
 
   it('charges the product core deposit, includes handed lines, and replays without duplicate movements', () => {
     const productId = insertProduct({ qty: 10, price: 500, coreDeposit: 100 })

@@ -58,6 +58,17 @@ describe('local POS stock safety', () => {
     expect(catalog.findById(stored.id)?.qty_on_hand).toBe(1)
   })
 
+  it('subtracts all duplicate product lines', () => {
+    const stored = product(10)
+    pos.checkout({ cashier_id: cashierId, shift_id: shiftId,
+      items: [
+        { product_id: stored.id, qty: 1, unit_price: 100 },
+        { product_id: stored.id, qty: 2, unit_price: 150 },
+      ], payments: [{ method: 'cash', amount: 400 }],
+    })
+    expect(catalog.findById(stored.id)?.qty_on_hand).toBe(7)
+  })
+
   it('does not sell stock reserved for an order', () => {
     const stored = product(2)
     const now = new Date().toISOString()

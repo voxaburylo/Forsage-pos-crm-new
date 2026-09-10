@@ -1,5 +1,6 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -40,7 +41,11 @@ export const posOrderApi = {
   addPayment: async (orderId: string, body: any, opts: Options = {}) => {
     const local = localOrders()
     if (local?.addPayment) {
-      const result = await local.addPayment(orderId, { ...body, user_id: userId() })
+      const { payment_id: _transientId, ...details } = body
+      const payload = { ...details, user_id: userId() }
+      const result = await durableLocalRequest(`order-payment:${orderId}:${userId()}`, payload,
+        payment_id => local.addPayment!(orderId, { ...payload, payment_id }))
+      void _transientId
       requestDesktopSync()
       return result
     }

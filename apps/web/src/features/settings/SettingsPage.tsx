@@ -16,6 +16,7 @@ import { BackupSettingsCard } from './BackupSettingsCard'
 import { ProblemLogCard } from './ProblemLogCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
+import { LoginSecurityCard } from './LoginSecurityCard'
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
 
@@ -399,6 +400,7 @@ export default function SettingsPage() {
           {isDesktopRuntime() && <BackupSettingsCard />}
 
           {isDesktopRuntime() && <LanSettingsCard />}
+          {isDesktopRuntime() && <LoginSecurityCard />}
 
           {isDesktopRuntime() && <FiscalSettingsCard />}
 

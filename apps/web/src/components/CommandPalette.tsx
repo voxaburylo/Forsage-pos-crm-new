@@ -5,6 +5,7 @@ import {
   Plus, FileText, BarChart2, CornerDownLeft,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/authStore'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { productApi } from '@/features/products/productApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { kopecksToHryvnia } from '@/types/product'
@@ -111,7 +112,7 @@ export function CommandPalette() {
 
   const q = query.trim().toLowerCase()
   const staticItems: Item[] = STATIC
-    .filter((c) => !c.roles || c.roles.includes(role))
+    .filter((c) => (c.to !== '/pos' || isDesktopRuntime()) && (!c.roles || c.roles.includes(role)))
     .filter((c) => !q || c.label.toLowerCase().includes(q) || (c.keywords ?? '').includes(q))
     .map((c) => ({ id: c.to + c.label, label: c.label, icon: c.icon, group: c.group, run: () => navigate(c.to) }))
 

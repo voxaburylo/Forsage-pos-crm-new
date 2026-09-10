@@ -18,6 +18,7 @@
  */
 import { isDesktopRuntime } from './desktopBridge'
 import { catalogComparator } from './catalogOrder'
+import { catalogLanguageTokenGroups } from '../../../desktop/src/lib/catalogLanguageSearch'
 
 /** Одна перевірка на всі входи в чергу продажів — щоб не покладатися на памʼять. */
 function assertBrowserQueueUsable(action: string): void {
@@ -106,6 +107,8 @@ export function offlineProductMatchesQuery(product: any, rawQuery: string): bool
     ...(Array.isArray(product.cross_numbers) ? product.cross_numbers : []),
   ].filter(Boolean).join(' '))
   if (!searchText) return false
+  const languageGroups = catalogLanguageTokenGroups(query)
+  if (languageGroups.length > 0 && languageGroups.every(group => group.some(token => searchText.includes(token)))) return true
   const needles = offlineProductSearchNeedles(query)
   if (needles.some((needle) => searchText.includes(needle))) return true
   const tokens = offlineProductSearchTokens(query)

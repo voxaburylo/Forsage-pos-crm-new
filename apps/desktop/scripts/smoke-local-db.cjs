@@ -12,8 +12,7 @@ const { LocalOrderRepository } = require('../dist/repositories/orderRepository.j
 const { LocalStaffRepository } = require('../dist/repositories/staffRepository.js');
 const { LocalSyncRepository } = require('../dist/repositories/syncRepository.js');
 
-const baseDir = path.join('C:\\tmp', `forsage-desktop-smoke-${Date.now()}`);
-fs.mkdirSync(baseDir, { recursive: true });
+const baseDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'forsage-desktop-smoke-'));
 
 function runFiscalIntentSmoke() {
   const fiscalDb = new LocalDatabase(path.join(baseDir, 'fiscal-intents'));

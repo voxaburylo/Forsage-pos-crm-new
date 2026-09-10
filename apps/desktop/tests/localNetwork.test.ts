@@ -62,6 +62,16 @@ describe('Forsage local network coordinator', () => {
       args: [{ items: [{ name: 'Фільтр' }] }],
       userId: 'manager-1',
     }])
+    const rejected = await fetch(`http://127.0.0.1:${port}/forsage-lan/rpc`, {
+      method: 'POST', headers: { Authorization: `Bearer ${hubStatus.accessKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: 'desktop:orders:save', args: [], user_id: 'manager-1', protocol_version: 1 }),
+    })
+    expect(rejected.ok).toBe(false)
+    expect(await rejected.text()).toContain('Несумісні версії')
+    expect(calls).toHaveLength(1)
+    await hub.stop()
+    await expect(client.invoke('desktop:orders:save', [], { id: 'manager-1', tenant_id: 'tenant-1', role: 'manager' })).rejects.toThrow(/Немає зв/)
+    expect(calls).toHaveLength(1)
   })
 
   it('never sends login, cloud sync, printing or fiscal commands to another PC', () => {

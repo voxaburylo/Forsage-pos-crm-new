@@ -3,7 +3,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
+import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
 import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDatabaseOpenResult } from './db/localDatabase'
 import { startBackupScheduler } from './db/backupScheduler'
 import { assertLocalDataAuthority } from './security/localDataAuthority'
@@ -98,6 +99,60 @@ let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
 let rendererCrashTimes: number[] = []
 let desktopAuthSession: { id: string; tenant_id: string; role: string } | null = null
+let rememberedAccess: RememberedAccess | null = null
+let rememberedSessionRequired = false
+let passwordAuthenticatedAt = 0
+function rememberedPinRequired(): boolean {
+  try {
+    const row = localDatabase?.prepare("SELECT value_json FROM app_meta WHERE key='local_login_pin_required'").get() as { value_json:string } | undefined
+    return !row || JSON.parse(row.value_json) !== false
+  } catch { return true }
+}
+function rememberedUser(id: string, tenant: string): RememberedUser | null {
+  return (localDatabase?.prepare('SELECT id,tenant_id,role,phone,full_name,password_hash,pin_hash,is_active,deleted_at FROM staff_users WHERE id=? AND tenant_id=?').get(id,tenant) as RememberedUser | undefined) ?? null
+}
+function getRememberedAccess(): RememberedAccess {
+  if (!localDatabase) throw Error('Локальна база ще не готова')
+  if (!rememberedAccess) {
+    powerMonitor.on('suspend', () => rememberedAccess?.lock())
+    powerMonitor.on('lock-screen', () => rememberedAccess?.lock())
+    // Lock independently of renderer polling, including a busy/frozen renderer.
+    const idleTimer = setInterval(() => {
+      if (rememberedSessionRequired && rememberedPinRequired() && powerMonitor.getSystemIdleTime() >= 300) {
+        rememberedAccess?.lock()
+        desktopAuthSession = null
+      }
+    }, 1000)
+    idleTimer.unref()
+    rememberedAccess = new RememberedAccess({
+    read: () => {
+      const row = localDatabase!.prepare("SELECT value_json FROM app_meta WHERE key='windows_day_access'").get() as { value_json:string } | undefined
+      return row ? JSON.parse(row.value_json) : null
+    },
+    write: value => {
+      if (value === null) localDatabase!.prepare("DELETE FROM app_meta WHERE key='windows_day_access'").run()
+      else localDatabase!.prepare("INSERT INTO app_meta(key,value_json,updated_at) VALUES('windows_day_access',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at").run(JSON.stringify(value),new Date().toISOString())
+    },
+    encrypt: text => {
+      if (process.platform !== 'win32' || !safeStorage.isEncryptionAvailable()) throw Error('Захищене сховище Windows недоступне. Використайте пароль')
+      return safeStorage.encryptString(text).toString('base64')
+    },
+    decrypt: text => safeStorage.decryptString(Buffer.from(text,'base64')),
+    user: rememberedUser,
+    pinRequired: rememberedPinRequired,
+    })
+  }
+  return rememberedAccess
+}
+function rememberedStatus() {
+  const access = getRememberedAccess()
+  if (rememberedSessionRequired && powerMonitor.getSystemIdleTime() >= 300) access.lock()
+  if (!desktopAuthSession) access.lock()
+  const status = access.status()
+  const locked = Boolean((status && !desktopAuthSession) || status?.locked || (rememberedSessionRequired && !status))
+  if (locked) desktopAuthSession = null
+  return { ...status, locked, available: Boolean(status), pinRequired: rememberedPinRequired() }
+}
 
 function diagnosticValue(value: unknown, depth = 0): string {
   if (value instanceof Error) {
@@ -231,6 +286,7 @@ function requireCashalot(): CashalotService {
 function requireDesktopSession(): { id: string; tenant_id: string; role: string } {
   const contextualSession = desktopSessionContext.getStore()
   if (contextualSession) return contextualSession
+  if (rememberedSessionRequired && rememberedStatus().locked) throw Error('Програму заблоковано. Введіть PIN або пароль')
   if (!desktopAuthSession) throw new Error('Необхідно увійти в програму')
   return desktopAuthSession
 }
@@ -1086,12 +1142,53 @@ app.whenReady().then(async () => {
 
   handleDesktopIpc('desktop:auth:login', (_event, phone: string, password: string) => {
     const user = requireLocalStaff().loginWithPassword(phone, password)
+    getRememberedAccess().forget()
+    rememberedSessionRequired = false
+    passwordAuthenticatedAt = Date.now()
     desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
     return user
   })
-  handleDesktopIpc('desktop:auth:login-online', (_event, phone: string, password: string) =>
-    loginOnlineAndProvisionLocal(phone, password))
+  handleDesktopIpc('desktop:auth:login-online', async (_event, phone: string, password: string) => {
+    const result = await loginOnlineAndProvisionLocal(phone, password)
+    getRememberedAccess().forget()
+    rememberedSessionRequired = false
+    passwordAuthenticatedAt = Date.now()
+    return result
+  })
+  handleDesktopIpc('desktop:auth:remembered-status', () => rememberedStatus())
+  handleDesktopIpc('desktop:auth:set-pin-required', (_event, enabled: boolean) => {
+    requireDesktopSession()
+    if (typeof enabled !== 'boolean') throw Error('Некоректне налаштування PIN')
+    localDatabase!.prepare("INSERT INTO app_meta(key,value_json,updated_at) VALUES('local_login_pin_required',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at").run(JSON.stringify(enabled),new Date().toISOString())
+    return { pinRequired: enabled }
+  })
+  handleDesktopIpc('desktop:auth:remember', (_event, pin: string) => {
+    const session = requireDesktopSession()
+    if (Date.now()-passwordAuthenticatedAt > 120_000 || !passwordAuthenticatedAt) throw Error('Спочатку увійдіть із паролем')
+    if (rememberedPinRequired() && !/^\d{4}$/.test(pin)) throw Error('PIN має містити 4 цифри')
+    let user = rememberedUser(session.id,session.tenant_id)
+    if (!user) throw Error('Працівника не знайдено')
+    if (rememberedPinRequired()) {
+      if (!user.pin_hash) requireLocalStaff().setPin(session.id,pin,session.tenant_id)
+      else if (!requireLocalStaff().verifyPin(session.id,pin,session.tenant_id).valid) throw Error('Невірний поточний PIN')
+    }
+    user = rememberedUser(session.id,session.tenant_id)!
+    getRememberedAccess().remember(user)
+    rememberedSessionRequired = true
+    passwordAuthenticatedAt = 0
+    return rememberedStatus()
+  })
+  handleDesktopIpc('desktop:auth:unlock-remembered', (_event, pin: string) => {
+    const user = getRememberedAccess().unlock(pin)
+    desktopAuthSession = { id:user.id, tenant_id:user.tenant_id, role:user.role }
+    rememberedSessionRequired = true
+    passwordAuthenticatedAt = 0
+    return user
+  })
   handleDesktopIpc('desktop:auth:logout', () => {
+    getRememberedAccess().forget()
+    rememberedSessionRequired = false
+    passwordAuthenticatedAt = 0
     desktopAuthSession = null
     return { success: true }
   })
@@ -1384,7 +1481,7 @@ app.whenReady().then(async () => {
     requireLocalPos().getSaleForReturn(saleId, tenantId),
   )
   handleDesktopIpc('desktop:pos:create-return', (_event, input) =>
-    requireLocalPos().createReturn({ ...input, cashier_id: requireDesktopSession().id }),
+    requireLocalPos().createReturn({ ...input, cashier_id: requireDesktopSession().id, approved_by: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:pos:get-sale', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getSale(id, tenantId),

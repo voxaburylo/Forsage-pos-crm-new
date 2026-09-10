@@ -63,3 +63,9 @@ export function businessDateRangeUtc(startDate: string, endDate: string): { from
     to: new Date(Date.parse(toExclusive) - 1).toISOString(),
   }
 }
+
+export function shiftBusinessMonth(period: string, delta: number): string {
+  const [year, month] = period.split('-').map(Number)
+  if (!/^\d{4}-\d{2}$/.test(period) || month < 1 || month > 12 || !Number.isInteger(delta)) throw new Error('Некоректний місяць')
+  return new Date(Date.UTC(year, month - 1 + delta, 1)).toISOString().slice(0, 7)
+}

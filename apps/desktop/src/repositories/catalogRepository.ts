@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { catalogLanguageTokenGroups } from '../lib/catalogLanguageSearch'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalProduct, type LocalProductUpsert } from '../db/localTypes'
 
@@ -511,19 +512,34 @@ export class LocalCatalogRepository {
     if (!source) return []
 
     const sourceCrosses = this.listCrossNumbers(productId, tenantId)
+    const sourceIdentity = new Set<string>([
+      ...catalogCodesFromName(source.name), normalizeCatalogCode(source.sku), normalizeCatalogCode(source.barcode),
+    ].filter((code) => code.length >= 4))
     const lookupCodes = new Set<string>([
-      ...catalogCodesFromName(source.name),
       ...sourceCrosses.map((row) => normalizeCatalogCode(row.number)),
       ...sourceCrosses.flatMap((row) => catalogCodesFromName(row.number)),
     ].filter((code) => code.length >= 4))
-    if (lookupCodes.size === 0) return []
+    // Shared OE references are not proof of interchangeability. Only a direct
+    // cross-to-product identity is accepted, in either direction; never traverse
+    // cross-to-cross intersections or transitive chains.
 
+    const matchedIds = new Set<string>()
+    const index = this.analogIndex(tenantId)
+    for (const code of lookupCodes) for (const id of index.identities.get(code) ?? []) matchedIds.add(id)
+    for (const code of sourceIdentity) for (const id of index.crosses.get(code) ?? []) matchedIds.add(id)
+    matchedIds.delete(productId)
+    if (!matchedIds.size) return []
+    const ids = [...matchedIds]
     const products = this.db.prepare(`
       SELECT p.id, p.tenant_id, p.sku, p.name, p.barcode,
              p.brand_id, br.name AS brand_name, p.category_id, c.name AS category_name,
              p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
              p.notes, p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
-             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
+             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at,
+             (SELECT COUNT(DISTINCT upper(replace(replace(replace(replace(trim(x.cross_number), ' ', ''), '-', ''), '/', ''), '.', '')))
+              FROM product_cross_numbers x
+              WHERE x.tenant_id = p.tenant_id AND x.product_id = p.id
+                AND x.deleted_at IS NULL AND trim(x.cross_number) <> '') AS cross_numbers_count
       FROM products p
       LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
       LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id AND c.deleted_at IS NULL
@@ -531,40 +547,41 @@ export class LocalCatalogRepository {
         AND p.id <> ?
         AND p.deleted_at IS NULL
         AND p.is_active = 1
-    `).all(tenantId, productId) as unknown as LocalProduct[]
+        AND p.id IN (${ids.map(() => '?').join(',')})
+    `).all(tenantId, productId, ...ids) as unknown as LocalProduct[]
 
-    const crossRows = this.db.prepare(`
-      SELECT product_id, cross_number
-      FROM product_cross_numbers
-      WHERE tenant_id = ? AND product_id <> ? AND deleted_at IS NULL
-    `).all(tenantId, productId) as Array<{ product_id: string; cross_number: string }>
-    const crossesByProduct = new Map<string, string[]>()
-    for (const row of crossRows) {
-      const values = crossesByProduct.get(row.product_id) ?? []
-      values.push(row.cross_number)
-      crossesByProduct.set(row.product_id, values)
-    }
-
-    const matched = products.filter((product) => {
-      const candidateCodes = new Set<string>([
-        ...catalogCodesFromName(product.name),
-        normalizeCatalogCode(product.sku),
-        normalizeCatalogCode(product.barcode),
-        ...(crossesByProduct.get(product.id) ?? []).map(normalizeCatalogCode),
-      ].filter((code) => code.length >= 4))
-      for (const code of lookupCodes) {
-        if (candidateCodes.has(code)) return true
-      }
-      return false
-    })
-
-    return this.attachAvailability(matched, tenantId)
+    return this.attachAvailability(products, tenantId)
       .sort((left, right) =>
         Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
         - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1)
         || String(left.name).localeCompare(String(right.name), 'uk', { sensitivity: 'base' }),
       )
       .slice(0, Math.max(1, Math.min(Number(limit) || 50, 100)))
+  }
+
+  private analogCache?: { tenant: string; stamp: string; identities: Map<string, Set<string>>; crosses: Map<string, Set<string>> }
+
+  private analogIndex(tenant: string) {
+    const changes = this.db.prepare('SELECT total_changes() n').get() as { n: number }
+    const version = this.db.prepare('PRAGMA data_version').get() as { data_version: number }
+    const stamp = `${changes.n}:${version.data_version}`
+    if (this.analogCache?.tenant === tenant && this.analogCache.stamp === stamp) return this.analogCache
+    const identities = new Map<string, Set<string>>()
+    const crosses = new Map<string, Set<string>>()
+    const add = (target: Map<string, Set<string>>, code: string, id: string) => {
+      if (code.length < 4) return
+      let ids = target.get(code)
+      if (!ids) { ids = new Set(); target.set(code, ids) }
+      ids.add(id)
+    }
+    const products = this.db.prepare(`SELECT id, name, sku, barcode FROM products
+      WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1`).all(tenant) as Array<{ id: string; name: string; sku: string; barcode: string | null }>
+    for (const product of products) for (const code of [normalizeCatalogCode(product.sku), normalizeCatalogCode(product.barcode), ...catalogCodesFromName(product.name)]) add(identities, code, product.id)
+    const rows = this.db.prepare(`SELECT product_id, cross_number FROM product_cross_numbers
+      WHERE tenant_id = ? AND deleted_at IS NULL`).all(tenant) as Array<{ product_id: string; cross_number: string }>
+    for (const row of rows) for (const code of [normalizeCatalogCode(row.cross_number), ...catalogCodesFromName(row.cross_number)]) add(crosses, code, row.product_id)
+    this.analogCache = { tenant, stamp, identities, crosses }
+    return this.analogCache
   }
 
   findById(id: string, tenantId = DEFAULT_TENANT_ID): LocalProduct | null {
@@ -809,6 +826,11 @@ export class LocalCatalogRepository {
     if (raw) {
       const indexedClauses = needles.map(() => 'p.search_text LIKE ?')
       const indexedParams = needles.map(needle => `%${needle}%`)
+      const languageGroups = catalogLanguageTokenGroups(raw)
+      if (languageGroups.some(group => group.length > 1)) {
+        indexedClauses.push(`(${languageGroups.map(group => `(${group.map(() => 'p.search_text LIKE ?').join(' OR ')})`).join(' AND ')})`)
+        indexedParams.push(...languageGroups.flat().map(token => `%${token}%`))
+      }
       if (tokens.length > 1) {
         indexedClauses.push(`(${tokens.map(() => 'p.search_text LIKE ?').join(' AND ')})`)
         indexedParams.push(...tokens.map(token => `%${token}%`))
@@ -821,24 +843,21 @@ export class LocalCatalogRepository {
         'p.barcode = ?',
         'p.barcode LIKE ?',
         'p.name LIKE ?',
-        `EXISTS (
-          SELECT 1 FROM product_barcodes b
-          WHERE b.tenant_id = p.tenant_id
-            AND b.product_id = p.id
+        `p.id IN (
+          SELECT b.product_id FROM product_barcodes b
+          WHERE b.tenant_id = ?
             AND b.deleted_at IS NULL
             AND (b.barcode = ? OR b.barcode = ? OR b.barcode LIKE ?)
         )`,
-        `EXISTS (
-          SELECT 1 FROM product_aliases a
-          WHERE a.tenant_id = p.tenant_id
-            AND a.product_id = p.id
+        `p.id IN (
+          SELECT a.product_id FROM product_aliases a
+          WHERE a.tenant_id = ?
             AND a.deleted_at IS NULL
             AND (a.alias LIKE ? OR a.alias LIKE ?)
         )`,
-        `EXISTS (
-          SELECT 1 FROM product_cross_numbers x
-          WHERE x.tenant_id = p.tenant_id
-            AND x.product_id = p.id
+        `p.id IN (
+          SELECT x.product_id FROM product_cross_numbers x
+          WHERE x.tenant_id = ?
             AND x.deleted_at IS NULL
             AND (x.cross_number = ? OR x.cross_number = ? OR x.cross_number LIKE ?)
         )`,
@@ -851,11 +870,14 @@ export class LocalCatalogRepository {
         compact,
         `%${raw}%`,
         `%${raw}%`,
+        tenantId,
         raw,
         compact,
         `%${raw}%`,
+        tenantId,
         `%${raw}%`,
         `%${compact}%`,
+        tenantId,
         raw,
         compact,
         `%${raw}%`,
@@ -909,7 +931,11 @@ export class LocalCatalogRepository {
              p.unit, p.purchase_price, p.retail_price, p.qty_on_hand, p.reorder_point,
              COALESCE(r.qty_reserved, 0) AS qty_reserved, (${availableQty}) AS qty_available,
              p.notes, p.is_active, p.is_service, p.requires_core_return, p.core_deposit_amount,
-             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at
+             p.storage_bin, p.is_favorite, p.photo_url, p.specs_json, p.created_at, p.updated_at,
+             (SELECT COUNT(DISTINCT upper(replace(replace(replace(replace(trim(x.cross_number), ' ', ''), '-', ''), '/', ''), '.', '')))
+              FROM product_cross_numbers x
+              WHERE x.tenant_id = p.tenant_id AND x.product_id = p.id
+                AND x.deleted_at IS NULL AND trim(x.cross_number) <> '') AS cross_numbers_count
       FROM matching_page r
       JOIN products p ON p.id = r.id
       LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL

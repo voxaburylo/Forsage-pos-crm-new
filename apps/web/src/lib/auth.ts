@@ -222,12 +222,30 @@ export async function signIn(phone: string, password: string) {
   return data.session
 }
 
+export async function signInRemembered(pin: string) {
+  const unlock = desktopBridge()?.auth?.unlockRemembered
+  if (!unlock) throw new Error('Оновіть локальну програму')
+  const user = await unlock(pin)
+  const session = createDesktopSession(user)
+  useAuthStore.getState().setOfflineSession(session)
+  // Reuse only the same user's existing server session; never persist their password.
+  void supabase.auth.getSession().then(({ data }) => {
+    if (data.session?.user.id === user.id && useAuthStore.getState().session?.user.id === user.id) {
+      useAuthStore.getState().setSession(data.session)
+    }
+  }).catch(() => {})
+  return session
+}
+
 export async function signOut() {
   // Відкладена спроба від попереднього локального входу не повинна знову
   // авторизувати користувача після виходу або зміни касира.
   desktopServerLoginGeneration += 1
   const localLogout = desktopBridge()?.auth?.logout
-  if (localLogout) await localLogout().catch(() => {})
+  if (localLogout) {
+    await localLogout()
+    useAuthStore.getState().setSession(null)
+  }
   await supabase.auth.signOut()
 }
 

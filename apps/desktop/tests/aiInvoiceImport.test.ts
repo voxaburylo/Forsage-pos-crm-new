@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalSupplyRepository } from '../src/repositories/supplyRepository'
@@ -55,6 +55,18 @@ describe('AI invoice import into local supply draft', () => {
     expect(created?.barcode).toBeNull()
     expect(created?.category_id).toBeNull()
     expect(result.invoice.items.find((item: any) => item.product_id === created?.id)?.qty).toBe(2)
+  })
+
+  it('loads name candidates once for the whole photo and reuses a new exact-name card', () => {
+    const prepare = vi.spyOn(db, 'prepare')
+    const result = supply.createInvoiceFromAiRows({ rows: Array.from({ length: 20 }, () => ({
+      name: 'Унікальна тестова деталь', qty: 1, purchase_price_uah: 20,
+    })) })
+    expect(result.created).toBe(1)
+    expect(result.matched).toBe(19)
+    expect(new Set(result.invoice.items.map((item: any) => item.product_id)).size).toBe(1)
+    expect(prepare.mock.calls.filter(([sql]) => /SELECT id, name FROM products/.test(sql))).toHaveLength(1)
+    prepare.mockRestore()
   })
 
   it('reuses exact article and normalized exact name but keeps a similar product separate', () => {

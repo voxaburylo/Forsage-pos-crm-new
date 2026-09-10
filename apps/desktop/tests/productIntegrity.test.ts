@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { catalogCodesFromName, LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalSyncRepository } from '../src/repositories/syncRepository'
@@ -83,6 +83,43 @@ describe('local product integrity', () => {
     const analogs = catalog.listAnalogs(sourceId)
     expect(analogs.map((product) => product.sku)).toEqual(['77829', '77290'])
   })
+  it('does not confuse W67/1 with W811/80 because of a shared OE reference', () => {
+    const first = randomUUID(), second = randomUUID()
+    catalog.upsertProduct({ id: first, sku: 'A-ONE', name: 'Фільтр MANN W67/1', cross_numbers: ['26300-35004'] })
+    catalog.upsertProduct({ id: second, sku: 'A-TWO', name: 'Фільтр MANN W811/80', cross_numbers: ['2630035004'] })
+    expect(catalog.listAnalogs(first)).toEqual([])
+    expect(catalog.listAnalogs(second)).toEqual([])
+  })
+
+  it('finds a direct replacement from either card without copying cross numbers', () => {
+    const first = randomUUID(), second = randomUUID(), third = randomUUID()
+    catalog.upsertProduct({ id: first, sku: 'DIRECT-ONE', name: 'Фільтр TEST AA100', cross_numbers: ['BB200'] })
+    catalog.upsertProduct({ id: second, sku: 'DIRECT-TWO', name: 'Фільтр TEST BB200', cross_numbers: ['CC300'] })
+    catalog.upsertProduct({ id: third, sku: 'DIRECT-THREE', name: 'Фільтр TEST CC300' })
+    expect(catalog.listAnalogs(first).map(p => p.id)).toEqual([second])
+    expect(catalog.listAnalogs(second).map(p => p.id)).toContain(first)
+    expect(catalog.listAnalogs(first).map(p => p.id)).not.toContain(third)
+    expect(catalog.listCrossNumbers(third)).toEqual([])
+  })
+
+  it('reuses the analogue index but invalidates it after a card or stock change', () => {
+    const first = randomUUID(), second = randomUUID()
+    catalog.upsertProduct({ id: first, sku: 'CACHE-A', name: 'Фільтр TEST AA100', cross_numbers: ['BB200'] })
+    catalog.upsertProduct({ id: second, sku: 'CACHE-B', name: 'Фільтр TEST BB200', qty_on_hand: 2 })
+    const prepare = vi.spyOn(db, 'prepare')
+    expect(catalog.listAnalogs(first).map(p => p.id)).toEqual([second])
+    const scans = () => prepare.mock.calls.filter(([sql]) => /SELECT id, name, sku, barcode FROM products/.test(sql)).length
+    expect(scans()).toBe(1)
+    expect(catalog.listAnalogs(first)[0].qty_on_hand).toBe(2)
+    expect(scans()).toBe(1)
+    catalog.upsertProduct({ id: second, sku: 'CACHE-B', name: 'Фільтр TEST BB200', qty_on_hand: 7 })
+    expect(catalog.listAnalogs(first)[0].qty_on_hand).toBe(7)
+    expect(scans()).toBe(2)
+    catalog.deleteProduct(second)
+    expect(catalog.listAnalogs(first)).toEqual([])
+    prepare.mockRestore()
+  })
+
   it('supersedes obsolete ordinary product updates but keeps the newest value', () => {
     const id = randomUUID()
     const now = new Date().toISOString()

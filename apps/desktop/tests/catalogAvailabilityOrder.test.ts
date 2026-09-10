@@ -42,6 +42,36 @@ describe('catalog availability before pagination', () => {
         options.released ?? null, options.deleted ?? null)
   }
 
+  it('finds Ukrainian and Russian names without merging cards or losing code qualifiers', () => {
+    const insert = db.prepare(`INSERT INTO products
+      (id,tenant_id,sku,name,search_text,qty_on_hand,created_at,updated_at)
+      VALUES (?,?,?,?,?,?, '2026-01-01','2026-01-01')`)
+    insert.run('belt-ua', DEFAULT_TENANT_ID, 'BELT-UA', 'Ремінь Gates 6PK1873', 'реминь gates 6pk1873', 3)
+    insert.run('belt-ru', DEFAULT_TENANT_ID, 'BELT-RU', 'Ремень Gates 6PK1873', 'ремень gates 6pk1873', 0)
+    insert.run('belt-other', DEFAULT_TENANT_ID, 'BELT-OTHER', 'Ремінь Gates 6PK1874', 'реминь gates 6pk1874', 1)
+    insert.run('bearing', DEFAULT_TENANT_ID, 'BEARING', 'Підшипник маточини', 'пидшипник маточини', 1)
+    for (const query of ['ремень gates 6PK1873', 'ремінь gates 6PK1873']) {
+      const page = catalog.listProducts({ query })
+      expect(page.total).toBe(2)
+      expect(page.data.map(p => p.id)).toEqual(['belt-ua', 'belt-ru'])
+    }
+    expect(catalog.listProducts({ query: 'подшипник ступицы' }).data.map(p => p.id)).toEqual(['bearing'])
+    expect(catalog.listProducts({ query: 'ремень gates 6PK1875' }).total).toBe(0)
+  })
+
+  it('counts recorded cross numbers on the requested page, excluding deleted and duplicate formatting', () => {
+    const insert = db.prepare(`INSERT INTO product_cross_numbers
+      (id,tenant_id,product_id,cross_number,deleted_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,'2026-01-01','2026-01-01')`)
+    insert.run('cross-a', DEFAULT_TENANT_ID, '0001', 'W 67/1', null)
+    insert.run('cross-b', DEFAULT_TENANT_ID, '0001', 'W67-1', null)
+    insert.run('cross-c', DEFAULT_TENANT_ID, '0001', 'OC195', null)
+    insert.run('cross-d', DEFAULT_TENANT_ID, '0001', 'DELETED', '2026-01-02')
+    insert.run('cross-e', DEFAULT_TENANT_ID, '0001', '   ', null)
+    expect(catalog.listProducts({ query: 'FILTER-0001' }).data[0].cross_numbers_count).toBe(2)
+    expect(catalog.listProducts({ query: 'FILTER-0002' }).data[0].cross_numbers_count).toBe(0)
+  })
+
   const available = (p: LocalProduct) => p.is_service === 1 || Number(p.qty_available) > 0
   function expectStockFirst(rows: LocalProduct[]) {
     const firstAbsent = rows.findIndex(p => !available(p))

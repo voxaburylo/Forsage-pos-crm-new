@@ -47,6 +47,17 @@ describe('cash boundaries', () => {
     expect(() => pos.createCashOperation({ shift_id: shift, type: 'out', amount: 101 })).toThrow(/недостатньо/i)
     expect(pos.getExpectedCash(cashier)?.expected_amount).toBe(100)
   })
+
+  it('persists manual cash request identity across restart and rejects a changed retry', () => {
+    const input = { operation_id: randomUUID(), shift_id: shift, type: 'in' as const, amount: 50 }
+    const first = pos.createCashOperation(input)
+    db.close()
+    db = new LocalDatabase(root)
+    pos = new LocalPosRepository(db)
+    expect(pos.createCashOperation(input).id).toBe(first.id)
+    expect(pos.getExpectedCash(cashier)?.expected_amount).toBe(150)
+    expect(() => pos.createCashOperation({ ...input, amount: 75 })).toThrow(/інші дані/)
+  })
   it('does not disguise an old negative cash balance as zero', () => {
     pos.createCashOperation({ shift_id: shift, type: 'out', amount: 100 })
     db.prepare("UPDATE cash_operations SET amount = 150 WHERE shift_id = ? AND type = 'cash_out'").run(shift)

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
-import { signIn } from '@/lib/auth'
+import { signIn, signInRemembered, signOut } from '@/lib/auth'
+import { useAuthStore } from '@/stores/authStore'
 import { homePathForRole } from '@/components/ProtectedRoute'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 
 import { API_BASE_URL } from '@/lib/apiBaseUrl'
 const PHONE_REGEX = /^\+?380\d{9}$/
@@ -16,10 +17,30 @@ function normalizePhone(value: string): string {
   return value
 }
 
-export default function LoginPage() {
+export default function LoginPage({ onUnlocked }: { onUnlocked?: () => void } = {}) {
   const navigate = useNavigate()
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
+  const [pin, setPin] = useState('')
+  const [remember, setRemember] = useState(false)
+  const [pinMode, setPinMode] = useState(false)
+  const [pinRequired, setPinRequired] = useState(true)
+  const [savedName, setSavedName] = useState('')
+  const canRemember = Boolean(desktopBridge()?.auth?.remember)
+  useEffect(() => {
+    if (!isDesktopRuntime()) return
+    try { setPhone(localStorage.getItem('forsage:last-login-phone') ?? '') } catch { /* optional hint */ }
+    let active = true
+    void desktopBridge()?.auth?.rememberedStatus?.().then(status => {
+      if (!active) return
+      setPinRequired(status.pinRequired !== false)
+      if (!status.available) return
+      setPhone(status.phone ?? '')
+      setSavedName(status.name ?? '')
+      setPinMode(true)
+    }).catch(() => {})
+    return () => { active = false }
+  }, [])
   const [showPassword, setShowPassword] = useState(false)
   const [phoneError, setPhoneError] = useState('')
   const [error, setError] = useState('')
@@ -70,8 +91,15 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      const session = await signIn(normalized, password)
-      navigate(homePathForRole(session.user.app_metadata?.role as string | undefined))
+      const session = pinMode ? await signInRemembered(pin) : await signIn(normalized, password)
+      if (!pinMode && remember) await desktopBridge()!.auth!.remember!(pin)
+      if (isDesktopRuntime()) {
+        try { localStorage.setItem('forsage:last-login-phone', normalized) } catch { /* optional hint */ }
+      }
+      setPassword('')
+      setPin('')
+      if (onUnlocked) onUnlocked()
+      else navigate(homePathForRole(session.user.app_metadata?.role as string | undefined))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Помилка входу')
     } finally {
@@ -87,6 +115,7 @@ export default function LoginPage() {
           <div className="text-4xl mb-3">⚡</div>
           <h1 className="text-2xl font-bold text-gray-900">Форсаж CRM</h1>
           <p className="text-gray-400 text-sm mt-1">Вхід до системи</p>
+          {pinMode && <p className="mt-2 text-sm">{savedName} · {pinRequired ? 'Вхід за PIN на цьому ПК' : 'Збережений вхід на цьому ПК'}</p>}
           {!online && (
             <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
               Режим офлайн — вхід за збереженими даними цього ПК
@@ -101,6 +130,8 @@ export default function LoginPage() {
             </label>
             <input
               type="tel"
+              autoComplete="username"
+              readOnly={pinMode || Boolean(onUnlocked)}
               value={phone}
               onChange={(e) => {
                 setPhone(e.target.value)
@@ -119,13 +150,14 @@ export default function LoginPage() {
             )}
           </div>
 
-          <div>
+          {!pinMode && <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Пароль
             </label>
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -141,7 +173,28 @@ export default function LoginPage() {
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
-          </div>
+          </div>}
+
+          {canRemember && !pinMode && <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+            Запам’ятати вхід на 24 години на цьому ПК
+          </label>}
+          {(pinMode || remember) && pinRequired && <div>
+            <label className="block text-sm mb-1">{pinMode ? 'PIN-код' : 'Ваш PIN (або задайте 4 цифри, якщо PIN ще немає)'}</label>
+            <input type="password" inputMode="numeric" autoComplete="off" pattern="[0-9]{4}" maxLength={4} required
+              value={pin} onChange={e => setPin(e.target.value.replace(/\D/g,''))}
+              className="w-full border rounded-lg px-4 py-3 text-lg" />
+            <p className="text-xs text-gray-500 mt-2">Після 5 хвилин бездіяльності — блокування. Після 5 помилок PIN потрібен пароль.</p>
+          </div>}
+          {(pinMode || remember) && !pinRequired && <p className="text-xs text-amber-700">PIN вимкнено в налаштуваннях цього ПК. Збережений вхід діє до 24 годин.</p>}
+          {(pinMode || onUnlocked) && <button type="button" className="text-sm underline" onClick={() => {
+            void signOut().then(() => {
+              useAuthStore.getState().setSession(null)
+              setPinMode(false); setPin(''); setError('')
+              navigate('/login', { replace: true })
+            })
+              .catch(e => setError(String(e)))
+          }}>Увійти з паролем / змінити користувача</button>}
 
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">

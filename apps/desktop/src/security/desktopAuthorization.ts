@@ -7,14 +7,23 @@ const STOCK_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'store
 const RECEIVING_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const INVENTORY_COUNTER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer']
 const OWNER_ROLES: readonly DesktopRole[] = ['owner', 'admin']
+const CASHIER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'cashier']
 
 export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:login',
   'desktop:auth:login-online',
   'desktop:auth:logout',
+  'desktop:auth:remembered-status',
+  'desktop:auth:unlock-remembered',
 ])
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
+  ['desktop:orders:add-payment', CASHIER_ROLES],
+  ['desktop:orders:complete', CASHIER_ROLES],
+  ...['checkout', 'create-return', 'open-shift', 'close-shift', 'create-cash-operation',
+    'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map((name): [string, readonly DesktopRole[]] => [`desktop:pos:${name}`, CASHIER_ROLES]),
+  ['desktop:auth:remember', ALL_ROLES],
+  ['desktop:auth:set-pin-required', OWNER_ROLES],
   ['desktop:backup-now', OWNER_ROLES],
   // Відкат бази затирає роботу, зроблену після копії — тільки власник.
   ['desktop:backup:list', OWNER_ROLES],
@@ -60,6 +69,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:pos:reconcile', OWNER_ROLES],
   ['desktop:pos:payout-customer-deposit', ['owner', 'admin', 'cashier']],
   ['desktop:fiscal:set-config', OWNER_ROLES],
+  ['desktop:fiscal:get-config', POS_ROLES],
+  ['desktop:fiscal:status', POS_ROLES],
   ['desktop:fiscal:register-com', OWNER_ROLES],
 ])
 
@@ -71,7 +82,7 @@ const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
   ['desktop:inventory:', INVENTORY_COUNTER_ROLES],
   ['desktop:orders:', ORDER_ROLES],
   ['desktop:pos:', POS_ROLES],
-  ['desktop:fiscal:', POS_ROLES],
+  ['desktop:fiscal:', CASHIER_ROLES],
   ['desktop:catalog:save-', STOCK_ROLES],
   ['desktop:catalog:delete-', STOCK_ROLES],
   ['desktop:catalog:upsert-', STOCK_ROLES],

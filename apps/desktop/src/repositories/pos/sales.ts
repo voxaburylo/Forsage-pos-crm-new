@@ -371,12 +371,13 @@ export class LocalPosSales extends LocalPosCustomers {
         )
 
         if (item.product && item.product.is_service !== 1) {
-          const qtyAfter = Number(item.product.qty_on_hand) - Number(item.qty)
-          this.db.prepare(`
+          const stock = this.db.prepare(`
             UPDATE products
-            SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
+            SET qty_on_hand = qty_on_hand - ?, dirty_at = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
-          `).run(qtyAfter, timestamp, timestamp, item.product.id, tenantId)
+            RETURNING qty_on_hand
+          `).get(Number(item.qty), timestamp, timestamp, item.product.id, tenantId) as { qty_on_hand: number }
+          const qtyAfter = stock.qty_on_hand
 
           this.db.prepare(`
             INSERT INTO inventory_movements (

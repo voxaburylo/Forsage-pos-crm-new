@@ -1,6 +1,7 @@
 export const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001'
 
 export interface LocalProduct {
+  cross_numbers_count?: number
   id: string
   tenant_id: string
   sku: string

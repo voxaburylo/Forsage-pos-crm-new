@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, useEffect, type ErrorInfo, type ReactNode } 
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { TillOnly } from '@/components/TillOnly'
+import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
 import { LocalSyncAgent } from '@/components/LocalSyncAgent'
@@ -170,6 +171,7 @@ function App() {
 
   return (
     <Router>
+      <div id="desktop-workspace">
       <LocalSyncAgent />
       <AppErrorBoundary>
       <Suspense fallback={<Loader />}>
@@ -255,6 +257,8 @@ function App() {
       </AppErrorBoundary>
       <ToastContainer />
       <CommandPalette />
+      </div>
+      <DesktopAccessGate />
     </Router>
   )
 }

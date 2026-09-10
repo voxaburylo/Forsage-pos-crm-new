@@ -215,6 +215,8 @@ export class LocalNetworkCoordinator {
         headers: { Authorization: `Bearer ${this.config.accessKey}` },
       }, 3_000)
       if (!response.ok) throw new Error(response.status === 401 ? 'Невірний код підключення' : `Головний ПК відповів з помилкою ${response.status}`)
+      const health = await response.json() as { service?: string; version?: number }
+      if (health.service !== 'forsage-lan' || health.version !== 2) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
       this.connected = true
       this.lastError = null
       return this.getStatus()
@@ -237,7 +239,7 @@ export class LocalNetworkCoordinator {
           Authorization: `Bearer ${this.config.accessKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(encodeTransport({ channel, args, user_id: session.id })),
+        body: JSON.stringify(encodeTransport({ channel, args, user_id: session.id, protocol_version: 2 })),
       }, 30_000)
     } catch (error) {
       this.connected = false
@@ -278,7 +280,7 @@ export class LocalNetworkCoordinator {
         return
       }
       if (request.method === 'GET' && request.url === '/forsage-lan/health') {
-        response.writeHead(200).end(JSON.stringify({ ok: true, service: 'forsage-lan', version: 1 }))
+        response.writeHead(200).end(JSON.stringify({ ok: true, service: 'forsage-lan', version: 2 }))
         return
       }
       if (request.method !== 'POST' || request.url !== '/forsage-lan/rpc') {
@@ -287,7 +289,8 @@ export class LocalNetworkCoordinator {
       }
       try {
         const body = await this.readBody(request)
-        const decoded = decodeTransport(JSON.parse(body)) as { channel?: unknown; args?: unknown; user_id?: unknown }
+        const decoded = decodeTransport(JSON.parse(body)) as { channel?: unknown; args?: unknown; user_id?: unknown; protocol_version?: unknown }
+        if (decoded.protocol_version !== 2) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
         const channel = String(decoded.channel ?? '')
         if (!isLanProxyChannel(channel)) throw new Error('Цю команду не можна виконувати через мережу')
         const requestedUserId = String(decoded.user_id ?? '')

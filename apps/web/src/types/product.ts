@@ -1,4 +1,5 @@
 export interface Product {
+  cross_numbers_count?: number
   id: string
   sku: string
   name: string

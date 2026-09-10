@@ -19,6 +19,14 @@ describe('catalog scroll boundary', () => {
   it('continues only after a loaded non-final page', () => {
     expect(canAdvanceCatalogPage(2, response(2, 100, 300), 200, true)).toBe(true)
   })
+  it('keeps the first 100 results before the final 12 for the belt search', () => {
+    expect(canAdvanceCatalogPage(1, response(1, 100, 14242), 0, false)).toBe(false)
+    expect(canAdvanceCatalogPage(1, null, 0, false)).toBe(false)
+    expect(canAdvanceCatalogPage(1, response(1, 100, 112), 100, true)).toBe(true)
+    expect(canAdvanceCatalogPage(2, response(1, 100, 112), 100, false)).toBe(false)
+    expect(canAdvanceCatalogPage(2, response(2, 12, 112), 112, true)).toBe(false)
+    expect(canAdvanceCatalogPage(3, response(3, 0, 112), 12, true)).toBe(false)
+  })
 })
 describe('catalog page source', () => {
   it('uses the paginated local API for named searches beyond the former 500-result cap', async () => {

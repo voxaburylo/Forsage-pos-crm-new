@@ -46,6 +46,30 @@ interface InventoryScanInput {
 export class LocalInventoryRepository {
   constructor(private readonly db: LocalDatabase) {}
 
+  private rememberCountBaseline(sessionId: string, productId: string, tenantId: string): void {
+    const product = this.findProductById(productId, tenantId)
+    if (!product) throw new Error('Товар не знайдено')
+    const movement = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) id FROM inventory_movements').get() as { id: number }
+    this.db.prepare(`INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`)
+      .run(`inventory-baseline:${tenantId}:${sessionId}:${productId}`,
+        JSON.stringify({ qty: num(product.qty_on_hand), movement: movement.id }), nowIso())
+  }
+
+  private assertCountStillCurrent(sessionId: string, item: any, tenantId: string, currentQty: number): void {
+    const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?')
+      .get(`inventory-baseline:${tenantId}:${sessionId}:${item.product_id}`) as { value_json: string } | undefined
+    const baseline = row ? JSON.parse(row.value_json) as { qty: number; movement: number } : null
+    const changed = baseline
+      ? this.db.prepare('SELECT 1 FROM inventory_movements WHERE tenant_id = ? AND product_id = ? AND rowid > ? LIMIT 1')
+        .get(tenantId, item.product_id, baseline.movement)
+      : this.db.prepare('SELECT 1 FROM inventory_movements WHERE tenant_id = ? AND product_id = ? AND created_at >= ? LIMIT 1')
+        .get(tenantId, item.product_id, item.created_at)
+    if (changed || currentQty !== num(baseline?.qty ?? item.expected_stock)) {
+      throw new Error(`Після підрахунку товару «${item.product?.name ?? item.product_id}» були складські зміни. Перерахуйте товар і введіть фактичну кількість знову. Ревізію не проведено.`)
+    }
+  }
+
   createAndCountProduct(sessionId: string, input: { operation_id: string; product: LocalProductUpsert; qty: number; user_id?: string }): { data: any; session: any } {
     if (!/^[0-9a-f-]{36}$/i.test(input.operation_id)) throw new Error('Некоректний ідентифікатор створення товару')
     const tenantId = input.product.tenant_id ?? DEFAULT_TENANT_ID
@@ -208,6 +232,7 @@ export class LocalInventoryRepository {
     let itemId = ''
     this.db.transaction(() => {
       const existing = this.findItemByProduct(sessionId, product.id, tenantId)
+      if (!existing?.was_counted) this.rememberCountBaseline(sessionId, product.id, tenantId)
       itemId = existing?.id ?? randomUUID()
       const nextQty = checkedNonnegative(num(existing?.counted_stock) + qty)
       this.db.prepare(`
@@ -285,6 +310,7 @@ export class LocalInventoryRepository {
     let itemId = ''
     this.db.transaction(() => {
       const existing = this.findItemByProduct(sessionId, product.id, tenantId)
+      if (!existing?.was_counted) this.rememberCountBaseline(sessionId, product.id, tenantId)
       itemId = existing?.id ?? randomUUID()
       const nextQty = checkedNonnegative(num(existing?.counted_stock) + qty)
       this.db.prepare(`
@@ -338,6 +364,8 @@ export class LocalInventoryRepository {
       WHERE id = ? AND session_id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(qty, timestamp, itemId, sessionId, tenantId)
     if (Number(result.changes) !== 1) throw new Error('Рядок ревізії не знайдено')
+    const item = this.findItemById(itemId, tenantId)
+    this.rememberCountBaseline(sessionId, item.product_id, tenantId)
     this.touchSession(sessionId, tenantId, timestamp)
     return this.findItemById(itemId, tenantId)
   }
@@ -403,6 +431,7 @@ export class LocalInventoryRepository {
       const prevRow = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
         .get(item.product_id, tenantId) as { qty_on_hand?: number } | undefined
       const prevQty = num(prevRow?.qty_on_hand ?? 0)
+      this.assertCountStillCurrent(sessionId, item, tenantId, prevQty)
       this.db.prepare('UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
         .run(counted, timestamp, timestamp, item.product_id, tenantId)
       // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,
@@ -579,7 +608,7 @@ export class LocalInventoryRepository {
   private listCountedItems(sessionId: string, tenantId: string): any[] {
     const rows = this.db.prepare(`
       SELECT i.id, i.product_id, i.expected_stock, i.counted_stock, i.price_checked,
-             i.observed_retail_price, i.updated_at, i.was_counted,
+             i.observed_retail_price, i.created_at, i.updated_at, i.was_counted,
              CASE WHEN p.id IS NULL THEN NULL ELSE json_object(
                'id', p.id, 'tenant_id', p.tenant_id, 'sku', p.sku, 'name', p.name,
                'barcode', p.barcode, 'brand_id', p.brand_id, 'brand_name', b.name,

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
-import { Search, Plus, MapPin, Link2, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
+import { Search, Plus, MapPin, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
@@ -13,6 +13,7 @@ import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { productApi } from '@/features/products/productApi'
+import { AnalogProducts } from './AnalogProducts'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -86,8 +87,8 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const [supplierResults, setSupplierResults] = useState<any[]>([])
   const [loading, setLoading]   = useState(false)
   const [importingId, setImportingId] = useState<string | null>(null)
-  const [analogs, setAnalogs]   = useState<Record<string, { analogs: Product[]; grouped: Record<string, Product[]> }>>({})
-  const [analogsLoading, setAnalogsLoading] = useState<string | null>(null)
+
+
   const [cameraOpen, setCameraOpen] = useState(false)
   const [mobileWeb, setMobileWeb] = useState(false)
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null)
@@ -447,17 +448,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       reportScannerStage('failed', normalizedCode)
     }
   }
-  async function fetchAnalogs(productId: string) {
-    if (analogs[productId]) return
-    setAnalogsLoading(productId)
-    try {
-      const data = await productApi.getAnalogs(productId) as any
-      const list: Product[] = Array.isArray(data) ? data : data?.analogs ?? data?.data ?? []
-      const grouped: Record<string, Product[]> = data?.grouped ?? { standard: list }
-      setAnalogs((prev) => ({ ...prev, [productId]: { analogs: list, grouped } }))
-    } catch { setAnalogs((prev) => ({ ...prev, [productId]: { analogs: [], grouped: {} } })) }
-    finally { setAnalogsLoading(null) }
-  }
+
 
   function addToReceipt(p: Product) {
     initAudio()
@@ -617,10 +608,10 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             )}
             {results.map((p, idx) => {
               const storageBin = p.storage_bin
-              const productAnalogsData = analogs[p.id]
-              const productAnalogs = productAnalogsData?.analogs ?? []
-              const groupedAnalogs = productAnalogsData?.grouped ?? {}
-              const showAnalogs = !p.is_service && (p.qty_available ?? p.qty_on_hand) <= 0
+
+
+
+
               return (
                 <div key={p.id}>
                   <div
@@ -691,81 +682,9 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
                         <span>Enter щоб додати</span>
                       </div>
                     )}
-                    <div className="flex items-center gap-3 mt-1.5">
-                      <button onClick={(e) => { e.stopPropagation(); fetchAnalogs(p.id) }}
-                        className="text-gray-500 hover:text-yellow-400 text-xs flex items-center gap-1 transition-colors px-2 py-1.5 rounded-lg hover:bg-gray-700 touch-target">
-                        <Link2 size={12} /> Аналоги
-                      </button>
-                    </div>
                   </div>
 
-                  {/* Аналоги для товарів без залишку */}
-                  {showAnalogs && analogsLoading !== p.id && productAnalogs.length === 0 && (
-                    <div className="ml-4 mt-1 mb-2">
-                      <button onClick={() => fetchAnalogs(p.id)}
-                        className="text-orange-400 text-xs flex items-center gap-1 hover:text-orange-300 transition-colors touch-target px-3 py-2 rounded-lg">
-                        ⚠️ Немає в наявності — шукати аналоги
-                      </button>
-                    </div>
-                  )}
-                  {analogsLoading === p.id && (
-                    <p className="text-gray-500 text-xs text-center py-2">Пошук аналогів...</p>
-                  )}
-                  {productAnalogsData && Object.keys(groupedAnalogs).length > 0 && productAnalogs.length > 0 && (
-                    <div className="mx-3 mb-3 p-3 bg-[#161616]/60 border border-gray-800 rounded-xl space-y-3">
-                      <p className="text-yellow-400 text-[10px] font-bold uppercase tracking-wider">🔗 Аналоги та кроси:</p>
-                      {Object.entries(groupedAnalogs).map(([tier, items]) => {
-                        const typedItems = items as Product[]
-                        if (!typedItems || typedItems.length === 0) return null
-                        
-                        const tierTitle = 
-                          tier === 'original' ? '🏭 Оригінал' :
-                          tier === 'premium' ? '⭐ Premium' :
-                          tier === 'standard' ? '✅ Standard' : '💵 Budget'
-
-                        const tierColor =
-                          tier === 'original' ? 'text-blue-400 border-blue-900/30 bg-blue-950/20' :
-                          tier === 'premium' ? 'text-yellow-400 border-yellow-950/30 bg-yellow-950/20' :
-                          tier === 'standard' ? 'text-gray-300 border-gray-800 bg-gray-900/30' : 'text-emerald-400 border-emerald-950/30 bg-emerald-950/20'
-
-                        return (
-                          <div key={tier} className="space-y-1.5">
-                            <div className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${tierColor} inline-block`}>
-                              {tierTitle}
-                            </div>
-                            <div className="space-y-1 pl-1">
-                              {typedItems.map((a) => (
-                                <button key={a.id} onClick={(e) => { e.stopPropagation(); addToReceipt(a); setQuery(''); setResults([]); setSupplierResults([]) }}
-                                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-yellow-500/10 transition-colors active:scale-[0.98] border border-gray-800/45 hover:border-yellow-500/30 bg-gray-950/20"
-                                  style={{ minHeight: 48 }}>
-                                  {a.photo_url && (
-                                    <div className="shrink-0 mr-2" onClick={(e) => e.stopPropagation()}>
-                                      <img
-                                        src={a.photo_url}
-                                        alt={a.name}
-                                        onClick={() => setZoomedPhoto(a.photo_url)}
-                                        className="w-8 h-8 rounded-md object-cover border border-gray-800 cursor-zoom-in hover:scale-105 active:scale-95"
-                                      />
-                                    </div>
-                                  )}
-                                  <div className="flex-1 min-w-0 text-left">
-                                    <p className="text-white text-xs font-medium truncate">{a.name}</p>
-                                    <p className="text-gray-500 text-[10px]">{a.sku} {a.brand && `• ${a.brand.name}`}</p>
-                                  </div>
-                                  <div className="text-right shrink-0 ml-2">
-                                    <p className="text-white text-xs font-semibold">{kopecksToHryvnia(a.retail_price)} ₴</p>
-                                    <p className={`text-xs ${(a.qty_available ?? a.qty_on_hand) > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                      {(a.qty_available ?? a.qty_on_hand) > 0 ? `● ${(a.qty_available ?? a.qty_on_hand)}` : '✗ Нема'}
-                                    </p>
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
+                  {!p.is_service && <AnalogProducts productId={p.id} onAdd={addToReceipt} />}
                 </div>
               )
             })}

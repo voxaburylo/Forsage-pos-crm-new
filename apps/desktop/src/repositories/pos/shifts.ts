@@ -99,6 +99,7 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
   }
 
   createCashOperation(input: {
+    operation_id?: string
     tenant_id?: string
     shift_id: string
     user_id?: string | null
@@ -114,13 +115,24 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const amount = money(input.amount)
     if (amount <= 0) throw new Error('Вкажіть суму більше нуля')
+    if (!['in', 'out'].includes(input.type)) throw new Error('Некоректний тип касової операції')
+    const id = input.operation_id ?? randomUUID()
+    const previous = this.db.prepare('SELECT * FROM cash_operations WHERE id = ?').get(id) as any
+    if (previous) {
+      if (previous.tenant_id !== tenantId || previous.shift_id !== input.shift_id || previous.amount !== amount
+        || previous.type !== (input.type === 'in' ? 'cash_in' : 'cash_out')
+        || previous.user_id !== (input.user_id ?? null) || previous.notes !== (input.note ?? null)
+        || previous.source !== (input.source ?? 'cashbox')) throw new Error('Повтор касової операції містить інші дані')
+      return { id, shift_id: input.shift_id, type: input.type, amount, note: previous.notes,
+        created_by: previous.user_id ?? 'local', created_at: previous.created_at }
+    }
     const shift = this.db.prepare(`
-      SELECT id FROM shifts
+      SELECT id, cashier_id FROM shifts
       WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL
-    `).get(input.shift_id, tenantId) as { id: string } | undefined
+    `).get(input.shift_id, tenantId) as { id: string; cashier_id: string } | undefined
     if (!shift) throw new Error('Касову зміну не знайдено або вже закрито')
+    if (input.user_id && input.user_id !== shift.cashier_id) throw new Error('Касова зміна належить іншому касиру')
     const timestamp = nowIso()
-    const id = randomUUID()
     const dbType = input.type === 'in' ? 'cash_in' : 'cash_out'
     this.assertCashOperationAllowed(tenantId, input.shift_id, dbType, amount)
     this.db.prepare(`

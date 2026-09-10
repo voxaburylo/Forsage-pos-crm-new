@@ -7,6 +7,7 @@ import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 import { canIssueOrderFromPos } from '@/features/orders/orderWorkflow'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface OrderItem {
   id: string
@@ -54,6 +55,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [open, setOpen] = useState(false)
   const [orders, setOrders] = useState<ReadyOrder[]>([])
   const [loading, setLoading] = useState(false)
+  const loadGeneration = useRef(0)
   const [completing, setCompleting] = useState<string | null>(null)
   
   // Search & Payment states
@@ -63,9 +65,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [payAction, setPayAction] = useState<PaymentAction>('deposit')
   const [closeAfterPayment, setCloseAfterPayment] = useState(false)
   const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account'>('cash')
+  const localOrderFiscalUnsupported = Boolean(desktopBridge())
   const [fiscal, setFiscal] = useState(() => {
+    if (desktopBridge()) return false
     try {
-      const saved = localStorage.getItem('forsage_pos_fiscal_enabled')
+      const saved = localStorage.getItem('forsage_order_fiscal_enabled')
       return saved === null ? true : saved === 'true'
     } catch {
       return true
@@ -83,7 +87,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [payOrder?.id, payAmount, payAction, payMethod])
 
   useEffect(() => {
-    try { localStorage.setItem('forsage_pos_fiscal_enabled', String(fiscal)) } catch { /* localStorage недоступний */ }
+    try { localStorage.setItem('forsage_order_fiscal_enabled', String(fiscal)) } catch { /* localStorage недоступний */ }
   }, [fiscal])
 
   useEffect(() => {
@@ -145,6 +149,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [searchParams, setSearchParams])
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current
     setLoading(true)
     try {
       const { data } = await posOrderApi.listReady(
@@ -153,13 +158,14 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           : { activeStatuses: ACTIVE_ORDER_STATUSES, customer_id: selectedCustomerId, limit: 80 },
         { silent: true, timeoutMs: READY_ORDER_READ_TIMEOUT_MS },
       ) as { data: ReadyOrder[] }
+      if (generation !== loadGeneration.current) return
       setOrders((data ?? []).filter((order) => !['completed', 'canceled', 'archived'].includes(order.status)))
     } catch (e) {
-      if (open || isMobileInline || search.trim()) {
+      if (generation === loadGeneration.current && (open || isMobileInline || search.trim())) {
         toast.error(getErrorMessage(e, 'Не вдалося завантажити замовлення для видачі'))
       }
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }, [isMobileInline, open, search, selectedCustomerId])
 
@@ -169,6 +175,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     window.addEventListener('forsage:desktop-sync-completed', load)
     return () => {
       clearInterval(id)
+      loadGeneration.current++
       window.removeEventListener('forsage:desktop-sync-completed', load)
     }
   }, [load])
@@ -257,11 +264,12 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       closePaymentModal()
 
       if (shouldCompleteAfterPayment) {
-        await completeOrder(
+        const issued = await completeOrder(
           { ...orderToComplete, total_paid: (orderToComplete.total_paid ?? 0) + amountVal },
           { skipPaymentCheck: true, quietSuccess: true, method: payMethod === 'card' ? 'card' : 'cash' },
         )
-        toast.success('Оплату внесено, замовлення видано!')
+        if (issued) toast.success('Оплату внесено, замовлення видано!')
+        else toast.error('Оплату збережено, але замовлення НЕ видано. Усуньте причину та повторіть лише видачу.')
       } else {
         toast.success(payAction === 'full' ? 'Повну оплату внесено!' : (payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Передоплату внесено!'))
         await load()
@@ -280,11 +288,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     const remaining = remainingDue(order)
     if (!options.skipPaymentCheck && remaining > 0) {
       toast.error(`Залишок до оплати: ${formatMoney(remaining)}. Спочатку внесіть оплату в замовленні.`)
-      return
+      return false
     }
     if (!options.skipPaymentCheck && !canIssueOrder(order)) {
       toast.error('Це замовлення не можна видати через касу')
-      return
+      return false
     }
 
     setCompleting(order.id)
@@ -302,8 +310,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       )
       if (!options.quietSuccess) toast.success('Замовлення видано!')
       await load()
+      return true
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
+      return false
     } finally {
       setCompleting(null)
     }
@@ -544,11 +554,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                 </div>
 
                 <div className="rounded-xl border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-100">
-                  Фіскальний режим вибирається нижче для цієї оплати.
-                  Ознака передається разом із платежем у ПРРО.
+                  {localOrderFiscalUnsupported ? 'Цей канал оплати замовлень не створює фіскальний чек. Оплата записується в локальну касу без ПРРО.' : 'Фіскальний режим для цієї оплати.'}
                 </div>
                 <label className="flex items-center gap-3 rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs text-amber-100">
-                  <input type="checkbox" checked={fiscal} onChange={(e) => setFiscal(e.target.checked)} className="h-4 w-4 accent-yellow-500" />
+                  <input type="checkbox" disabled={localOrderFiscalUnsupported} checked={fiscal} onChange={(e) => setFiscal(e.target.checked)} className="h-4 w-4 accent-yellow-500" />
                   Фіскальний чек (ПРРО)
                 </label>
                 {payAction === 'full' && canIssueOrder(payOrder) && (
@@ -789,11 +798,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
               </div>
 
               <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-100">
-                Фіскальний режим вибирається нижче для цієї оплати.
-                Ознака передається разом із платежем у ПРРО.
+                {localOrderFiscalUnsupported ? 'Цей канал оплати замовлень не створює фіскальний чек. Оплата записується в локальну касу без ПРРО.' : 'Фіскальний режим для цієї оплати.'}
               </div>
                 <label className="flex items-center gap-3 rounded-lg border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-xs text-amber-100">
-                  <input type="checkbox" checked={fiscal} onChange={(e) => setFiscal(e.target.checked)} className="h-4 w-4 accent-yellow-500" />
+                  <input type="checkbox" disabled={localOrderFiscalUnsupported} checked={fiscal} onChange={(e) => setFiscal(e.target.checked)} className="h-4 w-4 accent-yellow-500" />
                   Фіскальний чек (ПРРО)
                 </label>
                 {payAction === 'full' && canIssueOrder(payOrder) && (

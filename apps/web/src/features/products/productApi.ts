@@ -316,24 +316,15 @@ export const productApi = {
   getAnalogs: async (id: string) => {
     const local = desktopBridge()?.catalog.listAnalogs
     if (local) {
-      const rows = await local(id, 50)
+      const rows = await local(id, 100)
       const analogs = rows.map((row) => ({
         ...desktopProductToProduct(row),
         brand: row.brand_name ? { id: row.brand_id ?? '', name: row.brand_name } : null,
         analog_type: 'cross',
         priority: 500,
       }))
-      if (analogs.length > 0 || useAuthStore.getState().offlineMode) {
-        return { analogs, grouped: { original: [], premium: [], standard: analogs, budget: [] } }
-      }
-      try {
-        return await api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(
-          `/api/v1/products/${id}/analogs`,
-          { silent: true, timeoutMs: 6000 },
-        )
-      } catch {
-        return { analogs: [], grouped: { original: [], premium: [], standard: [], budget: [] } }
-      }
+      // SQLite is authoritative; empty local matches do not query the server.
+      return { analogs, grouped: { original: [], premium: [], standard: analogs, budget: [] } }
     }
     return api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`)
   },

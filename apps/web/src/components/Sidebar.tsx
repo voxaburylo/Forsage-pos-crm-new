@@ -9,7 +9,7 @@ import {
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
-import { desktopBridge } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { PICKING_STATUSES } from '@/features/inventory/pickingApi'
 
 interface NavItem {
@@ -133,7 +133,7 @@ function NavSection({
   const location = useLocation()
 
   const visibleItems = group.items.filter(
-    (item) => !item.roles || item.roles.includes(role),
+    (item) => (item.to !== '/pos' || isDesktopRuntime()) && (!item.roles || item.roles.includes(role)),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))

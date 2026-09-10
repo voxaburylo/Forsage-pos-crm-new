@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
     loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),
     logout: () => ipcRenderer.invoke('desktop:auth:logout'),
+    rememberedStatus: () => ipcRenderer.invoke('desktop:auth:remembered-status'),
+    setPinRequired: (enabled: boolean) => ipcRenderer.invoke('desktop:auth:set-pin-required', enabled),
+    remember: (pin: string) => ipcRenderer.invoke('desktop:auth:remember', pin),
+    unlockRemembered: (pin: string) => ipcRenderer.invoke('desktop:auth:unlock-remembered', pin),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
   lan: {

@@ -22,7 +22,8 @@ type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debto
 interface ProfitReport {
   from: string; to: string
   revenue: number; cogs: number; gross_margin: number
-  expenses: number; net_profit: number
+  expenses: number | null; net_profit: number | null
+  zero_cost_lines?: number
 }
 
 const PAYMENT_COLOR: Record<string, 'green' | 'blue' | 'red'> = {
@@ -148,12 +149,11 @@ export default function DailyReport() {
   const loadToday = useCallback(async () => {
     setLoading(true)
     try {
-      const [{ data: summary }, { data: period }, { data: items }] = await Promise.all([
-        reportApi.salesToday(),
+      const [{ data: period }, { data: items }] = await Promise.all([
         reportApi.salesPeriod(todayKey, todayKey),
-        reportApi.soldItems(todayKey, todayKey).catch(() => ({ data: [] as SoldItem[] })),
+        reportApi.soldItems(todayKey, todayKey),
       ])
-      setReport({ ...summary, sales: period.sales })
+      setReport(period)
       setSoldItems(items ?? [])
     } catch { toast.error('Помилка завантаження') } finally { setLoading(false) }
   }, [todayKey])
@@ -388,8 +388,8 @@ export default function DailyReport() {
           { 'Показник': 'Виручка', 'Значення (грн)': profit.revenue / 100 },
           { 'Показник': 'Собівартість (COGS)', 'Значення (грн)': -profit.cogs / 100 },
           { 'Показник': 'Валовий прибуток', 'Значення (грн)': profit.gross_margin / 100 },
-          { 'Показник': 'Операційні витрати', 'Значення (грн)': -profit.expenses / 100 },
-          { 'Показник': 'Чистий прибуток', 'Значення (грн)': profit.net_profit / 100 },
+          { 'Показник': 'Операційні витрати', 'Значення (грн)': profit.expenses === null ? 'Не обчислено' : -profit.expenses / 100 },
+          { 'Показник': 'Чистий прибуток', 'Значення (грн)': profit.net_profit === null ? 'Не обчислено: немає повного обліку витрат' : profit.net_profit / 100 },
         ]
         fileName = 'profit_loss'
       }
@@ -918,16 +918,17 @@ export default function DailyReport() {
               { label: 'Собівартість (COGS)', value: profit.cogs, color: 'text-gray-700', negative: true },
               { label: 'Валовий прибуток', value: profit.gross_margin, color: profit.gross_margin >= 0 ? 'text-green-600' : 'text-red-600', border: true },
               { label: 'Операційні витрати', value: profit.expenses, color: 'text-gray-700', negative: true },
-              { label: 'Чистий прибуток', value: profit.net_profit, color: profit.net_profit >= 0 ? 'text-green-700' : 'text-red-700', bold: true, border: true },
+              { label: 'Чистий прибуток', value: profit.net_profit, color: profit.net_profit === null ? 'text-gray-500' : profit.net_profit >= 0 ? 'text-green-700' : 'text-red-700', bold: true, border: true },
             ].map(({ label, value, color, negative, bold, border }) => (
               <div key={label} className={`flex justify-between items-center py-3 ${border ? 'border-t border-gray-200 mt-2' : ''}`}>
                 <span className={`text-sm ${bold ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>{label}</span>
                 <span className={`text-lg font-bold ${color}`}>
-                  {negative ? '−' : ''}{formatMoney(Math.abs(value))} ₴
+                  {value === null ? 'Не обчислено' : formatMoney(negative ? -value : value)}
                 </span>
               </div>
             ))}
-            <p className="text-xs text-gray-400 pt-2">Період: поточний місяць. COGS враховується лише для продажів через process_sale_v2.</p>
+            <p className="text-xs text-gray-500 pt-2">Період: поточний місяць. Враховано повернення за датою їх проведення. Валовий прибуток — до операційних витрат; без повного обліку витрат чистий прибуток не обчислюється.</p>
+            {Boolean(profit.zero_cost_lines) && <p className="text-xs text-amber-700">У {profit.zero_cost_lines} проданих позиціях закупівля записана як 0. Перевірте собівартість: валовий прибуток може бути завищений. Поточні ціни товарів не підставляються замість історичних.</p>}
           </div>
         ) : (
           <div className="text-center py-16 text-gray-400 text-sm">Завантаження...</div>
