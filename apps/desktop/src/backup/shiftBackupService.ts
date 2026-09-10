@@ -17,14 +17,18 @@ export class ShiftBackupService {
   private running: Promise<void> | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private uploads = new Set<string>()
+  private stopped = false
   constructor(private db: LocalDatabase, private programDirectory: string, private onError: (error: unknown) => void,
     private exporter?: typeof exportShiftSnapshot) {}
   start() {
+    this.stopped = false
+    if (this.timer) return
     this.timer = setInterval(() => { void this.tick() }, 30_000)
     void this.tick()
   }
-  async stop() { if (this.timer) clearInterval(this.timer); this.timer = null; await this.running }
+  async stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; await this.running }
   tick(): Promise<void> {
+    if (this.stopped) return Promise.resolve()
     if (this.running) return this.running
     this.running = this.runNext().catch(this.onError).finally(() => { this.running = null })
     return this.running

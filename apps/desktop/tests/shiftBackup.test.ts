@@ -58,6 +58,10 @@ describe('shift backups and full customer history',()=>{
     expect(restarted.pending(randomUUID())).toEqual([])
     restarted.confirmed(DEFAULT_TENANT_ID,id,job.sha256)
     expect(restarted.pending(DEFAULT_TENANT_ID)).toEqual([])
+    await restarted.stop()
+    const next=pos.openShift({cashier_id:cashier});pos.closeShift(cashier,0,null)
+    await restarted.tick()
+    expect(db.prepare('SELECT local_path FROM shift_backups WHERE id=?').get(next)).toEqual({local_path:null})
   })
   it('writes typed XLSX files from the same verified snapshot and a restorable gzip',async()=>{
     new LocalCatalogRepository(db).upsertProduct({id:randomUUID(),sku:'0007',barcode:'0000123456789',name:'=Не формула',qty_on_hand:3.5,purchase_price:12345,retail_price:20000,unit:'кг'})
