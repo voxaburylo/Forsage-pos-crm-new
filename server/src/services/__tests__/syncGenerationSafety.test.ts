@@ -124,7 +124,7 @@ describe('tenant reset generation safety', () => {
 
   it('adapts the legacy vehicle schema without dropping duplicate VIN history', () => {
     expect(migration).toContain('NULL::TIMESTAMPTZ')
-    expect(migration).toContain("ALTER TABLE public.customer_cars\n  ADD COLUMN IF NOT EXISTS updated_at")
+    expect(migration).toMatch(/ALTER TABLE public\.customer_cars\r?\n  ADD COLUMN IF NOT EXISTS updated_at/)
     expect(migration).toContain('WITH ranked_vins AS')
     expect(migration).toContain('ORDER BY created_at DESC NULLS LAST, id DESC')
     expect(migration).toContain('SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()')

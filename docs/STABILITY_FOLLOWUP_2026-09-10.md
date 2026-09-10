@@ -72,3 +72,17 @@ connection. No business records or working schema were modified.
 - Still requires user/device availability: real two-PC LAN order/payment flow,
   physical printer checks and a full working-day UI soak. No claim of completion
   for these physical scenarios.
+
+## Publication handoff
+
+- Local executable and initial Excel exports are ready; desktop shortcut still
+  points to the same portable executable.
+- Initial private server copy was uploaded and verified independently of app
+  deployment. Automatic future uploads require the new API deployment.
+- First GitHub run found a pre-existing CRLF-sensitive SQL text assertion in
+  `syncGenerationSafety.test.ts`; made that assertion accept LF and CRLF without
+  changing SQL or weakening the checked statement. Focused 11 tests pass.
+- Vercel deployment for `7a9c08d` failed. Logs require Vercel authentication;
+  CLI has no active credentials and no connected browser is available. Until
+  successful publication, automatic cloud jobs remain queued locally. Do not
+  claim the automatic cloud path is active in production yet.
