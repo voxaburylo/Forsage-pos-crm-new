@@ -7,6 +7,8 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, pow
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
 import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDatabaseOpenResult } from './db/localDatabase'
 import { startBackupScheduler } from './db/backupScheduler'
+import { ShiftBackupService } from './backup/shiftBackupService'
+import { customerHistory } from './repositories/customerHistory'
 import { assertLocalDataAuthority } from './security/localDataAuthority'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
@@ -80,6 +82,7 @@ app.on('browser-window-created', (_event, window) => {
 let mainWindow: BrowserWindow | null = null
 let localDatabase: LocalDatabase | null = null
 let stopBackupScheduler: (() => void) | null = null
+let shiftBackups: ShiftBackupService | null = null
 let databaseMaintenance = false
 let quitAfterCleanup = false
 let localCatalog: LocalCatalogRepository | null = null
@@ -955,6 +958,14 @@ app.whenReady().then(async () => {
   localSync = new LocalSyncRepository(localDatabase)
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
+  shiftBackups = new ShiftBackupService(localDatabase,
+    process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath), error => {
+      writeDesktopDiagnostic('shift-backup-failed', error)
+      recordDesktopProblem({ source: 'database', code: 'database.shift_backup_failed',
+        title: 'Не вдалося зберегти вивантаження після зміни',
+        detail: 'Зміна закрита. Вивантаження повториться. ' + (error instanceof Error ? error.message : String(error)) })
+    })
+  shiftBackups.start()
   stopBackupScheduler = startBackupScheduler(localDatabase, (error) => {
     writeDesktopDiagnostic('local-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.backup_failed',
@@ -984,6 +995,16 @@ app.whenReady().then(async () => {
     return { path: filePath }
   })
   handleDesktopIpc('desktop:backup-now', () => requireLocalDatabase().backupNow())
+  handleDesktopIpc('desktop:pos:customer-history', (_event, id: string, kind: string, options) =>
+    customerHistory(requireLocalDatabase(), requireDesktopSession().tenant_id, id, kind, options))
+  handleDesktopIpc('desktop:backup:pending', () => shiftBackups?.pending(requireDesktopSession().tenant_id) ?? [])
+  handleDesktopIpc('desktop:backup:status', () => shiftBackups?.status(requireDesktopSession().tenant_id) ?? [])
+  handleDesktopIpc('desktop:backup:upload', (_event, id: string, url: string) =>
+    shiftBackups!.upload(requireDesktopSession().tenant_id, id, url, requireTrustedAuthConfig().supabaseUrl))
+  handleDesktopIpc('desktop:backup:confirmed', (_event, id: string, sha: string) =>
+    shiftBackups!.confirmed(requireDesktopSession().tenant_id, id, sha))
+  handleDesktopIpc('desktop:backup:failed', (_event, id: string, message: string) =>
+    shiftBackups!.cloudFailed(requireDesktopSession().tenant_id, id, String(message)))
   handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
   handleDesktopIpc('desktop:backup:restore', async (_event, fileName: string) => {
     if (activeDesktopCommands.size > 1) {
@@ -1005,6 +1026,7 @@ app.whenReady().then(async () => {
     stopBackupScheduler = null
     let closed = false
     try {
+      await shiftBackups?.stop()
       await database.waitForBackup()
       await localNetwork?.stop()
       cashalot?.stopWorker()
@@ -1462,9 +1484,12 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:reconcile', (_event, cashierId: string, actualAmount: number, comment: string | null) =>
     requireLocalPos().reconcileShift(requireDesktopSession().id, actualAmount, comment),
   )
-  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null) =>
-    requireLocalPos().closeShift(requireDesktopSession().id, actualAmount, comment),
-  )
+  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null) => {
+    const session = requireDesktopSession()
+    const result = requireLocalPos().closeShift(session.id, actualAmount, comment, session.tenant_id)
+    setImmediate(() => { void shiftBackups?.tick() })
+    return result
+  })
   handleDesktopIpc('desktop:pos:open-shift', (_event, input: {
     cashier_id: string
     opening_cash?: number
@@ -1684,6 +1709,7 @@ app.on('before-quit', (event) => {
       // Не закриваємо SQLite під оплатою/фіскальною відповіддю, що ще триває.
       await Promise.allSettled([...activeDesktopCommands])
       cashalot?.stopWorker()
+      await shiftBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))
       localDatabase?.close()
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }

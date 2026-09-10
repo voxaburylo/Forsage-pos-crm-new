@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, ShoppingBag, Plus, Copy, ClipboardList } from 'lucide-react'
+import { Edit, Trash2, Plus, Copy, ClipboardList } from 'lucide-react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { customerApi } from './customerApi'
@@ -12,15 +12,15 @@ import { startRepeatOrder, formatOrderNo } from '@/features/orders/orderActions'
 import { canUseOrderCash } from '@/features/orders/orderUx'
 import { posCustomerMoneyApi } from '@/features/pos/posCustomerMoneyApi'
 import { CustomerBalances } from './CustomerBalances'
-import { customerCashPath, customerMoneyLabel } from './customerUi'
-import type { Customer, CustomerSale, CustomerVehicle } from '@/types/customer'
+import { customerCashPath } from './customerUi'
+import { CustomerHistory } from './CustomerHistory'
+import type { Customer, CustomerVehicle } from '@/types/customer'
 import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { formatMoney, formatDateTime } from '@/lib/utils'
+import { formatMoney } from '@/lib/utils'
 
-const PAYMENT_LABELS: Record<string, string> = { cash: 'Готівка', card: 'Картка', transfer: 'Переказ', debt: 'Борг', mixed: 'Змішана' }
 
 export default function CustomerDetailPage() {
   const navigate = useNavigate()
@@ -29,7 +29,6 @@ export default function CustomerDetailPage() {
   const local = Boolean(desktopBridge())
   const offlineMode = useAuthStore((s) => s.offlineMode)
   const [customer, setCustomer] = useState<Customer | null>(null)
-  const [sales, setSales] = useState<CustomerSale[]>([])
   const [cars, setCars] = useState<CustomerVehicle[]>([])
   const [customerOrders, setCustomerOrders] = useState<CustomerOrder[]>([])
   const [deposit, setDeposit] = useState<{ balance: number; transactions: any[] } | null>(null)
@@ -52,11 +51,10 @@ export default function CustomerDetailPage() {
     const failed = (section: string) => (error: unknown) => {
       if (active()) setErrors((old) => ({ ...old, [section]: error instanceof Error ? error.message : 'Не вдалося завантажити' }))
     }
-    setErrors({}); setLoading(true); setCustomer(null); setSales([]); setCars([]); setCustomerOrders([])
+    setErrors({}); setLoading(true); setCustomer(null); setCars([]); setCustomerOrders([])
     setDeposit(null); setDepositError(''); setHasMore(false)
     customerApi.get(id).then(({ data }) => { if (active()) setCustomer(data) }).catch(failed('Картка'))
       .finally(() => { if (active()) setLoading(false) })
-    customerApi.getSales(id).then(({ data }) => { if (active()) setSales(data) }).catch(failed('Чеки'))
     customerVehiclesApi.list(id).then(({ data }) => { if (active()) setCars(data) }).catch(failed('Автомобілі'))
     posCustomerMoneyApi.getDeposit(id).then(({ data }) => { if (active()) setDeposit(data as typeof deposit) })
       .catch((e) => { if (active()) setDepositError(e instanceof Error ? e.message : 'Не вдалося завантажити кошти клієнта') })
@@ -184,18 +182,7 @@ export default function CustomerDetailPage() {
 
         <CustomerBalances customer={customer} deposit={deposit?.balance}/>
         {local && canUseOrderCash(role) && <Button onClick={() => navigate(customerCashPath(customer.id))}>Розрахунки в касі</Button>}
-        <Card>
-          <h3 className="mb-3 font-semibold">Рух коштів клієнта — останні 50 операцій</h3>
-          {depositError ? <p role="alert" className="text-sm text-red-700">{depositError}</p> : deposit ? (
-            <div className="max-h-64 overflow-auto">
-              {deposit.transactions.length === 0 && <p className="text-sm text-gray-500">Операцій немає</p>}
-              {deposit.transactions.map((entry: any) => <div key={entry.id} className="flex flex-wrap justify-between gap-2 border-b py-2 text-sm">
-                <span>{formatDateTime(entry.created_at)} · {entry.notes || customerMoneyLabel(entry.method)}</span>
-                <span className={entry.amount >= 0 ? 'text-emerald-700' : 'text-red-700'}>{entry.amount > 0 ? '+' : ''}{formatMoney(entry.amount)} · залишок {formatMoney(entry.balance_after)}</span>
-              </div>)}
-            </div>
-          ) : <p className="text-sm text-gray-500">Завантаження...</p>}
-        </Card>
+        {depositError && <p role="alert" className="text-sm text-red-700">{depositError}</p>}
 
         <Card>
           <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Автомобілі ({cars.length})</h3>{local && <Button size="sm" variant="secondary" onClick={() => setEditModal(true)}>Додати / редагувати</Button>}</div>
@@ -290,31 +277,7 @@ export default function CustomerDetailPage() {
 
         {/* Історія покупок */}
         {hasMore && <Button variant="secondary" size="sm" onClick={moreOrders} loading={ordersLoading}>Ще замовлення</Button>}
-        <Card padding="none">
-          <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
-            <ShoppingBag size={16} className="text-gray-400" />
-            <h3 className="font-semibold text-gray-800 text-sm">Каса — останні чеки ({sales.length}, до 200)</h3>
-          </div>
-          {sales.length === 0 ? (
-            <p className="px-6 py-8 text-center text-gray-400 text-sm">{errors['Чеки'] ? 'Чеки не завантажені' : 'Покупок ще немає'}</p>
-          ) : (
-            <div className="divide-y divide-gray-50">
-              {sales.map((s) => (
-                <div key={s.id} className="px-6 py-3 flex items-center justify-between text-sm">
-                  <div>
-                    <span className="font-mono text-gray-600 text-xs">#{s.sale_number}</span>
-                    <span className="mx-2 text-gray-300">·</span>
-                    <span className="text-gray-500">{PAYMENT_LABELS[s.payment_method] ?? s.payment_method}</span>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <span className="font-semibold text-gray-900">{formatMoney(s.total)}</span>
-                    <span className="text-gray-400 text-xs">{formatDateTime(s.completed_at)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
+        <CustomerHistory customerId={customer.id} revision={revision} />
       </div>
 
       <QuickCustomerEditModal

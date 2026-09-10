@@ -363,6 +363,10 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
         },
         timestamp,
       )
+      this.db.prepare(`
+        INSERT OR IGNORE INTO shift_backups (id, tenant_id, device_id, closed_at, created_at)
+        VALUES (?, ?, (SELECT json_extract(value_json, '$') FROM app_meta WHERE key = 'device_id'), ?, ?)
+      `).run(shift.id, tenantId, timestamp, timestamp)
       return { ok: true, id: shift.id }
     })
   }

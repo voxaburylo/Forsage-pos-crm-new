@@ -15,7 +15,7 @@ import { parseProductsWorkbook, type ExcelImportProduct } from './excelProductIm
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
-import { aiChatStorageKey, readAiChat } from './aiChatStorage'
+import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
@@ -510,6 +510,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     setApplyingId(action.id)
     try {
       if (action.tool === 'create_supply_invoice_bulk') {
+        try {
+          saveAiChat(storageKey, localStorage, { entries: entries.slice(-80), applied, applyMsg, applyStatus, applyErrors })
+        } catch {
+          throw new Error('Не вдалося зберегти розпізнану накладну для відновлення. Звільніть місце на диску та повторіть. Накладну ще не створено.')
+        }
         const createLocalInvoice = desktopBridge()?.supply?.createInvoiceFromAi
         if (!createLocalInvoice) throw new Error('Локальна база недоступна — відкрийте програму Форсаж')
         const payload = payloadOverride ?? action.payload

@@ -12,6 +12,7 @@ import shiftsRouter from './routes/shifts.js'
 import salesRouter from './routes/sales.js'
 import returnsRouter from './routes/returns.js'
 import reportsRouter from './routes/reports.js'
+import backupsRouter from './routes/backups.js'
 import syncRouter from './routes/sync.js'
 import adminRouter, { settingsRouter } from './routes/admin.js'
 import suppliersRouter from './routes/suppliers.js'
@@ -193,6 +194,7 @@ app.use('/api/v1/supplier-pos', supplierPOsRouter)
 app.use('/api/v1/internal-consumptions', internalConsumptionsRouter)
 app.use('/api/v1/vin', vinRouter)
 app.use('/api/v1/ai', aiRouter)
+app.use('/api/v1/backups', backupsRouter)
 
 // Централизованный error handler (всегда последний)
 app.use(errorHandler)

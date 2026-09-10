@@ -4,6 +4,9 @@
   "private": true,
   "description": "Forsage local-first portable desktop application",
   "main": "dist/main.js",
+  "dependencies": {
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
   "scripts": {
     "build": "node scripts/verify-web-env.cjs && tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",

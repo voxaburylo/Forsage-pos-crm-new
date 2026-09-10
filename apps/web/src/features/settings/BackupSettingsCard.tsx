@@ -19,7 +19,10 @@ function formatSize(bytes: number): string {
  * ними було нічим: у програмі не було жодного способу відкотитись, і при
  * пошкодженні бази каса просто не відкривалася.
  */
+type ShiftCopy = { id: string; closed_at: string; export_directory: string | null; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }
 export function BackupSettingsCard() {
+  const [shiftCopies, setShiftCopies] = useState<ShiftCopy[]>([])
+  const [loadError, setLoadError] = useState('')
   const [backups, setBackups] = useState<DesktopDatabaseBackup[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -29,10 +32,12 @@ export function BackupSettingsCard() {
     const list = desktopBridge()?.listBackups
     if (!list) return
     setLoading(true)
+    setLoadError('')
     try {
       setBackups(await list())
+      setShiftCopies(await desktopBridge()?.shiftBackups?.status() ?? [])
     } catch {
-      // Список копій — довідкова інформація, мовчазна невдача тут прийнятна.
+      setLoadError('Не вдалося прочитати стан резервних копій. Натисніть «Оновити».')
     } finally {
       setLoading(false)
     }
@@ -70,6 +75,18 @@ export function BackupSettingsCard() {
 
   return (
     <Card className="mt-6 space-y-4 border-slate-200">
+      <div className="space-y-2">
+        <div className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold">Копії після закриття зміни</h3><Button size="sm" variant="secondary" onClick={load} loading={loading}>Оновити</Button></div>
+        <p className="text-sm text-gray-600">Excel: папка «Вивантаження» поруч із програмою, окремо товари та клієнти. Сервер: приватна повна копія, до 7 останніх перевірених копій на комп’ютер. Без інтернету чекає наступного підключення програми.</p>
+        {loadError&&<p role="alert" className="text-sm text-red-700">{loadError}</p>}
+        {shiftCopies.length===0&&!loading&&!loadError&&<p className="text-sm text-gray-500">Копії з’являться після першого закриття зміни в оновленій програмі.</p>}
+        {shiftCopies.map(copy=><div key={copy.id} className="border-b py-2 text-sm">
+          <strong>{formatMoment(copy.closed_at)}</strong>
+          <p>{copy.export_directory?'Excel збережено: '+copy.export_directory:'Excel: очікує створення'}</p>
+          <p>{copy.cloud_completed_at?'Серверну копію перевірено: '+formatMoment(copy.cloud_completed_at):'Серверна копія: очікує відправлення'}</p>
+          {(copy.local_error||copy.cloud_error)&&<p role="alert" className="text-red-700">{copy.local_error||copy.cloud_error}</p>}
+        </div>)}
+      </div>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 pb-2">

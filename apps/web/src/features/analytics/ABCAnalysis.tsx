@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { AlertTriangle, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { toast } from '@/components/ui/Toast'
-import { api } from '@/lib/api'
+import { useReportRows } from './useReportRows'
+import { ReportError } from './ReportError'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Badge, Table } from '@/components/ui'
 import { kopecksToHryvnia } from '@/types/product'
@@ -26,17 +27,9 @@ const CLASS_LABELS: Record<string, string> = {
 }
 
 export default function ABCAnalysis() {
-  const [items, setItems] = useState<ABCItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const { rows: items, loading, error, retry } = useReportRows<ABCItem>('/api/v1/analytics/abc?days=90')
   const [filter, setFilter] = useState<string | null>(null)
   const [showDeficit, setShowDeficit] = useState(false)
-
-  useEffect(() => {
-    api.get<{ data: ABCItem[] }>('/api/v1/analytics/abc?days=90')
-      .then((res) => setItems(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
 
   const filtered = items.filter((item) => {
     if (showDeficit) return item.abc_class === 'A' && item.currentStock <= 0
@@ -47,6 +40,7 @@ export default function ABCAnalysis() {
   const deficitCount = items.filter((i) => i.abc_class === 'A' && i.currentStock <= 0).length
 
   const exportToExcel = () => {
+    if (loading || error) return
     try {
       if (filtered.length === 0) {
         toast.error('Немає даних для експорту')
@@ -108,6 +102,7 @@ export default function ABCAnalysis() {
   return (
     <Layout title="ABC-аналіз товарів">
       <div className="max-w-5xl space-y-4">
+        <ReportError message={error} retry={retry} />
         {/* Кнопка дефіциту */}
         {deficitCount > 0 && (
           <button onClick={() => setShowDeficit(!showDeficit)}
@@ -159,7 +154,7 @@ export default function ABCAnalysis() {
             data={filtered}
             keyFn={(i) => i.id}
             loading={loading}
-            empty={<p className="text-gray-400 text-sm py-12 text-center">Немає даних</p>}
+            empty={<p className="text-gray-400 text-sm py-12 text-center">{error ? 'Звіт недоступний' : 'Немає даних'}</p>}
           />
         </Card>
       </div>

@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { ChartBar as Bar, ChartLegend as Legend, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
-import { api } from '@/lib/api'
+import { useReportRows } from './useReportRows'
+import { ReportError } from './ReportError'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Badge } from '@/components/ui'
 import { formatMoney, localDateKey } from '@/lib/utils'
@@ -30,8 +31,6 @@ interface StaffProfitabilityItem {
 type Period = 'month' | 'quarter' | 'year'
 
 export default function StaffAnalytics() {
-  const [items, setItems] = useState<StaffProfitabilityItem[]>([])
-  const [loading, setLoading] = useState(true)
   const [period, setPeriod] = useState<Period>('month')
   const [customRange, setCustomRange] = useState({ startDate: '', endDate: '' })
   const [isCustom, setIsCustom] = useState(false)
@@ -58,15 +57,10 @@ export default function StaffAnalytics() {
     }
   }, [period, isCustom, customRange])
 
-  useEffect(() => {
-    setLoading(true)
-    api.get<{ data: StaffProfitabilityItem[] }>(
-      `/api/v1/analytics/staff-profitability?startDate=${range.startDate}&endDate=${range.endDate}`
-    )
-      .then((res) => setItems(res.data || []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [range])
+  const { rows: items, loading, error, retry } = useReportRows<StaffProfitabilityItem>(
+    `/api/v1/analytics/staff-profitability?startDate=${range.startDate}&endDate=${range.endDate}`,
+    range.startDate <= range.endDate,
+  )
 
   // Summary Metrics
   const summary = useMemo(() => {
@@ -148,6 +142,7 @@ export default function StaffAnalytics() {
   }, [items, bestSellerId])
 
   const exportToExcel = () => {
+    if (loading || error) return
     try {
       if (items.length === 0) {
         toast.error('Немає даних для експорту')
@@ -274,6 +269,9 @@ export default function StaffAnalytics() {
         </div>
 
         {/* Metric Cards Grid */}
+        <ReportError message={error} retry={retry} />
+        {loading && <p role="status">Завантаження звіту…</p>}
+        {!loading && !error && <>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <Card className="p-5 border border-gray-100 shadow-sm bg-gradient-to-br from-white to-gray-50/50">
             <div className="flex justify-between items-start">
@@ -480,6 +478,7 @@ export default function StaffAnalytics() {
             </table>
           </div>
         </Card>
+        </>}
       </div>
     </Layout>
   )

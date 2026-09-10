@@ -52,4 +52,6 @@ apps/desktop/release/
 server/src/scratch/
 
 qa/
+Вивантаження/
+shift-backups/
 server/package-lock.json

@@ -28,6 +28,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:auth:remember', ALL_ROLES],
   ['desktop:auth:set-pin-required', OWNER_ROLES],
   ['desktop:backup-now', OWNER_ROLES],
+  ...['pending', 'status', 'upload', 'confirmed', 'failed'].map((name): [string, readonly DesktopRole[]] => [`desktop:backup:${name}`, CASHIER_ROLES]),
   // Відкат бази затирає роботу, зроблену після копії — тільки власник.
   ['desktop:backup:list', OWNER_ROLES],
   ['desktop:backup:restore', OWNER_ROLES],

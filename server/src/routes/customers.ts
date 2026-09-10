@@ -14,6 +14,29 @@ import notesRouter from './customerNotes.js'
 const router = Router()
 router.use(requireAuth)
 
+router.get('/:id/history/:kind', async (req,res,next) => {
+  try {
+    const kind=String(req.params.kind)
+    if(!['sales','deposit'].includes(kind)) throw new AppError('INVALID_HISTORY','Невідомий вид історії',422)
+    const parsed=z.object({
+      offset:z.coerce.number().int().min(0).default(0),
+      limit:z.coerce.number().int().min(1).max(100).default(50),
+      from:z.string().datetime().optional(),to:z.string().datetime().optional(),
+    }).parse(req.query)
+    if(parsed.from&&parsed.to&&parsed.from>parsed.to)throw new AppError('INVALID_PERIOD','Некоректний період',422)
+    await customerService.getCustomer(String(req.params.id),req.user!.tenant_id)
+    const date=kind==='sales'?'completed_at':'created_at'
+    let query=db.from(kind==='sales'?'sales':'customer_deposit_transactions')
+      .select(kind==='sales'?'id,sale_number,total,payment_method,status,completed_at':'id,amount,balance_after,method,notes,created_at')
+      .eq('tenant_id',req.user!.tenant_id).eq('customer_id',String(req.params.id)).is('deleted_at',null)
+    if(parsed.from)query=query.gte(date,parsed.from)
+    if(parsed.to)query=query.lte(date,parsed.to)
+    const {data,error}=await query.order(date,{ascending:false}).order('id',{ascending:false}).range(parsed.offset,parsed.offset+parsed.limit)
+    if(error)throw error
+    res.json({data:(data??[]).slice(0,parsed.limit),has_more:(data??[]).length>parsed.limit})
+  }catch(error){next(error)}
+})
+
 // GET /api/v1/customers — список з пошуком
 router.get('/', async (req, res, next) => {
   try {

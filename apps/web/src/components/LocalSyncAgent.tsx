@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { useDesktopOutboxSync } from '@/hooks/useDesktopOutboxSync'
+import { useShiftBackups } from '@/hooks/useShiftBackups'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { toast } from '@/components/ui/Toast'
 
@@ -14,6 +15,7 @@ const ERROR_TOAST_AFTER_MS = 5 * 60_000
 export function LocalSyncAgent() {
   const serverOnline = useServerStatus()
   useOfflineSync(serverOnline)
+  useShiftBackups(serverOnline)
   const { lastError } = useDesktopOutboxSync(serverOnline)
   useDesktopSyncErrorNotice(lastError)
   return null

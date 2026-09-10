@@ -477,6 +477,13 @@ interface ForsageDesktopBridge {
     export: () => Promise<{ path: string }>
   }
   backupNow: () => Promise<string>
+  shiftBackups?: {
+    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number }>>
+    status: () => Promise<Array<{ id: string; closed_at: string; captured_at: string | null; export_directory: string | null; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }>>
+    upload: (id: string, url: string) => Promise<{ ok: true }>
+    confirmed: (id: string, sha: string) => Promise<void>
+    failed: (id: string, message: string) => Promise<void>
+  }
   listBackups?: () => Promise<DesktopDatabaseBackup[]>
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
@@ -667,6 +674,7 @@ interface ForsageDesktopBridge {
     findCustomerByBarcode?: (barcode: string) => Promise<any | null>
     getCustomer?: (id: string, tenantId?: string) => Promise<any>
     getCustomerSales?: (id: string, tenantId?: string) => Promise<any[]>
+    customerHistory?: (id: string, kind: 'sales'|'deposit', options: { offset?: number; limit?: number; from?: string; to?: string }) => Promise<{ data: any[]; has_more: boolean }>
     saveCustomer?: (input: any, id?: string) => Promise<any>
     deleteCustomer?: (id: string, tenantId?: string) => Promise<{ ok: true }>
     listCustomerVehicles?: (customerId: string, tenantId?: string) => Promise<any[]>

@@ -37,6 +37,13 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     export: () => ipcRenderer.invoke('desktop:problems:export'),
   },
   backupNow: () => ipcRenderer.invoke('desktop:backup-now'),
+  shiftBackups: {
+    pending: () => ipcRenderer.invoke('desktop:backup:pending'),
+    status: () => ipcRenderer.invoke('desktop:backup:status'),
+    upload: (id: string, url: string) => ipcRenderer.invoke('desktop:backup:upload', id, url),
+    confirmed: (id: string, sha: string) => ipcRenderer.invoke('desktop:backup:confirmed', id, sha),
+    failed: (id: string, message: string) => ipcRenderer.invoke('desktop:backup:failed', id, message),
+  },
   listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
   restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
   catalog: {
@@ -223,6 +230,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:pos:find-customer-by-barcode', barcode),
     getCustomer: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer', id, tenantId),
     getCustomerSales: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-customer-sales', id, tenantId),
+    customerHistory: (id: string, kind: string, options: unknown) => ipcRenderer.invoke('desktop:pos:customer-history', id, kind, options),
     saveCustomer: (input: unknown, id?: string) => ipcRenderer.invoke('desktop:pos:save-customer', input, id),
     deleteCustomer: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:delete-customer', id, tenantId),
     listCustomerVehicles: (customerId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:list-customer-vehicles', customerId, tenantId),

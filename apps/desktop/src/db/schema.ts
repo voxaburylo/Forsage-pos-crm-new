@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 25
+export const LOCAL_SCHEMA_VERSION = 26
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1462,5 +1462,17 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_purchase_product
       ON auto_purchase_rules(tenant_id, product_id) WHERE deleted_at IS NULL;
+  ` },
+  { version: 26, sql: `
+    CREATE TABLE IF NOT EXISTS shift_backups (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, device_id TEXT NOT NULL,
+      closed_at TEXT NOT NULL, captured_at TEXT, local_path TEXT,
+      compressed_path TEXT, sha256 TEXT, size_bytes INTEGER,
+      export_directory TEXT, local_error TEXT, cloud_error TEXT,
+      cloud_completed_at TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_customer_receipts_history ON sales(tenant_id, customer_id, completed_at DESC, id DESC) WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_customer_deposits_history ON customer_deposit_transactions(tenant_id, customer_id, created_at DESC, id DESC) WHERE deleted_at IS NULL;
   ` },
 ]
