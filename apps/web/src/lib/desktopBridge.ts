@@ -690,7 +690,7 @@ interface ForsageDesktopBridge {
     expectedCash: (cashierId: string) => Promise<{ opening_cash: number; cash_sales: number; cash_returns: number; cash_in: number; cash_out: number; expected_amount: number } | null>
     shiftReport: (cashierId: string) => Promise<import('@/types/shift').ShiftReport | null>
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true }>
-    closeShift: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true; id: string }>
+    closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => Promise<{ ok: true; id: string }>
   }
   sync: {
     listPending: (limit?: number) => Promise<DesktopSyncOutboxOperation[]>

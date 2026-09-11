@@ -32,7 +32,7 @@ describe('section audit: durable financial and stock writes', () => {
     db.prepare('UPDATE customers SET debt_balance = 500 WHERE id = ?').run(customer)
     const request = { operation_id: randomUUID(), customer_id: customer, amount: 200, method: 'cash' as const, shift_id: shift, user_id: cashier }
     const first = pos.payDebt(request)
-    pos.closeShift(cashier, 1200, null)
+    pos.closeShift(cashier, 1200, null, shift)
     expect(pos.payDebt(request)).toEqual(first)
     expect(pos.getCustomer(customer).debt_balance).toBe(300)
   })

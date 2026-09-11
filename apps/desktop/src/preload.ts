@@ -247,8 +247,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     shiftReport: (cashierId: string) => ipcRenderer.invoke('desktop:pos:shift-report', cashierId),
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) =>
       ipcRenderer.invoke('desktop:pos:reconcile', cashierId, actualAmount, comment),
-    closeShift: (cashierId: string, actualAmount: number, comment: string | null) =>
-      ipcRenderer.invoke('desktop:pos:close-shift', cashierId, actualAmount, comment),
+    closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string) =>
+      ipcRenderer.invoke('desktop:pos:close-shift', cashierId, actualAmount, comment, shiftId),
   },
   sync: {
     listPending: (limit?: number) =>

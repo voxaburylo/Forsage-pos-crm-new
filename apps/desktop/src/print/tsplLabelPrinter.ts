@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, screen } from 'electron'
 import { calculateBarcodeCanvasGeometry } from './tsplBarcodeRaster'
 import { enqueuePrinterJob } from './printerJobQueue'
@@ -446,7 +446,7 @@ const COLLECT_PAGES_SCRIPT = `
 
 // ────────────────────────── Основний потік друку ──────────────────────────
 
-type TsplPrintResult = { success: true; labels: number }
+type TsplPrintResult = { success: true; labels: number; render_ms: number; spool_ms: number; bytes: number }
 const activePrintJobs = new Map<string, Promise<TsplPrintResult>>()
 const TSPL_TOTAL_TIMEOUT_MS = 180_000
 const TSPL_RENDER_TIMEOUT_MS = 15_000
@@ -458,6 +458,7 @@ async function executeLabelsTsplCore(
   options: TsplPrintOptions,
   controller: AbortController,
 ): Promise<TsplPrintResult> {
+  const startedAt = Date.now()
   if (typeof html !== 'string' || html.trim().length === 0) throw new Error('PRINT_HTML_EMPTY')
   const printerName = String(options.printerName ?? '').trim()
   assertPrinterRole(printerName, 'label')
@@ -585,14 +586,15 @@ async function executeLabelsTsplCore(
     }
 
     const job = Buffer.concat(chunks)
+    const renderMs = Date.now() - startedAt
     // Діагностика без принтера: FORSAGE_TSPL_DRY_RUN=шлях — скинути потік у файл
     const dryRunPath = process.env.FORSAGE_TSPL_DRY_RUN
     if (dryRunPath) {
       fs.writeFileSync(dryRunPath, job)
-      return { success: true, labels: pages.length }
+      return { success: true, labels: pages.length, render_ms: renderMs, spool_ms: 0, bytes: job.length }
     }
     await stage(sendRawToPrinter(printerName, job, controller.signal), 65_000, 'RAW_PRINT_TIMEOUT')
-    return { success: true, labels: pages.length }
+    return { success: true, labels: pages.length, render_ms: renderMs, spool_ms: Date.now() - startedAt - renderMs, bytes: job.length }
   } finally {
     controller.signal.removeEventListener('abort', abortRender)
     if (!renderWindow.isDestroyed()) renderWindow.destroy()
@@ -610,15 +612,20 @@ function executeLabelsTspl(html: string, options: TsplPrintOptions): Promise<Tsp
   )
 }
 
-/** One live batch per POS-80; a repeated click shares that exact batch. */
+/** Only identical pending batches are coalesced; different batches keep their FIFO position. */
 export function printLabelsTspl(html: string, options: TsplPrintOptions): Promise<TsplPrintResult> {
   const printerName = String(options.printerName ?? '').trim()
   assertPrinterRole(printerName, 'label')
-  const key = printerName.toLocaleLowerCase('en-US')
+  const key = createHash('sha256').update(JSON.stringify([
+    printerName.toLocaleLowerCase('en-US'), html, options.widthMm, options.heightMm,
+    options.gapMm, options.density, options.rotate180,
+  ])).digest('hex')
   const active = activePrintJobs.get(key)
   if (active) return active
+  if (activePrintJobs.size >= 20) return Promise.reject(new Error('Черга друку заповнена. Дочекайтеся завершення попередніх етикеток.'))
 
-  const job = enqueuePrinterJob(printerName, () => executeLabelsTspl(html, options))
+  const snapshot = { ...options, printerName }
+  const job = enqueuePrinterJob(printerName, () => executeLabelsTspl(html, snapshot))
   activePrintJobs.set(key, job)
   const release = () => {
     if (activePrintJobs.get(key) === job) activePrintJobs.delete(key)

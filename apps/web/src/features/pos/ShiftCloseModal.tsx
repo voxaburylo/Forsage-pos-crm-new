@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { shiftApi } from './shiftApi'
 import type { ShiftReport } from '@/types/shift'
 import type { ExpectedCash } from './shiftApi'
@@ -37,10 +37,21 @@ export function ShiftCloseModal({
   const [comment, setComment]           = useState('')
   const [loading, setLoading]           = useState(false)
   const [closing, setClosing]           = useState(false)
+  const closeInFlight = useRef(false)
+  const [loadedShiftId, setLoadedShiftId] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [tireWorkers, setTireWorkers]   = useState<TireServiceReportRow[]>([])
+  const [tireReportState, setTireReportState] = useState<'loading' | 'ready' | 'error'>('loading')
 
   useEffect(() => {
     if (!open) return
+    let cancelled = false
+    setLoadedShiftId(null)
+    setLoadError(false)
+    setReport(null)
+    setCashBreakdown(null)
+    setCashInput('')
+    setComment('')
     const desktopRuntime = desktopBridge()
     if (desktopRuntime && cashierId) {
       setLoading(true)
@@ -49,12 +60,15 @@ export function ShiftCloseModal({
         desktopRuntime.pos.expectedCash(cashierId),
       ])
         .then(([localReport, localCash]) => {
+          if (cancelled) return
+          if (!localReport || !localCash || localReport.shift.id !== shiftId) throw new Error('Зміна змінилася')
           setReport(localReport)
           setCashBreakdown(localCash)
+          setLoadedShiftId(shiftId)
         })
-        .catch(() => toast.error('Помилка завантаження локальних даних зміни'))
-        .finally(() => setLoading(false))
-      return
+        .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження локальних даних зміни') } })
+        .finally(() => { if (!cancelled) setLoading(false) })
+      return () => { cancelled = true }
     }
     if (offline) {
       setLoading(false)
@@ -66,11 +80,15 @@ export function ShiftCloseModal({
       shiftApi.expectedCash(),
     ])
       .then(([reportRes, cashRes]) => {
+        if (cancelled) return
+        if (!reportRes.data || !cashRes.data) throw new Error('Дані зміни недоступні')
         setReport(reportRes.data)
         setCashBreakdown(cashRes.data)
+        setLoadedShiftId(shiftId)
       })
-      .catch(() => toast.error('Помилка завантаження даних зміни'))
-      .finally(() => setLoading(false))
+      .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження даних зміни') } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [open, shiftId, offline, cashierId])
 
   useEffect(() => {
@@ -79,22 +97,27 @@ export function ShiftCloseModal({
       return
     }
     let cancelled = false
+    setTireWorkers([])
+    setTireReportState('loading')
     staffApi.tireServiceReport(businessDateKey(new Date()))
-      .then(({ data }) => { if (!cancelled) setTireWorkers(data ?? []) })
-      .catch(() => { if (!cancelled) setTireWorkers([]) })
+      .then(({ data }) => { if (!cancelled) { setTireWorkers(data ?? []); setTireReportState('ready') } })
+      .catch(() => { if (!cancelled) setTireReportState('error') })
     return () => { cancelled = true }
   }, [open, isOwnerOrAdmin])
 
   const tireWorkersDue = tireWorkers.reduce((sum, worker) => sum + Number(worker.payable_due ?? 0), 0)
   if (!open) return null
 
-  const cashReceived = Math.round(parseFloat(cashInput || '0') * 100)
+  const cashReceived = Math.round(Number(cashInput.replace(',', '.')) * 100)
+  const validCash = /^\d+(?:[.,]\d{1,2})?$/.test(cashInput.trim()) && Number.isSafeInteger(cashReceived) && cashReceived >= 0
+  const canClose = !loading && !loadError && loadedShiftId === shiftId && report !== null && cashBreakdown !== null && validCash
   const expectedCash = cashBreakdown?.expected_amount ?? 0
   const variance     = cashInput ? cashReceived - expectedCash : null
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
   const cashierAmountMismatch = !isOwnerOrAdmin && variance !== null && variance !== 0
 
   async function handleClose() {
+    if (closeInFlight.current || closing || !canClose) return
     if (offline && !isDesktop) {
       toast.error('Закриття зміни потребує інтернету')
       return
@@ -111,10 +134,11 @@ export function ShiftCloseModal({
       toast.error('Розбіжність > 10 грн — поясніть у коментарі')
       return
     }
+    closeInFlight.current = true
     setClosing(true)
     try {
       if (desktop && cashierId) {
-        await desktop.pos.closeShift(cashierId, cashReceived, comment.trim() || null)
+        await desktop.pos.closeShift(cashierId, cashReceived, comment.trim() || null, shiftId)
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       } else {
         try {
@@ -142,7 +166,8 @@ export function ShiftCloseModal({
           : 'Зміну закрито',
       )
 
-      // Desktop + увімкнений ПРРО Кашалот: закриваємо фіскальну зміну (Z-звіт).
+      onClosed()
+      // Облікова зміна вже закрита; очікування ПРРО не залишає форму доступною для повтору.
       if (desktop?.fiscal) {
         try {
           const fiscalConfig = await desktop.fiscal.getConfig()
@@ -158,19 +183,20 @@ export function ShiftCloseModal({
           }
         }
       }
-      onClosed()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка закриття зміни')
     } finally {
+      closeInFlight.current = false
       setClosing(false)
     }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70" onClick={() => { if (!closeInFlight.current) onClose() }} />
       <div className="relative max-h-[92vh] overflow-y-auto bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6 space-y-5">
         <h2 className="text-white text-lg font-bold">Закрити зміну</h2>
+        {loadError && <p role="alert" className="text-sm text-red-300">Дані зміни не завантажено. Закрийте це вікно та відкрийте знову. Закриття зміни заблоковано.</p>}
         {((offline && !isDesktop) || pendingOfflineSales > 0) && (
           <div className="rounded-xl border border-red-500/50 bg-red-900/25 px-4 py-3 text-sm text-red-300">
             {offline && !isDesktop
@@ -246,9 +272,11 @@ export function ShiftCloseModal({
               <div className="rounded-xl border border-cyan-700/50 bg-cyan-950/20 p-4 text-sm">
                 <div className="mb-3 flex items-center justify-between">
                   <span className="font-semibold text-cyan-100">Шиномонтаж за сьогодні</span>
-                  <strong className="text-cyan-300">Доступно до виплати: {formatMoney(tireWorkersDue)}</strong>
+                  {tireReportState === 'ready' && <strong className="text-cyan-300">Доступно до виплати: {formatMoney(tireWorkersDue)}</strong>}
                 </div>
-                {tireWorkers.length === 0 ? (
+                {tireReportState !== 'ready' ? (
+                  <p className="text-xs text-gray-400">{tireReportState === 'loading' ? 'Завантаження нарахувань…' : 'Не вдалося завантажити нарахування. Перевірте їх у зарплаті та виплатах; це не нульовий борг.'}</p>
+                ) : tireWorkers.length === 0 ? (
                   <p className="text-xs text-gray-500">Немає працівників шиномонтажу або нарахувань.</p>
                 ) : (
                   <div className="space-y-2">
@@ -281,6 +309,7 @@ export function ShiftCloseModal({
               <input
                 type="number" min="0" step="0.01" autoFocus
                 value={cashInput}
+                disabled={closing}
                 onChange={(e) => setCashInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleClose() }}
                 placeholder="0.00"
@@ -310,6 +339,7 @@ export function ShiftCloseModal({
               </label>
               <textarea
                 value={comment}
+                disabled={closing}
                 onChange={(e) => setComment(e.target.value)}
                 rows={2}
                 placeholder="Поясніть причину розбіжності..."
@@ -320,11 +350,11 @@ export function ShiftCloseModal({
         )}
 
         <div className="flex gap-3">
-          <button onClick={onClose}
+          <button onClick={onClose} disabled={closing}
             className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
             Скасувати
           </button>
-          <button onClick={handleClose} disabled={(offline && !isDesktop) || pendingOfflineSales > 0 || closing || loading || (cashInput === '' && !loading)}
+          <button onClick={handleClose} disabled={(offline && !isDesktop) || pendingOfflineSales > 0 || closing || !canClose}
             style={{ minHeight: 56 }}
             className="flex-1 py-3 rounded-xl bg-[#FFD000] text-black font-bold hover:bg-yellow-300 disabled:opacity-40 transition-colors">
             {closing ? 'Закриваємо...' : 'Закрити зміну'}

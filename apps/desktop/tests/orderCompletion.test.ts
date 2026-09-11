@@ -312,13 +312,16 @@ describe('LocalOrderRepository.completeOrder', () => {
     const productId = insertProduct({ qty: 3, price: 500 })
     const { orderId } = createPaidOrder({ productId, qty: 1, unitPrice: 500 })
     db.prepare("UPDATE customer_orders SET status = 'lead' WHERE id = ?").run(orderId)
-    repository.addPayment(orderId, {
+    expect(() => repository.addPayment(orderId, {
       tenant_id: DEFAULT_TENANT_ID,
       user_id: cashierId,
       shift_id: shiftId,
       amount: 100,
       method: 'cash',
-    })
+    })).toThrow(/перевищує/)
+    // A manager later reduced an already-paid order; issuing must still be blocked.
+    db.prepare('UPDATE customer_orders SET total_amount=400 WHERE id=?').run(orderId)
+    db.prepare('UPDATE customer_order_items SET sell_price=400 WHERE order_id=?').run(orderId)
 
     expect(() => repository.completeOrder(orderId, {
       tenant_id: DEFAULT_TENANT_ID,

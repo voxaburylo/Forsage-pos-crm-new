@@ -827,7 +827,7 @@ async function main() {
     || shiftReport.by_method.card !== orderSaleAmount) {
     throw new Error('Local shift report did not include both POS and completed-order sales');
   }
-  const closeResult = pos.closeShift('smoke-cashier', 10000 + saleAmount - dailyPayout.amount, 'Smoke close');
+  const closeResult = pos.closeShift('smoke-cashier', 10000 + saleAmount - dailyPayout.amount, 'Smoke close', shiftId);
   if (pos.getOpenShift('smoke-cashier') !== null) {
     throw new Error('Local shift remained open after closeShift');
   }

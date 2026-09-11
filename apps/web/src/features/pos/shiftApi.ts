@@ -53,9 +53,9 @@ export const shiftApi = {
     const local = desktopBridge()?.pos
     if (local) {
       const current = await local.getOpenShift(cashierId())
-      await local.closeShift(cashierId(), closing_cash, notes ?? null)
+      await local.closeShift(cashierId(), closing_cash, notes ?? null, shiftId)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
-      return { data: ({ ...current, id: current?.id ?? shiftId, status: 'closed', closing_cash, closed_at: new Date().toISOString() } as Shift) }
+      return { data: ({ ...(current?.id === shiftId ? current : {}), id: shiftId, status: 'closed', closing_cash, closed_at: new Date().toISOString() } as Shift) }
     }
     return api.post<{ data: Shift }>(
       `/api/v1/shifts/${shiftId}/close`,

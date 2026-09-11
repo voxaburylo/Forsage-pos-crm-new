@@ -6,7 +6,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
-import { canIssueOrderFromPos } from '@/features/orders/orderWorkflow'
+import { canIssueOrderFromPos, isUnpricedOrder } from '@/features/orders/orderWorkflow'
 import { desktopBridge } from '@/lib/desktopBridge'
 
 interface OrderItem {
@@ -76,6 +76,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
   })
   const [paying, setPaying] = useState(false)
+  const paymentInFlight = useRef(false)
   // Рахунок клієнта (передплата) — для оплати замовлення з балансу
   const [accountBalance, setAccountBalance] = useState<number | null>(null)
   const paymentAttemptRef = useRef<{ fingerprint: string; paymentId: string } | null>(null)
@@ -201,6 +202,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }
 
   function closePaymentModal() {
+    if (paymentInFlight.current) return
     setPayOrder(null)
     setPayAmount('')
     setCloseAfterPayment(false)
@@ -208,15 +210,15 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }
 
   async function handleAddPayment() {
-    if (!payOrder) return
+    if (!payOrder || paying || paymentInFlight.current) return
     const remaining = remainingDue(payOrder)
     const amountVal = payAction === 'full' ? remaining : Math.round(parseFloat(payAmount) * 100)
-    if (isNaN(amountVal) || amountVal <= 0) {
+    if (!Number.isSafeInteger(amountVal) || amountVal <= 0) {
       toast.error(payAction === 'full' ? 'Замовлення вже сплачено' : 'Некоректна сума')
       return
     }
 
-    const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(payOrder.status) && remaining <= 0
+    const canAcceptOpenDraftDeposit = isUnpricedOrder(payOrder)
     if (!canAcceptOpenDraftDeposit && amountVal > remaining) {
       toast.error('Сума перевищує залишок до сплати')
       return
@@ -234,13 +236,14 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     const shouldCompleteAfterPayment = payAction === 'full' && closeAfterPayment && canIssueOrder(orderToComplete)
 
     const paymentFingerprint = [
-      payOrder.id, amountVal, payMethod, store.currentShift?.id ?? '',
+      payOrder.id, amountVal, payMethod, store.currentShift?.id ?? '', payAction, fiscal,
     ].join('|')
     if (paymentAttemptRef.current?.fingerprint !== paymentFingerprint) {
       paymentAttemptRef.current = { fingerprint: paymentFingerprint, paymentId: crypto.randomUUID() }
     }
     const paymentId = paymentAttemptRef.current.paymentId
 
+    paymentInFlight.current = true
     setPaying(true)
     try {
       await posOrderApi.addPayment(
@@ -261,6 +264,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       )
 
       paymentAttemptRef.current = null
+      paymentInFlight.current = false
       closePaymentModal()
 
       if (shouldCompleteAfterPayment) {
@@ -277,6 +281,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка внесення оплати'))
     } finally {
+      paymentInFlight.current = false
       setPaying(false)
     }
   }
@@ -323,7 +328,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     const remaining = remainingDue(order)
     const isCompleting = completing === order.id
     const isActive = !['completed', 'canceled', 'archived'].includes(order.status)
-    const canDeposit = isActive && (remaining > 0 || ['lead', 'quoted'].includes(order.status))
+    const canDeposit = isActive && (remaining > 0 || isUnpricedOrder(order))
     const canFullPay = isActive && remaining > 0
     const canIssueAction = canIssueOrder(order)
     const rounded = density === 'mobile' ? 'rounded-xl' : 'rounded-lg'

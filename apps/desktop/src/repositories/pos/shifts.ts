@@ -7,10 +7,15 @@
  * довелося переписувати. Методи перенесені рядок у рядок.
  */
 import { DEFAULT_TENANT_ID } from '../../db/localTypes'
-import { money, nowIso } from './posShared'
+import { nowIso } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosFiscalGuards } from './fiscalGuards'
 import { readOpenCashBalance } from '../cashBalance'
+import { idempotentMutation } from '../idempotentMutation'
+
+function validateCashAmount(amount: number): void {
+  if (!Number.isSafeInteger(amount) || amount < 0) throw new Error('Некоректна сума готівки')
+}
 
 export class LocalPosShifts extends LocalPosFiscalGuards {
   openShift(input: {
@@ -19,6 +24,7 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     opening_cash?: number
     notes?: string | null
   }): string {
+    validateCashAmount(input.opening_cash ?? 0)
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const existing = this.findOpenShift(input.cashier_id, tenantId)
     if (existing) return existing
@@ -113,7 +119,8 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
 
   private createCashOperationInTransaction(input: Parameters<LocalPosShifts['createCashOperation']>[0]): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const amount = money(input.amount)
+    validateCashAmount(input.amount)
+    const amount = input.amount
     if (amount <= 0) throw new Error('Вкажіть суму більше нуля')
     if (!['in', 'out'].includes(input.type)) throw new Error('Некоректний тип касової операції')
     const id = input.operation_id ?? randomUUID()
@@ -301,6 +308,7 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
   }
 
   reconcileShift(cashierId: string, actualAmount: number, comment: string | null, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    validateCashAmount(actualAmount)
     const shift = this.getOpenShift(cashierId, tenantId)
     if (!shift) throw new Error('LOCAL_NO_SHIFT')
     const exp = this.getExpectedCash(cashierId, tenantId)
@@ -318,13 +326,18 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     return { ok: true }
   }
 
-  closeShift(cashierId: string, actualAmount: number, comment: string | null, tenantId = DEFAULT_TENANT_ID): { ok: true; id: string } {
-    return this.db.transaction(() => {
+  closeShift(cashierId: string, actualAmount: number, comment: string | null, shiftId: string, tenantId = DEFAULT_TENANT_ID, role = 'cashier'): { ok: true; id: string } {
+    validateCashAmount(actualAmount)
+    if (!shiftId?.trim()) throw new Error('Не вказано зміну для закриття')
+    return idempotentMutation(this.db, `shift-close:${tenantId}`, shiftId, { cashierId, actualAmount, comment: comment?.trim() || null }, () => {
       const shift = this.getOpenShift(cashierId, tenantId)
-      if (!shift) throw new Error('LOCAL_NO_SHIFT')
+      if (!shift || shift.id !== shiftId) throw new Error('Ця зміна вже закрита або не належить касиру. Оновіть дані зміни.')
       const expected = this.getExpectedCash(cashierId, tenantId)?.expected_amount ?? 0
-      const closingCash = money(actualAmount)
+      const closingCash = actualAmount
       const variance = closingCash - expected
+      const canOverride = role === 'owner' || role === 'admin'
+      if (!canOverride && variance !== 0) throw new Error(`Сума не сходиться. Очікується ${(expected / 100).toFixed(2)} грн. Оновіть дані зміни.`)
+      if (canOverride && Math.abs(variance) > 1000 && !comment?.trim()) throw new Error('Розбіжність > 10 грн — поясніть у коментарі')
       const timestamp = nowIso()
       const note = comment?.trim()
         ? `${shift.notes ? shift.notes + '\n' : ''}${comment.trim()}`

@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { RendererRecovery } from './rendererRecovery'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -102,7 +103,6 @@ const activeDesktopCommands = new Set<Promise<unknown>>()
 const desktopSessionContext = new AsyncLocalStorage<LanSession>()
 let cashalot: CashalotService | null = null
 let desktopDataRoot: string | null = null
-let rendererCrashTimes: number[] = []
 let desktopAuthSession: { id: string; tenant_id: string; role: string } | null = null
 let rememberedAccess: RememberedAccess | null = null
 let rememberedSessionRequired = false
@@ -204,29 +204,6 @@ function rendererIndexPath(): string {
   return app.isPackaged
     ? path.join(__dirname, 'renderer', 'index.html')
     : path.resolve(__dirname, '../../web/dist/index.html')
-}
-
-async function loadRendererWithRetry(window: BrowserWindow): Promise<void> {
-  const target = rendererIndexPath()
-  let lastError: unknown = null
-  const retryDelaysMs = [250, 500, 1_000, 2_000, 3_000]
-  for (let attempt = 1; attempt <= retryDelaysMs.length + 1; attempt += 1) {
-    if (!existsSync(target)) {
-      lastError = new Error(`Файл інтерфейсу не знайдено: ${target}`)
-    } else {
-      try {
-        await window.loadFile(target)
-        return
-      } catch (error) {
-        lastError = error
-      }
-    }
-    writeDesktopDiagnostic('renderer-load-retry', { attempt, target, error: diagnosticValue(lastError) })
-    if (attempt <= retryDelaysMs.length) {
-      await new Promise<void>((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]))
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('Не вдалося завантажити інтерфейс Forsage')
 }
 
 function requireLocalDatabase(): LocalDatabase {
@@ -671,6 +648,30 @@ async function createWindow(): Promise<void> {
     ? new URL(developmentUrl).origin
     : null
   const packagedRendererPath = path.resolve(rendererIndexPath()).toLocaleLowerCase('en-US')
+  const window = mainWindow
+  const recovery = new RendererRecovery({
+    isDestroyed: () => window.isDestroyed(),
+    load: async () => {
+      if (!app.isPackaged && developmentUrl) return window.loadURL(developmentUrl)
+      const target = rendererIndexPath()
+      if (!existsSync(target)) throw new Error(`Файл інтерфейсу не знайдено: ${target}`)
+      return window.loadFile(target)
+    },
+    retry: (attempt, error) => writeDesktopDiagnostic('renderer-load-retry', { attempt, target: rendererIndexPath(), error: diagnosticValue(error) }),
+  })
+  let recoveryFailed = false
+  const failRecovery = (error: unknown) => {
+    if (recoveryFailed || window.isDestroyed()) return
+    recoveryFailed = true
+    recovery.stop()
+    writeDesktopDiagnostic('renderer-recovery-failed', diagnosticValue(error))
+    dialog.showErrorBox('Forsage не вдалося відновити', error instanceof Error ? error.message : 'Перезапустіть програму. Дані залишено в локальній базі.')
+    app.quit()
+  }
+  window.on('closed', () => {
+    recovery.stop()
+    if (mainWindow === window) { desktopAuthSession = null; mainWindow = null }
+  })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
@@ -695,21 +696,7 @@ async function createWindow(): Promise<void> {
     writeDesktopDiagnostic('renderer-process-gone', details)
     if (details.reason === 'clean-exit' || details.reason === 'killed') return
 
-    const now = Date.now()
-    rendererCrashTimes = rendererCrashTimes.filter((time) => now - time < 60_000)
-    rendererCrashTimes.push(now)
-    if (rendererCrashTimes.length > 2) {
-      dialog.showErrorBox(
-        'Forsage не вдалося відновити',
-        'Інтерфейс аварійно завершився кілька разів. Причину записано у журнал. Перезапустіть програму.',
-      )
-      app.quit()
-      return
-    }
-
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload()
-    }, 300)
+    void recovery.crashed().catch(failRecovery)
   })
   mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
     let allowed = false
@@ -737,9 +724,7 @@ async function createWindow(): Promise<void> {
   mainWindow.once('ready-to-show', showMainWindow)
   mainWindow.webContents.once('did-finish-load', () => setTimeout(showMainWindow, 0))
 
-  if (!app.isPackaged && developmentUrl) await mainWindow.loadURL(developmentUrl)
-  else await loadRendererWithRetry(mainWindow)
-  mainWindow.on('closed', () => { desktopAuthSession = null; mainWindow = null })
+  await recovery.start().catch(failRecovery)
 }
 
 function sanitizePageMm(value: unknown, fallback: number, min: number, max: number): number {
@@ -1475,18 +1460,21 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:cash-operation-summary', (_event, shiftId: string, tenantId?: string) =>
     requireLocalPos().getCashOperationSummary(shiftId, tenantId),
   )
-  handleDesktopIpc('desktop:pos:expected-cash', (_event, cashierId: string) =>
-    requireLocalPos().getExpectedCash(requireDesktopSession().id),
-  )
-  handleDesktopIpc('desktop:pos:shift-report', (_event, cashierId: string) =>
-    requireLocalPos().getShiftReport(requireDesktopSession().id),
-  )
-  handleDesktopIpc('desktop:pos:reconcile', (_event, cashierId: string, actualAmount: number, comment: string | null) =>
-    requireLocalPos().reconcileShift(requireDesktopSession().id, actualAmount, comment),
-  )
-  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null) => {
+  handleDesktopIpc('desktop:pos:expected-cash', (_event, cashierId: string) => {
     const session = requireDesktopSession()
-    const result = requireLocalPos().closeShift(session.id, actualAmount, comment, session.tenant_id)
+    return requireLocalPos().getExpectedCash(session.id, session.tenant_id)
+  })
+  handleDesktopIpc('desktop:pos:shift-report', (_event, cashierId: string) => {
+    const session = requireDesktopSession()
+    return requireLocalPos().getShiftReport(session.id, session.tenant_id)
+  })
+  handleDesktopIpc('desktop:pos:reconcile', (_event, cashierId: string, actualAmount: number, comment: string | null) => {
+    const session = requireDesktopSession()
+    return requireLocalPos().reconcileShift(session.id, actualAmount, comment, session.tenant_id)
+  })
+  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => {
+    const session = requireDesktopSession()
+    const result = requireLocalPos().closeShift(session.id, actualAmount, comment, shiftId, session.tenant_id, session.role)
     setImmediate(() => { void shiftBackups?.tick() })
     return result
   })
@@ -1494,10 +1482,14 @@ app.whenReady().then(async () => {
     cashier_id: string
     opening_cash?: number
     notes?: string | null
-  }) => requireLocalPos().openShift({ ...input, cashier_id: requireDesktopSession().id }))
-  handleDesktopIpc('desktop:pos:get-open-shift', (_event, cashierId: string) =>
-    requireLocalPos().getOpenShift(requireDesktopSession().id),
-  )
+  }) => {
+    const session = requireDesktopSession()
+    return requireLocalPos().openShift({ ...input, cashier_id: session.id, tenant_id: session.tenant_id })
+  })
+  handleDesktopIpc('desktop:pos:get-open-shift', (_event, cashierId: string) => {
+    const session = requireDesktopSession()
+    return requireLocalPos().getOpenShift(session.id, session.tenant_id)
+  })
   handleDesktopIpc('desktop:pos:checkout', (_event, input: LocalSaleCheckoutInput) => {
     return requireLocalPos().checkout({ ...input, cashier_id: requireDesktopSession().id })
   })
@@ -1580,9 +1572,12 @@ app.whenReady().then(async () => {
       isDefault: (printer as unknown as { isDefault?: boolean }).isDefault === true,
     }))
   })
-  handleDesktopIpc('desktop:print:labels-tspl', (_event, html: string, options: TsplPrintOptions) =>
-    printLabelsTspl(html, options),
-  )
+  handleDesktopIpc('desktop:print:labels-tspl', async (_event, html: string, options: TsplPrintOptions) => {
+    const startedAt = Date.now()
+    const result = await printLabelsTspl(html, options)
+    writeDesktopDiagnostic('label-batch-completed', { ...result, total_with_queue_ms: Date.now() - startedAt })
+    return result
+  })
   handleDesktopIpc('desktop:fiscal:pick-folder', async (_event, defaultPath?: string) => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {
       title: 'Виберіть папку',

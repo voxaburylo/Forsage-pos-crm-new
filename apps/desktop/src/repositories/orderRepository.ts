@@ -10,6 +10,10 @@ function dayStamp(date: Date): string {
 }
 function num(value: unknown): number { const n = Number(value ?? 0); return Number.isFinite(n) ? n : 0 }
 function boolInt(value: unknown): number { return value === true || value === 1 ? 1 : 0 }
+function pageInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback
+}
 function parseJson(value: string | null): any { if (!value) return null; try { return JSON.parse(value) } catch { return null } }
 
 const ACTIVE_STATUSES = ['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']
@@ -38,6 +42,13 @@ type LocalOrderItemState = { item_status: string; sell_price: number; qty: numbe
 
 type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
 
+function isUnpricedOrder(order: any): boolean {
+  if (!['lead', 'quoted', 'new'].includes(order.status) || num(order.total_amount) !== 0) return false
+  const active = order.items.filter((item: any) => !['canceled', 'returned'].includes(item.item_status))
+  return (order.items.length === 0 || active.length > 0)
+    && active.every((item: any) => num(item.sell_price) === 0 && num(item.core_deposit_amount) === 0)
+}
+
 export class LocalOrderRepository {
   private readonly pos: LocalPosRepository
 
@@ -47,8 +58,8 @@ export class LocalOrderRepository {
 
   listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string; customer_id?: string } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const offset = Math.max(0, Number(input.offset ?? 0) || 0)
-    const limit = Math.max(1, Math.min(500, Number(input.limit ?? 200) || 200))
+    const offset = pageInteger(input.offset ?? 0, 0, 0, Number.MAX_SAFE_INTEGER)
+    const limit = pageInteger(input.limit ?? 200, 200, 1, 500)
     const raw = String(input.search ?? '').trim()
     const params: any[] = [tenantId]
     let searchSql = ''
@@ -61,17 +72,17 @@ export class LocalOrderRepository {
     }
 
     if (raw) {
-      const q = `%${raw}%`
+      const q = raw
       searchSql = ` AND (
-        CAST(o.order_number AS TEXT) LIKE ?
-        OR COALESCE(o.kp_number, '') LIKE ?
-        OR COALESCE(c.phone, '') LIKE ?
-        OR COALESCE(c.full_name, '') LIKE ?
-        OR COALESCE(c.card_barcode, '') LIKE ?
+        instr(CAST(o.order_number AS TEXT), ?) > 0
+        OR instr(forsage_lower(o.kp_number), forsage_lower(?)) > 0
+        OR instr(COALESCE(c.phone, ''), ?) > 0
+        OR instr(forsage_lower(c.full_name), forsage_lower(?)) > 0
+        OR instr(forsage_lower(c.card_barcode), forsage_lower(?)) > 0
         OR EXISTS (
           SELECT 1 FROM customer_order_items i
-          WHERE i.order_id = o.id AND i.deleted_at IS NULL
-            AND (lower(COALESCE(i.name, '')) LIKE lower(?) OR lower(COALESCE(i.sku, '')) LIKE lower(?))
+          WHERE i.order_id = o.id AND i.tenant_id = o.tenant_id AND i.deleted_at IS NULL
+            AND (instr(forsage_lower(i.name), forsage_lower(?)) > 0 OR instr(forsage_lower(i.sku), forsage_lower(?)) > 0)
         )
       )`
       params.push(q, q, q, q, q, q, q)
@@ -86,7 +97,7 @@ export class LocalOrderRepository {
       ORDER BY o.updated_at DESC, o.id DESC
       LIMIT ? OFFSET ?
     `).all(...params) as any[]
-    return rows.map((row) => this.decorateOrder(row, tenantId))
+    return this.decorateOrders(rows, tenantId)
   }
 
   saveOrder(input: any, orderId?: string): any {
@@ -548,7 +559,7 @@ export class LocalOrderRepository {
   listReadyOrders(input: { tenant_id?: string; search?: string; customer_id?: string | null; limit?: number } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const search = String(input.search ?? '').trim().toLowerCase()
-    const limit = Math.max(1, Math.min(200, input.limit ?? 80))
+    const limit = pageInteger(input.limit ?? 80, 80, 1, 200)
     const statusPlaceholders = ACTIVE_STATUSES.map(() => '?').join(',')
     const params: any[] = [tenantId, ...ACTIVE_STATUSES]
     let where = `o.tenant_id = ? AND o.deleted_at IS NULL AND o.status IN (${statusPlaceholders})`
@@ -558,13 +569,13 @@ export class LocalOrderRepository {
     }
     if (search) {
       where += ` AND (
-        CAST(o.order_number AS TEXT) LIKE ?
-        OR lower(COALESCE(o.kp_number, '')) LIKE ?
-        OR lower(COALESCE(c.phone, '')) LIKE ?
-        OR lower(COALESCE(c.full_name, '')) LIKE ?
-        OR lower(COALESCE(c.card_barcode, '')) LIKE ?
+        instr(CAST(o.order_number AS TEXT), ?) > 0
+        OR instr(forsage_lower(o.kp_number), ?) > 0
+        OR instr(COALESCE(c.phone, ''), ?) > 0
+        OR instr(forsage_lower(c.full_name), ?) > 0
+        OR instr(forsage_lower(c.card_barcode), ?) > 0
       )`
-      const q = `%${search}%`
+      const q = search
       params.push(q, q, q, q, q)
     }
     params.push(limit)
@@ -579,7 +590,7 @@ export class LocalOrderRepository {
                o.updated_at DESC
       LIMIT ?
     `).all(...params) as any[]
-    return rows.map((row) => this.decorateOrder(row, tenantId))
+    return this.decorateOrders(rows, tenantId)
   }
 
   getOrder(id: string, tenantId = DEFAULT_TENANT_ID): any | null {
@@ -646,8 +657,10 @@ export class LocalOrderRepository {
 
   private addPaymentInTransaction(orderId: string, input: Parameters<LocalOrderRepository['addPayment']>[1]): { data: any; order: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const amount = Math.round(num(input.amount))
-    if (amount <= 0) throw new Error('Некоректна сума')
+    const amount = input.amount
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error('Некоректна сума')
+    if (!['cash', 'card', 'transfer', 'account'].includes(input.method)) throw new Error('Невідомий спосіб оплати')
+    if (input.is_fiscal) throw new Error('Фіскалізація передоплати замовлення ще не підтримується цим каналом. Фіскальний чек не створено; оплату не записано.')
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
     const paymentId = input.payment_id ?? randomUUID()
@@ -659,6 +672,11 @@ export class LocalOrderRepository {
         && existingPayment.order_id === orderId
         && num(existingPayment.amount) === amount
         && existingPayment.method === input.method
+        && existingPayment.shift_id === (input.shift_id ?? null)
+        && existingPayment.created_by === (input.user_id ?? null)
+        && existingPayment.is_fiscal === boolInt(input.is_fiscal)
+        && existingPayment.notes === (input.notes ?? null)
+        && !existingPayment.deleted_at
       if (!sameRequest) throw new Error('Цей ідентифікатор платежу вже використано для іншої оплати')
       return { data: existingPayment, order }
     }
@@ -666,7 +684,7 @@ export class LocalOrderRepository {
     if (input.is_fiscal) throw new Error('Фіскалізація передоплати замовлення ще не підтримується цим каналом. Фіскальний чек не створено; оплату не записано.')
     if (['canceled', 'cancelled', 'archived'].includes(order.status)) throw new Error('Замовлення скасоване або архівоване. Оплату не прийнято.')
     const remaining = this.remainingDue(order)
-    const canAcceptOpenDraftDeposit = ['lead', 'quoted'].includes(order.status) && remaining <= 0
+    const canAcceptOpenDraftDeposit = isUnpricedOrder(order)
     if (!canAcceptOpenDraftDeposit && amount > remaining) throw new Error('Сума перевищує залишок до сплати')
     if (input.method === 'account' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата з рахунку неможлива')
 
@@ -684,7 +702,8 @@ export class LocalOrderRepository {
     const timestamp = this.nextTimestamp(tenantId, orderId)
     const accountTransactionId = input.method === 'account' ? paymentId : null
     const nextPaid = Math.max(num(order.total_paid), num(order.prepayment)) + amount
-    const nextStatus = (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
+    if (!Number.isSafeInteger(nextPaid)) throw new Error('Сума оплат завелика')
+    const nextStatus = !canAcceptOpenDraftDeposit && (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
 
     this.db.transaction(() => {
       if (input.method === 'account') {
@@ -1121,11 +1140,27 @@ export class LocalOrderRepository {
     `).get(scope, timestamp) as { value: number } | undefined
     return Number(row?.value ?? 1)
   }
-  private decorateOrder(row: any, tenantId: string): any {
+  private decorateOrders(rows: any[], tenantId: string): any[] {
+    if (!rows.length) return []
     const items = this.db.prepare(`
       SELECT * FROM customer_order_items
+      WHERE tenant_id = ? AND order_id IN (${rows.map(() => '?').join(',')}) AND deleted_at IS NULL
+      ORDER BY created_at ASC, rowid ASC
+    `).all(tenantId, ...rows.map((row) => row.id)) as any[]
+    const byOrder = new Map<string, any[]>()
+    for (const item of items) {
+      const group = byOrder.get(item.order_id) ?? []
+      group.push(item)
+      byOrder.set(item.order_id, group)
+    }
+    return rows.map((row) => this.decorateOrder(row, tenantId, byOrder.get(row.id) ?? []))
+  }
+
+  private decorateOrder(row: any, tenantId: string, loadedItems?: any[]): any {
+    const items = loadedItems ?? this.db.prepare(`
+      SELECT * FROM customer_order_items
       WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, rowid ASC
     `).all(tenantId, row.id) as any[]
     return {
       id: row.id,

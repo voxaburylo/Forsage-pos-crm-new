@@ -34,7 +34,7 @@ describe('cash boundaries', () => {
     expect(pos.getExpectedCash(cashier)?.expected_amount).toBe(100)
   })
   it('does not receive a deposit into an already closed shift', () => {
-    pos.closeShift(cashier, 100, null)
+    pos.closeShift(cashier, 100, null, shift)
     expect(() => pos.addCustomerDeposit({ customer_id: customer, amount: 50, method: 'cash', shift_id: shift })).toThrow(/змін/i)
     expect(pos.getCustomerDeposit(customer).balance).toBe(500)
   })
