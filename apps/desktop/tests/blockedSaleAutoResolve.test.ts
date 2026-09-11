@@ -57,15 +57,14 @@ describe('продаж, заблокований відʼємним залишк
   const saleStatus = (sequence: number) => (db.prepare('SELECT status, attempts FROM sync_outbox WHERE sequence = ?')
     .get(sequence) as { status: string; attempts: number })
 
-  it('піднімає залишок сервера до касового плюс проданe і повертає чек у чергу', () => {
+  it('передає поточний залишок без додавання проданого назад і повертає чек у чергу', () => {
     queueSale({ sequence: 200, qty: 2, attempts: MAX_OUTBOX_ATTEMPTS })
     const sync = new LocalSyncRepository(db)
 
     sync.applyPushResults([])
 
-    // На касі лишилось 3, у чеку 2 — отже до чека на сервері мало бути 5.
-    // Сервер прийме продаж, відніме 2 і зійдеться з касою.
-    expect(JSON.parse(correction()!.payload_json)).toMatchObject({ qty_on_hand: 5, stock_correction: true })
+    // На касі лишилось 3. Повторна передача копії не повинна додати дві продані одиниці.
+    expect(JSON.parse(correction()!.payload_json)).toMatchObject({ qty_on_hand: 3, stock_correction: true })
     const sale = saleStatus(200)
     expect(sale.status).toBe('pending')
     expect(sale.attempts).toBe(0)

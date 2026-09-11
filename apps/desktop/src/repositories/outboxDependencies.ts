@@ -19,6 +19,7 @@ export interface OutboxDependencyRow {
   tenant_id: string
   aggregate_type: string
   aggregate_id: string
+  operation_type?: string
 }
 
 
@@ -27,6 +28,10 @@ export function outboxDependencyKeys(row: OutboxDependencyRow, payload: any): st
   const keys = new Set<string>([
     `${prefix}:aggregate:${row.aggregate_type}:${row.aggregate_id}`,
   ])
+  // Receipt copies do not consume stock. Let the server verify references on
+  // each retry instead of waiting forever behind an unrelated old inventory.
+  // Same-receipt operations still retain their ordering.
+  if (row.operation_type === 'sale.completed' || row.operation_type === 'inventory.document_copied') return [...keys]
   const addReference = (type: 'supplier' | 'product' | 'invoice' | 'brand' | 'category', value: unknown) => {
     if (typeof value === 'string' && value) keys.add(`${prefix}:reference:${type}:${value}`)
   }

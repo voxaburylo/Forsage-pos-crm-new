@@ -112,6 +112,17 @@ const baseInput = {
 
 describe('addOrderPayment idempotency', () => {
   beforeEach(() => vi.clearAllMocks())
+  it('copies a signed local account payment after the balance was already mirrored', async () => {
+    const state=createState();state.customerBalance=0
+    installFakeTransaction(state)
+    const transactionId='77777777-7777-4777-8777-777777777777'
+    const input={...baseInput,method:'account' as const,local_balance_mirrored:true,local_balance_after:0,local_account_transaction_id:transactionId}
+    await addOrderPayment(input);await addOrderPayment(input)
+    expect(state.customerBalance).toBe(0)
+    expect(state.accountTransactions.size).toBe(1)
+    expect(state.accountTransactions.has(transactionId)).toBe(true)
+    expect(state.payments.size).toBe(1)
+  })
 
   it('returns the first payment on retry without a second cash movement', async () => {
     const state = createState()

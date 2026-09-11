@@ -55,3 +55,10 @@ qa/
 Вивантаження/
 shift-backups/
 server/package-lock.json
+
+# Local operational reports, signed business snapshots and device credentials.
+docs/SALES_MIRROR_REPAIR_2026-09-11.md
+mirror-identity.json
+Mirror-registration-*.json
+Mirror-state-repair-*.json
+Sales-mirror-repair-*.json

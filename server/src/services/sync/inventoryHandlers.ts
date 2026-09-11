@@ -130,7 +130,7 @@ export async function applyWriteoffCreated(tenantId: string, userId: string, ope
       if (!product.rowCount) throw new AppError('SYNC_PRODUCT_NOT_FOUND', 'Товар списання не знайдено', 404)
       const qty = Number(item.qty)
       const available = Number(product.rows[0]?.qty_on_hand ?? 0)
-      if (qty > available) {
+      if (!operation.balance_mirrored && qty > available) {
         throw new AppError('INSUFFICIENT_STOCK', `Недостатньо товару для списання: є ${available}, потрібно ${qty}`, 409)
       }
       await client.query(
@@ -139,7 +139,7 @@ export async function applyWriteoffCreated(tenantId: string, userId: string, ope
         ) VALUES ($1,$2,$3,$4,$5,$6)`,
         [randomUUID(), writeoffId, item.product_id, qty, Math.round(Number(product.rows[0]?.purchase_price ?? 0) * qty), createdAt],
       )
-      await client.query(
+      if (!operation.balance_mirrored) await client.query(
         `UPDATE products
          SET qty_on_hand = qty_on_hand - $1, updated_at = $2
          WHERE id = $3 AND tenant_id = $4`,
@@ -253,7 +253,7 @@ export async function applyInventoryDeleted(tenantId: string, operation: SyncOut
 
 export async function applyInventoryCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   // A historical document copy must never reapply an old physical count.
-  const documentOnly = operation.operation_type === 'inventory.document_copied'
+  const documentOnly = operation.operation_type === 'inventory.document_copied' || operation.balance_mirrored === true
   const payload = operation.payload ?? {}
   const sessionId = String(payload.id ?? operation.aggregate_id)
   const items = (Array.isArray(payload.items) ? payload.items : [])
@@ -305,8 +305,8 @@ export async function applyInventoryCompleted(tenantId: string, userId: string, 
       if (!Number.isFinite(countedStock) || countedStock < 0) continue
 
       const product = await client.query(
-        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand, updated_at FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
-        [productId, tenantId],
+        'SELECT id, COALESCE(qty_on_hand, 0) AS qty_on_hand, updated_at FROM products WHERE id = $1 AND tenant_id = $2 AND ($3::boolean OR deleted_at IS NULL) LIMIT 1 FOR UPDATE',
+        [productId, tenantId, documentOnly],
       )
       if (!product.rowCount) {
         throw new AppError('SYNC_PRODUCT_NOT_FOUND', `Товар ревізії не знайдено: ${productId}`, 404)

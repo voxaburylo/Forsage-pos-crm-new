@@ -227,10 +227,10 @@ export async function applyCustomerDebtPaid(tenantId: string, userId: string, op
     )
     if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
     const customer = customerResult.rows[0]
-    if (Number(customer.debt_balance ?? 0) <= 0) return
-    const paid = Math.min(amount, Number(customer.debt_balance ?? 0))
+    if (!operation.balance_mirrored && Number(customer.debt_balance ?? 0) <= 0) return
+    const paid = operation.balance_mirrored ? amount : Math.min(amount, Number(customer.debt_balance ?? 0))
     const balanceAfter = Number(customer.debt_balance ?? 0) - paid
-    await client.query(
+    if (!operation.balance_mirrored) await client.query(
       'UPDATE customers SET debt_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
       [customerId, tenantId, balanceAfter, appliedAt],
     )
@@ -275,10 +275,11 @@ export async function applyCustomerDepositChanged(tenantId: string, userId: stri
     )
     if (!customerResult.rowCount) throw new AppError('SYNC_CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
     const customer = customerResult.rows[0]
-    const balanceAfter = Number(customer.deposit_balance ?? 0) + amount
+    const balanceAfter = operation.balance_mirrored ? Number(payload.balance_after) : Number(customer.deposit_balance ?? 0) + amount
+    if (!Number.isSafeInteger(balanceAfter)) throw new AppError('SYNC_DEPOSIT_BALANCE_REQUIRED', 'Відсутній історичний баланс операції рахунку', 409)
     if (balanceAfter < 0) throw new AppError('INSUFFICIENT_DEPOSIT', 'Недостатньо коштів на рахунку клієнта', 400)
 
-    await client.query(
+    if (!operation.balance_mirrored) await client.query(
       'UPDATE customers SET deposit_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
       [customerId, tenantId, balanceAfter, appliedAt],
     )
@@ -326,7 +327,9 @@ export async function applyCustomerBonusAdjusted(tenantId: string, userId: strin
       return
     }
 
-    const updated = await client.query(
+    const updated = operation.balance_mirrored ? await client.query(
+      'SELECT bonus_balance FROM customers WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL', [customerId, tenantId],
+    ) : await client.query(
       `UPDATE customers
        SET bonus_balance = COALESCE(bonus_balance, 0) + $1, updated_at = $2
        WHERE id = $3 AND tenant_id = $4 AND deleted_at IS NULL

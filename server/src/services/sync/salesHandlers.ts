@@ -567,199 +567,90 @@ export async function applyShiftClosed(tenantId: string, operation: SyncOutboxOp
   })
 }
 
+/** A completed desktop sale is a document copy, never another stock/payment operation. */
 export async function applySaleCompleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}
-  await runTransaction(async (client) => {
-    const saleId = String(payload.sale_id ?? operation.aggregate_id)
-    const existing = await client.query(
-      'SELECT id FROM sales WHERE id = $1 AND tenant_id = $2',
-      [saleId, tenantId],
-    )
-    if (existing.rowCount) return
-
-    const payments = Array.isArray(payload.payments) ? payload.payments : []
-    const cashAmount = sumPayments(payments, 'cash')
-    const cardAmount = sumPayments(payments, 'card')
-    const transferAmount = sumPayments(payments, 'transfer')
-    const debtAmount = sumPayments(payments, 'debt')
-    const paymentMethod = normalizePaymentMethod(payload.payment_method)
-    const completedAt = payload.completed_at ?? operation.created_at
-    const appliedAt = operation.applied_at ?? operation.created_at
-    let shiftId = isUuid(payload.shift_id) ? String(payload.shift_id) : null
-    if (!shiftId) throw new AppError('SYNC_SALE_SHIFT_REQUIRED', 'Для продажу не вказано касову зміну', 422)
-    const shift = await client.query(
-      'SELECT id, status, opened_at, closed_at FROM shifts WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
-      [shiftId, tenantId],
-    )
-    if (!shift.rowCount) {
-      await client.query(
-        `INSERT INTO shifts (
-          id, tenant_id, cashier_id, status, opening_cash, opened_at, notes, created_at, updated_at
-        ) VALUES ($1, $2, $3, 'open', 0, $4, $5, $4, $6)`,
-        [shiftId, tenantId, uuidOr(payload.cashier_id, userId), completedAt, 'Створено під час офлайн-синхронізації', appliedAt],
-      )
-    } else {
-      const row = shift.rows[0]
-      const completedTime = new Date(completedAt).getTime()
-      const outsideInterval = completedTime < new Date(row.opened_at).getTime()
-        || (row.closed_at && completedTime > new Date(row.closed_at).getTime())
-      if (outsideInterval) {
-        shiftId = randomUUID()
-        const expectedCash = Math.max(0, cashAmount)
-        await client.query(
-          `INSERT INTO shifts (
-             id, tenant_id, cashier_id, status, opening_cash, closing_cash,
-             expected_cash, cash_variance, opened_at, closed_at, notes, created_at, updated_at
-           ) VALUES ($1,$2,$3,'closed',0,$4,$4,0,$5,$5,$6,$5,$7)`,
-          [
-            shiftId, tenantId, uuidOr(payload.cashier_id, userId), expectedCash, completedAt,
-            'Автоматична звірка офлайн-продажу після закриття старої зміни',
-            appliedAt,
-          ],
-        )
-      }
+  const saleId = String(payload.sale_id ?? operation.aggregate_id)
+  const completedAt = payload.completed_at ?? payload.created_at
+  const items = Array.isArray(payload.items) ? payload.items : []
+  const money = (value: unknown, label: string) => {
+    const number = Number(value ?? 0)
+    if (!Number.isSafeInteger(number) || number < 0) throw new AppError('SYNC_SALE_INVALID', label, 422)
+    return number
+  }
+  if (!isUuid(saleId) || !isUuid(payload.shift_id) || !completedAt
+    || !Number.isFinite(Date.parse(completedAt)) || items.length === 0) {
+    throw new AppError('SYNC_SALE_INVALID', 'Неповні дані локального чека: потрібні зміна, дата та товари', 422)
+  }
+  const total = money(payload.total, 'Некоректна сума чека')
+  const subtotal = money(payload.subtotal, 'Некоректна сума товарів')
+  const discount = money(payload.discount, 'Некоректна знижка')
+  const bonusesSpent = money(payload.bonuses_spent, 'Некоректна сума бонусів')
+  const payments = Array.isArray(payload.payments) ? payload.payments : []
+  for (const payment of payments) money(payment.amount, 'Некоректна сума оплати')
+  const cashAmount = money(sumPayments(payments, 'cash'), 'Некоректна готівка')
+  const cardAmount = money(sumPayments(payments, 'card'), 'Некоректна оплата карткою')
+  const transferAmount = money(sumPayments(payments, 'transfer'), 'Некоректний переказ')
+  const debtAmount = money(sumPayments(payments, 'debt'), 'Некоректний борг')
+  const paymentMethod = normalizePaymentMethod(payload.payment_method)
+  const preparedItems = items.map((item: any) => {
+    const qty = Number(item.qty)
+    if (!Number.isFinite(qty) || qty <= 0 || (item.product_id != null && !isUuid(item.product_id))) {
+      throw new AppError('SYNC_SALE_QTY_INVALID', 'Некоректний товар або кількість у чеку', 422)
     }
-    const bonusesSpent = Math.max(0, Math.round(Number(payload.bonuses_spent ?? 0)))
-    const fiscalNumber = payload.fiscal_number
-      ?? payments.find((payment: { fiscal_number?: string | null }) => payment?.fiscal_number)?.fiscal_number
-      ?? null
-    const isFiscal = payload.is_fiscal === true || fiscalNumber !== null
-
+    return { ...item, qty,
+      unit_price: money(item.unit_price, 'Некоректна ціна'),
+      discount: money(item.discount, 'Некоректна знижка позиції'),
+      total: money(item.total ?? Math.round(qty * Number(item.unit_price) - Number(item.discount ?? 0)), 'Некоректна сума позиції'),
+      cost_price: money(item.purchase_price ?? item.cost_price, 'Некоректна собівартість'),
+      core_deposit_amount: money(item.core_deposit_amount, 'Некоректна застава'),
+    }
+  })
+  const appliedAt = operation.applied_at ?? new Date().toISOString()
+  await runTransaction(async (client) => {
+    // Serialise duplicate deliveries even when the receipt is not inserted yet.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [tenantId + ':sale:' + saleId])
+    const existing = await client.query('SELECT id, total FROM sales WHERE id = $1 AND tenant_id = $2', [saleId, tenantId])
+    if (existing.rowCount) {
+      if (Number(existing.rows[0].total) !== total) throw new AppError('SYNC_SALE_COPY_CONFLICT', 'Серверна копія чека має іншу суму; потрібна звірка', 409)
+      return
+    }
+    const shift = await client.query('SELECT id FROM shifts WHERE id = $1 AND tenant_id = $2', [payload.shift_id, tenantId])
+    if (!shift.rowCount) throw new AppError('SYNC_SALE_SHIFT_REQUIRED', 'Спочатку потрібно передати копію касової зміни', 409)
+    for (const item of preparedItems) {
+      if (item.product_id == null) item.product_id = await ensureFreeAmountProduct(client, tenantId)
+    }
+    // Deleted products still belong to historical receipts. Do not recreate or sell them.
+    const products = await client.query('SELECT id FROM products WHERE id = ANY($1::uuid[]) AND tenant_id = $2',
+      [preparedItems.map((item: any) => item.product_id), tenantId])
+    const knownProducts = new Set(products.rows.map((product) => product.id))
+    for (const item of preparedItems) {
+      if (!knownProducts.has(item.product_id)) throw new AppError('SYNC_PRODUCT_NOT_FOUND', 'Не передано картку товару: ' + item.product_id, 409)
+    }
+    const fiscalNumber = payload.fiscal_number ?? payments.find((payment: any) => payment.fiscal_number)?.fiscal_number ?? null
     await client.query(
       `INSERT INTO sales (
         id, tenant_id, sale_number, customer_id, cashier_id, shift_id, status,
         subtotal, discount, total, payment_method, is_debt, notes, manager_id,
         cash_amount, card_amount, transfer_amount, bonuses_spent, is_fiscal, fiscal_number, fiscal_qr_url,
         completed_at, created_at, updated_at
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, 'completed',
-        $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18, $19, $20,
-        $21, $21, $22
-      )`,
-      [
-        saleId,
-        tenantId,
-        payload.sale_number,
-        isUuid(payload.customer_id) ? payload.customer_id : null,
-        uuidOr(payload.cashier_id, userId),
-        shiftId,
-        Number(payload.subtotal ?? 0),
-        Number(payload.discount ?? 0),
-        Number(payload.total ?? 0),
-        paymentMethod,
-        debtAmount > 0 || paymentMethod === 'debt',
-        payload.notes ?? null,
-        uuidOr(payload.manager_id ?? payload.cashier_id, userId),
-        cashAmount,
-        cardAmount,
-        transferAmount,
-        bonusesSpent,
-        isFiscal,
-        fiscalNumber,
-        payload.fiscal_qr_url ?? null,
-        completedAt,
-        appliedAt,
-      ],
-    )
-
-    await client.query(`SELECT set_config('app.stock_source_type', 'sale', true)`)
-    await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [saleId])
-    for (const item of payload.items ?? []) {
-      const productId = item.product_id ?? await ensureFreeAmountProduct(client, tenantId)
-      const product = await client.query(
-        `SELECT id, is_service, COALESCE(purchase_price, 0) AS purchase_price,
-                requires_core_return, COALESCE(core_deposit_amount, 0) AS core_deposit_amount
-         FROM products
-         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
-        [productId, tenantId],
-      )
-      if (!product.rowCount) {
-        throw new AppError('SYNC_PRODUCT_NOT_FOUND', `Товар не знайдено: ${productId}`, 404)
-      }
-
-      const qty = Number(item.qty ?? 0)
-      if (!Number.isFinite(qty) || qty <= 0) throw new AppError('SYNC_SALE_QTY_INVALID', 'Кількість товару у чеку має бути більше нуля', 422)
-      const unitPrice = Math.max(0, Math.round(Number(item.unit_price ?? 0)))
-      const discount = Math.max(0, Math.round(Number(item.discount ?? 0)))
-      const total = Math.max(0, Math.round(qty * unitPrice - discount))
-      const isService = product.rows[0].is_service === true
-      const costPrice = Number(item.purchase_price ?? product.rows[0].purchase_price ?? 0)
-      const coreDepositAmount = product.rows[0].requires_core_return === true
-        ? Number(product.rows[0].core_deposit_amount ?? 0)
-        : 0
-
+      ) VALUES ($1,$2,$3,$4,$5,$6,'completed',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$21,$22)`,
+      [saleId, tenantId, payload.sale_number, isUuid(payload.customer_id) ? payload.customer_id : null,
+        uuidOr(payload.cashier_id, userId), payload.shift_id, subtotal, discount, total, paymentMethod,
+        debtAmount > 0 || paymentMethod === 'debt', payload.notes ?? null,
+        uuidOr(payload.manager_id ?? payload.cashier_id, userId), cashAmount, cardAmount, transferAmount,
+        bonusesSpent, payload.is_fiscal === true || fiscalNumber !== null, fiscalNumber,
+        payload.fiscal_qr_url ?? null, completedAt, appliedAt])
+    for (const item of preparedItems) {
       await client.query(
-        `INSERT INTO sale_items (
-          id, tenant_id, sale_id, product_id, qty, unit_price, discount, total,
-          cost_price, core_deposit_amount, core_return_status
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [
-          isUuid(item.id) ? item.id : randomUUID(),
-          tenantId,
-          saleId,
-          productId,
-          qty,
-          unitPrice,
-          discount,
-          total,
-          costPrice,
-          coreDepositAmount,
-          coreDepositAmount > 0 ? 'pending' : 'none',
-        ],
-      )
-
-      if (!isService) {
-        await client.query(
-          'UPDATE products SET qty_on_hand = qty_on_hand - $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-          [qty, appliedAt, productId, tenantId],
-        )
-      }
+        `INSERT INTO sale_items (id, tenant_id, sale_id, product_id, qty, unit_price, discount, total,
+          cost_price, core_deposit_amount, core_return_status, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [isUuid(item.id) ? item.id : randomUUID(), tenantId, saleId, item.product_id, item.qty,
+          item.unit_price, item.discount, item.total, item.cost_price, item.core_deposit_amount,
+          item.core_return_status ?? (item.core_deposit_amount > 0 ? 'pending' : 'none'), completedAt])
     }
-
-    const customerId = isUuid(payload.customer_id) ? payload.customer_id : null
-    if (debtAmount > 0 && customerId) {
-      await client.query(
-        'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-        [debtAmount, appliedAt, customerId, tenantId],
-      )
-    } else if (paymentMethod === 'debt' && customerId) {
-      await client.query(
-        'UPDATE customers SET debt_balance = debt_balance + $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
-        [Number(payload.total ?? 0), appliedAt, customerId, tenantId],
-      )
-    }
-
-    if (bonusesSpent > 0) {
-      if (!customerId) throw new AppError('SYNC_BONUS_CUSTOMER_REQUIRED', 'Для списання бонусів потрібен клієнт', 422)
-      const spent = await client.query(
-        `UPDATE customers
-         SET bonus_balance = COALESCE(bonus_balance, 0) - $1, updated_at = $2
-         WHERE id = $3 AND tenant_id = $4 AND COALESCE(bonus_balance, 0) >= $1
-         RETURNING bonus_balance`,
-        [bonusesSpent, appliedAt, customerId, tenantId],
-      )
-      if (!spent.rowCount) {
-        throw new AppError('SYNC_INSUFFICIENT_BONUS', 'На сервері недостатньо бонусів клієнта; спочатку синхронізуйте картку клієнта', 409)
-      }
-      await client.query(
-        `INSERT INTO bonus_transactions (
-          id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
-          description, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,'spend',$5,$6,$7,$8)`,
-        [
-          operation.operation_id,
-          tenantId,
-          customerId,
-          -bonusesSpent,
-          saleId,
-          `Списання бонусів за чеком ${payload.sale_number ?? saleId.slice(0, 8)}`,
-          completedAt,
-          appliedAt,
-        ],
-      )
-    }
+    // Quantities, customer debt and bonuses were already applied by the local cash register.
+    // Current balances require a separately verified snapshot, not historical deltas.
   })
 }

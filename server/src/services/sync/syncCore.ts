@@ -178,6 +178,7 @@ export interface SyncOutboxOperation {
   payload: any
   created_at: string
   applied_at?: string
+  balance_mirrored?: boolean
 }
 
 export interface SyncPushResult {

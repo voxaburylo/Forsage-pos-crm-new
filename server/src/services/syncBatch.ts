@@ -22,6 +22,7 @@ function dependencyKeys(operation: SyncBatchOperation): string[] {
   const keys = new Set<string>([
     `${prefix}:aggregate:${operation.aggregate_type}:${operation.aggregate_id}`,
   ])
+  if (operation.operation_type === 'sale.completed' || operation.operation_type === 'inventory.document_copied') return [...keys]
   const addReference = (type: 'supplier' | 'product' | 'invoice', value: unknown) => {
     if (typeof value === 'string' && value) keys.add(`${prefix}:reference:${type}:${value}`)
   }

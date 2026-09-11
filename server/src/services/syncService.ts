@@ -12,6 +12,7 @@ import { nextSettingsRowUpdatedAt, prepareLabelSettingsUpdate } from './labelSet
 import { clearProductSearchCache } from './productService.js'
 import { processSyncBatch } from './syncBatch.js'
 import { withTenantSyncGenerationGuard } from './syncGeneration.js'
+import { applyBalanceSnapshot, requiresSignedBalances } from './sync/balanceMirror.js'
 
 // Фільтр .in() їде в URL: 1000 UUID — це ~37 000 символів, і сервер відхиляє
 // такий запит як Bad Request (уся синхронізація падала з DB_ERROR). Ліміт на
@@ -59,6 +60,13 @@ export async function pushLocalOperations(params: {
       const restrictedCustomerWrite = ['customer.created', 'customer.updated'].includes(operation.operation_type)
         && !['owner', 'admin', 'manager'].includes(params.role)
       const rawPayload = { ...(operation.payload ?? {}) }
+      if (!rawPayload.local_balance_snapshot && await requiresSignedBalances(params.tenantId)) {
+        throw new AppError('MIRROR_SIGNATURE_REQUIRED', 'Основну локальну базу захищено. Запустіть актуальну локальну версію програми для передачі копій.', 409)
+      }
+      if (rawPayload.local_balance_snapshot) {
+        await applyBalanceSnapshot(params.tenantId, operation.device_id, rawPayload.local_balance_snapshot)
+        delete rawPayload.local_balance_snapshot
+      }
       const originalPayload = restrictedCustomerWrite
         ? Object.fromEntries(Object.entries(rawPayload).filter(([key]) => [
             'id', 'phone', 'full_name', 'email', 'notes', 'card_barcode', 'birth_date', 'created_at',
@@ -72,6 +80,7 @@ export async function pushLocalOperations(params: {
         ...operation,
         created_at: appliedAt,
         applied_at: appliedAt,
+        balance_mirrored: Boolean(operation.payload?.local_balance_snapshot),
         payload: originalPayload,
       }
 

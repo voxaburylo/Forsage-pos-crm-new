@@ -42,13 +42,20 @@ describe('застаріла ревізія лікується без участ
     error?: string | null
   }): string {
     const operationId = randomUUID()
+    const aggregateId = randomUUID()
+    if (options.operationType === 'inventory.completed') {
+      db.prepare(`INSERT INTO inventory_sessions(id,tenant_id,session_name,status,created_at,updated_at)
+        VALUES (?,?,'Test','completed','2026-09-03','2026-09-03')`).run(aggregateId, DEFAULT_TENANT_ID)
+      db.prepare(`INSERT INTO inventory_items(id,tenant_id,session_id,product_id,expected_stock,counted_stock,was_counted,created_at,updated_at)
+        VALUES (?,?,?,?,6,6,1,'2026-09-03','2026-09-03')`).run(randomUUID(), DEFAULT_TENANT_ID, aggregateId, productId)
+    }
     db.prepare(`
       INSERT INTO sync_outbox(
         sequence, operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
         operation_type, payload_json, status, attempts, created_at, last_error
       ) VALUES (?, ?, ?, 'device-1', ?, ?, ?, ?, ?, ?, '2026-09-03T09:43:00.000Z', ?)
     `).run(
-      options.sequence, operationId, DEFAULT_TENANT_ID, options.aggregateType, randomUUID(),
+      options.sequence, operationId, DEFAULT_TENANT_ID, options.aggregateType, aggregateId,
       options.operationType,
       JSON.stringify({ items: [{ product_id: productId, counted_stock: 6, expected_stock: 6 }] }),
       options.status, options.attempts, options.error ?? null,
@@ -110,7 +117,7 @@ describe('застаріла ревізія лікується без участ
     expect(row.status).toBe('failed')
   })
 
-  it('не чіпає ревізію, поки по тому самому товару щось стоїть у черзі', () => {
+  it('copies verified inventory even when later receipts wait behind it', () => {
     queueOperation({
       sequence: 100, operationType: 'inventory.completed', aggregateType: 'inventory',
       status: 'failed', attempts: MAX_OUTBOX_ATTEMPTS, error: staleError,
@@ -126,9 +133,11 @@ describe('застаріла ревізія лікується без участ
     pushCycle(sync)
 
     const row = db.prepare('SELECT status FROM sync_outbox WHERE sequence = 100').get() as { status: string }
-    expect(row.status).toBe('failed')
-    expect(db.prepare("SELECT COUNT(*) n FROM sync_outbox WHERE operation_type = 'product.upsert'").get())
-      .toEqual({ n: 0 })
+    expect(row.status).toBe('pending')
+    expect(db.prepare("SELECT operation_type FROM sync_outbox WHERE sequence=100").get())
+      .toEqual({ operation_type: 'inventory.document_copied' })
+    expect(db.prepare('SELECT qty_on_hand FROM products WHERE id=?').get(productId)).toEqual({ qty_on_hand: 6 })
+    expect(sync.listPending(10).some(row => row.operation_type === 'sale.completed')).toBe(true)
   })
 
   it('не чіпає ревізію, яку сервер відхилив з іншої причини', () => {

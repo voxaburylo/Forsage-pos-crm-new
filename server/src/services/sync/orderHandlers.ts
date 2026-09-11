@@ -456,6 +456,9 @@ export async function applyOrderPaymentAdded(tenantId: string, userId: string, o
     // Offline payment was validated while the local shift was open. It can reach
     // the server after that shift closed, so validate its timestamp interval.
     accept_closed_shift: true,
+    local_balance_mirrored: operation.balance_mirrored === true,
+    local_balance_after: payload.balance_after,
+    local_account_transaction_id: isUuid(payload.account_transaction_id) ? payload.account_transaction_id : undefined,
   })
 }
 
@@ -622,7 +625,7 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       const unitPrice = Math.round(Number(orderItem.sell_price ?? 0))
       const merchandiseTotal = Math.round(unitPrice * qty)
       const isService = product.is_service === true
-      if (!isService && !allowNegative && Number(product.qty_on_hand ?? 0) < qty) {
+      if (!operation.balance_mirrored && !isService && !allowNegative && Number(product.qty_on_hand ?? 0) < qty) {
         throw new AppError(
           'INSUFFICIENT_STOCK',
           `Недостатньо залишку для «${product.name}»: є ${Number(product.qty_on_hand ?? 0)}, потрібно ${qty}`,

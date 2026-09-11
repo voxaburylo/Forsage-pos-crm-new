@@ -61,7 +61,7 @@ describe('LocalSyncRepository.listPending', () => {
       aggregateType: 'product', aggregateId: 'product-delayed', operationType: 'product.upsert',
       payload: { id: 'product-delayed' }, status: 'failed', nextAttemptAt: future,
     })
-    insertOperation({
+    const dependent = insertOperation({
       aggregateType: 'sale', aggregateId: 'sale-dependent', operationType: 'sale.completed',
       payload: { items: [{ product_id: 'product-delayed' }] },
     })
@@ -70,7 +70,25 @@ describe('LocalSyncRepository.listPending', () => {
       payload: { items: [{ product_id: 'product-ready' }] },
     })
 
-    expect(repository.listPending(10).map((row) => row.operation_id)).toEqual([independent])
+    expect(repository.listPending(10).map((row) => row.operation_id)).toEqual([dependent, independent])
+  })
+
+  it('does not hide completed receipts behind a failed old count of the same product', () => {
+    insertOperation({ aggregateType: 'inventory_session', aggregateId: 'old-count',
+      operationType: 'inventory.completed', payload: { items: [{ product_id: 'p1' }] },
+      status: 'failed', nextAttemptAt: new Date(Date.now() + 60_000).toISOString() })
+    const receipt = insertOperation({ aggregateType: 'sale', aggregateId: 'receipt',
+      operationType: 'sale.completed', payload: { items: [{ product_id: 'p1' }] } })
+    expect(repository.listPending(10).map(row => row.operation_id)).toEqual([receipt])
+  })
+
+  it('does not let one failed receipt block another receipt for the same product', () => {
+    insertOperation({ aggregateType: 'sale', aggregateId: 'old-sale', operationType: 'sale.completed',
+      payload: { items: [{ product_id: 'p1' }] }, status: 'failed',
+      nextAttemptAt: new Date(Date.now() + 60_000).toISOString() })
+    const receipt = insertOperation({ aggregateType: 'sale', aggregateId: 'new-sale',
+      operationType: 'sale.completed', payload: { items: [{ product_id: 'p1' }] } })
+    expect(repository.listPending(10).map(row => row.operation_id)).toEqual([receipt])
   })
 
   it('preserves supplier and invoice dependency order without blocking another supplier', () => {

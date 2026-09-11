@@ -38,7 +38,7 @@ describe('sync batch isolation', () => {
     expect(apply).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps dependent documents pending until the failed product succeeds', async () => {
+  it('retries receipt copies independently while stock documents wait for failed products', async () => {
     const operations = [
       operation(1, 'product', 'product-a', 'product.upsert'),
       operation(2, 'sale', 'sale-a', 'sale.completed', {
@@ -57,7 +57,7 @@ describe('sync batch isolation', () => {
 
     const results = await processSyncBatch(operations, apply)
 
-    expect(results.map((result) => result.sequence)).toEqual([1, 4])
-    expect(apply.mock.calls.map(([item]) => item.sequence)).toEqual([1, 4])
+    expect(results.map((result) => result.sequence)).toEqual([1, 2, 4])
+    expect(apply.mock.calls.map(([item]) => item.sequence)).toEqual([1, 2, 4])
   })
 })

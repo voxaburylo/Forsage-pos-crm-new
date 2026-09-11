@@ -100,6 +100,9 @@ app.use('/api/v1/vin/ocr', express.json({ limit: '10mb' }))
 app.use('/api/v1/ai/chat', express.json({ limit: '25mb' }))
 // Імпорт каталогу товарів: список «усіх товарів» легко перевищує стандартні 100kb
 app.use('/api/v1/import', express.json({ limit: '25mb' }))
+// Signed local snapshots exceed Express's 100kb default. Keep below Vercel's
+// request limit; only this authenticated sync endpoint receives the larger body.
+app.use('/api/v1/sync/push', express.json({ limit: '4mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)
@@ -138,7 +141,7 @@ app.get('/api/v1/health/database', async (_req, res) => {
 })
 
 app.get('/api/v1/version', (_req, res) => {
-  res.json({ version: '2.0.0-direct-sql' })
+  res.json({ version: '2.0.0-direct-sql', local_mirror_contract: 1 })
 })
 
 // Rate limit на login — підключаємо ДО роутера

@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
+import { createMirrorSigner } from './security/mirrorIdentity'
 import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDatabaseOpenResult } from './db/localDatabase'
 import { startBackupScheduler } from './db/backupScheduler'
 import { ShiftBackupService } from './backup/shiftBackupService'
@@ -940,7 +941,13 @@ app.whenReady().then(async () => {
   localSupply = new LocalSupplyRepository(localDatabase)
   localStaff = new LocalStaffRepository(localDatabase)
   localWarehouse = new LocalWarehouseRepository(localDatabase)
-  localSync = new LocalSyncRepository(localDatabase)
+  localSync = new LocalSyncRepository(localDatabase, createMirrorSigner(path.dirname(path.dirname(localDatabase.databasePath)), {
+    encrypt: text => {
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('Захищене сховище Windows недоступне для передачі копії')
+      return safeStorage.encryptString(text).toString('base64')
+    },
+    decrypt: text => safeStorage.decryptString(Buffer.from(text,'base64')),
+  }))
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
   shiftBackups = new ShiftBackupService(localDatabase,

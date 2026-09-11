@@ -197,6 +197,17 @@ export async function applySupplierInvoiceUpdated(tenantId: string, operation: S
 }
 
 export async function applySupplierInvoicePosted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
+  if (operation.balance_mirrored) {
+    await runTransaction(async client => {
+      const row=await client.query('SELECT status FROM supply_invoices WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE',[operation.aggregate_id,tenantId])
+      if(!row.rowCount)throw new AppError('NOT_FOUND','Накладну не знайдено',404)
+      if(row.rows[0].status==='posted')return
+      if(row.rows[0].status!=='draft')throw new AppError('INVOICE_STATE_CONFLICT','Стан копії накладної не відповідає проведенню',409)
+      await client.query("UPDATE supply_invoices SET status='posted',posted_by=$3,posted_at=$4,updated_at=$5 WHERE id=$1 AND tenant_id=$2",
+        [operation.aggregate_id,tenantId,userId,operation.payload.created_at ?? operation.created_at,operation.applied_at ?? operation.created_at])
+    })
+    return
+  }
   const { data: invoice } = await db
     .from('supply_invoices')
     .select('id,status')
@@ -267,6 +278,16 @@ export async function applySupplierInvoicePaymentAdded(tenantId: string, userId:
 }
 
 export async function applySupplierInvoiceCancelled(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  if (operation.balance_mirrored) {
+    await runTransaction(async client=>{
+      const row=await client.query('SELECT status,paid_amount FROM supply_invoices WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE',[operation.aggregate_id,tenantId])
+      if(!row.rowCount)throw new AppError('NOT_FOUND','Накладну не знайдено',404)
+      if(row.rows[0].status==='cancelled')return
+      if(Number(row.rows[0].paid_amount)>0)throw new AppError('PAID_INVOICE_CANNOT_BE_CANCELLED','Не можна скасувати оплачену накладну',409)
+      await client.query("UPDATE supply_invoices SET status='cancelled',updated_at=$3 WHERE id=$1 AND tenant_id=$2",[operation.aggregate_id,tenantId,operation.applied_at ?? operation.created_at])
+    })
+    return
+  }
   const { data: invoice } = await db
     .from('supply_invoices')
     .select('id,status,paid_amount')

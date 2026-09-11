@@ -17,6 +17,10 @@ export type AddOrderPaymentInput = {
   created_at?: string
   applied_at?: string
   accept_closed_shift?: boolean
+  // Internal sync-only context, never accepted from the public payment request.
+  local_balance_mirrored?: boolean
+  local_balance_after?: number
+  local_account_transaction_id?: string
 }
 
 export type AddOrderPaymentResult = {
@@ -148,11 +152,12 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
       if (!customerResult.rowCount) {
         throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
       }
-      const balanceAfter = numeric(customerResult.rows[0].deposit_balance) - input.amount
+      const balanceAfter = input.local_balance_mirrored ? Number(input.local_balance_after) : numeric(customerResult.rows[0].deposit_balance) - input.amount
+      if (!Number.isSafeInteger(balanceAfter)) throw new AppError('SYNC_DEPOSIT_BALANCE_REQUIRED', 'Відсутній історичний баланс оплати', 409)
       if (balanceAfter < 0) {
         throw new AppError('INSUFFICIENT_DEPOSIT', 'Недостатньо коштів на рахунку клієнта', 400)
       }
-      await client.query(
+      if (!input.local_balance_mirrored) await client.query(
         `UPDATE customers
          SET deposit_balance = $3, updated_at = $4
          WHERE id = $1 AND tenant_id = $2`,
@@ -164,7 +169,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
            shift_id, notes, created_by, created_at, updated_at
          ) VALUES ($1, $2, $3, $4, $5, 'account', $6, $7, $8, $9, $10, $11)`,
         [
-          paymentId,
+          input.local_account_transaction_id ?? paymentId,
           input.tenant_id,
           order.customer_id,
           -input.amount,

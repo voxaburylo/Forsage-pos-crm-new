@@ -8,6 +8,8 @@ import { LocalProblemRepository } from './problemRepository'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
 import { readServerResetGeneration } from './localTenantReset'
 import { recoverInventoryDocumentCopies } from './inventoryCopyRecovery'
+import { attachBalanceSnapshots } from './balanceSnapshot'
+import { matchesCompletedInventory } from './inventoryCopyValidation'
 
 const SERVER_PULL_SCOPE = 'desktop_server_pull'
 const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
@@ -104,7 +106,7 @@ interface OutboxDropCandidate {
 export class LocalSyncRepository {
   private readonly problems: LocalProblemRepository
 
-  constructor(private readonly db: LocalDatabase) {
+  constructor(private readonly db: LocalDatabase, private readonly signMirror?: (text: string) => string) {
     this.problems = new LocalProblemRepository(db)
     recoverInventoryDocumentCopies(db)
     this.coalesceSupersededProductOperations()
@@ -114,6 +116,7 @@ export class LocalSyncRepository {
     this.recoverOrphanReturnedSaleDirtyFlags()
     this.recoverAcknowledgedDirtyFlags()
     this.wakeStuckOperations()
+    this.autoResolveStaleInventories()
   }
 
   getPullState(): LocalSyncPullState {
@@ -398,13 +401,12 @@ export class LocalSyncRepository {
    * Це правило, а не вибір, тому питати нікого не треба: каса — джерело
    * правди для залишків. Копіюємо документ і окремо надсилаємо свою кількість.
    *
-   * Свідомо чекаємо, поки вичерпаються всі спроби, і тільки якщо по тих самих
-   * товарах більше нічого не стоїть у черзі: конфлікт буває й тимчасовим —
-   * поки попереду не доїхав продаж, який змінив залишок на сервері.
+   * Після вичерпання спроб звіряємо повний документ із локальною ревізією.
+   * Очікувати пізніші операції не можна: вони самі можуть чекати цю ревізію.
    */
   private autoResolveStaleInventories(): number {
     const candidates = this.db.prepare(`
-      SELECT sequence, payload_json
+      SELECT sequence, tenant_id, aggregate_id, payload_json
       FROM sync_outbox
       WHERE status = 'failed'
         AND attempts >= ${MAX_OUTBOX_ATTEMPTS}
@@ -413,17 +415,15 @@ export class LocalSyncRepository {
           last_error LIKE '%змінився після початку ревізії%'
           OR last_error LIKE '%SYNC_INVENTORY_CONFLICT%'
         )
-    `).all() as Array<{ sequence: number; payload_json: string | null }>
+    `).all() as Array<{ sequence: number; tenant_id: string; aggregate_id: string; payload_json: string | null }>
     if (candidates.length === 0) return 0
 
     const ready = candidates.filter((candidate) => {
       let payload: any = null
       try { payload = candidate.payload_json ? JSON.parse(candidate.payload_json) : null } catch { return false }
-      const productIds = [...new Set((Array.isArray(payload?.items) ? payload.items : [])
-        .map((item: any) => item?.product_id)
-        .filter((id: any): id is string => typeof id === 'string' && id.length > 0))] as string[]
-      if (productIds.length === 0) return false
-      return productIds.every((productId) => !this.hasOtherUnsyncedWork(productId, candidate.sequence))
+      // Waiting for later product work deadlocks: that work waits behind this count.
+      // Copy only after checking every item against the completed local document.
+      return matchesCompletedInventory(this.db, candidate.tenant_id, candidate.aggregate_id, payload)
     })
     if (ready.length === 0) return 0
 
@@ -438,10 +438,8 @@ export class LocalSyncRepository {
    * Викидати такий чек не можна — зникне виторг; лишати в черзі теж не
    * можна — він тримає все наступне по цих товарах.
    *
-   * Правило однозначне, тому робимо мовчки: спершу надсилаємо серверу
-   * залишок, який був ДО цього чека (нинішній касовий плюс продане), потім
-   * повертаємо чек у чергу. Сервер прийме продаж і сам відніме кількість —
-   * і зійдеться рівно з касою.
+   * Повторно передаємо документ і поточний залишок. Не додаємо продане назад:
+   * сервер тепер отримує копію чека, а не нову операцію списання.
    */
   private autoResolveBlockedSales(): number {
     const candidates = this.db.prepare(`
@@ -475,7 +473,7 @@ export class LocalSyncRepository {
 
       const queued = this.db.transaction(() => {
         let corrections = 0
-        for (const [productId, qty] of sold) {
+        for (const productId of sold.keys()) {
           const product = this.db.prepare(`
             SELECT id, sku, name, COALESCE(qty_on_hand, 0) AS qty_on_hand
             FROM products
@@ -487,7 +485,7 @@ export class LocalSyncRepository {
           corrections += this.queueStockCorrection(
             candidate.tenant_id,
             product,
-            Number(product.qty_on_hand ?? 0) + qty,
+            Number(product.qty_on_hand ?? 0),
           )
         }
         if (corrections === 0) return 0
@@ -671,7 +669,7 @@ export class LocalSyncRepository {
     }
 
     if (corruptSequences.length > 0) this.markCorruptPayloads(corruptSequences)
-    return operations
+    return attachBalanceSnapshots(this.db, operations, this.signMirror)
   }
   applyPushResults(results: LocalSyncPushResult[]): void {
     const timestamp = nowIso()
