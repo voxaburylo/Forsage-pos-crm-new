@@ -1,4 +1,5 @@
 import { api } from '@/lib/api'
+import { selectDesktopPushBatch, validateDesktopPushResults } from './desktopSyncBatch'
 import {
   desktopBridge,
   isDesktopRuntime,
@@ -43,11 +44,17 @@ async function executeDesktopOutboxPush(limit = 50): Promise<DesktopPushResult> 
 
   pushExecutionActive = true
   try {
-    const [operations, state] = await Promise.all([
+    const [pendingOperations, state] = await Promise.all([
       desktop.sync.listPending(limit),
       desktop.sync.getPullState(),
     ])
-    if (operations.length === 0) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
+    if (pendingOperations.length === 0) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
+    const { operations, oversized } = selectDesktopPushBatch(pendingOperations, state.reset_generation)
+    if (oversized) {
+      await desktop.sync.markBatchFailed([oversized.sequence],
+        'Документ завеликий для передачі на сервер. Локальні дані збережено; потрібна перевірка синхронізації')
+      return { pushed: 0, failed: 1, pending: pendingOperations.length - 1, resetRequired: false }
+    }
     try {
       const response = await api.post<PushResponse>('/api/v1/sync/push', {
         reset_generation: state.reset_generation,
@@ -56,12 +63,12 @@ async function executeDesktopOutboxPush(limit = 50): Promise<DesktopPushResult> 
         silent: true,
         timeoutMs: 60_000,
       })
-      const results = response.data.results ?? []
+      const results = validateDesktopPushResults(operations, response.data.results)
       await desktop.sync.applyPushResults(results)
       return {
         pushed: results.filter((result) => result.status === 'synced').length,
         failed: results.filter((result) => result.status === 'failed').length,
-        pending: Math.max(0, operations.length - results.length),
+        pending: pendingOperations.length - operations.length,
         resetRequired: response.data.reset_required === true || results.some((result) => result.status === 'discarded'),
       }
     } catch (error) {

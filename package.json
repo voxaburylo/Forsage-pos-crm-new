@@ -13,7 +13,8 @@
     "desktop:smoke": "pnpm --filter=desktop smoke:db",
     "desktop:dist": "pnpm --filter=desktop dist",
     "lint": "pnpm --recursive lint",
-    "typecheck": "pnpm --filter=web typecheck && pnpm --filter=desktop typecheck && pnpm --filter=server typecheck",
+    "typecheck": "pnpm --filter=web typecheck && pnpm --filter=desktop typecheck && pnpm --filter=server typecheck && pnpm typecheck:api",
+    "typecheck:api": "pnpm --filter=server exec tsc --noEmit -p ../api/tsconfig.json",
     "test": "pnpm --filter=web test && pnpm --filter=desktop test && pnpm --filter=server test",
     "verify": "pnpm typecheck && pnpm --filter=web lint && pnpm test"
   },
