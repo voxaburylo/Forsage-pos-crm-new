@@ -1,5 +1,11 @@
-# Desktop application and its local installers are not part of the web deploy.
-apps/desktop/
+# Keep only the pure search vocabulary imported by the web catalog.
+# Excluding the entire desktop directory also removes this build dependency.
+apps/desktop/*
+!apps/desktop/src/
+apps/desktop/src/*
+!apps/desktop/src/lib/
+apps/desktop/src/lib/*
+!apps/desktop/src/lib/catalogLanguageSearch.ts
 
 # Dependencies and generated output are rebuilt by Vercel.
 node_modules/
@@ -18,6 +24,17 @@ dist/
 *.blockmap
 *.zip
 logs/
+tmp/
+local-scripts/
+shift-backups/
+Вивантаження/
+BELT_RECONCILIATION_*.md
+FILTER_CROSS_PROGRESS_*.md
+docs/SALES_MIRROR_REPAIR_*.md
+mirror-identity.json
+Mirror-registration-*.json
+Mirror-state-repair-*.json
+Sales-mirror-repair-*.json
 qa/
 .ux-shots/
 test_*.cjs
