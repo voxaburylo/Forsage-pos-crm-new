@@ -1,3 +1,4 @@
+import { assertBackupSpace } from './backupSpace'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { mkdir, rename, stat } from 'node:fs/promises'
@@ -44,6 +45,7 @@ export class ShiftBackupService {
       await mkdir(root, { recursive: true })
       const snapshot = path.join(root, stamp + '.db')
       let capturedAt = job.captured_at
+      await assertBackupSpace(root, this.db.databasePath)
       if (!existsSync(snapshot)) {
         capturedAt = new Date().toISOString()
         await createVerifiedBackup(this.db.databasePath, snapshot + '.partial')
@@ -52,7 +54,7 @@ export class ShiftBackupService {
       capturedAt ??= (await stat(snapshot)).mtime.toISOString()
       this.db.prepare('UPDATE shift_backups SET local_path=?, captured_at=? WHERE id=?').run(snapshot, capturedAt, job.id)
       const output = path.join(this.programDirectory, 'Вивантаження', stamp)
-      const result = await this.exportInWorker({ snapshot, output, tenantId: job.tenant_id, stamp, closedAt: job.closed_at, capturedAt })
+      const result = await this.exportInWorker({ snapshot, dataRoot: this.db.dataRoot, output, tenantId: job.tenant_id, stamp, closedAt: job.closed_at, capturedAt })
       this.db.prepare(`UPDATE shift_backups SET compressed_path=?, sha256=?, size_bytes=?,
         export_directory=?, local_error=NULL, next_attempt_at=NULL WHERE id=?`)
         .run(result.compressed, result.sha256, result.size, output, job.id)

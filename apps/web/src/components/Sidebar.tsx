@@ -1,3 +1,4 @@
+import { navigationAllowed } from '@/lib/navigationAccess'
 import { useState, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
@@ -133,7 +134,7 @@ function NavSection({
   const location = useLocation()
 
   const visibleItems = group.items.filter(
-    (item) => (item.to !== '/pos' || isDesktopRuntime()) && (!item.roles || item.roles.includes(role)),
+    (item) => navigationAllowed(item.to, isDesktopRuntime()) && (!item.roles || item.roles.includes(role)),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))
@@ -204,8 +205,15 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
       if (local) {
         // Той самий фільтр, що й у списку збірки — інакше лічильник у меню
         // показував більше, ніж реально в черзі (враховував відкриті lead/new).
-        local({ limit: 500, offset: 0 })
-          .then((rows) => setPickingCount((rows ?? []).filter((order: any) => PICKING_STATUSES.includes(order.status)).length))
+        (async () => {
+          let count = 0
+          for (let offset = 0; ; offset += 500) {
+            const rows = await local({ limit: 500, offset })
+            count += (rows ?? []).filter((order: any) => PICKING_STATUSES.includes(order.status)).length
+            if (!rows || rows.length < 500) break
+          }
+          return count
+        })().then(setPickingCount)
           .catch(() => {})
         return
       }

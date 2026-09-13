@@ -1,3 +1,4 @@
+import { restoreEmbeddedPhotos } from '../backup/embeddedPhotos'
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -96,6 +97,7 @@ export class LocalDatabase {
       `)
       this.migrate()
       this.assertIntegrity()
+      restoreEmbeddedPhotos(this.database, dataRoot)
       deviceId = this.getOrCreateDeviceId()
     } catch (error) {
       try { this.database.close() } catch { /* уже закрита або не відкривалась */ }

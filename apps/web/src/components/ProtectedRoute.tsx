@@ -1,3 +1,4 @@
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -6,10 +7,13 @@ interface Props {
   roles?: string[]
 }
 
-export function homePathForRole(role?: string): string {
+export function homePathForRole(role?: string, desktop = isDesktopRuntime()): string {
+  if (!desktop) return '/products'
+  if (role === 'sto_viewer') return '/inventory'
+  if (role === 'tire_worker') return '/products'
   if (role === 'cashier') return '/pos'
   if (role === 'storekeeper') return '/inventory/picking'
-  return '/dashboard'
+  return ['owner', 'admin', 'manager'].includes(role ?? '') ? '/dashboard' : '/products'
 }
 
 export default function ProtectedRoute({ children, roles }: Props) {

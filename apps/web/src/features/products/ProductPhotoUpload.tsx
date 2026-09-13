@@ -9,7 +9,6 @@ interface Props {
   onPhotoUrl: (url: string | null) => void  // повідомляє батьківський компонент про головне фото
 }
 
-const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL as string
 const BUCKET        = 'product-photos'
 const MAX_PX        = 1200   // максимальна сторона після стиснення
 const JPEG_QUALITY  = 0.82   // 82% — хороший баланс якість/розмір
@@ -56,21 +55,6 @@ export async function uploadToStorage(blob: Blob, folder: string): Promise<strin
 
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path)
   return data.publicUrl
-}
-
-async function deleteFromStorage(url: string): Promise<void> {
-  try {
-    const localDelete = desktopBridge()?.catalog.deletePhoto
-    if (localDelete && url.startsWith('file:')) {
-      await localDelete(url)
-      return
-    }
-    const { supabase } = await import('@/lib/supabase')
-    const prefix = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/`
-    if (!url.startsWith(prefix)) return
-    const path = url.slice(prefix.length)
-    await supabase.storage.from(BUCKET).remove([path])
-  } catch { /* best-effort */ }
 }
 
 // ─── Компонент ────────────────────────────────────────────────────────────────
@@ -157,8 +141,7 @@ export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: P
 
   // ── Видалення фото ─────────────────────────────────────────────────────────
   async function removePhoto(idx: number) {
-    const url = photos[idx]
-    await deleteFromStorage(url)
+    // Only detach from the draft. Physical deletion follows successful product save.
     const next        = photos.filter((_, i) => i !== idx)
     const nextMainIdx = Math.min(mainIdx, Math.max(0, next.length - 1))
     setPhotos(next)

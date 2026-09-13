@@ -74,8 +74,8 @@ export default function ProductsPage() {
   const session  = useAuthStore((s) => s.session)
   const role     = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const scopeKey = session?.user?.id ?? ''
-  const isAdmin  = canDeleteCatalog(role)
-  const canEditCatalog = ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
+  const isAdmin  = isDesktopRuntime() && canDeleteCatalog(role)
+  const canEditCatalog = isDesktopRuntime() && ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const loadRequestRef             = useRef(0)
@@ -654,7 +654,7 @@ export default function ProductsPage() {
                     {bulkMoving ? '...' : 'OK'}
                   </button>
                 </div>
-                <Button size="sm" onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
+                <Button size="sm" disabled={!canEditCatalog} onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
                 <Button size="sm" variant="secondary" className="hidden sm:inline-flex" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
                 {isAdmin && (
                   <Button size="sm" variant="secondary"
@@ -705,13 +705,13 @@ export default function ProductsPage() {
                         </div>
                       )}
                       <div className="min-w-0 flex-1">
-                        <button onClick={() => navigate(`/products/${p.id}/edit`)}
+                        <button onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
                           className="block w-full text-left text-[15px] font-semibold leading-snug text-gray-900 break-words hover:text-yellow-700">
                           {p.name}
                         </button>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
-                          <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}/edit`)} />
+                          <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)} />
                           {p.category && <span className="text-[11px] text-gray-400">{p.category.name}</span>}
                           {p.brand?.name && <span className="text-[11px] text-gray-400">{p.brand.name}</span>}
                         </div>
@@ -747,7 +747,7 @@ export default function ProductsPage() {
                     </div>
 
                     <div className="mt-3 flex gap-2">
-                      <Button size="sm" className="flex-1" onClick={() => navigate(`/products/${p.id}/edit`)}>Редагувати</Button>
+                      <Button size="sm" className="flex-1" onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}>{canEditCatalog ? "Редагувати" : "Перегляд"}</Button>
 
                       {isAdmin && (
                         <Button size="sm" variant="danger-outline" onClick={() => askDelete(p)} aria-label={`Видалити ${p.name}`}>
@@ -851,7 +851,7 @@ export default function ProductsPage() {
                               </div>
                             )}
                             <div>
-                              <button onClick={() => navigate(`/products/${p.id}/edit`)}
+                              <button onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
                                 className="font-medium text-gray-900 hover:text-yellow-700 text-left transition-colors text-sm leading-snug">
                                 {p.name}
                               </button>
@@ -861,7 +861,7 @@ export default function ProductsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}/edit`)} /></td>
+                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)} /></td>
                         <td className="px-3 py-3 text-sm text-gray-500">{p.brand?.name ?? '—'}</td>
                         <td className="px-3 py-3">
                           {editBinId === p.id ? (
@@ -926,7 +926,7 @@ export default function ProductsPage() {
                               <SplitButton
                                 size="sm"
                                 primaryLabel="Ред."
-                                onPrimary={() => navigate(`/products/${p.id}/edit`)}
+                                onPrimary={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
                                 actions={[
 
                                   { label: 'Дублювати', icon: <Copy size={14} />, onClick: () => navigate(`/products/new?clone=${p.id}`) },
@@ -935,8 +935,8 @@ export default function ProductsPage() {
                                 ]}
                               />
                             ) : (
-                              <button onClick={() => navigate(`/products/${p.id}/edit`)}
-                                className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">Ред.</button>
+                              <button onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
+                                className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">{canEditCatalog ? "Ред." : "Перегляд"}</button>
                             )}
                           </div>
                         </td>

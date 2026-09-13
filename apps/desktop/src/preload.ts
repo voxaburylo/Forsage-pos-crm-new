@@ -100,6 +100,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:update-settings', input),
     searchProducts: (query: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:search-products', query, limit),
+    analytics: (input: unknown) => ipcRenderer.invoke('desktop:catalog:analytics', input),
+    applyBatch: (input: unknown) => ipcRenderer.invoke('desktop:catalog:apply-batch', input),
     saveProduct: (product: unknown, options?: { reuseExistingSku?: boolean }) =>
       ipcRenderer.invoke('desktop:catalog:save-product', product, options),
     savePhoto: (folder: string, bytes: ArrayBuffer) =>

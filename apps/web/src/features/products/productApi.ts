@@ -255,6 +255,9 @@ export const productApi = {
       const existing = await desktopCatalog.findById(id)
       if (!existing) throw new Error('Товар не знайдено в локальній базі')
       const saved = await desktopCatalog.saveProduct(desktopUpdatePayload(id, existing, form))
+      if (existing.photo_url && existing.photo_url !== saved.photo_url && existing.photo_url.startsWith('file:')) {
+        await desktopCatalog.deletePhoto?.(existing.photo_url).catch(() => {})
+      }
       requestDesktopSync()
       return { data: desktopProductToProduct(saved) }
     }
@@ -307,11 +310,13 @@ export const productApi = {
     return response
   },
 
-  merge: (primaryId: string, duplicateId: string) =>
-    api.post<{ data: Product }>('/api/v1/products/merge', {
+  merge: (primaryId: string, duplicateId: string) => {
+    if (desktopBridge()) return Promise.reject(new Error('Злиття дублів ще не перенесено в локальну базу. Серверну копію змінювати заборонено.'))
+    return api.post<{ data: Product }>('/api/v1/products/merge', {
       primary_product_id: primaryId,
       duplicate_product_id: duplicateId,
-    }),
+    })
+  },
 
   getAnalogs: async (id: string) => {
     const local = desktopBridge()?.catalog.listAnalogs

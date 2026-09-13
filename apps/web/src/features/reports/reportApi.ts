@@ -3,7 +3,6 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { productApi } from '@/features/products/productApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { warehouseApi } from '@/features/inventory/warehouseApi'
-import { useAuthStore } from '@/stores/authStore'
 import type { Sale } from '@/types/sale'
 import type { SalesSummary, SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
@@ -286,12 +285,5 @@ export const reportApi = {
     return api.get<{ data: any }>(`/api/v1/reports/profit?from=${from}&to=${to}`)
   },
 
-  shiftReport: async (shiftId: string) => {
-    const local = desktopBridge()?.pos.shiftReport
-    if (local) {
-      const cashierId = useAuthStore.getState().session?.user?.id ?? ''
-      return { data: await local(cashierId) }
-    }
-    return api.get<{ data: unknown }>('/api/v1/reports/shift/' + shiftId)
-  },
+
 }

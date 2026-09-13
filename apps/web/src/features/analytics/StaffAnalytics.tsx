@@ -82,7 +82,7 @@ export default function StaffAnalytics() {
     return items.map((item) => ({
       name: item.manager_name,
       'Валовий прибуток': item.gross_profit,
-      'Витрати на ЗП': item.total_payouts,
+      'Виплачено': item.total_payouts,
       'Чистий прибуток': item.net_profit,
     }))
   }, [items])
@@ -291,7 +291,7 @@ export default function StaffAnalytics() {
 
           <Card className="p-5 border border-gray-100 shadow-sm bg-gradient-to-br from-white to-gray-50/50">
             <div className="flex justify-between items-start">
-              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider font-medium">Витрати на персонал</p>
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider font-medium">Виплачено працівникам</p>
               <div className="p-1.5 bg-rose-500 text-white rounded-lg"><Users size={16} /></div>
             </div>
             <h3 className="text-xl font-bold text-rose-900 mt-3">{formatMoney(summary.payouts)}</h3>
@@ -332,7 +332,7 @@ export default function StaffAnalytics() {
                   />
                   <Legend verticalAlign="top" height={36} />
                   <Bar dataKey="Валовий прибуток" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                  <Bar dataKey="Витрати на ЗП" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                  <Bar dataKey="Виплачено" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={40} />
                   <Bar dataKey="Чистий прибуток" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={40} />
                 </BarChart>
               </ResponsiveContainer>
@@ -404,7 +404,7 @@ export default function StaffAnalytics() {
                   <th className="text-right px-4 py-4 font-semibold">Виручка (POS / Замовлення)</th>
                   <th className="text-right px-4 py-4 font-semibold">Собівартість (COGS)</th>
                   <th className="text-right px-4 py-4 font-semibold">Валовий прибуток</th>
-                  <th className="text-right px-4 py-4 font-semibold">Виплати (ЗП / Бонуси / Інше)</th>
+                  <th className="text-right px-4 py-4 font-semibold">Виплачено / нараховано</th>
                   <th className="text-right px-6 py-4 font-semibold">Чистий результат</th>
                 </tr>
               </thead>
@@ -455,10 +455,10 @@ export default function StaffAnalytics() {
                         )}
                       </td>
                       
-                      <td data-label="Виплати (ЗП / Бонуси / Інше)" className="px-4 py-4 text-right">
+                      <td data-label="Виплачено / нараховано" className="px-4 py-4 text-right">
                         <div className="font-semibold text-rose-600">{formatMoney(mgr.total_payouts)}</div>
                         <div className="text-xs text-gray-400">
-                          {formatMoney(mgr.salary_cost)} / {formatMoney(mgr.bonus_cost)} / {formatMoney(mgr.advance_cost - mgr.penalty_cost)}
+                          Нараховано: {formatMoney(mgr.salary_cost + mgr.bonus_cost - mgr.penalty_cost)}
                         </div>
                       </td>
                       

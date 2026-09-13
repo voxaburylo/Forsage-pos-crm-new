@@ -1,3 +1,4 @@
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Tag, Trash2 } from 'lucide-react'
@@ -22,6 +23,7 @@ const STATUS_LABEL: Record<string, string> = {
 export default function InvoiceDetailPage() {
   const navigate = useNavigate()
   const { id } = useParams()
+  const requests = useLatestRequest(id)
   const [invoice, setInvoice] = useState<SupplyInvoice | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
@@ -50,10 +52,13 @@ export default function InvoiceDetailPage() {
   }
 
   function load() {
-    supplierApi.getInvoice(id!).then((res) => setInvoice(res.data)).catch(() => {
+    const current = requests.begin()
+    setLoading(true)
+    supplierApi.getInvoice(id!).then((res) => { if (current()) setInvoice(res.data) }).catch(() => {
+      if (!current()) return
       toast.error('Не вдалось завантажити накладну')
       navigate('/suppliers/invoices')
-    }).finally(() => setLoading(false))
+    }).finally(() => { if (current()) setLoading(false) })
   }
 
   useEffect(() => { load() }, [id])
@@ -137,7 +142,7 @@ export default function InvoiceDetailPage() {
   }
 
 
-  if (loading || !invoice) {
+  if (loading || !invoice || invoice.id !== id) {
     return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>
   }
 

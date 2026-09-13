@@ -1,3 +1,4 @@
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useState, useEffect, useCallback } from 'react'
 import { Shield } from 'lucide-react'
 import { auditApi } from './auditApi'
@@ -25,7 +26,9 @@ export default function AuditLogPage() {
   const [page, setPage]           = useState(1)
   const [loading, setLoading]     = useState(false)
 
+  const requests = useLatestRequest([entityType, dateFrom, dateTo, page])
   const load = useCallback(async () => {
+    const current = requests.begin()
     setLoading(true)
     try {
       const data = await auditApi.list({
@@ -35,11 +38,11 @@ export default function AuditLogPage() {
         page,
         per_page:    50,
       })
-      setResult(data)
+      if (current()) setResult(data)
     } catch {
-      toast.error('Помилка завантаження')
+      if (current()) toast.error('Помилка завантаження')
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [entityType, dateFrom, dateTo, page])
 

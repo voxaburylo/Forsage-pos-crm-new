@@ -1,3 +1,5 @@
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 
@@ -11,7 +13,17 @@ export function useReportRows<T>(url: string, valid = true) {
     let active = true
     if (!valid) return
     setState({ key, rows: [], error: '', pending: true })
-    api.get<{ data: T[] }>(url).then((response) => {
+    const load = async (): Promise<{data:T[]}> => {
+      if (!isDesktopRuntime()) return api.get<{data:T[]}>(url)
+      const local = desktopBridge()?.catalog.analytics
+      if (!local) throw new Error('Для локальної аналітики запустіть оновлену програму')
+      const parsed = new URL(url, 'https://local.invalid')
+      const kind = parsed.pathname.endsWith('/abc') ? 'abc' : 'staff'
+      const endDate = parsed.searchParams.get('endDate') || businessDateKey()
+      const startDate = parsed.searchParams.get('startDate') || businessDateKey(new Date(Date.now() - 90*86400000))
+      return { data: await local({kind,startDate,endDate,...businessDateRangeUtc(startDate,endDate)}) as T[] }
+    }
+    load().then((response) => {
       if (!Array.isArray(response.data)) throw new Error('Сервер повернув неповний звіт')
       if (active) setState({ key, rows: response.data, error: '', pending: false })
     }).catch((error) => {

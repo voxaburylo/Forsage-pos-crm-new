@@ -507,6 +507,8 @@ interface ForsageDesktopBridge {
     getSettings?: () => Promise<any>
     updateSettings?: (input: any) => Promise<any>
     searchProducts: (query: string, limit?: number) => Promise<DesktopProduct[]>
+    analytics?: (input: { kind: 'abc' | 'staff'; from: string; to: string; startDate: string; endDate: string }) => Promise<any[]>
+    applyBatch?: (input: { operation_id: string; kind: 'import' | 'bulk'; payload: any }) => Promise<any>
     saveProduct?: (product: {
       id: string
       sku: string

@@ -1,3 +1,4 @@
+import { withRequestDeadline } from './requestDeadline'
 import { isDesktopRuntime } from './desktopBridge'
 import { API_BASE_URL } from './apiBaseUrl'
 
@@ -60,7 +61,12 @@ async function refreshToken(): Promise<string | null> {
   }
 }
 
-export async function request<T>(path: string, options?: RequestOptions): Promise<T> {
+export function request<T>(path: string, options?: RequestOptions): Promise<T> {
+  return withRequestDeadline(signal => requestOnce<T>(path, { ...options, signal }),
+    options?.timeoutMs ?? DEFAULT_API_REQUEST_TIMEOUT_MS, options?.signal)
+}
+
+async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T> {
   if (isWebReadOnlyRequest(path, options?.method)) {
     const error = new Error('Через веб можна тільки дивитися. Зміни робіть у локальній програмі на касі.')
     ;(error as any).code = 'WEB_IS_READ_ONLY'
@@ -68,25 +74,15 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
     throw error
   }
   const token = await getAccessToken()
-  const { silent, _retry, timeoutMs = DEFAULT_API_REQUEST_TIMEOUT_MS, ...fetchOptions } = options ?? {}
-
-  // Кожен серверний запит має межу очікування. Без цього втрачений TCP-запит
-  // залишав модальні вікна та розділи у стані «завантаження» без кінця.
-  const controller = new AbortController()
-  let timedOut = false
-  const abortFromCaller = () => controller.abort(fetchOptions.signal?.reason)
-  if (fetchOptions.signal?.aborted) abortFromCaller()
-  else fetchOptions.signal?.addEventListener('abort', abortFromCaller, { once: true })
-  const timer = setTimeout(() => {
-    timedOut = true
-    controller.abort()
-  }, Math.max(1_000, timeoutMs))
+  options?.signal?.throwIfAborted()
+  const { silent, _retry, ...fetchOptions } = options ?? {}
+  delete fetchOptions.timeoutMs
 
   let res: Response
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       ...fetchOptions,
-      signal: controller.signal,
+      signal: fetchOptions.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -98,26 +94,22 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
       },
     })
   } catch (networkErr) {
-    const aborted = controller.signal.aborted || (networkErr as any)?.name === 'AbortError'
-    const msg = timedOut
-      ? 'Сервер не відповів вчасно. Перевірте результат операції перед повторенням.'
-      : aborted
+    const aborted = fetchOptions.signal?.aborted || (networkErr as any)?.name === 'AbortError'
+    const msg = aborted
         ? 'Запит скасовано.'
         : 'Сервер недоступний. Перевірте підключення до мережі.'
     if (!silent && !isDesktopRuntime()) {
       import('@/components/ui/Toast').then(({ toast }) => toast.error(msg))
     }
     throw new Error(msg)
-  } finally {
-    clearTimeout(timer)
-    fetchOptions.signal?.removeEventListener('abort', abortFromCaller)
   }
 
   // При 401 — спробуємо оновити токен і повторити запит один раз
   if (res.status === 401 && !_retry) {
     const newToken = await refreshToken()
+    options?.signal?.throwIfAborted()
     if (newToken) {
-      return request<T>(path, { ...options, _retry: true })
+      return requestOnce<T>(path, { ...options, _retry: true })
     }
     // Серверна авторизація не повинна закривати робочу локальну касу.
     // Після відновлення онлайн-сесії фоновий обмін повторить запит.

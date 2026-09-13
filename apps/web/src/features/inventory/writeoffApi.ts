@@ -8,6 +8,7 @@ export const writeoffApi = {
   get: (id: string) => warehouseApi.getWriteoff(id),
 
   create: (body: {
+    operation_id?: string
     reason: WriteoffReason
     notes?: string | null
     items: Array<{ product_id: string; qty: number }>

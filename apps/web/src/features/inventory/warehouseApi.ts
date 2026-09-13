@@ -79,10 +79,12 @@ export const warehouseApi = {
   },
 
   async createWriteoff(body: {
+    operation_id?: string
     reason: WriteoffReason
     notes?: string | null
     items: Array<{ product_id: string; qty: number }>
   }): Promise<{ data: Writeoff }> {
+    if (desktopBridge() && body.operation_id) return { data: await requiredDesktopWarehouse().createWriteoff(body) as Writeoff }
     if (desktopBridge()) return { data: await durableLocalRequest('writeoff:' + useAuthStore.getState().session?.user?.id, body, operation_id => requiredDesktopWarehouse().createWriteoff({ ...body, operation_id })) as Writeoff }
     return api.post<{ data: Writeoff }>('/api/v1/writeoffs', body)
   },

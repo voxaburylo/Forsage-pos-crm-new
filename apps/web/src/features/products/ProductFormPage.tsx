@@ -236,7 +236,7 @@ export default function ProductFormPage() {
               <ProductPhotoUpload
                 productId={isEdit ? id : undefined}
                 currentPhotoUrl={form.photo_url ?? null}
-                onPhotoUrl={(url) => setForm((f) => ({ ...f, photo_url: url ?? undefined }))}
+                onPhotoUrl={(url) => setForm((f) => ({ ...f, photo_url: url ?? '' }))}
               />
             </div>
 

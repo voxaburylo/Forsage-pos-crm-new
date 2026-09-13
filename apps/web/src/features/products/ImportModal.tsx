@@ -365,6 +365,7 @@ export function ImportModal({ onClose, onImported }: Props) {
     setImporting(true)
     try {
       const res = await importApi.confirm({
+        client_identity: JSON.stringify({ text: rawText, mapping, mode, createMissing, updateRetail }),
         supplier_id: null,
         items: validItems.map(item => ({
           row: item.row,

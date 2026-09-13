@@ -16,8 +16,8 @@ describe('екрани змін не відкриваються у вебі', ()
   it('does not invite web users into POS from either navigation menu', () => {
     const sidebar = readFileSync(new URL('./Sidebar.tsx', import.meta.url), 'utf8')
     const palette = readFileSync(new URL('./CommandPalette.tsx', import.meta.url), 'utf8')
-    expect(sidebar).toContain("item.to !== '/pos' || isDesktopRuntime()")
-    expect(palette).toContain("c.to !== '/pos' || isDesktopRuntime()")
+    expect(sidebar).toContain("navigationAllowed(item.to, isDesktopRuntime())")
+    expect(palette).toContain("navigationAllowed(c.to, isDesktopRuntime())")
   })
   const mustBeTillOnly = [
     '/pos',

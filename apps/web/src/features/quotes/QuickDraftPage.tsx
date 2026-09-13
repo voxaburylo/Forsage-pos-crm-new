@@ -1,3 +1,4 @@
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ClipboardList, Search, Save, User } from 'lucide-react'
@@ -29,10 +30,19 @@ export default function QuickDraftPage() {
   const [saving, setSaving] = useState(false)
   const [loadedOrderVersion, setLoadedOrderVersion] = useState<string>()
 
+  const requests = useLatestRequest(id)
   useEffect(() => {
     if (!id) return
+    const current = requests.begin()
+    setLoading(true)
     orderApi.get(id)
       .then(({ data }) => {
+        if (!current()) return
+        if (data.items.some(item => item.product_id || item.sku || Number(item.qty) !== 1 || Number(item.sell_price) !== 0 || Number(item.buy_price) !== 0 || item.supplier_id || ((item as any).variants?.length ?? 0) > 0)
+          || Object.entries(data.vehicle_info ?? {}).some(([key, value]) => key !== 'vin' && Boolean(value))) {
+          navigate('/orders/' + id + '/edit', { replace: true })
+          return
+        }
         setLoadedOrderVersion(data.updated_at)
         setPhone(data.customer?.phone ?? '')
         setCustomerName(data.customer?.full_name ?? '')
@@ -46,10 +56,11 @@ export default function QuickDraftPage() {
         setNote(data.comment ?? '')
       })
       .catch(() => {
+        if (!current()) return
         toast.error('Чернетку не знайдено')
         navigate('/orders?tab=drafts')
       })
-      .finally(() => setLoading(false))
+      .finally(() => { if (current()) setLoading(false) })
   }, [id, navigate])
 
   const parts = useMemo(

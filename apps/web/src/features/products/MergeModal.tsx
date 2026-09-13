@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Search } from 'lucide-react'
 import { productApi } from './productApi'
 import type { Product } from '@/types/product'
@@ -12,19 +14,30 @@ interface Props {
 }
 
 export function MergeModal({ product, onClose, onMerged }: Props) {
+  const localMergeUnavailable = isDesktopRuntime()
   const [search, setSearch] = useState('')
   const [results, setResults] = useState<Product[]>([])
   const [selected, setSelected] = useState<Product | null>(null)
   const [merging, setMerging] = useState(false)
   const [confirm, setConfirm] = useState(false)
 
-  async function handleSearch(q: string) {
+  const searches = useLatestRequest(product.id)
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (searchTimer.current) clearTimeout(searchTimer.current) }, [])
+  function handleSearch(q: string) {
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    const current = searches.begin()
+    setSelected(null)
+    setConfirm(false)
     setSearch(q)
     if (!q.trim()) { setResults([]); return }
+    setResults([])
+    searchTimer.current = setTimeout(async () => {
     try {
       const { data } = await productApi.list({ search: q, per_page: 8 })
-      setResults(data.filter((p) => p.id !== product.id))
-    } catch { setResults([]) }
+      if (current()) setResults(data.filter((p) => p.id !== product.id))
+    } catch { if (current()) setResults([]) }
+    }, 180)
   }
 
   async function handleMerge() {
@@ -47,6 +60,7 @@ export function MergeModal({ product, onClose, onMerged }: Props) {
       <div className="relative bg-white rounded-2xl border w-full max-w-lg mx-4 p-6 space-y-4 shadow-xl">
         <h2 className="text-lg font-bold text-gray-900">🔗 Злиття дублікатів</h2>
 
+        {localMergeUnavailable && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Злиття ще не перенесено в локальну базу. Тут можна знайти та перевірити дублікати, але об’єднання тимчасово недоступне.</p>}
         {/* Основний товар */}
         <div className="bg-green-50 border border-green-200 rounded-xl p-3">
           <p className="text-xs text-green-700 font-medium mb-1">Основний товар (залишиться)</p>
@@ -67,7 +81,7 @@ export function MergeModal({ product, onClose, onMerged }: Props) {
           {results.length > 0 && (
             <div className="mt-1 border border-gray-200 rounded-lg divide-y max-h-40 overflow-y-auto">
               {results.map((p) => (
-                <button key={p.id} onClick={() => { setSelected(p); setResults([]); setSearch(p.name); setConfirm(false) }}
+                <button key={p.id} onClick={() => { searches.invalidate(); if (searchTimer.current) clearTimeout(searchTimer.current); setSelected(p); setResults([]); setSearch(p.name); setConfirm(false) }}
                   className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center justify-between ${selected?.id === p.id ? 'bg-yellow-50' : ''}`}>
                   <div>
                     <span className="font-medium">{p.name}</span>
@@ -111,7 +125,7 @@ export function MergeModal({ product, onClose, onMerged }: Props) {
         )}
 
         {confirm && (
-          <button onClick={handleMerge} disabled={merging}
+          <button onClick={handleMerge} disabled={merging || localMergeUnavailable}
             className="w-full py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 disabled:opacity-40 transition-colors">
             {merging ? 'Об\'єднання...' : '✅ Підтвердити злиття'}
           </button>

@@ -1,4 +1,6 @@
 import { api } from '@/lib/api'
+import { durableImport } from '@/lib/durableImport'
+import { useAuthStore } from '@/stores/authStore'
 import { parseLocaleNumber } from '@/lib/parseDecimal'
 import { desktopBridge, type DesktopProduct } from '@/lib/desktopBridge'
 import type { SupplyInvoice } from '@/types/supplier'
@@ -37,6 +39,7 @@ interface PreviewBody {
   supplier_id?: string | null
 }
 interface ConfirmBody {
+  client_identity?: string
   items: ImportItem[]
   supplier_id?: string | null
   invoice_number?: string | null
@@ -47,7 +50,7 @@ interface ConfirmBody {
 }
 
 const normalizeArticle = (raw: string) =>
-  raw.replace(/[\s\-./_]/g, '').toUpperCase().replace(/^0+/, '') || raw.toUpperCase()
+  raw.trim().normalize('NFKC').toUpperCase()
 
 function normalizeBarcode(value: unknown): string | null {
   const raw = String(value ?? '').trim()
@@ -59,6 +62,12 @@ function normalizeBarcode(value: unknown): string | null {
     if (Number.isSafeInteger(numeric)) return String(numeric)
   }
   return compact
+}
+
+export function parseImportQuantity(raw: string): number {
+  const text = raw.trim().replace(/[\s\u00a0]/g, '')
+  if (!/^[+-]?\d+(?:[.,]\d+)?$/.test(text)) return Number.NaN
+  return Number(text.replace(',', '.'))
 }
 
 function detectDelimiter(line: string): string {
@@ -114,7 +123,11 @@ function parseLines(body: PreviewBody): { items: ImportItem[]; conflicts: Previe
     const parsedPrice = parseNumber(rawPrice)
     const priceReview = Number.isNaN(parsedPrice) || parsedPrice < 0
     const rawQty = read('qty')
-    const parsedQty = body.mapping.qty == null ? 1 : (rawQty ? parseNumber(rawQty) : 0)
+    const parsedQty = body.mapping.qty == null ? 1 : parseImportQuantity(rawQty)
+    if (!Number.isFinite(parsedQty) || parsedQty < 0) {
+      conflicts.push({ row, sku, name, reason: 'Некоректна кількість: ' + (rawQty || '(порожньо)') })
+      continue
+    }
     const rawRetail = read('retail_price')
     const parsedRetail = rawRetail ? parseNumber(rawRetail) : Number.NaN
     const warnings = priceReview
@@ -122,7 +135,7 @@ function parseLines(body: PreviewBody): { items: ImportItem[]; conflicts: Previe
       : []
     items.push({
       row, sku, name,
-      qty: Number.isNaN(parsedQty) || parsedQty < 0 ? 0 : parsedQty,
+      qty: parsedQty,
       price: priceReview ? 0 : Math.round(parsedPrice * 100),
       retail_price: Number.isNaN(parsedRetail) || parsedRetail < 0 ? null : Math.round(parsedRetail * 100),
       barcode,
@@ -166,8 +179,17 @@ async function localPreview(body: PreviewBody): Promise<ParseResult> {
   }
   const byName = new Map(products.filter((p) => p.name)
     .map((p) => [p.name.trim().toLocaleLowerCase('uk-UA'), p]))
-  const items = parsed.items.map((item): ImportItem => {
+  const keyCounts = new Map<string, number>()
+  for (const p of products) for (const key of ['sku:' + normalizeArticle(p.sku ?? ''), 'name:' + p.name.trim().toLocaleLowerCase('uk-UA')]) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1)
+  const ambiguous = (key: string, field: 'sku' | 'name') => (keyCounts.get(field + ':' + key) ?? 0) > 1
+  const items = parsed.items.flatMap((item): ImportItem[] => {
     let product = item.sku ? bySku.get(normalizeArticle(item.sku)) : undefined
+    const barcodeProduct = item.barcode ? byBarcode.get(normalizeBarcode(item.barcode)) : undefined
+    if ((product && barcodeProduct && product.id !== barcodeProduct.id) || (item.sku && ambiguous(normalizeArticle(item.sku), 'sku'))
+      || (!product && !barcodeProduct && ambiguous(item.name.trim().toLocaleLowerCase('uk-UA'), 'name'))) {
+      parsed.conflicts.push({ row: item.row, sku: item.sku, name: item.name, reason: 'Неоднозначний збіг або артикул і штрихкод належать різним товарам' })
+      return []
+    }
     let quality: 'exact' | 'fuzzy' | 'new' = product ? 'exact' : 'new'
     const warnings = [...(item.warnings ?? [])]
     if (!product && item.barcode) {
@@ -182,9 +204,9 @@ async function localPreview(body: PreviewBody): Promise<ParseResult> {
       }
     }
     if (!product) {
-      return { ...item, warnings: [...warnings, 'Новий товар (не знайдено в локальній базі)'] }
+      return [{ ...item, warnings: [...warnings, 'Новий товар (не знайдено в локальній базі)'] }]
     }
-    return {
+    return [{
       ...item,
       sku: item.sku || product.sku,
       barcode: item.barcode || product.barcode,
@@ -196,7 +218,7 @@ async function localPreview(body: PreviewBody): Promise<ParseResult> {
       old_price: product.purchase_price,
       old_qty: product.qty_on_hand,
       old_retail_price: product.retail_price,
-    }
+    }]
   })
   const matched = items.filter((item) => item.matched).length
   return {
@@ -210,144 +232,11 @@ async function localPreview(body: PreviewBody): Promise<ParseResult> {
   }
 }
 
-function retailFromSettings(price: number, settings: any): number {
-  const rules = Array.isArray(settings?.markup_rules) ? settings.markup_rules : []
-  const rule = rules.find((candidate: any) =>
-    price >= Number(candidate.minPrice) && price < Number(candidate.maxPrice))
-  const result = Math.round(price * (1 + Number(rule?.markupPct ?? 30) / 100))
-  if (settings?.price_rounding_enabled !== true) return result
-  const step = Math.max(1, Number(settings.price_rounding_step) || 100)
-  const scaled = result / step
-  const rounded = settings.price_rounding_dir === 'up' ? Math.ceil(scaled)
-    : settings.price_rounding_dir === 'down' ? Math.floor(scaled) : Math.round(scaled)
-  return rounded * step
-}
-
-function productSpecs(product: DesktopProduct): Record<string, string> {
-  try {
-    const value = JSON.parse(product.specs_json ?? '{}')
-    return value && typeof value === 'object' ? value : {}
-  } catch { return {} }
-}
-
-function existingPayload(product: DesktopProduct, changes: Record<string, unknown>) {
-  return {
-    id: product.id,
-    sku: product.sku,
-    name: product.name,
-    barcode: product.barcode,
-    brand_id: product.brand_id ?? null,
-    category_id: product.category_id ?? null,
-    unit: product.unit,
-    purchase_price: product.purchase_price,
-    retail_price: product.retail_price,
-    qty_on_hand: Number(product.qty_on_hand),
-    reorder_point: Number(product.reorder_point ?? 0),
-    notes: product.notes ?? null,
-    storage_bin: product.storage_bin,
-    is_active: product.is_active === 1,
-    is_service: product.is_service === 1,
-    is_favorite: product.is_favorite === 1,
-    photo_url: product.photo_url ?? null,
-    specs: productSpecs(product),
-    ...changes,
-  }
-}
-
-async function localConfirm(body: ConfirmBody):
-Promise<{ data: SupplyInvoice | { created: number; updated: number; errors: number } }> {
-  const bridge = desktopBridge()
-  const save = bridge?.catalog.saveProduct
-  if (!bridge || !save) throw new Error('Локальна база недоступна')
-  const current = await allLocalProducts()
-  const products = new Map(current.map((product) => [product.id, product]))
-  const categories = await bridge.catalog.listCategories?.() ?? []
-  const categoryIds = new Map(categories.map((category) =>
-    [category.name.trim().toLocaleLowerCase('uk-UA'), category.id]))
-  for (const item of body.items) {
-    const name = item.category_name?.trim()
-    const key = name?.toLocaleLowerCase('uk-UA')
-    if (name && key && !categoryIds.has(key) && bridge.catalog.createCategory) {
-      const category = await bridge.catalog.createCategory(name)
-      categoryIds.set(key, category.id)
-    }
-  }
-  const settings = await bridge.catalog.getSettings?.() ?? {}
-  const invoiceItems: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> = []
-  let created = 0
-  let updated = 0
-  let errors = 0
-  for (const item of body.items) {
-    let product = item.product_id ? products.get(item.product_id) : undefined
-    if (!product && !body.create_missing) { errors += 1; continue }
-    const categoryId = item.category_name
-      ? categoryIds.get(item.category_name.trim().toLocaleLowerCase('uk-UA')) ?? null
-      : product?.category_id ?? null
-    const retail = item.retail_price ?? retailFromSettings(item.price, settings)
-    if (!product) {
-      product = await save({
-        id: crypto.randomUUID(),
-        sku: item.sku ? normalizeArticle(item.sku) : 'IMP-' + Date.now() + '-' + item.row,
-        name: item.name,
-        barcode: item.barcode || null,
-        category_id: categoryId,
-        unit: 'шт',
-        purchase_price: item.price,
-        retail_price: retail,
-        qty_on_hand: body.supplier_id ? 0 : item.qty,
-        reorder_point: 0,
-        storage_bin: item.storage_bin || null,
-        is_active: true,
-      })
-      products.set(product.id, product)
-      created += 1
-    } else if (!body.supplier_id) {
-      const nextQty = body.mode === 'add' ? Number(product.qty_on_hand) + item.qty : item.qty
-      product = await save(existingPayload(product, {
-        sku: item.sku ? normalizeArticle(item.sku) : product.sku,
-        name: item.name || product.name,
-        barcode: item.barcode || product.barcode,
-        category_id: categoryId,
-        purchase_price: item.price,
-        retail_price: body.update_retail === false ? product.retail_price : retail,
-        qty_on_hand: nextQty,
-        stock_correction: true,
-        storage_bin: item.storage_bin || product.storage_bin,
-      }))
-      products.set(product.id, product)
-      updated += 1
-    } else if (body.supplier_id) {
-      const changes: Record<string, unknown> = {}
-      if (item.name && item.name !== product.name) changes.name = item.name
-      if (item.barcode && item.barcode !== product.barcode) changes.barcode = item.barcode
-      if (categoryId && categoryId !== product.category_id) changes.category_id = categoryId
-      if (item.storage_bin && item.storage_bin !== product.storage_bin) changes.storage_bin = item.storage_bin
-      if (Object.keys(changes).length > 0) {
-        product = await save(existingPayload(product, changes))
-        products.set(product.id, product)
-      }
-    }
-    if (body.supplier_id) {
-      invoiceItems.push({
-        product_id: product.id,
-        qty: item.qty,
-        purchase_price: item.price,
-        total: Math.round(item.qty * item.price),
-      })
-    }
-  }
-  if (body.supplier_id) {
-    if (!invoiceItems.length) throw new Error('Немає товарів для створення накладної')
-    const invoice = await bridge.supply?.createInvoice({
-      supplier_id: body.supplier_id,
-      invoice_number: body.invoice_number ?? null,
-      notes: body.notes ?? null,
-      items: invoiceItems,
-    })
-    if (!invoice) throw new Error('Не вдалося створити локальну накладну')
-    return { data: invoice as SupplyInvoice }
-  }
-  return { data: { created, updated, errors } }
+async function localConfirm(body: ConfirmBody): Promise<{ data: any }> {
+  const apply = desktopBridge()?.catalog.applyBatch
+  if (!apply) throw new Error('Для безпечного імпорту запустіть оновлену локальну програму')
+  return durableImport('catalog-import:' + useAuthStore.getState().session?.user.id, body.client_identity ?? JSON.stringify(body), body,
+    (operation_id, payload) => apply({ operation_id, kind: 'import', payload }))
 }
 
 function guessMapping(text: string): PreviewBody['mapping'] {

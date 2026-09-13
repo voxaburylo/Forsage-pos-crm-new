@@ -1,3 +1,4 @@
+import { readReportPages } from '../lib/readReportPages.js'
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { PeriodQuery } from '../validators/reportSchema.js'
@@ -31,11 +32,11 @@ async function loadOrderSaleIds(tenantId: string, saleIds: string[]): Promise<Se
   const result = new Set<string>()
   for (let offset = 0; offset < saleIds.length; offset += ORDER_SALE_ID_CHUNK_SIZE) {
     const chunk = saleIds.slice(offset, offset + ORDER_SALE_ID_CHUNK_SIZE)
-    const { data, error } = await db
+    const { data, error } = await readReportPages(db
       .from('customer_orders')
       .select('sale_id')
       .eq('tenant_id', tenantId)
-      .in('sale_id', chunk)
+      .in('sale_id', chunk))
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     for (const row of data ?? []) {
       if (row.sale_id) result.add(row.sale_id)
@@ -72,12 +73,12 @@ async function buildSummaryForRange(
 ) {
   const [orderSaleIds, paymentsResult] = await Promise.all([
     loadOrderSaleIds(tenantId, sales.map((sale) => sale.id)),
-    db
+    readReportPages(db
       .from('order_payments')
       .select('amount,method,is_fiscal')
       .eq('tenant_id', tenantId)
       .gte('created_at', from)
-      .lte('created_at', to),
+      .lte('created_at', to)),
   ])
   if (paymentsResult.error) throw new AppError('DB_ERROR', paymentsResult.error.message, 500)
   return buildSummary(sales, orderSaleIds, paymentsResult.data ?? [])
@@ -86,13 +87,13 @@ async function buildSummaryForRange(
 export async function getSalesToday(tenantId: string) {
   const { from, to } = todayRange()
 
-  const { data, error } = await db
+  const { data, error } = await readReportPages(db
     .from('sales')
     .select('id, total, payment_method, cash_amount, card_amount, transfer_amount')
     .eq('tenant_id', tenantId)
     .gte('completed_at', from)
     .lte('completed_at', to)
-    .in('status', ['completed', 'returned'])
+    .in('status', ['completed', 'returned']))
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return buildSummaryForRange(data ?? [], tenantId, from, to)
@@ -105,14 +106,14 @@ export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
   const { from: dateFrom, to: dateTo } = inclusiveKyivRange(startDate, endDate)
 
   // 1. Отримуємо продажі за період
-  const { data: sales, error: salesErr } = await db
+  const { data: sales, error: salesErr } = await readReportPages(db
     .from('sales')
     .select('id, sale_number, total, payment_method, status, completed_at, cash_amount, card_amount, transfer_amount, customer:customers(id,phone,full_name)')
     .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
     .in('status', ['completed', 'returned'])
-    .order('completed_at', { ascending: false })
+    .order('completed_at', { ascending: false }))
 
   if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
 
@@ -122,20 +123,21 @@ export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
   const saleIds = list.map((s) => s.id)
   let profit = 0
 
-  if (saleIds.length > 0) {
-    const { data: items, error: itemsErr } = await db
-      .from('sale_items')
-      .select('qty, unit_price, product:products!inner(purchase_price)')
-      .eq('tenant_id', tenantId)
-      .in('sale_id', saleIds)
-
-    if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
-
-    for (const item of items ?? []) {
-      const product = item.product as unknown as { purchase_price: number } | undefined
-      const purchasePrice = product?.purchase_price ?? 0
-      profit += (item.unit_price - purchasePrice) * item.qty
-    }
+  const costs = new Map<string, number>()
+  for (let offset = 0; offset < saleIds.length; offset += 100) {
+    const {data: items, error} = await readReportPages(db.from('sale_items')
+      .select('id,sale_id,qty,unit_price,cost_price,discount').eq('tenant_id',tenantId).in('sale_id',saleIds.slice(offset,offset+100)))
+    if(error)throw new AppError('DB_ERROR',error.message,500)
+    for(const item of items) costs.set(item.sale_id,(costs.get(item.sale_id)??0)+Number(item.cost_price??0)*Number(item.qty))
+  }
+  profit=list.reduce((sum,sale)=>sum+Number(sale.total??0)-(costs.get(sale.id)??0),0)
+  // Refunds belong to their actual return date, including sales from earlier periods.
+  const {data: refunds,error: refundsError}=await readReportPages(db.from('returns').select('id').eq('tenant_id',tenantId).eq('status','completed').gte('created_at',dateFrom).lte('created_at',dateTo))
+  if(refundsError)throw new AppError('DB_ERROR',refundsError.message,500)
+  for(let offset=0;offset<refunds.length;offset+=100){
+    const {data: lines,error}=await readReportPages(db.from('return_items').select('quantity,total_kopecks,sale_item:sale_items(cost_price)').eq('tenant_id',tenantId).in('return_id',refunds.slice(offset,offset+100).map(r=>r.id)))
+    if(error)throw new AppError('DB_ERROR',error.message,500)
+    for(const line of lines)profit-=Number(line.total_kopecks??0)-Number(line.quantity??0)*Number(line.sale_item?.cost_price??0)
   }
 
   return { ...await buildSummaryForRange(list, tenantId, dateFrom, dateTo), profit, sales: list }
@@ -143,12 +145,12 @@ export async function getSalesPeriod(query: PeriodQuery, tenantId: string) {
 
 export async function getLowStockProducts(tenantId: string) {
   // PostgREST не вміє порівнювати дві колонки → фільтруємо в JS
-  const { data, error } = await db
+  const { data, error } = await readReportPages(db
     .from('products')
     .select('id, sku, name, qty_on_hand, reorder_point, unit, brand:brands(name), category:categories(name)')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
-    .eq('is_active', true)
+    .eq('is_active', true))
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return (data ?? [])
@@ -157,13 +159,13 @@ export async function getLowStockProducts(tenantId: string) {
 }
 
 export async function getDebtors(tenantId: string) {
-  const { data, error } = await db
+  const { data, error } = await readReportPages(db
     .from('customers')
     .select('id, phone, full_name, debt_balance')
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .gt('debt_balance', 0)
-    .order('debt_balance', { ascending: false })
+    .order('debt_balance', { ascending: false }))
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data ?? []
@@ -177,14 +179,14 @@ export async function getWeeklySales(tenantId: string) {
   const startDate = weekAgo.toISOString().slice(0, 10)
   const { from: fromDate, to } = inclusiveKyivRange(startDate, today)
 
-  const { data, error } = await db
+  const { data, error } = await readReportPages(db
     .from('sales')
     .select('completed_at, total')
     .eq('tenant_id', tenantId)
     .gte('completed_at', fromDate)
     .lte('completed_at', to)
     .in('status', ['completed', 'returned'])
-    .order('completed_at', { ascending: true })
+    .order('completed_at', { ascending: true }))
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
@@ -217,13 +219,13 @@ export async function getTopProducts(query: PeriodQuery, tenantId: string) {
   const { from: dateFrom, to: dateTo } = inclusiveKyivRange(startDate, endDate)
 
   // 1. Отримуємо ID продажів за період
-  const { data: sales, error: salesErr } = await db
+  const { data: sales, error: salesErr } = await readReportPages(db
     .from('sales')
     .select('id')
     .eq('tenant_id', tenantId)
     .gte('completed_at', dateFrom)
     .lte('completed_at', dateTo)
-    .in('status', ['completed', 'returned'])
+    .in('status', ['completed', 'returned']))
 
   if (salesErr) throw new AppError('DB_ERROR', salesErr.message, 500)
 
@@ -231,13 +233,14 @@ export async function getTopProducts(query: PeriodQuery, tenantId: string) {
   if (saleIds.length === 0) return []
 
   // 2. Отримуємо всі sale_items з продуктами
-  const { data: items, error: itemsErr } = await db
-    .from('sale_items')
-    .select('product_id, qty, unit_price, total, product:products!inner(sku, name)')
-    .eq('tenant_id', tenantId)
-    .in('sale_id', saleIds)
-
-  if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
+  const items: any[] = []
+  for (let offset = 0; offset < saleIds.length; offset += 100) {
+    const page = await readReportPages(db.from('sale_items')
+      .select('product_id, qty, unit_price, total, product:products!inner(sku, name)')
+      .eq('tenant_id', tenantId).in('sale_id', saleIds.slice(offset, offset + 100)))
+    if (page.error) throw new AppError('DB_ERROR', page.error.message, 500)
+    items.push(...page.data)
+  }
 
   // 3. Групуємо по товару
   const grouped = new Map<string, {
@@ -274,12 +277,12 @@ export async function getWriteoffsSummary(tenantId: string) {
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const from  = year + '-' + month + '-01T00:00:00.000Z'
 
-  const { data, error } = await db
+  const { data, error } = await readReportPages(db
     .from('inventory_writeoffs')
     .select('id, reason, created_at, items:inventory_writeoff_items(cost_kopecks)')
     .eq('tenant_id', tenantId)
     .gte('created_at', from)
-    .order('created_at', { ascending: false })
+    .order('created_at', { ascending: false }))
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
@@ -307,22 +310,22 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
     { data: cashOps, error: cashOpsError },
     { data: orderPayments, error: paymentError },
   ] = await Promise.all([
-    db
+    readReportPages(db
       .from('sales')
       .select('id, sale_number, total, payment_method, status, completed_at, is_fiscal, cash_amount, card_amount')
       .eq('shift_id', shiftId)
       .eq('tenant_id', tenantId)
-      .order('completed_at', { ascending: true }),
-    db
+      .order('completed_at', { ascending: true })),
+    readReportPages(db
       .from('cash_operations')
       .select('type, amount, created_by')
       .eq('shift_id', shiftId)
-      .eq('tenant_id', tenantId),
-    db
+      .eq('tenant_id', tenantId)),
+    readReportPages(db
       .from('order_payments')
       .select('amount, method, is_fiscal')
       .eq('shift_id', shiftId)
-      .eq('tenant_id', tenantId),
+      .eq('tenant_id', tenantId)),
   ])
   if (salesError) throw new AppError('DB_ERROR', salesError.message, 500)
   if (cashOpsError) throw new AppError('DB_ERROR', cashOpsError.message, 500)
@@ -384,26 +387,19 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
 // Агрегує однакові позиції завершених чеків; послуги пропускаються.
 export async function getSoldItems(fromDate: string, toDate: string, tenantId: string) {
   const { from, toExclusive } = kyivDateRange(fromDate, toDate)
-  const sales: Array<{ id: string }> = []
-  const pageSize = 1000
-  for (let offset = 0; ; offset += pageSize) {
-    const { data: page, error } = await db.from('sales').select('id')
-      .eq('tenant_id', tenantId).in('status', ['completed', 'returned'])
-      .gte('completed_at', from).lt('completed_at', toExclusive)
-      .order('completed_at', { ascending: true })
-      .range(offset, offset + pageSize - 1)
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
-    sales.push(...(page ?? []))
-    if ((page?.length ?? 0) < pageSize) break
-  }
+  const { data: sales, error: salesError } = await readReportPages(db.from('sales').select('id')
+    .eq('tenant_id', tenantId).in('status', ['completed', 'returned'])
+    .gte('completed_at', from).lt('completed_at', toExclusive)
+    .order('completed_at', { ascending: true }))
+  if (salesError) throw new AppError('DB_ERROR', salesError.message, 500)
 
   const ids = sales.map((sale) => sale.id)
   const agg = new Map<string, any>()
   for (let i = 0; i < ids.length; i += 100) {
-    const { data: items, error: itemsErr } = await db.from('sale_items')
+    const { data: items, error: itemsErr } = await readReportPages(db.from('sale_items')
       .select('product_id, qty, unit_price, discount, product:products(sku, barcode, name, unit, qty_on_hand, storage_bin, is_service)')
       .eq('tenant_id', tenantId)
-      .in('sale_id', ids.slice(i, i + 100))
+      .in('sale_id', ids.slice(i, i + 100)))
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
     for (const it of (items ?? []) as any[]) {
       if (!it.product_id || it.product?.is_service) continue
@@ -432,19 +428,19 @@ export async function getSoldItems(fromDate: string, toDate: string, tenantId: s
   }
   const returnIds: string[] = []
   for (let i = 0; i < ids.length; i += 100) {
-    const { data: returns, error: returnsErr } = await db.from('returns')
+    const { data: returns, error: returnsErr } = await readReportPages(db.from('returns')
       .select('id')
       .eq('tenant_id', tenantId)
       .eq('status', 'completed')
-      .in('sale_id', ids.slice(i, i + 100))
+      .in('sale_id', ids.slice(i, i + 100)))
     if (returnsErr) throw new AppError('DB_ERROR', returnsErr.message, 500)
     returnIds.push(...(returns ?? []).map((item) => item.id))
   }
   for (let i = 0; i < returnIds.length; i += 100) {
-    const { data: items, error: returnItemsErr } = await db.from('return_items')
+    const { data: items, error: returnItemsErr } = await readReportPages(db.from('return_items')
       .select('product_id, quantity, total_kopecks')
       .eq('tenant_id', tenantId)
-      .in('return_id', returnIds.slice(i, i + 100))
+      .in('return_id', returnIds.slice(i, i + 100)))
     if (returnItemsErr) throw new AppError('DB_ERROR', returnItemsErr.message, 500)
     for (const item of items ?? []) {
       const current = agg.get(item.product_id)

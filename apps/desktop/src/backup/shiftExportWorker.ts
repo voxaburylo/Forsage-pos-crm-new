@@ -1,3 +1,4 @@
+import { embedBackupPhotos } from './embeddedPhotos'
 import { parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
@@ -9,8 +10,9 @@ import path from 'node:path'
 import * as XLSX from 'xlsx'
 
 export async function exportShiftSnapshot(input: {
-  snapshot: string; output: string; tenantId: string; stamp: string; closedAt: string; capturedAt: string
+  snapshot: string; dataRoot?: string; output: string; tenantId: string; stamp: string; closedAt: string; capturedAt: string
 }) {
+  if (input.dataRoot) await embedBackupPhotos(input.snapshot, input.dataRoot)
   await mkdir(input.output, { recursive: true })
   const db = new DatabaseSync(input.snapshot, { readOnly: true })
   try {

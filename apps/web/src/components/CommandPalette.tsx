@@ -1,3 +1,4 @@
+import { navigationAllowed } from '@/lib/navigationAccess'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -112,7 +113,7 @@ export function CommandPalette() {
 
   const q = query.trim().toLowerCase()
   const staticItems: Item[] = STATIC
-    .filter((c) => (c.to !== '/pos' || isDesktopRuntime()) && (!c.roles || c.roles.includes(role)))
+    .filter((c) => navigationAllowed(c.to, isDesktopRuntime()) && (!c.roles || c.roles.includes(role)))
     .filter((c) => !q || c.label.toLowerCase().includes(q) || (c.keywords ?? '').includes(q))
     .map((c) => ({ id: c.to + c.label, label: c.label, icon: c.icon, group: c.group, run: () => navigate(c.to) }))
 

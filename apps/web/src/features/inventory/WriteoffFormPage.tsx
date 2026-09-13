@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Trash2, X } from 'lucide-react'
 import { writeoffApi } from './writeoffApi'
@@ -8,6 +8,7 @@ import type { Product } from '@/types/product'
 import { Layout } from '@/components/Layout'
 import { Button, Card } from '@/components/ui'
 import { ProductAutocomplete } from '@/components/ProductAutocomplete'
+import { useAuthStore } from '@/stores/authStore'
 import { toast } from '@/components/ui/Toast'
 
 interface LineItem {
@@ -23,17 +24,32 @@ const REASONS = ['damage', 'expiry', 'loss', 'audit', 'other'] as const
 
 export default function WriteoffFormPage() {
   const navigate = useNavigate()
-  const [reason, setReason]   = useState<WriteoffReason>('damage')
-  const [notes, setNotes]     = useState('')
-  const [items, setItems]     = useState<LineItem[]>([])
+  const user = useAuthStore(state => state.session?.user)
+  const draftKey = 'forsage:writeoff-draft:' + user?.id
+  const [draft] = useState(() => { try { return JSON.parse(localStorage.getItem(draftKey) || '{}') ?? {} } catch { return {} } })
+  const [operationId] = useState(() => typeof draft.operation_id === 'string' ? draft.operation_id : crypto.randomUUID())
+  const finished = useRef(false)
+  const busy = useRef(false)
+  const [reason, setReason]   = useState<WriteoffReason>(draft.reason || 'damage')
+  const [notes, setNotes]     = useState(draft.notes || '')
+  const [items, setItems]     = useState<LineItem[]>(Array.isArray(draft.items) ? draft.items : [])
   const [search, setSearch]   = useState('')
   const [saving, setSaving]   = useState(false)
+
+  useEffect(() => {
+    if (finished.current) return
+    try { localStorage.setItem(draftKey, JSON.stringify({ reason, notes, items, operation_id: operationId })) }
+    catch { toast.error('Не вдалося зберегти чернетку. Не закривайте це вікно.') }
+  }, [draftKey, reason, notes, items, operationId])
 
   const hasDraft = items.length > 0 || notes.trim().length > 0
   const totalQty = items.reduce((sum, item) => sum + Number(item.qty || 0), 0)
 
   function closeForm() {
+    if (busy.current) return
     if (hasDraft && !confirm('Закрити акт списання без проведення?\n\nДані з цього вікна не будуть збережені.')) return
+    finished.current = true
+    localStorage.removeItem(draftKey)
     navigate('/inventory/writeoffs')
   }
 
@@ -77,21 +93,29 @@ export default function WriteoffFormPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (busy.current) return
     const err = validate()
     if (err) { toast.error(err); return }
 
+    busy.current = true
     setSaving(true)
     try {
+      // Save the document's identity before dispatch so restoring an old draft cannot deduct twice.
+      localStorage.setItem(draftKey, JSON.stringify({ reason, notes, items, operation_id: operationId }))
       const res = await writeoffApi.create({
+        operation_id: operationId,
         reason,
         notes: notes.trim() || null,
         items: items.map((i) => ({ product_id: i.product_id, qty: i.qty })),
       })
+      finished.current = true
+      try { localStorage.removeItem(draftKey) } catch { /* The saved operation ID still prevents replay. */ }
       toast.success('Акт списання проведено')
       navigate('/inventory/writeoffs/' + res.data.id)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка проведення списання')
     } finally {
+      busy.current = false
       setSaving(false)
     }
   }
@@ -111,7 +135,7 @@ export default function WriteoffFormPage() {
         </div>
       }
     >
-      <form id="writeoff-form" onSubmit={handleSubmit} className="max-w-5xl pb-24">
+      <form id="writeoff-form" onSubmit={handleSubmit} className="max-w-5xl pb-24"><fieldset disabled={saving}>
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Акт списання проводиться одразу: після натискання залишки товарів будуть зменшені, а рух товару буде записаний в історію.
         </div>
@@ -215,7 +239,7 @@ export default function WriteoffFormPage() {
             </div>
           </div>
         </div>
-      </form>
+      </fieldset></form>
     </Layout>
   )
 }

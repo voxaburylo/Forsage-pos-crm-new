@@ -77,7 +77,7 @@ export function BackupSettingsCard() {
     <Card className="mt-6 space-y-4 border-slate-200">
       <div className="space-y-2">
         <div className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold">Копії після закриття зміни</h3><Button size="sm" variant="secondary" onClick={load} loading={loading}>Оновити</Button></div>
-        <p className="text-sm text-gray-600">Excel: папка «Вивантаження» поруч із програмою, окремо товари та клієнти. Сервер: приватна повна копія, до 7 останніх перевірених копій на комп’ютер. Без інтернету чекає наступного підключення програми.</p>
+        <p className="text-sm text-gray-600">Excel: папка «Вивантаження» поруч із програмою, окремо товари та клієнти. Сервер: приватна копія бази з доступними локальними фото, до 7 останніх перевірених копій на комп’ютер. Без інтернету чекає наступного підключення програми. Знімок створюється під час виконання резервування; відсутні файли фото відновити неможливо.</p>
         {loadError&&<p role="alert" className="text-sm text-red-700">{loadError}</p>}
         {shiftCopies.length===0&&!loading&&!loadError&&<p className="text-sm text-gray-500">Копії з’являться після першого закриття зміни в оновленій програмі.</p>}
         {shiftCopies.map(copy=><div key={copy.id} className="border-b py-2 text-sm">

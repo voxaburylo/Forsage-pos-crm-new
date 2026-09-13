@@ -783,7 +783,7 @@ async function main() {
     employee_name: 'Smoke Cashier',
     method: 'cash',
     shift_id: shiftId,
-    work_date: new Date().toISOString().slice(0, 10),
+    work_date: new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
     user_id: 'smoke-cashier',
   });
   if (dailyPayout.amount !== 7500) throw new Error('Local daily salary payout has incorrect amount');

@@ -1,3 +1,4 @@
+import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { RendererRecovery } from './rendererRecovery'
 import { BlackBox } from './diagnostics/blackBox'
@@ -27,6 +28,7 @@ import type {
   LocalSyncPushResult,
 } from './db/localTypes'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
+import { applyCatalogBatch } from './repositories/catalogBatchWorker'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
@@ -1105,6 +1107,8 @@ app.whenReady().then(async () => {
   })
   handleDesktopIpc('desktop:catalog:delete-photo', async (_event, photoUrl: string) => {
     if (!desktopDataRoot || !String(photoUrl).startsWith('file:')) return { ok: true }
+    const referenced = requireLocalDatabase().prepare('SELECT 1 FROM products WHERE photo_url = ? LIMIT 1').get(photoUrl)
+    if (referenced) return { ok: true }
     const photosRoot = path.resolve(desktopDataRoot, 'photos')
     const photoPath = path.resolve(fileURLToPath(photoUrl))
     if (photoPath !== photosRoot && !photoPath.startsWith(photosRoot + path.sep)) {
@@ -1155,6 +1159,8 @@ app.whenReady().then(async () => {
     requireLocalCatalog().searchProducts(query, undefined, limit),
   )
   handleDesktopIpc('desktop:catalog:upsert-product', () => assertLocalDataAuthority('desktop:catalog:upsert-product'))
+  handleDesktopIpc('desktop:catalog:analytics', (_event, input) => localAnalytics(requireLocalDatabase(), input))
+  handleDesktopIpc('desktop:catalog:apply-batch', (_event, input) => applyCatalogBatch(requireLocalDatabase().dataRoot, input))
   handleDesktopIpc('desktop:catalog:save-product', (_event, product: LocalProductUpsert, options) =>
     requireLocalCatalog().saveProduct(product, options),
   )
