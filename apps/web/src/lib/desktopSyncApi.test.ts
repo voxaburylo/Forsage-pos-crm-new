@@ -3,10 +3,10 @@ import type { DesktopSyncOutboxOperation } from './desktopBridge'
 import { DESKTOP_PUSH_MAX_BYTES } from './desktopSyncBatch'
 
 const mocks = vi.hoisted(() => ({
-  post: vi.fn(), listPending: vi.fn(), getPullState: vi.fn(),
+  get: vi.fn(), post: vi.fn(), listPending: vi.fn(), getPullState: vi.fn(),
   applyPushResults: vi.fn(), markBatchFailed: vi.fn(),
 }))
-vi.mock('@/lib/api', () => ({ api: { post: mocks.post } }))
+vi.mock('@/lib/api', () => ({ api: { post: mocks.post, get: mocks.get } }))
 vi.mock('@/lib/desktopBridge', () => ({ isDesktopRuntime: () => true,
   desktopBridge: () => ({ sync: mocks }),
 }))
@@ -25,6 +25,26 @@ beforeEach(() => {
   mocks.post.mockResolvedValue({ data: { results: [ack(1)] } })
 })
 describe('desktop outbox upload execution', () => {
+  it('keeps signed documents pending on an older server without spending retries', async () => {
+    mocks.listPending.mockResolvedValue([{ ...operation(1), payload: { local_balance_snapshot: {} } }])
+    mocks.get.mockResolvedValue({ version: 'old' })
+    expect(await pushDesktopOutbox()).toEqual({ pushed: 0, failed: 0, pending: 1, resetRequired: false })
+    expect(mocks.post).not.toHaveBeenCalled()
+    expect(mocks.markBatchFailed).not.toHaveBeenCalled()
+    expect(mocks.applyPushResults).not.toHaveBeenCalled()
+  })
+  it('does not fail documents when the compatibility check is offline', async () => {
+    mocks.listPending.mockResolvedValue([{ ...operation(1), payload: { local_balance_snapshot: {} } }])
+    mocks.get.mockRejectedValue(new Error('offline'))
+    await expect(pushDesktopOutbox()).rejects.toThrow('offline')
+    expect(mocks.markBatchFailed).not.toHaveBeenCalled()
+  })
+  it('sends signed documents only to a compatible server', async () => {
+    mocks.listPending.mockResolvedValue([{ ...operation(1), payload: { local_balance_snapshot: {} } }])
+    mocks.get.mockResolvedValue({ local_mirror_contract: 1 })
+    expect((await pushDesktopOutbox()).pushed).toBe(1)
+    expect(mocks.post).toHaveBeenCalledTimes(1)
+  })
   it('sends only a bounded prefix and leaves the rest pending', async () => {
     const rows = [operation(1, 2_000_000), operation(2, 2_000_000), operation(3)]
     mocks.listPending.mockResolvedValue(rows)

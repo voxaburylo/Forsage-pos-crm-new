@@ -49,6 +49,16 @@ async function executeDesktopOutboxPush(limit = 50): Promise<DesktopPushResult> 
       desktop.sync.getPullState(),
     ])
     if (pendingOperations.length === 0) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
+    // Local updates may be installed before the web deployment. Never let a
+    // legacy server acknowledge signed snapshots it does not understand.
+    const needsMirrorContract = pendingOperations.some(operation => operation.payload
+      && typeof operation.payload === 'object' && 'local_balance_snapshot' in operation.payload)
+    if (needsMirrorContract) {
+      const version = await api.get<{ local_mirror_contract?: number }>('/api/v1/version', { silent: true, timeoutMs: 10_000 })
+      if (version.local_mirror_contract !== 1) {
+        return { pushed: 0, failed: 0, pending: pendingOperations.length, resetRequired: false }
+      }
+    }
     const { operations, oversized } = selectDesktopPushBatch(pendingOperations, state.reset_generation)
     if (oversized) {
       await desktop.sync.markBatchFailed([oversized.sequence],

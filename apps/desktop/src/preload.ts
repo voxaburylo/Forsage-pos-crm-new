@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer as electronIpcRenderer } from 'electron'
 import { localizeDesktopIpcError } from './ipcError'
 
+// No DOM text, form values, arguments, clipboard or screenshots are collected.
+let diagnosticWindowAt = 0, diagnosticCount = 0
+function reportDiagnostic(payload: Record<string, unknown>): void {
+  if (Date.now() - diagnosticWindowAt > 1000) { diagnosticWindowAt = Date.now(); diagnosticCount = 0 }
+  if (++diagnosticCount > 20) return
+  try { electronIpcRenderer.send('desktop:diagnostic-event', payload) } catch { /* diagnostics must not break the UI */ }
+}
+const reportSection = () => reportDiagnostic({ kind: 'section', section: window.location.hash.slice(0, 200) })
+window.addEventListener('DOMContentLoaded', reportSection)
+window.addEventListener('hashchange', reportSection)
+
 const ipcRenderer = {
   async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     try {
@@ -13,6 +24,12 @@ const ipcRenderer = {
 
 
 contextBridge.exposeInMainWorld('forsageDesktop', {
+  diagnostics: {
+    reportError: (kind: string, message: string, stack: string) => {
+      if (kind !== 'renderer-error' && kind !== 'renderer-rejection') return
+      reportDiagnostic({ kind, message: String(message).slice(0, 2048), stack: String(stack).slice(0, 4096) })
+    },
+  },
   auth: {
     login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
     loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),

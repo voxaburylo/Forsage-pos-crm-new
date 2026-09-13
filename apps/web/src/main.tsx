@@ -2,6 +2,9 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { installLocalDiagnostics } from './lib/localDiagnostics'
+
+installLocalDiagnostics()
 
 // VitePWA активує новий service worker автоматично. Одразу перезавантажуємо
 // сторінку після зміни контролера, щоб відкрита вкладка не продовжувала

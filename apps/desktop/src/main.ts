@@ -1,9 +1,10 @@
 import path from 'node:path'
 import { RendererRecovery } from './rendererRecovery'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { BlackBox } from './diagnostics/blackBox'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
 import { createMirrorSigner } from './security/mirrorIdentity'
@@ -51,6 +52,13 @@ import { customerWritePayload } from './security/customerWritePolicy'
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
+const blackBox = gotSingleInstanceLock ? new BlackBox(path.join(
+  process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Forsage') : app.getPath('userData'), 'logs', 'blackbox',
+)) : null
+blackBox?.record('runtime', { pid: process.pid, version: app.getVersion(), electron: process.versions.electron,
+  node: process.versions.node, platform: process.platform, arch: process.arch })
+try { blackBox?.record('build', { build: createHash('sha256').update(readFileSync(__filename)).digest('hex') }) } catch { /* optional identity */ }
+let diagnosticCommandSequence = 0
 
 // Electron does not provide the usual browser text menu automatically.
 // Install it for every current and future BrowserWindow (main UI, print preview,
@@ -169,19 +177,7 @@ function diagnosticValue(value: unknown, depth = 0): string {
 }
 
 function writeDesktopDiagnostic(event: string, details: unknown): void {
-  try {
-    const dataRoot = desktopDataRoot
-      ?? (process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Forsage') : app.getPath('userData'))
-    const logDir = path.join(dataRoot, 'logs')
-    mkdirSync(logDir, { recursive: true })
-    appendFileSync(
-      path.join(logDir, 'desktop-errors.log'),
-      `[${new Date().toISOString()}] ${event}\n${diagnosticValue(details)}\n\n`,
-      'utf8',
-    )
-  } catch {
-    // Діагностика не повинна сама зупиняти касу.
-  }
+  blackBox?.record(event, details)
 }
 interface DesktopPrintOptions {
   title?: string
@@ -490,6 +486,9 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
       throw new Error('Неприпустиме джерело локальної команди')
     }
+    const sequence = ++diagnosticCommandSequence
+    blackBox?.record('command-start', { channel, sequence, role: desktopAuthSession?.role ?? 'signed-out' })
+    let failed = false
     try {
       const session = PUBLIC_DESKTOP_CHANNELS.has(channel) ? null : requireDesktopSession()
       if (session && localNetwork?.getStatus().mode === 'client' && isLanProxyChannel(channel)) {
@@ -497,6 +496,8 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
       }
       return await executeDesktopCommand(channel, listener, event, args, session)
     } catch (error) {
+      failed = true
+      blackBox?.record('command-error', { channel, sequence, error })
       // Кожна кнопка каси проходить тут. Без цього запису збій бачив лише той,
       // хто відкрив консоль розробника, — тобто ніхто.
       const message = error instanceof Error ? error.message : String(error)
@@ -513,6 +514,8 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
       throw error
     } finally {
       const durationMs = Date.now() - startedAt
+      blackBox?.record('command-end', { channel, sequence, duration_ms: durationMs,
+        status: failed ? 'failed' : 'ok', role: desktopAuthSession?.role ?? 'signed-out' })
       if (durationMs >= 2_000) {
         writeDesktopDiagnostic('slow-desktop-command', { channel, duration_ms: durationMs })
       }
@@ -650,6 +653,11 @@ async function createWindow(): Promise<void> {
     : null
   const packagedRendererPath = path.resolve(rendererIndexPath()).toLocaleLowerCase('en-US')
   const window = mainWindow
+  window.on('close', () => blackBox?.record('window-close-request'))
+  window.webContents.on('did-finish-load', () => blackBox?.record('renderer-loaded'))
+  window.webContents.on('console-message', (_event, level, message) => {
+    if (level === 3) blackBox?.record('renderer-console-error', new Error(message.slice(0, 2048)))
+  })
   const recovery = new RendererRecovery({
     isDestroyed: () => window.isDestroyed(),
     load: async () => {
@@ -670,6 +678,7 @@ async function createWindow(): Promise<void> {
     app.quit()
   }
   window.on('closed', () => {
+    blackBox?.record('window-closed')
     recovery.stop()
     if (mainWindow === window) { desktopAuthSession = null; mainWindow = null }
   })
@@ -926,6 +935,29 @@ function openLocalDatabaseOrExplain(dataRoot: string): LocalDatabaseOpenResult |
 }
 
 app.whenReady().then(async () => {
+  blackBox?.record('app-ready')
+  powerMonitor.on('suspend', () => blackBox?.record('system-suspend'))
+  powerMonitor.on('resume', () => blackBox?.record('system-resume'))
+  let rendererBudgetAt = 0, rendererBudget = 0
+  ipcMain.on('desktop:diagnostic-event', (event, payload: unknown) => {
+    if (!mainWindow || event.sender.id !== mainWindow.webContents.id || !payload || typeof payload !== 'object') return
+    if (Date.now() - rendererBudgetAt > 1000) { rendererBudgetAt = Date.now(); rendererBudget = 0 }
+    if (++rendererBudget > 20) return
+    const data = payload as Record<string, unknown>
+    if (data.kind === 'section' && typeof data.section === 'string') {
+      const section = data.section.split(/[/?#]/).filter(Boolean)[0] ?? 'home'
+      if (['home', 'pos', 'products', 'orders', 'customers', 'inventory', 'suppliers', 'analytics', 'reports',
+        'settings', 'staff', 'sales', 'returns', 'cashflow', 'labels', 'login', 'ai', 'receiving', 'admin',
+        'internal', 'auto-purchase', 'audit', 'notifications', 'ai-assistant', 'quotes', 'chats',
+        'abc', 'waitlist', 'needs-action', 'staff-analytics'].includes(section)) {
+        blackBox?.record('section-opened', { section })
+      }
+    } else if (data.kind === 'renderer-error' || data.kind === 'renderer-rejection') {
+      const error = new Error(typeof data.message === 'string' ? data.message.slice(0, 2048) : 'Unknown renderer error')
+      if (typeof data.stack === 'string') error.stack = data.stack.slice(0, 4096)
+      blackBox?.record(data.kind, error)
+    }
+  })
   app.setName('Forsage')
   const dataRoot = process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'Forsage')
@@ -934,6 +966,7 @@ app.whenReady().then(async () => {
   const opened = openLocalDatabaseOrExplain(dataRoot)
   if (!opened) return
   localDatabase = opened.database
+  blackBox?.record('database-opened', { schemaVersion: localDatabase.info().schemaVersion })
   localCatalog = new LocalCatalogRepository(localDatabase)
   localInventory = new LocalInventoryRepository(localDatabase)
   localOrders = new LocalOrderRepository(localDatabase)
@@ -1702,6 +1735,7 @@ app.on('before-quit', (event) => {
   if (quitAfterCleanup) return
   event.preventDefault()
   if (databaseMaintenance) return
+  blackBox?.record('shutdown-start')
   databaseMaintenance = true
   stopBackupScheduler?.()
   stopBackupScheduler = null
@@ -1717,6 +1751,7 @@ app.on('before-quit', (event) => {
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }
     finally {
       quitAfterCleanup = true
+      await blackBox?.close()
       app.quit()
     }
   })()

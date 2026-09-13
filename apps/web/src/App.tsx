@@ -97,6 +97,8 @@ function isRouteChunkError(error: unknown): boolean {
   return /ChunkLoadError|Loading chunk|dynamically imported module|Importing a module script failed|Failed to fetch/i.test(`${name} ${message}`)
 }
 
+import { reportLocalError } from './lib/localDiagnostics'
+
 type AppErrorBoundaryState = { error: Error | null }
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
@@ -107,6 +109,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    reportLocalError(error)
     if (isRouteChunkError(error) && typeof window !== 'undefined') {
       const alreadyTried = window.sessionStorage.getItem(ROUTE_RELOAD_KEY) === '1'
       if (!alreadyTried) {
