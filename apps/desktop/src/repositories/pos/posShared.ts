@@ -101,7 +101,7 @@ export interface FiscalIntentRow {
 
 export interface ReturnableSaleItemRow {
   id: string
-  product_id: string
+  product_id: string | null
   product_name: string
   sku: string
   unit: string

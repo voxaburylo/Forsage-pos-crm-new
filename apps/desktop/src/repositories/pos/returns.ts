@@ -89,18 +89,23 @@ export class LocalPosReturns extends LocalPosSales {
                  AND r.deleted_at IS NULL
              ), 0) AS already_refunded_kopecks
       FROM sale_items si
-      JOIN products p ON p.id = si.product_id AND p.tenant_id = si.tenant_id
+      LEFT JOIN products p ON p.id = si.product_id AND p.tenant_id = si.tenant_id
       WHERE si.sale_id = ? AND si.tenant_id = ? AND si.deleted_at IS NULL
       ORDER BY si.created_at ASC
     `).all(saleId, tenantId) as unknown as ReturnableSaleItemRow[]
     const allocation = allocateRefundPool(Number(sale.total), rows)
-    const alreadyRefunded = rows.reduce(
+    // Receipt-wide discounts must include free-amount lines in their weights.
+    // Those lines cannot be returned through this product-return workflow, but
+    // omitting them would refund the product's undiscounted price instead.
+    const returnableRows = rows.filter((item) => item.product_id !== null)
+    const productRefundPool = returnableRows.reduce((sum, item) => sum + (allocation.lineRefunds.get(item.id) ?? 0), 0)
+    const alreadyRefunded = returnableRows.reduce(
       (sum, item) => sum + money(Number(item.already_refunded_kopecks ?? 0)),
       0,
     )
     if (
       alreadyRefunded < 0
-      || alreadyRefunded > allocation.productRefundPool
+      || alreadyRefunded > productRefundPool
       || rows.some((item) => (
         Number(item.already_returned_qty) < 0
         || Number(item.already_returned_qty) > Number(item.qty)
@@ -110,7 +115,7 @@ export class LocalPosReturns extends LocalPosSales {
     ) {
       throw new Error('У чеку є некоректні дані попереднього повернення')
     }
-    const items = rows.map((item) => {
+    const items = returnableRows.map((item) => {
       const refundableTotal = allocation.lineRefunds.get(item.id) ?? 0
       const alreadyReturnedQty = Number(item.already_returned_qty)
       const alreadyRefundedKopecks = money(Number(item.already_refunded_kopecks))
@@ -140,9 +145,10 @@ export class LocalPosReturns extends LocalPosSales {
         completed_at: sale.completed_at,
         is_fiscal: sale.is_fiscal,
         fiscal_number: sale.fiscal_number,
-        product_refund_pool: allocation.productRefundPool,
+        product_refund_pool: productRefundPool,
         already_refunded_kopecks: alreadyRefunded,
-        refundable_kopecks: Math.max(0, allocation.productRefundPool - alreadyRefunded),
+        refundable_kopecks: Math.max(0, productRefundPool - alreadyRefunded),
+        has_non_returnable_items: returnableRows.length !== rows.length,
       },
       items,
     }
@@ -191,9 +197,9 @@ export class LocalPosReturns extends LocalPosSales {
         ready.sale.customer_id ?? null,
         String(input.reason ?? 'other'),
         input.reason_note ?? null,
-        String(input.refund_method ?? 'cash'),
+        ready.refund_method,
         ready.refund,
-        String(input.stock_action ?? 'return_to_stock'),
+        ready.stock_action,
         ready.approved_by,
         input.fiscal_number ?? null,
         clientOperationId,
@@ -222,9 +228,9 @@ export class LocalPosReturns extends LocalPosSales {
           timestamp,
           timestamp,
         )
-        if (input.stock_action === 'return_to_stock' && item.product_id) {
+        if (ready.stock_action === 'return_to_stock' && item.product_id) {
           const product = this.getProductForUpdate(item.product_id, tenantId)
-          if (product) {
+          if (product && product.is_service !== 1) {
             const nextQty = Number(product.qty_on_hand ?? 0) + item.quantity
             this.db.prepare(`
               UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
@@ -268,10 +274,12 @@ export class LocalPosReturns extends LocalPosSales {
             SELECT si.product_id
             FROM sale_items si
             LEFT JOIN (
-              SELECT sale_item_id, SUM(quantity) AS qty
-              FROM customer_return_items
-              WHERE tenant_id = ?
-              GROUP BY sale_item_id
+              SELECT ri.sale_item_id, SUM(ri.quantity) AS qty
+              FROM customer_return_items ri
+              JOIN customer_returns r ON r.id = ri.return_id AND r.tenant_id = ri.tenant_id
+              WHERE ri.tenant_id = ? AND r.sale_id = ?
+                AND ri.deleted_at IS NULL AND r.deleted_at IS NULL
+              GROUP BY ri.sale_item_id
             ) returned ON returned.sale_item_id = si.id
             WHERE si.sale_id = ? AND si.tenant_id = ? AND si.deleted_at IS NULL
             GROUP BY si.product_id
@@ -279,10 +287,10 @@ export class LocalPosReturns extends LocalPosSales {
           )
       `).run(
         timestamp, timestamp, tenantId, ready.sale.id, tenantId,
-        tenantId, ready.sale.id, tenantId,
+        tenantId, ready.sale.id, ready.sale.id, tenantId,
       )
 
-      if (input.refund_method === 'cash') {
+      if (ready.refund_method === 'cash') {
         this.addCashOperation(
           tenantId,
           ready.shift_id,
@@ -293,7 +301,7 @@ export class LocalPosReturns extends LocalPosSales {
           timestamp,
           returnId,
         )
-      } else if (ready.sale.customer_id && input.refund_method === 'debt_reduction') {
+      } else if (ready.sale.customer_id && ready.refund_method === 'debt_reduction') {
         const updated = this.db.prepare(`
           UPDATE customers
           SET debt_balance = debt_balance - ?, dirty_at = ?, updated_at = ?
@@ -310,7 +318,7 @@ export class LocalPosReturns extends LocalPosSales {
         if (Number(updated.changes) !== 1) {
           throw new Error('Сума боргу клієнта менша за суму повернення')
         }
-      } else if (ready.sale.customer_id && input.refund_method === 'credit') {
+      } else if (ready.sale.customer_id && ready.refund_method === 'credit') {
         const customer = this.getCustomerForMoney(ready.sale.customer_id, tenantId)
         const balanceAfter = Number(customer.deposit_balance ?? 0) + ready.refund
         const updated = this.db.prepare(`
@@ -343,9 +351,10 @@ export class LocalPosReturns extends LocalPosSales {
         )
       }
 
-      const remaining = this.getSaleForReturn(ready.sale.id, tenantId).items
+      const returnState = this.getSaleForReturn(ready.sale.id, tenantId)
+      const remaining = returnState.items
         .reduce((sum: number, item: any) => sum + Number(item.available_qty ?? 0), 0)
-      if (remaining <= 0) {
+      if (remaining <= 0 && !returnState.sale.has_non_returnable_items) {
         this.db.prepare(`
           UPDATE sales SET status = 'returned', dirty_at = ?, updated_at = ?
           WHERE id = ? AND tenant_id = ?
@@ -358,8 +367,8 @@ export class LocalPosReturns extends LocalPosSales {
         sale_id: ready.sale.id,
         reason: input.reason,
         reason_note: input.reason_note ?? null,
-        refund_method: input.refund_method,
-        stock_action: input.stock_action,
+        refund_method: ready.refund_method,
+        stock_action: ready.stock_action,
         fiscal_number: input.fiscal_number ?? null,
         refund_kopecks: ready.refund,
         shift_id: ready.shift_id,
@@ -408,6 +417,8 @@ export class LocalPosReturns extends LocalPosSales {
       condition: string
     }>
     refund: number
+    refund_method: string
+    stock_action: string
     approved_by: string
     shift_id: string | null
   } {
@@ -513,6 +524,8 @@ export class LocalPosReturns extends LocalPosSales {
       sale,
       normalized,
       refund,
+      refund_method: refundMethod,
+      stock_action: stockAction,
       approved_by: approvedBy,
       shift_id: shiftId,
     }
