@@ -11,7 +11,7 @@ import { app } from 'electron'
 // стають у чергу за трупом, і станція «просто не друкує». Гірше того, Electron
 // повертає success, щойно спулер прийняв байти, тож каса рапортує успіх.
 //
-// Тому кожен друк обгортаємо з двох боків: перед відправкою чистимо чергу і
+// Тому кожен друк обгортаємо з двох боків: перед відправкою перевіряємо чергу і
 // перевіряємо готовність принтера, після — переконуємось, що завдання реально
 // пішло. Кожен принтер перевіряється ОКРЕМО за іменем: чековий і етикетковий
 // не мають впливати один на одного.
@@ -33,6 +33,8 @@ export const SPOOLER_ERRORS = {
   queueStuck: 'PRINT_QUEUE_STUCK',
   notReady: 'PRINT_PRINTER_NOT_READY',
   notConfirmed: 'PRINT_NOT_CONFIRMED',
+  checkFailed: 'PRINT_GUARD_UNAVAILABLE',
+  checkTimeout: 'PRINT_GUARD_TIMEOUT',
 } as const
 
 /** Чи це відмова саме охорони черги (а не звичайна помилка налаштувань друку). */
@@ -65,11 +67,8 @@ try {
   # поверненні з функції, і тоді .Count дає $null — саме випадок «залип рівно
   # один job», тобто найчастіший. Без обгортки перевірка мовчки пропускала його.
   $stuck = @(Get-StuckJobs)
-  if ($stuck.Count -gt 0) {
-    $stuck | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 1500
-    if (@(Get-StuckJobs).Count -gt 0) { throw '${SPOOLER_ERRORS.queueStuck}' }
-  }
+  # Never delete an unrelated or potentially partially printed job automatically.
+  if ($stuck.Count -gt 0) { throw '${SPOOLER_ERRORS.queueStuck}' }
   $printer = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
   if ($printer -and ($printer.PrinterStatus -match '${NOT_READY_PATTERN}')) {
     throw "${SPOOLER_ERRORS.notReady}: $($printer.PrinterStatus)"
@@ -160,10 +159,10 @@ function runGuardScript(
     let stderr = ''
     ps.stdout.on('data', (chunk) => { stdout += String(chunk) })
     ps.stderr.on('data', (chunk) => { stderr += String(chunk) })
-    // Сам PowerShell не запустився — не привід валити друк.
-    ps.on('error', () => resolve())
+    // A failed check is not proof that the printer accepted/completed the job.
+    ps.on('error', () => { clearTimeout(timeout); reject(new Error(SPOOLER_ERRORS.checkFailed)) })
 
-    const timeout = setTimeout(() => { ps.kill(); resolve() }, timeoutMs)
+    const timeout = setTimeout(() => { ps.kill(); reject(new Error(SPOOLER_ERRORS.checkTimeout)) }, timeoutMs)
 
     ps.on('close', (exitCode) => {
       clearTimeout(timeout)
@@ -174,7 +173,7 @@ function runGuardScript(
 }
 
 /**
- * Прибирає залиплі завдання конкретного принтера і перевіряє його готовність.
+ * Виявляє залиплі завдання конкретного принтера, не видаляючи їх.
  * Кидає PRINT_QUEUE_STUCK / PRINT_PRINTER_NOT_READY, якщо друкувати марно.
  */
 export function preflightPrinter(printerName: string): Promise<void> {

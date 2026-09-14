@@ -101,18 +101,14 @@ function Get-StuckJobs {
 }
 
 # ── Preflight ────────────────────────────────────────────────────────────────
-# Спершу прибираємо чужий мотлох із черги, і лише потім дивимось на статус
-# принтера: залипле завдання саме по собі виставляє принтеру стан Error.
+# Перевіряємо чергу, не видаляючи завдання користувача.
 try {
   # @() обов'язкове: Windows PowerShell 5.1 розгортає одноелементний масив при
   # поверненні з функції, і тоді .Count дає $null — саме випадок «залип рівно
   # один job», тобто найчастіший. Без обгортки перевірка мовчки пропускала його.
   $stuck = @(Get-StuckJobs)
-  if ($stuck.Count -gt 0) {
-    $stuck | Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 1500
-    if (@(Get-StuckJobs).Count -gt 0) { throw 'TSPL_QUEUE_STUCK' }
-  }
+  # Never delete an unrelated or potentially partially printed job automatically.
+  if ($stuck.Count -gt 0) { throw 'TSPL_QUEUE_STUCK' }
   $printer = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
   # Під час пакетного друку USB-принтер часто дає КОРОТКОЧАСНИЙ not-ready між
   # завданнями (Offline/NotAvailable на частку секунди), а друк потім іде нормально.

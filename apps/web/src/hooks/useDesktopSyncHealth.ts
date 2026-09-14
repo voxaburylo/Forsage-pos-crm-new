@@ -1,3 +1,4 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { useCallback, useEffect, useState } from 'react'
 import { getDesktopSyncStatus } from '@/lib/desktopSyncApi'
 import { isDesktopRuntime, type DesktopSyncStatus } from '@/lib/desktopBridge'
@@ -27,7 +28,7 @@ export function useDesktopSyncHealth(enabled = true): DesktopSyncHealth {
   const [status, setStatus] = useState<DesktopSyncStatus | null>(null)
 
   const refresh = useCallback(async () => {
-    if (!enabled || !isDesktopRuntime()) return
+    if (!enabled || !isDesktopRuntime() || isDesktopAccessLocked()) return
     setStatus(await getDesktopSyncStatus())
   }, [enabled])
 
@@ -37,6 +38,7 @@ export function useDesktopSyncHealth(enabled = true): DesktopSyncHealth {
     let timer: number | null = null
 
     const tick = async () => {
+      if (isDesktopAccessLocked()) { timer = window.setTimeout(tick, POLL_INTERVAL_MS); return }
       const next = await getDesktopSyncStatus()
       if (cancelled) return
       setStatus(next)
@@ -46,12 +48,14 @@ export function useDesktopSyncHealth(enabled = true): DesktopSyncHealth {
     // Синхронізатор шле цю подію, коли щось реально поїхало — оновлюємо
     // лічильник одразу, щоб індикатор не «відставав» на десять секунд.
     const handleSyncCompleted = () => { void refresh() }
+    window.addEventListener('forsage:desktop-access-changed', handleSyncCompleted)
     window.addEventListener('forsage:desktop-sync-completed', handleSyncCompleted)
     void tick()
 
     return () => {
       cancelled = true
       if (timer !== null) window.clearTimeout(timer)
+      window.removeEventListener('forsage:desktop-access-changed', handleSyncCompleted)
       window.removeEventListener('forsage:desktop-sync-completed', handleSyncCompleted)
     }
   }, [enabled, refresh])

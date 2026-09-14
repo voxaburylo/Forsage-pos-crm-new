@@ -1,3 +1,4 @@
+import { customerDiscountPct } from '@/features/customers/customerDiscount'
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
 import { Search, Plus, MapPin, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
@@ -282,8 +283,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       return true
     }
     const store = usePOSStore.getState()
-    const effectivePct = customer.loyalty_mode === 'cashback'
-      ? 0 : (customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+    const effectivePct = customerDiscountPct(customer)
     store.setCustomer({
       id: customer.id,
       phone: customer.phone,
@@ -376,8 +376,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         }
         const store = usePOSStore.getState()
         // Режим «накопичення»: % не знижує чек, а нараховується на рахунок після продажу
-        const effectivePct = (customer as any).loyalty_mode === 'cashback'
-          ? 0 : (customer.price_tier?.discount_pct ?? customer.discount_pct ?? 0)
+        const effectivePct = customerDiscountPct(customer)
         store.setCustomer({
           id: customer.id,
           phone: customer.phone,
@@ -417,7 +416,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           return
         }
         const store = usePOSStore.getState()
-        const effectivePct = c.loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? 0)
+        const effectivePct = customerDiscountPct(c)
         store.setCustomer({
           id: c.id, phone: c.phone, name: c.full_name ?? null,
           debtBalance: c.debt_balance ?? 0, tierDiscountPct: effectivePct,

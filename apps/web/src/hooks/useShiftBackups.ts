@@ -1,3 +1,4 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { useEffect } from 'react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { api } from '@/lib/api'
@@ -11,7 +12,7 @@ export function useShiftBackups(serverOnline: boolean) {
     let stopped = false, busy = false
     let delayUntil = 0, failures = 0
     async function run() {
-      if (stopped || busy || Date.now() < delayUntil) return
+      if (stopped || busy || isDesktopAccessLocked() || Date.now() < delayUntil) return
       busy = true
       let id = ''
       try {
@@ -35,8 +36,9 @@ export function useShiftBackups(serverOnline: boolean) {
     }
     const timer = window.setInterval(() => { void run() }, 30_000)
     const wake = () => { void run() }
+    window.addEventListener('forsage:desktop-access-changed', wake)
     window.addEventListener('forsage:desktop-sync-requested', wake)
     void run()
-    return () => { stopped = true; window.clearInterval(timer); window.removeEventListener('forsage:desktop-sync-requested',wake) }
+    return () => { stopped = true; window.clearInterval(timer); window.removeEventListener('forsage:desktop-access-changed', wake); window.removeEventListener('forsage:desktop-sync-requested',wake) }
   }, [serverOnline, user?.id])
 }

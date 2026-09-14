@@ -16,6 +16,25 @@ describe('customer card integrity', () => {
   afterEach(() => { db.close(); if (path.dirname(root) === path.resolve(tmpdir()) && path.basename(root).startsWith('forsage-customer-card-')) rmSync(root, { recursive: true, force: true }) })
   const create = () => pos.saveCustomer({ phone: '+38 (050) 123-45-67', full_name: 'ЄВГЕН Коваль', card_barcode: 'CARD123' }).data
 
+  it('preserves personal discount and cashback mode on create, edit and every card read', () => {
+    const first = pos.saveCustomer({ phone: '0508888888', discount_pct: 7.25, loyalty_mode: 'cashback', card_barcode: 'LOYALTY' }).data
+    expect(first).toMatchObject({ discount_pct: 7.25, loyalty_mode: 'cashback' })
+    for (const card of [pos.getCustomer(first.id), pos.findCustomerByBarcode('LOYALTY'), pos.listCustomers().data[0]]) {
+      expect(card).toMatchObject({ discount_pct: 7.25, loyalty_mode: 'cashback' })
+    }
+    const saved = pos.saveCustomer({ discount_pct: 5, loyalty_mode: 'discount', expected_updated_at: first.updated_at }, first.id).data
+    expect(saved).toMatchObject({ discount_pct: 5, loyalty_mode: 'discount' })
+    expect(pos.getCustomer(first.id)).toMatchObject({ discount_pct: 5, loyalty_mode: 'discount' })
+    expect(db.prepare('SELECT count(*) n FROM sales').get()).toMatchObject({ n: 0 })
+  })
+  it('returns the configured price group and falls back when that group was removed', () => {
+    const customer = create()
+    db.prepare("INSERT OR REPLACE INTO app_meta(key,value_json,updated_at) VALUES('shop_settings',?,'2026-09-14')").run(JSON.stringify({price_tiers:[{id:'trade',name:'Trade',discount_pct:10}]}))
+    pos.saveCustomer({ price_tier_id: 'trade', discount_pct: 5 }, customer.id)
+    expect(pos.getCustomer(customer.id).price_tier).toMatchObject({ id: 'trade', discount_pct: 10 })
+    db.prepare("UPDATE app_meta SET value_json='{}' WHERE key='shop_settings'").run()
+    expect(pos.getCustomer(customer.id)).toMatchObject({ price_tier: null, discount_pct: 5 })
+  })
   it('searches Cyrillic without case sensitivity in the list and cash desk', () => {
     const customer = create()
     for (const search of ['євген', 'КОВАЛЬ', '0501234567', '+380501234567', 'card123']) {
@@ -95,7 +114,8 @@ describe('customer card integrity', () => {
 
 describe('customer write permissions', () => {
   it('cashier cannot write financial terms or spoof an author', () => {
-    expect(customerWritePayload({ phone: '0501234567', bonus_balance: 500, discount_pct: 90, price_tier_id: 'fake', user_id: 'other' }, { id: 'cashier', role: 'cashier' })).toEqual({ phone: '0501234567', user_id: 'cashier' })
+    expect(() => customerWritePayload({ phone: '0501234567', bonus_balance: 500, discount_pct: 90, price_tier_id: 'fake', user_id: 'other' }, { id: 'cashier', role: 'cashier' })).toThrow('Зміни не збережено')
+    expect(customerWritePayload({ phone: '0501234567', user_id: 'other' }, { id: 'cashier', role: 'cashier' })).toEqual({ phone: '0501234567', user_id: 'cashier' })
     expect(isDesktopChannelAllowed('desktop:pos:delete-customer', 'cashier')).toBe(false)
   })
   it('manager can correct bonuses, owner can delete', () => {

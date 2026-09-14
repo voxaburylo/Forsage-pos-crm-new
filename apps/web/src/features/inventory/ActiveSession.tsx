@@ -271,6 +271,12 @@ export default function ActiveSession() {
   const writeFailuresRef = useRef(0)
   const writeQueueRef = useRef(new InventoryWriteQueue())
   const inputGuardRef = useRef(new InventoryInputGuard())
+  const [failedInputWritesBySession, setFailedInputWritesBySession] = useState<Record<string, number>>({})
+  const failedInputWrites = failedInputWritesBySession[id ?? ''] ?? 0
+  function refreshFailedInputs(sessionId: string) {
+    const count = inputGuardRef.current.failedSaveCount(sessionId)
+    setFailedInputWritesBySession(previous => ({ ...previous, [sessionId]: count }))
+  }
   const creatingProductRef = useRef(false)
   const flushingInputRef = useRef(false)
   const refreshAfterWritesRef = useRef(false)
@@ -615,7 +621,15 @@ export default function ActiveSession() {
     if (qty === null) { toast.error('Вкажіть кількість числом. Для нульового залишку введіть 0.'); return }
     try {
       await trackRowWrite(async function () {
-        await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        try {
+          await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+          inputGuardRef.current.markSaved(id, item.id, 'qty')
+        } catch (error) {
+          inputGuardRef.current.markSaveFailed(id, item.id, 'qty')
+          setHighlightedItemId(item.id)
+          setShowRecent(true)
+          throw error
+        } finally { refreshFailedInputs(id) }
       })
       load(true)
     } catch (error) {
@@ -629,6 +643,7 @@ export default function ActiveSession() {
       await trackRowWrite(async () => {
         await inventoryApi.removeItem(id, item.id, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
         inputGuardRef.current.removeItem(id, item.id)
+        refreshFailedInputs(id)
         setSelectedIds((prev) => {
           const next = new Set(prev)
           if (item.product?.id) next.delete(item.product.id)
@@ -651,7 +666,15 @@ export default function ActiveSession() {
     if (retail === null) { toast.error('Некоректна ціна'); return }
     try {
       await trackRowWrite(async () => {
-        await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        try {
+          await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+          inputGuardRef.current.markSaved(id, item.id, 'retail')
+        } catch (error) {
+          inputGuardRef.current.markSaveFailed(id, item.id, 'retail')
+          setHighlightedItemId(item.id)
+          setShowRecent(true)
+          throw error
+        } finally { refreshFailedInputs(id) }
         load(true)
       })
     } catch (error) {
@@ -668,7 +691,15 @@ export default function ActiveSession() {
     if (purchase === null) { toast.error('Некоректна закупівельна ціна'); return }
     try {
       await trackRowWrite(async () => {
-        await productApi.update(product.id, { purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        try {
+          await productApi.update(product.id, { purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+          inputGuardRef.current.markSaved(id, item.id, 'purchase')
+        } catch (error) {
+          inputGuardRef.current.markSaveFailed(id, item.id, 'purchase')
+          setHighlightedItemId(item.id)
+          setShowRecent(true)
+          throw error
+        } finally { refreshFailedInputs(id) }
         load(true)
       })
     } catch (error) {
@@ -1154,7 +1185,7 @@ export default function ActiveSession() {
       finally { flushingInputRef.current = false }
       await waitForPendingRowWrites()
       if (inventoryApi.pendingScans(id).length) throw new Error('Є незавершені сканування. Відновіть або перевірте чергу перед завершенням ревізії.')
-      if (inputGuardRef.current.hasErrors(id)) throw new Error('Виправте незаповнену або некоректну кількість чи ціну в рядках ревізії перед завершенням.')
+      if (inputGuardRef.current.hasErrors(id)) throw new Error('Є некоректна або незбережена кількість чи ціна. Повторіть збереження проблемних полів перед завершенням ревізії.')
       if (scanFailuresRef.current !== scanFailuresBefore) throw new Error('Не всі сканування збережено. Перевірте повідомлення та товари перед завершенням ревізії.')
       if (writeFailuresRef.current !== writeFailuresBefore) throw new Error('Не всі правки збережено. Виправте помилку перед завершенням ревізії.')
       const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
@@ -1581,6 +1612,9 @@ export default function ActiveSession() {
           }}
         />
 <Card padding="none">
+          {failedInputWrites > 0 && <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            Не збережено полів: {failedInputWrites}. Повторно введіть потрібну кількість або ціну в підсвіченому рядку. Ревізію не буде завершено, доки ці правки не збережуться.
+          </p>}
           <div className="flex items-center gap-2 px-4 py-3">
             {canEditPrice && isActive && countedRows.length > 0 && (
               <input

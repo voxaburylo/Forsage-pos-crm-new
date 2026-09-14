@@ -113,6 +113,14 @@ export class LocalPosBase {
   protected decorateCustomer(row: any): any {
     let tags: string[] = []
     try { tags = JSON.parse(row.tags_json ?? '[]') } catch { tags = [] }
+    let priceTier: any = null
+    if (row.price_tier_id) {
+      const settings = this.db.prepare("SELECT value_json FROM app_meta WHERE key = 'shop_settings'").get() as { value_json: string } | undefined
+      try {
+        const tiers = JSON.parse(settings?.value_json ?? '{}').price_tiers
+        if (Array.isArray(tiers)) priceTier = tiers.find((tier: any) => tier.id === row.price_tier_id) ?? null
+      } catch { /* No configured tier: use the personal discount. */ }
+    }
     return {
       id: row.id,
       phone: row.phone ?? '',
@@ -124,11 +132,12 @@ export class LocalPosBase {
       notes: row.notes ?? null,
       tags,
       price_tier_id: row.price_tier_id ?? null,
-      price_tier: null,
+      price_tier: priceTier,
       bonus_balance: Number(row.bonus_balance ?? 0),
       vip_level: row.vip_level ?? 'standard',
       risk_profile: row.risk_profile ?? 'low',
       discount_pct: Number(row.discount_pct ?? 0),
+      loyalty_mode: row.loyalty_mode === 'cashback' ? 'cashback' : 'discount',
       client_status: row.client_status ?? 'client',
       card_barcode: row.card_barcode ?? null,
       primary_vin: row.primary_vin ?? null,

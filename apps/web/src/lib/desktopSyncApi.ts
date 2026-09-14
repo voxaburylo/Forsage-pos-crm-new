@@ -1,3 +1,4 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { api } from '@/lib/api'
 import { selectDesktopPushBatch, validateDesktopPushResults } from './desktopSyncBatch'
 import {
@@ -107,7 +108,7 @@ export function pushDesktopOutbox(limit = 50): Promise<DesktopPushResult> {
 export async function getDesktopSyncStatus(): Promise<DesktopSyncStatus | null> {
   if (!isDesktopRuntime()) return null
   const desktop = desktopBridge()
-  if (!desktop?.sync.status) return null
+  if (!desktop?.sync.status || isDesktopAccessLocked()) return null
   try {
     return await desktop.sync.status()
   } catch {

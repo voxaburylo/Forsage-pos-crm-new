@@ -2,11 +2,12 @@ import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { RendererRecovery } from './rendererRecovery'
 import { BlackBox } from './diagnostics/blackBox'
+import { LOCAL_CRASH_OPTIONS } from './diagnostics/localCrashCapture'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, crashReporter, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
 import { createMirrorSigner } from './security/mirrorIdentity'
 import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDatabaseOpenResult } from './db/localDatabase'
@@ -52,6 +53,8 @@ import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './prin
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 import { customerWritePayload } from './security/customerWritePolicy'
 
+// Keep the existing encryption profile stable across package/product renames.
+app.setPath('userData', path.join(app.getPath('appData'), 'desktop'))
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
 const blackBox = gotSingleInstanceLock ? new BlackBox(path.join(
@@ -60,6 +63,16 @@ const blackBox = gotSingleInstanceLock ? new BlackBox(path.join(
 blackBox?.record('runtime', { pid: process.pid, version: app.getVersion(), electron: process.versions.electron,
   node: process.versions.node, platform: process.platform, arch: process.arch })
 try { blackBox?.record('build', { build: createHash('sha256').update(readFileSync(__filename)).digest('hex') }) } catch { /* optional identity */ }
+// Capture the native stack on the next renderer/GPU/utility crash, locally only.
+if (gotSingleInstanceLock) {
+  try {
+    const crashDir = path.join(process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Forsage') : app.getPath('userData'), 'logs', 'crashes')
+    mkdirSync(crashDir, { recursive: true })
+    app.setPath('crashDumps', crashDir)
+    crashReporter.start(LOCAL_CRASH_OPTIONS)
+    blackBox?.record('local-crash-capture-started')
+  } catch (error) { blackBox?.record('local-crash-capture-failed', error) }
+}
 let diagnosticCommandSequence = 0
 
 // Electron does not provide the usual browser text menu automatically.

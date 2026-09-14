@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from 'node:crypto'
+import { createPublicKey, generateKeyPairSync, sign } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -16,7 +16,15 @@ export function createMirrorSigner(root: string, crypto: { encrypt: (text: strin
           encrypted_private_key: crypto.encrypt(pem),
         }), { flag: 'wx', mode: 0o600 })
       }
-      privateKey = crypto.decrypt(JSON.parse(readFileSync(filename,'utf8')).encrypted_private_key)
+      try {
+        const identity = JSON.parse(readFileSync(filename, 'utf8'))
+        const pem = crypto.decrypt(identity.encrypted_private_key)
+        if (createPublicKey(pem).export({ type: 'spki', format: 'pem' }).toString() !== identity.public_key) throw new Error('Identity mismatch')
+        privateKey = pem
+      } catch {
+        // Never replace an unreadable identity: the server trusts this exact public key.
+        throw new Error('MIRROR_IDENTITY_UNAVAILABLE: не вдалося відкрити захищений ключ серверної копії. Локальні дані збережено; потрібне відновлення профілю ключа, не скидання бази.')
+      }
     }
     return sign(null, Buffer.from(text), privateKey).toString('base64')
   }

@@ -184,11 +184,16 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
           {canManageFinancials ? <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input label="Бонусів на рахунку, грн" type="number" min="0" step="0.01" value={form.bonus_balance} onChange={(e)=>set('bonus_balance',e.target.value)} />
-            <Input label="Персональний процент, %" type="number" min="0" max="100" step="0.1" value={form.discount_pct} onChange={(e)=>set('discount_pct',e.target.value)} />
+            <Input label={form.loyalty_mode === 'cashback' ? 'Накопичення, %' : 'Персональна знижка, %'} type="number" min="0" max="100" step="any" value={form.discount_pct} onChange={(e)=>set('discount_pct',e.target.value)} />
             <label className="text-sm font-medium text-gray-700">Статус<select value={form.client_status} onChange={(e)=>set('client_status',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="client">Звичайний клієнт</option><option value="sto">СТО</option></select></label>
             <label className="text-sm font-medium text-gray-700">Процент працює як<select value={form.loyalty_mode} onChange={(e)=>set('loyalty_mode',e.target.value as 'discount'|'cashback')} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="discount">Знижка в касі</option><option value="cashback">Накопичення на рахунок</option></select></label>
           </div>
-          {tiers.length > 0 && <label className="block text-sm font-medium text-gray-700">Ціновий рівень<select value={form.price_tier_id} onChange={(e)=>set('price_tier_id',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="">Стандартна ціна</option>{tiers.map((tier)=><option key={tier.id} value={tier.id}>{tier.name} (-{tier.discount_pct}%)</option>)}</select></label>}
+          {tiers.length > 0 && <label className="block text-sm font-medium text-gray-700">Ціновий рівень<select value={form.price_tier_id} onChange={(e)=>set('price_tier_id',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="">Персональна знижка з картки</option>{tiers.map((tier)=><option key={tier.id} value={tier.id}>{tier.name} (-{tier.discount_pct}%)</option>)}</select></label>}
+          <p className="text-sm text-gray-600">{form.loyalty_mode === 'cashback'
+            ? 'Ціна в чеку не зменшується: процент нараховується на рахунок.'
+            : form.price_tier_id && tiers.some(tier => tier.id === form.price_tier_id)
+              ? 'У касі діє знижка цінової групи. Щоб застосувати персональну — виберіть її у списку вище.'
+              : 'У касі діє персональна знижка з цієї картки.'}</p>
           <details className="text-sm"><summary className="cursor-pointer text-gray-600">Додаткові позначки клієнта</summary>
             <div className="mt-2 grid grid-cols-2 gap-3">
               <label>VIP рівень<select value={form.vip_level} onChange={(e) => set('vip_level', e.target.value)} className="mt-1 w-full rounded-lg border p-2"><option value="standard">Стандартний</option><option value="bronze">Бронзовий</option><option value="silver">Срібний</option><option value="gold">Золотий</option></select></label>

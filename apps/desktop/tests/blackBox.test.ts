@@ -60,6 +60,19 @@ describe('private bounded local black box', () => {
     expect(data).toMatchObject({ channel: 'desktop:auth:login', duration_ms: 42,
       error: { error_type: 'Error', frames: ['main.js:45:8'] } })
   })
+  it('classifies operational failures without recording customer or printer names', () => {
+    for (const [message, code] of [
+      ['Програму заблоковано. Введіть PIN або пароль', 'session-locked'],
+      ['MIRROR_IDENTITY_UNAVAILABLE', 'mirror-key-unavailable'],
+      ['Недостатньо товару «Private product». Доступно: 1, потрібно: 2', 'insufficient-stock'],
+      ['TSPL_PRINT_NOT_CONFIRMED: Private printer', 'print-outcome-unknown'],
+      ['PRINT_GUARD_TIMEOUT', 'print-timeout'],
+    ]) {
+      const details = safeDiagnosticDetails(new Error(message))
+      expect(details.error_code).toBe(code)
+      expect(JSON.stringify(details)).not.toContain('Private')
+    }
+  })
   it('keeps a stable error fingerprint for comparison', () => {
     expect(safeDiagnosticDetails('network failed')).toEqual(safeDiagnosticDetails('network failed'))
     expect(safeDiagnosticDetails('network failed')).not.toEqual(safeDiagnosticDetails('SQL failed'))

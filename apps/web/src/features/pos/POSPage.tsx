@@ -1,3 +1,5 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
+import { customerDiscountPct } from '@/features/customers/customerDiscount'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
@@ -129,7 +131,7 @@ function clearSavedCart() {
 }
 
 function posCustomerFromCustomer(c: Customer): POSCustomer {
-  const tierDiscountPct = (c as any).loyalty_mode === 'cashback' ? 0 : (c.price_tier?.discount_pct ?? c.discount_pct ?? 0)
+  const tierDiscountPct = customerDiscountPct(c)
   return {
     id: c.id,
     phone: c.phone,
@@ -391,6 +393,7 @@ export default function POSPage() {
 
     // Кількість активних замовлень для мобільного таба
     const loadReadyCount = () => {
+      if (isDesktopAccessLocked()) return
       const localReady = desktopBridge()?.orders?.listReady
       if (localReady) {
         localReady({ limit: 80 }).then((data) => setReadyOrdersCount(data.length)).catch(() => {})
@@ -405,7 +408,8 @@ export default function POSPage() {
     }
     loadReadyCount()
     const id = setInterval(loadReadyCount, 10000)
-    return () => clearInterval(id)
+    window.addEventListener('forsage:desktop-access-changed', loadReadyCount)
+    return () => { clearInterval(id); window.removeEventListener('forsage:desktop-access-changed', loadReadyCount) }
   }, [refreshSuspendedCount, setPriceRounding])
 
   // Авто-друк чека після продажу (вмикається в Налаштуваннях).

@@ -101,7 +101,7 @@ export default function CustomerFormPage() {
         email:         form.email.trim(),
         notes:         form.notes.trim(),
         tags:          form.tags,
-        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null, discount_pct: Number(form.discount_pct), client_status: form.client_status } : {}),
+        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null, discount_pct: Number(form.discount_pct.replace(',', '.')), client_status: form.client_status } : {}),
         card_barcode:  form.card_barcode.trim() || null,
         ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
@@ -185,7 +185,7 @@ export default function CustomerFormPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
-                <input disabled={!canManageFinancials} type="number" min="0" max="100" step="0.1"
+                <input disabled={!canManageFinancials} type="number" min="0" max="100" step="any"
                   value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
               </div>

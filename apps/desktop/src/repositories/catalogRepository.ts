@@ -951,16 +951,16 @@ export class LocalCatalogRepository {
       SELECT id, name, sort_order
       FROM categories
       WHERE tenant_id = ? AND deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM sync_outbox o
-          WHERE o.tenant_id = categories.tenant_id
+        AND id NOT IN (
+          SELECT o.aggregate_id FROM sync_outbox o
+          WHERE o.tenant_id = ?
             AND o.aggregate_type = 'category'
-            AND o.aggregate_id = categories.id
+            AND o.aggregate_id IS NOT NULL
             AND o.operation_type = 'category.deleted'
             AND o.status <> 'synced'
         )
       ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
-    `).all(tenantId) as unknown as LocalCatalogCategory[]
+    `).all(tenantId, tenantId) as unknown as LocalCatalogCategory[]
   }
 
   listBrands(tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand[] {
@@ -968,16 +968,16 @@ export class LocalCatalogRepository {
       SELECT id, name, country
       FROM brands
       WHERE tenant_id = ? AND deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM sync_outbox o
-          WHERE o.tenant_id = brands.tenant_id
+        AND id NOT IN (
+          SELECT o.aggregate_id FROM sync_outbox o
+          WHERE o.tenant_id = ?
             AND o.aggregate_type = 'brand'
-            AND o.aggregate_id = brands.id
+            AND o.aggregate_id IS NOT NULL
             AND o.operation_type = 'brand.deleted'
             AND o.status <> 'synced'
         )
       ORDER BY name COLLATE NOCASE ASC, id ASC
-    `).all(tenantId) as unknown as LocalCatalogBrand[]
+    `).all(tenantId, tenantId) as unknown as LocalCatalogBrand[]
   }
   createCategory(name: string, sortOrder = 0, tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory {
     const cleanName = name.trim()

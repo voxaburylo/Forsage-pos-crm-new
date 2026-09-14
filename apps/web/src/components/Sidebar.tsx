@@ -1,3 +1,4 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { navigationAllowed } from '@/lib/navigationAccess'
 import { useState, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
@@ -201,6 +202,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
 
 
     function fetchPicking() {
+      if (isDesktopAccessLocked()) return
       const local = desktopBridge()?.orders?.list
       if (local) {
         // Той самий фільтр, що й у списку збірки — інакше лічильник у меню
@@ -223,7 +225,8 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     }
     fetchPicking()
     const t = setInterval(fetchPicking, 120_000)
-    return () => clearInterval(t)
+    window.addEventListener('forsage:desktop-access-changed', fetchPicking)
+    return () => { clearInterval(t); window.removeEventListener('forsage:desktop-access-changed', fetchPicking) }
   }, [role, location.pathname, location.search])
 
   const badgeMap: Record<string, number> = {

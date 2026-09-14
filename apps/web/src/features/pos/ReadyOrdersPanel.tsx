@@ -1,3 +1,4 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Package, X, ChevronDown, Loader2, User } from 'lucide-react'
@@ -150,6 +151,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [searchParams, setSearchParams])
 
   const load = useCallback(async () => {
+    if (isDesktopAccessLocked()) return
     const generation = ++loadGeneration.current
     setLoading(true)
     try {
@@ -173,10 +175,12 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   useEffect(() => {
     load()
     const id = setInterval(load, 10_000)
+    window.addEventListener('forsage:desktop-access-changed', load)
     window.addEventListener('forsage:desktop-sync-completed', load)
     return () => {
       clearInterval(id)
       loadGeneration.current++
+      window.removeEventListener('forsage:desktop-access-changed', load)
       window.removeEventListener('forsage:desktop-sync-completed', load)
     }
   }, [load])

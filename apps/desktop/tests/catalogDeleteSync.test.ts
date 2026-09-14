@@ -28,6 +28,24 @@ describe('catalog delete synchronization', () => {
     }
   })
 
+  it('excludes pending reference deletions in one tenant without hiding another tenant', () => {
+    for (const [table, type, create, list, remove] of [
+      ['categories', 'category', (name: string) => catalog.createCategory(name), () => catalog.listCategories(), (id: string) => catalog.deleteCategory(id)],
+      ['brands', 'brand', (name: string) => catalog.createBrand(name), () => catalog.listBrands(), (id: string) => catalog.deleteBrand(id)],
+    ] as const) {
+      const kept = create('Keep')
+      const removed = create('Remove')
+      remove(removed.id)
+      // Simulate a stale active reference while its local deletion is waiting.
+      db.prepare('UPDATE ' + table + ' SET deleted_at=NULL WHERE id=?').run(removed.id)
+      db.prepare("INSERT INTO sync_outbox(operation_id,tenant_id,device_id,aggregate_type,aggregate_id,operation_type,payload_json,status,created_at) VALUES(?,?,?, ?,?,?, '{}','pending','2026-09-14')")
+        .run(randomUUID(), 'other-tenant', db.deviceId, type, kept.id, type + '.deleted')
+      expect(list().map(row => row.id)).toContain(kept.id)
+      expect(list().map(row => row.id)).not.toContain(removed.id)
+      db.prepare("UPDATE sync_outbox SET status='synced' WHERE aggregate_id=?").run(removed.id)
+      expect(list().map(row => row.id)).toContain(removed.id)
+    }
+  })
   function remoteProduct(id: string, updatedAt: string) {
     return {
       id,

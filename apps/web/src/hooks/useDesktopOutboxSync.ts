@@ -1,3 +1,4 @@
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { syncDesktopNow } from '@/lib/desktopSyncApi'
@@ -28,7 +29,7 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
   const [lastError, setLastError] = useState<string | null>(null)
   const retryAttemptRef = useRef(0)
   const syncNow = useCallback(async () => {
-    if (!serverOnline || !userId || offlineMode || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }
+    if (isDesktopAccessLocked() || !serverOnline || !userId || offlineMode || !isDesktopRuntime()) return { pushed: 0, failed: 0, pending: 0 }
     setSyncing(true)
     try {
       const result = await syncDesktopNow()
@@ -80,6 +81,7 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
       }
     }
 
+    window.addEventListener('forsage:desktop-access-changed', requestImmediateSync)
     window.addEventListener('forsage:desktop-sync-requested', requestImmediateSync)
     window.addEventListener('online', requestImmediateSync)
     document.addEventListener('visibilitychange', handleVisibility)
@@ -88,6 +90,7 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
     return () => {
       cancelled = true
       if (timer !== null) window.clearTimeout(timer)
+      window.removeEventListener('forsage:desktop-access-changed', requestImmediateSync)
       window.removeEventListener('forsage:desktop-sync-requested', requestImmediateSync)
       window.removeEventListener('online', requestImmediateSync)
       document.removeEventListener('visibilitychange', handleVisibility)

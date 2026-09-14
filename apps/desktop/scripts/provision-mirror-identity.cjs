@@ -7,6 +7,9 @@ const path = require('node:path')
 const { createMirrorSigner } = require('../dist/security/mirrorIdentity')
 const root = process.argv[2]
 if (!root || !path.isAbsolute(root)) throw Error('Required: absolute Forsage data root')
+// Match the packaged application's existing encryption profile before ready.
+// app.setName() after ready does not move the Chromium key store.
+app.setPath('userData', path.join(app.getPath('appData'), 'desktop'))
 app.whenReady().then(() => {
   if (!safeStorage.isEncryptionAvailable()) throw Error('Windows protected storage unavailable')
   const db = new DatabaseSync(path.join(root,'data','forsage.db'), {readOnly:true})

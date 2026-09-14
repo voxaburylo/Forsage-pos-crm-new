@@ -1,3 +1,4 @@
+import { setDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { desktopBridge } from '@/lib/desktopBridge'
@@ -7,6 +8,7 @@ import LoginPage from '@/pages/LoginPage'
 export function DesktopAccessGate() {
   const [locked, setLocked] = useState(false)
   const location = useLocation()
+  const updateLocked = (value: boolean) => { setDesktopAccessLocked(value); setLocked(value) }
   useEffect(() => {
     const workspace = document.getElementById('desktop-workspace')
     if (locked && location.pathname !== '/login') {
@@ -19,7 +21,7 @@ export function DesktopAccessGate() {
     const status = desktopBridge()?.auth?.rememberedStatus
     if (!status) return
     let active = true
-    const check = () => { void status().then(s => { if (active) setLocked(s.locked) }).catch(() => { if (active) setLocked(true) }) }
+    const check = () => { void status().then(s => { if (active) updateLocked(s.locked) }).catch(() => { if (active) updateLocked(true) }) }
     check()
     const timer = window.setInterval(check, 5000)
     window.addEventListener('focus',check)
@@ -27,6 +29,6 @@ export function DesktopAccessGate() {
   }, [])
   if (!locked || location.pathname === '/login') return null
   return <div className="fixed inset-0 z-[1000] overflow-auto bg-gray-100" role="dialog" aria-modal="true" aria-label="Програму заблоковано">
-    <LoginPage onUnlocked={() => setLocked(false)} />
+    <LoginPage onUnlocked={() => updateLocked(false)} />
   </div>
 }
