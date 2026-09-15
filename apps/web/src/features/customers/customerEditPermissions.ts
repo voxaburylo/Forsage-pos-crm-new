@@ -8,6 +8,10 @@ export function canManageCustomerDiscount(role: string | null | undefined, loyal
   return canManageCustomerFinancials(role) || (role === 'cashier' && loyaltyMode !== 'cashback')
 }
 
+export function canManageCustomerStatus(role: string | null | undefined): boolean {
+  return canManageCustomerFinancials(role) || role === 'cashier'
+}
+
 export function buildRoleSafeCustomerUpdate<
   TBasic extends Record<string, unknown>,
   TPrivileged extends Record<string, unknown>,

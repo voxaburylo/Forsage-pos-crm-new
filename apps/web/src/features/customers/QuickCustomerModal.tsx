@@ -9,7 +9,7 @@ import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import { TAGS } from '@/types/customer'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { canManageCustomerDiscount, canManageCustomerFinancials } from './customerEditPermissions'
+import { canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
 
 interface Props {
   open: boolean
@@ -48,6 +48,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
   const canManageFinancials = canManageCustomerFinancials(role)
+  const canManageStatus = canManageCustomerStatus(role)
   const canManageDiscount = canManageCustomerDiscount(role)
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
@@ -156,8 +157,9 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
         email: email.trim() || undefined,
         notes: notes.trim() || undefined,
         tags,
+        ...(canManageStatus ? { client_status: clientStatus } : {}),
         ...(canManageDiscount ? { discount_pct: Number(discountPct.replace(',', '.')) } : {}),
-        ...(canManageFinancials ? { price_tier_id: priceTierId || null, client_status: clientStatus } : {}),
+        ...(canManageFinancials ? { price_tier_id: priceTierId || null } : {}),
         card_barcode: cardBarcode.trim() || null,
         ...(hasVehicle ? {
           vehicle: {
@@ -371,7 +373,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">Статус клієнта</label>
-              <select disabled={!canManageFinancials} value={clientStatus} onChange={(e) => setClientStatus(e.target.value)}
+              <select disabled={!canManageStatus} value={clientStatus} onChange={(e) => setClientStatus(e.target.value)}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
                 <option value="client">Звичайний клієнт</option>
                 <option value="sto">СТО</option>

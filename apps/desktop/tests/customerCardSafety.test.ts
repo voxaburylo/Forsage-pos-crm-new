@@ -41,6 +41,18 @@ describe('customer card integrity', () => {
     expect(db.prepare('SELECT count(*) n FROM sales').get()).toMatchObject({ n: 0 })
     expect(db.prepare('SELECT count(*) n FROM bonus_transactions').get()).toMatchObject({ n: 0 })
   })
+  it('cashier can create and change customer status without changing balances', () => {
+    const session = { id: 'cashier', role: 'cashier' }
+    const customer = pos.saveCustomer(customerWritePayload({ phone: '0501234567', client_status: 'sto' }, session)).data
+    expect(customer.client_status).toBe('sto')
+    for (const status of ['client', 'sto']) {
+      pos.saveCustomer(customerWritePayload({ client_status: status }, session, pos.getCustomer(customer.id)), customer.id)
+      expect(pos.getCustomer(customer.id)).toMatchObject({ client_status: status, bonus_balance: 0, debt_balance: 0, deposit_balance: 0 })
+    }
+    expect(() => pos.saveCustomer(customerWritePayload({ client_status: 'owner' }, session), customer.id)).toThrow('статус')
+    expect(pos.getCustomer(customer.id).client_status).toBe('sto')
+    expect(() => customerWritePayload({ client_status: 'sto' }, { id: 'worker', role: 'tire_worker' })).toThrow('Немає прав')
+  })
   it('returns the configured price group and falls back when that group was removed', () => {
     const customer = create()
     db.prepare("INSERT OR REPLACE INTO app_meta(key,value_json,updated_at) VALUES('shop_settings',?,'2026-09-14')").run(JSON.stringify({price_tiers:[{id:'trade',name:'Trade',discount_pct:10}]}))
@@ -136,7 +148,7 @@ describe('customer write permissions', () => {
     expect(customerWritePayload({ discount_pct: 5, user_id: 'fake' }, {id:'cashier',role:'cashier'}, {loyalty_mode:'discount'})).toEqual({ discount_pct:5,user_id:'cashier' })
     expect(customerWritePayload({ discount_pct: 5 }, {id:'cashier',role:'cashier'})).toEqual({ discount_pct:5,user_id:'cashier' })
     expect(() => customerWritePayload({ discount_pct: 5 }, {id:'cashier',role:'cashier'}, {loyalty_mode:'cashback'})).toThrow('накопичень')
-    for (const field of ['bonus_balance','price_tier_id','client_status','loyalty_mode']) {
+    for (const field of ['bonus_balance','price_tier_id','loyalty_mode']) {
       expect(() => customerWritePayload({ [field]: 1 }, {id:'cashier',role:'cashier'})).toThrow('Зміни не збережено')
     }
   })

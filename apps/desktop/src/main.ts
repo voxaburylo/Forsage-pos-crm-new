@@ -45,6 +45,7 @@ import {
   type CashalotConfigUpdate,
 } from './fiscal/cashalotService'
 import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
+import { canUseReceiptGdiFallback, printReceiptViaGdi } from './print/receiptGdiPrinter'
 import { enqueuePrinterJob } from './print/printerJobQueue'
 import { assertPrinterRole, type PrinterRole } from './print/printerRole'
 import { withPrintTimeout } from './print/printTimeout'
@@ -881,7 +882,7 @@ async function executePrintHtmlDocument(html: string, options: DesktopPrintOptio
         })
       })
 
-    // Залипле завдання цього ж принтера з'їло б друк мовчки — чистимо до відправки.
+    // Перевіряємо чергу перед відправкою, не видаляючи наявних завдань.
     if (deviceName) await preflightPrinter(deviceName)
     const submittedAfter = new Date(Date.now() - 2_000).toISOString()
 
@@ -902,6 +903,12 @@ async function executePrintHtmlDocument(html: string, options: DesktopPrintOptio
         if (error instanceof Error && isSpoolerGuardError(error)) break
         // «Invalid printer settings» / подібне — пробуємо наступний, простіший варіант
       }
+    }
+    if (canUseReceiptGdiFallback(options.printerRole, lastError) && options.silent === true) {
+      blackBox?.record('receipt-print-driver-fallback', { reason: 'invalid-printer-settings' })
+      await printReceiptViaGdi(printWindow, deviceName, documentName)
+      await postflightPrinter(deviceName, documentName, submittedAfter)
+      return { success: true }
     }
     throw lastError instanceof Error ? lastError : new Error('PRINT_FAILED')
   } finally {

@@ -9,7 +9,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
-import { canManageCustomerDiscount, canManageCustomerFinancials } from './customerEditPermissions'
+import { canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
 
 interface FormData {
   phone:         string
@@ -39,6 +39,7 @@ export default function CustomerFormPage() {
   const isEdit   = !!id && id !== 'new'
   const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
   const canManageFinancials = canManageCustomerFinancials(role)
+  const canManageStatus = canManageCustomerStatus(role)
   const [loyaltyMode, setLoyaltyMode] = useState('discount')
   const canManageDiscount = canManageCustomerDiscount(role, loyaltyMode)
   const [version, setVersion] = useState<string | undefined>()
@@ -104,8 +105,9 @@ export default function CustomerFormPage() {
         email:         form.email.trim(),
         notes:         form.notes.trim(),
         tags:          form.tags,
+        ...(canManageStatus ? { client_status: form.client_status } : {}),
         ...(canManageDiscount ? { discount_pct: Number(form.discount_pct.replace(',', '.')) } : {}),
-        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null, client_status: form.client_status } : {}),
+        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null } : {}),
         card_barcode:  form.card_barcode.trim() || null,
         ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
@@ -195,7 +197,7 @@ export default function CustomerFormPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
-                <select disabled={!canManageFinancials} value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
+                <select disabled={!canManageStatus} value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
                   <option value="client">Звичайний клієнт</option>
                   <option value="sto">СТО</option>

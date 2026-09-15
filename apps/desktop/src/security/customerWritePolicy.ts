@@ -5,7 +5,10 @@ export function customerWritePayload(input: Record<string, unknown>, session: { 
     if (input.discount_pct !== undefined && (session.role !== 'cashier' || current?.loyalty_mode === 'cashback')) {
       throw new Error('Налаштування накопичень клієнта змінює менеджер або адміністратор. Зміни не збережено.')
     }
-    for (const key of ['bonus_balance', 'expected_bonus_balance', 'bonus_description', 'price_tier_id', 'client_status', 'loyalty_mode', 'vip_level', 'risk_profile']) {
+    if (input.client_status !== undefined && session.role !== 'cashier') {
+      throw new Error('Немає прав на зміну статусу клієнта. Зміни не збережено.')
+    }
+    for (const key of ['bonus_balance', 'expected_bonus_balance', 'bonus_description', 'price_tier_id', 'loyalty_mode', 'vip_level', 'risk_profile']) {
       if (input[key] !== undefined) throw new Error('Бонуси та інші фінансові умови клієнта може змінювати лише власник, адміністратор або менеджер. Зміни не збережено.')
     }
   }

@@ -5,6 +5,9 @@ export function customerPhoneKey(value: unknown): string {
 
 export function validateCustomerChanges(input: Record<string, unknown>): void {
   if (input.phone !== undefined && !customerPhoneKey(input.phone)) throw new Error('Вкажіть номер телефону')
+  if (input.client_status !== undefined && !['client', 'sto'].includes(String(input.client_status))) {
+    throw new Error('Оберіть статус клієнта зі списку')
+  }
   if (input.discount_pct !== undefined && (!Number.isFinite(Number(input.discount_pct)) || Number(input.discount_pct) < 0 || Number(input.discount_pct) > 100)) {
     throw new Error('Процент клієнта має бути від 0 до 100')
   }

@@ -10,7 +10,7 @@ import { pricingApi, type PriceTier } from '@/features/admin/pricingApi'
 import { customerApi } from './customerApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
 import { useAuthStore } from '@/stores/authStore'
-import { buildRoleSafeCustomerUpdate, canManageCustomerDiscount, canManageCustomerFinancials } from './customerEditPermissions'
+import { buildRoleSafeCustomerUpdate, canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
 
 interface Props {
   customer: Customer | null
@@ -24,6 +24,7 @@ const EMPTY_CAR: VehicleDraft = { brand: '', model: '', year: '', vin: '', notes
 export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Props) {
   const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
   const canManageFinancials = canManageCustomerFinancials(role)
+  const canManageStatus = canManageCustomerStatus(role)
   const [current, setCurrent] = useState<Customer | null>(null)
   const [form, setForm] = useState({ phone:'', full_name:'', email:'', birth_date:'', card_barcode:'', notes:'', discount_pct:'0', bonus_balance:'0', client_status:'client', loyalty_mode:'discount' as 'discount'|'cashback', price_tier_id:'', vip_level:'standard', risk_profile:'low' })
   const canManageDiscount = canManageCustomerDiscount(role, form.loyalty_mode)
@@ -119,6 +120,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
       const bonusChanged = canManageFinancials && bonus !== null && bonus !== current.bonus_balance
       const { data } = await customerApi.update(current.id, {
         ...update,
+        ...(canManageStatus ? { client_status: form.client_status } : {}),
         ...(canManageDiscount ? { discount_pct: discount } : {}),
         expected_updated_at: current.updated_at,
         ...(bonusChanged ? { bonus_balance: bonus!, expected_bonus_balance: current.bonus_balance, bonus_description: 'Ручне коригування у картці клієнта' } : {}),
@@ -183,11 +185,13 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
         </section>
         <section className="space-y-3 rounded-xl border border-yellow-100 bg-yellow-50/50 p-4">
           <h3 className="font-semibold text-gray-900">Бонуси, знижки та ціни</h3>
+          {canManageStatus && (
+            <label className="text-sm font-medium text-gray-700">Статус<select value={form.client_status} onChange={(e)=>set('client_status',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="client">Звичайний клієнт</option><option value="sto">СТО</option></select></label>
+          )}
           {canManageFinancials ? <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input label="Бонусів на рахунку, грн" type="number" min="0" step="0.01" value={form.bonus_balance} onChange={(e)=>set('bonus_balance',e.target.value)} />
             <Input label={form.loyalty_mode === 'cashback' ? 'Накопичення, %' : 'Персональна знижка, %'} type="number" min="0" max="100" step="any" value={form.discount_pct} onChange={(e)=>set('discount_pct',e.target.value)} />
-            <label className="text-sm font-medium text-gray-700">Статус<select value={form.client_status} onChange={(e)=>set('client_status',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="client">Звичайний клієнт</option><option value="sto">СТО</option></select></label>
             <label className="text-sm font-medium text-gray-700">Процент працює як<select value={form.loyalty_mode} onChange={(e)=>set('loyalty_mode',e.target.value as 'discount'|'cashback')} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="discount">Знижка в касі</option><option value="cashback">Накопичення на рахунок</option></select></label>
           </div>
           {tiers.length > 0 && <label className="block text-sm font-medium text-gray-700">Ціновий рівень<select value={form.price_tier_id} onChange={(e)=>set('price_tier_id',e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"><option value="">Персональна знижка з картки</option>{tiers.map((tier)=><option key={tier.id} value={tier.id}>{tier.name} (-{tier.discount_pct}%)</option>)}</select></label>}
@@ -206,7 +210,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
             <div className="rounded-lg border border-yellow-200 bg-white px-3 py-2.5 text-sm text-gray-600">
               {canManageDiscount ? <Input label="Персональна знижка, %" type="number" min="0" max="100" step="any" value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)} /> : <p>Цей клієнт накопичує бонуси. Процент накопичень змінює менеджер або адміністратор.</p>}
               {form.price_tier_id && <p className="mt-2">Знижка цінової групи має пріоритет над персональною. Цінову групу змінює менеджер.</p>}
-              <p className="mt-2">Бонусний баланс, статус і ціновий рівень змінює менеджер або адміністратор.</p>
+              <p className="mt-2">Бонусний баланс і ціновий рівень змінює менеджер або адміністратор.</p>
             </div>
           )}
         </section>
