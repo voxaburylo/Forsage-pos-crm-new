@@ -9,7 +9,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
-import { canManageCustomerFinancials } from './customerEditPermissions'
+import { canManageCustomerDiscount, canManageCustomerFinancials } from './customerEditPermissions'
 
 interface FormData {
   phone:         string
@@ -39,6 +39,8 @@ export default function CustomerFormPage() {
   const isEdit   = !!id && id !== 'new'
   const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
   const canManageFinancials = canManageCustomerFinancials(role)
+  const [loyaltyMode, setLoyaltyMode] = useState('discount')
+  const canManageDiscount = canManageCustomerDiscount(role, loyaltyMode)
   const [version, setVersion] = useState<string | undefined>()
 
   const [form, setForm]     = useState<FormData>(EMPTY)
@@ -56,6 +58,7 @@ export default function CustomerFormPage() {
     customerApi.get(id).then(({ data }) => {
       const d = data as typeof data & { price_tier_id?: string | null }
       setVersion(d.updated_at)
+      setLoyaltyMode(d.loyalty_mode ?? 'discount')
       setForm({
         phone:         d.phone,
         full_name:     d.full_name ?? '',
@@ -101,7 +104,8 @@ export default function CustomerFormPage() {
         email:         form.email.trim(),
         notes:         form.notes.trim(),
         tags:          form.tags,
-        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null, discount_pct: Number(form.discount_pct.replace(',', '.')), client_status: form.client_status } : {}),
+        ...(canManageDiscount ? { discount_pct: Number(form.discount_pct.replace(',', '.')) } : {}),
+        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null, client_status: form.client_status } : {}),
         card_barcode:  form.card_barcode.trim() || null,
         ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
@@ -185,7 +189,7 @@ export default function CustomerFormPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
-                <input disabled={!canManageFinancials} type="number" min="0" max="100" step="any"
+                <input disabled={!canManageDiscount} type="number" min="0" max="100" step="any"
                   value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
               </div>

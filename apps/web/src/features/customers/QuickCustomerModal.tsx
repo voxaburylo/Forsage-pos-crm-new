@@ -9,7 +9,7 @@ import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import { TAGS } from '@/types/customer'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { canManageCustomerFinancials } from './customerEditPermissions'
+import { canManageCustomerDiscount, canManageCustomerFinancials } from './customerEditPermissions'
 
 interface Props {
   open: boolean
@@ -48,6 +48,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
   const canManageFinancials = canManageCustomerFinancials(role)
+  const canManageDiscount = canManageCustomerDiscount(role)
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
   const [results, setResults]       = useState<Customer[]>([])
@@ -155,7 +156,8 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
         email: email.trim() || undefined,
         notes: notes.trim() || undefined,
         tags,
-        ...(canManageFinancials ? { price_tier_id: priceTierId || null, discount_pct: Number(discountPct) || 0, client_status: clientStatus } : {}),
+        ...(canManageDiscount ? { discount_pct: Number(discountPct.replace(',', '.')) } : {}),
+        ...(canManageFinancials ? { price_tier_id: priceTierId || null, client_status: clientStatus } : {}),
         card_barcode: cardBarcode.trim() || null,
         ...(hasVehicle ? {
           vehicle: {
@@ -375,7 +377,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
                 <option value="sto">СТО</option>
               </select>
             </div>
-            <Input disabled={!canManageFinancials} label="Персональна знижка (%)" type="number" min="0" max="100" step="0.1"
+            <Input disabled={!canManageDiscount} label="Персональна знижка (%)" type="number" min="0" max="100" step="any"
               value={discountPct} onChange={(e) => setDiscountPct(e.target.value)} />
             {canManageFinancials && tiers.length > 0 && (
               <div className="sm:col-span-2">

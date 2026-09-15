@@ -10,7 +10,7 @@ import { pricingApi, type PriceTier } from '@/features/admin/pricingApi'
 import { customerApi } from './customerApi'
 import { customerVehiclesApi } from './customerVehiclesApi'
 import { useAuthStore } from '@/stores/authStore'
-import { buildRoleSafeCustomerUpdate, canManageCustomerFinancials } from './customerEditPermissions'
+import { buildRoleSafeCustomerUpdate, canManageCustomerDiscount, canManageCustomerFinancials } from './customerEditPermissions'
 
 interface Props {
   customer: Customer | null
@@ -26,6 +26,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
   const canManageFinancials = canManageCustomerFinancials(role)
   const [current, setCurrent] = useState<Customer | null>(null)
   const [form, setForm] = useState({ phone:'', full_name:'', email:'', birth_date:'', card_barcode:'', notes:'', discount_pct:'0', bonus_balance:'0', client_status:'client', loyalty_mode:'discount' as 'discount'|'cashback', price_tier_id:'', vip_level:'standard', risk_profile:'low' })
+  const canManageDiscount = canManageCustomerDiscount(role, form.loyalty_mode)
   const [tiers, setTiers] = useState<PriceTier[]>([])
   const [cars, setCars] = useState<CustomerVehicle[]>([])
   const [car, setCar] = useState<VehicleDraft>(EMPTY_CAR)
@@ -103,7 +104,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     const bonus = parseCustomerMoney(form.bonus_balance)
     const discount = Number(form.discount_pct.replace(',', '.'))
     if (canManageFinancials && bonus === null) { toast.error('Некоректний баланс бонусів'); return }
-    if (canManageFinancials && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
+    if (canManageDiscount && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
     busy.current = true
     setSaving(true)
     try {
@@ -118,6 +119,7 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
       const bonusChanged = canManageFinancials && bonus !== null && bonus !== current.bonus_balance
       const { data } = await customerApi.update(current.id, {
         ...update,
+        ...(canManageDiscount ? { discount_pct: discount } : {}),
         expected_updated_at: current.updated_at,
         ...(bonusChanged ? { bonus_balance: bonus!, expected_bonus_balance: current.bonus_balance, bonus_description: 'Ручне коригування у картці клієнта' } : {}),
       })
@@ -202,7 +204,9 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
           </details>
           </> : (
             <div className="rounded-lg border border-yellow-200 bg-white px-3 py-2.5 text-sm text-gray-600">
-              Касир може змінювати контакти, штрихкод картки, дату народження та автомобілі. Бонуси, знижки, статус і ціновий рівень змінює менеджер або адміністратор.
+              {canManageDiscount ? <Input label="Персональна знижка, %" type="number" min="0" max="100" step="any" value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)} /> : <p>Цей клієнт накопичує бонуси. Процент накопичень змінює менеджер або адміністратор.</p>}
+              {form.price_tier_id && <p className="mt-2">Знижка цінової групи має пріоритет над персональною. Цінову групу змінює менеджер.</p>}
+              <p className="mt-2">Бонусний баланс, статус і ціновий рівень змінює менеджер або адміністратор.</p>
             </div>
           )}
         </section>

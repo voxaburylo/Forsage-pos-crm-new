@@ -27,6 +27,20 @@ describe('customer card integrity', () => {
     expect(pos.getCustomer(first.id)).toMatchObject({ discount_pct: 5, loyalty_mode: 'discount' })
     expect(db.prepare('SELECT count(*) n FROM sales').get()).toMatchObject({ n: 0 })
   })
+  it('persists a cashier discount through the write policy and rejects invalid percentages', () => {
+    const customer = create()
+    const session = { id: 'cashier', role: 'cashier' }
+    const saved = pos.saveCustomer(customerWritePayload({ discount_pct: 7.5, expected_updated_at: customer.updated_at }, session, pos.getCustomer(customer.id)), customer.id).data
+    expect(saved.discount_pct).toBe(7.5)
+    expect(pos.getCustomer(customer.id).discount_pct).toBe(7.5)
+    expect(pos.findCustomerByBarcode('CARD123')?.discount_pct).toBe(7.5)
+    for (const value of [-1, 101]) {
+      expect(() => pos.saveCustomer(customerWritePayload({ discount_pct: value }, session, pos.getCustomer(customer.id)), customer.id)).toThrow()
+      expect(pos.getCustomer(customer.id).discount_pct).toBe(7.5)
+    }
+    expect(db.prepare('SELECT count(*) n FROM sales').get()).toMatchObject({ n: 0 })
+    expect(db.prepare('SELECT count(*) n FROM bonus_transactions').get()).toMatchObject({ n: 0 })
+  })
   it('returns the configured price group and falls back when that group was removed', () => {
     const customer = create()
     db.prepare("INSERT OR REPLACE INTO app_meta(key,value_json,updated_at) VALUES('shop_settings',?,'2026-09-14')").run(JSON.stringify({price_tiers:[{id:'trade',name:'Trade',discount_pct:10}]}))
@@ -117,6 +131,14 @@ describe('customer write permissions', () => {
     expect(() => customerWritePayload({ phone: '0501234567', bonus_balance: 500, discount_pct: 90, price_tier_id: 'fake', user_id: 'other' }, { id: 'cashier', role: 'cashier' })).toThrow('Зміни не збережено')
     expect(customerWritePayload({ phone: '0501234567', user_id: 'other' }, { id: 'cashier', role: 'cashier' })).toEqual({ phone: '0501234567', user_id: 'cashier' })
     expect(isDesktopChannelAllowed('desktop:pos:delete-customer', 'cashier')).toBe(false)
+  })
+  it('cashier saves discounts but cannot change cashback rates or other financial fields', () => {
+    expect(customerWritePayload({ discount_pct: 5, user_id: 'fake' }, {id:'cashier',role:'cashier'}, {loyalty_mode:'discount'})).toEqual({ discount_pct:5,user_id:'cashier' })
+    expect(customerWritePayload({ discount_pct: 5 }, {id:'cashier',role:'cashier'})).toEqual({ discount_pct:5,user_id:'cashier' })
+    expect(() => customerWritePayload({ discount_pct: 5 }, {id:'cashier',role:'cashier'}, {loyalty_mode:'cashback'})).toThrow('накопичень')
+    for (const field of ['bonus_balance','price_tier_id','client_status','loyalty_mode']) {
+      expect(() => customerWritePayload({ [field]: 1 }, {id:'cashier',role:'cashier'})).toThrow('Зміни не збережено')
+    }
   })
   it('manager can correct bonuses, owner can delete', () => {
     expect(customerWritePayload({ bonus_balance: 500 }, { id: 'manager', role: 'manager' })).toEqual({ bonus_balance: 500, user_id: 'manager' })

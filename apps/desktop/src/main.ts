@@ -1483,9 +1483,10 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:get-customer-sales', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getCustomerSales(id, tenantId),
   )
-  handleDesktopIpc('desktop:pos:save-customer', (_event, input, id?: string) =>
-    requireLocalPos().saveCustomer(customerWritePayload(input, requireDesktopSession()), id),
-  )
+  handleDesktopIpc('desktop:pos:save-customer', (_event, input, id?: string) => {
+    const pos = requireLocalPos()
+    return pos.saveCustomer(customerWritePayload(input, requireDesktopSession(), id ? pos.getCustomer(id) : undefined), id)
+  })
   handleDesktopIpc('desktop:pos:delete-customer', (_event, id: string, tenantId?: string) =>
     requireLocalPos().deleteCustomer(id, tenantId),
   )

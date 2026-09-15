@@ -4,6 +4,10 @@ export function canManageCustomerFinancials(role: string | null | undefined): bo
   return CUSTOMER_FINANCIAL_ROLES.some((allowedRole) => allowedRole === role)
 }
 
+export function canManageCustomerDiscount(role: string | null | undefined, loyaltyMode = 'discount'): boolean {
+  return canManageCustomerFinancials(role) || (role === 'cashier' && loyaltyMode !== 'cashback')
+}
+
 export function buildRoleSafeCustomerUpdate<
   TBasic extends Record<string, unknown>,
   TPrivileged extends Record<string, unknown>,
