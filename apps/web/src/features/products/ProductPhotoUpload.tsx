@@ -1,40 +1,90 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
-import { Upload, X, Star, ImagePlus, Clipboard, Camera } from 'lucide-react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react'
+import { Upload, X, ImagePlus, Clipboard, Camera } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { useScopedAction } from '@/hooks/useScopedAction'
 
 interface Props {
-  productId?: string          // undefined = новий товар (фото збережуться після create)
+  productId?: string
   currentPhotoUrl?: string | null
-  onPhotoUrl: (url: string | null) => void  // повідомляє батьківський компонент про головне фото
+  onPhotoUrl: (url: string | null) => void | Promise<void>
+  onBusyChange?: (pending: boolean) => void
+  disabled?: boolean
+  successMessage?: string
 }
 
-const BUCKET        = 'product-photos'
-const MAX_PX        = 1200   // максимальна сторона після стиснення
-const JPEG_QUALITY  = 0.82   // 82% — хороший баланс якість/розмір
+const BUCKET = 'product-photos'
+const MAX_PX = 1200
+const JPEG_QUALITY = 0.82
 
-// ─── Стиснення через Canvas API (без залежностей) ────────────────────────────
-export async function compressToJpeg(source: File | Blob): Promise<Blob> {
+export async function compressToJpeg(source: File | Blob, signal?: AbortSignal): Promise<Blob> {
+  signal?.throwIfAborted()
+  if (source.type && !source.type.startsWith('image/')) throw new Error('Оберіть зображення: JPG, PNG або WebP')
+  if (!source.size || source.size > 20 * 1024 * 1024) throw new Error('Фото має бути не порожнім і не більше 20 МБ')
   return new Promise((resolve, reject) => {
     const img = new Image()
     const url = URL.createObjectURL(source)
-    img.onload = () => {
+    let settled = false
+    const finish = (blob?: Blob, error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       URL.revokeObjectURL(url)
-      const scale = Math.min(1, MAX_PX / Math.max(img.width, img.height))
-      const w = Math.round(img.width  * scale)
-      const h = Math.round(img.height * scale)
-      const canvas = document.createElement('canvas')
-      canvas.width = w; canvas.height = h
-      const ctx = canvas.getContext('2d')
-      if (!ctx) { reject(new Error('canvas ctx')); return }
-      ctx.drawImage(img, 0, 0, w, h)
-      canvas.toBlob(
-        (blob) => blob ? resolve(blob) : reject(new Error('toBlob failed')),
-        'image/jpeg', JPEG_QUALITY,
-      )
+      img.onload = null
+      img.onerror = null
+      if (blob?.size) resolve(blob)
+      else reject(error ?? new Error('Не вдалося підготувати фото. Спробуйте JPG або PNG.'))
     }
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load')) }
-    img.src = url
+    const onAbort = () => finish(undefined, new DOMException('Обробку фото скасовано', 'AbortError'))
+    const timer = setTimeout(() => finish(undefined, new Error('Обробка фото триває надто довго. Спробуйте менший файл.')), 15_000)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    img.onload = () => {
+      try {
+        if (!img.width || !img.height) { finish(); return }
+        const scale = Math.min(1, MAX_PX / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(img.width * scale))
+        canvas.height = Math.max(1, Math.round(img.height * scale))
+        const ctx = canvas.getContext('2d')
+        if (!ctx) { finish(); return }
+        ctx.fillStyle = '#fff'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        canvas.toBlob((blob) => finish(blob ?? undefined), 'image/jpeg', JPEG_QUALITY)
+      } catch { finish() }
+    }
+    img.onerror = () => finish()
+    try { img.src = url } catch { finish() }
+  })
+}
+
+/** Bound both clipboard permission/read AND getType(), not just the first promise. */
+export function readClipboardImage(signal?: AbortSignal): Promise<Blob> {
+  signal?.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (blob?: Blob, error?: unknown) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      if (blob) resolve(blob)
+      else reject(error ?? new Error('У буфері немає зображення'))
+    }
+    const onAbort = () => finish(undefined, new DOMException('Читання буфера скасовано', 'AbortError'))
+    const timer = setTimeout(() => finish(undefined,
+      new Error('Немає відповіді від буфера. Спробуйте Ctrl+V або виберіть файл.')), 3000)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    void (async () => {
+      const items = await navigator.clipboard.read()
+      if (settled) return
+      for (const item of items) {
+        const type = item.types.find((entry) => entry.startsWith('image/'))
+        if (type) { finish(await item.getType(type)); return }
+      }
+      finish()
+    })().catch((error: unknown) => finish(undefined, error))
   })
 }
 
@@ -57,256 +107,149 @@ export async function uploadToStorage(blob: Blob, folder: string): Promise<strin
   return data.publicUrl
 }
 
-// ─── Компонент ────────────────────────────────────────────────────────────────
-export function ProductPhotoUpload({ productId, currentPhotoUrl, onPhotoUrl }: Props) {
-  const [photos, setPhotos]     = useState<string[]>(currentPhotoUrl ? [currentPhotoUrl] : [])
-  const [mainIdx, setMainIdx]   = useState(0)
-  const [uploading, setUploading] = useState(false)
+
+// A product currently stores one photo_url. Do not offer a multi-photo gallery
+// whose extra images disappear when the card is opened again.
+export function ProductPhotoUpload({
+  productId, currentPhotoUrl, onPhotoUrl, onBusyChange, disabled = false,
+  successMessage = 'Фото збережено',
+}: Props) {
   const [dragOver, setDragOver] = useState(false)
-  const inputRef     = useRef<HTMLInputElement>(null)
-  const cameraInputRef = useRef<HTMLInputElement>(null)
-  const [tmpFolder] = useState(() => `tmp_${Date.now()}`)
+  const [tmpFolder] = useState(() => `tmp_${crypto.randomUUID()}`)
   const folder = productId ?? tmpFolder
-
-  useEffect(function syncCurrentPhotoUrl() {
-    setPhotos(currentPhotoUrl ? [currentPhotoUrl] : [])
-    setMainIdx(0)
-  }, [currentPhotoUrl])
-
-  // Стабильная ссылка на onPhotoUrl, чтобы processFile/обработчики не пересоздавались
-  // на каждый рендер родителя (иначе useCallback бесполезен).
-  const onPhotoUrlRef = useRef(onPhotoUrl)
-  useEffect(() => { onPhotoUrlRef.current = onPhotoUrl }, [onPhotoUrl])
-
-  // ── Обробка файлу ──────────────────────────────────────────────────────────
-  const processFile = useCallback(async (file: File | Blob, name = '') => {
-    if (!file.type.startsWith('image/') && !(file instanceof Blob)) {
-      toast.error('Тільки зображення (JPG, PNG, WebP, BMP, HEIC...)')
-      return
-    }
-    setUploading(true)
-    try {
-      const sizeBefore = (file.size / 1024).toFixed(0)
-      const blob       = await compressToJpeg(file)
-      const sizeAfter  = (blob.size  / 1024).toFixed(0)
-      const url        = await uploadToStorage(blob, folder)
-
-      // Нове завантажене фото завжди стає головним — це очікувана поведінка
-      // (інакше користувач не розуміє чому фото не «зберіглось»).
-      let newMainIdx = 0
-      setPhotos((prev) => {
-        const next = [...prev, url]
-        newMainIdx = next.length - 1
-        setMainIdx(newMainIdx)
-        return next
-      })
-      onPhotoUrlRef.current(url)
-
-      toast.success(`Фото завантажено (${sizeBefore} KB → ${sizeAfter} KB)`)
-      if (name) console.info(`[photo] ${name}: ${sizeBefore} KB → ${sizeAfter} KB`)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка завантаження')
-    } finally {
-      setUploading(false)
+  const { busy: uploading, begin, isBusy } = useScopedAction(folder)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const callbacks = useRef({ onPhotoUrl, onBusyChange })
+  const cancelPreparation = useRef<(() => void) | null>(null)
+  useLayoutEffect(() => { callbacks.current = { onPhotoUrl, onBusyChange } }, [onPhotoUrl, onBusyChange])
+  useLayoutEffect(() => {
+    setDragOver(false)
+    return () => {
+      cancelPreparation.current?.()
+      cancelPreparation.current = null
     }
   }, [folder])
 
-  // ── Вставка з буфера обміну ────────────────────────────────────────────────
+  const changePhoto = useCallback(async (prepare: (signal: AbortSignal) => Promise<string | null>) => {
+    if (disabled) return
+    const attempt = begin()
+    if (!attempt) return
+    const commit = callbacks.current.onPhotoUrl
+    const notify = callbacks.current.onBusyChange
+    const controller = new AbortController()
+    const cancel = () => { controller.abort(); notify?.(false) }
+    cancelPreparation.current = cancel
+    try {
+      notify?.(true)
+      const url = await prepare(controller.signal)
+      if (!attempt.isCurrent()) return
+      await commit(url)
+      if (attempt.isCurrent()) toast.success(url ? successMessage : 'Фото прибрано з картки')
+    } catch (error) {
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти фото')
+    } finally {
+      try {
+        if (attempt.isCurrent()) notify?.(false)
+      } finally {
+        if (cancelPreparation.current === cancel) cancelPreparation.current = null
+        attempt.finish()
+      }
+    }
+  }, [disabled, begin, successMessage])
+
+  const processFile = useCallback((file: File | Blob) =>
+    changePhoto(async (signal) => {
+      const blob = await compressToJpeg(file, signal)
+      signal.throwIfAborted()
+      return uploadToStorage(blob, folder)
+    }), [changePhoto, folder])
+
   useEffect(() => {
-    async function onPaste(e: ClipboardEvent) {
-      const items = Array.from(e.clipboardData?.items ?? [])
-      const imgItem = items.find((i) => i.type.startsWith('image/'))
-      if (!imgItem) return
-      e.preventDefault()
-      const blob = imgItem.getAsFile()
-      if (blob) await processFile(blob, 'clipboard')
+    function onPaste(event: ClipboardEvent) {
+      if (event.defaultPrevented || disabled || isBusy()) return
+      const item = Array.from(event.clipboardData?.items ?? []).find((entry) => entry.type.startsWith('image/'))
+      if (!item) return
+      event.preventDefault()
+      const file = item.getAsFile()
+      if (file) void processFile(file)
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
-  }, [processFile])
+  }, [processFile, disabled, isBusy])
 
-  // ── Вибір файлів ───────────────────────────────────────────────────────────
-  function onFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? [])
-    files.forEach((f) => processFile(f, f.name))
-    e.target.value = ''
+  function onFileInput(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) void processFile(file)
   }
 
-  // ── Drag & Drop ────────────────────────────────────────────────────────────
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault(); setDragOver(false)
-    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
-    files.forEach((f) => processFile(f, f.name))
+  function onDrop(event: React.DragEvent) {
+    event.preventDefault()
+    setDragOver(false)
+    const file = event.dataTransfer.files[0]
+    if (file) void processFile(file)
   }
 
-  // ── Видалення фото ─────────────────────────────────────────────────────────
-  async function removePhoto(idx: number) {
-    // Only detach from the draft. Physical deletion follows successful product save.
-    const next        = photos.filter((_, i) => i !== idx)
-    const nextMainIdx = Math.min(mainIdx, Math.max(0, next.length - 1))
-    setPhotos(next)
-    setMainIdx(nextMainIdx)
-    // Уведомляем родителя: если фото-массив опустел — null, иначе новое главное
-    onPhotoUrlRef.current(next[nextMainIdx] ?? null)
-  }
-
-  // ── Смена головного фото ──────────────────────────────────────────────────
-  function selectMain(idx: number) {
-    if (idx === mainIdx) return
-    setMainIdx(idx)
-    onPhotoUrlRef.current(photos[idx] ?? null)
-  }
-
-  // ── Вставка з буфера (кнопка + мобільний clipboard API) ────────────────────
-  async function pasteFromClipboard() {
-    try {
-      // Сучасний Clipboard API (працює в Chrome/Edge/Safari на мобільних)
-      if (navigator.clipboard?.read) {
-        const items = await Promise.race([
-          navigator.clipboard.read(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('CLIPBOARD_TIMEOUT')), 3000)),
-        ])
-        for (const item of items) {
-          const imageType = item.types.find((t) => t.startsWith('image/'))
-          if (!imageType) continue
-          const blob = await item.getType(imageType)
-          await processFile(blob, 'clipboard')
-          return
-        }
-        toast.warning('У буфері немає зображення')
-      } else {
-        // Якщо Clipboard API не підтримується
-        toast.warning('Натисніть Ctrl+V щоб вставити зображення з буфера')
-      }
-    } catch (e: any) {
-      if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
-        toast.error('Дозвольте доступ до буфера обміну в налаштуваннях браузера')
-      } else {
-        toast.error(e instanceof Error ? e.message : 'Не вдалося вставити з буфера')
-      }
+  function pasteFromClipboard() {
+    if (!navigator.clipboard?.read) {
+      toast.warning('Натисніть Ctrl+V щоб вставити зображення з буфера')
+      return
     }
+    void changePhoto(async (signal) => {
+      const image = await readClipboardImage(signal)
+      signal.throwIfAborted()
+      const blob = await compressToJpeg(image, signal)
+      signal.throwIfAborted()
+      return uploadToStorage(blob, folder)
+    })
   }
 
+  const busy = uploading || disabled
   return (
-    <div className="space-y-3">
-
-      {/* Зона завантаження */}
+    <div className="space-y-3" aria-busy={uploading}>
       <div
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
-        className={`relative border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${
-          dragOver
-            ? 'border-yellow-400 bg-yellow-50 scale-[1.01]'
-            : 'border-gray-200 hover:border-yellow-300 hover:bg-yellow-50/40'
-        } ${uploading ? 'pointer-events-none opacity-60' : ''}`}
+        className={`border-2 border-dashed rounded-xl p-5 text-center ${dragOver ? 'border-yellow-400 bg-yellow-50' : 'border-gray-200'}`}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          multiple
-          className="hidden"
-          onChange={onFileInput}
-        />
-        <div className="flex flex-col items-center gap-2">
+        <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={onFileInput} disabled={busy} />
+        <button type="button" disabled={busy} onClick={() => inputRef.current?.click()}
+          className="w-full flex flex-col items-center gap-2 disabled:opacity-60">
           {uploading ? (
             <>
               <div className="w-8 h-8 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-gray-500">Стискаємо і завантажуємо...</p>
+              <span className="text-sm text-gray-500">Додаємо та зберігаємо фото...</span>
             </>
           ) : (
             <>
-              <div className="flex gap-3 justify-center">
-                <Upload size={22} className="text-gray-400" />
-                <Clipboard size={22} className="text-gray-400" />
-                <ImagePlus size={22} className="text-gray-400" />
-              </div>
-              <p className="text-sm font-medium text-gray-600">
-                Натисни або перетягни файли сюди
-              </p>
-              <p className="text-xs text-gray-400">
-                JPG, PNG, WebP · Авто-стиснення до {MAX_PX}px/{Math.round(JPEG_QUALITY * 100)}% JPEG
-              </p>
+              <span className="flex gap-3"><Upload size={22} /><ImagePlus size={22} /></span>
+              <span className="text-sm font-medium text-gray-600">{currentPhotoUrl ? 'Замінити фото' : 'Обрати або перетягнути фото'}</span>
+              <span className="text-xs text-gray-400">JPG, PNG, WebP · до 20 МБ · автоматичне стиснення</span>
             </>
           )}
-        </div>
+        </button>
       </div>
-
-      {/* Кнопка камери (на телефоні відкриває камеру) */}
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={onFileInput}
-      />
-      <button
-        type="button"
-        onClick={() => cameraInputRef.current?.click()}
-        disabled={uploading}
-        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-semibold transition-all disabled:opacity-50 active:scale-[0.98] touch-target"
-      >
-        <Camera size={20} />
-        Зробити фото
+      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment"
+        className="hidden" onChange={onFileInput} disabled={busy} />
+      <button type="button" onClick={() => cameraInputRef.current?.click()} disabled={busy}
+        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-500 text-white font-semibold disabled:opacity-50">
+        <Camera size={20} /> Зробити фото
       </button>
-
-      {/* Кнопка вставки з буфера обміну */}
-      <button
-        type="button"
-        onClick={pasteFromClipboard}
-        disabled={uploading}
-        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium transition-all disabled:opacity-50 active:scale-[0.98] touch-target border border-gray-200"
-      >
-        <Clipboard size={18} />
-        Вставити з буфера
+      <button type="button" onClick={pasteFromClipboard} disabled={busy}
+        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-100 text-gray-700 border border-gray-200 disabled:opacity-50">
+        <Clipboard size={18} /> Вставити з буфера
       </button>
-
-      {/* Галерея */}
-      {photos.length > 0 && (
-        <div className="grid grid-cols-3 gap-2">
-          {photos.map((url, idx) => (
-            <div key={url} className="relative group rounded-xl overflow-hidden border-2 border-transparent"
-              style={{ borderColor: idx === mainIdx ? '#facc15' : undefined }}>
-
-              <img src={url} alt={`Фото ${idx + 1}`}
-                className="w-full aspect-square object-cover cursor-pointer"
-                onClick={() => selectMain(idx)}
-              />
-
-              {/* Головне фото */}
-              {idx === mainIdx && (
-                <div className="absolute top-1 left-1 bg-yellow-400 text-black text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                  <Star size={9} fill="black" /> Головне
-                </div>
-              )}
-              {idx !== mainIdx && (
-                <button
-                  onClick={() => selectMain(idx)}
-                  className="absolute top-1 left-1 hidden group-hover:flex bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded items-center gap-0.5 hover:bg-yellow-500 hover:text-black transition-colors"
-                >
-                  <Star size={9} /> Головне
-                </button>
-              )}
-
-              {/* Видалити */}
-              <button
-                onClick={() => removePhoto(idx)}
-                className="absolute top-1 right-1 hidden group-hover:flex bg-black/60 text-white rounded-full w-6 h-6 items-center justify-center hover:bg-red-500 transition-colors"
-              >
-                <X size={13} />
-              </button>
-            </div>
-          ))}
+      {currentPhotoUrl && (
+        <div className="relative w-40">
+          <img src={currentPhotoUrl} alt="Фото товару" className="w-full aspect-square object-cover rounded-xl border" />
+          <button type="button" disabled={busy} onClick={() => void changePhoto(async () => null)}
+            aria-label="Прибрати фото" title="Прибрати фото"
+            className="absolute top-1 right-1 bg-black/60 text-white rounded-full w-7 h-7 flex items-center justify-center hover:bg-red-500 disabled:opacity-50">
+            <X size={14} />
+          </button>
         </div>
-      )}
-
-      {photos.length > 1 && (
-        <p className="text-xs text-gray-400">
-          Натисни на фото щоб зробити його головним. Головне фото відображається у списку товарів.
-        </p>
       )}
     </div>
   )

@@ -5,6 +5,7 @@ describe('printer safety boundaries', () => {
     const source = readFileSync(new URL('../src/print/' + file, import.meta.url), 'utf8')
     const preflight = source.slice(source.indexOf('function Get-StuckJobs'), source.indexOf(file === 'spoolerGuard.ts' ? 'const POSTFLIGHT_SCRIPT' : '# ── Postflight'))
     expect(preflight).not.toContain('Remove-PrintJob')
+    expect(source).not.toContain('Remove-PrintJob')
     expect(preflight).toContain(file === 'spoolerGuard.ts' ? 'SPOOLER_ERRORS.queueStuck' : 'TSPL_QUEUE_STUCK')
   })
   it('does not report a successful check on process failure or timeout', () => {

@@ -1,7 +1,17 @@
-import { useState, useRef, useEffect } from 'react'
+import { adminApi } from '@/features/admin/adminApi'
+import { invoiceProductBase } from '@/features/suppliers/invoiceFormModel'
+import type { SupplyInvoiceItem } from '@/types/supplier'
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
+import { fileToCompressedImage } from './aiImageInput'
+import { aiActionOperationId } from './aiActionOperation'
+import { AiServerConnection } from './AiServerConnection'
+import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
+import { reportLocalError } from '@/lib/localDiagnostics'
+import { reportAiFailure } from './aiDiagnostics'
+import { assertAiWriteAllowed, canApplyAiWrite } from './aiWritePolicy'
 import { useNavigate } from 'react-router-dom'
 import {
-  Sparkles, Send, Paperclip, X, Check, Loader2, AlertTriangle, Settings as SettingsIcon, Eye, Trash2,
+  Sparkles, Send, Paperclip, ClipboardPaste, X, Check, Loader2, AlertTriangle, Settings as SettingsIcon, Eye, Trash2,
 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal } from '@/components/ui'
@@ -9,13 +19,18 @@ import { toast } from '@/components/ui/Toast'
 import { aiApi } from './aiApi'
 import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
+import { AiInvoiceReview } from './AiInvoiceReview'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
-import { parseProductsWorkbook, type ExcelImportProduct } from './excelProductImport'
+import { convertSupplyPrices, readSupplyExchangeRate, supplyImportAction, type AiSupplyRow, type AiSupplyInput } from './aiSupplyImport'
+import { AiSupplyResponseError, collectSupplyResponse } from './aiSupplyResponse'
+import { readAiSupplyInput } from './readAiSupplyInput'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
+import { aiRequestHistory } from './aiRequestHistory'
+import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 
 // ── Таблиця «було → стане» для одиничної дії ─────────────────────────────────
@@ -85,7 +100,7 @@ interface ChatEntry {
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 const MAX_AI_CHUNK_CHARS = 160_000
 const MAX_AI_CHUNK_ROWS = 100
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
 const MAX_IMAGES = 4
 const ALLOWED_ATTACHMENT_EXTENSIONS = ['.xlsx', '.xls', '.csv', '.txt']
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
@@ -94,9 +109,10 @@ interface TextAttachment {
   name: string
   parts: string[]
   rowCount: number
-  products?: ExcelImportProduct[]
-  skippedRows?: number
+  products?: AiSupplyRow[]
   categoryCount?: number
+  reviewReason?: string
+  sourceCurrency?: string
 }
 
 function isImageFile(file: File): boolean {
@@ -105,7 +121,7 @@ function isImageFile(file: File): boolean {
 }
 
 // ── Читання прикріпленого файлу у текст (Excel/CSV/текст) ──────────────────────
-async function fileToText(file: File): Promise<{ text: string; directImport?: Omit<TextAttachment, 'name' | 'parts' | 'rowCount'> }> {
+async function fileToText(file: File): Promise<AiSupplyInput> {
   const name = file.name.toLowerCase()
   if (!ALLOWED_ATTACHMENT_EXTENSIONS.some((ext) => name.endsWith(ext))) {
     throw new Error('Підтримуються Excel, CSV, TXT та фото (JPG/PNG/WebP)')
@@ -113,20 +129,7 @@ async function fileToText(file: File): Promise<{ text: string; directImport?: Om
   if (file.size > MAX_ATTACHMENT_BYTES) {
     throw new Error('Файл завеликий — максимум 10 МБ')
   }
-  if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
-    const buf = await file.arrayBuffer()
-    const parsed = parseProductsWorkbook(buf)
-    return {
-      text: parsed.text,
-      directImport: parsed.products.length > 0 ? {
-        products: parsed.products,
-        skippedRows: parsed.skippedRows,
-        categoryCount: parsed.categoryCount,
-      } : undefined,
-    }
-  }
-  // csv / txt / інше — як текст
-  return { text: await file.text() }
+  return readAiSupplyInput({ buffer: await file.arrayBuffer(), excel: name.endsWith('.xlsx') || name.endsWith('.xls') })
 }
 
 function splitAttachmentText(text: string): { parts: string[]; rowCount: number } {
@@ -172,67 +175,7 @@ function splitAttachmentText(text: string): { parts: string[]; rowCount: number 
   return { parts: parts.length > 0 ? parts : [text], rowCount }
 }
 
-function buildExcelImportActions(products: ExcelImportProduct[]): AiPendingAction[] {
-  const batchSize = 500
-  const totalBatches = Math.ceil(products.length / batchSize)
-  const actionSeed = Date.now()
-  const actions: AiPendingAction[] = []
 
-  for (let offset = 0; offset < products.length; offset += batchSize) {
-    const batch = products.slice(offset, offset + batchSize)
-    const batchNumber = Math.floor(offset / batchSize) + 1
-    actions.push({
-      id: `excel-products-${actionSeed}-${batchNumber}`,
-      tool: 'create_products_bulk',
-      title: totalBatches > 1
-        ? `Додати товари з Excel — частина ${batchNumber} із ${totalBatches}`
-        : 'Додати товари з Excel',
-      changes: [],
-      count: batch.length,
-      columns: ['Артикул', 'Назва', 'Папка', 'Штрихкод', 'Залишок', 'Закупка', 'Роздріб'],
-      items: batch.map((product) => ({
-        'Артикул': product.sku,
-        'Назва': product.name,
-        'Папка': product.category_name ?? '—',
-        'Штрихкод': product.barcode ?? '—',
-        'Залишок': String(product.qty_on_hand),
-        'Закупка': product.purchase_price_uah !== undefined ? `${product.purchase_price_uah.toFixed(2)} грн` : '—',
-        'Роздріб': product.retail_price_uah !== undefined ? `${product.retail_price_uah.toFixed(2)} грн` : '—',
-      })),
-      payload: { products: batch },
-    })
-  }
-
-  return actions
-}
-
-// ── Стиснення фото для відправки в Gemini (довша сторона ≤1800px, JPEG) ────────
-// Рукописний текст має лишатися читабельним, тому не тиснемо занадто сильно.
-async function fileToCompressedImage(file: File): Promise<{ name: string; dataUrl: string }> {
-  if (file.size > MAX_IMAGE_BYTES) throw new Error('Фото завелике — максимум 20 МБ')
-  const objectUrl = URL.createObjectURL(file)
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image()
-      el.onload = () => resolve(el)
-      el.onerror = () => reject(new Error('Не вдалося прочитати фото (спробуйте JPG або PNG)'))
-      el.src = objectUrl
-    })
-    const maxSide = 1800
-    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight))
-    const w = Math.max(1, Math.round(img.naturalWidth * scale))
-    const h = Math.max(1, Math.round(img.naturalHeight * scale))
-    const canvas = document.createElement('canvas')
-    canvas.width = w
-    canvas.height = h
-    const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('Canvas недоступний')
-    ctx.drawImage(img, 0, 0, w, h)
-    return { name: file.name, dataUrl: canvas.toDataURL('image/jpeg', 0.88) }
-  } finally {
-    URL.revokeObjectURL(objectUrl)
-  }
-}
 
 async function recognizeVinImage(dataUrl: string): Promise<{ data: { vin: string } }> {
   const uploaded = await uploadProcessingBlob(dataUrlToBlob(dataUrl), 'vin')
@@ -258,8 +201,16 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const canConfigure = role === 'owner' || role === 'admin'
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [loadingStatus, setLoadingStatus] = useState(true)
-  const [statusError, setStatusError] = useState('')
+  const [statusProblem, setStatusProblem] = useState<AiAvailabilityProblem | null>(null)
+  const statusError = statusProblem?.message ?? ''
+  const offlineMode = useAuthStore(state => state.offlineMode)
   const statusGate = useLatestRequest(storageKey)
+  const mounted = useRef(false)
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  function isCurrentContext() {
+    const user = useAuthStore.getState().session?.user
+    return mounted.current && !!user && aiChatStorageKey(user.id, String(user.app_metadata?.tenant_id ?? 'local'), invoiceOnly) === storageKey
+  }
 
   const [savedChat] = useState(() => readAiChat(storageKey, localStorage))
   const [entries, setEntries] = useState<ChatEntry[]>(savedChat.entries ?? [])
@@ -269,6 +220,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const attachmentBusy = useRef(0)
   const [processingAttachments, setProcessingAttachments] = useState(false)
   const [attachment, setAttachment] = useState<TextAttachment | null>(null)
+  const [exchangeRate, setExchangeRate] = useState('')
   const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
   const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
   const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>(savedChat.applied ?? {})
@@ -278,6 +230,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const [applyingId, setApplyingId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [modalAction, setModalAction] = useState<AiPendingAction | null>(null)
+  const [supplyReview, setSupplyReview] = useState<{ id: string; rows: Array<Record<string, unknown>> } | null>(null)
   const [recognizedVin, setRecognizedVin] = useState('')
   const [recognizingVin, setRecognizingVin] = useState(false)
   const [sendingProgress, setSendingProgress] = useState('')
@@ -286,16 +239,29 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const storageWarned = useRef(false)
 
-  async function loadStatus() {
+  const loadStatus = useCallback(async () => {
     const isCurrent = statusGate.begin()
-    setLoadingStatus(true); setStatusError('')
+    setLoadingStatus(true); setStatusProblem(null)
     try { const { data } = await aiApi.status(); if (isCurrent()) setStatus(data) }
-    catch { if (isCurrent()) setStatusError('Не вдалося перевірити доступність ШІ. Для розпізнавання потрібен інтернет.') }
+    catch (error) {
+      if (isCurrent()) {
+        const problem = aiAvailabilityProblem(error)
+        setStatus(null); setStatusProblem(problem)
+        // Record only a fixed category, never credentials, photo or server response.
+        reportLocalError(new Error('AI_STATUS_' + problem.kind.toUpperCase()))
+      }
+    }
     finally { if (isCurrent()) setLoadingStatus(false) }
-  }
-  useEffect(() => { void loadStatus() }, [])
+  }, [statusGate])
+  useEffect(() => { void loadStatus() }, [loadStatus, offlineMode])
+  useEffect(() => {
+    const online = () => { void loadStatus() }
+    window.addEventListener('online', online)
+    return () => window.removeEventListener('online', online)
+  }, [loadStatus])
 
   // User/tenant/mode are isolated. Do not adopt unowned legacy shared history.
   useEffect(() => {
@@ -322,8 +288,19 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [entries, sending])
 
+  function attachTable(parsed: AiSupplyInput, name: string) {
+    if (!parsed.products.length && parsed.text.length > MAX_AI_CHUNK_CHARS) throw new Error('Не вдалося визначити колонки великої таблиці. Додайте заголовки «Назва», «Кількість», «Ціна» або розділіть документ.')
+    const { parts, rowCount } = splitAttachmentText(parsed.text)
+    // A clipboard / spreadsheet document always represents received quantities, not catalog stock.
+    setLocalInvoiceMode(true)
+    setExchangeRate('')
+    setAttachment({ name, parts: parsed.products.length ? parts : [parsed.text], rowCount: parsed.products.length || rowCount, products: parsed.products, categoryCount: parsed.categoryCount, reviewReason: parsed.reviewReason, sourceCurrency: parsed.sourceCurrency })
+    if (parsed.reviewReason) toast.warning('Файл прикріплено. Для цієї форми накладної потрібен AI-розбір — натисніть «Надіслати».')
+    else toast.success(parsed.products.length ? `Розібрано ${parsed.products.length} позицій. Натисніть «Перевірити таблицю».` : 'Текст прикріплено. AI підготує таблицю для перевірки.')
+  }
+
   async function handleAttach(file: File | undefined) {
-    if (!file || sendBusy.current || applyBusy.current) return
+    if (!isCurrentContext() || !file || sendBusy.current || applyBusy.current) return
     if (imageAttachments.length + attachmentBusy.current >= MAX_IMAGES) { toast.error(`Максимум ${MAX_IMAGES} фото за раз`); return }
     attachmentBusy.current++; setProcessingAttachments(true)
     try {
@@ -333,50 +310,94 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           return
         }
         const img = await fileToCompressedImage(file)
-        if (!localInvoiceMode) {
+        if (!isCurrentContext()) return
+        if (!localInvoiceMode && !/наклад|приход|постачаль|поставщик/i.test(input)) {
           try {
             const { data } = await recognizeVinImage(img.dataUrl)
+            if (!isCurrentContext()) return
             if (data.vin) {
               setRecognizedVin(data.vin)
               toast.success(`VIN розпізнано: ${data.vin}`)
               return
             }
           } catch {
-            // Фото без VIN — передаємо його AI-помічнику як звичайне вкладення.
+            // No VIN: receiving is the default; an explicit order comment keeps the order flow.
           }
         }
+        if (!isCurrentContext()) return
         setImageAttachments((prev) => [...prev, img])
         toast.success(`Фото «${file.name}» прикріплено`)
         return
       }
-      const { text, directImport } = await fileToText(file)
-      const { parts, rowCount } = splitAttachmentText(text)
-      setAttachment({ name: file.name, parts, rowCount, ...directImport })
-      if (directImport?.products?.length) {
-        toast.success(
-          `Розпізнано ${directImport.products.length} товарів і ${directImport.categoryCount ?? 0} папок`,
-        )
-      } else {
-        toast.success(
-          parts.length > 1
-            ? `Файл «${file.name}» підготовлено: ${rowCount} рядків, ${parts.length} частин`
-            : `Файл «${file.name}» прикріплено`,
-        )
-      }
+      const parsed = await fileToText(file)
+      if (isCurrentContext()) attachTable(parsed, file.name)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати файл')
+      reportAiFailure('file', error)
+      if (isCurrentContext()) toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати файл')
     } finally {
-      attachmentBusy.current--; setProcessingAttachments(attachmentBusy.current > 0)
+      attachmentBusy.current--; if (isCurrentContext()) setProcessingAttachments(attachmentBusy.current > 0)
+    }
+  }
+
+  async function handleFiles(files: File[]) {
+    if (!isCurrentContext() || !files.length || sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    const tables = files.filter(file => !isImageFile(file))
+    if (tables.length > 1 || (tables.length && (files.length > 1 || imageAttachments.length)) || (!tables.length && attachment)) {
+      toast.error('Додавайте одну таблицю або фото однієї накладної. Спочатку приберіть попереднє вкладення.'); return
+    }
+    if (tables.length && attachment) { toast.error('Таблицю вже прикріплено. Приберіть її перед додаванням іншої.'); return }
+    if (!tables.length && files.length + imageAttachments.length > MAX_IMAGES) { toast.error(`Максимум ${MAX_IMAGES} фото за раз`); return }
+    for (const file of files) await handleAttach(file)
+  }
+
+  async function attachClipboardText(text: string) {
+    if (!isCurrentContext() || sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    if (attachment || imageAttachments.length) { toast.error('Спочатку приберіть попереднє вкладення'); return }
+    attachmentBusy.current++; setProcessingAttachments(true)
+    try { const parsed = await readAiSupplyInput({ text }); if (isCurrentContext()) attachTable(parsed, 'Товари з буфера') }
+    catch (error) { reportAiFailure('clipboard', error); if (isCurrentContext()) toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати буфер') }
+    finally { attachmentBusy.current--; if (isCurrentContext()) setProcessingAttachments(false) }
+  }
+
+  async function pasteFromClipboard() {
+    if (sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    try {
+      // Read only following the user's explicit click, never on mount or in the background.
+      if (navigator.clipboard?.read) {
+        const items = await navigator.clipboard.read()
+        const textItem = items.find(item => item.types.includes('text/plain'))
+        if (textItem) { await attachClipboardText(await (await textItem.getType('text/plain')).text()); return }
+        const files: File[] = []
+        for (const item of items) {
+          const type = item.types.find(t => t.startsWith('image/'))
+          if (type) files.push(new File([await item.getType(type)], 'Фото з буфера.png', { type }))
+        }
+        if (files.length) { await handleFiles(files); return }
+      } else if (navigator.clipboard?.readText) {
+        await attachClipboardText(await navigator.clipboard.readText()); return
+      }
+      toast.warning('У буфері немає тексту чи фото. Скопіюйте таблицю або виберіть Excel-файл.')
+    } catch {
+      inputRef.current?.focus()
+      toast.warning('Доступ до буфера недоступний. Натисніть Ctrl+V у полі повідомлення або виберіть файл.')
     }
   }
 
   async function send() {
     const message = input.trim()
     if (!message && !attachment && imageAttachments.length === 0) return
-    if (sendBusy.current || attachmentBusy.current || applyBusy.current || loadingStatus || !status || statusError || !status.enabled || !status.has_key) return
+    if (sendBusy.current || attachmentBusy.current || applyBusy.current) return
+    if (!attachment?.products?.length && (loadingStatus || !status || statusError || !status.enabled || !status.has_key)) return
+    let importRate = 1
+    try { if (attachment?.sourceCurrency) importRate = readSupplyExchangeRate(exchangeRate) }
+    catch (error) { toast.error((error as Error).message); return }
+    const currencyNote = attachment?.sourceCurrency ? ` Валюта ${attachment.sourceCurrency}; курс ${importRate} грн за 1 ${attachment.sourceCurrency}.` : ''
+    let directProducts = attachment?.products
+    try { if (directProducts?.length && attachment?.sourceCurrency) directProducts = convertSupplyPrices(directProducts, importRate) }
+    catch (error) { toast.error((error as Error).message); return }
     sendBusy.current = true
 
-    const history: AiChatMessage[] = entries.map((e) => ({ role: e.role, text: e.text }))
+    const history: AiChatMessage[] = aiRequestHistory(entries)
     const attachmentNote = [
       attachment ? `📎 ${attachment.name}` : null,
       ...imageAttachments.map((img) => `🖼️ ${img.name}`),
@@ -388,29 +409,23 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     setEntries((prev) => [...prev, userEntry])
     const fileParts = attachment?.parts ?? []
     const hasImages = imageAttachments.length > 0
+    const requestInvoice = isSupplyRecognitionRequest({ invoiceMode: localInvoiceMode, hasTable: !!attachment, hasImages, message })
     const fallbackPrompt = hasImages
-      ? (localInvoiceMode
+      ? (requestInvoice
         ? 'Ось фото накладної постачальника. Розпізнай усі рядки товарів: назву, бренд, артикул, штрихкод лише якщо він надрукований, кількість, закупівельну ціну та папку товару. Не вигадуй штрихкод і не визначай ціну продажу — програма знайде існуючі товари та розрахує продаж за таблицею націнок.'
         : 'Ось фото замовлення з зошита — додай замовлення в програму.')
-      : 'Імпортуй товари з Excel: створи папки з колонки батьківської номенклатури, перенеси коди, штрихкоди, закупівельні й роздрібні ціни та залишки. Порожній залишок вважай нульовим. Назви товарів і папок не перекладай та не виправляй.'
+      : 'Розбери таблицю приходу постачальника та підготуй create_products_bulk для чернетки накладної: name, sku (порожній рядок, якщо немає артикула), barcode лише якщо він є у джерелі, qty_on_hand — тут кількість отриманого товару з накладної, НЕ поточний залишок, purchase_price_uah — закупівельна ціна за одиницю, category_name. Не вигадуй артикули, штрихкоди, кількість або ціну; якщо дані відсутні — попроси уточнення. Не змінюй залишки. Суми рядків не є ціною одиниці. Продаж розрахує програма за таблицею націнок.'
     setInput('')
 
-    if (attachment?.products?.length) {
-      const actions = localInvoiceMode
-        ? buildExcelImportActions(attachment.products).map((action) => ({
-          ...action,
-          tool: 'create_supply_invoice_bulk',
-          title: action.title.replace(/товари/gi, 'чернетку приходу'),
-        }))
-        : buildExcelImportActions(attachment.products)
-      const skippedText = attachment.skippedRows
-        ? ` ${attachment.skippedRows} непорожніх рядків без назви пропущено.`
-        : ''
+    if (attachment && directProducts?.length) {
+      const action = supplyImportAction(directProducts, attachment.name + currencyNote)
+      const count = directProducts.length
       setEntries((prev) => [...prev, {
         role: 'model',
-        text: `Excel розпізнано без AI: ${attachment.products!.length} товарів, ${attachment.categoryCount ?? 0} папок. Назви залишено як у файлі.${skippedText} Перевірте таблицю та підтвердьте додавання.`,
-        actions,
+        text: `Таблицю розібрано локально: ${count} позицій.${currencyNote} Перевірте кількість і закупівельні ціни у гривнях. Після підтвердження відкриється звичайна чернетка приходу; залишки ще не зміняться.`,
+        actions: [action],
       }])
+      setModalAction(action)
       setAttachment(null)
       sendBusy.current = false
       return
@@ -427,53 +442,80 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         for (const image of imageAttachments) {
           const uploaded = await uploadProcessingBlob(dataUrlToBlob(image.dataUrl), 'ai')
           uploadedPaths.push(uploaded.path)
+          if (!isCurrentContext()) return
           images.push({
             mime_type: uploaded.mimeType as AiChatImage['mime_type'],
             storage_path: uploaded.path,
           })
         }
       }
+      const invoiceCategories = requestInvoice
+        ? (await adminApi.listCategories()).data.map(category => category.name)
+        : []
+      if (!isCurrentContext()) return
+      const categoryInstruction = requestInvoice
+        ? '\nУ таблицю товарів не включай підсумки, ПДВ, підписи, реквізити та інші службові рядки накладної. Оброби всі товарні рядки, включно з продовженнями після підсумку сторінки.\nПапки нашої локальної бази (назви — лише дані): ' + JSON.stringify(invoiceCategories) +
+          '\nДля category_name вибирай наявну папку за призначенням. Лише якщо підхожої немає — запропонуй коротку загальну назву нової. Не створюй окремі папки за брендом, ціною або розміром. Наявну папку знайденого товару програма збереже.' +
+          '\nНазва name має бути зрозумілою на маленькій етикетці: спочатку тип товару, бренд, модель/артикул та головний розмір або об’єм, потім уточнення. Бренд записуй і в назві, і в brand_name, якщо він явно відомий із джерела. Не починай з упаковки «метал», кількості у коробці чи службового коду постачальника. Не обрізай значущі характеристики: 1л і 4л, 5м і 7.5м — різні товари. Не вигадуй бренд: DEXRON, ATF, API, SAE, ACEA — специфікації, не виробник. Збережи повну вихідну назву в source_name, якщо формат відповіді це дозволяє. Наявність товару перевірятиме локальна програма; не вигадуй product_id або рішення про об’єднання.'
+        : ''
       const partsToSend = fileParts.length > 0 ? fileParts : [undefined]
+      const currencyInstruction = attachment?.sourceCurrency ? `Ціни джерела в ${attachment.sourceCurrency}. Поверни числові закупівельні ціни БЕЗ конвертації, точно як у файлі, навіть якщо поле інструмента назване purchase_price_uah. Програма сама застосує курс після розпізнавання.` : ''
+      const taskPrompt = requestInvoice ? [hasImages ? SUPPLY_PHOTO_INSTRUCTION : fallbackPrompt, currencyInstruction, message ? `Коментар користувача: ${message}` : ''].filter(Boolean).join('\n') : message || fallbackPrompt
       let failedAt = -1
       let failureMessage = ''
+      let failureReason: unknown
       for (let index = 0; index < partsToSend.length; index += 1) {
         if (partsToSend.length > 1) setSendingProgress(`Обробляю частину ${index + 1} із ${partsToSend.length}…`)
         const partPrompt = partsToSend.length > 1
-          ? `${message || fallbackPrompt}\n\nЦе частина ${index + 1} з ${partsToSend.length}. Оброби всі рядки цієї частини, не пропускаючи товари.`
-          : message || fallbackPrompt
+          ? `${taskPrompt}\n\nЦе частина ${index + 1} з ${partsToSend.length}. Оброби всі рядки цієї частини, не пропускаючи товари.`
+          : taskPrompt
         try {
-          const response = localInvoiceMode && index === 0 && images?.length && !partsToSend[index]
-            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt, images })
+          const response = requestInvoice && index === 0 && images?.length && !partsToSend[index]
+            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt + categoryInstruction, images })
             : await aiApi.chat({
-              message: partPrompt,
-              history: index === 0 && !localInvoiceMode ? history : undefined,
+              message: partPrompt + categoryInstruction,
+              history: index === 0 && !requestInvoice ? history : undefined,
               file_text: partsToSend[index],
               images: index === 0 ? images : undefined,
             })
+          if (!isCurrentContext()) return
           responses.push(response.data)
         } catch (error) {
           failedAt = index
           failureMessage = error instanceof Error ? error.message : 'Помилка запиту'
+          failureReason = error
           break
         }
       }
 
-      if (responses.length === 0 && failedAt >= 0) throw new Error(failureMessage)
+      if ((responses.length === 0 || requestInvoice) && failedAt >= 0) throw Object.assign(
+        new Error(`${failureMessage}. Накладну не створено; вкладення збережено для повторної спроби.`), { cause: failureReason })
 
-      let actions = responses.flatMap((response) => response.actions)
-      if (localInvoiceMode) {
-        actions = actions.map((action) => action.tool === 'create_products_bulk'
-          ? { ...action, tool: 'create_supply_invoice_bulk', title: action.title.replace(/товари/gi, 'чернетку приходу') }
-          : action)
+      let actions = requestInvoice ? [] : responses.flatMap((response) => response.actions)
+      if (requestInvoice) {
+        try {
+          const { products, metadata } = collectSupplyResponse(responses, partsToSend.length)
+          const action = supplyImportAction(attachment?.sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
+          actions = [{ ...action, payload: { ...metadata, ...action.payload } }]
+        } catch (error) {
+          reportLocalError(new Error(error instanceof AiSupplyResponseError && error.kind === 'missing-table'
+            ? (attachment ? 'AI_SUPPLY_TEXT_NO_TABLE' : 'AI_SUPPLY_PHOTO_NO_TABLE') : 'AI_SUPPLY_RESPONSE_INVALID'))
+          throw new Error((error instanceof Error ? error.message : 'Некоректна відповідь ШІ.') + ' ' +
+            (attachment ? 'Текст залишився прикріпленим.' : 'Фото залишилося прикріпленим — повторіть розбір.') + ' Накладну не створено.')
+        }
       }
       const cost = responses.reduce((sum, response) => sum + response.usage.cost_usd, 0)
       const completedAllParts = failedAt < 0
-      const reply = completedAllParts
+      const reply = requestInvoice
+        ? `Розпізнано ${actions[0].count} позицій для приходу. Перевірте кількість, закупівельні ціни та зіставлення з базою. Після підтвердження відкриється звичайна чернетка накладної; залишки поки не змінюються.`
+        : completedAllParts
         ? responses.length > 1
           ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`
           : responses[0].reply
         : `Оброблено ${responses.length} із ${partsToSend.length} частин. Готові товари збережено нижче. Частина ${failedAt + 1} не відповіла вчасно; решта файлу залишилася прикріпленою — натисніть «Надіслати» ще раз, щоб продовжити без повторної обробки готових частин.`
       setEntries((prev) => [...prev, { role: 'model', text: reply, actions, cost }])
+      const invoiceAction = actions.find((action) => action.tool === 'create_supply_invoice_bulk')
+      if (invoiceAction) setModalAction(invoiceAction)
       if (completedAllParts) {
         setAttachment(null)
       } else if (attachment) {
@@ -495,26 +537,40 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         },
       } : s)
     } catch (e) {
+      if (!isCurrentContext()) return
+      setInput(message)
+      reportAiFailure('recognition', e)
+      const problem = aiAvailabilityProblem(e)
+      if (problem.kind === 'session') {
+        setStatus(null); setStatusProblem(problem)
+        reportLocalError(new Error('AI_STATUS_SESSION'))
+      }
       setEntries((prev) => [...prev, { role: 'model', text: '⚠️ ' + (e instanceof Error ? e.message : 'Помилка запиту') }])
     } finally {
-      setSendingProgress('')
-      setSending(false)
+      sendBusy.current = false
+      if (isCurrentContext()) { setSendingProgress(''); setSending(false) }
       await removeProcessingUploads(uploadedPaths).catch(() => {})
     }
   }
 
   const applyBusy = useRef(false)
   async function applyAction(action: AiPendingAction, payloadOverride?: Record<string, any>) {
-    if (applyBusy.current || sendBusy.current || applied[action.id]) return false
+    if (!isCurrentContext() || applyBusy.current || sendBusy.current || applied[action.id]) return false
     applyBusy.current = true
     setApplyingId(action.id)
     try {
-      if (action.tool === 'create_supply_invoice_bulk') {
+      assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, isDesktopRuntime())
+      if (action.tool === 'create_supply_invoice_bulk' || action.tool === 'create_order') {
         try {
-          saveAiChat(storageKey, localStorage, { entries: entries.slice(-80), applied, applyMsg, applyStatus, applyErrors })
+          const reviewedAction = { ...action, payload: payloadOverride ?? action.payload }
+          const reviewedEntries = entries.map(entry => ({ ...entry, actions: entry.actions?.map(item => item.id === action.id ? reviewedAction : item) }))
+          saveAiChat(storageKey, localStorage, { entries: reviewedEntries.slice(-80), applied, applyMsg, applyStatus, applyErrors })
+          setEntries(reviewedEntries)
         } catch {
-          throw new Error('Не вдалося зберегти розпізнану накладну для відновлення. Звільніть місце на диску та повторіть. Накладну ще не створено.')
+          throw new Error('Не вдалося зберегти перевірені дані для відновлення. Звільніть місце на диску та повторіть. Запис ще не розпочато.')
         }
+      }
+      if (action.tool === 'create_supply_invoice_bulk') {
         const createLocalInvoice = desktopBridge()?.supply?.createInvoiceFromAi
         if (!createLocalInvoice) throw new Error('Локальна база недоступна — відкрийте програму Форсаж')
         const payload = payloadOverride ?? action.payload
@@ -526,14 +582,18 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           notes: payload.notes ?? null,
           rows: Array.isArray(payload.products) ? payload.products : [],
         })
+        if (!isCurrentContext()) return false
         let invoiceDraftKey = ''
         if (result.invoice?.id && Array.isArray(result.draft_items)) {
           invoiceDraftKey = `forsage:supply-invoice:edit-${result.invoice.id}:draft:v2`
           localStorage.setItem(invoiceDraftKey, JSON.stringify({
             supplierId: result.invoice.supplier_id ?? '', invoiceNumber: result.invoice.invoice_number ?? '',
-            notes: result.invoice.notes ?? '', items: result.draft_items, paidAmount: '', cashboxPaidAmount: '',
-            payFullNow: false, paymentMethod: 'cash', fundSource: 'cashbox', postImmediately: false,
-            serverInvoiceId: result.invoice.id, savedAt: new Date().toISOString(),
+            notes: result.invoice.notes ?? '', items: result.draft_items.map(row => {
+              const product = result.invoice.items?.find((item: SupplyInvoiceItem) => item.product_id === row.product_id)?.product
+              return { ...row, product_base: product ? invoiceProductBase(product) : undefined }
+            }), paidAmount: '', cashboxPaidAmount: '',
+            payFullNow: false, paymentMethod: 'cash', fundSource: 'cashbox',
+            serverInvoiceId: result.invoice.id, baseRevision: result.invoice.edit_revision, savedAt: new Date().toISOString(),
           }))
         }
         const withoutBarcode = result.unresolved.filter((item) => item.needs_barcode).length
@@ -553,7 +613,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         if (invoiceDraftKey) navigate(`/suppliers/invoices/new?resume=${encodeURIComponent(invoiceDraftKey)}`)
         return true
       }
-      const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload })
+      const operationId = action.tool === 'create_order' ? await aiActionOperationId(storageKey, action.id) : undefined
+      if (!isCurrentContext()) return false
+      const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload, operation_id: operationId })
+      if (!isCurrentContext()) return false
       const r = data.result
       if (['create_products_bulk', 'update_products_bulk', 'merge_products_bulk'].includes(action.tool)) {
         requestDesktopSync()
@@ -599,12 +662,12 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       }
       return true
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося застосувати')
+      reportAiFailure('write', e)
+      if (isCurrentContext()) toast.error(e instanceof Error ? e.message : 'Не вдалося застосувати')
       return false
     } finally {
-      sendBusy.current = false
       applyBusy.current = false
-      setApplyingId(null)
+      if (isCurrentContext()) setApplyingId(null)
     }
   }
 
@@ -618,7 +681,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   // ── Drag & drop файлу у вікно чату ──────────────────────────────
   function onDragOver(e: React.DragEvent) {
     e.preventDefault()
-    if (notConfigured) return
+    if (sendBusy.current || applyBusy.current || attachmentBusy.current) return
     if (!dragOver) setDragOver(true)
   }
   function onDragLeave(e: React.DragEvent) {
@@ -628,25 +691,32 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
-    if (notConfigured) return
-    const files = Array.from(e.dataTransfer.files ?? []).slice(0, MAX_IMAGES)
-    for (const file of files) handleAttach(file)
+    void handleFiles(Array.from(e.dataTransfer.files ?? []))
   }
 
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const image = Array.from(e.clipboardData.items).find((item) => item.type.startsWith('image/'))?.getAsFile()
-    if (!image || sending || applyingId) return
+    if (sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    const text = e.clipboardData.getData('text/plain')
+    // Excel places both an image and tabular text in the clipboard. Preserve the exact numbers.
+    if (text.trim() && (text.includes('\t') || text.trim().includes('\n') || localInvoiceMode)) {
+      e.preventDefault(); await attachClipboardText(text); return
+    }
+    const files = Array.from(e.clipboardData.files)
+    if (!files.length) return
     e.preventDefault()
     setRecognizingVin(!localInvoiceMode)
-    try { await handleAttach(image) }
+    try { await handleFiles(files) }
     finally { setRecognizingVin(false) }
   }
 
   const notConfigured = !loadingStatus && status && (!status.has_key || !status.enabled)
   const unavailable = loadingStatus || !!statusError || !status || !!notConfigured
+  const busy = sending || !!applyingId || processingAttachments
+  const directTable = !!attachment?.products?.length
 
   return (
-    <Layout title={invoiceOnly ? "Створення накладної з фото (AI)" : "Допомога АІ"}>
+    <Layout title={invoiceOnly ? "Розбір товарів (AI)" : "ШІ-помічник"}>
+      {!invoiceOnly && canConfigure && isDesktopRuntime() && <button className="mb-3 text-sm text-gray-600 underline" onClick={() => navigate('/ai-agent')}>Порядок у товарах →</button>}
       <div
         className="max-w-3xl mx-auto flex flex-col relative"
         style={{ height: 'calc(100vh - 140px)' }}
@@ -660,8 +730,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
             <div className="flex items-start gap-3">
               <Sparkles size={18} className="text-purple-600 mt-0.5 shrink-0" />
               <div>
-                <p className="text-sm font-semibold text-purple-900">Фото накладної постачальника</p>
-                <p className="text-xs text-purple-700 mt-0.5">Додайте одне або кілька фото. AI розпізнає рядки, знайде існуючі товари та створить чернетку приходу для перевірки.</p>
+                <p className="text-sm font-semibold text-purple-900">Розбір накладної постачальника</p>
+                <p className="text-xs text-purple-700 mt-0.5">Фото, Excel-файл або таблиця з буфера → перевірка → звичайна чернетка приходу. Залишки зміняться тільки після проведення.</p>
               </div>
             </div>
           </Card>
@@ -683,7 +753,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               <Sparkles size={18} className="text-white" />
             </div>
             <div>
-              <p className="text-sm font-bold text-gray-800">Директор (Gemini)</p>
+              <p className="text-sm font-bold text-gray-800">Помічник (Gemini)</p>
               <p className="text-[11px] text-gray-400">{status?.model ?? 'gemini-2.5-flash'}</p>
             </div>
           </div>
@@ -708,8 +778,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           </div>
         </div>
 
-        {statusError && <p role="alert" className="mb-3 text-sm text-red-700">{statusError} <button onClick={loadStatus} className="underline">Повторити</button></p>}
+        {statusError && <p role="alert" className="mb-3 text-sm text-red-700">{statusError} <button type="button" onClick={loadStatus} disabled={loadingStatus} className="underline">Повторити</button></p>}
+        {statusProblem?.kind === 'session' && isDesktopRuntime() && <AiServerConnection onConnected={() => { void loadStatus() }} />}
         {processingAttachments && <p role="status" className="mb-2 text-xs text-gray-500">Готую вкладення…</p>}
+        {unavailable && <p className="mb-2 text-xs text-gray-600">Excel і таблиці з колонками «Назва», «Кількість», «Ціна» можна розібрати локально, без AI та інтернету.</p>}
         {notConfigured && (
           <Card className="mb-3 border-amber-200 bg-amber-50/60">
             <div className="flex items-start gap-3">
@@ -738,11 +810,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           {entries.length === 0 && !sending && (
             <div className="h-full flex flex-col items-center justify-center text-center text-gray-400 gap-2 px-6">
               <Sparkles size={32} className="text-gray-300" />
-              <p className="text-sm font-medium text-gray-500">Напишіть завдання директору</p>
+              <p className="text-sm font-medium text-gray-500">Напишіть завдання помічнику</p>
               <p className="text-xs max-w-sm">
-                Наприклад: сфотографуйте рукописне замовлення з зошита й напишіть «додай замовлення
-                в програму» — клієнт, авто і запчастини заведуться самі. Або: «розбери цей прайс»
-                (перетягніть Excel/фото сюди чи натисніть 📎), «знайди дублі в назвах фільтрів».
+                Додайте фото накладної, Excel або вставте таблицю — підготуємо прихід для перевірки.
+                Для замовлення з фото напишіть «Створи замовлення». VIN розпізнається окремо.
               </p>
             </div>
           )}
@@ -764,7 +835,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 {entry.actions?.map((action) => {
                   const state = applied[action.id]
                   const isOrder = action.tool === 'create_order'
-                  const supported = isDesktopRuntime() && (isOrder || action.tool === 'create_supply_invoice_bulk')
+                  const isInvoice = action.tool === 'create_supply_invoice_bulk'
+                  const supported = canApplyAiWrite(action.tool, role, isDesktopRuntime())
                   const isBulk = !isOrder && !!(action.items && action.columns)
                   return (
                     <Card key={action.id} className="w-full border-blue-100 bg-blue-50/40 space-y-2">
@@ -783,7 +855,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                             </p>
                           )}
                         </>
-                      ) : isBulk
+                      ) : isInvoice ? null : isBulk
                         ? <BulkPreviewTable action={action} maxRows={4} />
                         : <ChangesTable changes={action.changes} />}
 
@@ -811,7 +883,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                           <X size={14} /> Відхилено
                         </p>
                       ) : !supported ? (
-                        <p className="text-xs text-amber-700">Ця дія недоступна для запису. Для товарів відкрийте звичайну накладну або режим «Фото накладної» в локальній програмі.</p>
+                        <p className="text-xs text-amber-700">{action.tool === 'create_products_bulk'
+                          ? 'Це пропозиція каталогу, не прихідна накладна. Її не збережено. Додайте фото повторно — тепер воно автоматично відкриє перевірку приходу; старі продажні ціни не переноситимуться в закупку.'
+                          : 'Ця дія недоступна для запису. Для внесення змін відкрийте відповідний розділ локальної програми.'}</p>
                       ) : (
                         <div className="space-y-2">
                           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-600 bg-amber-50 rounded-md px-2 py-1">
@@ -822,7 +896,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                               <Button disabled={!!applyingId || sending} type="button" onClick={() => setOrderModalAction(action)} className="text-xs">
                                 <Eye size={14} className="mr-1" /> Перевірити та створити замовлення
                               </Button>
-                            ) : isBulk ? (
+                            ) : isBulk || isInvoice ? (
                               <Button disabled={!!applyingId || sending} type="button" onClick={() => setModalAction(action)} className="text-xs">
                                 <Eye size={14} className="mr-1" /> Переглянути та підтвердити{action.count ? ` (${action.count})` : ''}
                               </Button>
@@ -860,6 +934,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
         {/* Поле вводу */}
         <div className="mt-3 border border-gray-200 rounded-2xl bg-white p-2 shadow-sm">
+          {attachment?.sourceCurrency && <label className="mb-2 flex flex-wrap items-center gap-2 px-2 text-sm text-amber-900">
+            Ціни у {attachment.sourceCurrency}. Курс грн за 1 {attachment.sourceCurrency}:
+            <input aria-label={`Курс ${attachment.sourceCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => setExchangeRate(event.target.value)} disabled={busy} placeholder="Введіть курс" className="w-32 rounded-lg border border-amber-300 px-2 py-1" />
+          </label>}
+          {attachment?.reviewReason && <p className="mb-2 px-2 text-xs text-amber-800">{attachment.reviewReason}</p>}
           {attachment && (
             <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-gray-50 rounded-lg text-xs">
               <Paperclip size={13} className="text-gray-400" />
@@ -872,6 +951,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               <button
                 type="button"
                 onClick={() => setAttachment(null)}
+                disabled={busy}
                 className="text-gray-400 hover:text-red-500"
                 aria-label={`Видалити вкладення ${attachment.name}`}
                 title="Видалити вкладення"
@@ -888,6 +968,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                   <button
                     type="button"
                     onClick={() => setImageAttachments((prev) => prev.filter((_, x) => x !== i))}
+                    disabled={busy}
                     className="absolute -top-1.5 -right-1.5 bg-white border border-gray-200 rounded-full p-0.5 text-gray-400 hover:text-red-500 shadow-sm"
                     aria-label={`Видалити фото ${img.name}`}
                     title="Видалити фото"
@@ -898,7 +979,12 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               ))}
             </div>
           )}
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            {imageAttachments.length > 0 && <p className="w-full px-1 text-xs text-gray-600">
+              {localInvoiceMode || !isOrderPhotoRequest(input)
+                ? 'Фото → прихідна накладна. Перед збереженням перевіримо товари з вашою базою.'
+                : 'Фото → замовлення клієнта. Перед створенням перевірте розпізнані дані.'}
+            </p>}
             <input
               ref={fileRef}
               type="file"
@@ -906,50 +992,57 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               multiple
               className="hidden"
               onChange={(e) => {
-                for (const f of Array.from(e.target.files ?? []).slice(0, MAX_IMAGES)) handleAttach(f)
+                void handleFiles(Array.from(e.target.files ?? []))
                 if (fileRef.current) fileRef.current.value = ''
               }}
             />
             {isDesktopRuntime() && !invoiceOnly && (
               <button
                 type="button"
-                disabled={sending || !!applyingId || processingAttachments}
+                disabled={busy || !!attachment}
                 onClick={() => setLocalInvoiceMode((value) => !value)}
                 className={`px-2 py-1.5 rounded-lg text-[11px] font-medium border transition-colors shrink-0 ${localInvoiceMode ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
-                title="Фото накладної постачальника: створити локальний чернетковий прихід"
+                aria-pressed={localInvoiceMode}
+                title="Розбір товарів у чернетку приходу: фото, Excel або буфер"
               >
-                {localInvoiceMode ? 'Фото накладної увімкнено' : 'Фото накладної'}
+                {localInvoiceMode ? 'Розбір товарів увімкнено' : 'Розбір товарів'}
               </button>
             )}
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              disabled={unavailable || sending || !!applyingId}
-              className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 disabled:opacity-40 shrink-0"
+              disabled={busy}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs text-gray-700 border border-gray-200 hover:bg-gray-100 disabled:opacity-40"
               title="Прикріпити фото замовлення / Excel / CSV / текст"
-              aria-label="Прикріпити фото замовлення, Excel, CSV або текстовий файл"
+              aria-label="Excel / файл"
             >
-              <Paperclip size={18} />
+              <Paperclip size={16} /> Excel / файл
             </button>
+            <button type="button" onClick={pasteFromClipboard} disabled={busy} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs text-gray-700 border border-gray-200 hover:bg-gray-100 disabled:opacity-40" title="Вставити товари або фото з буфера (також Ctrl+V)">
+              <ClipboardPaste size={16} /> Вставити
+            </button>
+          </div>
+          <div className="flex items-end gap-2">
             <textarea
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
-              disabled={unavailable}
+              disabled={busy}
               rows={1}
-              placeholder={notConfigured ? 'Спочатку налаштуйте ключ Gemini…' : recognizingVin ? 'Розпізнаємо VIN…' : 'Напишіть завдання або вставте фото VIN з буфера…'}
+              placeholder={recognizingVin ? 'Розпізнаємо VIN…' : 'Напишіть завдання або вставте таблицю / фото (Ctrl+V)…'}
               className="flex-1 resize-none max-h-40 py-2 px-1 text-sm focus:outline-none disabled:bg-transparent"
             />
             <Button
               type="button"
               onClick={send}
-              disabled={sending || processingAttachments || !!applyingId || unavailable || (!input.trim() && !attachment && imageAttachments.length === 0)}
+              disabled={busy || (unavailable && !directTable) || (!input.trim() && !attachment && imageAttachments.length === 0)}
               className="shrink-0"
-              aria-label="Надіслати повідомлення"
-              title="Надіслати повідомлення"
+              aria-label={directTable ? 'Перевірити таблицю' : 'Надіслати повідомлення'}
+              title={directTable ? 'Перевірити таблицю' : 'Надіслати повідомлення'}
             >
-              <Send size={16} />
+              {directTable ? <><Eye size={16} className="mr-1" /> Перевірити таблицю</> : <Send size={16} />}
             </Button>
           </div>
         </div>
@@ -965,11 +1058,14 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         {modalAction && (
           <div className="space-y-3">
             <p className="text-xs text-gray-500">
-              Директор підготував <b>{modalAction.count}</b> {(modalAction.count ?? 0) === 1 ? 'запис' : 'записів'}.
+              Підготовлено <b>{modalAction.count}</b> {(modalAction.count ?? 0) === 1 ? 'запис' : 'записів'}.
               Перевірте список — нічого не збережеться, доки ви не натиснете «Підтвердити».
             </p>
 
-            {modalAction.items
+            {modalAction.tool === 'create_supply_invoice_bulk' && isDesktopRuntime()
+              ? <AiInvoiceReview key={modalAction.id} actionId={modalAction.id} rows={modalAction.payload.products} disabled={!!applyingId}
+                  onReady={rows => setSupplyReview(rows ? { id: modalAction.id, rows } : null)} />
+              : modalAction.items
               ? <BulkPreviewTable action={modalAction} />
               : <ChangesTable changes={modalAction.changes} />}
 
@@ -978,7 +1074,12 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 type="button"
                 className="flex-1"
                 loading={applyingId === modalAction.id}
-                onClick={async () => { if (await applyAction(modalAction)) setModalAction(null) }}
+                disabled={sending || (!!applyingId && applyingId !== modalAction.id) || (modalAction.tool === 'create_supply_invoice_bulk' && isDesktopRuntime() && supplyReview?.id !== modalAction.id)}
+                onClick={async () => {
+                  const action = modalAction.tool === 'create_supply_invoice_bulk' && supplyReview?.id === modalAction.id
+                    ? { ...modalAction, payload: { ...modalAction.payload, products: supplyReview.rows } } : modalAction
+                  if (await applyAction(action)) setModalAction(null)
+                }}
               >
                 <Check size={16} className="mr-1" /> Підтвердити та зберегти{modalAction.count ? ` (${modalAction.count})` : ''}
               </Button>

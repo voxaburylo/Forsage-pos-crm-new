@@ -28,6 +28,7 @@ export interface LocalProduct {
 
 export interface LocalProductUpsert {
   id: string
+  expected_updated_at?: string
   tenant_id?: string
   sku: string
   name: string

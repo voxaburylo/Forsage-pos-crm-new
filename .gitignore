@@ -62,3 +62,13 @@ mirror-identity.json
 Mirror-registration-*.json
 Mirror-state-repair-*.json
 Sales-mirror-repair-*.json
+
+# Local-only operational data and one-off repair tools (not release sources).
+/tmp/
+/BELT_RECONCILIATION_2026-09-07.md
+/FILTER_CROSS_PROGRESS_2026-09-07.md
+/apps/desktop/scripts/ai-history-audit.cjs
+/apps/desktop/scripts/append-filter-crosses.cjs
+/apps/desktop/scripts/filter-crosses-owner-2026-09-07.json
+/apps/desktop/scripts/research-filter-oe.py
+/apps/desktop/scripts/restore-four-belts.cjs

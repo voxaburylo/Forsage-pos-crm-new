@@ -1,0 +1,20 @@
+import { readFileSync } from 'node:fs'
+import { expect, it } from 'vitest'
+it('keeps one explicit posting action and does not restore the obsolete stock checkbox', () => {
+  const form = readFileSync(new URL('./InvoiceFormPage.tsx', import.meta.url), 'utf8')
+  const model = readFileSync(new URL('./invoiceFormModel.ts', import.meta.url), 'utf8')
+  expect(form).not.toContain('postImmediately')
+  expect(model).not.toContain('postImmediately')
+  expect(form).toContain("{saving ? 'Проводимо...' : recalculatingPrices ? 'Розрахунок цін...' : 'Провести'}")
+  expect(form).toContain('await supplierApi.commitReceiving(')
+  expect(form).not.toContain('productApi.create(')
+  expect(form).not.toContain('productApi.update(')
+  expect(form).not.toContain('supplierApi.payInvoice(')
+  expect(form).not.toContain('supplierApi.postInvoice(')
+  expect(form).not.toContain('проведіть вручну зі списку')
+  expect(form).not.toContain('manualQtyOverridesRef')
+  expect(form).toContain('captureInvoiceQuantities(itemsRef.current, visibleQuantities)')
+  expect(form).toContain('input.getClientRects().length > 0')
+  expect(form.match(/data-invoice-quantity=\{item.client_key\}/g)).toHaveLength(2)
+  expect(form).toContain('<fieldset disabled={saving}')
+})

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useScopedAction } from '@/hooks/useScopedAction'
+import { useEffect, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Modal } from './Modal'
 import { Button } from './Button'
@@ -6,7 +7,7 @@ import { Button } from './Button'
 interface Props {
   open: boolean
   onClose: () => void
-  onConfirm: () => void | Promise<void>
+  onConfirm: () => void | boolean | Promise<void | boolean>
   title: string
   message?: React.ReactNode
   confirmLabel?: string
@@ -22,21 +23,29 @@ export function ConfirmDialog({
   cancelLabel  = 'Скасувати',
   danger = false,
 }: Props) {
-  const [busy, setBusy] = useState(false)
+  const action = useScopedAction(String(open))
+  const busy = action.busy
+  const [error, setError] = useState('')
+  useEffect(() => { setError('') }, [open])
 
   async function handleConfirm() {
-    setBusy(true)
+    const attempt = action.begin()
+    if (!attempt) return
+    setError('')
     try {
-      await onConfirm()
-      onClose()
+      const result = await onConfirm()
+      if (attempt.isCurrent() && result !== false) onClose()
+    } catch (error) {
+      if (attempt.isCurrent()) setError(error instanceof Error ? error.message : 'Не вдалося виконати дію. Спробуйте ще раз.')
     } finally {
-      setBusy(false)
+      attempt.finish()
     }
   }
 
   return (
-    <Modal open={open} onClose={() => { if (!busy) onClose() }} title={title} size="sm">
+    <Modal open={open} onClose={() => { if (!action.isBusy()) onClose() }} title={title} size="sm">
       <div className="space-y-4">
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
         {message && (
           <div className={`flex gap-3 p-3 rounded-lg ${danger ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
             {danger && <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />}
@@ -59,7 +68,7 @@ export function ConfirmDialog({
             type="button"
             variant="secondary"
             disabled={busy}
-            onClick={onClose}
+            onClick={() => { if (!action.isBusy()) onClose() }}
           >
             {cancelLabel}
           </Button>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Trash2, X } from 'lucide-react'
+import { parseWriteoffQuantity, writeoffQuantityStep } from './writeoffQuantity'
 import { writeoffApi } from './writeoffApi'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
@@ -17,7 +18,7 @@ interface LineItem {
   product_sku:  string
   unit:         string
   qty_on_hand:  number
-  qty:          number
+  qty:          number | string
 }
 
 const REASONS = ['damage', 'expiry', 'loss', 'audit', 'other'] as const
@@ -26,7 +27,19 @@ export default function WriteoffFormPage() {
   const navigate = useNavigate()
   const user = useAuthStore(state => state.session?.user)
   const draftKey = 'forsage:writeoff-draft:' + user?.id
-  const [draft] = useState(() => { try { return JSON.parse(localStorage.getItem(draftKey) || '{}') ?? {} } catch { return {} } })
+  const [loaded] = useState(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem(draftKey) || '{}')
+      if (!value || Array.isArray(value) || typeof value !== 'object'
+        || (value.notes !== undefined && typeof value.notes !== 'string')
+        || (value.reason !== undefined && !REASONS.includes(value.reason))
+        || (value.operation_id !== undefined && (typeof value.operation_id !== 'string' || !value.operation_id || value.operation_id.length > 200))
+        || (value.pending === true && !value.operation_id)
+        || (value.items !== undefined && (!Array.isArray(value.items) || value.items.some((item: LineItem) => !item || typeof item.product_id !== 'string' || typeof item.product_name !== 'string')))) throw Error()
+      return { draft: value, error: '' }
+    } catch { return { draft: {}, error: 'Не вдалося прочитати чернетку списання. Не створюйте її повторно — потрібна перевірка збережених даних.' } }
+  })
+  const draft = loaded.draft
   const [operationId] = useState(() => typeof draft.operation_id === 'string' ? draft.operation_id : crypto.randomUUID())
   const finished = useRef(false)
   const busy = useRef(false)
@@ -35,21 +48,24 @@ export default function WriteoffFormPage() {
   const [items, setItems]     = useState<LineItem[]>(Array.isArray(draft.items) ? draft.items : [])
   const [search, setSearch]   = useState('')
   const [saving, setSaving]   = useState(false)
+  const [pending, setPending] = useState(draft.pending === true)
 
   useEffect(() => {
-    if (finished.current) return
-    try { localStorage.setItem(draftKey, JSON.stringify({ reason, notes, items, operation_id: operationId })) }
+    if (finished.current || loaded.error) return
+    try { localStorage.setItem(draftKey, JSON.stringify({ reason, notes, items, operation_id: operationId, pending })) }
     catch { toast.error('Не вдалося зберегти чернетку. Не закривайте це вікно.') }
-  }, [draftKey, reason, notes, items, operationId])
+  }, [draftKey, reason, notes, items, operationId, pending, loaded.error])
 
   const hasDraft = items.length > 0 || notes.trim().length > 0
-  const totalQty = items.reduce((sum, item) => sum + Number(item.qty || 0), 0)
+  const totalQty = items.reduce((sum, item) => sum + (parseWriteoffQuantity(item.qty) ?? 0), 0)
 
   function closeForm() {
     if (busy.current) return
+    if (pending || loaded.error) { toast.error('Спочатку перевірте результат попередньої спроби списання.'); return }
     if (hasDraft && !confirm('Закрити акт списання без проведення?\n\nДані з цього вікна не будуть збережені.')) return
+    try { localStorage.removeItem(draftKey) }
+    catch { toast.error('Не вдалося прибрати чернетку. Вікно залишено відкритим.'); return }
     finished.current = true
-    localStorage.removeItem(draftKey)
     navigate('/inventory/writeoffs')
   }
 
@@ -63,17 +79,16 @@ export default function WriteoffFormPage() {
       product_name: p.name,
       product_sku:  p.sku,
       unit:         p.unit ?? 'шт',
-      qty_on_hand:  (p as any).qty_available ?? p.qty_on_hand ?? 0,
+      qty_on_hand:  p.qty_on_hand ?? p.qty_available ?? 0,
       qty:          1,
     }])
     setSearch('')
   }
 
   function updateQty(index: number, value: string) {
-    const num = parseFloat(value) || 0
     setItems((prev) => {
       const next = [...prev]
-      next[index] = { ...next[index], qty: Math.min(num, next[index].qty_on_hand) }
+      next[index] = { ...next[index], qty: value }
       return next
     })
   }
@@ -85,15 +100,14 @@ export default function WriteoffFormPage() {
   function validate(): string | null {
     if (items.length === 0) return 'Додайте хоча б один товар'
     for (const item of items) {
-      if (item.qty <= 0) return 'Кількість має бути > 0 для "' + item.product_name + '"'
-      if (item.qty > item.qty_on_hand) return 'Недостатньо залишку для "' + item.product_name + '"'
+      if (parseWriteoffQuantity(item.qty) === null) return 'Кількість має бути > 0 для "' + item.product_name + '"'
     }
     return null
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (busy.current) return
+    if (busy.current || pending || loaded.error) return
     const err = validate()
     if (err) { toast.error(err); return }
 
@@ -101,23 +115,43 @@ export default function WriteoffFormPage() {
     setSaving(true)
     try {
       // Save the document's identity before dispatch so restoring an old draft cannot deduct twice.
-      localStorage.setItem(draftKey, JSON.stringify({ reason, notes, items, operation_id: operationId }))
+      localStorage.setItem(draftKey, JSON.stringify({ reason, notes, items, operation_id: operationId, pending: true }))
+      setPending(true)
       const res = await writeoffApi.create({
         operation_id: operationId,
         reason,
         notes: notes.trim() || null,
-        items: items.map((i) => ({ product_id: i.product_id, qty: i.qty })),
+        items: items.map((i) => ({ product_id: i.product_id, qty: parseWriteoffQuantity(i.qty)! })),
       })
-      finished.current = true
-      try { localStorage.removeItem(draftKey) } catch { /* The saved operation ID still prevents replay. */ }
-      toast.success('Акт списання проведено')
-      navigate('/inventory/writeoffs/' + res.data.id)
+      finishWriteoff(res.data.id)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка проведення списання')
+      try {
+        const saved = await writeoffApi.checkOperation(operationId)
+        if (saved) finishWriteoff(saved.id)
+        else { setPending(false); toast.error(err instanceof Error ? err.message : 'Помилка проведення списання') }
+      } catch { setPending(true); toast.error('Результат списання не підтверджено. Натисніть «Перевірити списання» — не створюйте інший акт замість цього.') }
     } finally {
       busy.current = false
       setSaving(false)
     }
+  }
+
+  function finishWriteoff(id: string) {
+    finished.current = true
+    try { localStorage.removeItem(draftKey) } catch { /* The preserved pending marker forces a read-only status check. */ }
+    toast.success('Акт списання проведено')
+    navigate('/inventory/writeoffs/' + id)
+  }
+
+  async function checkPending() {
+    if (busy.current) return
+    busy.current = true; setSaving(true)
+    try {
+      const saved = await writeoffApi.checkOperation(operationId)
+      if (saved) finishWriteoff(saved.id)
+      else { setPending(false); toast.success('Цей акт не проведений. Можна перевірити рядки та провести.') }
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося перевірити списання') }
+    finally { busy.current = false; setSaving(false) }
   }
 
   return (
@@ -129,13 +163,18 @@ export default function WriteoffFormPage() {
           <Button type="button" variant="outline" icon={<X size={15} />} onClick={closeForm}>
             Закрити
           </Button>
-          <Button type="submit" form="writeoff-form" disabled={saving || items.length === 0}>
+          <Button type="submit" form="writeoff-form" disabled={saving || pending || !!loaded.error || items.length === 0}>
             {saving ? 'Проводимо...' : 'Провести списання'}
           </Button>
         </div>
       }
     >
-      <form id="writeoff-form" onSubmit={handleSubmit} className="max-w-5xl pb-24"><fieldset disabled={saving}>
+      {loaded.error && <p role="alert" className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-red-800">{loaded.error}</p>}
+      {pending && !loaded.error && <Card className="mb-4 max-w-5xl">
+        <p role="alert" className="mb-3 text-sm text-amber-800">Є спроба списання без підтвердженого результату. Спочатку перевірте її, щоб не зменшити залишок двічі.</p>
+        <Button type="button" loading={saving} onClick={checkPending}>Перевірити списання</Button>
+      </Card>}
+      <form id="writeoff-form" onSubmit={handleSubmit} className="max-w-5xl pb-24"><fieldset disabled={saving || pending || !!loaded.error}>
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Акт списання проводиться одразу: після натискання залишки товарів будуть зменшені, а рух товару буде записаний в історію.
         </div>
@@ -193,16 +232,18 @@ export default function WriteoffFormPage() {
                       <div className="text-xs text-gray-400">{item.product_sku}</div>
                     </td>
                     <td className="px-2 py-2 text-right text-gray-500 whitespace-nowrap">
-                      {item.qty_on_hand} {item.unit}
+                      <span title="Залишок на момент додавання. Під час проведення перевіряється актуальний залишок.">{item.qty_on_hand} {item.unit}</span>
                     </td>
                     <td className="px-2 py-2">
-                      <input type="number" step="0.001" min="0.001" max={item.qty_on_hand}
+                      <input type="number" step={writeoffQuantityStep(item.unit)} min={writeoffQuantityStep(item.unit)}
+                        aria-label={"Кількість списання: " + item.product_name}
                         value={item.qty}
                         onChange={(e) => updateQty(i, e.target.value)}
                         className={
                           'w-full text-right border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 ' +
-                          (item.qty > item.qty_on_hand ? 'border-red-400 bg-red-50' : 'border-gray-200')
+                          ((parseWriteoffQuantity(item.qty) ?? 0) > item.qty_on_hand ? 'border-amber-400 bg-amber-50' : 'border-gray-200')
                         } />
+                      {(parseWriteoffQuantity(item.qty) ?? 0) > item.qty_on_hand && <p className="mt-1 text-xs text-amber-700">Більше показаного залишку. При проведенні перевіримо актуальний.</p>}
                     </td>
                     <td className="px-2 py-2">
                       <button type="button" onClick={() => removeItem(i)}

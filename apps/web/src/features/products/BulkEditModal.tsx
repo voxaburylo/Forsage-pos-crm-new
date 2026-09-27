@@ -57,8 +57,8 @@ export function BulkEditModal({ open, productIds, onClose, onUpdated }: Props) {
         toast.error('Введіть значення для зміни роздрібної ціни')
         return
       }
-      const val = parseFloat(retailPrice)
-      if (isNaN(val)) {
+      const val = Number(retailPrice.trim().replace(/[ \u00a0\u202f]/g, '').replace(',', '.'))
+      if (!Number.isFinite(val)) {
         toast.error('Введіть коректне число для роздрібної ціни')
         return
       }
@@ -78,8 +78,8 @@ export function BulkEditModal({ open, productIds, onClose, onUpdated }: Props) {
         toast.error('Введіть значення для зміни собівартості')
         return
       }
-      const val = parseFloat(purchasePrice)
-      if (isNaN(val)) {
+      const val = Number(purchasePrice.trim().replace(/[ \u00a0\u202f]/g, '').replace(',', '.'))
+      if (!Number.isFinite(val)) {
         toast.error('Введіть коректне число для собівартості')
         return
       }

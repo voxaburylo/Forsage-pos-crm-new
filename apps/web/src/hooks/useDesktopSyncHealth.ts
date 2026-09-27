@@ -21,8 +21,8 @@ export interface DesktopSyncHealth {
  * ніж мало б». Саме через невидимість такої черги продаж міг залишитися лише
  * в локальній базі, а власник бачив у звітах меншу виручку.
  *
- * `enabled: false` повністю глушить опитування — на екрані касира лічильник
- * не потрібен, і зайвих звернень до бази робити нема за чим.
+ * `enabled: false` повністю глушить опитування — коли діагностику закрито,
+ * зайві звернення до бази не потрібні.
  */
 export function useDesktopSyncHealth(enabled = true): DesktopSyncHealth {
   const [status, setStatus] = useState<DesktopSyncStatus | null>(null)
@@ -68,11 +68,4 @@ export function syncSeverity(status: DesktopSyncStatus | null): DesktopSyncSever
   if (status.stuck > 0) return 'stuck'
   if (status.pending > 0 || status.retrying > 0) return 'pending'
   return 'clean'
-}
-
-/** Підпис для індикатора. Касиру потрібні слова, а не назви полів. */
-export function syncHealthLabel(status: DesktopSyncStatus): string {
-  if (status.stuck > 0) return `${status.stuck} не відправлено`
-  const waiting = status.pending + status.retrying
-  return `${waiting} чекає відправки`
 }

@@ -26,7 +26,7 @@ router.get('/staff-options', requireRole('owner', 'admin', 'manager', 'cashier')
 
 // Users
 router.get('/users', requireRole('owner', 'admin'), async (req, res, next) => {
-  try { res.json({ data: await adminService.listUsers(req.user!.tenant_id) }) } catch (err) { next(err) }
+  try { res.json({ data: await adminService.listUsers(req.user!.tenant_id, req.query.include_archived === 'true') }) } catch (err) { next(err) }
 })
 
 router.post('/users', requireRole('owner', 'admin'), async (req, res, next) => {
@@ -41,12 +41,20 @@ router.put('/users/:id', requireRole('owner', 'admin'), async (req, res, next) =
   try {
     const parsed = updateUserSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    if (req.params.id === req.user!.id && (parsed.data.is_active === false || parsed.data.role === 'tire_worker')) throw new AppError('SELF_DISABLE', 'Не можна вимкнути власний доступ', 409)
     res.json({ data: await adminService.updateUser(String(req.params.id), parsed.data, req.user!.tenant_id) })
   } catch (err) { next(err) }
 })
 
 router.delete('/users/:id', requireRole('owner', 'admin'), async (req, res, next) => {
-  try { await adminService.deleteUser(String(req.params.id), req.user!.tenant_id); res.status(204).send() } catch (err) { next(err) }
+  try {
+    if (req.params.id === req.user!.id) throw new AppError('SELF_DELETE', 'Не можна видалити власний обліковий запис', 409)
+    await adminService.deleteUser(String(req.params.id), req.user!.tenant_id); res.status(204).send()
+  } catch (err) { next(err) }
+})
+
+router.post('/users/:id/restore', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.json({ data: await adminService.restoreUser(String(req.params.id), req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 
 // PUT /api/v1/admin/users/:id/password — скидання пароля адміном

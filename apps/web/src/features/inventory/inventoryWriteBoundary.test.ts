@@ -29,12 +29,17 @@ describe('all manual inventory writes participate in completion', () => {
     expect(handler).not.toContain('productApi.create(')
     expect(handler).not.toContain('inventoryApi.count(')
   })
-  it.each(['savePrice', 'addProduct', 'setItemQty', 'removeItem', 'setItemRetail', 'setItemPurchase',
-    'updateItemProduct', 'applyRowMarkup', 'applyMassPrice', 'saveCount', 'createProductFromInventory', 'applyIssuePrice'])(
+  it.each(['savePrice', 'addProduct', 'setItemQty', 'removeItem', 'setItemProductField',
+    'applyRowMarkup', 'applyMassPrice', 'saveCount', 'createProductFromInventory', 'applyIssuePrice'])(
     '%s tracks the whole write operation', name => {
       const handler = functions.get(name)!
       const outerTry = handler.body!.statements.find(ts.isTryStatement)!
-      expect(outerTry.tryBlock.statements[0].getText(tree)).toMatch(/^await trackRowWrite\(/)
+      const first = outerTry.tryBlock.statements[0]
+      const expression = ts.isVariableStatement(first) ? first.declarationList.declarations[0].initializer
+        : ts.isExpressionStatement(first) ? first.expression : undefined
+      expect(expression && ts.isAwaitExpression(expression)).toBe(true)
+      expect(expression && ts.isAwaitExpression(expression) && ts.isCallExpression(expression.expression)
+        ? expression.expression.expression.getText(tree) : '').toBe('trackRowWrite')
     },
   )
   it('checks failures before applying stock and flushes the active input', () => {
@@ -57,10 +62,14 @@ describe('all manual inventory writes participate in completion', () => {
   it('does not discard edits by comparing with an outdated rendered value', () => {
     for (const [name, stale] of [
       ['setItemQty', 'qty === item.counted_stock'],
-      ['setItemRetail', 'retail === product.retail_price'],
-      ['setItemPurchase', 'purchase === (product.purchase_price'],
-      ['updateItemProduct', 'sku === product.sku'],
-      ['updateItemProduct', 'name === product.name'],
+      ['setItemProductField', 'value === product[field]'],
     ]) expect(functions.get(name)!.getText(tree)).not.toContain(stale)
+  })
+  it('routes all inventory product edits through the atomic, field-baseline endpoint', () => {
+    expect(source).not.toContain('productApi.update(')
+    expect(functions.get('setItemProductField')!.getText(tree)).toContain('draft.base')
+    const mass = functions.get('applyMassPrice')!.getText(tree)
+    expect(mass.match(/await inventoryApi.updateProducts\(/g)).toHaveLength(1)
+    expect(mass).toContain('base: { retail_price: currentRetail, purchase_price: purchase }')
   })
 })

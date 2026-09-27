@@ -3,6 +3,7 @@ import { HardDriveDownload, RotateCcw, Save } from 'lucide-react'
 import { Button, Card, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge, type DesktopDatabaseBackup } from '@/lib/desktopBridge'
+import { BackupStatusSummary, type ShiftCopyStatus } from './BackupStatusSummary'
 
 function formatMoment(value: string): string {
   const parsed = new Date(value)
@@ -19,9 +20,8 @@ function formatSize(bytes: number): string {
  * ними було нічим: у програмі не було жодного способу відкотитись, і при
  * пошкодженні бази каса просто не відкривалася.
  */
-type ShiftCopy = { id: string; closed_at: string; export_directory: string | null; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }
 export function BackupSettingsCard() {
-  const [shiftCopies, setShiftCopies] = useState<ShiftCopy[]>([])
+  const [shiftCopies, setShiftCopies] = useState<ShiftCopyStatus[]>([])
   const [loadError, setLoadError] = useState('')
   const [backups, setBackups] = useState<DesktopDatabaseBackup[]>([])
   const [loading, setLoading] = useState(false)
@@ -34,8 +34,9 @@ export function BackupSettingsCard() {
     setLoading(true)
     setLoadError('')
     try {
-      setBackups(await list())
-      setShiftCopies(await desktopBridge()?.shiftBackups?.status() ?? [])
+      const [local, shifts] = await Promise.all([list(), desktopBridge()?.shiftBackups?.status() ?? Promise.resolve([])])
+      setBackups(local)
+      setShiftCopies(shifts)
     } catch {
       setLoadError('Не вдалося прочитати стан резервних копій. Натисніть «Оновити».')
     } finally {
@@ -76,16 +77,16 @@ export function BackupSettingsCard() {
   return (
     <Card className="mt-6 space-y-4 border-slate-200">
       <div className="space-y-2">
-        <div className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold">Копії після закриття зміни</h3><Button size="sm" variant="secondary" onClick={load} loading={loading}>Оновити</Button></div>
+        <div className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold">Резервні копії для відновлення</h3><Button size="sm" variant="secondary" onClick={load} loading={loading}>Оновити</Button></div>
         <p className="text-sm text-gray-600">Excel: папка «Вивантаження» поруч із програмою, окремо товари та клієнти. Сервер: приватна копія бази з доступними локальними фото, до 7 останніх перевірених копій на комп’ютер. Без інтернету чекає наступного підключення програми. Знімок створюється під час виконання резервування; відсутні файли фото відновити неможливо.</p>
         {loadError&&<p role="alert" className="text-sm text-red-700">{loadError}</p>}
-        {shiftCopies.length===0&&!loading&&!loadError&&<p className="text-sm text-gray-500">Копії з’являться після першого закриття зміни в оновленій програмі.</p>}
-        {shiftCopies.map(copy=><div key={copy.id} className="border-b py-2 text-sm">
+        {!loading&&!loadError&&<BackupStatusSummary backups={backups} shifts={shiftCopies}/>}
+        {!loading&&!loadError&&shiftCopies.length>0&&<details><summary className="cursor-pointer py-2 text-sm font-medium">Історія копій після зміни</summary>{shiftCopies.map(copy=><div key={copy.id} className="border-b py-2 text-sm break-words">
           <strong>{formatMoment(copy.closed_at)}</strong>
-          <p>{copy.export_directory?'Excel збережено: '+copy.export_directory:'Excel: очікує створення'}</p>
+          <p>{copy.exports_ready?'Excel збережено: '+copy.export_directory:'Excel: файли не готові або ще не перевірені'}</p>
           <p>{copy.cloud_completed_at?'Серверну копію перевірено: '+formatMoment(copy.cloud_completed_at):'Серверна копія: очікує відправлення'}</p>
           {(copy.local_error||copy.cloud_error)&&<p role="alert" className="text-red-700">{copy.local_error||copy.cloud_error}</p>}
-        </div>)}
+        </div>)}</details>}
       </div>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
@@ -111,7 +112,7 @@ export function BackupSettingsCard() {
         </Button>
       </div>
 
-      {backups.length === 0 ? (
+      {loadError ? null : backups.length === 0 ? (
         <p className="rounded-lg bg-slate-50 px-3 py-4 text-center text-sm text-slate-500">
           {loading ? 'Завантаження…' : 'Копій ще немає — натисніть «Зробити копію».'}
         </p>

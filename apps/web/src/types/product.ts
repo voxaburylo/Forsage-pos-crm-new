@@ -62,12 +62,24 @@ export interface PaginatedProducts {
   }
 }
 
+// A card may omit stock and hidden purchase price; documents own stock changes.
+export type ProductCreateData = Omit<ProductFormData, 'qty_on_hand' | 'purchase_price'> &
+  Partial<Pick<ProductFormData, 'qty_on_hand' | 'purchase_price'>>
+
 // Утилиты для конвертации
 export const kopecksToHryvnia = (k: number): string => (k / 100).toFixed(2)
 export const hryvniaToKopecks = (s: string | number | undefined): number => {
   if (s === undefined || s === '') return 0
-  const n = typeof s === 'number' ? s : parseFloat(String(s).replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'))
-  return isNaN(n) ? 0 : Math.round(n * 100)
+  let raw = typeof s === 'number' ? s : String(s).trim()
+  if (typeof raw === 'string' && /^\d{1,3}(?:,\d{3})+\.\d{1,2}$/.test(raw)) raw = raw.replace(/,/g, '')
+  else if (typeof raw === 'string' && /^\d{1,3}(?:\.\d{3})+,\d{1,2}$/.test(raw)) raw = raw.replace(/\./g, '')
+  if (typeof raw === 'string' && !/^(?:\d+|\d{1,3}(?:[ \u00a0\u202f]\d{3})+)(?:[.,]\d{1,2})?$/.test(raw))
+    throw new Error('Некоректна ціна. Введіть гривні, наприклад 1250,50; не більше двох знаків після коми.')
+  const n = typeof raw === 'number' ? raw : Number(raw.replace(/[ \u00a0\u202f]/g, '').replace(',', '.'))
+  const kopecks = Math.round(n * 100)
+  if (!Number.isFinite(n) || n < 0 || !Number.isSafeInteger(kopecks) || kopecks > 2_147_483_647)
+    throw new Error('Некоректна або завелика ціна. Перевірте, чи не введено штрихкод у поле ціни.')
+  return kopecks
 }
 
 export function stockStatus(product: Product): 'ok' | 'low' | 'out' {

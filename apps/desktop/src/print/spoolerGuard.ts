@@ -23,11 +23,11 @@ const STUCK_JOB_PATTERN = 'Error|Blocked|Offline|PaperOut|UserIntervention'
  * так — `Printing, Retained` БЕЗ жодної помилки, PagesPrinted=0, і воно висить
  * годинами. Тому для них додатково дивимось на вік і прогрес.
  */
-const IN_FLIGHT_JOB_PATTERN = 'Printing|Retained|Deleting|Spooling'
+const IN_FLIGHT_JOB_PATTERN = 'Normal|None|Printing|Retained|Deleting|Spooling'
 /** Скільки секунд завдання може висіти без жодної надрукованої сторінки. */
 const STALE_JOB_SECONDS = 90
 /** Статуси принтера, за яких немає сенсу відправляти. */
-const NOT_READY_PATTERN = 'Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
+const NOT_READY_PATTERN = 'Paused|Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
 
 export const SPOOLER_ERRORS = {
   queueStuck: 'PRINT_QUEUE_STUCK',
@@ -124,9 +124,7 @@ try {
     if ($left.Count -gt 0 -and $printing.Count -eq 0) { $failure = 'No pages printed' }
   }
   if ($failure) {
-    Get-TargetJobs |
-      Where-Object { $_.JobStatus -match $stuckPattern } |
-      Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
+    # The job may have partially printed. Leave it for explicit user inspection.
     throw "${SPOOLER_ERRORS.notConfirmed}: $failure"
   }
 } catch [System.Management.Automation.CommandNotFoundException] {
@@ -184,7 +182,7 @@ export function preflightPrinter(printerName: string): Promise<void> {
 
 /**
  * Чекає, поки завдання зникне з черги принтера. Кидає PRINT_NOT_CONFIRMED,
- * якщо воно натомість впало в помилку — тобто друку НЕ відбулось.
+ * якщо результат невідомий: документ міг бути надрукований частково.
  */
 export function postflightPrinter(
   printerName: string,
@@ -207,5 +205,11 @@ export function postflightPrinter(
     ],
     (timeoutSeconds + 10) * 1000,
     'POSTFLIGHT_OK',
-  )
+  ).catch((error: unknown) => {
+    // This check runs only after submission. Even a later "printer not ready"
+    // error cannot prove that no paper was printed.
+    const failure = error instanceof Error ? error : new Error(String(error))
+    failure.message += ' [PRINT_SUBMISSION_STARTED]'
+    throw failure
+  })
 }

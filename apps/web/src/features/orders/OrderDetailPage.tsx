@@ -21,6 +21,8 @@ import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
 import { canUseOrderCash, orderEditPath } from './orderUx'
 import { useAuthStore } from '@/stores/authStore'
+import { OrderLanBadge, OrderLanNotice } from './OrderLanNotice'
+import { desktopBridge } from '@/lib/desktopBridge'
 
 interface Payment {
   id: string
@@ -102,7 +104,8 @@ const ITEM_STATUS_COLOR: Record<ItemStatus, BadgeColor> = {
   returned: 'red',
 }
 
-function itemStatusLabel(item: CustomerOrder['items'][number]): string {
+function itemStatusLabel(item: CustomerOrder['items'][number], localState?: CustomerOrder['lan_sync']): string {
+  if (localState && item.item_status === 'pending' && item.source_type === 'warehouse') return 'Резерв потребує підтвердження'
   if (item.item_status === 'pending' && item.source_type === 'supplier') return 'Під замовлення'
   if (item.item_status === 'pending' && item.source_type === 'warehouse') return 'Зарезервовано'
   return ITEM_STATUS_LABEL[item.item_status]
@@ -159,6 +162,11 @@ export default function OrderDetailPage() {
   }, [id, navigate])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const refresh = () => { void load() }
+    window.addEventListener('forsage:lan-orders-changed', refresh)
+    return () => window.removeEventListener('forsage:lan-orders-changed', refresh)
+  }, [load])
 
   async function openCustomerEditor() {
     if (!order?.customer) return
@@ -284,12 +292,13 @@ export default function OrderDetailPage() {
   const allArrived = order.items.every((i) => ['arrived', 'handed', 'canceled', 'returned'].includes(i.item_status))
   const allHanded  = order.items.every((i) => ['handed', 'canceled', 'returned'].includes(i.item_status))
   const terminal    = isTerminalOrderStatus(order.status)
-  const canComplete = allArrived && !allHanded && !terminal
-  const canCancel   = !terminal
+  const serverActionsReady = !order.lan_sync
+  const canComplete = serverActionsReady && allArrived && !allHanded && !terminal
+  const canCancel   = serverActionsReady && !terminal
   const isDraft     = order.status === 'quoted' || (order.status === 'lead' && (order.source === 'mobile_draft' || order.items.some((item) => (item as { is_draft_note?: boolean }).is_draft_note)))
   // Звичайне (не чернетка, не завершене/скасоване) замовлення можна редагувати
   // напряму — раніше кнопки редагування тут не було взагалі
-  const canEdit     = !isDraft && !terminal
+  const canEdit     = !isDraft && !terminal && order.lan_sync?.state !== 'blocked'
   const hasPendingWarehouseItems = order.items.some((i) => i.source_type === 'warehouse' && i.item_status === 'pending')
 
   return (
@@ -298,7 +307,7 @@ export default function OrderDetailPage() {
       onBack={() => navigate('/orders')}
       actions={
         <div className="flex gap-1.5 md:gap-2 items-center">
-          {isDraft && (
+          {isDraft && order.lan_sync?.state !== 'blocked' && (
             <Button icon={<FilePen size={15} />} onClick={() => navigate(orderEditPath(order))}>
               <span>Редагувати чернетку</span>
             </Button>
@@ -308,7 +317,7 @@ export default function OrderDetailPage() {
               <span className="hidden sm:inline">Редагувати</span>
             </Button>
           )}
-          {order.status === 'completed' && order.sale_id && (
+          {serverActionsReady && order.status === 'completed' && order.sale_id && (
             <>
               <Button variant="secondary" onClick={() => navigate(`/returns?saleId=${order.sale_id}&orderId=${id}`)}>
                 ↩️ <span className="hidden sm:inline">Повернути</span>
@@ -323,7 +332,7 @@ export default function OrderDetailPage() {
               {remaining > 0 ? <>💰<span className="hidden sm:inline">&nbsp;Оплата / видача в касі</span></> : <>📦<span className="hidden sm:inline">&nbsp;Видати товар</span></>}
             </Button>
           )}
-          {hasPendingWarehouseItems && !terminal && (
+          {serverActionsReady && hasPendingWarehouseItems && !terminal && (
             <Button className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold" onClick={() => navigate(`/inventory/picking?orderId=${id}`)}>
               📦<span className="hidden sm:inline">&nbsp;Зібрати</span>
             </Button>
@@ -460,6 +469,28 @@ export default function OrderDetailPage() {
       }
     >
       <div className="mx-auto max-w-[1400px] space-y-5">
+        <OrderLanNotice />
+        {order.lan_sync && <Card className="space-y-2 border-amber-200 bg-amber-50">
+          <OrderLanBadge order={order} />
+          <p className="text-sm">{order.lan_sync.message}</p>
+          {order.lan_sync.state === 'blocked' && <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={async () => {
+              try { await desktopBridge()?.orders?.retryOffline?.(order.lan_sync?.local_id || order.id); await load() }
+              catch (error) { toast.error(error instanceof Error ? error.message : 'Повтор не виконано') }
+            }}>Повторити передавання</Button>
+            <Button variant="secondary" onClick={async () => {
+              try { await navigator.clipboard.writeText(JSON.stringify(order, null, 2)); toast.success('Ваші правки скопійовано') }
+              catch { toast.error('Не вдалося скопіювати правки') }
+            }}>Копіювати мої правки</Button>
+            <Button variant="secondary" onClick={async () => {
+              if (!window.confirm('Відкинути тільки локальні правки цього замовлення? Дані головного ПК залишаться без змін. Спершу скопіюйте потрібні правки.')) return
+              try {
+                await desktopBridge()?.orders?.discardOffline?.(order.lan_sync?.local_id || order.id)
+                navigate('/orders')
+              } catch (error) { toast.error(error instanceof Error ? error.message : 'Правки не відкинуто') }
+            }}>Відкинути локальні правки</Button>
+          </div>}
+        </Card>}
 
         {/* Шапка */}
         <Card>
@@ -569,7 +600,7 @@ export default function OrderDetailPage() {
           ) : (
             <div className="space-y-2.5">
               {order.items.map((item) => {
-                const actions = (ITEM_STATUS_ACTIONS[item.item_status] ?? []).filter((action) => !(item.source_type === 'warehouse' && action.status === 'ordered'))
+                const actions = serverActionsReady ? (ITEM_STATUS_ACTIONS[item.item_status] ?? []).filter((action) => !(item.source_type === 'warehouse' && action.status === 'ordered')) : []
                 return (
                   <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between bg-gray-50 rounded-xl p-4 text-sm gap-3 shadow-sm border border-gray-100/50">
                     <div className="flex-1 min-w-0">
@@ -578,7 +609,7 @@ export default function OrderDetailPage() {
                         {item.sku && <span className="text-gray-400 text-xs font-mono bg-white px-1.5 py-0.5 rounded border border-gray-100">{item.sku}</span>}
                       </div>
                       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                        <Badge color={ITEM_STATUS_COLOR[item.item_status]}>{itemStatusLabel(item)}</Badge>
+                        <Badge color={ITEM_STATUS_COLOR[item.item_status]}>{itemStatusLabel(item, order.lan_sync)}</Badge>
                         {item.expected_date && (
                           <span className={`text-xs ${new Date(item.expected_date) < new Date() ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
                             ⏳ Очікується: {formatDate(item.expected_date)}
@@ -613,7 +644,7 @@ export default function OrderDetailPage() {
         <Card>
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-800">Оплати</h3>
-            {!terminal && canUseCash && (
+            {serverActionsReady && !terminal && canUseCash && (
               <Button size="sm" variant="secondary" onClick={openOrderPaymentInPos}>
                 {canComplete && remaining <= 0 ? 'Видати товар через касу' : 'Оплата / видача через касу'}
               </Button>
@@ -626,7 +657,7 @@ export default function OrderDetailPage() {
           )}
 
           {payments.length === 0 ? (
-            <p className="text-sm text-gray-400">Ще не було оплат</p>
+            <p className="text-sm text-gray-400">{order.lan_sync ? 'Історію оплат можна перевірити після підтвердження головного ПК.' : 'Ще не було оплат'}</p>
           ) : (
             <table className="w-full text-sm">
               <thead>

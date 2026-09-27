@@ -34,6 +34,18 @@ describe('local supply stock safety', () => {
     })
   }
 
+  it('posts 98 after editing the draft from 46, exactly once', () => {
+    const stored = product(3)
+    const invoice = supply.createInvoice({ items: [{ product_id: stored.id, qty: 46, purchase_price: 1000 }] })
+    supply.updateInvoice(invoice.id, { items: [{ product_id: stored.id, qty: 98, purchase_price: 1000 }] })
+    const posted = supply.postInvoice(invoice.id)
+    expect(posted.items[0].qty).toBe(98)
+    expect(posted.total).toBe(98000)
+    expect(catalog.findById(stored.id)?.qty_on_hand).toBe(101)
+    expect(() => supply.postInvoice(invoice.id)).toThrow()
+    expect(catalog.findById(stored.id)?.qty_on_hand).toBe(101)
+  })
+
   it('fails loudly when an invoice item points to a deleted product', () => {
     const stored = product()
     const invoice = supply.createInvoice({

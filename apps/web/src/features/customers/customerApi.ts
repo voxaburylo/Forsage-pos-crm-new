@@ -15,7 +15,7 @@ export interface CustomerFilters {
 
 export interface CustomerCreateResponse {
   data: Customer
-  meta?: { reused: boolean; vehicle_added: boolean }
+  meta?: { reused: boolean; vehicle_added: boolean; card_attached?: boolean }
 }
 
 function buildQuery(filters: CustomerFilters): string {

@@ -13,6 +13,12 @@ describe('mobile sold items', () => {
     expect(html).not.toContain('<table')
     expect(html).toContain('overflow-wrap:anywhere')
   })
+  it('shows supplier names on mobile without another table or horizontal scroller', () => {
+    const html = renderToStaticMarkup(<SoldItemsMobile showSuppliers items={[{ ...item, suppliers: [{ id: 'a', name: 'Автокомфорт' }] }]} />)
+    expect(html).toContain('Постачальники: Автокомфорт')
+    expect(html).not.toContain('<table')
+    expect(html).not.toContain('overflow-auto')
+  })
   it('does not invent a unit price for return-only rows', () => {
     const html = renderToStaticMarkup(<SoldItemsMobile items={[{ ...item, qty_sold: 0, revenue: 0, qty_net: -1, net_revenue: -10000 }]} />)
     expect(html).not.toContain('NaN')

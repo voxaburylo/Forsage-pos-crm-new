@@ -2,7 +2,7 @@ export function stockQuantity(value: string): number | null {
   const text = value.trim().replace(',', '.')
   if (!/^\d+(\.\d{1,3})?$/.test(text)) return null
   const number = Number(text)
-  return Number.isFinite(number) && number > 0 ? number : null
+  return Number.isFinite(number) && number > 0 && number <= Number.MAX_SAFE_INTEGER / 1000 ? number : null
 }
 
 export function shiftMonthKey(month: string, delta: number): string {

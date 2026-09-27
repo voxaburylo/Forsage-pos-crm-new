@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 
 function canonical(value: unknown): unknown {
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Некоректна кількість або сума. Запис не виконано.')
   if (Array.isArray(value)) return value.map(canonical)
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
     .filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonical(v)]))
@@ -16,6 +17,7 @@ export function idempotentMutation<T>(db: LocalDatabase, scope: string, operatio
     const row = db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
     if (row) {
       const saved = JSON.parse(row.value_json)
+      if (saved.cancelled === true) throw new Error('Цю спробу вже закрито без проведення. Старий запит не виконано.')
       if (saved.fingerprint !== fingerprint) throw new Error('Повтор операції містить інші дані. Запис не виконано.')
       return saved.result as T
     }

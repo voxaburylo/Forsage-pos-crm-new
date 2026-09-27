@@ -9,7 +9,10 @@ import type {
   StockAction,
   ItemCondition,
   SaleItemForReturn,
+  CustomerReturn,
 } from '@/types/return'
+import { parseReturnQuantity } from './returnQuantity'
+import { writeoffQuantityStep } from '@/features/inventory/writeoffQuantity'
 import {
   RETURN_REASON_LABELS,
   REFUND_METHOD_LABELS,
@@ -66,13 +69,21 @@ interface SelectedItem {
   available_qty: number
   refundable_total: number
   available_refund: number
-  qty: number
+  qty: number | string
   condition: ItemCondition
 }
 
 // Загальний condition для всіх позицій (спрощення для MVP)
 
 export default function ReturnForm() {
+  const requestVersion = useRef(0)
+  const submitBusy = useRef(false)
+  const [confirmedReturn, setConfirmedReturn] = useState<CustomerReturn | null>(null)
+  const [pendingReturn, setPendingReturn] = useState(() => {
+    try { return returnApi.hasPending() } catch { return true }
+  })
+  const [checkingReturn, setCheckingReturn] = useState(false)
+  useEffect(() => () => { requestVersion.current++ }, [])
   const [step, setStep] = useState(1)
   const [saleNumber, setSaleNumber] = useState('')
   const [found, setFound] = useState<FoundSale | null>(null)
@@ -96,7 +107,8 @@ export default function ReturnForm() {
   const [selectedUnresolvedId, setSelectedUnresolvedId] = useState<string | null>(null)
   const [startupRecoveryText, setStartupRecoveryText] = useState('')
   const [startupRecoveryBusy, setStartupRecoveryBusy] = useState(false)
-  const [startupRecoveryLoading, setStartupRecoveryLoading] = useState(false)
+  const [startupRecoveryLoading, setStartupRecoveryLoading] = useState(() => Boolean(desktopBridge()))
+  const [startupRecoveryError, setStartupRecoveryError] = useState('')
   const [globalCondition, setGlobalCondition] = useState<ItemCondition>('good')
 
   // Stock action — синхронізується з condition
@@ -122,7 +134,7 @@ export default function ReturnForm() {
     if (!allowed.includes(stockAction)) {
       setStockAction(defaultAction)
     }
-  }, [globalCondition])
+  }, [globalCondition, stockAction])
 
   useEffect(() => {
     const desktop = desktopBridge()
@@ -130,6 +142,7 @@ export default function ReturnForm() {
     if (!desktop || !cashierId) return
     let cancelled = false
     setStartupRecoveryLoading(true)
+    setStartupRecoveryError('')
     desktop.fiscal.listUnresolvedReturns({ cashier_id: cashierId })
       .then((items) => {
         if (cancelled) return
@@ -142,6 +155,7 @@ export default function ReturnForm() {
       })
       .catch((error) => {
         if (!cancelled) {
+          setStartupRecoveryError('Не вдалося перевірити попередні фіскальні повернення. Спочатку повторіть перевірку — нові гроші не списано.')
           toast.error(error instanceof Error
             ? error.message
             : 'Не вдалося перевірити незавершені фіскальні повернення')
@@ -155,13 +169,15 @@ export default function ReturnForm() {
     }
   }, [session?.user?.id])
 
-  const activeItems = selected.filter((i) => i.qty > 0)
+  const activeItems = selected.map(item => ({ ...item, qty: parseReturnQuantity(item.qty) ?? 0 })).filter(item => item.qty > 0)
+  const invalidQuantity = selected.some(item => parseReturnQuantity(item.qty) === null || (parseReturnQuantity(item.qty) ?? 0) > item.available_qty)
   const selectedRefund = (item: SelectedItem) => {
-    if (item.qty <= 0 || item.original_qty <= 0) return 0
-    if (item.qty >= item.available_qty - Number.EPSILON) return item.available_refund
+    const quantity = parseReturnQuantity(item.qty) ?? 0
+    if (quantity <= 0 || item.original_qty <= 0) return 0
+    if (quantity >= item.available_qty - Number.EPSILON) return item.available_refund
     return Math.min(
       item.available_refund,
-      Math.round(item.refundable_total * item.qty / item.original_qty),
+      Math.round(item.refundable_total * quantity / item.original_qty),
     )
   }
   const totalRefund = activeItems.reduce((sum, item) => sum + selectedRefund(item), 0)
@@ -183,8 +199,10 @@ export default function ReturnForm() {
   }
 
   async function searchSale(num: string, options: { preferProductBarcode?: boolean } = {}) {
+    if (submitBusy.current || pendingReturn) return
     const q = num.trim()
     if (!q) return
+    const version = ++requestVersion.current
 
     setSearching(true)
     setFound(null)
@@ -193,6 +211,7 @@ export default function ReturnForm() {
     setCandidates([])
     setCandidateHint('')
     setSaleFiscalNumber(null)
+    setLoadingItems(false)
     setStep(1)
 
     try {
@@ -213,6 +232,7 @@ export default function ReturnForm() {
       for (const req of requests) {
         if (!req.params.product_barcode && !req.params.search) continue
         const result = await saleApi.list(req.params, { silent: true })
+        if (version !== requestVersion.current) return
         sales = (result as unknown as { data: FoundSale[] }).data ?? []
         hint = req.hint
         if (sales.length > 0) break
@@ -227,27 +247,33 @@ export default function ReturnForm() {
         setCandidates(sales)   // кілька чеків — даємо обрати
         return
       }
-      await selectSale(sales[0])
+      await selectSale(sales[0], version)
     } catch (err) {
+      if (version !== requestVersion.current) return
       toast.error(err instanceof Error ? err.message : 'Помилка пошуку чека')
     } finally {
-      setSearching(false)
+      if (version === requestVersion.current) setSearching(false)
     }
   }
 
   usePOSBarcodeScanner({
     onScan: (code) => {
+      if (submitBusy.current || pendingReturn || startupRecoveryLoading || startupRecoveryError || fiscalRecovery || unresolvedReturns.length) return
       setSaleNumber(code)
       searchSale(code, { preferProductBarcode: true })
     },
   })
 
-  async function selectSale(sale: FoundSale) {
+  async function selectSale(sale: FoundSale, version = ++requestVersion.current) {
+    if (submitBusy.current || pendingReturn || version !== requestVersion.current) return
     setFound(sale)
+    setSearching(false)
     setCandidates([])
+    setSelected([]); setSaleItems([]); setSaleFiscalNumber(null); setStep(1)
     try {
       setLoadingItems(true)
       const itemsResult = await returnApi.getSaleItems(sale.id)
+      if (version !== requestVersion.current) return
       const data = itemsResult.data
       setSaleItems(data.items)
       setSaleFiscalNumber(data.sale.fiscal_number ?? null)
@@ -268,9 +294,10 @@ export default function ReturnForm() {
       setSelected(initSelected)
       setStep(2)
     } catch (err) {
+      if (version !== requestVersion.current) return
       toast.error(err instanceof Error ? err.message : 'Помилка завантаження чека')
     } finally {
-      setLoadingItems(false)
+      if (version === requestVersion.current) setLoadingItems(false)
     }
   }
 
@@ -279,15 +306,16 @@ export default function ReturnForm() {
     const saleId = searchParams.get('saleId')
     const presale = searchParams.get('sale')
     if (saleId) {
+      const version = ++requestVersion.current
       saleApi.get(saleId, { silent: true })
-        .then(({ data: sale }) => selectSale({
+        .then(({ data: sale }) => { if (version !== requestVersion.current) return; return selectSale({
           id: sale.id,
           sale_number: sale.sale_number,
           total: sale.total,
           status: sale.status,
           completed_at: sale.completed_at,
-        }))
-        .catch((error) => toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити чек замовлення'))
+        }, version) })
+        .catch((error) => { if (version === requestVersion.current) toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити чек замовлення') })
       return
     }
     if (presale) {
@@ -296,12 +324,11 @@ export default function ReturnForm() {
     }
   }, [])
 
-  function updateQty(id: string, qty: number) {
+  function updateQty(id: string, qty: string) {
     setSelected((prev) =>
       prev.map((item) => {
         if (item.id !== id) return item
-        const clamped = Math.max(0, Math.min(qty, item.available_qty))
-        return { ...item, qty: clamped }
+        return { ...item, qty }
       })
     )
   }
@@ -317,7 +344,9 @@ export default function ReturnForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!found || !hasSelection) return
+    if (submitBusy.current || done || pendingReturn || startupRecoveryLoading || startupRecoveryError || fiscalRecovery || unresolvedReturns.length || !found || !hasSelection) return
+    if (invalidQuantity) { toast.error('Перевірте кількість: до 3 знаків після коми та не більше доступного до повернення.'); return }
+    if (!Number.isSafeInteger(totalRefund) || totalRefund < 0) { toast.error('Не вдалося визначити суму повернення. Відкрийте чек повторно; гроші не списано.'); return }
 
     if (reason === 'other' && !reasonNote.trim()) {
       toast.error('Уточніть причину')
@@ -350,6 +379,8 @@ export default function ReturnForm() {
     }
     const operationId = returnAttemptRef.current.operationId
 
+    submitBusy.current = true
+    requestVersion.current++
     setSubmitting(true)
     try {
       let fiscalReturnNum: string | null = null
@@ -405,6 +436,7 @@ export default function ReturnForm() {
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       } else {
         const result = await returnApi.create(returnBody, operationId)
+        setConfirmedReturn(result.data)
         fiscalReturnNum = result.data?.fiscal_number ?? null
       }
 
@@ -422,6 +454,8 @@ export default function ReturnForm() {
         toast.error(err instanceof Error ? err.message : 'Помилка оформлення повернення')
       }
     } finally {
+      submitBusy.current = false
+      try { setPendingReturn(returnApi.hasPending()) } catch { setPendingReturn(true) }
       setSubmitting(false)
     }
   }
@@ -438,6 +472,14 @@ export default function ReturnForm() {
         ? preferred
         : items[0]?.operation_id ?? null
     })
+  }
+
+  async function retryStartupRecovery() {
+    if (startupRecoveryLoading || submitBusy.current) return
+    setStartupRecoveryLoading(true)
+    try { await refreshUnresolvedReturns(); setStartupRecoveryError('') }
+    catch (error) { toast.error(error instanceof Error ? error.message : 'Перевірка поки недоступна') }
+    finally { setStartupRecoveryLoading(false) }
   }
 
   async function resumeUnresolvedReturn(intent: DesktopUnresolvedFiscalReturnIntent) {
@@ -554,6 +596,9 @@ export default function ReturnForm() {
   }
 
   function reset() {
+    if (submitBusy.current) return
+    requestVersion.current++
+    setConfirmedReturn(null)
     setDone(false)
     returnAttemptRef.current = null
     setFiscalRecovery(null)
@@ -562,6 +607,10 @@ export default function ReturnForm() {
     setSaleItems([])
     setSelected([])
     setSaleNumber('')
+    setCandidates([])
+    setCandidateHint('')
+    setSearching(false)
+    setLoadingItems(false)
     setReason('defective')
     setReasonNote('')
     setMethod('cash')
@@ -570,6 +619,18 @@ export default function ReturnForm() {
     setSaleFiscalNumber(null)
     setReturnFiscalNumber(null)
     setStep(1)
+  }
+
+  async function checkPendingReturn() {
+    if (submitBusy.current) return
+    submitBusy.current = true; setCheckingReturn(true)
+    try {
+      const saved = await returnApi.checkPending()
+      setPendingReturn(false)
+      if (saved) { setConfirmedReturn(saved); setDone(true); toast.success('Повернення вже збережене. Повторної видачі грошей не виконано.') }
+      else toast.success('Незавершена спроба не проведена. Можна оформити повернення.')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося перевірити повернення') }
+    finally { submitBusy.current = false; setCheckingReturn(false) }
   }
 
   async function startExchangeOrder() {
@@ -606,13 +667,13 @@ export default function ReturnForm() {
           <RotateCcw size={40} className="text-green-500 mx-auto mb-3" />
           <p className="text-lg font-semibold text-gray-900 mb-1">Повернення оформлено</p>
           <p className="text-gray-500 text-sm mb-2">
-            {'Повернуто позицій: ' + activeItems.length + ', сума: ' + formatMoney(totalRefund)}
+            {'Повернуто позицій: ' + (confirmedReturn?.return_items?.length ?? activeItems.length) + ', сума: ' + formatMoney(confirmedReturn?.refund_kopecks ?? totalRefund)}
           </p>
           <p className="text-gray-500 text-sm mb-2">
-            {ITEM_CONDITION_LABELS[globalCondition] + ' → ' + STOCK_ACTION_LABELS[stockAction]}
+            {confirmedReturn ? STOCK_ACTION_LABELS[confirmedReturn.stock_action as StockAction] : ITEM_CONDITION_LABELS[globalCondition] + ' → ' + STOCK_ACTION_LABELS[stockAction]}
           </p>
           <p className="text-gray-500 text-sm mb-2">
-            {REFUND_METHOD_LABELS[method]}
+            {REFUND_METHOD_LABELS[confirmedReturn?.refund_method ?? method]}
           </p>
           {returnFiscalNumber && (
             <p className="text-gray-500 text-sm mb-2">
@@ -621,7 +682,7 @@ export default function ReturnForm() {
           )}
           <div className="mb-4" />
           <div className="flex flex-col sm:flex-row justify-center gap-2">
-            {exchangeOrderId && (
+            {exchangeOrderId && activeItems.length > 0 && (
               <Button onClick={startExchangeOrder}>Створити замовлення на заміну</Button>
             )}
             <Button variant={exchangeOrderId ? 'secondary' : 'primary'} onClick={reset}>Нове повернення</Button>
@@ -634,7 +695,15 @@ export default function ReturnForm() {
   // ===== MAIN FORM =====
   return (
     <Layout title="Оформити повернення">
-      <div className="max-w-3xl space-y-4">
+      {pendingReturn && <Card className="mb-4 max-w-3xl border-amber-300">
+        <p role="alert" className="mb-3 text-sm text-amber-800">Є спроба повернення без підтвердженого результату. Перевірте її перед новою операцією; гроші повторно не видавайте.</p>
+        <Button type="button" loading={checkingReturn} onClick={checkPendingReturn}>Перевірити повернення</Button>
+      </Card>}
+      {startupRecoveryError && <Card className="mb-4 max-w-3xl border-amber-300">
+        <p role="alert" className="mb-3 text-sm text-amber-800">{startupRecoveryError}</p>
+        <Button type="button" loading={startupRecoveryLoading} onClick={retryStartupRecovery}>Перевірити попередні повернення</Button>
+      </Card>}
+      <fieldset disabled={submitting || pendingReturn || checkingReturn || startupRecoveryLoading || !!startupRecoveryError || !!fiscalRecovery || unresolvedReturns.length > 0} className="max-w-3xl space-y-4">
 
         {/* STEP 1: Search sale */}
         <Card>
@@ -715,7 +784,7 @@ export default function ReturnForm() {
                       key={item.id}
                       className={
                         'flex items-center gap-3 p-3 rounded-xl border ' +
-                        (item.qty > 0
+                        ((parseReturnQuantity(item.qty) ?? 0) > 0
                           ? 'bg-yellow-50 border-yellow-300'
                           : isFullyReturned
                             ? 'bg-gray-50 border-gray-200 opacity-50'
@@ -740,12 +809,15 @@ export default function ReturnForm() {
                             <input
                               type="number"
                               min="0"
+                              step={writeoffQuantityStep(item.unit)}
+                              aria-label={'Кількість повернення: ' + item.product_name}
                               max={item.available_qty}
                               value={item.qty}
-                              onChange={(e) => updateQty(item.id, parseInt(e.target.value) || 0)}
+                              onChange={(e) => updateQty(item.id, e.target.value)}
                               className="w-16 px-2 py-1 text-sm text-center border border-gray-200 rounded-lg"
                             />
                             <span className="text-xs text-gray-400">{'/' + item.available_qty}</span>
+                            {(parseReturnQuantity(item.qty) === null || (parseReturnQuantity(item.qty) ?? 0) > item.available_qty) && <span className="text-xs text-red-600">Від 0 до {item.available_qty}; до 3 знаків після коми</span>}
                           </>
                         )}
                         {isFullyReturned && (
@@ -760,7 +832,7 @@ export default function ReturnForm() {
 
             {hasSelection && (
               <div className="mt-3 flex items-center gap-3">
-                <Button size="sm" variant="ghost" onClick={() => setStep(3)}>
+                <Button size="sm" variant="ghost" disabled={invalidQuantity} onClick={() => setStep(3)}>
                   {'Далі: Причина і оплата (' + activeItems.length + ' поз.)'}
                 </Button>
                 <span className="text-sm font-semibold text-gray-700">
@@ -940,7 +1012,7 @@ export default function ReturnForm() {
                 <Button type="button" variant="ghost" onClick={() => setStep(2)}>
                   Назад до вибору позицій
                 </Button>
-                <Button type="submit" loading={submitting} icon={<RotateCcw size={16} />} size="lg">
+                <Button type="submit" loading={submitting} disabled={invalidQuantity} icon={<RotateCcw size={16} />} size="lg">
                   {'Оформити повернення на ' + formatMoney(totalRefund)}
                 </Button>
               </div>
@@ -959,7 +1031,7 @@ export default function ReturnForm() {
             </div>
           </Card>
         )}
-      </div>
+      </fieldset>
       {startupRecoveryLoading && unresolvedReturns.length === 0 && (
         <div className="fixed bottom-5 right-5 z-[110] rounded-xl bg-gray-900 px-4 py-3 text-sm text-white shadow-xl">
           Перевіряємо незавершені повернення…

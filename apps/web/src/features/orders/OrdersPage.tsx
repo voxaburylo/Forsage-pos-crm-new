@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import {
   Plus, Phone, MessageSquare, FilePen, ClipboardList,
@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { READY_ORDER_STATUSES, WORK_ORDER_STATUSES, isReadyOrderStatus, isWorkOrderStatus, canUseOrderCash, orderEditPath } from './orderUx'
 import { SubNavTabs, ORDERS_TABS } from '@/components/SubNavTabs'
 import { orderApi } from './orderApi'
+import { OrderLanBadge, OrderLanNotice } from './OrderLanNotice'
 import { canDeleteDraftOrder, isCompletedOrderStatus, isTerminalOrderStatus } from './orderStatus'
 import { startRepeatOrder, formatOrderNo } from './orderActions'
 import { customerApi } from '@/features/customers/customerApi'
@@ -22,6 +23,9 @@ import { Card, Badge, Button, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import type { CustomerVehicle } from '@/types/customer'
+import { BoundedCache } from '@/lib/boundedCache'
+import { createReadPoller } from '@/lib/readPoller'
+import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 
 // ───────────────────────── Constants ─────────────────────────
 
@@ -129,6 +133,7 @@ interface OrderItem {
 }
 
 interface CustomerOrder {
+  lan_sync?: { state: 'pending' | 'blocked' | 'cached'; message: string }
   id: string
   order_number: number | null
   kp_number: string | null
@@ -297,6 +302,7 @@ function OrderRow({ order, active, onClick }: {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 flex-wrap">
           <Badge color={conf.color}>{conf.label}</Badge>
+          <OrderLanBadge order={order} />
           {draft && (
             <span className="text-[9px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-semibold">
               Чернетка
@@ -1086,6 +1092,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                   <div className="flex items-center gap-1.5">
                     {o.status === 'completed' && hasDebt && <Badge color="red">Є борг</Badge>}
                     <Badge color={conf.color}>{conf.label}</Badge>
+                    <OrderLanBadge order={o} />
                   </div>
                 </div>
                 <div>
@@ -1291,6 +1298,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                         }`}>
                           {STATUS_CONFIG[o.status]?.label ?? o.status}
                         </span>
+                        <OrderLanBadge order={o} />
                         {o.status === 'completed' && hasDebt && (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-700">
                             Є борг
@@ -1436,13 +1444,31 @@ export default function OrdersPage() {
   const vehiclePhotoBusyRef = useRef(false)
   const [vehiclePhotoLoading, setVehiclePhotoLoading] = useState(false)
   const [vehiclePhotoDragOver, setVehiclePhotoDragOver] = useState(false)
+  const vehiclePhotoRevision = useRef(0)
+  const photoAccountKey = JSON.stringify([session?.user.id, session?.user.app_metadata?.tenant_id, role])
+  const photoContextKey = JSON.stringify([location.key, photoAccountKey])
+  const currentPhotoContext = useRef(photoContextKey)
+  useLayoutEffect(() => {
+    currentPhotoContext.current = photoContextKey
+    vehiclePhotoRevision.current++
+    vehiclePhotoBusyRef.current = false
+    setVehiclePhotoLoading(false)
+    return () => { vehiclePhotoRevision.current++; vehiclePhotoBusyRef.current = false }
+  }, [photoContextKey])
 
   const openOrderFromVehiclePhoto = useCallback(async (file: File) => {
     if (vehiclePhotoBusyRef.current) return
     vehiclePhotoBusyRef.current = true
+    const revision = ++vehiclePhotoRevision.current
+    const isCurrent = () => {
+      const current = useAuthStore.getState().session
+      const accountKey = JSON.stringify([current?.user.id, current?.user.app_metadata?.tenant_id, current?.user.app_metadata?.role ?? 'cashier'])
+      return revision === vehiclePhotoRevision.current && currentPhotoContext.current === photoContextKey && accountKey === photoAccountKey
+    }
     setVehiclePhotoLoading(true)
     try {
       const vehicle = await recognizeVehicleImage(file)
+      if (!isCurrent()) return
       const params = new URLSearchParams()
       if (vehicle.vin) params.set('vin', vehicle.vin)
       if (vehicle.make) params.set('make', vehicle.make)
@@ -1454,12 +1480,11 @@ export default function OrdersPage() {
         ? `VIN розпізнано: ${vehicle.vin}`
         : `Автомобіль розпізнано: ${vehicleLabel}`)
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Не вдалося розпізнати фото'))
+      if (isCurrent()) toast.error(getErrorMessage(error, 'Не вдалося розпізнати фото'))
     } finally {
-      vehiclePhotoBusyRef.current = false
-      setVehiclePhotoLoading(false)
+      if (isCurrent()) { vehiclePhotoBusyRef.current = false; setVehiclePhotoLoading(false) }
     }
-  }, [navigate])
+  }, [navigate, photoAccountKey, photoContextKey])
 
   useEffect(() => {
     if (chatMode) return
@@ -1483,15 +1508,20 @@ export default function OrdersPage() {
   const [bulkItems, setBulkItems] = useState<any[]>([])
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
-  const orderCacheRef = useRef(new Map<string, CustomerOrder[]>())
+  const orderCacheRef = useRef(new BoundedCache<string, CustomerOrder[]>(12))
   const orderLoadRequestRef = useRef(0)
+  const chatLoadRequestRef = useRef(0)
+  const refreshOrdersRef = useRef(() => {})
 
   // ── завантаження чатів ──
-  const loadChats = useCallback(() => {
+  const loadChats = useCallback(async () => {
     if (!chatMode || offlineMode) { setChats([]); setLoadingChats(false); return }
-    api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
-      .then((r) => { setChats((r.data ?? []).filter((chat) => chat.channel.platform === 'telegram')); setLoadingChats(false) })
-      .catch(() => setLoadingChats(false))
+    const request = ++chatLoadRequestRef.current
+    try {
+      const r = await api.get<{ data: Chat[] }>('/api/v1/chats', { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
+      if (request === chatLoadRequestRef.current) setChats((r.data ?? []).filter((chat) => chat.channel.platform === 'telegram'))
+    } catch { /* background read; preserve the current list */ }
+    finally { if (request === chatLoadRequestRef.current) setLoadingChats(false) }
   }, [chatMode, offlineMode])
   useEffect(() => {
     if (!chatMode || offlineMode) {
@@ -1500,9 +1530,11 @@ export default function OrdersPage() {
       return
     }
     setLoadingChats(true)
-    loadChats()
-    const timer = window.setInterval(loadChats, 5000)
-    return () => window.clearInterval(timer)
+    const poller = createReadPoller({ read: loadChats, intervalMs: 5000,
+      canRead: () => !isDesktopAccessLocked() && document.visibilityState !== 'hidden' })
+    poller.wake()
+    document.addEventListener('visibilitychange', poller.wake)
+    return () => { chatLoadRequestRef.current++; poller.stop(); document.removeEventListener('visibilitychange', poller.wake) }
   }, [chatMode, offlineMode, loadChats])
 
   // ── завантаження замовлень за вкладкою ──
@@ -1518,13 +1550,6 @@ export default function OrdersPage() {
       const next = response.data ?? []
       orderCacheRef.current.set(cacheKey, next)
       setHasMoreOrders(response.meta?.has_more ?? false)
-      if (tab === 'all') {
-        orderCacheRef.current.set(`active:${offset}`, next.filter((o) => isWorkOrderStatus(o.status)))
-        orderCacheRef.current.set(`ready:${offset}`, next.filter((o) => isReadyOrderStatus(o.status)))
-        orderCacheRef.current.set(`completed:${offset}`, next.filter((o) => isCompletedOrderStatus(o.status)))
-        orderCacheRef.current.set(`canceled:${offset}`, next.filter((o) => o.status === 'canceled'))
-        orderCacheRef.current.set(`drafts:${offset}`, next.filter(isDraft))
-      }
       setOrders(next)
     } catch (error) {
       if (requestId === orderLoadRequestRef.current && showLoading) {
@@ -1535,17 +1560,24 @@ export default function OrdersPage() {
     }
   }, [tab, offset, serverSearch, chatMode])
   useEffect(() => {
-    void loadOrders()
-    const timer = window.setInterval(() => { void loadOrders(false) }, 15_000)
+    let initial = true
+    const poller = createReadPoller({ read: async () => { const first = initial; initial = false; await loadOrders(first) }, intervalMs: 15_000,
+      canRead: () => !isDesktopAccessLocked() && document.visibilityState !== 'hidden' })
+    refreshOrdersRef.current = poller.wake
+    poller.wake()
+    document.addEventListener('visibilitychange', poller.wake)
+    window.addEventListener('forsage:desktop-access-changed', poller.wake)
     return () => {
       orderLoadRequestRef.current += 1
-      window.clearInterval(timer)
+      poller.stop()
+      document.removeEventListener('visibilitychange', poller.wake)
+      window.removeEventListener('forsage:desktop-access-changed', poller.wake)
     }
   }, [loadOrders])
   useEffect(() => {
     const refreshFromLocalPull = () => {
       orderCacheRef.current.clear()
-      void loadOrders(false)
+      refreshOrdersRef.current()
     }
     window.addEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
     return () => window.removeEventListener('forsage:desktop-sync-completed', refreshFromLocalPull)
@@ -1576,21 +1608,16 @@ export default function OrdersPage() {
   const activeChatId = selection?.kind === 'chat' ? selection.id : null
   useEffect(() => {
     if (!chatMode || offlineMode || !activeChatId) { setMessages([]); return }
-    let cancelled = false
-    let requestId = 0
-    function load() {
-      const currentRequest = ++requestId
-      api.get<{ data: Message[] }>(`/api/v1/chats/${activeChatId}/messages`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS })
-        .then((r) => {
-          if (!cancelled && currentRequest === requestId) setMessages(r.data ?? [])
-        })
-        .catch(() => {})
-    }
-    load()
-    const timer = window.setInterval(load, 2000)
+    const poller = createReadPoller({
+      read: () => api.get<{ data: Message[] }>(`/api/v1/chats/${activeChatId}/messages`, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }),
+      onData: r => setMessages(r.data ?? []), intervalMs: 2000,
+      canRead: () => !isDesktopAccessLocked() && document.visibilityState !== 'hidden',
+    })
+    poller.wake()
+    document.addEventListener('visibilitychange', poller.wake)
     return () => {
-      cancelled = true
-      window.clearInterval(timer)
+      poller.stop()
+      document.removeEventListener('visibilitychange', poller.wake)
     }
   }, [activeChatId, chatMode, offlineMode])
 
@@ -1808,6 +1835,7 @@ export default function OrdersPage() {
       )}
 
       <div className="flex-1 flex flex-col min-w-0">
+        <OrderLanNotice />
         {/* шапка */}
         <header className="bg-white border-b border-gray-100 px-3 md:px-6 py-3 md:py-3.5 min-h-[58px] flex items-center justify-between shrink-0 gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -2277,6 +2305,7 @@ function OrderInlineView({
 
         {/* шапка */}
         <Card>
+          <OrderLanBadge order={order} />
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-2 flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">

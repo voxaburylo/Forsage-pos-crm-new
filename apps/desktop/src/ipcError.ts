@@ -28,6 +28,19 @@ const INTERNAL_CODE_MESSAGES: Record<string, string> = {
   LOCAL_SALE_INVALID_QTY: 'Некоректна кількість товару.',
   LOCAL_PRODUCT_NOT_FOUND: 'Товар не знайдено в локальній базі. Оновіть дані або виберіть товар заново.',
   LOCAL_SALE_INVALID_PRICE: 'Некоректна ціна товару.',
+  LOCAL_SALE_INVALID_AMOUNT: 'Некоректна сума оплати. Перевірте введені суми.',
+  LOCAL_SALE_INVALID_DISCOUNT: 'Знижка має бути невід’ємною і не перевищувати вартість товарів.',
+  LOCAL_SALE_INVALID_BONUS: 'Некоректна сума списання бонусів.',
+  LOCAL_SALE_INVALID_PAYMENT_METHOD: 'Невідомий спосіб оплати. Виберіть його заново.',
+  LOCAL_ASYNC_TRANSACTION_FORBIDDEN: 'Операцію зупинено до збереження через внутрішню помилку. Зверніться до адміністратора.',
+  LOCAL_BACKUP_CORRUPT: 'Резервна копія пошкоджена. Робочу базу не замінено.',
+  LOCAL_BACKUP_MISSING_TABLE: 'Резервна копія неповна: відсутні потрібні дані. Робочу базу не замінено.',
+  LOCAL_BACKUP_BROKEN_REFERENCES: 'Резервна копія має порушені зв’язки між документами. Відновлення з неї заблоковано.',
+  LOCAL_BACKUP_NOT_FORSAGE_DATABASE: 'Це не резервна копія бази Форсажу.',
+  LOCAL_BACKUP_INVALID_SCHEMA: 'Не вдалося перевірити версію резервної копії.',
+  LOCAL_BACKUP_SAME_FILE: 'Не можна записувати резервну копію поверх робочої бази.',
+  LOCAL_BACKUP_TIMEOUT: 'Створення резервної копії не завершилося вчасно. Попередні копії збережено.',
+  LOCAL_BACKUP_INCOMPLETE: 'Резервну копію не завершено. Попередні копії збережено.',
   LOCAL_SALE_PAYMENT_MISMATCH: 'Сума оплати не збігається з сумою чека.',
   LOCAL_PAYMENT_OPERATION_CONFLICT: 'Цей номер операції вже використано для іншого чека.',
   LOCAL_RETURN_OPERATION_CONFLICT: 'Цей номер операції вже використано для іншого повернення.',
@@ -45,6 +58,9 @@ const INTERNAL_CODE_MESSAGES: Record<string, string> = {
   FISCAL_COM_REGISTER_FAILED: 'Не вдалося зареєструвати компонент Cashalot. Перевірте права адміністратора.',
   FISCAL_WORKER_EXITED: 'Служба Cashalot зупинилась. Перезапустіть програму та Cashalot.',
   PRINT_HTML_EMPTY: 'Немає документа для друку.',
+  PRINT_DOCUMENT_LOAD_FAILED: 'Не вдалося підготувати макет друку. Завдання ще не надіслано принтеру.',
+  PRINT_RUNTIME_FILES_MISSING: 'Відсутні службові файли програми для друку. Збережіть роботу, повністю закрийте «Форсаж» і відкрийте знову. Завдання ще не надіслано принтеру.',
+  PRINT_SESSION_REQUIRED: 'Не вдалося відкрити ізольоване вікно друку. Перезапустіть програму.',
   PRINT_TIMEOUT: 'Принтер не відповів вчасно.',
   PRINT_FAILED: 'Не вдалося надрукувати документ.',
   MIRROR_IDENTITY_UNAVAILABLE: 'Не вдалося відкрити захищений ключ серверної копії. Локальні дані збережено; зверніться до адміністратора для відновлення ключа.',
@@ -99,6 +115,10 @@ export function localizeDesktopIpcError(error: unknown): Error {
   }
 
   message = message.replace(IPC_PREFIX, '').replace(/^Error:\s*/i, '').trim()
+  if (/PRINT_SUBMISSION_STARTED|PRINT_OUTCOME_UNKNOWN|print-outcome-unknown|PRINT_NOT_CONFIRMED|TSPL_TOTAL_TIMEOUT|RAW_PRINT_TIMEOUT|TSPL_PRINT_ABORTED/.test(message)) {
+    return new Error('Не вдалося підтвердити результат друку. Документ міг бути надрукований частково або повністю. Перевірте папір і чергу перед повтором.')
+  }
+  if (message.includes('PRINT_REPEAT_CANCELLED')) return new Error('Друк скасовано. Перевірте попереднє завдання у черзі принтера.')
   const lower = message.toLowerCase()
 
   if (lower.includes('foreign key constraint failed')) {

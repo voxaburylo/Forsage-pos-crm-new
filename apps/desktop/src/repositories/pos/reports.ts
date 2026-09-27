@@ -9,6 +9,8 @@
 import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import { businessDateKey, nowIso } from './posShared'
 import { LocalPosFiscal } from './fiscal'
+import { soldItemSuppliers } from './soldItemSuppliers'
+import { allocateReceiptRevenue } from '../../lib/receiptRevenue'
 
 export class LocalPosReports extends LocalPosFiscal {
   dashboardSummary(input: { tenant_id?: string; date_from: string; date_to: string }): any {
@@ -268,14 +270,38 @@ export class LocalPosReports extends LocalPosFiscal {
       ORDER BY qty_net DESC, sold.name COLLATE NOCASE ASC
     `).all(tenantId, dateFrom, dateTo, tenantId) as any[]
 
+    // Allocate over all lines, including services and free-price lines, before filtering.
+    const receiptLines = this.db.prepare(`
+      SELECT s.id AS sale_id, s.total AS receipt_total, si.id, si.total, si.product_id,
+        CAST(ROUND(si.qty * si.core_deposit_amount) AS INTEGER) AS coreTotal
+      FROM sales s JOIN sale_items si ON si.sale_id=s.id AND si.tenant_id=s.tenant_id
+      WHERE s.tenant_id=? AND s.deleted_at IS NULL AND si.deleted_at IS NULL
+        AND s.status IN ('completed', 'returned')
+        AND COALESCE(s.completed_at,s.created_at)>=? AND COALESCE(s.completed_at,s.created_at)<=?
+    `).all(tenantId, dateFrom, dateTo) as { sale_id: string; receipt_total: number; id: string; total: number; coreTotal: number; product_id: string | null }[]
+    const receipts = new Map<string, typeof receiptLines>()
+    for (const line of receiptLines) {
+      const lines = receipts.get(line.sale_id) ?? []
+      lines.push(line)
+      receipts.set(line.sale_id, lines)
+    }
+    const revenues = new Map<string, number>()
+    for (const lines of receipts.values()) {
+      const allocated = allocateReceiptRevenue(Number(lines[0].receipt_total), lines)
+      for (const line of lines) if (line.product_id) {
+        revenues.set(line.product_id, (revenues.get(line.product_id) ?? 0) + allocated.get(line.id)!)
+      }
+    }
+    const suppliers = soldItemSuppliers(this.db, tenantId, rows.map(row => row.product_id))
     return rows.map((row) => ({
       ...row,
+      suppliers: suppliers.get(row.product_id) ?? [],
       qty_sold: Number(row.qty_sold ?? 0),
       qty_returned: Number(row.qty_returned ?? 0),
       qty_net: Number(row.qty_net ?? 0),
-      revenue: Number(row.revenue ?? 0),
+      revenue: revenues.get(row.product_id) ?? 0,
       refund_total: Number(row.refund_total ?? 0),
-      net_revenue: Number(row.net_revenue ?? 0),
+      net_revenue: Math.max(0, (revenues.get(row.product_id) ?? 0) - Number(row.refund_total ?? 0)),
       qty_on_hand: Number(row.qty_on_hand ?? 0),
     }))
   }

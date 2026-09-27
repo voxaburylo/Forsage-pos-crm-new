@@ -108,15 +108,15 @@ export class LocalStaffRepository {
   private readonly pinAttempts = new Map<string, { failures: number; blockedUntil: number }>()
   private readonly passwordAttempts = new Map<string, { failures: number; blockedUntil: number }>()
 
-  constructor(private readonly db: LocalDatabase) {}
+  constructor(private readonly db: LocalDatabase, private readonly diagnose: (reason: string) => void = () => {}) {}
 
-  listUsers(tenantId = DEFAULT_TENANT_ID): any[] {
+  listUsers(tenantId = DEFAULT_TENANT_ID, includeArchived = false): any[] {
     return (this.db.prepare(`
-      SELECT id, phone, full_name, role, is_active, base_rate, rate_period, created_at
+      SELECT id, phone, full_name, role, is_active, base_rate, rate_period, created_at, deleted_at
       FROM staff_users
-      WHERE tenant_id = ? AND deleted_at IS NULL
+      WHERE tenant_id = ? AND (? = 1 OR deleted_at IS NULL)
       ORDER BY is_active DESC, full_name COLLATE NOCASE ASC
-    `).all(tenantId) as any[]).map((row) => ({
+    `).all(tenantId, includeArchived ? 1 : 0) as any[]).map((row) => ({
       ...row,
       phone: row.phone ?? '',
       email: '',
@@ -223,21 +223,31 @@ export class LocalStaffRepository {
       UPDATE staff_users SET password_hash = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(hashSecret(password), nowIso(), id, tenantId)
+    this.passwordAttempts.delete(`${tenantId}:${normalizePhone(user.phone)}`)
     return { success: true }
   }
 
   updateUser(id: string, input: any, tenantId = DEFAULT_TENANT_ID): any {
+    return this.db.transaction(() => this.updateUserInTransaction(id, input, tenantId))
+  }
+
+  private updateUserInTransaction(id: string, input: any, tenantId: string): any {
     const current = this.requireUser(id, tenantId)
     const fullName = input.full_name === undefined ? current.full_name : String(input.full_name).trim()
     const role = input.role ?? current.role
     const noProgramAccess = role === 'tire_worker'
-    const phone = noProgramAccess ? '' : (input.phone === undefined ? current.phone : String(input.phone).trim())
+    const phone = noProgramAccess ? '' : `+${normalizePhone(input.phone === undefined ? current.phone : String(input.phone))}`
     if (!fullName) throw new Error('Вкажіть ім’я співробітника')
+    if (!['owner','admin','manager','cashier','storekeeper','sto_viewer','tire_worker'].includes(role)) throw new Error('Некоректна роль працівника')
+    if (!noProgramAccess && !/^\+380\d{9}$/.test(phone)) throw new Error('Невірний формат телефону (+380XXXXXXXXX)')
+    if (input.base_rate !== undefined && (!Number.isSafeInteger(input.base_rate) || input.base_rate < 0)) throw new Error('Некоректна ставка')
+    if (current.role === 'owner' && (role !== 'owner' || input.is_active === false)) this.requireAnotherOwner(id, tenantId)
     if (phone) {
-      const duplicate = this.db.prepare(`
-        SELECT id FROM staff_users
-        WHERE tenant_id = ? AND phone = ? AND id <> ? AND deleted_at IS NULL LIMIT 1
-      `).get(tenantId, phone, id)
+      const candidates = this.db.prepare(`
+        SELECT id, phone FROM staff_users
+        WHERE tenant_id = ? AND id <> ? AND deleted_at IS NULL
+      `).all(tenantId, id) as Array<{id: string; phone: string | null}>
+      const duplicate = candidates.find(row => normalizePhone(row.phone ?? '') === normalizePhone(phone))
       if (duplicate) throw new Error('Співробітник з таким телефоном вже існує')
     }
     const timestamp = nowIso()
@@ -266,7 +276,9 @@ export class LocalStaffRepository {
   }
 
   deleteUser(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
-    this.requireUser(id, tenantId)
+    return this.db.transaction(() => {
+    const current = this.requireUser(id, tenantId)
+    if (current.role === 'owner') this.requireAnotherOwner(id, tenantId)
     const timestamp = nowIso()
     this.db.prepare(`
       UPDATE staff_users SET is_active = 0, deleted_at = ?, dirty_at = ?, updated_at = ?
@@ -274,6 +286,53 @@ export class LocalStaffRepository {
     `).run(timestamp, timestamp, timestamp, id, tenantId)
     this.addOutbox(tenantId, 'staff_user', id, 'staff_user.deleted', { id }, timestamp)
     return { ok: true }
+    })
+  }
+
+  restoreUser(id: string, tenantId = DEFAULT_TENANT_ID): any {
+    return this.db.transaction(() => {
+      const current = this.db.prepare('SELECT * FROM staff_users WHERE id = ? AND tenant_id = ?').get(id, tenantId) as any
+      if (!current) throw new Error('Працівника не знайдено')
+      if (!current.deleted_at) return this.listUsers(tenantId).find(user => user.id === id)
+      const phone = normalizePhone(current.phone)
+      if (phone && this.listUsers(tenantId).some(user => user.id !== id && normalizePhone(user.phone) === phone)) {
+        throw new Error('Цей телефон уже належить іншому працівнику. Змініть його в активній картці перед відновленням.')
+      }
+      const timestamp = nowIso()
+      this.db.prepare('UPDATE staff_users SET deleted_at = NULL, is_active = 1, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
+        .run(timestamp, timestamp, id, tenantId)
+      const restored = this.listUsers(tenantId).find(user => user.id === id)
+      this.addOutbox(tenantId, 'staff_user', id, 'staff_user.updated', { ...restored, deleted_at: null }, timestamp)
+      this.passwordAttempts.delete(`${tenantId}:${phone}`)
+      this.pinAttempts.delete(`${tenantId}:${id}`)
+      return restored
+    })
+  }
+
+  private requireAnotherOwner(id: string, tenantId: string): void {
+    const other = this.db.prepare("SELECT id FROM staff_users WHERE tenant_id = ? AND id <> ? AND role = 'owner' AND is_active = 1 AND deleted_at IS NULL LIMIT 1").get(tenantId, id)
+    if (!other) throw new Error('Не можна вимкнути або видалити останнього власника')
+  }
+
+  saveUserSettings(id: string, input: any, rules: any[], tenantId = DEFAULT_TENANT_ID): any {
+    if (!Array.isArray(rules) || rules.length > 3) throw new Error('Некоректні правила зарплати')
+    const managedTypes = ['personal_sales', 'pos_sales', 'order_sales', 'tire_service']
+    const unique = new Set<string>()
+    for (const rule of rules) {
+      if (!['pos_sales', 'order_sales', 'tire_service'].includes(rule.rule_type) || unique.has(rule.rule_type)) throw new Error('Некоректне або повторне правило зарплати')
+      unique.add(rule.rule_type)
+      for (const value of [rule.pct_from_revenue, rule.pct_from_profit]) {
+        if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('Відсоток має бути від 0 до 100')
+      }
+    }
+    return this.db.transaction(() => {
+      const user = this.updateUser(id, input, tenantId)
+      for (const old of this.listCommissionRules(tenantId)) {
+        if (old.user_id === id && !old.brand_id && !old.category_id && managedTypes.includes(old.rule_type)) this.deleteCommissionRule(old.id, tenantId)
+      }
+      for (const rule of rules) this.createCommissionRule({ ...rule, user_id: id, brand_id: null, category_id: null }, tenantId)
+      return user
+    })
   }
 
   adoptServerAuthenticatedPassword(
@@ -312,12 +371,16 @@ export class LocalStaffRepository {
     }
 
     const row = (this.db.prepare(`
-      SELECT id, tenant_id, full_name, role, phone, password_hash, is_active, created_at, updated_at
+      SELECT id, tenant_id, full_name, role, phone, password_hash, is_active, created_at, updated_at, deleted_at
       FROM staff_users
-      WHERE tenant_id = ? AND deleted_at IS NULL
-      ORDER BY is_active DESC, updated_at DESC
+      WHERE tenant_id = ?
+      ORDER BY (deleted_at IS NULL) DESC, is_active DESC, updated_at DESC
     `).all(tenantId) as any[]).find((candidate) => normalizePhone(candidate.phone) === normalizedPhone)
 
+    if (row?.deleted_at) { this.diagnose('account-archived'); throw new Error('[LOCAL_AUTH_ARCHIVED] Працівника видалено. Власник може відновити його в архіві команди.') }
+    if (row && Number(row.is_active) !== 1) { this.diagnose('account-disabled'); throw new Error('[LOCAL_AUTH_DISABLED] Доступ працівника вимкнено. Зверніться до власника.') }
+    if (row?.role === 'tire_worker' && normalizedPhone) { this.diagnose('role-no-access'); throw new Error('[LOCAL_AUTH_DISABLED] Шиномонтажник не має доступу до програми') }
+    if (row && row.role !== 'tire_worker' && !row.password_hash) { this.diagnose('local-credentials-missing'); throw new Error('[LOCAL_AUTH_MISSING] На цьому ПК ще немає пароля працівника. Для першого входу потрібен інтернет.') }
     const valid = Boolean(
       row
       && Number(row.is_active) === 1
@@ -326,6 +389,7 @@ export class LocalStaffRepository {
       && verifySecret(row.password_hash, password, row.id),
     )
     if (!valid) {
+      this.diagnose(row ? 'password-mismatch' : 'account-not-found')
       const failures = (attempt?.failures ?? 0) + 1
       this.passwordAttempts.set(attemptKey, {
         failures: failures >= 10 ? 0 : failures,
@@ -337,6 +401,7 @@ export class LocalStaffRepository {
     }
 
     this.passwordAttempts.delete(attemptKey)
+    this.diagnose('login-ok')
     if (secretHashNeedsUpgrade(row.password_hash)) {
       this.db.prepare(`
         UPDATE staff_users SET password_hash = ?, updated_at = ?
@@ -418,9 +483,13 @@ export class LocalStaffRepository {
   }
 
   createCommissionRule(input: any, tenantId = DEFAULT_TENANT_ID): any {
+    return this.db.transaction(() => this.createCommissionRuleInTransaction(input, tenantId))
+  }
+
+  private createCommissionRuleInTransaction(input: any, tenantId: string): any {
     const revenue = Number(input.pct_from_revenue ?? 0)
     const profit = Number(input.pct_from_profit ?? 0)
-    if (revenue < 0 || revenue > 100 || profit < 0 || profit > 100) throw new Error('Відсоток має бути від 0 до 100')
+    if (!Number.isFinite(revenue) || !Number.isFinite(profit) || revenue < 0 || revenue > 100 || profit < 0 || profit > 100) throw new Error('Відсоток має бути від 0 до 100')
     if (input.user_id) {
       const employee = this.requireUser(input.user_id, tenantId)
       if (employee.role === 'owner') throw new Error('Власник не входить до зарплатної відомості працівників')
@@ -442,6 +511,7 @@ export class LocalStaffRepository {
   }
 
   deleteCommissionRule(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    return this.db.transaction(() => {
     const timestamp = nowIso()
     const result = this.db.prepare(`
       UPDATE commission_rules SET deleted_at = ?, dirty_at = ?, updated_at = ?
@@ -450,14 +520,20 @@ export class LocalStaffRepository {
     if (Number(result.changes) === 0) throw new Error('Правило комісії не знайдено')
     this.addOutbox(tenantId, 'commission_rule', id, 'commission_rule.deleted', { id }, timestamp)
     return { ok: true }
+    })
   }
 
-  listSalary(input: { tenant_id?: string; period?: string; employee_id?: string } = {}): any[] {
+  listSalary(input: { tenant_id?: string; period?: string; employee_id?: string; page?: number; per_page?: number } = {}, unlimited = false): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const params: Array<string | number | null> = [tenantId]
     let where = ''
     if (input.period) { where += ' AND period = ?'; params.push(input.period) }
     if (input.employee_id) { where += ' AND employee_id = ?'; params.push(input.employee_id) }
+    if (!unlimited) {
+      const size = Number(input.per_page ?? 200), page = Number(input.page ?? 1)
+      if (!Number.isSafeInteger(size) || size < 1 || size > 500 || !Number.isSafeInteger(page) || page < 1 || page > 1_000_000) throw new Error('Некоректна сторінка історії зарплати')
+      params.push(size, (page - 1) * size)
+    }
     return this.db.prepare(`
       SELECT id, employee_id, employee_name, amount, type, method, period, note,
              work_date, source, shift_id, cash_operation_id, created_at
@@ -469,11 +545,11 @@ export class LocalStaffRepository {
             AND owner.tenant_id = salary_payments.tenant_id
             AND owner.role = 'owner' AND owner.deleted_at IS NULL
         )
-    ` + where + ' ORDER BY created_at DESC LIMIT 200').all(...params) as any[]
+    ` + where + ' ORDER BY created_at DESC, id DESC' + (unlimited ? '' : ' LIMIT ? OFFSET ?')).all(...params) as any[]
   }
 
   salarySummary(period = currentPeriod(), tenantId = DEFAULT_TENANT_ID): any[] {
-    return this.aggregateSalary(this.listSalary({ tenant_id: tenantId, period }))
+    return this.aggregateSalary(this.listSalary({ tenant_id: tenantId, period }, true))
   }
 
   dailySummary(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any[] {
@@ -522,21 +598,36 @@ export class LocalStaffRepository {
       GROUP BY employee_id
     `).all(tenantId, workDate) as any[]
     const salaryByWorker = new Map(salaryRows.map((row) => [String(row.employee_id), row]))
+    const salaryOperations = this.db.prepare(`
+      SELECT p.id, p.employee_id, p.type, p.source, p.amount, p.method, p.note,
+        p.work_date, p.created_at, p.created_by, p.commission_source_sale_id AS sale_id,
+        u.full_name AS cashier_name, c.source AS fund_source
+      FROM salary_payments p
+      JOIN staff_users employee ON employee.id = p.employee_id AND employee.tenant_id = p.tenant_id AND employee.role = 'tire_worker'
+      LEFT JOIN staff_users u ON u.id = p.created_by AND u.tenant_id = p.tenant_id
+      LEFT JOIN cash_operations c ON c.id = p.cash_operation_id AND c.tenant_id = p.tenant_id
+      WHERE p.tenant_id = ? AND p.work_date = ? AND p.deleted_at IS NULL
+      ORDER BY p.created_at, p.id
+    `).all(tenantId, workDate) as any[]
     const candidateReceipts = this.db.prepare(`
       SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
-        sale.payment_method, sale.total, sale.cash_amount,
+        sale.payment_method, sale.total, sale.cash_amount, sale.notes, sale.cashier_id,
+        cashier.full_name AS cashier_name,
+        json_group_array(json_object('id', item.id, 'description', COALESCE(NULLIF(item.description, ''), product.name, 'Послуги шиномонтажу'),
+          'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total)) AS services_json,
         COALESCE(SUM(item.qty), 0) AS services_qty,
         COALESCE(SUM(item.total), 0) AS service_revenue
       FROM sales sale
       JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id AND item.deleted_at IS NULL
       LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
+      LEFT JOIN staff_users cashier ON cashier.id = sale.cashier_id AND cashier.tenant_id = sale.tenant_id
       WHERE sale.tenant_id = ? AND sale.status = 'completed' AND sale.deleted_at IS NULL
         AND sale.manager_id IS NOT NULL
-        AND COALESCE(product.sku, item.sku, '') = 'POS-TIRE-SERVICE'
+        AND COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'
         AND datetime(sale.completed_at) >= datetime(?, '-1 day')
         AND datetime(sale.completed_at) < datetime(?, '+2 day')
       GROUP BY sale.id
-      ORDER BY datetime(sale.completed_at) DESC
+      ORDER BY datetime(sale.completed_at), sale.id
     `).all(tenantId, workDate, workDate) as any[]
     const workerNames = new Map(workers.map((worker) => [String(worker.employee_id), String(worker.employee_name)]))
     const receipts = candidateReceipts
@@ -553,6 +644,11 @@ export class LocalStaffRepository {
           employee_id: row.employee_id, employee_name: workerNames.get(String(row.employee_id)) ?? 'Шиномонтажник',
           services_qty: Number(row.services_qty ?? 0), service_revenue: serviceRevenue,
           cash_revenue: cashRevenue, payment_method: row.payment_method, total: saleTotal,
+          cashier_id: row.cashier_id, cashier_name: row.cashier_name ?? null, notes: row.notes ?? null,
+          services: JSON.parse(row.services_json),
+          commission_earned: salaryOperations.filter(operation => operation.sale_id === row.id
+            && operation.employee_id === row.employee_id && operation.source === 'commission')
+            .reduce((sum, operation) => sum + money(operation.amount), 0),
         }
       })
     const handovers = this.db.prepare(`
@@ -563,6 +659,15 @@ export class LocalStaffRepository {
       GROUP BY employee_id
     `).all(tenantId, workDate) as any[]
     const handedByWorker = new Map(handovers.map((row) => [String(row.employee_id), money(row.amount)]))
+    const cashHandovers = this.db.prepare(`
+      SELECT c.id, c.employee_id, c.amount, c.work_date, c.created_at, c.notes AS note,
+        c.user_id AS created_by, u.full_name AS cashier_name
+      FROM cash_operations c
+      JOIN staff_users employee ON employee.id = c.employee_id AND employee.tenant_id = c.tenant_id AND employee.role = 'tire_worker'
+      LEFT JOIN staff_users u ON u.id = c.user_id AND u.tenant_id = c.tenant_id
+      WHERE c.tenant_id = ? AND c.type = 'cash_in' AND c.source = 'cashbox' AND c.work_date = ? AND c.deleted_at IS NULL
+      ORDER BY c.created_at, c.id
+    `).all(tenantId, workDate)
     const availableOn = new Date(`${workDate}T12:00:00Z`)
     availableOn.setUTCDate(availableOn.getUTCDate() + 2)
     const salaryAvailableOn = availableOn.toISOString().slice(0, 10)
@@ -589,12 +694,13 @@ export class LocalStaffRepository {
         services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
         service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
         commission_earned: money(salary.commission_earned), daily_rate: recordedDailyRate + projectedDailyRate,
+        daily_rate_projected: projectedDailyRate,
         earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
         salary_ready: salaryReady, payable_due: salaryReady ? due : 0,
       }
     })
     return {
-      data, receipts, date: workDate, totals: {
+      data, receipts, salary_operations: salaryOperations, cash_handovers: cashHandovers, details_version: 1, date: workDate, totals: {
         services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
         service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
         cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),

@@ -13,10 +13,12 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { BackupSettingsCard } from './BackupSettingsCard'
+import { BuildInfoSummary } from './BuildInfoSummary'
 import { ProblemLogCard } from './ProblemLogCard'
+import { ServerCopyStatusCard } from './ServerCopyStatusCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
-import { LoginSecurityCard } from './LoginSecurityCard'
+
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
 
@@ -399,17 +401,20 @@ export default function SettingsPage() {
                       {desktopRuntime.databasePath}
                     </p>
                   )}
+                  <BuildInfoSummary build={desktopRuntime?.build} />
                 </div>
               </div>
             </Card>
           )}
+
+          {isDesktopRuntime() && <ServerCopyStatusCard />}
 
           {isDesktopRuntime() && <ProblemLogCard />}
 
           {isDesktopRuntime() && <BackupSettingsCard />}
 
           {isDesktopRuntime() && <LanSettingsCard />}
-          {isDesktopRuntime() && <LoginSecurityCard />}
+
 
           {isDesktopRuntime() && <FiscalSettingsCard />}
 

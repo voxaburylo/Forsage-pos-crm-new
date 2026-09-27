@@ -59,7 +59,10 @@ async function removeProductPhotoObjects(urls: string[]): Promise<number> {
 
 
 function phoneToEmail(phone: string): string {
-  return `${phone.replace(/\D/g, '')}@forsage.internal`
+  let digits = phone.replace(/\D/g, '')
+  if (digits.startsWith('0')) digits = `38${digits}`
+  else if (digits.startsWith('80')) digits = `3${digits}`
+  return `${digits}@forsage.internal`
 }
 
 // ===================== USERS =====================
@@ -74,6 +77,7 @@ function mapSupabaseUser(u: any) {
     full_name: userMeta.full_name ?? '',
     role:      appMeta.role ?? 'cashier',
     is_active: appMeta.is_active !== false,
+    deleted_at: appMeta.deleted_at ?? null,
     base_rate: appMeta.base_rate ?? 0,
     rate_period: appMeta.rate_period ?? 'month',
     created_at: u.created_at,
@@ -99,10 +103,10 @@ async function listAllAuthUsers(): Promise<any[]> {
   }
 }
 
-export async function listUsers(tenantId: string) {
+export async function listUsers(tenantId: string, includeArchived = false) {
   const users = await listAllAuthUsers()
   return users
-    .filter((user) => user.app_metadata?.tenant_id === tenantId)
+    .filter((user) => user.app_metadata?.tenant_id === tenantId && (includeArchived || !user.app_metadata?.deleted_at))
     .map(mapSupabaseUser)
 }
 
@@ -116,7 +120,9 @@ export async function createUser(input: CreateUserInput, tenantId: string) {
   if (!noProgramAccess) {
     const existing = await listAllAuthUsers()
     const dup = existing.find((u) => u.email === email)
-    if (dup) throw new AppError('PHONE_DUPLICATE', `Користувач з телефоном ${phone} вже існує`, 409)
+    if (dup) throw new AppError('PHONE_DUPLICATE', dup.app_metadata?.tenant_id === tenantId && (dup.app_metadata?.deleted_at || dup.app_metadata?.is_active === false)
+      ? 'Цей працівник уже є в команді або архіві. Відновіть його картку — не створюйте нову.'
+      : 'Працівник із цим телефоном уже існує. Відкрийте його картку.', 409)
   }
 
   const { data, error } = await supabaseAdmin.auth.admin.createUser({
@@ -150,6 +156,8 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
 
   const currentUserMeta = existing.user.user_metadata ?? {}
   const currentAppMeta = existing.user.app_metadata ?? {}
+  if (currentAppMeta.deleted_at) throw new AppError('USER_ARCHIVED', 'Спочатку відновіть працівника з архіву', 409)
+  if (currentAppMeta.role === 'owner' && (input.role && input.role !== 'owner' || input.is_active === false)) await requireAnotherOwner(id, tenantId)
   
   if (input.phone !== undefined && input.phone !== currentUserMeta.phone) {
     const email = phoneToEmail(input.phone)
@@ -166,7 +174,8 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
     },
     app_metadata: {
       ...currentAppMeta,
-      ...(input.role      !== undefined ? { role: input.role, can_login: input.role !== 'tire_worker' } : {}),
+      can_login: (input.role ?? currentAppMeta.role) !== 'tire_worker' && (input.is_active ?? currentAppMeta.is_active) !== false,
+      ...(input.role      !== undefined ? { role: input.role } : {}),
       ...(input.is_active !== undefined ? { is_active: input.is_active } : {}),
       ...(input.base_rate !== undefined ? { base_rate: input.base_rate } : {}),
       ...(input.rate_period !== undefined ? { rate_period: input.rate_period } : {}),
@@ -180,7 +189,7 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, updatePayload)
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
-  return data.user
+  return mapSupabaseUser(data.user)
 }
 
 export async function resetPassword(id: string, newPassword: string, tenantId: string) {
@@ -202,12 +211,18 @@ export async function deactivateUser(id: string, tenantId: string) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
   }
 
+  if (existing.user.app_metadata?.role === 'owner') await requireAnotherOwner(id, tenantId)
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, {
-    app_metadata: { ...existing.user.app_metadata, is_active: false },
+    app_metadata: { ...existing.user.app_metadata, is_active: false, can_login: false },
   })
 
   if (error) throw new AppError('DB_ERROR', error.message, 500)
   return data.user
+}
+
+async function requireAnotherOwner(id: string, tenantId: string): Promise<void> {
+  const users = await listUsers(tenantId)
+  if (!users.some(user => user.id !== id && user.role === 'owner' && user.is_active)) throw new AppError('LAST_OWNER', 'Не можна вимкнути або видалити останнього власника', 409)
 }
 
 export async function deleteUser(id: string, tenantId: string) {
@@ -215,19 +230,23 @@ export async function deleteUser(id: string, tenantId: string) {
   if (!existing.user || existing.user.app_metadata?.tenant_id !== tenantId) {
     throw new AppError('USER_NOT_FOUND', 'Користувача не знайдено', 404)
   }
-  // 1. Clean up references
-  await db.from('warehouse_movements').update({ moved_by: null }).eq('moved_by', id).eq('tenant_id', tenantId)
-  await db.from('staff_kpi_targets').delete().eq('user_id', id).eq('tenant_id', tenantId)
+  // Preserve the author of sales, stock movements and payroll; archiving is reversible.
+  if (existing.user.app_metadata?.role === 'owner') await requireAnotherOwner(id, tenantId)
+  const { error } = await supabaseAdmin.auth.admin.updateUserById(id, {
+    app_metadata: { ...existing.user.app_metadata, is_active: false, can_login: false, deleted_at: new Date().toISOString() },
+  })
+  if (error) throw new AppError('DB_ERROR', error.message, 500)
+}
 
-  // 2. Delete user from Supabase Auth. If deletion fails, revoke the old JWT
-  // immediately through trusted app_metadata before reporting the error.
-  const { error } = await supabaseAdmin.auth.admin.deleteUser(id)
-  if (error) {
-    await supabaseAdmin.auth.admin.updateUserById(id, {
-      app_metadata: { ...existing.user.app_metadata, is_active: false },
-    })
-    throw new AppError('DB_ERROR', error.message, 500)
-  }
+export async function restoreUser(id: string, tenantId: string) {
+  const { data: existing, error: readError } = await supabaseAdmin.auth.admin.getUserById(id)
+  if (readError || !existing.user || existing.user.app_metadata?.tenant_id !== tenantId) throw new AppError('USER_NOT_FOUND', 'Працівника не знайдено', 404)
+  const meta = existing.user.app_metadata ?? {}
+  const { data, error } = await supabaseAdmin.auth.admin.updateUserById(id, {
+    app_metadata: { ...meta, deleted_at: null, is_active: true, can_login: meta.role !== 'tire_worker' },
+  })
+  if (error) throw new AppError('AUTH_ERROR', error.message, 500)
+  return mapSupabaseUser(data.user)
 }
 
 

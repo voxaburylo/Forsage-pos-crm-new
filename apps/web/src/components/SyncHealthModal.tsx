@@ -43,12 +43,8 @@ function formatMoment(value: string): string {
 }
 
 /**
- * Вікно тільки показує стан — жодної кнопки.
- *
- * Черга розбирається сама: відправка йде кожні десять секунд, застрягле
- * повторюється, а те, що сервер не прийме ніколи, каса знімає й вирівнює
- * залишок зі свого боку. Натискати тут нічого не треба, і саме тому нема чого.
- * Власник заглядає сюди, тільки якщо хоче побачити, що саме ще в дорозі.
+ * Read-only diagnostics opened explicitly from Settings, never from the work screen.
+ * The background worker owns retries. This window does not modify stock or the queue.
  */
 export function SyncHealthModal({ open, onClose, status }: Props) {
   const [operations, setOperations] = useState<DesktopSyncStuckOperation[]>([])
@@ -70,11 +66,11 @@ export function SyncHealthModal({ open, onClose, status }: Props) {
   const waiting = (status?.pending ?? 0) + (status?.retrying ?? 0)
 
   return (
-    <Modal open={open} onClose={onClose} title="Синхронізація з сервером" size="xl">
+    <Modal open={open} onClose={onClose} title="Стан копії для вебперегляду" size="xl">
       <div className="space-y-4">
         <div className="grid grid-cols-3 gap-3">
-          <SummaryTile label="Чекають відправки" value={waiting} tone="neutral" />
-          <SummaryTile label="Не відправлено" value={status?.stuck ?? 0} tone="danger" />
+          <SummaryTile label="Чекають відправки" value={status ? waiting : '—'} tone="neutral" />
+          <SummaryTile label="Не відправлено" value={status?.stuck ?? '—'} tone="danger" />
           <SummaryTile
             label="Останній обмін"
             value={status?.pull_last_success_at ? formatMoment(status.pull_last_success_at) : '—'}
@@ -92,8 +88,10 @@ export function SyncHealthModal({ open, onClose, status }: Props) {
           <p className="rounded-lg bg-gray-50 px-3 py-6 text-center text-sm text-gray-500">
             {loading
               ? 'Завантаження…'
-              : waiting > 0
-                ? 'Усе в дорозі — решта поїде автоматично.'
+              : !status
+                ? 'Стан копії поки недоступний. Локальна робота триває.'
+                : waiting > 0
+                ? 'Є операції в черзі. Програма повторює передавання у фоні.'
                 : 'Усе синхронізовано.'}
           </p>
         ) : (
@@ -127,9 +125,8 @@ export function SyncHealthModal({ open, onClose, status }: Props) {
               </table>
             </div>
             <p className="mt-2 text-xs text-gray-500">
-              Дані не втрачені — вони збережені на цьому компʼютері, і каса повторює відправку сама.
-              Те, що сервер не прийме ніколи, вона знімає з черги теж сама і вирівнює залишок зі свого
-              боку. Робити тут нічого не треба; якщо рядок висить тиждень — покажіть його розробнику.
+              Локальна база залишається основною. Черга передавання не змінює залишки на касі.
+              Якщо помилка довго не зникає, її можна перевірити в журналі проблем.
             </p>
           </div>
         )}

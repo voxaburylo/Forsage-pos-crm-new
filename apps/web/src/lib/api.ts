@@ -1,6 +1,7 @@
 import { withRequestDeadline } from './requestDeadline'
 import { isDesktopRuntime } from './desktopBridge'
 import { API_BASE_URL } from './apiBaseUrl'
+import { apiValidationError } from './apiValidationError'
 
 const DEFAULT_API_REQUEST_TIMEOUT_MS = 60_000
 const SAFE_API_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -28,6 +29,11 @@ async function getAccessToken(): Promise<string | null> {
   try {
     const { supabase } = await import('./supabase')
     const { data } = await supabase.auth.getSession()
+    if (isDesktopRuntime()) {
+      const { useAuthStore } = await import('@/stores/authStore')
+      const local = useAuthStore.getState().session
+      if (!data.session || data.session.user.id !== local?.user.id || data.session.user.app_metadata?.tenant_id !== local?.user.app_metadata?.tenant_id) return null
+    }
     return data.session?.access_token ?? null
   } catch {
     return null
@@ -55,6 +61,11 @@ async function refreshToken(): Promise<string | null> {
     const { supabase } = await import('./supabase')
     const { data, error } = await supabase.auth.refreshSession()
     if (error || !data.session) return null
+    if (isDesktopRuntime()) {
+      const { useAuthStore } = await import('@/stores/authStore')
+      const local = useAuthStore.getState().session
+      if (data.session.user.id !== local?.user.id || data.session.user.app_metadata?.tenant_id !== local?.user.app_metadata?.tenant_id) return null
+    }
     return data.session.access_token
   } catch {
     return null
@@ -114,7 +125,9 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
     // Серверна авторизація не повинна закривати робочу локальну касу.
     // Після відновлення онлайн-сесії фоновий обмін повторить запит.
     if (isDesktopRuntime()) {
-      throw new Error('Серверна сесія ще не відновлена. Локальна програма продовжує працювати.')
+      throw Object.assign(new Error('Серверна сесія ще не відновлена. Локальна програма продовжує працювати.'), {
+        status: 401, code: 'DESKTOP_SERVER_AUTH_REQUIRED',
+      })
     }
     // Refresh не вдався — виходимо на логін
     try {
@@ -132,6 +145,7 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
       const body = await res.json()
       errorCode = body?.error?.code
       errorMessage = body?.error?.message ?? errorMessage
+      errorMessage = apiValidationError(path, errorMessage, errorCode, body?.error?.details)
       // Технічні префікси кодів із БД-помилок (INSUFFICIENT_STOCK: ...) користувачу не потрібні
       errorMessage = errorMessage.replace(/^[A-Z][A-Z_]{2,}:\s*/, '')
       errorMessage = humanizeApiError(errorMessage, errorCode)

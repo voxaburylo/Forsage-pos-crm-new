@@ -1,3 +1,4 @@
+import { normalizeCatalogSearchQuery, articleSearchTerms } from '../lib/catalogSearchQuery'
 import { randomUUID } from 'node:crypto'
 import { catalogLanguageTokenGroups } from '../lib/catalogLanguageSearch'
 import type { LocalDatabase } from '../db/localDatabase'
@@ -53,6 +54,7 @@ export interface LocalProductListResult {
 
 export interface LocalProductSaveOptions {
   reuseExistingSku?: boolean
+  restoreArchivedSku?: boolean
 }
 
 export interface LocalCatalogCategory {
@@ -100,6 +102,8 @@ export function catalogCodesFromName(value: string | null | undefined): string[]
 }
 
 function productSearchNeedles(raw: string): string[] {
+  const articleTerms = articleSearchTerms(raw)
+  if (articleTerms.length) return [...new Set(articleTerms.map(normalizeSearchText))]
   const values = new Set<string>()
   const normalized = normalizeSearchText(raw)
   if (normalized) values.add(normalized)
@@ -150,6 +154,17 @@ function productSearchText(product: LocalProductUpsert): string {
 }
 
 export class LocalCatalogRepository {
+  private batchSkuIndex: { tenantId: string; rows: Array<{ id: string; key: string; deleted_at: string | null }> } | null = null
+
+  /** Scoped to one synchronous transaction: never keep a stale catalog between commands. */
+  withSkuLookupIndex<T>(tenantId: string, work: () => T): T {
+    const previous = this.batchSkuIndex
+    const rows = this.db.prepare(`SELECT id, sku, deleted_at FROM products WHERE tenant_id = ?
+      ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC`).all(tenantId) as Array<{ id: string; sku: string; deleted_at: string | null }>
+    this.batchSkuIndex = { tenantId, rows: rows.map(row => ({ id: row.id, key: normalizedSkuLookup(row.sku), deleted_at: row.deleted_at })) }
+    try { return work() } finally { this.batchSkuIndex = previous }
+  }
+
   constructor(private readonly db: LocalDatabase) {
     this.repairProductSearchIndex()
   }
@@ -220,6 +235,10 @@ export class LocalCatalogRepository {
   private saveProductInTransaction(input: LocalProductUpsert, options: LocalProductSaveOptions): LocalProduct {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const storedById = this.findStoredProductById(input.id, tenantId)
+    if (input.expected_updated_at && (!storedById || storedById.updated_at !== input.expected_updated_at))
+      throw new Error('LOCAL_PRODUCT_STALE|Товар уже змінено іншою операцією. Ваші правки не записано. Повторіть збереження з актуальної картки.')
+    input = { ...input }
+    delete input.expected_updated_at
 
     // Для накладної повторний код постачальника повинен прив'язатися до вже
     // відомої активної картки. Звичайне створення товару й надалі показує
@@ -228,6 +247,7 @@ export class LocalCatalogRepository {
       const storedBySku = this.findStoredProductBySku(input.sku, tenantId, true)
       if (storedBySku) {
         if (storedBySku.deleted_at) {
+          if (options.restoreArchivedSku === false) throw new Error(`Артикул «${input.sku}» належить видаленій картці. Відновіть її свідомо в товарах або виправте артикул; ШІ не відновлює товари автоматично.`)
           if (options.reuseExistingSku) {
             const activeReplacement = this.findActiveReplacement(input, storedBySku, tenantId)
             if (activeReplacement) return activeReplacement
@@ -288,9 +308,10 @@ export class LocalCatalogRepository {
       retail_price: validMoney(input.retail_price, 'Ціна продажу'),
       core_deposit_amount: validMoney(input.core_deposit_amount, 'Застава'),
     }
-    const timestamp = nowIso()
     const searchText = productSearchText(input)
     const stockBefore = this.findStoredProductById(input.id, tenantId)
+    const previousTimestamp = Date.parse(stockBefore?.updated_at ?? '')
+    const timestamp = new Date(Math.max(Date.now(), Number.isFinite(previousTimestamp) ? previousTimestamp + 1 : 0)).toISOString()
 
     this.db.transaction(() => {
       this.db.prepare(`
@@ -494,6 +515,10 @@ export class LocalCatalogRepository {
 
     const product = this.findById(input.id, tenantId)
     if (!product) throw new Error('LOCAL_PRODUCT_UPSERT_FAILED')
+    if (this.batchSkuIndex?.tenantId === tenantId) {
+      this.batchSkuIndex.rows = this.batchSkuIndex.rows.filter(row => row.id !== input.id)
+      this.batchSkuIndex.rows.unshift({ id: input.id, key: normalizedSkuLookup(product.sku), deleted_at: null })
+    }
     return product
   }
 
@@ -505,6 +530,67 @@ export class LocalCatalogRepository {
       ORDER BY created_at ASC
     `).all(tenantId, productId) as Array<{ id: string; number: string; source: string }>
     return rows
+  }
+
+  /** Delta edits retain other numbers and never rewrite prices, stock or barcodes. */
+  changeCrossNumbers(productId: string, change: { add?: string[]; removeId?: string; source?: string }, tenantId = DEFAULT_TENANT_ID) {
+    if (!change || Boolean(change.add) === Boolean(change.removeId)) throw new Error('Вкажіть номери для додавання або номер для видалення')
+    if (change.removeId !== undefined && (typeof change.removeId !== 'string' || !change.removeId.trim())) throw new Error('Невірний номер для видалення')
+    if (change.add && (!Array.isArray(change.add) || !change.add.length || change.add.length > 1000
+      || change.add.some(number => typeof number !== 'string' || !normalizeCatalogCode(number) || number.length > 120))) {
+      throw new Error('Перевірте крос-номери: до 1000 номерів, не більше 120 символів у кожному')
+    }
+    const source = String(change.source ?? 'Внесено менеджером').trim()
+    if (source.length > 200) throw new Error('Джерело номера: не більше 200 символів')
+    return this.db.transaction(() => {
+      const product = this.findStoredProductById(productId, tenantId)
+      if (!product || product.deleted_at) throw new Error('Товар не знайдено')
+      const previous = Date.parse(product.updated_at ?? '')
+      const timestamp = new Date(Math.max(Date.now(), Number.isFinite(previous) ? previous + 1 : 0)).toISOString()
+      let changed = false
+      if (change.add) {
+        const known = new Set(this.listCrossNumbers(productId, tenantId).map(row => normalizeCatalogCode(row.number)))
+        for (const value of change.add) {
+          const number = value.trim()
+          const key = normalizeCatalogCode(number)
+          if (known.has(key)) continue
+          this.db.prepare(`
+            INSERT INTO product_cross_numbers (id, tenant_id, product_id, cross_number, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tenant_id, product_id, cross_number) DO UPDATE SET
+              deleted_at = NULL, source = excluded.source, updated_at = excluded.updated_at
+          `).run(randomUUID(), tenantId, productId, number, source || 'Внесено менеджером', timestamp, timestamp)
+          known.add(key)
+          changed = true
+        }
+      } else {
+        const target = this.db.prepare('SELECT id FROM product_cross_numbers WHERE id = ? AND product_id = ? AND tenant_id = ?')
+          .get(change.removeId!, productId, tenantId)
+        if (!target) throw new Error('Крос-номер уже змінено. Оновіть картку та перевірте список.')
+        changed = this.db.prepare('UPDATE product_cross_numbers SET deleted_at = ?, updated_at = ? WHERE id = ? AND product_id = ? AND tenant_id = ? AND deleted_at IS NULL')
+          .run(timestamp, timestamp, change.removeId!, productId, tenantId).changes > 0
+      }
+      const rows = this.listCrossNumbers(productId, tenantId)
+      if (changed) {
+        this.db.prepare('UPDATE products SET dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
+          .run(timestamp, timestamp, productId, tenantId)
+        const stored = product as LocalProduct & { specs_json?: string; is_favorite?: number; reorder_point?: number; notes?: string; photo_url?: string }
+        const barcodes = this.db.prepare('SELECT barcode FROM product_barcodes WHERE tenant_id = ? AND product_id = ? AND deleted_at IS NULL AND is_primary = 0')
+          .all(tenantId, productId) as Array<{ barcode: string }>
+        this.addProductOutbox('product.upsert', productId, {
+          id: productId, tenant_id: tenantId, sku: stored.sku, name: stored.name, barcode: stored.barcode,
+          brand_id: stored.brand_id, category_id: stored.category_id, unit: stored.unit,
+          purchase_price: stored.purchase_price, retail_price: stored.retail_price, qty_on_hand: stored.qty_on_hand,
+          reorder_point: stored.reorder_point, notes: stored.notes, storage_bin: stored.storage_bin,
+          photo_url: stored.photo_url, core_deposit_amount: stored.core_deposit_amount,
+          is_active: stored.is_active === 1, is_service: stored.is_service === 1,
+          is_favorite: stored.is_favorite === 1, requires_core_return: stored.requires_core_return === 1,
+          specs: JSON.parse(stored.specs_json || '{}'), cross_numbers: rows.map(row => row.number),
+          additional_barcodes: barcodes.map(row => row.barcode),
+        })
+      }
+      return rows
+    })
   }
 
   listAnalogs(productId: string, tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
@@ -651,6 +737,10 @@ export class LocalCatalogRepository {
 
     const lookup = normalizedSkuLookup(raw)
     if (!lookup) return null
+    if (this.batchSkuIndex?.tenantId === tenantId) {
+      const candidate = this.batchSkuIndex.rows.find(row => (includeDeleted || !row.deleted_at) && row.key === lookup)
+      return candidate ? this.findStoredProductById(candidate.id, tenantId) : null
+    }
     const candidates = this.db.prepare(`
       SELECT id, sku, deleted_at
       FROM products
@@ -783,7 +873,7 @@ export class LocalCatalogRepository {
     return row ? (this.attachAvailability([row], tenantId)[0] ?? null) : null
   }
   listProducts(options: LocalProductListOptions = {}, tenantId = DEFAULT_TENANT_ID): LocalProductListResult {
-    const raw = (options.query ?? '').trim()
+    const raw = normalizeCatalogSearchQuery(options.query ?? '')
     const needles = productSearchNeedles(raw)
     const tokens = productSearchTokens(raw)
     const compact = compactLookupCode(raw)
@@ -915,7 +1005,7 @@ export class LocalCatalogRepository {
         SELECT product_id, SUM(qty) AS qty_reserved
         FROM stock_reserves
         WHERE tenant_id = ? AND released_at IS NULL AND deleted_at IS NULL
-          AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
         GROUP BY product_id
       ), matching_page AS MATERIALIZED (
         SELECT p.id, COALESCE(r.qty_reserved, 0) AS qty_reserved
@@ -980,13 +1070,18 @@ export class LocalCatalogRepository {
     `).all(tenantId, tenantId) as unknown as LocalCatalogBrand[]
   }
   createCategory(name: string, sortOrder = 0, tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory {
-    const cleanName = name.trim()
+    return this.db.transaction(() => this.createCategoryInTransaction(name, sortOrder, tenantId))
+  }
+
+  private createCategoryInTransaction(name: string, sortOrder: number, tenantId: string): LocalCatalogCategory {
+    const cleanName = name.trim().replace(/\s+/g, ' ')
     if (!cleanName) throw new Error('Вкажіть назву папки')
-    const existing = this.db.prepare(`
-      SELECT id FROM categories
-      WHERE tenant_id = ? AND deleted_at IS NULL AND lower(name) = lower(?)
-      LIMIT 1
-    `).get(tenantId, cleanName) as { id: string } | undefined
+    if (cleanName.length > 120) throw new Error('Назва папки має містити не більше 120 символів')
+    const normalized = cleanName.normalize('NFKC').toLocaleLowerCase('uk-UA')
+    const existing = (this.db.prepare(`
+      SELECT id, name FROM categories WHERE tenant_id = ? AND deleted_at IS NULL
+    `).all(tenantId) as Array<{ id: string; name: string }>).find(row =>
+      row.name.trim().replace(/\s+/g, ' ').normalize('NFKC').toLocaleLowerCase('uk-UA') === normalized)
     if (existing) throw new Error('Така папка вже існує')
     const id = randomUUID()
     const timestamp = nowIso()
@@ -999,8 +1094,15 @@ export class LocalCatalogRepository {
   }
 
   updateCategory(id: string, name: string, tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory {
+    return this.db.transaction(() => this.updateCategoryInTransaction(id, name, tenantId))
+  }
+
+  private updateCategoryInTransaction(id: string, name: string, tenantId: string): LocalCatalogCategory {
     const cleanName = name.trim()
     if (!cleanName) throw new Error('Вкажіть назву папки')
+    const key = cleanName.normalize('NFKC').replace(/\s+/g, ' ').toLocaleLowerCase('uk-UA')
+    const duplicates = this.db.prepare('SELECT name FROM categories WHERE tenant_id = ? AND id <> ? AND deleted_at IS NULL').all(tenantId, id) as Array<{name:string}>
+    if(duplicates.some(row=>row.name.trim().normalize('NFKC').replace(/\s+/g, ' ').toLocaleLowerCase('uk-UA')===key))throw new Error('Така папка вже існує')
     const timestamp = nowIso()
     const result = this.db.prepare(`
       UPDATE categories SET name = ?, dirty_at = ?, updated_at = ?
@@ -1030,14 +1132,24 @@ export class LocalCatalogRepository {
   }
 
   createBrand(name: string, country: string | null = null, tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand {
+    return this.db.transaction(() => this.createBrandInTransaction(name, country, tenantId))
+  }
+
+  private createBrandInTransaction(name: string, country: string | null, tenantId: string): LocalCatalogBrand {
     const cleanName = name.trim()
     if (!cleanName) throw new Error('Вкажіть назву бренду')
-    const existing = this.db.prepare(`
-      SELECT id FROM brands
-      WHERE tenant_id = ? AND deleted_at IS NULL AND lower(name) = lower(?)
-      LIMIT 1
-    `).get(tenantId, cleanName) as { id: string } | undefined
-    if (existing) throw new Error('Такий бренд вже існує')
+    const normalized = cleanName.normalize('NFKC').toLocaleLowerCase('uk-UA')
+    const matches = (this.db.prepare('SELECT id, name, country, deleted_at FROM brands WHERE tenant_id = ?').all(tenantId) as Array<{id:string;name:string;country:string|null;deleted_at:string|null}>)
+      .filter(row => row.name.trim().normalize('NFKC').toLocaleLowerCase('uk-UA') === normalized)
+    if (matches.some(row => !row.deleted_at)) throw new Error('Такий бренд вже існує')
+    if (matches.length > 1) throw new Error('В архіві є кілька брендів з такою назвою. Потрібна перевірка власника.')
+    if (matches[0]) {
+      const row = { id: matches[0].id, name: cleanName, country: country ?? matches[0].country }
+      const timestamp = nowIso()
+      this.db.prepare('UPDATE brands SET name = ?, country = ?, deleted_at = NULL, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?').run(row.name, row.country, timestamp, timestamp, row.id, tenantId)
+      this.addCatalogOutbox('brand', row.id, 'brand.upsert', row, tenantId, timestamp)
+      return row
+    }
     const id = randomUUID()
     const timestamp = nowIso()
     this.db.prepare(`
@@ -1050,6 +1162,10 @@ export class LocalCatalogRepository {
   }
 
   updateBrand(id: string, input: { name?: string; country?: string | null }, tenantId = DEFAULT_TENANT_ID): LocalCatalogBrand {
+    return this.db.transaction(() => this.updateBrandInTransaction(id, input, tenantId))
+  }
+
+  private updateBrandInTransaction(id: string, input: { name?: string; country?: string | null }, tenantId: string): LocalCatalogBrand {
     const current = this.db.prepare(`
       SELECT id, name, country FROM brands
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
@@ -1178,7 +1294,7 @@ export class LocalCatalogRepository {
   }
 
   searchProducts(query: string, tenantId = DEFAULT_TENANT_ID, limit = 20): LocalProduct[] {
-    const raw = query.trim()
+    const raw = normalizeCatalogSearchQuery(query)
     if (!raw) return []
 
     const exact = this.findByBarcode(raw, tenantId)
@@ -1197,7 +1313,7 @@ export class LocalCatalogRepository {
          AND product_id IN (${placeholders})
          AND released_at IS NULL
          AND deleted_at IS NULL
-         AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+         AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
        GROUP BY product_id`,
     ).all(tenantId, ...productIds) as Array<{ product_id: string; qty_reserved: number }>
     const reservedByProduct = new Map(

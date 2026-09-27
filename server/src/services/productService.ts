@@ -1,3 +1,4 @@
+import { normalizeCatalogSearchQuery, articleSearchTerms } from '../lib/catalogSearchQuery.js'
 import { db } from '../db/supabase.js'
 import { catalogListQuery } from '../repositories/catalogListQuery.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
@@ -67,7 +68,10 @@ function catalogNameVariants(code: string): string[] {
   return [...values].map(cleanProductSearchTerm).filter(Boolean)
 }
 
-function productListSearchTerms(search: string): string[] {
+export function productListSearchTerms(search: string): string[] {
+  search = normalizeCatalogSearchQuery(search)
+  const articleTerms = articleSearchTerms(search)
+  if (articleTerms.length) return articleTerms
   const values = new Set<string>()
   const clean = cleanProductSearchTerm(search)
   if (clean) values.add(clean)
@@ -130,7 +134,8 @@ async function enrichWithAvailability(products: any[]): Promise<any[]> {
 
 export async function listProducts(query: ProductListQuery, tenantId: string) {
   const { pool } = await import('../db/pg.js')
-  const sql = catalogListQuery(query, tenantId, productListSearchTerms(query.search ?? ''))
+  const normalizedQuery = { ...query, search: normalizeCatalogSearchQuery(query.search ?? '') }
+  const sql = catalogListQuery(normalizedQuery, tenantId, productListSearchTerms(normalizedQuery.search))
   const { rows } = await pool.query(sql)
   const total = Number(rows[0]?.total ?? 0)
   return {

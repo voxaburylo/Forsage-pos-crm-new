@@ -1,5 +1,7 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useScopedAction } from '@/hooks/useScopedAction'
 import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
 import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download, Wrench, ClipboardCopy } from 'lucide-react'
@@ -15,9 +17,12 @@ import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import { businessDateKey } from '@/lib/businessDate'
 import { useAuthStore } from '@/stores/authStore'
 import { staffApi } from '@/features/staff/staffApi'
-import type { SalaryFundSource, TireServiceReceipt, TireServiceReportRow } from '@/features/staff/staffApi'
+import type { SalaryFundSource, TireServiceReport, TireServiceReportRow } from '@/features/staff/staffApi'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { TireServiceDetails, tireOperationLabel } from './TireServiceDetails'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { SoldItemsMobile } from './SoldItemsMobile'
+import { filterSoldBySupplier, soldSupplierOptions, soldSupplierNames, soldReorderExport, UNKNOWN_SUPPLIER, supplierReportNote } from './soldSupplierReport'
 
 type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
@@ -64,10 +69,11 @@ function dateKeyDaysAgo(days: number): string {
 }
 
 export default function DailyReport() {
+  const [searchParams] = useSearchParams()
   const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
   const canSeeFullReports = role === 'owner' || role === 'admin'
   const canSeeTireReport = canSeeFullReports || role === 'cashier'
-  const [tab, setTab]           = useState<Tab>(() => canSeeFullReports ? 'today' : 'sold')
+  const [tab, setTab]           = useState<Tab>(() => searchParams.get('tab') === 'tire' && canSeeTireReport ? 'tire' : canSeeFullReports ? 'today' : 'sold')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
   const [report, setReport]     = useState<SalesPeriodReport | null>(null)
@@ -81,16 +87,30 @@ export default function DailyReport() {
 
   // Продані товари за період — один зведений список для дозамовлення.
   const todayKey = businessDateKey()
-  const [soldItems, setSoldItems] = useState<SoldItem[]>([])
+  const [allSoldItems, setSoldItems] = useState<SoldItem[]>([])
   const [soldFrom, setSoldFrom] = useState(todayKey)
   const [soldTo, setSoldTo] = useState(todayKey)
   const [soldLoading, setSoldLoading] = useState(false)
-  const [tireDate, setTireDate] = useState(todayKey)
-  const [tireRows, setTireRows] = useState<TireServiceReportRow[]>([])
-  const [tireReceipts, setTireReceipts] = useState<TireServiceReceipt[]>([])
-  const [tireHandoverEmployee, setTireHandoverEmployee] = useState<string | null>(null)
-  const [tirePayoutEmployee, setTirePayoutEmployee] = useState<string | null>(null)
+  const [soldSupplierId, setSoldSupplierId] = useState('')
+  const supplierOptions = useMemo(() => soldSupplierOptions(allSoldItems), [allSoldItems])
+  const supplierDataAvailable = allSoldItems.every(item => Array.isArray(item.suppliers))
+  const soldItems = useMemo(() => tab === 'sold' && supplierDataAvailable
+    ? filterSoldBySupplier(allSoldItems, soldSupplierId) : allSoldItems, [allSoldItems, tab, soldSupplierId, supplierDataAvailable])
+  const supplierLabel = !soldSupplierId || !supplierDataAvailable ? 'Усі постачальники'
+    : soldSupplierId === UNKNOWN_SUPPLIER ? 'Постачальника не визначено'
+    : supplierOptions.find(item => item.id === soldSupplierId)?.name ?? 'Вибраний постачальник'
+  const [soldError, setSoldError] = useState(false)
+  const [tireDate, setTireDate] = useState(() => {
+    const requested = searchParams.get('date') ?? ''
+    return /^\d{4}-\d{2}-\d{2}$/.test(requested) && requested <= todayKey &&
+      !Number.isNaN(Date.parse(requested)) && new Date(requested).toISOString().slice(0, 10) === requested ? requested : todayKey
+  })
+  const [tireEmployeeId, setTireEmployeeId] = useState(searchParams.get('employee') ?? '')
+  const [tireReport, setTireReport] = useState<TireServiceReport | null>(null)
+  const [tireError, setTireError] = useState(false)
+  const tireRows = useMemo(() => tireReport?.data.filter(row => !tireEmployeeId || row.employee_id === tireEmployeeId) ?? [], [tireReport, tireEmployeeId])
   const [tireLoading, setTireLoading] = useState(false)
+  const tireAction = useScopedAction(JSON.stringify([tab, tireDate, tireEmployeeId, role]))
   const reportRequests = useLatestRequest([tab, dateFrom, dateTo])
   const tireRequests = useLatestRequest([tab, tireDate])
 
@@ -106,14 +126,15 @@ export default function DailyReport() {
   }, [tab, dateFrom, dateTo])
 
   useEffect(() => {
-    setTireRows([])
-    setTireReceipts([])
+    setTireReport(null)
+    setTireError(false)
     setTireLoading(false)
   }, [tab, tireDate])
 
   useEffect(() => {
     setSoldItems([])
     setSoldLoading(false)
+    setSoldError(false)
     if (tab !== 'sold' || !soldFrom || !soldTo || soldFrom > soldTo) return
     let cancelled = false
     setSoldLoading(true)
@@ -122,6 +143,7 @@ export default function DailyReport() {
       .catch(() => {
         if (!cancelled) {
           setSoldItems([])
+          setSoldError(true)
           toast.error('Не вдалося сформувати список проданих товарів')
         }
       })
@@ -135,8 +157,8 @@ export default function DailyReport() {
       toast.error('Немає товарів для копіювання')
       return
     }
-    const text = soldItems.map((item, index) =>
-      `${index + 1}. ${item.name} | арт. ${item.sku || '—'} | продано ${item.qty_net} ${item.unit} | залишок ${item.qty_on_hand} ${item.unit}`,
+    const text = `Продані товари: ${soldFrom} — ${soldTo} | ${supplierLabel}\n` + soldItems.map((item, index) =>
+      `${index + 1}. ${item.name} | арт. ${item.sku || '—'} | продано ${item.qty_net} ${item.unit} | залишок ${item.qty_on_hand} ${item.unit} | ${soldSupplierNames(item)}`,
     ).join('\n')
     try {
       await navigator.clipboard.writeText(text)
@@ -153,7 +175,7 @@ export default function DailyReport() {
     const period = soldFrom === soldTo ? soldFrom : `${soldFrom} — ${soldTo}`
     const rows = soldItems.map((it, i) =>
       `<tr><td>${i + 1}</td><td>${escapeHtml(it.sku)}</td><td>${escapeHtml(it.barcode || '—')}</td>` +
-      `<td>${escapeHtml(it.name)}</td><td style="text-align:right;font-weight:bold">${it.qty_net} ${escapeHtml(it.unit)}</td>` +
+      `<td>${escapeHtml(it.name)}<br><small>${escapeHtml(soldSupplierNames(it))}</small></td><td style="text-align:right;font-weight:bold">${it.qty_net} ${escapeHtml(it.unit)}</td>` +
       `<td style="text-align:right">${it.qty_on_hand} ${escapeHtml(it.unit)}</td></tr>`).join('')
     const w = window.open('', '_blank', 'width=900,height=900')
     if (!w) return
@@ -164,6 +186,7 @@ export default function DailyReport() {
       th{background:#f3f3f3}
     </style></head><body>
       <h3>Продані товари за ${period} — для дозамовлення</h3>
+      <p>${escapeHtml(supplierLabel)}</p><p>${escapeHtml(supplierReportNote)}</p>
       <table><tr><th>#</th><th>Артикул</th><th>Штрихкод</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
     </body></html>`)
     w.document.close()
@@ -249,64 +272,70 @@ export default function DailyReport() {
   }, [])
 
   const loadTireReport = useCallback(async () => {
-    if (!canSeeTireReport) return
+    if (!canSeeTireReport || !tireDate) return
     const isCurrent = tireRequests.begin()
     setTireLoading(true)
+    setTireError(false)
     try {
       const report = await staffApi.tireServiceReport(tireDate)
       if (!isCurrent()) return
-      setTireRows(report.data ?? [])
-      setTireReceipts(report.receipts ?? [])
+      setTireReport(report)
     } catch {
       if (!isCurrent()) return
-      setTireRows([])
-      setTireReceipts([])
+      setTireReport(null)
+      setTireError(true)
       toast.error('Не вдалося завантажити звіт шиномонтажу')
     } finally {
       if (isCurrent()) setTireLoading(false)
     }
   }, [canSeeTireReport, tireDate])
 
-  const handOverTireCash = useCallback(async (row: TireServiceReportRow) => {
-    if (row.cash_pending <= 0 || tireHandoverEmployee) return
+  async function handOverTireCash(row: TireServiceReportRow) {
+    if (!isDesktopRuntime() || !canSeeTireReport || tireLoading || tireError || tireReport?.date !== tireDate || row.cash_pending <= 0) return
+    const attempt = tireAction.begin()
+    if (!attempt) return
     try {
       const { data: shift } = await shiftApi.current({ silent: true })
+      if (!attempt.isCurrent()) return
       if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
       if (!window.confirm(`Внести ${formatMoney(row.cash_pending)} каси шиномонтажу за ${tireDate} від ${row.employee_name} у поточну зміну?`)) return
-      setTireHandoverEmployee(row.employee_id)
       await staffApi.tireCashHandover({
         employee_id: row.employee_id, employee_name: row.employee_name, work_date: tireDate,
         shift_id: shift.id, amount: row.cash_pending, operation_id: crypto.randomUUID(),
       })
+      if (!attempt.isCurrent()) return
       toast.success('Касу шиномонтажу внесено в поточну зміну')
       await loadTireReport()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося внести касу шиномонтажу')
-    } finally { setTireHandoverEmployee(null) }
-  }, [loadTireReport, tireDate, tireHandoverEmployee])
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося внести касу шиномонтажу')
+    } finally { attempt.finish() }
+  }
 
-  const payTireSalary = useCallback(async (row: TireServiceReportRow, fundSource: SalaryFundSource) => {
-    if (!canSeeFullReports || !row.salary_ready || row.payable_due <= 0 || tirePayoutEmployee) return
+  async function payTireSalary(row: TireServiceReportRow, fundSource: SalaryFundSource) {
+    if (!isDesktopRuntime() || !canSeeFullReports || tireLoading || tireError || tireReport?.date !== tireDate || !row.salary_ready || row.payable_due <= 0) return
+    const attempt = tireAction.begin()
+    if (!attempt) return
     try {
       const { data: shift } = await shiftApi.current({ silent: true })
+      if (!attempt.isCurrent()) return
       if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
       const question = fundSource === 'owner_funds'
         ? `Внести ${formatMoney(row.payable_due)} власних коштів власника та одразу виплатити зарплату ${row.employee_name} за ${tireDate}? Залишок каси не зміниться.`
         : `Видати ${formatMoney(row.payable_due)} зарплати ${row.employee_name} за ${tireDate} з поточної каси?`
       if (!window.confirm(question)) return
-      setTirePayoutEmployee(row.employee_id)
       const result = await staffApi.dailyPayout({
         employee_id: row.employee_id, employee_name: row.employee_name, method: 'cash',
         fund_source: fundSource, shift_id: shift.id, work_date: tireDate,
       })
+      if (!attempt.isCurrent()) return
       toast.success(fundSource === 'owner_funds'
         ? `Виплачено ${formatMoney(result.data.amount)} власними коштами власника`
         : `Виплачено з каси ${formatMoney(result.data.amount)}`)
       await loadTireReport()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося виплатити зарплату')
-    } finally { setTirePayoutEmployee(null) }
-  }, [canSeeFullReports, loadTireReport, tireDate, tirePayoutEmployee])
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося виплатити зарплату')
+    } finally { attempt.finish() }
+  }
 
   const exportToExcel = useCallback(() => {
     if (loading || soldLoading || tireLoading || (tab === 'sold' && (!soldFrom || !soldTo || soldFrom > soldTo))) { toast.error('Дочекайтеся коректного звіту за обраний період'); return }
@@ -355,19 +384,11 @@ export default function DailyReport() {
           toast.error('Немає проданих товарів за вибраний період')
           return
         }
-        dataToExport = soldItems.map((item) => ({
-          'Артикул': item.sku,
-          'Штрихкод': item.barcode || '',
-          'Назва': item.name,
-          'Чисто продано': item.qty_net,
-          'Одиниця': item.unit,
-          'Залишок зараз': item.qty_on_hand,
-          'Полиця': item.storage_bin || '',
-          'Чиста сума (грн)': item.net_revenue / 100,
-        }))
-        fileName = `sold_items_${soldFrom}_${soldTo}`
+        dataToExport = soldReorderExport(soldItems, supplierLabel)
+        const supplierFile = supplierLabel.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
+        fileName = `sold_items_${soldFrom}_${soldTo}_${supplierFile}`
       } else if (tab === 'tire') {
-        if (!tireRows.length) {
+        if (!tireReport || tireError || !tireDate || !tireRows.length) {
           toast.error('Немає даних шиномонтажу за вибраний день')
           return
         }
@@ -381,8 +402,33 @@ export default function DailyReport() {
           'Виплачено (грн)': row.paid / 100,
           'Штраф (грн)': row.penalty / 100,
           'До виплати (грн)': row.due / 100,
+          'Можна видати зараз (грн)': row.payable_due / 100,
+          'Ставка попередня': row.daily_rate_projected ? 'Так' : 'Ні',
         }))
-        fileName = `tire_service_${tireDate}`
+        const selectedIds = new Set(tireRows.map(row => row.employee_id))
+        const names = new Map(tireRows.map(row => [row.employee_id, row.employee_name]))
+        const receiptRows = tireReport.receipts.filter(row => selectedIds.has(row.employee_id)).map(row => ({
+          'День робіт': tireDate, 'Працівник': row.employee_name, 'Чек': row.sale_number,
+          'Час (Київ)': new Date(row.completed_at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' }),
+          'Касир': row.cashier_name ?? '', 'Роботи': row.services?.map(item => `${item.description} × ${item.qty}`).join('; ') ?? '',
+          'Коментар': row.notes ?? '', 'Оплата': PAYMENT_LABELS[row.payment_method] ?? row.payment_method,
+          'Сума робіт (грн)': row.service_revenue / 100, 'Нарахування за чек (грн)': row.commission_earned === undefined ? '' : row.commission_earned / 100,
+        }))
+        const operations = [
+          ...(tireReport.salary_operations ?? []).map(row => ({ ...row, label: tireOperationLabel(row) })),
+          ...(tireReport.cash_handovers ?? []).map(row => ({ ...row, label: 'Готівку передано до каси' })),
+        ].filter(row => selectedIds.has(row.employee_id)).sort((a, b) => a.created_at.localeCompare(b.created_at)).map(row => ({
+          'День робіт': row.work_date, 'Працівник': names.get(row.employee_id), 'Операція': row.label,
+          'Фактичний час (Київ)': new Date(row.created_at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' }),
+          'Виконав': row.cashier_name ?? '', 'Сума (грн)': row.amount / 100, 'Примітка': row.note ?? '',
+        }))
+        const workbook = XLSX.utils.book_new()
+        for (const [name, rows] of [['Підсумок', dataToExport], ['Чеки', receiptRows], ['Операції', operations]] as const) {
+          XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name)
+        }
+        XLSX.writeFile(workbook, `tire_service_${tireDate}.xlsx`)
+        toast.success('Експортовано підсумок, чеки та операції шиномонтажу')
+        return
       } else if (tab === 'lowstock') {
         if (!lowStock.length) {
           toast.error('Немає даних для експорту')
@@ -446,7 +492,7 @@ export default function DailyReport() {
     } catch (err) {
       toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, tireRows, tireDate, loading, soldLoading, tireLoading])
+  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, supplierLabel, tireRows, tireReport, tireError, tireDate, loading, soldLoading, tireLoading])
 
   useEffect(() => {
     if (tab === 'today')         loadToday()
@@ -474,15 +520,6 @@ export default function DailyReport() {
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
   const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_net), 0)
   const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.net_revenue), 0)
-  const tireTotals = tireRows.reduce((totals, row) => ({
-    services: totals.services + Number(row.services_qty ?? 0),
-    revenue: totals.revenue + Number(row.service_revenue ?? 0),
-    earned: totals.earned + Number(row.earned ?? 0),
-    due: totals.due + Number(row.due ?? 0),
-    payable: totals.payable + Number(row.payable_due ?? 0),
-    cashPending: totals.cashPending + Number(row.cash_pending ?? 0),
-    cashHanded: totals.cashHanded + Number(row.cash_handed_over ?? 0),
-  }), { services: 0, revenue: 0, earned: 0, due: 0, payable: 0, cashPending: 0, cashHanded: 0 })
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -494,13 +531,13 @@ export default function DailyReport() {
     <Layout title="Продажі та звіти">
       <div className="flex justify-between items-center gap-2 mb-6 flex-wrap">
         <label className="w-full min-w-0 md:hidden text-sm text-gray-600">Звіт
-          <select value={tab} onChange={e => setTab(e.target.value as Tab)} className="mt-1 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-3 text-base text-gray-900">
+          <select value={tab} disabled={tireAction.busy} onChange={e => { if (!tireAction.isBusy()) setTab(e.target.value as Tab) }} className="mt-1 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-3 text-base text-gray-900">
             {TABS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
         </label>
         <div className="hidden md:flex gap-2 flex-wrap">
           {TABS.map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id as Tab)}
+            <button key={t.id} disabled={tireAction.busy} onClick={() => { if (!tireAction.isBusy()) setTab(t.id as Tab) }}
               className={
                 'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ' +
                 (tab === t.id
@@ -542,6 +579,7 @@ export default function DailyReport() {
           <p className="mb-4 text-xs text-gray-500">
             Товари потрапляють у цей список за датою завершення продажу та об’єднуються незалежно від кількості чеків.
             Передоплати замовлень рахуються окремо за датою прийняття грошей.
+            {' '}Отримано грошей — це платежі за період, а не залишок готівки в касі: внесення, виплати й початковий залишок звіряйте у закритті зміни.
           </p>
 
           <Card padding="none">
@@ -642,6 +680,22 @@ export default function DailyReport() {
                 </button>
               ))}
             </div>
+            <div className="mt-4 min-w-0 border-t border-gray-100 pt-4">
+              <label className="block min-w-0 text-sm font-medium text-gray-700">
+                Постачальник
+                <select aria-label="Постачальник для дозамовлення" value={supplierDataAvailable ? soldSupplierId : ''}
+                  onChange={event => setSoldSupplierId(event.target.value)} disabled={soldLoading || !supplierDataAvailable}
+                  className="mt-1 block min-h-[44px] w-full min-w-0 max-w-full rounded-lg border border-gray-200 bg-white px-3 text-base md:max-w-md md:text-sm">
+                  <option value="">Усі постачальники</option>
+                  <option value={UNKNOWN_SUPPLIER}>Постачальника не визначено</option>
+                  {soldSupplierId && soldSupplierId !== UNKNOWN_SUPPLIER && !supplierOptions.some(item => item.id === soldSupplierId) &&
+                    <option value={soldSupplierId}>Вибраний постачальник — немає продажів</option>}
+                  {supplierOptions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <p className="mt-2 text-xs leading-relaxed text-gray-500">{supplierReportNote}</p>
+              {!supplierDataAvailable && <p role="status" className="mt-2 text-sm text-amber-700">Оновіть програму або веб-сервер, щоб бачити постачальників. Зараз показано загальний звіт.</p>}
+            </div>
           </Card>
 
           <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -662,13 +716,15 @@ export default function DailyReport() {
           <Card padding="none">
             {soldLoading ? (
               <div className="flex min-h-48 items-center justify-center text-sm text-gray-400">Формуємо список…</div>
+            ) : soldError ? (
+              <p role="alert" className="p-6 text-center text-red-700">Не вдалося завантажити звіт. Перевірте підключення та виберіть період ще раз.</p>
             ) : soldItems.length === 0 ? (
               <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-gray-400">
-                За вибраний період проданих товарів немає
+                За вибраний період і постачальником проданих товарів немає
               </div>
             ) : (
               <>
-              <SoldItemsMobile items={soldItems} />
+              <SoldItemsMobile items={soldItems} showSuppliers />
               <div className="hidden md:block max-h-[65vh] overflow-auto">
                 <table className="w-full min-w-[900px] text-sm">
                   <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
@@ -687,7 +743,7 @@ export default function DailyReport() {
                       <tr key={item.product_id} className={item.qty_on_hand <= 0 ? 'bg-red-50/60' : 'hover:bg-gray-50'}>
                         <td data-label="Артикул" className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
                         <td data-label="Штрихкод" className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
-                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900">{item.name}</td>
+                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900">{item.name}<div className="mt-1 text-xs font-normal text-gray-500">{soldSupplierNames(item)}</div></td>
                         <td data-label="Полиця" className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
                         <td data-label="Чисто продано" className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
                         <td data-label="Залишок" className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
@@ -706,68 +762,15 @@ export default function DailyReport() {
       )}
 
       {/* Шиномонтаж — чеки, відкладена каса та зарплата */}
-      {tab === 'tire' && canSeeTireReport && (
-        <>
-          <Card className="mb-4">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div><h2 className="text-lg font-bold text-gray-900">Шиномонтаж за день</h2>
-                <p className="mt-1 max-w-3xl text-sm text-gray-500">Чеки прив’язані до дня робіт. Готівку можна внести в будь-яку наступну відкриту зміну; зарплата доступна через 2 дні та після внесення всієї готівки.</p></div>
-              <label className="text-xs font-medium text-gray-600">Дата робіт
-                <input type="date" value={tireDate} max={todayKey} onChange={(event) => setTireDate(event.target.value)} className="mt-1 block rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800" />
-              </label>
-            </div>
-          </Card>
-          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
-            <Card><p className="text-xs text-gray-400">Чеків</p><p className="text-2xl font-bold text-gray-900">{tireReceipts.length}</p></Card>
-            <Card><p className="text-xs text-gray-400">Каса шиномонтажу</p><p className="text-2xl font-bold text-gray-900">{formatMoney(tireTotals.revenue)}</p></Card>
-            <Card><p className="text-xs text-gray-400">Внесено готівки</p><p className="text-2xl font-bold text-green-700">{formatMoney(tireTotals.cashHanded)}</p></Card>
-            <Card><p className="text-xs text-gray-400">Очікує внесення</p><p className="text-2xl font-bold text-orange-700">{formatMoney(tireTotals.cashPending)}</p></Card>
-            <Card><p className="text-xs text-gray-400">Зарплата до видачі</p><p className="text-2xl font-bold text-amber-700">{formatMoney(tireTotals.payable)}</p></Card>
-          </div>
-          <Card padding="none" className="mb-4">
-            <div className="border-b border-gray-100 px-4 py-3"><h3 className="font-bold text-gray-900">Чеки шиномонтажу</h3><p className="text-xs text-gray-500">Один рядок — один закритий чек.</p></div>
-            {tireLoading ? <div className="flex min-h-32 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div> : tireReceipts.length === 0 ?
-              <div className="flex min-h-32 items-center justify-center px-4 text-center text-sm text-gray-400">За цей день немає закритих чеків шиномонтажу</div> :
-              <div className="overflow-auto"><table className="w-full min-w-[780px] text-sm">
-                <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Чек / час</th><th className="px-3 py-3 text-left">Шиномонтажник</th><th className="px-3 py-3 text-right">Послуг</th><th className="px-3 py-3 text-right">Сума робіт</th><th className="px-3 py-3 text-left">Оплата</th><th className="px-4 py-3 text-right">Готівка</th></tr></thead>
-                <tbody className="divide-y divide-gray-100">{tireReceipts.map((receipt) => <tr key={receipt.id} className="hover:bg-gray-50">
-                  <td data-label="Чек / час" className="px-4 py-3"><div className="font-semibold text-gray-900">#{receipt.sale_number}</div><div className="text-xs text-gray-500">{formatDateTime(receipt.completed_at)}</div></td>
-                  <td data-label="Шиномонтажник" className="px-3 py-3">{receipt.employee_name}</td><td data-label="Послуг" className="px-3 py-3 text-right">{Number(receipt.services_qty.toFixed(3))}</td>
-                  <td data-label="Сума робіт" className="px-3 py-3 text-right font-semibold">{formatMoney(receipt.service_revenue)}</td>
-                  <td data-label="Оплата" className="px-3 py-3"><Badge color={PAYMENT_COLOR[receipt.payment_method] ?? 'gray'}>{PAYMENT_LABELS[receipt.payment_method] ?? receipt.payment_method}</Badge></td>
-                  <td data-label="Готівка" className="px-4 py-3 text-right">{formatMoney(receipt.cash_revenue)}</td></tr>)}</tbody>
-              </table></div>}
-          </Card>
-          <Card padding="none">
-            <div className="border-b border-gray-100 px-4 py-3"><h3 className="font-bold text-gray-900">Розрахунок по працівниках</h3></div>
-            {tireLoading ? <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Формуємо звіт…</div> : tireRows.length === 0 ?
-              <div className="flex min-h-40 items-center justify-center text-sm text-gray-400">Немає активних шиномонтажників</div> :
-              <div className="overflow-auto"><table className="w-full min-w-[1100px] text-sm">
-                <thead className="bg-gray-50 text-xs text-gray-500"><tr><th className="px-4 py-3 text-left">Працівник</th><th className="px-2 py-3 text-right">Каса</th><th className="px-2 py-3 text-right">Готівкою</th><th className="px-2 py-3 text-right">Внесено</th><th className="px-2 py-3 text-right">Ще внести</th><th className="px-2 py-3 text-right">Нараховано</th><th className="px-2 py-3 text-right">Виплачено</th><th className="px-2 py-3 text-right">Залишок</th><th className="px-4 py-3 text-left">Статус / дія</th></tr></thead>
-                <tbody className="divide-y divide-gray-100">{tireRows.map((row) => <tr key={row.employee_id} className="hover:bg-gray-50">
-                  <td data-label="Працівник" className="px-4 py-3 font-semibold text-gray-900">{row.employee_name}</td><td data-label="Каса" className="px-2 py-3 text-right font-semibold">{formatMoney(row.service_revenue)}</td>
-                  <td data-label="Готівкою" className="px-2 py-3 text-right">{formatMoney(row.cash_revenue)}</td><td data-label="Внесено" className="px-2 py-3 text-right text-green-700">{formatMoney(row.cash_handed_over)}</td>
-                  <td data-label="Ще внести" className="px-2 py-3 text-right font-semibold text-orange-700">{formatMoney(row.cash_pending)}</td><td data-label="Нараховано" className="px-2 py-3 text-right">{formatMoney(row.earned)}</td>
-                  <td data-label="Виплачено" className="px-2 py-3 text-right text-gray-500">{formatMoney(row.paid)}</td><td data-label="Залишок" className="px-2 py-3 text-right font-bold">{formatMoney(row.due)}</td>
-                  <td data-label="Статус / дія" className="px-4 py-3">{row.cash_pending > 0 ?
-                    <button onClick={() => handOverTireCash(row)} disabled={tireHandoverEmployee === row.employee_id} className="rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300 disabled:opacity-50">
-                      {tireHandoverEmployee === row.employee_id ? 'Вносимо…' : `+ Внести ${formatMoney(row.cash_pending)}`}</button> :
-                    row.salary_ready && row.payable_due > 0 ? (canSeeFullReports ?
-                      <div className="flex min-w-[250px] flex-col gap-1.5">
-                        <span className="text-xs font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span>
-                        <div className="flex gap-1.5">
-                          <button onClick={() => payTireSalary(row, 'cashbox')} disabled={Boolean(tirePayoutEmployee)} className="rounded-lg bg-gray-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-gray-700 disabled:opacity-50">З каси</button>
-                          <button onClick={() => payTireSalary(row, 'owner_funds')} disabled={Boolean(tirePayoutEmployee)} className="rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-bold text-black hover:bg-amber-300 disabled:opacity-50">Кошти власника</button>
-                        </div>
-                      </div> : <span className="font-semibold text-green-700">До видачі: {formatMoney(row.payable_due)}</span>) :
-                    row.salary_ready ? <span className="text-xs font-semibold text-gray-500">Виплачено</span> :
-                    <span className="text-xs font-medium text-blue-700">Очікує до {formatDate(row.salary_available_on)}</span>}</td>
-                </tr>)}</tbody>
-                <tfoot className="border-t-2 border-gray-200 bg-amber-50"><tr><td colSpan={8} className="px-4 py-4 text-right text-base font-bold">Усього зарплати, яку можна видати:</td><td data-label="Статус / дія" className="px-4 py-4 text-xl font-black text-amber-800">{formatMoney(tireTotals.payable)}</td></tr></tfoot>
-              </table></div>}
-          </Card>
-        </>
-      )}
+      {tab === 'tire' && canSeeTireReport && <TireServiceDetails
+        report={tireReport} date={tireDate} today={todayKey} employeeId={tireEmployeeId}
+        loading={tireLoading} error={tireError}
+        onDate={date => { if (!tireAction.isBusy()) setTireDate(date) }}
+        onEmployee={id => { if (!tireAction.isBusy()) setTireEmployeeId(id) }}
+        onRefresh={() => { if (!tireAction.isBusy()) void loadTireReport() }} canPay={canSeeFullReports} canMutate={isDesktopRuntime()}
+        busy={tireAction.busy}
+        onHandOver={handOverTireCash} onPay={payTireSalary}
+      />}
       {/* 7 днів — графік */}
       {tab === 'weekly' && (
         <>

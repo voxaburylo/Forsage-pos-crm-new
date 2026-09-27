@@ -26,12 +26,13 @@ export interface SupplyInvoiceItem {
   qty: number
   purchase_price: number
   total: number
-  product?: { id: string; sku: string; name: string; unit: string; retail_price: number; barcode: string | null; storage_bin?: string | null } | null
+  product?: { id: string; sku: string; name: string; unit: string; retail_price: number; barcode: string | null; storage_bin?: string | null; category_id?: string | null; photo_url?: string | null } | null
 }
 
 export type SupplyInvoiceStatus = 'draft' | 'posted' | 'cancelled'
 
 export interface SupplyInvoice {
+  edit_revision?: string
   id: string
   supplier_id: string | null
   invoice_number: string | null

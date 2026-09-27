@@ -1,9 +1,10 @@
 import { api } from '@/lib/api'
-import type { Product, PaginatedProducts, ProductFormData } from '@/types/product'
+import type { Product, PaginatedProducts, ProductFormData, ProductCreateData } from '@/types/product'
 import { hryvniaToKopecks } from '@/types/product'
 import { desktopBridge, desktopProductToProduct, type DesktopProduct } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { performCatalogDelete } from './catalogDeletePermissions'
+import { serialProductWrite } from './serialProductWrite'
 
 export interface StockBreakdown {
   on_hand: number
@@ -20,6 +21,13 @@ export interface ProductCrossNumber {
   source: string
   is_verified: boolean
   created_at: string
+}
+
+function localCrossNumbers(rows: Array<{ id: string; number: string; source: string }>): ProductCrossNumber[] {
+  return rows.map(r => ({
+    id: r.id, number: r.number, normalized_number: r.number, number_type: 'cross',
+    brand: null, source: r.source, is_verified: true, created_at: '',
+  }))
 }
 
 export interface ProductFilters {
@@ -72,7 +80,7 @@ function cleanSpecs(raw: Record<string, string> | undefined | null): Record<stri
 }
 
 // Create — требует ВСЕ поля формы, маппит с дефолтами.
-function formToCreatePayload(form: ProductFormData) {
+function formToCreatePayload(form: ProductCreateData) {
   return {
     sku: form.sku,
     name: form.name,
@@ -136,7 +144,7 @@ type DesktopProductSavePayload = NonNullable<NonNullable<ReturnType<typeof deskt
   ? Product
   : never
 
-export function desktopCreatePayload(id: string, form: ProductFormData): DesktopProductSavePayload {
+export function desktopCreatePayload(id: string, form: ProductCreateData): DesktopProductSavePayload {
   const payload = formToCreatePayload(form)
   return { id, ...payload } as DesktopProductSavePayload
 }
@@ -154,6 +162,7 @@ function desktopExistingSpecs(product: DesktopProduct): Record<string, string> {
 function desktopUpdatePayload(id: string, existing: DesktopProduct, form: Partial<ProductFormData>): DesktopProductSavePayload {
   return {
     id,
+    expected_updated_at: existing.updated_at,
     sku: form.sku ?? existing.sku,
     name: form.name ?? existing.name,
     barcode: form.barcode !== undefined ? (form.barcode || null) : existing.barcode,
@@ -234,7 +243,7 @@ export const productApi = {
     if (local) return { data: (await local(q, limit)).map(desktopProductToProduct) }
     return api.get<{ data: Product[] }>(`/api/v1/products/search?q=${encodeURIComponent(q)}&limit=${limit}`, opts)
   },
-  create: async (form: ProductFormData, opts?: ProductRequestOptions) => {
+  create: async (form: ProductCreateData, opts?: ProductRequestOptions) => {
     const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog?.saveProduct) {
       const saved = await desktopCatalog.saveProduct(
@@ -252,14 +261,16 @@ export const productApi = {
   update: async (id: string, form: Partial<ProductFormData>, opts?: ProductRequestOptions) => {
     const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog?.saveProduct && desktopCatalog.findById) {
-      const existing = await desktopCatalog.findById(id)
+      return serialProductWrite(id, async () => {
+      const existing = await desktopCatalog.findById!(id)
       if (!existing) throw new Error('Товар не знайдено в локальній базі')
-      const saved = await desktopCatalog.saveProduct(desktopUpdatePayload(id, existing, form))
+      const saved = await desktopCatalog.saveProduct!(desktopUpdatePayload(id, existing, form))
       if (existing.photo_url && existing.photo_url !== saved.photo_url && existing.photo_url.startsWith('file:')) {
         await desktopCatalog.deletePhoto?.(existing.photo_url).catch(() => {})
       }
       requestDesktopSync()
       return { data: desktopProductToProduct(saved) }
+      })
     }
 
     const response = await api.put<{ data: Product }>(`/api/v1/products/${id}`, formToUpdatePayload(form), opts)
@@ -298,13 +309,15 @@ export const productApi = {
   generateBarcode: async (id: string) => {
     const desktopCatalog = desktopBridge()?.catalog
     if (desktopCatalog?.generateBarcode && desktopCatalog.saveProduct && desktopCatalog.findById) {
-      const existing = await desktopCatalog.findById(id)
+      return serialProductWrite(id, async () => {
+      const existing = await desktopCatalog.findById!(id)
       if (!existing) throw new Error('Товар не знайдено')
       if (existing.barcode) return { data: desktopProductToProduct(existing) }
-      const barcode = await desktopCatalog.generateBarcode()
-      const saved = await desktopCatalog.saveProduct(desktopUpdatePayload(id, existing, { barcode }))
+      const barcode = await desktopCatalog.generateBarcode!()
+      const saved = await desktopCatalog.saveProduct!(desktopUpdatePayload(id, existing, { barcode }))
       requestDesktopSync()
       return { data: desktopProductToProduct(saved) }
+      })
     }
     const response = await api.post<{ data: Product }>(`/api/v1/products/${id}/generate-barcode`, {})
     return response
@@ -334,45 +347,35 @@ export const productApi = {
     return api.get<{ analogs: any[]; grouped: Record<string, any[]> }>(`/api/v1/products/${id}/analogs`)
   },
 
-  addAnalog: (id: string, analogProductId: string, analogType: 'substitute' | 'oem' | 'cross') =>
-    api.post(`/api/v1/products/${id}/analogs`, {
-      analog_product_id: analogProductId,
-      analog_type: analogType,
-    }),
-
-  removeAnalog: (id: string, analogId: string) =>
-    api.delete(`/api/v1/products/${id}/analogs/${analogId}`),
-
   getCrossNumbers: async (id: string) => {
     const local = desktopBridge()?.catalog?.listCrossNumbers
     if (local) {
       const rows = await local(id)
-      return {
-        data: rows.map((r) => ({
-          id: r.id, number: r.number, normalized_number: r.number,
-          number_type: 'cross' as const, brand: null, source: r.source,
-          is_verified: true, created_at: '',
-        })) as ProductCrossNumber[],
-      }
+      return { data: localCrossNumbers(rows) }
     }
     if (desktopBridge() && useAuthStore.getState().offlineMode) return { data: [] as ProductCrossNumber[] }
     return api.get<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`)
   },
 
-  addCrossNumbers: (
+  addCrossNumbers: async (
     id: string,
     numbers: string[],
-    numberType: ProductCrossNumber['number_type'],
     source: string,
-  ) =>
-    api.post<{ data: ProductCrossNumber[] }>(`/api/v1/products/${id}/cross-numbers`, {
-      numbers,
-      number_type: numberType,
-      source,
-    }),
+  ) => {
+    const local = desktopBridge()?.catalog.changeCrossNumbers
+    if (!local) throw new Error('Збереження крос-номерів доступне в оновленій локальній програмі')
+    const data = localCrossNumbers(await local(id, { add: numbers, source }))
+    requestDesktopSync()
+    return { data }
+  },
 
-  removeCrossNumber: (id: string, crossNumberId: string) =>
-    api.delete(`/api/v1/products/${id}/cross-numbers/${crossNumberId}`),
+  removeCrossNumber: async (id: string, crossNumberId: string) => {
+    const local = desktopBridge()?.catalog.changeCrossNumbers
+    if (!local) throw new Error('Збереження крос-номерів доступне в оновленій локальній програмі')
+    const data = localCrossNumbers(await local(id, { removeId: crossNumberId }))
+    requestDesktopSync()
+    return { data }
+  },
 
   importCrossNumbers: (text: string, source?: string) =>
     api.post<{ data: { linked: number; products: number; not_found: number; not_found_skus: string[]; skipped_dup: number } }>(

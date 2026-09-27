@@ -7,10 +7,16 @@ import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
 import Papa from 'papaparse'
 import { supplierApi } from './supplierApi'
+import { invoiceProductBase } from './invoiceFormModel'
+import { isMissingInvoiceError } from './invoiceDraftStore'
+import { InvoiceSupplierPicker } from './InvoiceSupplierPicker'
+import { InvoiceVersionConflict } from './InvoiceVersionConflict'
+import { InvoicePriceGuard } from './invoicePriceGuard'
+import type { SupplyInvoice } from '@/types/supplier'
 import { productApi } from '@/features/products/productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { adminApi } from '@/features/admin/adminApi'
-import type { Product, ProductFormData } from '@/types/product'
+import type { Product } from '@/types/product'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -18,8 +24,7 @@ import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
-import { resolveActiveLinkedInvoiceProduct } from './invoiceProductLink'
-import { applyManualInvoiceQuantities, parseManualInvoiceQuantity } from './invoiceQuantityGuard'
+import { captureInvoiceQuantities, nextInvoiceItems } from './invoiceQuantityGuard'
 
 export default function InvoiceFormPage() {
   const navigate = useNavigate()
@@ -42,22 +47,20 @@ export default function InvoiceFormPage() {
   }, [cloneId, freshToken, id, isEdit, resumeDraftKey])
   const invoiceDraftReadyRef = useRef(false)
   const invoiceSubmitRef = useRef(false)
-  // Окремо пам'ятаємо останню кількість, яку людина фізично ввела у рядок.
-  // Асинхронна прив'язка картки товару не має права повернути старе значення.
-  const manualQtyOverridesRef = useRef<Map<string, number>>(new Map())
-  // Одноразовый флаг для кнопки «Сохранить и закрыть».
-  const postOnSaveRef = useRef(false)
+  // Після проведення/скасування більше не записуємо чернетку при виході.
   const invoiceDraftPersistenceDisabledRef = useRef(false)
   const serverDraftIdRef = useRef<string | null>(isEdit && id ? id : null)
+  const baseRevisionRef = useRef<string | undefined>(undefined)
+  const commitInvoiceIdRef = useRef<string | undefined>(undefined)
+  const [versionConflict, setVersionConflict] = useState<SupplyInvoice | null>(null)
 
   const [supplierId, setSupplierId] = useState(preSelectedSupplier)
   const [invoiceNumber, setInvoiceNumber] = useState('')
   const [notes, setNotes] = useState('')
-  const [items, setItems] = useState<LineItem[]>([])
+  const [items, setItemsState] = useState<LineItem[]>([])
   const [serverDraftId, setServerDraftId] = useState<string | null>(isEdit && id ? id : null)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(isEdit)
-  const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([])
   const [productSearch, setProductSearch] = useState('')
   const [productResults, setProductResults] = useState<Product[]>([])
   const [problemLineKey, setProblemLineKey] = useState<string | null>(null)
@@ -69,6 +72,10 @@ export default function InvoiceFormPage() {
   const [newSupplierName, setNewSupplierName] = useState('')
   const [newSupplierPhone, setNewSupplierPhone] = useState('')
   const [creatingSupplier, setCreatingSupplier] = useState(false)
+  const [categoryTargets, setCategoryTargets] = useState<string[] | null>(null)
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [creatingCategory, setCreatingCategory] = useState(false)
+  const categoryBusyRef = useRef(false)
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
   const [importTab, setImportTab] = useState<'manual' | 'file' | 'clipboard'>('manual')
   const [clipboardText, setClipboardText] = useState('')
@@ -90,9 +97,12 @@ export default function InvoiceFormPage() {
   const [payFullNow, setPayFullNow] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState<InvoicePaymentMethod>('cash')
   const [fundSource, setFundSource] = useState<InvoiceFundSource>('cashbox')
-  const [postImmediately, setPostImmediately] = useState(true)  // провести одразу після створення
   const [initialPaymentAvailable, setInitialPaymentAvailable] = useState(!isEdit)
   const [moneyDrafts, setMoneyDrafts] = useState<Record<string, string>>({})
+  const moneyOriginalRef = useRef<Record<string, number>>({})
+  const priceGuardRef = useRef(new InvoicePriceGuard())
+  const pendingPriceRef = useRef(0)
+  const [recalculatingPrices, setRecalculatingPrices] = useState(false)
   const itemsRef = useRef(items)
   const invoiceDraftSnapshotRef = useRef<SupplyInvoiceDraftData>({
     supplierId,
@@ -104,28 +114,43 @@ export default function InvoiceFormPage() {
     payFullNow,
     paymentMethod,
     fundSource,
-    postImmediately,
+
     serverInvoiceId: serverDraftId,
   })
 
+  // One synchronous source for edits, scans, imports, autosave and submission.
+  // A separate manual-quantity cache used to overwrite later additions/scans.
+  function setItems(update: React.SetStateAction<LineItem[]>) {
+    const next = nextInvoiceItems(itemsRef.current, update)
+    itemsRef.current = next
+    invoiceDraftSnapshotRef.current = { ...invoiceDraftSnapshotRef.current, items: next }
+    setItemsState(next)
+  }
+
   useEffect(() => {
-    itemsRef.current = items
     invoiceDraftSnapshotRef.current = {
       supplierId,
       invoiceNumber,
       notes,
-      items,
+      items: itemsRef.current,
       paidAmount,
       cashboxPaidAmount,
       payFullNow,
       paymentMethod,
       fundSource,
-      postImmediately,
+
       serverInvoiceId: serverDraftIdRef.current,
+      baseRevision: baseRevisionRef.current,
+      commitInvoiceId: commitInvoiceIdRef.current,
     }
-  }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, postImmediately, serverDraftId])
+  }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, serverDraftId])
 
   function applySupplyInvoiceDraft(draft: SupplyInvoiceLocalDraft, fallbackSupplier = preSelectedSupplier) {
+    priceGuardRef.current.prune([])
+    moneyOriginalRef.current = {}
+    setMoneyDrafts({})
+    baseRevisionRef.current = draft.baseRevision
+    commitInvoiceIdRef.current = draft.commitInvoiceId
     setSupplierId(draft.supplierId || fallbackSupplier)
     setInvoiceNumber(draft.invoiceNumber)
     setNotes(draft.notes)
@@ -135,7 +160,7 @@ export default function InvoiceFormPage() {
     setPayFullNow(draft.payFullNow === true)
     setPaymentMethod(draft.paymentMethod)
     setFundSource(draft.fundSource)
-    setPostImmediately(draft.postImmediately)
+
     const draftId = draft.serverInvoiceId || (isEdit && id ? id : null)
     serverDraftIdRef.current = draftId
     setServerDraftId(draftId)
@@ -149,6 +174,9 @@ export default function InvoiceFormPage() {
   useEffect(() => {
     if (isEdit || cloneId) return
     invoiceDraftReadyRef.current = false
+    invoiceDraftPersistenceDisabledRef.current = false
+    setVersionConflict(null)
+    commitInvoiceIdRef.current = undefined
     let cancelled = false
     let readyTimer: number | null = null
     const markReady = () => {
@@ -158,6 +186,21 @@ export default function InvoiceFormPage() {
     if (localDraft) {
       applySupplyInvoiceDraft(localDraft, preSelectedSupplier)
       toast.success('Чернетку накладної відновлено')
+    }
+    if (desktopBridge() && localDraft?.serverInvoiceId) {
+      supplierApi.getInvoice(localDraft.serverInvoiceId).then(({ data: invoice }) => {
+        if (cancelled) return
+        if (invoice.status !== 'draft') {
+          setVersionConflict(invoice)
+          setInitialPaymentAvailable(false)
+          return
+        }
+        setInitialPaymentAvailable(Number(invoice.paid_amount ?? 0) <= 0)
+        if (invoice.edit_revision && localDraft.baseRevision !== invoice.edit_revision) setVersionConflict(invoice)
+      }).catch(() => {
+        if (!cancelled) toast.warning('Пов’язану накладну не вдалося відкрити. Чернетку збережено; її можна скасувати.')
+      }).finally(() => { if (!cancelled && !invoiceDraftPersistenceDisabledRef.current) markReady() })
+      return () => { cancelled = true; if (readyTimer != null) window.clearTimeout(readyTimer) }
     }
     if (desktopBridge() || freshToken || resumeDraftKey) {
       markReady()
@@ -172,7 +215,7 @@ export default function InvoiceFormPage() {
       supplierApi.getInvoice(serverId).then((res) => {
         if (cancelled) return
         const serverDraft = draftFromServerInvoice(res.data)
-        const draft = newestSupplyInvoiceDraft(localDraft, serverDraft)
+        const draft = desktopBridge() ? localDraft ?? serverDraft : newestSupplyInvoiceDraft(localDraft, serverDraft)
         if (draft) applySupplyInvoiceDraft(draft, preSelectedSupplier)
       }).catch(() => {})
         .finally(() => { if (!cancelled) markReady() })
@@ -202,7 +245,7 @@ export default function InvoiceFormPage() {
       persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately, serverDraftId])
+  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, serverDraftId])
 
   useEffect(() => {
     if (!invoiceDraftReadyRef.current || invoiceDraftPersistenceDisabledRef.current) return
@@ -233,7 +276,7 @@ export default function InvoiceFormPage() {
       }
     }, 1500)
     return () => window.clearTimeout(timer)
-  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, postImmediately, serverDraftId])
+  }, [invoiceDraftKey, supplierId, invoiceNumber, notes, items, paidAmount, paymentMethod, fundSource, serverDraftId])
 
   useEffect(() => {
     const flushDraft = () => {
@@ -263,7 +306,7 @@ export default function InvoiceFormPage() {
   )
 
   function moneyKey(index: number, field: 'purchase_price' | 'retail_price') {
-    return `${index}:${field}`
+    return `${items[index]?.client_key ?? index}:${field}`
   }
 
   function moneyValue(index: number, field: 'purchase_price' | 'retail_price', kopecks: number) {
@@ -271,6 +314,8 @@ export default function InvoiceFormPage() {
   }
 
   function beginMoneyEdit(index: number, field: 'purchase_price' | 'retail_price', kopecks: number, target: HTMLInputElement) {
+    moneyOriginalRef.current[moneyKey(index, field)] = kopecks
+    if (field === 'retail_price' && itemsRef.current[index]) priceGuardRef.current.invalidate(itemsRef.current[index].client_key)
     setMoneyDrafts((prev) => ({ ...prev, [moneyKey(index, field)]: kopecksForForm(kopecks) }))
     window.setTimeout(() => target.select(), 0)
   }
@@ -296,69 +341,89 @@ export default function InvoiceFormPage() {
     })
     if (field === 'purchase_price') {
       const draftValue = moneyDrafts[key]
-      const purchaseForRecalc = draftValue !== undefined ? parseMoneyToKopecks(draftValue) : items[index]?.purchase_price
-      void recalcRetail(index, false, purchaseForRecalc)
+      const purchaseForRecalc = draftValue !== undefined ? parseMoneyToKopecks(draftValue) : itemsRef.current[index]?.purchase_price
+      if (purchaseForRecalc !== moneyOriginalRef.current[key]) void recalcRetail(index, false, purchaseForRecalc)
+      delete moneyOriginalRef.current[key]
     }
   }
 
   // Завантажуємо постачальників
   useEffect(() => {
-    supplierApi.list({ per_page: 200 }).then((r) => setSuppliers(r.data)).catch(() => {})
     adminApi.getSettings().then((res) => setQuickPercents(res.data.quick_percents || [])).catch(() => {})
     adminApi.listCategories().then((res) => setCategories(res.data)).catch(() => {})
   }, [])
 
   // Якщо редагування — завантажуємо накладну
   useEffect(() => {
+    let cancelled = false
     if (id) {
       invoiceDraftReadyRef.current = false
+      invoiceDraftPersistenceDisabledRef.current = false
+      setVersionConflict(null)
+      setLoading(true)
       supplierApi.getInvoice(id).then((res) => {
+        if (cancelled) return
         const inv = res.data
+        const localDraft = loadSupplyInvoiceDraft(invoiceDraftKey)
         if (inv.status !== 'draft') {
+          if (desktopBridge() && localDraft) {
+            applySupplyInvoiceDraft({ ...localDraft, serverInvoiceId: id }, inv.supplier_id ?? '')
+            setInitialPaymentAvailable(false)
+            setVersionConflict(inv)
+            return
+          }
           invoiceDraftPersistenceDisabledRef.current = true
           clearSupplyInvoiceDraft(invoiceDraftKey)
-          toast.warning('Цю накладну вже не можна редагувати напряму — відкриваю копію для проведення')
-          navigate(`/suppliers/invoices/new?clone=${id}`, { replace: true })
+          toast.warning('Накладну вже проведено або скасовано. Відкриваю документ без створення копії.')
+          navigate(`/suppliers/invoices/${id}`, { replace: true })
           return
         }
         setInitialPaymentAvailable(Number(inv.paid_amount ?? 0) <= 0)
         const serverDraft = draftFromServerInvoice(inv)
-        const localDraft = loadSupplyInvoiceDraft(invoiceDraftKey)
-        const draft = newestSupplyInvoiceDraft(localDraft, serverDraft)
+        const draft = desktopBridge() ? localDraft ?? serverDraft : newestSupplyInvoiceDraft(localDraft, serverDraft)
         serverDraftIdRef.current = id
         setServerDraftId(id)
         if (draft) {
           applySupplyInvoiceDraft({ ...draft, serverInvoiceId: id }, inv.supplier_id ?? '')
+          if (inv.edit_revision && draft.baseRevision !== inv.edit_revision) setVersionConflict(inv)
           toast.success('Чернетку накладної відновлено')
         } else {
+          baseRevisionRef.current = inv.edit_revision
           setSupplierId(inv.supplier_id ?? '')
           setInvoiceNumber(inv.invoice_number ?? '')
           setNotes(inv.notes ?? '')
           setItems(invoiceItemsToLineItems(inv))
         }
       }).catch(() => {
+        if (cancelled) return
         toast.error('Не вдалось завантажити накладну')
         navigate('/suppliers')
       }).finally(() => {
+        if (cancelled) return
         setLoading(false)
         invoiceDraftReadyRef.current = true
       })
     }
+    return () => { cancelled = true }
   }, [id, invoiceDraftKey])
 
   // Дублювання: /suppliers/invoices/new?clone=<id> — копіюємо постачальника й позиції,
   // номер лишаємо порожнім (новий), статус — чернетка.
   useEffect(() => {
     if (id || !cloneId) return
+    let cancelled = false
     setLoading(true)
     invoiceDraftReadyRef.current = false
     supplierApi.getInvoice(cloneId).then((res) => {
+      if (cancelled) return
       const inv = res.data
       const serverDraft = draftFromServerInvoice(inv)
       const loadedItems = serverDraft?.items ?? invoiceItemsToLineItems(inv)
       clearSupplyInvoiceDraft(invoiceDraftKey)
       invoiceDraftPersistenceDisabledRef.current = false
       serverDraftIdRef.current = null
+      baseRevisionRef.current = undefined
+      setVersionConflict(null)
       setServerDraftId(null)
       setSupplierId(inv.supplier_id ?? '')
       setInvoiceNumber('')
@@ -366,14 +431,16 @@ export default function InvoiceFormPage() {
       setPaidAmount('')
       setPaymentMethod('cash')
       setFundSource('cashbox')
-      setPostImmediately(true)
+
       setItems(loadedItems.map((item) => ({ ...item, client_key: makeLineKey() })))
       toast.success('Накладну скопійовано — вкажіть новий номер і проведіть')
-    }).catch(() => toast.error('Не вдалось завантажити накладну для копіювання'))
+    }).catch(() => { if (!cancelled) toast.error('Не вдалось завантажити накладну для копіювання') })
       .finally(() => {
+        if (cancelled) return
         setLoading(false)
         invoiceDraftReadyRef.current = true
       })
+    return () => { cancelled = true }
   }, [cloneId, id, invoiceDraftKey])
 
   // Пошук товарів. Ігноруємо запізнілу відповідь попереднього запиту,
@@ -478,12 +545,6 @@ export default function InvoiceFormPage() {
     }, 0)
   }
 
-  function makeInvoiceLineProblemError() {
-    const err = new Error('INVOICE_LINE_PROBLEM')
-    err.name = 'InvoiceLineProblem'
-    return err
-  }
-
   function handleRowFieldKeyDown(e: React.KeyboardEvent<HTMLInputElement>, index: number, field: RowField) {
     if (e.key !== 'Enter' || e.shiftKey) return
     e.preventDefault()
@@ -538,7 +599,9 @@ export default function InvoiceFormPage() {
       delete barcodeLookupTimers.current[rowKey]
     }
     try {
-      const match = await findExistingProductForItem({ ...current, barcode: code })
+      // A deliberate scan replaces the row with the exact barcode card. The old
+      // AI/supplier SKU must not compete with the barcode the user just scanned.
+      const match = await findExistingProductForItem({ ...current, sku: '', product_name: '', barcode: code })
       if (!match) {
         if (showMiss) toast.warning('Товар з таким штрихкодом не знайдено в базі')
         return
@@ -599,6 +662,7 @@ export default function InvoiceFormPage() {
     setItems((prev) => [...prev, {
       client_key: makeLineKey(),
       product_id: product.id,
+      product_base: invoiceProductBase(product),
       product_name: product.name,
       qty: 1,
       purchase_price: product.purchase_price,
@@ -631,6 +695,10 @@ export default function InvoiceFormPage() {
   }
 
   function updateItem(index: number, field: keyof LineItem, value: string | number) {
+    if (field === 'retail_price' || field === 'purchase_price' || field === 'category_id') {
+      const row = itemsRef.current[index]
+      if (row) priceGuardRef.current.invalidate(row.client_key)
+    }
     setItems((prev) => {
       const next = [...prev]
       const item = { ...next[index] }
@@ -653,54 +721,48 @@ export default function InvoiceFormPage() {
   }
 
   function updateManualQuantity(index: number, value: string | number) {
-    const row = itemsRef.current[index]
-    if (row) manualQtyOverridesRef.current.set(row.client_key, parseManualInvoiceQuantity(value))
     updateItem(index, 'qty', value)
   }
 
   // Сетка цен (ORD P2): авто-розрахунок роздрібної з закупівельної по наценці категорії або сітці
   async function recalcRetail(onlyIndex?: number | number[], forceUseGrid?: boolean, purchaseOverride?: number) {
+    if (invoiceSubmitRef.current) return
     const isSingle = typeof onlyIndex === 'number'
-    const targets = Array.isArray(onlyIndex) ? onlyIndex : isSingle ? [onlyIndex] : items.map((_, i) => i)
-    const localSettings = forceUseGrid
-      ? await adminApi.getSettings().then((res) => res.data as any).catch(() => null)
-      : null
-
-    const updates = await Promise.all(targets.map(async (idx) => {
-      const it = items[idx]
-      const purchasePrice = purchaseOverride !== undefined && isSingle ? purchaseOverride : it?.purchase_price
-      if (!it || !purchasePrice || purchasePrice <= 0) return null
-
-      if (forceUseGrid && localSettings) {
-        const localRetail = retailFromLocalGrid(purchasePrice, localSettings)
-        if (localRetail != null) return { idx, retail: localRetail }
-        return null
-      }
-
-      try {
-        const categoryId = forceUseGrid ? undefined : (it.category_id ?? undefined)
-        const r = await pricingApi.autoRetail(purchasePrice, categoryId)
-        return r.data?.retail_price != null ? { idx, retail: r.data.retail_price } : null
-      } catch { return null }
-    }))
-
-    const validUpdates = updates.filter((u): u is { idx: number; retail: number } => u !== null)
-    const map = new Map(validUpdates.map((u) => [u.idx, u.retail]))
-    if (map.size === 0) {
+    const targets = Array.isArray(onlyIndex) ? onlyIndex : isSingle ? [onlyIndex] : itemsRef.current.map((_, i) => i)
+    priceGuardRef.current.prune(itemsRef.current.map(item => item.client_key))
+    const requests = targets.flatMap(idx => {
+      const item = itemsRef.current[idx]
+      if (!item) return []
+      const purchase = purchaseOverride !== undefined && isSingle ? purchaseOverride : item.purchase_price
+      if (!Number.isSafeInteger(purchase) || purchase <= 0) return []
+      return [priceGuardRef.current.begin({ ...item, purchase_price: purchase })]
+    })
+    if (!requests.length) return
+    pendingPriceRef.current += 1
+    setRecalculatingPrices(true)
+    try {
+      const settings = forceUseGrid ? await adminApi.getSettings().then(res => res.data as any).catch(() => null) : null
+      const results = await Promise.all(requests.map(async request => {
+        try {
+          const retail = forceUseGrid
+            ? (settings ? retailFromLocalGrid(request.purchase, settings) : null)
+            : (await pricingApi.autoRetail(request.purchase, request.category ?? undefined)).data?.retail_price
+          return retail != null ? { request, retail } : null
+        } catch { return null }
+      }))
+      const valid = results.filter((result): result is NonNullable<typeof result> => result !== null && Number.isSafeInteger(result.retail) && result.retail >= 0)
+      const before = itemsRef.current
+      const next = priceGuardRef.current.apply(before, valid)
+      const applied = next.filter((item, index) => item !== before[index]).length
+      setItems(next)
+      if (isSingle && valid.length === 0) toast.warning('Не вдалося розрахувати націнку. Перевірте роздрібну ціну вручну перед проведенням.')
       if (!isSingle) {
-        toast.warning(forceUseGrid
-          ? 'Не вдалося розрахувати за сіткою: перевірте правила націнки і закупівельні ціни'
-          : 'Наценки категорій не задані — задайте їх у «Ціноутворення»'
-        )
+        if (applied) toast.success(`Роздрібні ціни перераховано для ${applied} позицій`)
+        else toast.warning('Ціни не змінено: перевірте правила націнки. Рядки з новішими ручними правками пропущено.')
       }
-      return
-    }
-    setItems((prev) => prev.map((it, i) => map.has(i) ? { ...it, retail_price: map.get(i)! } : it))
-    if (!isSingle) {
-      toast.success(forceUseGrid
-        ? `За сіткою перераховано ${map.size} позицій`
-        : `Роздрібні ціни перераховано для ${map.size} позицій`
-      )
+    } finally {
+      pendingPriceRef.current -= 1
+      setRecalculatingPrices(pendingPriceRef.current > 0)
     }
   }
   function applyCustomPct() {
@@ -888,7 +950,6 @@ export default function InvoiceFormPage() {
       })
       toast.success('Постачальника створено')
       const newSup = res.data
-      setSuppliers((prev) => [...prev, newSup])
       setSupplierId(newSup.id)
       setSupplierModal(false)
       setNewSupplierName('')
@@ -920,6 +981,38 @@ export default function InvoiceFormPage() {
   function selectedIndices(): number[] {
     const set = new Set(selectedLineKeys)
     return items.map((it, i) => (set.has(it.client_key) ? i : -1)).filter((i) => i >= 0)
+  }
+
+  function selectInvoiceCategory(value: string, targets: string[]) {
+    if (value === '__create_category__') {
+      setNewCategoryName('')
+      setCategoryTargets(targets)
+      return
+    }
+    setItems(prev => prev.map(item => targets.includes(item.client_key) ? { ...item, category_id: value || null } : item))
+  }
+  async function createInvoiceCategory() {
+    const name = newCategoryName.trim().replace(/\s+/g, ' ')
+    if (!name || categoryTargets === null || categoryBusyRef.current) return
+    categoryBusyRef.current = true
+    setCreatingCategory(true)
+    try {
+      const latest = (await adminApi.listCategories()).data
+      const normalized = name.normalize('NFKC').toLocaleLowerCase('uk-UA')
+      let category = latest.find(c => c.name.trim().replace(/\s+/g, ' ').normalize('NFKC').toLocaleLowerCase('uk-UA') === normalized)
+      if (!category) {
+        const result = await adminApi.createCategory(name) as { data: { id: string; name: string; sort_order: number } }
+        category = result.data
+      }
+      if (!category?.id) throw new Error('Не вдалося отримати створену папку')
+      setCategories([...latest.filter(c => c.id !== category!.id), category].sort((a, b) => a.name.localeCompare(b.name, 'uk')))
+      selectInvoiceCategory(category.id, categoryTargets)
+      setBulkCategoryId(category.id)
+      setCategoryTargets(null)
+      toast.success('Папку вибрано')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося створити папку')
+    } finally { categoryBusyRef.current = false; setCreatingCategory(false) }
   }
 
   function applyBulkCategory() {
@@ -999,11 +1092,12 @@ export default function InvoiceFormPage() {
     return {
       ...item,
       product_id: product.id,
+      product_base: invoiceProductBase(product),
       is_new: false,
       sku: product.sku,
       barcode: product.barcode || item.barcode || '',
       product_name: product.name || item.product_name,
-      category_id: product.category_id ?? item.category_id ?? null,
+      category_id: item.product_id === product.id ? item.category_id ?? null : product.category_id ?? item.category_id ?? null,
       storage_bin: product.storage_bin ?? item.storage_bin ?? null,
       photo_url: product.photo_url ?? item.photo_url ?? null,
       unit: normalizeInvoiceUnit(product.unit || item.unit),
@@ -1128,7 +1222,21 @@ export default function InvoiceFormPage() {
   }
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    const submittedItems = applyManualInvoiceQuantities(itemsRef.current, manualQtyOverridesRef.current)
+    if (invoiceSubmitRef.current || resolvingImportedProducts) return
+    if (pendingPriceRef.current > 0) { toast.warning('Дочекайтеся розрахунку цін перед проведенням.'); return }
+    // Desktop and mobile controls both exist in the DOM. Only the visible
+    // quantity input is authoritative; never let its hidden twin overwrite it.
+    const visibleQuantities = Array.from(e.currentTarget.querySelectorAll<HTMLInputElement>('input[data-invoice-quantity]'))
+      .filter(input => input.getClientRects().length > 0)
+      .map(input => ({ client_key: input.dataset.invoiceQuantity!, value: input.value }))
+    let submittedItems: LineItem[]
+    try {
+      submittedItems = captureInvoiceQuantities(itemsRef.current, visibleQuantities)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Перевірте кількість товару')
+      return
+    }
+    setItems(submittedItems)
     if (submittedItems.length === 0) { toast.error('Додайте хоча б один товар'); return }
     if (!supplierId) { toast.error('Оберіть постачальника'); return }
     if (invoiceSubmitRef.current) return
@@ -1136,253 +1244,46 @@ export default function InvoiceFormPage() {
     invoiceSubmitRef.current = true
     setSaving(true)
     try {
-      // Перевіряємо касу до створення нових карток товарів. Інакше при відмові
-      // оплати накладна не створювалась, а її товари вже лишались у базі.
+      // All writes are owned by one local transaction. No card writes in the renderer.
       const submittedTotal = submittedItems.reduce((sum, item) => sum + item.total, 0)
       const paidKopecks = initialPaymentAvailable ? Math.min(payFullNow ? submittedTotal : parseMoneyToKopecks(paidAmount), submittedTotal) : 0
       const paymentParts = initialPaymentAvailable ? buildSupplierPaymentParts(paidKopecks) : []
-      const cashboxPart = paymentParts.find((part) => part.fund_source === 'cashbox')?.amount ?? 0
+      const cashboxPart = paymentParts.find(part => part.fund_source === 'cashbox')?.amount ?? 0
       const shiftId = cashboxPart > 0 ? await requireCashboxFunds(cashboxPart) : null
       if (cashboxPart > 0 && !shiftId) return
-
-      // 1. Create missing products first. Робимо послідовно, щоб два однакові
-      // рядки з імпорту/телефона не створювали товар паралельно і не ловили duplicate.
-      const productCache = new Map<string, Product>()
-
-      const rememberProduct = (product: Product) => {
-        const sku = (product.sku || '').trim()
-        const barcode = normalizeBarcodeValue(product.barcode)
-        if (sku) productCache.set(`sku:${normalizeSkuValue(sku)}`, product)
-        if (barcode) productCache.set(`barcode:${barcode}`, product)
-        for (const extra of product.additional_barcodes ?? []) {
-          const normalizedExtra = normalizeBarcodeValue(extra)
-          if (normalizedExtra) productCache.set(`barcode:${normalizedExtra}`, product)
-        }
+      const invoiceId = (isEdit ? id : serverDraftIdRef.current) || commitInvoiceIdRef.current || crypto.randomUUID()
+      commitInvoiceIdRef.current = invoiceId
+      // Persist identity BEFORE IPC: even a changed retry after a lost reply cannot create a second invoice.
+      invoiceDraftSnapshotRef.current = { ...invoiceDraftSnapshotRef.current, items: submittedItems, commitInvoiceId: invoiceId }
+      persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
+      const result = await supplierApi.commitReceiving({
+        invoice_id: invoiceId, expected_revision: baseRevisionRef.current,
+        supplier_id: supplierId, invoice_number: invoiceNumber.trim() || null, notes: notes.trim() || null,
+        items: submittedItems,
+        payments: paymentParts.map(part => ({ ...part, payment_method: paymentMethod, shift_id: part.fund_source === 'cashbox' ? shiftId : null })),
+      })
+      if (result.data.status !== 'posted') {
+        setVersionConflict(result.data)
+        throw new Error('DOCUMENT_CONFLICT: Стан накладної вже змінився. Звірте документ.')
       }
-
-      const cachedProductForItem = (item: LineItem): Product | null => {
-        const sku = (item.sku || '').trim()
-        const barcode = normalizeBarcodeValue(item.barcode)
-        return resolveCachedInvoiceProduct(
-          productCache,
-          sku ? normalizeSkuValue(sku) : null,
-          barcode,
-          item.product_name,
-        )
-      }
-      const bindProductToItem = (item: LineItem, product: Product): LineItem => {
-        return bindExistingProductToItem(item, product)
-      }
-
-      const resolvedItems: LineItem[] = []
-      for (const item of submittedItems) {
-        // Перед проведенням ще раз шукаємо точний збіг у базі за артикулом/ШК.
-        // Якщо постачальник прислав рядок з уже існуючим артикулом — приймаємо товар
-        // на існуючу картку, а не створюємо дубль і не блокуємо накладну.
-        let exactMatch: Product | null = null
-        try {
-          exactMatch = await findExistingProductForItem(item)
-        } catch (lineErr) {
-          const message = lineErr instanceof Error ? lineErr.message : 'У цьому рядку конфлікт артикула або штрихкоду'
-          raiseInvoiceLineProblem(item.client_key, message)
-          throw makeInvoiceLineProblemError()
-        }
-        if (exactMatch) {
-          rememberProduct(exactMatch)
-          const boundItem = bindProductToItem(item, exactMatch)
-          // Для вже прив'язаного рядка не стираємо дані, які користувач щойно
-          // відредагував у накладній. Для нового імпортованого рядка картка з
-          // бази, як і раніше, лишається авторитетною.
-          if (item.product_id === exactMatch.id && !item.is_new) {
-            boundItem.product_name = item.product_name.trim() || exactMatch.name
-            if (item.sku.trim()) boundItem.sku = item.sku.trim()
-            if (normalizeBarcodeValue(item.barcode)) boundItem.barcode = normalizeBarcodeValue(item.barcode)
-          }
-          resolvedItems.push(boundItem)
-          continue
-        }
-
-        // A draft may have been saved on another device while its linked
-        // product was already soft-deleted. Never trust that stale id: a posted
-        // invoice referencing a hidden product loses the received stock during
-        // reconciliation. Re-check the card and recreate/restore it below when
-        // it is missing.
-        if (item.product_id && !item.is_new) {
-          const linkedProduct = await resolveActiveLinkedInvoiceProduct(
-            item.product_id,
-            async (productId) => (await productApi.get(productId)).data,
-          )
-          if (linkedProduct) {
-            resolvedItems.push(item)
-            continue
-          }
-        }
-
-        let cached: Product | null = null
-        try {
-          cached = cachedProductForItem(item)
-        } catch (lineErr) {
-          const message = lineErr instanceof Error ? lineErr.message : 'У цьому рядку конфлікт артикула або штрихкоду'
-          raiseInvoiceLineProblem(item.client_key, message)
-          throw makeInvoiceLineProblemError()
-        }
-        if (cached) {
-          resolvedItems.push(bindProductToItem(item, cached))
-          continue
-        }
-
-        // Бракує даних — не блокуємо збереження/проведення: підставляємо авто-артикул/назву
-        // (товар створюється з плейсхолдером, який можна допиляти пізніше в картці).
-        const skuTrim = (item.sku || '').trim()
-        const genSku = skuTrim || makeAutoSku(item.client_key)
-        const genName = (item.product_name || '').trim() || `Товар ${genSku}`
-
-        const form: ProductFormData = {
-          name: genName,
-          sku: genSku,
-          barcode: item.barcode || '',
-          unit: normalizeInvoiceUnit(item.unit),
-          purchase_price: kopecksForForm(item.purchase_price),
-          retail_price: kopecksForForm(item.retail_price),
-          qty_on_hand: '0',
-          reorder_point: '0',
-          notes: '',
-          is_active: true,
-          storage_bin: item.storage_bin ?? '',
-          is_favorite: false,
-          brand_id: '',
-          category_id: item.category_id ?? '',
-          photo_url: item.photo_url || null,
-          specs: {}
-        }
-        try {
-          const res = await productApi.create(form, { silent: true, reuseExistingSku: true })
-          rememberProduct(res.data)
-          resolvedItems.push(bindProductToItem(item, res.data))
-        } catch (createErr) {
-          if (!isDuplicateProductError(createErr)) throw createErr
-          const duplicateMatch = await findExistingProductForItem({ ...item, sku: genSku, product_name: genName })
-          if (!duplicateMatch) {
-            raiseInvoiceLineProblem(item.client_key, duplicateProductMessage(createErr, item.product_name || genSku))
-            throw makeInvoiceLineProblemError()
-          }
-          rememberProduct(duplicateMatch)
-          resolvedItems.push(bindProductToItem(item, duplicateMatch))
-        }
-      }
-
-      // Зберігаємо відредаговані дані карток ДО створення накладної. Так помилка
-      // артикула/штрихкоду не губиться після створення документа і касир може
-      // одразу виправити або замінити саме проблемний рядок без дубля накладної.
-      if (resolvedItems.length > 0) {
-        const productUpdateResults = await Promise.allSettled(
-          resolvedItems.map(async (item) => {
-            const patch: Partial<ProductFormData> = {
-              name: item.product_name,
-              category_id: item.category_id ?? '',
-              storage_bin: item.storage_bin ?? '',
-              is_active: true,
-            }
-            const sku = item.sku.trim()
-            const barcode = normalizeBarcodeValue(item.barcode)
-            if (sku) patch.sku = sku
-            if (barcode) patch.barcode = barcode
-            if (item.retail_price > 0) patch.retail_price = kopecksForForm(item.retail_price)
-            if (item.photo_url) patch.photo_url = item.photo_url
-            await productApi.update(item.product_id!, patch, { silent: true })
-          }),
-        )
-        const failedIndex = productUpdateResults.findIndex((result) => result.status === 'rejected')
-        if (failedIndex >= 0) {
-          const failedItem = resolvedItems[failedIndex]
-          const failedResult = productUpdateResults[failedIndex] as PromiseRejectedResult
-          const rawMessage = failedResult.reason instanceof Error ? failedResult.reason.message : ''
-          const field: RowField = /штрихкод|barcode/i.test(rawMessage) ? 'barcode' : 'sku'
-          const message = isDuplicateProductError(failedResult.reason)
-            ? duplicateProductMessage(failedResult.reason, failedItem.product_name)
-            : /foreign key/i.test(rawMessage)
-              ? `«${failedItem.product_name}»: не вдалося зберегти картку через некоректну категорію. Виберіть категорію ще раз.`
-              : `«${failedItem.product_name}»: не вдалося зберегти артикул, штрихкод або інші дані товару. Перевірте рядок і повторіть.`
-          itemsRef.current = resolvedItems
-          setItems(resolvedItems)
-          raiseInvoiceLineProblem(failedItem.client_key, message, failedItem, field)
-          throw makeInvoiceLineProblemError()
-        }
-      }
-
-      const body = {
-        supplier_id: supplierId,
-        invoice_number: invoiceNumber.trim() || null,
-        notes: notes.trim() || null,
-        items: resolvedItems.map((i) => ({
-          product_id: i.product_id!,
-          qty: i.qty,
-          purchase_price: i.purchase_price,
-          total: i.total,
-        })),
-      }
-      const recordInitialPayments = async (invoiceId: string) => {
-        for (const part of paymentParts) {
-          await supplierApi.payInvoice(invoiceId, {
-            amount: part.amount,
-            payment_method: paymentMethod,
-            fund_source: part.fund_source,
-            shift_id: part.fund_source === 'cashbox' ? shiftId : null,
-            note: part.note,
-          })
-        }
-      }
-      const shouldPost = postOnSaveRef.current || postImmediately
-      const existingDraftId = isEdit ? id! : serverDraftIdRef.current
-      if (existingDraftId) {
-        const updated = await supplierApi.updateInvoice(existingDraftId, { ...body, draft_payload: null })
-        const invoiceId = updated.data.id
-
-        if (initialPaymentAvailable && paymentParts.length > 0) {
-          await recordInitialPayments(invoiceId)
-        }
-
-        if (shouldPost) {
-          try {
-            await supplierApi.postInvoice(invoiceId)
-            toast.success('Накладну створено і проведено — залишки оновлено')
-          } catch {
-            toast.warning('Накладну збережено, але не вдалось провести — проведіть вручну зі списку')
-          }
-        } else {
-          toast.success(isEdit ? 'Накладну оновлено' : 'Накладну створено')
-        }
-      } else {
-        const created = await supplierApi.createInvoice({
-          ...body,
-          paid_amount: 0,
-          payment_method: null,
-          fund_source: null,
-          shift_id: null,
-        })
-
-        if (initialPaymentAvailable && created?.data?.id && paymentParts.length > 0) {
-          await recordInitialPayments(created.data.id)
-        }
-
-        // «Провести одразу» — збільшує залишки на складі без окремого заходу в список
-        if (shouldPost && created?.data?.id) {
-          try {
-            await supplierApi.postInvoice(created.data.id)
-            toast.success('Накладну створено і проведено — залишки оновлено')
-          } catch {
-            toast.warning('Накладну створено, але не вдалось провести — проведіть вручну зі списку')
-          }
-        } else {
-          toast.success('Накладну створено')
-        }
-      }
+      baseRevisionRef.current = result.data.edit_revision
+      serverDraftIdRef.current = result.data.id
+      setServerDraftId(result.data.id)
+      setInitialPaymentAvailable(false)
+      toast.success('Накладну проведено — товари, оплата та залишки збережені разом')
       invoiceDraftPersistenceDisabledRef.current = true
-      clearSupplyInvoiceDraft(invoiceDraftKey)
+      clearSupplyInvoiceDraft(invoiceDraftKey, serverDraftIdRef.current)
       navigate(`/suppliers/invoices`)
     } catch (err) {
-      if ((err as Error)?.name === 'InvoiceLineProblem') {
-        return
+      const failedId = serverDraftIdRef.current || commitInvoiceIdRef.current
+      if (err instanceof Error && err.message.includes('DOCUMENT_CONFLICT') && failedId) {
+        const current = await supplierApi.getInvoice(failedId).catch(() => null)
+        if (current) setVersionConflict(current.data)
+      }
+      const lineMatch = err instanceof Error ? err.message.match(/RECEIVING_LINE:(\d+):\s*(.*)/s) : null
+      if (lineMatch) {
+        const item = submittedItems[Number(lineMatch[1])]
+        if (item) { raiseInvoiceLineProblem(item.client_key, lineMatch[2]); return }
       }
       if (isDuplicateProductError(err)) {
         toast.error(duplicateProductMessage(err))
@@ -1391,20 +1292,13 @@ export default function InvoiceFormPage() {
       }
     } finally {
       invoiceSubmitRef.current = false
-      postOnSaveRef.current = false
+
       setSaving(false)
     }
   }
 
-  function saveAndPostInvoice() {
-    if (saving) return
-    postOnSaveRef.current = true
-    setPostImmediately(true)
-    const form = document.querySelector('form[data-supply-invoice-form="true"]') as HTMLFormElement | null
-    form?.requestSubmit()
-  }
-
   function closeInvoiceForm() {
+    if (invoiceSubmitRef.current) { toast.warning('Дочекайтеся завершення проведення накладної'); return }
     // Вихід через «Назад» зберігає незакриту накладну як чернетку.
     const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
     if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться у списку як чернетка.')) return
@@ -1412,18 +1306,46 @@ export default function InvoiceFormPage() {
   }
 
   async function cancelInvoiceForm() {
+    if (invoiceSubmitRef.current) return
     const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
     if (hasContent && !confirm('Скасувати накладну?\n\nЧернетку буде видалено без зміни залишків.')) return
+    invoiceSubmitRef.current = true
+    setSaving(true)
     invoiceDraftPersistenceDisabledRef.current = true
-    clearSupplyInvoiceDraft(invoiceDraftKey)
     const draftId = serverDraftIdRef.current || (isEdit && id ? id : null)
     try {
-      if (draftId) await supplierApi.deleteInvoice(draftId)
+      if (!draftId && commitInvoiceIdRef.current) {
+        // Unknown commit outcome is not permission to silently throw away its draft.
+        const committed = await supplierApi.getInvoice(commitInvoiceIdRef.current).catch(error => {
+          if (isMissingInvoiceError(error)) return null
+          throw error
+        })
+        if (committed) {
+          setVersionConflict(committed.data)
+          throw new Error('DOCUMENT_CONFLICT: Накладна вже записана. Відкрийте збережений документ перед скасуванням.')
+        }
+      }
+      if (draftId) {
+        // Legacy drafts have no revision: compare first instead of deleting unseen edits.
+        if (desktopBridge() && !baseRevisionRef.current) {
+          const current = (await supplierApi.getInvoice(draftId)).data
+          setVersionConflict(current)
+          throw new Error('DOCUMENT_CONFLICT: Спочатку звірте актуальну накладну перед видаленням.')
+        }
+        await supplierApi.deleteInvoice(draftId, baseRevisionRef.current)
+      }
+      clearSupplyInvoiceDraft(invoiceDraftKey, draftId)
       toast.success('Чернетку накладної видалено')
       navigate('/suppliers/invoices')
     } catch (err) {
       invoiceDraftPersistenceDisabledRef.current = false
       toast.error(err instanceof Error ? err.message : 'Не вдалося видалити чернетку')
+      if (err instanceof Error && err.message.includes('DOCUMENT_CONFLICT') && draftId) {
+        try { setVersionConflict((await supplierApi.getInvoice(draftId)).data) } catch { /* Keep the unsaved form. */ }
+      }
+    } finally {
+      invoiceSubmitRef.current = false
+      setSaving(false)
     }
   }
   if (loading) return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>
@@ -1434,18 +1356,35 @@ export default function InvoiceFormPage() {
       onBack={closeInvoiceForm}
     >
       <form data-supply-invoice-form="true" onSubmit={handleSubmit}>
+        {versionConflict && <InvoiceVersionConflict current={versionConflict} items={items} busy={saving}
+          onReload={() => {
+            if (!confirm('Завантажити актуальну накладну з бази замість правок у цій формі? Поточні незбережені правки буде замінено.')) return
+            const draft = draftFromServerInvoice(versionConflict)
+            if (!draft) return
+            applySupplyInvoiceDraft(draft)
+            setMoneyDrafts({})
+            setSelectedLineKeys([])
+            persistSupplyInvoiceDraft(invoiceDraftKey, draft)
+            setInitialPaymentAvailable(Number(versionConflict.paid_amount ?? 0) <= 0)
+            setVersionConflict(null)
+          }}
+          onKeep={() => {
+            if (!confirm('Ви звірили актуальні позиції та оплату? Наступне проведення застосує ваші правки замість поточної чернетки. Уже внесена оплата збережеться.')) return
+            baseRevisionRef.current = versionConflict.edit_revision
+            invoiceDraftSnapshotRef.current = { ...invoiceDraftSnapshotRef.current, baseRevision: versionConflict.edit_revision }
+            persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
+            setInitialPaymentAvailable(Number(versionConflict.paid_amount ?? 0) <= 0)
+            setVersionConflict(null)
+          }}
+          onOpen={() => navigate('/suppliers/invoices/' + versionConflict.id)} />}
+        <fieldset disabled={saving} className="min-w-0 border-0 p-0 m-0" aria-busy={saving}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <Card>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Постачальник *</label>
                 <div className="flex gap-2">
-                  <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}
-                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                    >
-                    <option value="">— Оберіть —</option>
-                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
+                  <InvoiceSupplierPicker value={supplierId} onChange={setSupplierId} />
                   {!isEdit && (
                     <button type="button" onClick={() => setSupplierModal(true)}
                       className="px-3.5 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold text-sm rounded-lg transition-colors"
@@ -1587,11 +1526,12 @@ export default function InvoiceFormPage() {
                     <span className="text-xs text-blue-700 font-medium">Категорія для вибраних ({selectedLineKeys.length}):</span>
                     <select
                       value={bulkCategoryId}
-                      onChange={(e) => setBulkCategoryId(e.target.value)}
+                      onChange={(e) => e.target.value === '__create_category__' ? selectInvoiceCategory(e.target.value, [...selectedLineKeys]) : setBulkCategoryId(e.target.value)}
                       className="border border-blue-100 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-yellow-400 bg-white min-w-[160px]"
                     >
                       <option value="">Вибрати категорію</option>
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      <option value="__create_category__">+ Створити папку</option>
                     </select>
                     <button type="button" onClick={applyBulkCategory} className="px-2.5 py-1 rounded bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700">
                       Застосувати
@@ -1705,13 +1645,14 @@ export default function InvoiceFormPage() {
                   <td className="px-2 py-2">
                     <select
                       value={item.category_id ?? ''}
-                      onChange={(e) => updateItem(i, 'category_id', e.target.value)}
+                      onChange={(e) => selectInvoiceCategory(e.target.value, [item.client_key])}
 
                       title="Папка/категорія товару"
                       className="w-40 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
                       <option value="">Без папки</option>
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      <option value="__create_category__">+ Створити папку</option>
                     </select>
                   </td>
                   <td className="px-2 py-2">
@@ -1741,7 +1682,7 @@ export default function InvoiceFormPage() {
                       className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                   </td>
                   <td className="px-2 py-2">
-                    <input ref={(el) => { qtyRefs.current[i] = el }} type="number" step="1" min="0" value={item.qty}
+                    <input ref={(el) => { qtyRefs.current[i] = el }} data-invoice-quantity={item.client_key} type="number" step="1" min="0" value={item.qty}
                       onChange={(e) => updateManualQuantity(i, e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'qty')}
 
@@ -1764,6 +1705,7 @@ export default function InvoiceFormPage() {
                   <td className="px-2 py-2">
                     <input ref={(el) => { purchaseRefs.current[i] = el }} type="text" inputMode="decimal"
                       value={moneyValue(i, 'purchase_price', item.purchase_price)}
+                      data-invoice-price="purchase"
                       onFocus={(e) => beginMoneyEdit(i, 'purchase_price', item.purchase_price, e.currentTarget)}
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'purchase_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
@@ -1794,6 +1736,7 @@ export default function InvoiceFormPage() {
                     <div className="flex items-center justify-end gap-1">
                       <input ref={(el) => { retailRefs.current[i] = el }} type="text" inputMode="decimal"
                         value={moneyValue(i, 'retail_price', item.retail_price)}
+                        data-invoice-price="retail"
                         onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
                         onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
                         onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
@@ -1899,12 +1842,13 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Папка</label>
                     <select
                       value={item.category_id ?? ''}
-                      onChange={(e) => updateItem(i, 'category_id', e.target.value)}
+                      onChange={(e) => selectInvoiceCategory(e.target.value, [item.client_key])}
 
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
                       <option value="">Без папки</option>
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      <option value="__create_category__">+ Створити папку</option>
                     </select>
                   </div>
                   <div>
@@ -1948,7 +1892,7 @@ export default function InvoiceFormPage() {
                       <button type="button" disabled={item.qty <= 1}
                         onClick={() => updateManualQuantity(i, Math.max(1, item.qty - 1))}
                         className="shrink-0 w-9 h-10 rounded-lg border border-gray-200 text-gray-600 font-bold disabled:opacity-40">−</button>
-                      <input type="number" step="1" min="0" value={item.qty}
+                      <input data-invoice-quantity={item.client_key} type="number" step="1" min="0" value={item.qty}
                         onChange={(e) => updateManualQuantity(i, e.target.value)}
 
                         className="w-full min-w-[64px] text-center border border-gray-200 rounded-lg px-2 py-2 text-base focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
@@ -1976,6 +1920,7 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Закупка, грн</label>
                     <input type="text" inputMode="decimal"
                       value={moneyValue(i, 'purchase_price', item.purchase_price)}
+                      data-invoice-price="purchase"
                       onFocus={(e) => beginMoneyEdit(i, 'purchase_price', item.purchase_price, e.currentTarget)}
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'purchase_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'purchase_price', e.target.value)}
@@ -1987,6 +1932,7 @@ export default function InvoiceFormPage() {
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Продаж, грн</label>
                     <input type="text" inputMode="decimal"
                       value={moneyValue(i, 'retail_price', item.retail_price)}
+                      data-invoice-price="retail"
                       onFocus={(e) => beginMoneyEdit(i, 'retail_price', item.retail_price, e.currentTarget)}
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
@@ -2129,23 +2075,12 @@ export default function InvoiceFormPage() {
         )}
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" disabled={saving}>
-            {saving ? 'Збереження...' : isEdit ? 'Оновити' : postImmediately ? 'Створити і провести' : 'Створити чернетку'}
+          <Button type="submit" disabled={saving || resolvingImportedProducts || recalculatingPrices}>
+            {saving ? 'Проводимо...' : recalculatingPrices ? 'Розрахунок цін...' : 'Провести'}
           </Button>
-          {isEdit && (
-            <Button type="button" onClick={saveAndPostInvoice} disabled={saving} className="bg-green-600 hover:bg-green-700 text-white">
-              {saving ? 'Збереження...' : 'Зберегти і закрити накладну'}
-            </Button>
-          )}
           <Button type="button" variant="outline" onClick={() => void cancelInvoiceForm()}>Скасувати</Button>
-          {!isEdit && (
-            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-1">
-              <input type="checkbox" checked={postImmediately} onChange={(e) => setPostImmediately(e.target.checked)}
-                className="w-4 h-4 accent-yellow-400" />
-              Провести одразу (оновити залишки)
-            </label>
-          )}
         </div>
+        </fieldset>
       </form>
 
       {/* Попередній перегляд Excel перед додаванням у накладну */}
@@ -2273,6 +2208,19 @@ export default function InvoiceFormPage() {
         </div>
       </Modal>
       {/* Швидке створення постачальника */}
+      <Modal open={categoryTargets !== null} onClose={() => { if (!creatingCategory) setCategoryTargets(null) }} title="Нова папка товарів" size="sm">
+        <div className="space-y-4">
+          <Input autoFocus label="Назва папки" value={newCategoryName} maxLength={120}
+            onChange={e => setNewCategoryName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createInvoiceCategory() } }} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" disabled={creatingCategory} onClick={() => setCategoryTargets(null)}>Скасувати</Button>
+            <Button type="button" disabled={creatingCategory || !newCategoryName.trim()} onClick={() => void createInvoiceCategory()}>
+              {creatingCategory ? 'Створюємо...' : 'Створити та вибрати'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <Modal open={supplierModal} onClose={() => setSupplierModal(false)} title="Швидке створення постачальника" size="sm">
         <div className="space-y-4">
           <Input label="Назва постачальника *" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="ТОВ Запчастини..." required />

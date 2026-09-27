@@ -24,9 +24,9 @@ import { QuickChargeModal } from './QuickChargeModal'
 import { HelpModal } from './HelpModal'
 import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
-import { LockScreenOverlay, isLocked } from './LockScreenOverlay'
+
 import { shiftApi } from './shiftApi'
-import { usePOSStore, type POSItem, type POSCustomer } from '@/stores/posStore'
+import { usePOSStore, type POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
 import type { Sale } from '@/types/sale'
 import type { Shift } from '@/types/shift'
@@ -42,93 +42,7 @@ import { cacheCurrentShift, decrementCachedStock, enqueueSale, getCachedStaff } 
 import { OfflineSalesModal } from './OfflineSalesModal'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { SyncHealthIndicator } from '@/components/SyncHealthIndicator'
-import { missingSavedTabs } from './cartRecovery'
-
-const CART_KEY = 'forsage_pos_cart'
-
-interface SavedCart {
-  tabs: Array<{ idempotencyKey: string; items: POSItem[]; customer: POSCustomer | null; notes: string }>
-  savedAt: string
-  shiftId: string | null
-}
-
-function saveCart(store: { tabs: Array<{ idempotencyKey: string; items: POSItem[]; customer: POSCustomer | null; notes: string }>; currentShift: { id: string } | null }) {
-  try {
-    const hasItems = store.tabs.some((t) => Array.isArray(t.items) && t.items.length > 0)
-    if (!hasItems) { localStorage.removeItem(CART_KEY); return }
-    const cart: SavedCart = {
-      tabs: store.tabs.map((t) => ({ idempotencyKey: t.idempotencyKey, items: t.items, customer: t.customer, notes: t.notes })),
-      savedAt: new Date().toISOString(),
-      shiftId: store.currentShift?.id ?? null,
-    }
-    localStorage.setItem(CART_KEY, JSON.stringify(cart))
-  } catch (error) {
-    console.warn('Не вдалося зберегти аварійну копію кошика', error)
-  }
-}
-
-function loadCart(): SavedCart | null {
-  try {
-    const raw = localStorage.getItem(CART_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<SavedCart>
-    if (!Array.isArray(parsed.tabs)) {
-      localStorage.removeItem(CART_KEY)
-      return null
-    }
-    const tabs = parsed.tabs.slice(0, 5).flatMap((tab) => {
-      if (!tab || !Array.isArray(tab.items)) return []
-      const savedOperationId = typeof tab.idempotencyKey === 'string'
-        && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{7,127}$/.test(tab.idempotencyKey.trim())
-        ? tab.idempotencyKey.trim()
-        : crypto.randomUUID()
-      const items = tab.items.flatMap((rawItem) => {
-        const item = rawItem as Partial<POSItem>
-        const qty = Number(item.qty)
-        const unitPrice = Number(item.unitPrice)
-        if (!item.productId || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) return []
-        const discount = Math.max(0, Math.min(Number(item.discount) || 0, unitPrice * qty))
-        return [{
-          productId: String(item.productId),
-          sku: String(item.sku ?? ''),
-          name: String(item.name ?? item.sku ?? 'Товар'),
-          unit: String(item.unit ?? 'шт'),
-          qty,
-          unitPrice,
-          discount,
-          discountPct: Number.isFinite(Number(item.discountPct)) ? Number(item.discountPct) : undefined,
-          total: unitPrice * qty - discount,
-          qtyOnHand: Number(item.qtyOnHand) || 0,
-          requiresCoreReturn: Boolean(item.requiresCoreReturn),
-          coreDepositAmount: Number(item.coreDepositAmount) || 0,
-        }]
-      })
-      return items.length > 0 ? [{
-        idempotencyKey: savedOperationId,
-        items,
-        customer: tab.customer ?? null,
-        notes: String(tab.notes ?? ''),
-      }] : []
-    })
-    if (tabs.length === 0) {
-      localStorage.removeItem(CART_KEY)
-      return null
-    }
-    return {
-      tabs,
-      savedAt: Number.isFinite(Date.parse(parsed.savedAt ?? '')) ? String(parsed.savedAt) : new Date().toISOString(),
-      shiftId: typeof parsed.shiftId === 'string' ? parsed.shiftId : null,
-    }
-  } catch {
-    try { localStorage.removeItem(CART_KEY) } catch { /* storage may be unavailable */ }
-    return null
-  }
-}
-
-function clearSavedCart() {
-  try { localStorage.removeItem(CART_KEY) } catch { /* storage may be unavailable */ }
-}
+import { connectOpenReceipts } from './cartRecovery'
 
 function posCustomerFromCustomer(c: Customer): POSCustomer {
   const tierDiscountPct = customerDiscountPct(c)
@@ -143,13 +57,6 @@ function posCustomerFromCustomer(c: Customer): POSCustomer {
     riskProfile: c.risk_profile ?? 'low',
   }
 }
-function savedCartTotal(cart: SavedCart): number {
-  return cart.tabs.reduce(
-    (sum, tab) => sum + tab.items.reduce((itemSum, item) => itemSum + (Number(item.total) || 0), 0),
-    0,
-  )
-}
-
 const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 const POS_READ_TIMEOUT_MS = 10_000
 const POS_ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
@@ -285,15 +192,9 @@ export default function POSPage() {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити чек')
     }
   }
-  const [recoverCart, setRecoverCart] = useState<SavedCart | null>(() => {
-    const saved = loadCart()
-    if (!saved) return null
-    const tabs = missingSavedTabs(saved.tabs, usePOSStore.getState().tabs)
-    return tabs.length ? { ...saved, tabs } : null
-  })
   const [crashSale, setCrashSale]       = useState<Sale | null>(null)
   const [helpOpen, setHelpOpen]         = useState(false)
-  const [isLockedPIN, setLockedPIN]     = useState(isLocked())
+
   const serverOnline = useServerStatus()
   const desktopRuntime = Boolean(desktopBridge())
   const effectiveOnline = desktopRuntime || serverOnline
@@ -392,24 +293,27 @@ export default function POSPage() {
       .catch(() => {})
 
     // Кількість активних замовлень для мобільного таба
-    const loadReadyCount = () => {
-      if (isDesktopAccessLocked()) return
-      const localReady = desktopBridge()?.orders?.listReady
-      if (localReady) {
-        localReady({ limit: 80 }).then((data) => setReadyOrdersCount(data.length)).catch(() => {})
-        return
-      }
-      api.get(`/api/v1/customer-orders?status=${POS_ACTIVE_ORDER_STATUSES}&per_page=80`, { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
-        .then((res: any) => {
-          const data = res.data
-          if (Array.isArray(data)) setReadyOrdersCount(data.length)
-        })
-        .catch(() => {})
+    const poller = createReadPoller({
+      intervalMs: 30_000,
+      canRead: () => !isDesktopAccessLocked() && document.visibilityState !== 'hidden',
+      read: async () => {
+        const local = desktopBridge()?.orders
+        if (local?.count) return local.count({ statuses: POS_ACTIVE_ORDER_STATUSES.split(',') })
+        if (local?.listReady) return (await local.listReady({ limit: 80 })).length
+        const res = await api.get<{ data: unknown[] }>(`/api/v1/customer-orders?status=${POS_ACTIVE_ORDER_STATUSES}&per_page=80`, { silent: true, timeoutMs: POS_READ_TIMEOUT_MS })
+        return Array.isArray(res.data) ? res.data.length : 0
+      },
+      onData: setReadyOrdersCount,
+    })
+    poller.wake()
+    const events = ['forsage:desktop-access-changed', 'focus', 'forsage:desktop-sync-requested']
+    for (const event of events) window.addEventListener(event, poller.wake)
+    document.addEventListener('visibilitychange', poller.wake)
+    return () => {
+      poller.stop()
+      for (const event of events) window.removeEventListener(event, poller.wake)
+      document.removeEventListener('visibilitychange', poller.wake)
     }
-    loadReadyCount()
-    const id = setInterval(loadReadyCount, 10000)
-    window.addEventListener('forsage:desktop-access-changed', loadReadyCount)
-    return () => { clearInterval(id); window.removeEventListener('forsage:desktop-access-changed', loadReadyCount) }
   }, [refreshSuspendedCount, setPriceRounding])
 
   // Авто-друк чека після продажу (вмикається в Налаштуваннях).
@@ -456,31 +360,21 @@ export default function POSPage() {
     } catch { localStorage.removeItem(PAYMENT_ATTEMPT_KEY) }
   }, [])
 
-  // Crash Recovery — авто-збереження всіх вкладок (зберігаємо і shift_id)
+  const receiptScope = session?.user?.id
+    ? String(session.user.app_metadata?.tenant_id ?? 'local') + ':' + session.user.id : ''
   useEffect(() => {
-    // Do not overwrite a genuine crash backup while its recovery is pending.
-    if (recoverCart) return
-    // Під час серії сканів не серіалізуємо весь чек після кожного товару.
-    // Останній стан зберігається одразу після короткої паузи.
-    const timer = window.setTimeout(() => saveCart(store), 180)
-    return () => window.clearTimeout(timer)
-  }, [store.tabs, store.currentShift, recoverCart])
+    if (!receiptScope || store.isInitializing || store.initError) return
+    if (store.currentShift && store.currentShift.cashier_id !== session?.user?.id) return
+    const disconnect = connectOpenReceipts(usePOSStore, localStorage, receiptScope)
+    // Page leave and app exit persist the latest store, never a stale render closure.
+    const flushOnExit = disconnect.flush
+    window.addEventListener('beforeunload', flushOnExit)
+    return () => { window.removeEventListener('beforeunload', flushOnExit); disconnect() }
+  }, [receiptScope, store.isInitializing, store.initError, store.currentShift?.cashier_id, session?.user?.id])
 
-  useEffect(() => {
-    const flush = () => { if (!recoverCart) saveCart(usePOSStore.getState()) }
-    window.addEventListener('beforeunload', flush)
-    return () => { window.removeEventListener('beforeunload', flush); flush() }
-  }, [recoverCart])
-
-  // Очистити localStorage після успішного продажу або скидання
   const originalClear = useCallback(() => {
-    const { tabs, activeTabId } = store
-    const tab = tabs.find((t) => t.id === activeTabId)
-    if (tab && tab.items.length > 0) {
-      store.clearReceipt()
-    }
-    clearSavedCart()
-  }, [store])
+    usePOSStore.getState().clearReceipt()
+  }, [])
 
   // Гарячі клавіші
   useEffect(() => {
@@ -709,7 +603,6 @@ export default function POSPage() {
       paymentPrintChoiceRef.current = printAfterPayment === true
       setLastSale(localReceipt)
       store.clearReceipt()
-      clearSavedCart()
       setPayOpen(false)
       playCashRegister()
       toast.success(`Офлайн-чек ${localReceipt.sale_number} збережено і буде синхронізовано`)
@@ -728,7 +621,6 @@ export default function POSPage() {
       if (sale) {
         paymentPrintChoiceRef.current = printAfterPayment === true
         setLastSale(sale as Sale)
-        clearSavedCart()
         setPayOpen(false)
         playCashRegister()
         return true
@@ -741,73 +633,12 @@ export default function POSPage() {
     }
   }
 
-  function handleRestoreCart(cart: SavedCart) {
-    try {
-      const missing = missingSavedTabs(cart.tabs, usePOSStore.getState().tabs)
-      const availableTargets = store.tabs.filter((tab) => tab.items.length === 0).length + Math.max(0, 5 - store.tabs.length)
-      if (missing.length > availableTargets) {
-        toast.error(`Потрібно вільних вкладок: ${missing.length}. Закрийте зайві чеки та повторіть.`)
-        return
-      }
-      let restored = 0
-      for (const savedTab of missing) {
-        const ok = store.restoreReceipt({
-          idempotencyKey: savedTab.idempotencyKey,
-          items: savedTab.items,
-          customer: savedTab.customer,
-          notes: savedTab.notes,
-        })
-        if (!ok) break
-        restored++
-      }
-      if (restored !== missing.length) {
-        toast.error('Не вистачає вільних вкладок або кошик пошкоджений. Закрийте зайву вкладку й повторіть.')
-        return
-      }
-      setRecoverCart(null)
-      saveCart(usePOSStore.getState())
-      if (restored) toast.success(restored > 1 ? `Відновлено вкладок: ${restored}` : 'Кошик відновлено')
-    } catch (error) {
-      console.error('Помилка відновлення збереженого кошика', error)
-      toast.error('Кошик пошкоджений. Його можна безпечно видалити кнопкою поруч.')
-    }
-  }
-
-  function handleDismissRecover() {
-    setRecoverCart(null)
-    clearSavedCart()
-    toast.success('Збережену копію кошика видалено')
-  }
-
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#1A1A1A]">
       <div
         className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
       >
-      {/* Lock Screen */}
-      {isLockedPIN && (
-        <LockScreenOverlay onUnlock={() => setLockedPIN(false)} />
-      )}
 
-      {/* Crash Recovery — банер відновлення */}
-      {recoverCart && (
-        <div className="bg-yellow-500/10 border-b border-yellow-500/30 px-4 py-2 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2 text-yellow-300 text-sm">
-            <RotateCcw size={14} />
-            <span>Знайдено збережений кошик від {new Date(recoverCart.savedAt).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })} ({recoverCart.tabs.length} вкл., {(savedCartTotal(recoverCart) / 100).toFixed(2)} грн)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => handleRestoreCart(recoverCart)}
-              className="px-3 py-1 bg-yellow-500/20 text-yellow-300 text-xs font-medium rounded-lg hover:bg-yellow-500/30 transition-colors">
-              Відновити
-            </button>
-            <button onClick={handleDismissRecover}
-              className="px-3 py-1 bg-gray-700 text-gray-400 text-xs rounded-lg hover:text-white transition-colors">
-              Видалити копію
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Connectivity banner */}
       {!desktopRuntime && !serverOnline && (
@@ -841,7 +672,7 @@ export default function POSPage() {
               Друк чека
             </button>
             <button
-              onClick={() => { store.clearReceipt(); clearSavedCart(); setRecoverCart(null); setCrashSale(null) }}
+              onClick={() => { store.clearReceipt(); setCrashSale(null) }}
               className="px-3 py-1 bg-emerald-700 text-white text-xs rounded-lg hover:bg-emerald-600 transition-colors">
               Це той самий — очистити кошик
             </button>
@@ -868,7 +699,6 @@ export default function POSPage() {
           </div>
           {/* Ліворуч, а не в меню «Ще»: якщо чеки не їдуть на сервер, касир має
               побачити це без жодного кліку — і на вузькому екрані теж. */}
-          <SyncHealthIndicator theme="dark" />
         </div>
 
         {/* Desktop права частина — щоденні дії з підписами, решта в меню «Ще» */}
@@ -1062,8 +892,6 @@ export default function POSPage() {
         onClosed={() => {
           store.setCurrentShift(null)
           if (session?.user?.id) cacheCurrentShift(null, session.user.id).catch(() => {})
-          clearSavedCart()
-          store.clearReceipt()
           setCloseOpen(false)
           // After a successful shift close, leave the full-screen POS instead
           // of keeping the cashier on the empty OpenShiftScreen.
@@ -1227,3 +1055,4 @@ export default function POSPage() {
 }
 
 
+import { createReadPoller } from '@/lib/readPoller'

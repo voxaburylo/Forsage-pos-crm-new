@@ -1,6 +1,10 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useScopedAction } from '@/hooks/useScopedAction'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { parseWriteoffQuantity } from '@/features/inventory/writeoffQuantity'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, Clock, AlertTriangle, Search, Trash, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
+import { Edit, Trash2, Clock, AlertTriangle, Trash, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
 import { productApi, type ProductCrossNumber } from './productApi'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
@@ -15,6 +19,7 @@ import {
   DEFAULT_BIN_LABEL,
 } from '@/features/labels/LabelDesigner'
 import { warehouseApi } from '@/features/inventory/warehouseApi'
+import { useWarehouseRecovery, WarehouseRecoveryNotice } from '@/features/inventory/WarehouseRecovery'
 import { canDeleteCatalog } from './catalogDeletePermissions'
 
 import { useAuthStore } from '@/stores/authStore'
@@ -54,13 +59,25 @@ function StockBadge({ product }: { product: Product }) {
 }
 
 export default function ProductDetailPage() {
+  const { id } = useParams<{ id: string }>()
+  return <ProductDetail key={id} />
+}
+
+function ProductDetail() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   // Закупівля/маржа — тільки власник/адмін/кладівник (сервер їх і не віддає іншим)
   const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const offlineMode = useAuthStore((s) => s.offlineMode)
+  const photoRequests = useLatestRequest([id, offlineMode])
+  const writes = useScopedAction(JSON.stringify([id, role, offlineMode]))
+  const linksRequests = useLatestRequest([id, offlineMode])
+  const canWrite = isDesktopRuntime() && ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
+  const canReserve = canWrite && role !== 'cashier'
+  const reserveRecovery = useWarehouseRecovery('reserve', canReserve)
+  const reserveRefresh = useLatestRequest([id, role, offlineMode])
   const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
-  const canDeleteProduct = canDeleteCatalog(role)
+  const canDeleteProduct = canWrite && canDeleteCatalog(role)
   const [product, setProduct] = useState<Product | null>(null)
   const [history, setHistory] = useState<Array<{
     type: 'price_change' | 'sale' | 'return' | 'writeoff'
@@ -71,121 +88,73 @@ export default function ProductDetailPage() {
   const [analogs, setAnalogs] = useState<{ grouped: Record<string, any[]> } | null>(null)
   const [crossNumbers, setCrossNumbers] = useState<ProductCrossNumber[]>([])
   const [crossPaste, setCrossPaste] = useState('')
-  const [crossType, setCrossType] = useState<ProductCrossNumber['number_type']>('cross')
   const [crossSource, setCrossSource] = useState('Внесено менеджером')
-  const [savingCrossNumbers, setSavingCrossNumbers] = useState(false)
+  const [linksLoading, setLinksLoading] = useState(true)
+  const [linksError, setLinksError] = useState('')
   const [fitment, setFitment] = useState<{ grouped: Record<string, any[]> } | null>(null)
   const [cobuy, setCobuy] = useState<any[]>([])
   const [photoModalOpen, setPhotoModalOpen] = useState(false)
   const [savingPhoto, setSavingPhoto] = useState(false)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
   const [printModalOpen, setPrintModalOpen] = useState(false)
   const [printCopies, setPrintCopies] = useState(1)
 
   
-  // Inline Analogs state
-  const [analogSearch, setAnalogSearch] = useState('')
-  const [analogSearchLoading, setAnalogSearchLoading] = useState(false)
-  const [analogSuggestions, setAnalogSuggestions] = useState<Product[]>([])
-  const [selectedAnalogType, setSelectedAnalogType] = useState<'substitute' | 'oem' | 'cross'>('substitute')
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
-  const suggestionsRef = useRef<HTMLDivElement>(null)
-
-  // Close suggestions dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (suggestionsRef.current && !suggestionsRef.current.contains(e.target as Node)) {
-        setSuggestionsOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
-
-  // Auto-search for analog suggestions
-  useEffect(() => {
-    if (!analogSearch.trim()) {
-      setAnalogSuggestions([])
-      return
-    }
-    const delayDebounce = setTimeout(async () => {
-      setAnalogSearchLoading(true)
-      try {
-        const { data } = await productApi.list({ search: analogSearch, per_page: 5 })
-        // Filter out current product
-        setAnalogSuggestions((data ?? []).filter((p) => p.id !== id))
-        setSuggestionsOpen(true)
-      } catch (err) {
-        console.error(err)
-      } finally {
-        setAnalogSearchLoading(false)
-      }
-    }, 300)
-    return () => clearTimeout(delayDebounce)
-  }, [analogSearch, id])
-
-  const handleAddAnalog = async (analogProductId: string) => {
+  const refreshLinks = useCallback(async () => {
     if (!id) return
+    const isCurrent = linksRequests.begin()
+    setLinksLoading(true)
+    setLinksError('')
     try {
-      await productApi.addAnalog(id, analogProductId, selectedAnalogType)
-      toast.success('Аналог успішно додано')
-      // Refresh analogs
-      const analogsData = await productApi.getAnalogs(id).then(r => r as any).catch(() => null)
-      if (analogsData) setAnalogs(analogsData as any)
-      setAnalogSearch('')
-      setSuggestionsOpen(false)
-    } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Помилка додавання аналога')
-    }
-  }
-
-  const handleRemoveAnalog = async (analogId: string) => {
-    if (!id) return
-    if (!confirm('Ви впевнені, що хочете видалити цей аналог?')) return
-    try {
-      await productApi.removeAnalog(id, analogId)
-      toast.success('Аналог видалено')
-      // Refresh analogs
-      const analogsData = await productApi.getAnalogs(id).then(r => r as any).catch(() => null)
-      if (analogsData) setAnalogs(analogsData as any)
+      const [matches, numbers] = await Promise.all([
+        settleOptional(productApi.getAnalogs(id), null),
+        settleOptional(productApi.getCrossNumbers(id), null),
+      ])
+      if (!isCurrent()) return
+      if (!matches || !numbers) throw new Error('Не вдалося завантажити аналоги')
+      setAnalogs(matches)
+      setCrossNumbers(numbers.data)
     } catch {
-      toast.error('Помилка видалення аналога')
+      if (isCurrent()) setLinksError('Не вдалося оновити крос-номери та аналоги. Повторіть завантаження.')
+    } finally {
+      if (isCurrent()) setLinksLoading(false)
     }
-  }
+  }, [id, linksRequests])
+
+  useEffect(() => { void refreshLinks() }, [refreshLinks, offlineMode])
 
   const handleAddCrossNumbers = async () => {
-    if (!id) return
-    const numbers = [...new Set(
-      crossPaste
-        .split(/[\r\n,;\t]+/)
-        .map((value) => value.trim())
-        .filter(Boolean),
-    )]
-    if (numbers.length === 0) {
-      toast.error('Вставте хоча б один номер')
-      return
-    }
-    setSavingCrossNumbers(true)
+    if (!id || !canWrite || linksLoading || linksError || uploadingPhoto) return
+    const numbers = [...new Set(crossPaste.split(/[\r\n,;\t]+/).map(value => value.trim()).filter(Boolean))]
+    if (!numbers.length) { toast.error('Вставте хоча б один номер'); return }
+    const attempt = writes.begin()
+    if (!attempt) return
     try {
-      const { data } = await productApi.addCrossNumbers(id, numbers, crossType, crossSource.trim() || 'Внесено менеджером')
+      const { data } = await productApi.addCrossNumbers(id, numbers, crossSource.trim() || 'Внесено менеджером')
+      if (!attempt.isCurrent()) return
       setCrossNumbers(data)
       setCrossPaste('')
-      toast.success(`Номери збережено. Усього у картці: ${data.length}`)
+      toast.success('Крос-номери збережено')
+      await refreshLinks()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти номери')
-    } finally {
-      setSavingCrossNumbers(false)
-    }
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти номери')
+    } finally { attempt.finish() }
   }
 
   const handleRemoveCrossNumber = async (crossNumber: ProductCrossNumber) => {
-    if (!id || !confirm(`Видалити номер ${crossNumber.number}?`)) return
+    if (!id || !canWrite || linksLoading || linksError || uploadingPhoto || writes.isBusy()) return
+    if (!confirm('Видалити номер ' + crossNumber.number + '?')) return
+    const attempt = writes.begin()
+    if (!attempt) return
     try {
-      await productApi.removeCrossNumber(id, crossNumber.id)
-      setCrossNumbers((current) => current.filter((item) => item.id !== crossNumber.id))
+      const { data } = await productApi.removeCrossNumber(id, crossNumber.id)
+      if (!attempt.isCurrent()) return
+      setCrossNumbers(data)
       toast.success('Номер видалено')
+      await refreshLinks()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити номер')
-    }
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося видалити номер')
+    } finally { attempt.finish() }
   }
 
   const copyCrossNumber = async (number: string) => {
@@ -198,17 +167,18 @@ export default function ProductDetailPage() {
   }
 
   async function handlePhotoUrl(url: string | null) {
-    if (!product || !id) return
+    if (!product || !id || product.id !== id) throw new Error('Відкрийте картку товару повторно')
+    if (!canWrite) throw new Error('Картка доступна лише для перегляду')
+    const attempt = writes.begin()
+    if (!attempt) throw new Error('Зачекайте завершення попереднього збереження')
+    const isCurrent = photoRequests.begin()
     setSavingPhoto(true)
     try {
-      await productApi.update(id, { photo_url: url })
-      setProduct({ ...product, photo_url: url })
-      toast.success(url ? 'Фото збережено' : 'Фото видалено')
-      setPhotoModalOpen(false)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка')
+      await productApi.update(id, { photo_url: url ?? '' })
+      if (isCurrent() && attempt.isCurrent()) setProduct(current => current?.id === id ? { ...current, photo_url: url } : current)
     } finally {
-      setSavingPhoto(false)
+      if (isCurrent()) setSavingPhoto(false)
+      attempt.finish()
     }
   }
 
@@ -257,63 +227,100 @@ export default function ProductDetailPage() {
 
   useEffect(() => {
     if (!id) return
+    let active = true
+    setLoading(true)
+    setPhotoModalOpen(false)
+    setSavingPhoto(false)
+    setUploadingPhoto(false)
     productApi.get(id).then(({ data }) => {
+      if (!active) return
       setProduct(data)
       setLoading(false)
       return Promise.all([
         settleOptional(productApi.getHistory(id), { data: [] }),
-        settleOptional(productApi.getAnalogs(id), null),
-        settleOptional(productApi.getCrossNumbers(id), { data: [] }),
+
         settleOptional(productApi.getFitment(id), null),
         settleOptional(productApi.getCobuy(id), []),
-      ]).then(([{ data: hist }, analogsData, crossNumbersData, fitmentData, cobuyData]) => {
+      ]).then(([{ data: hist }, fitmentData, cobuyData]) => {
+        if (!active) return
         setHistory(hist as typeof history)
-        if (analogsData) setAnalogs(analogsData)
-        setCrossNumbers(crossNumbersData.data)
-        if (fitmentData) setFitment(fitmentData)
+
+        setFitment(fitmentData)
         setCobuy(cobuyData)
       })
-    }).catch(() => navigate('/products')).finally(() => setLoading(false))
+    }).catch(() => { if (active) navigate('/products') }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [id, navigate, offlineMode])
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [reserveOpen, setReserveOpen] = useState(false)
   const [reserveQty, setReserveQty] = useState('1')
-  const [reserving, setReserving] = useState(false)
-
   async function handleReserve() {
-    if (!product) return
-    const qty = parseFloat(reserveQty)
-    if (isNaN(qty) || qty <= 0) { toast.error('Вкажіть коректну кількість'); return }
-    setReserving(true)
+    if (!product || !canReserve || uploadingPhoto || reserveRecovery.blocked || reserveRecovery.busy) return
+    const qty = parseWriteoffQuantity(reserveQty)
+    if (qty === null) { toast.error('Вкажіть коректну кількість, не більше трьох знаків після коми'); return }
+    const attempt = writes.begin()
+    if (!attempt) return
     try {
-      const expires = new Date(); expires.setDate(expires.getDate() + 3)
       await warehouseApi.createReserve({
-        product_id: product.id,
-        qty,
-        customer_id: null,
-        order_id: null,
-        expires_at: expires.toISOString(),
+        product_id: product.id, qty, customer_id: null, order_id: null, duration_days: 3,
       })
+      if (!attempt.isCurrent()) return
       toast.success('Товар зарезервовано на 3 дні')
       setReserveOpen(false)
       setReserveQty('1')
+      try {
+        const data = await settleOptional(productApi.get(product.id), null)
+        if (!attempt.isCurrent()) return
+        if (data) setProduct(data.data)
+        else toast.warning('Резерв збережено. Відкрийте картку повторно для оновлення залишку.')
+      } catch {
+        if (attempt.isCurrent()) toast.warning('Резерв збережено. Відкрийте картку повторно для оновлення залишку.')
+      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не вдалося зарезервувати')
-    } finally {
-      setReserving(false)
-    }
+      if (attempt.isCurrent()) { reserveRecovery.refresh(); toast.error(e instanceof Error ? e.message : 'Не вдалося зарезервувати') }
+    } finally { attempt.finish() }
   }
 
+  const reserveRecoveryNotice = <WarehouseRecoveryNotice recovery={reserveRecovery} disabled={writes.busy} onResolved={result => {
+    if (result.committed) { setReserveOpen(false); setReserveQty('1') }
+    if (!id) return
+    const current = reserveRefresh.begin()
+    void settleOptional(productApi.get(id), null).then(data => {
+      if (!current()) return
+      if (data) setProduct(data.data)
+      else toast.warning('Відкрийте картку повторно для оновлення залишку.')
+    })
+  }} />
+
   async function handleDelete() {
-    if (!product) return
+    if (!product || !canDeleteProduct || uploadingPhoto) return false
+    const attempt = writes.begin()
+    if (!attempt) return false
     try {
       await productApi.delete(product.id)
+      if (!attempt.isCurrent()) return false
       toast.success('Товар видалено')
       navigate('/products')
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка')
-    }
+      if (attempt.isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка')
+      return false
+    } finally { attempt.finish() }
+  }
+
+  async function handleGenerateBarcode() {
+    if (!product || !canWrite || uploadingPhoto || writes.isBusy()) return
+    if (product.barcode && !confirm('Замінити основний штрихкод товару на новий?')) return
+    const attempt = writes.begin()
+    if (!attempt) return
+    try {
+      const { data } = await productApi.generateBarcode(product.id)
+      if (!attempt.isCurrent()) return
+      setProduct(data)
+      toast.success('Штрихкод згенеровано: ' + data.barcode)
+    } catch (e) {
+      if (attempt.isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка')
+    } finally { attempt.finish() }
   }
 
   if (loading || !product) return (
@@ -328,14 +335,14 @@ export default function ProductDetailPage() {
       actions={
         <div className="flex gap-2 items-center">
           {product.is_active === false && <Badge color="red">🚫 Неактивний</Badge>}
-          <Button variant="secondary" size="sm" onClick={() => setReserveOpen(true)}>
+          {canReserve && <Button variant="secondary" size="sm" disabled={writes.busy || uploadingPhoto} onClick={() => setReserveOpen(true)}>
             📌 Резерв
-          </Button>
-          <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => navigate(`/products/${product.id}/edit`)}>
+          </Button>}
+          {canWrite && <Button variant="secondary" size="sm" disabled={writes.busy || uploadingPhoto} icon={<Edit size={14} />} onClick={() => navigate(`/products/${product.id}/edit`)}>
             Редагувати
-          </Button>
+          </Button>}
           {canDeleteProduct && (
-            <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
+<Button variant="danger" size="sm" disabled={writes.busy || uploadingPhoto} icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
               Видалити
             </Button>
           )}
@@ -343,6 +350,7 @@ export default function ProductDetailPage() {
       }
     >
       <div className="max-w-3xl space-y-4">
+        {!reserveOpen && canReserve && reserveRecoveryNotice}
 
         {/* Основна інфо */}
         <Card>
@@ -360,14 +368,15 @@ export default function ProductDetailPage() {
                   <Camera size={28} />
                 </div>
               )}
-              <button
+              {canWrite && <button
+                disabled={writes.busy || uploadingPhoto}
                 onClick={() => setPhotoModalOpen(true)}
                 className="absolute inset-0 w-full h-full flex items-center justify-center bg-black/0 group-hover:bg-black/40 rounded-xl transition-all"
               >
                 <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-medium bg-black/60 px-3 py-1.5 rounded-lg transition-all">
                   {product.photo_url ? 'Змінити фото' : 'Додати фото'}
                 </span>
-              </button>
+              </button>}
             </div>
             <div className="flex-1 flex items-start justify-between">
               <div>
@@ -409,16 +418,10 @@ export default function ProductDetailPage() {
                     <span className="text-gray-400 text-sm italic">Не вказано</span>
                   )}
                 </div>
-                <button onClick={async () => {
-                  try {
-                    const { data } = await productApi.generateBarcode(product.id)
-                    setProduct(data)
-                    toast.success('Штрих-код згенеровано: ' + data.barcode)
-                  } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
-                }}
+                {canWrite && <button onClick={handleGenerateBarcode} disabled={writes.busy || uploadingPhoto}
                   className="self-start text-xs text-gray-500 hover:text-blue-600 flex items-center gap-1 font-medium px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors">
                   <Barcode size={14} /> Згенерувати штрихкод
-                </button>
+                </button>}
               </div>
             </div>
             <div>
@@ -501,77 +504,37 @@ export default function ProductDetailPage() {
               {kopecksToHryvnia(product.retail_price - product.purchase_price)} ₴
               {' '}
               <span className="text-sm text-gray-500 font-normal">
-                ({Math.round((1 - product.purchase_price / product.retail_price) * 100)}%)
+                ({product.retail_price > 0 ? Math.round((1 - product.purchase_price / product.retail_price) * 100) + '%' : '—'})
               </span>
             </p>
           </Card>
         )}
 
 
-                {/* ?Аналоги? */}
-        {!offlineMode && (
+        {/* Matches are derived from local cross-numbers, not independent cloud links. */}
         <Card>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <h3 className="font-semibold text-gray-800">🔗 Крос-номери та аналоги</h3>
-            
-            {/* Inline search bar for adding analogs */}
-            <div className="relative flex items-center gap-2" ref={suggestionsRef}>
-              <select
-                value={selectedAnalogType}
-                onChange={(e) => setSelectedAnalogType(e.target.value as any)}
-                className="border border-gray-200 rounded-lg px-2 py-1 text-xs bg-gray-50 focus:outline-none"
-              >
-                <option value="substitute">Замінник</option>
-                <option value="oem">Оригінал (OEM)</option>
-                <option value="cross">Крос-номер</option>
-              </select>
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="Додати аналог..."
-                  value={analogSearch}
-                  onChange={(e) => {
-                    setAnalogSearch(e.target.value)
-                    setSuggestionsOpen(true)
-                  }}
-                  className="border border-gray-200 rounded-lg pl-8 pr-3 py-1 text-xs w-48 focus:outline-none focus:ring-1 focus:ring-yellow-400"
-                />
-                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                {analogSearchLoading && (
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-gray-300 border-t-yellow-400 rounded-full animate-spin"></div>
-                )}
-              </div>
-
-              {/* Suggestions Popup */}
-              {suggestionsOpen && analogSuggestions.length > 0 && (
-                <div className="absolute right-0 top-full mt-1 w-64 bg-white border border-gray-100 rounded-lg shadow-lg z-50 overflow-hidden divide-y divide-gray-50 animate-fadeIn">
-                  {analogSuggestions.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => handleAddAnalog(s.id)}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-50 transition flex flex-col cursor-pointer"
-                      type="button"
-                    >
-                      <span className="font-medium text-xs text-gray-800 truncate">{s.name}</span>
-                      <span className="text-[10px] text-gray-400 font-mono">{s.sku} • {s.brand?.name || 'Без бренду'}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          <h3 className="font-semibold text-gray-800 mb-2">Крос-номери та аналоги</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Аналоги визначаються за крос-номерами товарів. Додавайте лише перевірені номери сумісних деталей.
+          </p>
+          {linksLoading && <p role="status" className="text-sm text-gray-500 mb-3">Оновлюємо аналоги...</p>}
+          {linksError && <div role="alert" className="text-sm text-amber-700 mb-3">
+            {linksError} <Button size="sm" disabled={writes.busy} onClick={refreshLinks}>Оновити аналоги</Button>
+          </div>}
+          <fieldset disabled={writes.busy || uploadingPhoto || linksLoading || !!linksError} className="min-w-0">
 
           <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4 mb-5">
             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-3">
               <div>
                 <p className="text-sm font-semibold text-gray-900">Номери, за якими можна знайти цей товар</p>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Вставте список з Excel, каталогу або повідомлення. Розділяйте номери новим рядком, комою чи крапкою з комою.
+                  {canWrite ? 'Вставте список з Excel, каталогу або повідомлення. Розділяйте номери новим рядком, комою чи крапкою з комою.' : 'Натисніть номер, щоб скопіювати. Зміни доступні в локальній програмі.'}
                 </p>
               </div>
-              <Badge color="blue">{crossNumbers.length} номерів</Badge>
+              {!linksLoading && !linksError && <Badge color="blue">{crossNumbers.length} номерів</Badge>}
             </div>
 
+            {canWrite && <>
             <textarea
               value={crossPaste}
               onChange={(event) => setCrossPaste(event.target.value)}
@@ -580,17 +543,7 @@ export default function ProductDetailPage() {
               className="w-full resize-y rounded-xl border border-gray-200 bg-white px-3 py-2.5 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
 
-            <div className="grid grid-cols-1 sm:grid-cols-[150px_1fr_auto] gap-2 mt-2">
-              <select
-                value={crossType}
-                onChange={(event) => setCrossType(event.target.value as ProductCrossNumber['number_type'])}
-                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              >
-                <option value="cross">Крос-номер</option>
-                <option value="oe">OE / OEM</option>
-                <option value="supplier">Постачальник</option>
-                <option value="other">Інший номер</option>
-              </select>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 mt-2">
               <input
                 value={crossSource}
                 onChange={(event) => setCrossSource(event.target.value)}
@@ -601,12 +554,13 @@ export default function ProductDetailPage() {
               <Button
                 size="sm"
                 onClick={handleAddCrossNumbers}
-                disabled={savingCrossNumbers || !crossPaste.trim()}
+                disabled={writes.busy || !crossPaste.trim()}
               >
-                {savingCrossNumbers ? 'Зберігаємо...' : 'Додати номери'}
+                {writes.busy ? 'Зберігаємо...' : 'Додати номери'}
               </Button>
             </div>
 
+            </>}
             {crossNumbers.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-4">
                 {crossNumbers.map((crossNumber) => (
@@ -626,20 +580,21 @@ export default function ProductDetailPage() {
                     >
                       {crossNumber.number}
                     </button>
-                    <button
+                    {canWrite && <button
                       type="button"
                       onClick={() => handleRemoveCrossNumber(crossNumber)}
                       className="p-0.5 text-gray-300 hover:text-red-500 opacity-50 group-hover:opacity-100"
                       title="Видалити номер"
                     >
                       <Trash size={11} />
-                    </button>
+                    </button>}
                   </div>
                 ))}
               </div>
             )}
           </div>
 
+          </fieldset>
           <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">Пов’язані товари зі складу</p>
 
           {analogs && Object.keys(analogs.grouped).length > 0 && (
@@ -662,14 +617,7 @@ export default function ProductDetailPage() {
                             <span className={'text-[10px] px-1.5 py-0.5 rounded-full ' + ((a.qty_available ?? a.qty_on_hand) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>
                               {(a.qty_available ?? a.qty_on_hand) > 0 ? 'Є (' + (a.qty_available ?? a.qty_on_hand) + ')' : 'Нема'}
                             </span>
-                            <button
-                              onClick={() => handleRemoveAnalog(a.id)}
-                              className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition p-0.5"
-                              title="Видалити зв'язок аналога"
-                              type="button"
-                            >
-                              <Trash size={12} />
-                            </button>
+
                           </div>
                         </div>
                       ))}
@@ -680,13 +628,12 @@ export default function ProductDetailPage() {
             </div>
           )}
 
-          {(!analogs || Object.values(analogs.grouped).every(arr => (arr as any[]).length === 0)) && (
+          {!linksLoading && !linksError && (!analogs || Object.values(analogs.grouped).every(arr => (arr as any[]).length === 0)) && (
             <div className="text-xs text-center py-6 text-gray-400">
-              Немає пов'язаних аналогів для цього товару. Використовуйте поле пошуку вище для швидкого додавання.
+              За внесеними крос-номерами пов’язаних товарів не знайдено.
             </div>
           )}
         </Card>
-        )}
 
         {/* Fitment — сумісність з авто */}
         {fitment && Object.keys(fitment.grouped).length > 0 && (
@@ -774,7 +721,7 @@ export default function ProductDetailPage() {
       {/* Модалка додавання/зміни фото */}
       <Modal
         open={photoModalOpen}
-        onClose={() => setPhotoModalOpen(false)}
+        onClose={() => { if (!uploadingPhoto && !savingPhoto) setPhotoModalOpen(false) }}
         title={product.photo_url ? 'Змінити фото товару' : 'Додати фото товару'}
         size="md"
       >
@@ -782,14 +729,16 @@ export default function ProductDetailPage() {
           productId={product.id}
           currentPhotoUrl={product.photo_url ?? null}
           onPhotoUrl={handlePhotoUrl}
+          onBusyChange={setUploadingPhoto}
+          disabled={!canWrite || writes.busy}
         />
         <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
           <p className="text-xs text-gray-400">
-            {savingPhoto ? 'Зберігаємо...' : 'Зміни зберігаються автоматично'}
+            {uploadingPhoto || savingPhoto ? 'Зберігаємо...' : 'Зміни зберігаються автоматично'}
           </p>
           <Button
             onClick={() => setPhotoModalOpen(false)}
-            loading={savingPhoto}
+            loading={uploadingPhoto || savingPhoto}
           >
             Готово
           </Button>
@@ -851,19 +800,20 @@ export default function ProductDetailPage() {
         />
       )}
 
-      <Modal open={reserveOpen} onClose={() => setReserveOpen(false)} title="Зарезервувати товар" size="sm">
+      <Modal open={reserveOpen && canReserve} onClose={() => { if (!writes.isBusy()) setReserveOpen(false) }} title="Зарезервувати товар" size="sm">
+        {reserveRecoveryNotice}
         <div className="space-y-4">
           <p className="text-sm text-gray-600">
             Резерв «{product.name}» на 3 дні. Клієнта можна додати пізніше в розділі «Склад → Резерви».
           </p>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Кількість</label>
-            <input type="number" min={1} value={reserveQty} onChange={(e) => setReserveQty(e.target.value)}
+            <input aria-label="Кількість резерву" type="text" inputMode="decimal" disabled={writes.busy || reserveRecovery.blocked || reserveRecovery.busy} value={reserveQty} onChange={(e) => setReserveQty(e.target.value)}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" autoFocus />
           </div>
           <div className="flex gap-3">
-            <Button className="flex-1" loading={reserving} onClick={handleReserve}>Зарезервувати</Button>
-            <Button variant="secondary" onClick={() => setReserveOpen(false)}>Скасувати</Button>
+            <Button className="flex-1" loading={writes.busy} disabled={reserveRecovery.blocked || reserveRecovery.busy} onClick={handleReserve}>Зарезервувати</Button>
+            <Button variant="secondary" disabled={writes.busy} onClick={() => { if (!writes.isBusy()) setReserveOpen(false) }}>Скасувати</Button>
           </div>
         </div>
       </Modal>

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useState, useEffect, useRef } from 'react'
+import { useScopedAction } from '@/hooks/useScopedAction'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Save, Wand2, Plus } from 'lucide-react'
 import { productApi } from './productApi'
@@ -13,6 +13,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
+import { createdProductReference, productEditorPayload, productHasNegativeMargin, productMoneyInput, suggestedRetailText } from './productFormModel'
 
 const EMPTY: ProductFormData = {
   sku: '', name: '', barcode: '', brand_id: '', category_id: '',
@@ -23,6 +24,12 @@ const EMPTY: ProductFormData = {
 }
 
 export default function ProductFormPage() {
+  const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
+  return <ProductForm key={JSON.stringify([id, searchParams.get('clone')])} />
+}
+
+function ProductForm() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
@@ -30,9 +37,9 @@ export default function ProductFormPage() {
   const isEdit = !!id && id !== 'new'
 
   const [form, setForm] = useState<ProductFormData>(EMPTY)
-  const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const markupRequests = useLatestRequest([id, form.purchase_price, form.retail_price, form.category_id])
+  const [loading, setLoading] = useState(isEdit || !!cloneId)
+  const [photoPending, setPhotoPending] = useState(false)
+  const photoPendingRef = useRef(false)
   // Швидкі відсотки націнки з налаштувань (для випадачки біля ціни).
   const [quickPercents, setQuickPercents] = useState<number[]>([])
 
@@ -41,6 +48,14 @@ export default function ProductFormPage() {
   // збереженні — інакше затерли б реальну закупівлю нулем.
   const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
+  const scopeKey = JSON.stringify([id, cloneId, role])
+  const writes = useScopedAction(scopeKey)
+  const saving = writes.busy
+  const barcodeAction = useScopedAction(JSON.stringify([scopeKey, form.barcode]))
+  const markupAction = useScopedAction(JSON.stringify([scopeKey, form.purchase_price, form.retail_price, form.category_id]))
+  const [referencesReady, setReferencesReady] = useState(false)
+  const [referencesError, setReferencesError] = useState<string | null>(null)
+  const [referenceReload, setReferenceReload] = useState(0)
 
   // Категорії та бренди для "креативних" селектів
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
@@ -59,40 +74,50 @@ export default function ProductFormPage() {
   }
 
   useEffect(() => {
+    let active = true
+    setReferencesReady(false)
+    setReferencesError(null)
     Promise.all([
       adminApi.listCategories(),
       adminApi.listBrands(),
     ]).then(([catRes, brandRes]) => {
+      if (!active) return
       setCategories(catRes.data)
       setBrands(brandRes.data)
-    }).catch(() => {})
+      setReferencesReady(true)
+    }).catch(() => { if (active) setReferencesError('Не вдалося завантажити категорії та бренди. Введені дані не втрачено.') })
     adminApi.getSettings()
-      .then((r) => setQuickPercents(Array.isArray(r.data.quick_percents) ? r.data.quick_percents.filter((n) => Number(n) > 0) : []))
+      .then((r) => { if (active) setQuickPercents(Array.isArray(r.data.quick_percents) ? r.data.quick_percents.filter((n) => Number(n) > 0) : []) })
       .catch(() => {})
-  }, [])
+    return () => { active = false }
+  }, [referenceReload])
 
   // Розрахунок роздрібної: «За таблицею» (правила націнки) або швидкий відсоток від закупки.
   async function applyRetailMarkup(value: string) {
-    const isCurrent = markupRequests.begin()
-    const purchase = Math.round(parseFloat((form.purchase_price || '0').replace(',', '.')) * 100)
-    if (!purchase) { toast.error('Спершу вкажіть закупівельну ціну'); return }
-    if (value === 'table') {
-      try {
+    if (writes.isBusy() || !canSeeMargin) return
+    const attempt = markupAction.begin()
+    if (!attempt) return
+    try {
+      const purchase = productMoneyInput(form.purchase_price, 'Закупівельна ціна')
+      if (!purchase) { toast.error('Спершу вкажіть закупівельну ціну'); return }
+      if (value === 'table') {
         const res = await pricingApi.autoRetail(purchase, form.category_id || undefined)
-        if (!isCurrent()) return
+        if (!attempt.isCurrent()) return
         if (res.data.retail_price !== null) {
-          set('retail_price', (res.data.retail_price / 100).toFixed(2))
+          set('retail_price', suggestedRetailText(res.data.retail_price))
           toast.success('Ціну розраховано за таблицею націнки')
         } else {
           toast.warning('Націнка для цього товару не налаштована')
         }
-      } catch { if (isCurrent()) toast.error('Помилка розрахунку') }
-      return
-    }
-    if (value.startsWith('pct:')) {
-      const pct = parseFloat(value.slice(4)) || 0
-      if (pct <= 0) return
-      set('retail_price', (Math.round(purchase * (1 + pct / 100)) / 100).toFixed(2))
+      } else if (value.startsWith('pct:')) {
+        const pct = Number(value.slice(4))
+        if (!Number.isFinite(pct) || pct <= 0) throw new Error('Некоректний відсоток націнки')
+        set('retail_price', suggestedRetailText(Math.round(purchase * (1 + pct / 100))))
+      }
+    } catch (error) {
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Помилка розрахунку')
+    } finally {
+      attempt.finish()
     }
   }
 
@@ -139,8 +164,10 @@ export default function ProductFormPage() {
   // (артикул, штрих-код) та залишку; назву позначаємо «(копія)».
   useEffect(() => {
     if (isEdit || !cloneId) return
+    let active = true
     setLoading(true)
     productApi.get(cloneId).then(({ data }) => {
+      if (!active) return
       setForm({
         sku: '',
         name: `${data.name} (копія)`,
@@ -161,64 +188,91 @@ export default function ProductFormPage() {
         requires_core_return: data.requires_core_return ?? false,
         core_deposit_amount: data.core_deposit_amount ? kopecksToHryvnia(data.core_deposit_amount) : '',
       })
-    }).catch(() => toast.error('Не вдалося завантажити товар для копіювання'))
-      .finally(() => setLoading(false))
+    }).catch(() => { if (active) toast.error('Не вдалося завантажити товар для копіювання') })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [cloneId, isEdit])
 
   function set(field: keyof ProductFormData, value: string | boolean) {
     setForm((f) => ({ ...f, [field]: value }))
   }
 
-  const [generatingBarcode, setGeneratingBarcode] = useState(false)
   async function handleGenerateBarcode() {
-    setGeneratingBarcode(true)
+    if (writes.isBusy() || loading) return
+    const attempt = barcodeAction.begin()
+    if (!attempt) return
     try {
       const { data } = await productApi.generateBarcodeOnly()
+      if (!attempt.isCurrent()) return
       set('barcode', data.barcode)
       toast.success('Штрих-код згенеровано: ' + data.barcode)
     } catch {
-      toast.error('Не вдалося згенерувати штрих-код')
+      if (attempt.isCurrent()) toast.error('Не вдалося згенерувати штрих-код')
     } finally {
-      setGeneratingBarcode(false)
+      attempt.finish()
+    }
+  }
+
+  async function createReference(kind: 'category' | 'brand') {
+    if (loading || !referencesReady || photoPendingRef.current) return
+    const name = (kind === 'category' ? catSearch : brandSearch).trim()
+    if (!name) return
+    const attempt = writes.begin()
+    if (!attempt) return
+    try {
+      const response = kind === 'category' ? await adminApi.createCategory(name) : await adminApi.createBrand(name)
+      if (!attempt.isCurrent()) return
+      const data = createdProductReference(response)
+      if (kind === 'category') {
+        setCategories((previous) => [...previous.filter((item) => item.id !== data.id), data])
+        set('category_id', data.id)
+        setCatSearch(''); setCatOpen(false)
+      } else {
+        setBrands((previous) => [...previous.filter((item) => item.id !== data.id), data])
+        set('brand_id', data.id)
+        setBrandSearch(''); setBrandOpen(false)
+      }
+      toast.success(kind === 'category' ? 'Категорію створено' : 'Бренд створено')
+    } catch (error) {
+      if (attempt.isCurrent()) {
+        setReferencesReady(false)
+        setReferencesError('Не вдалося підтвердити створення. Спершу оновіть категорії та бренди, щоб перевірити результат. Введені дані не втрачено.')
+        toast.error(error instanceof Error ? error.message : 'Помилка')
+      }
+    } finally {
+      attempt.finish()
     }
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (saving || loading) return
-    if (!form.sku.trim())        { toast.error('Артикул обов\'язковий'); return }
-    if (form.name.trim().length < 2) { toast.error('Назва мінімум 2 символи'); return }
-    const retailNum = parseFloat(form.retail_price.replace(',', '.'))
-    if (!form.retail_price || isNaN(retailNum) || retailNum < 0) {
-      toast.error('Вкажіть коректну роздрібну ціну')
-      return
-    }
-
-    setSaving(true)
+    if (writes.isBusy() || loading) return
+    if (!referencesReady) { toast.warning('Спершу дочекайтеся завантаження категорій і брендів'); return }
+    if (photoPendingRef.current) { toast.warning('Дочекайтеся завершення додавання фото'); return }
+    if (barcodeAction.isBusy() || markupAction.isBusy()) { toast.warning('Дочекайтеся генерації штрихкоду або розрахунку ціни'); return }
+    const attempt = writes.begin()
+    if (!attempt) return
     try {
-      // Персонал без доступу до маржі не надсилає purchase_price взагалі
-      const payload: any = { ...form }
-      if (!canSeeMargin) delete payload.purchase_price
-      // Картка товару не керує складським залишком. Новий товар створюється з нулем,
-      // а кількість змінюється тільки документами: приходом, ревізією, продажем тощо.
-      delete payload.qty_on_hand
+      const payload = productEditorPayload(form, canSeeMargin)
 
       if (isEdit) {
         await productApi.update(id, payload)
+        if (!attempt.isCurrent()) return
         toast.success('Товар оновлено')
       } else {
         const { data } = await productApi.create(payload)
+        if (!attempt.isCurrent()) return
         toast.success(`Товар "${data.name}" створено`)
       }
       navigate('/products')
     } catch (err) {
       // api.ts вже показав toast — тут тільки логуємо щоб уникнути дублювання
       // Виняток: якщо це не HTTP-помилка (status відсутній), показуємо сами
-      if (!(err as any).status) {
+      if (attempt.isCurrent() && !(err as any).status) {
         toast.error(err instanceof Error ? err.message : 'Помилка збереження')
       }
     } finally {
-      setSaving(false)
+      attempt.finish()
     }
   }
 
@@ -227,16 +281,25 @@ export default function ProductFormPage() {
   return (
     <Layout title={isEdit ? 'Редагувати товар' : 'Новий товар'}>
       <div className="max-w-2xl">
+        {!referencesReady && <div role={referencesError ? 'alert' : 'status'} className="mb-3 rounded-lg border p-3 text-sm">
+          {referencesError ?? 'Завантаження категорій і брендів...'}
+          {referencesError && <Button type="button" variant="secondary" onClick={() => setReferenceReload((value) => value + 1)}>Повторити завантаження</Button>}
+        </div>}
         <form onSubmit={handleSubmit}>
+          <fieldset disabled={saving || !referencesReady} className="min-w-0" aria-busy={saving}>
           <Card className="space-y-5">
 
             {/* Фото товару */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Фото товару</label>
               <ProductPhotoUpload
+                key={id ?? cloneId ?? 'new'}
                 productId={isEdit ? id : undefined}
                 currentPhotoUrl={form.photo_url ?? null}
                 onPhotoUrl={(url) => setForm((f) => ({ ...f, photo_url: url ?? '' }))}
+                disabled={saving || !referencesReady}
+                onBusyChange={(pending) => { photoPendingRef.current = pending; setPhotoPending(pending) }}
+                successMessage="Фото додано. Натисніть «Зберегти зміни» або «Створити товар»."
               />
             </div>
 
@@ -262,7 +325,7 @@ export default function ProductFormPage() {
                   type="button"
                   variant="secondary"
                   onClick={handleGenerateBarcode}
-                  loading={generatingBarcode}
+                  loading={barcodeAction.busy}
                   icon={<Wand2 size={15} />}
                   className="shrink-0"
                 >
@@ -301,16 +364,7 @@ export default function ProductFormPage() {
                           </button>
                         ))}
                       {catSearch.trim() && !categories.some((c) => c.name.toLowerCase() === catSearch.toLowerCase()) && (
-                        <button type="button" onClick={async () => {
-                            try {
-                              const res = await adminApi.createCategory(catSearch.trim())
-                              const newCat = (res as any).data ?? res
-                              setCategories((prev) => [...prev, newCat])
-                              setForm((f) => ({ ...f, category_id: newCat.id }))
-                              setCatSearch(''); setCatOpen(false)
-                              toast.success('Категорію створено')
-                            } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
-                          }}
+                        <button type="button" onClick={() => void createReference('category')}
                           className="w-full text-left px-3 py-2 text-sm text-yellow-700 hover:bg-yellow-50 font-medium flex items-center gap-1 transition-colors">
                           <Plus size={14} /> + Створити "{catSearch.trim()}"
                         </button>
@@ -340,16 +394,7 @@ export default function ProductFormPage() {
                           </button>
                         ))}
                       {brandSearch.trim() && !brands.some((b) => b.name.toLowerCase() === brandSearch.toLowerCase()) && (
-                        <button type="button" onClick={async () => {
-                            try {
-                              const res = await adminApi.createBrand(brandSearch.trim())
-                              const newBrand = (res as any).data ?? res
-                              setBrands((prev) => [...prev, newBrand])
-                              setForm((f) => ({ ...f, brand_id: newBrand.id }))
-                              setBrandSearch(''); setBrandOpen(false)
-                              toast.success('Бренд створено')
-                            } catch (e) { toast.error(e instanceof Error ? e.message : 'Помилка') }
-                          }}
+                        <button type="button" onClick={() => void createReference('brand')}
                           className="w-full text-left px-3 py-2 text-sm text-yellow-700 hover:bg-yellow-50 font-medium flex items-center gap-1 transition-colors">
                           <Plus size={14} /> + Створити "{brandSearch.trim()}"
                         </button>
@@ -365,7 +410,7 @@ export default function ProductFormPage() {
               {canSeeMargin && (
                 <Input
                   label="Закупівельна ціна (₴)"
-                  type="number" min="0" step="0.01"
+                  type="text" inputMode="decimal"
                   value={form.purchase_price}
                   onChange={(e) => set('purchase_price', e.target.value)}
                   placeholder="250.00"
@@ -375,7 +420,7 @@ export default function ProductFormPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Роздрібна ціна (₴) *</label>
                 <div className="flex items-stretch gap-1">
                   <input
-                    type="number" min="0" step="0.01"
+                    type="text" inputMode="decimal"
                     value={form.retail_price}
                     onChange={(e) => set('retail_price', e.target.value)}
                     placeholder="450.00"
@@ -383,6 +428,7 @@ export default function ProductFormPage() {
                     className="min-w-0 flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
                   />
                   <select
+                    disabled={!canSeeMargin || markupAction.busy}
                     value=""
                     title="Розрахувати ціну: за таблицею націнки або швидкий відсоток від закупки"
                     onChange={(e) => { const v = e.target.value; if (v) applyRetailMarkup(v); e.target.value = '' }}
@@ -393,8 +439,7 @@ export default function ProductFormPage() {
                     {quickPercents.map((p) => <option key={p} value={`pct:${p}`}>{p}%</option>)}
                   </select>
                 </div>
-                {form.purchase_price && form.retail_price
-                  && parseFloat(form.purchase_price) > parseFloat(form.retail_price)
+                {canSeeMargin && productHasNegativeMargin(form.purchase_price, form.retail_price)
                   && (
                     <div className="mt-1 flex items-center gap-1 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-md px-2 py-1">
                       <span>⚠</span>
@@ -531,7 +576,7 @@ export default function ProductFormPage() {
             </div>
 
             <div className="flex gap-3 pt-2">
-              <Button type="submit" loading={saving} icon={<Save size={16} />}>
+              <Button type="submit" loading={saving} disabled={photoPending || barcodeAction.busy || markupAction.busy} icon={<Save size={16} />}>
                 {isEdit ? 'Зберегти зміни' : 'Створити товар'}
               </Button>
               <Button type="button" variant="secondary" onClick={() => navigate('/products')}>
@@ -539,6 +584,7 @@ export default function ProductFormPage() {
               </Button>
             </div>
           </Card>
+          </fieldset>
         </form>
       </div>
     </Layout>

@@ -9,6 +9,7 @@ import { toast } from '@/components/ui/Toast'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 import { canIssueOrderFromPos, isUnpricedOrder } from '@/features/orders/orderWorkflow'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { createReadPoller } from '@/lib/readPoller'
 
 interface OrderItem {
   id: string
@@ -151,7 +152,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [searchParams, setSearchParams])
 
   const load = useCallback(async () => {
-    if (isDesktopAccessLocked()) return
+    if (isDesktopAccessLocked() || document.visibilityState === 'hidden') return
     const generation = ++loadGeneration.current
     setLoading(true)
     try {
@@ -173,15 +174,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }, [isMobileInline, open, search, selectedCustomerId])
 
   useEffect(() => {
-    load()
-    const id = setInterval(load, 10_000)
-    window.addEventListener('forsage:desktop-access-changed', load)
-    window.addEventListener('forsage:desktop-sync-completed', load)
+    const poller = createReadPoller({ read: load, intervalMs: open || isMobileInline ? 10_000 : 60_000,
+      canRead: () => !isDesktopAccessLocked() && document.visibilityState !== 'hidden' })
+    poller.wake()
+    window.addEventListener('forsage:desktop-access-changed', poller.wake)
+    window.addEventListener('forsage:desktop-sync-completed', poller.wake)
+    document.addEventListener('visibilitychange', poller.wake)
     return () => {
-      clearInterval(id)
+      poller.stop()
       loadGeneration.current++
-      window.removeEventListener('forsage:desktop-access-changed', load)
-      window.removeEventListener('forsage:desktop-sync-completed', load)
+      window.removeEventListener('forsage:desktop-access-changed', poller.wake)
+      window.removeEventListener('forsage:desktop-sync-completed', poller.wake)
+      document.removeEventListener('visibilitychange', poller.wake)
     }
   }, [load])
 

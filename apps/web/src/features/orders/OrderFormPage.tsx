@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef, useId } from 'react'
+import { useEffect, useLayoutEffect, useState, useMemo, useRef, useId } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
@@ -18,9 +18,13 @@ import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisit
 import { toast } from '@/components/ui/Toast'
 import { OrderProductResults } from './OrderProductResults'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
-import { readOrderFormDraft, writeOrderFormDraft } from './orderFormDraft'
+import { readOrderFormDraft, writeOrderFormDraft, removeOrderFormDraft } from './orderFormDraft'
+import { beginOrderSaveAttempt, checkOrderSaveAttempt, clearOrderSaveAttempt, readOrderSaveAttempt } from './orderSaveAttempt'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { saveOrderForm } from './orderFormSave'
+import { OrderLanNotice } from './OrderLanNotice'
 import { useAuthStore } from '@/stores/authStore'
+import { orderVehicleFromDraft } from './orderVehicleDraft'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
   try {
@@ -194,7 +198,13 @@ export default function OrderFormPage() {
 }
 
 function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: () => void }) {
-  const [backup] = useState(() => readOrderFormDraft<FormBackup>(backupKey))
+  const [initialBackup] = useState(() => {
+    try { return { backup: readOrderFormDraft<FormBackup>(backupKey), pending: readOrderSaveAttempt(backupKey), error: '' } }
+    catch (error) { return { backup: null, pending: null, error: (error as Error).message } }
+  })
+  const backup = initialBackup.backup
+  const [pendingSave, setPendingSave] = useState(initialBackup.pending)
+  const [checkingSave, setCheckingSave] = useState(false)
   const backupFinished = useRef(false)
   const [backupState, setBackupState] = useState('')
   const [discardPrompt, setDiscardPrompt] = useState(false)
@@ -204,7 +214,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const [loading, setLoading] = useState(!backup && Boolean(id || searchParams.get('draftId')))
   const [loadError, setLoadError] = useState('')
   const sourceDraftId = !id ? searchParams.get('draftId') : null
-  const [formReady, setFormReady] = useState(!id && !sourceDraftId)
+  const [formReady, setFormReady] = useState(!initialBackup.error && !backup && !id && !sourceDraftId)
   const [totalPaid, setTotalPaid] = useState(0)
   const [loadedStatus, setLoadedStatus] = useState('lead')
   const [draftHint, setDraftHint] = useState<CustomerOrder | null>(null)
@@ -252,9 +262,25 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const [newVehYear, setNewVehYear] = useState('')
   const [newVehVin, setNewVehVin] = useState('')
   const [addingVehicle, setAddingVehicle] = useState(false)
+  const [decodingVin, setDecodingVin] = useState(false)
+  const [ocrLoading, setOcrLoading] = useState(false)
+  const customerVehicleRequest = useRef(0)
+  const vehicleReadRevision = useRef(0)
+  const [items, setItems] = useState<ItemRow[]>([])
+  const totalKop = useMemo(() => items.reduce((sum, row) => {
+    if (!row.name.trim() || row.item_status === 'canceled' || row.item_status === 'returned') return sum
+    const price = orderNumber(row.sell_price) || 0
+    const qty = orderNumber(row.qty) || 0
+    return sum + Math.round(Math.round(price * 100) * qty)
+  }, 0), [items])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [comment, setComment] = useState('')
+  const [isUrgent, setIsUrgent] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
 
   useEffect(() => {
-    if (id || backup) return
+    if (id || backup || initialBackup.error) return
     const vin = searchParams.get('vin')?.trim().toUpperCase() ?? ''
     const make = searchParams.get('make')?.trim() ?? ''
     const model = searchParams.get('model')?.trim() ?? ''
@@ -277,23 +303,26 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
 
   // Duplicate order initialization (P1 Fix 9)
   useEffect(() => {
-    if (id || backup) return
+    if (id || backup || initialBackup.error) return
     const raw = sessionStorage.getItem('duplicate_order_payload')
     if (raw) {
       sessionStorage.removeItem('duplicate_order_payload')
       try {
         const payload = JSON.parse(raw)
+        const request = ++customerVehicleRequest.current
+        if (payload.vehicle_info) setLoadedVehicleInfo(payload.vehicle_info)
         if (payload.customer_id) {
           setCustomerId(payload.customer_id)
           // Load customer
           customerApi.get(payload.customer_id)
             .then((r) => {
-              if (r.data) setSelectedCustomer(r.data)
+              if (request === customerVehicleRequest.current && !savingRef.current && r.data) setSelectedCustomer(r.data)
             })
             .catch(() => {})
           // Load vehicles
           customerVehiclesApi.list(payload.customer_id)
             .then((res) => {
+              if (request !== customerVehicleRequest.current || savingRef.current) return
               const list = res.data || []
               setVehicles(list)
               if (payload.vehicle_info) {
@@ -319,19 +348,23 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   // Чернетка не перетворюється на напівготове замовлення автоматично.
   // Вона висить поруч як список-підказка, а менеджер заповнює нормальну накладну.
   useEffect(() => {
-    if (!sourceDraftId || backup) return
+    if (!sourceDraftId || backup || initialBackup.error) return
+    let cancelled = false
     orderApi.get(sourceDraftId)
       .then(({ data: draft }) => {
+        if (cancelled) return
+        const request = ++customerVehicleRequest.current
         setDraftHint(draft)
         setDraftHintOpen(true)
         setComment(draft.comment ?? '')
         if (draft.customer) {
           setCustomerId(draft.customer.id)
           customerApi.get(draft.customer.id)
-            .then((result) => setSelectedCustomer(result.data))
+            .then((result) => { if (request === customerVehicleRequest.current && !savingRef.current && !cancelled) setSelectedCustomer(result.data) })
             .catch(() => {})
           customerVehiclesApi.list(draft.customer.id)
             .then((result) => {
+              if (request !== customerVehicleRequest.current || savingRef.current || cancelled) return
               setVehicles(result.data ?? [])
               const matched = (result.data ?? []).find((vehicle) => vehicle.vin === draft.vehicle_info?.vin)
               if (matched) setSelectedVehicle(matched)
@@ -342,23 +375,31 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         setStep(3)
       })
       .catch(() => {
+        if (cancelled) return
         toast.error('Чернетку не знайдено')
         navigate('/orders?tab=drafts')
       })
-      .finally(() => { setFormReady(true); setLoading(false) })
+      .finally(() => { if (!cancelled) { setFormReady(true); setLoading(false) } })
+    return () => { cancelled = true }
   }, [sourceDraftId, navigate])
 
   // Load existing order details for editing (P0 Fix 1)
   useEffect(() => {
-    if (!id || backup) return
+    if (!id || backup || initialBackup.error) return
+    let cancelled = false
     setLoading(true)
     orderApi.get(id)
       .then((r) => {
+        if (cancelled) return
         const o = r.data
-        if (!o) return
+        if (!o?.updated_at) throw new Error('Не отримано актуальну версію замовлення')
+        const request = ++customerVehicleRequest.current
         setLoadedOrderVersion(o.updated_at)
         setTotalPaid(o.total_paid ?? o.prepayment ?? 0)
         setLoadedStatus(o.status)
+        setCustomerId(o.customer_id ?? '')
+        // Keep the order's own vehicle data even if the customer/garage request is offline.
+        if (o.vehicle_info) setLoadedVehicleInfo(o.vehicle_info)
         
         // Load customer
         if (o.customer) {
@@ -382,18 +423,22 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
             updated_at: new Date().toISOString(),
             deleted_at: null,
           }
+          setSelectedCustomer(fallbackCust)
           customerApi.get(o.customer.id)
             .then((res) => {
+              if (request !== customerVehicleRequest.current || savingRef.current || cancelled) return
               if (res.data) setSelectedCustomer(res.data)
               else setSelectedCustomer(fallbackCust)
             })
             .catch(() => {
+              if (request !== customerVehicleRequest.current || savingRef.current || cancelled) return
               setSelectedCustomer(fallbackCust)
             })
           
           // Load vehicles
           customerVehiclesApi.list(o.customer.id)
             .then((res) => {
+              if (request !== customerVehicleRequest.current || savingRef.current || cancelled) return
               const list = res.data || []
               setVehicles(list)
               if (o.vehicle_info) {
@@ -407,7 +452,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                 else setLoadedVehicleInfo(o.vehicle_info as any)
               }
             })
-            .catch(() => {})
+            .catch(() => { if (request === customerVehicleRequest.current && !savingRef.current && !cancelled && o.vehicle_info) setLoadedVehicleInfo(o.vehicle_info) })
         } else if (o.vehicle_info) {
           // Замовлення без клієнта, але з авто — теж не губимо
           setLoadedVehicleInfo(o.vehicle_info as any)
@@ -445,13 +490,10 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         setStep(3)
         setFormReady(true)
       })
-      .catch(() => setLoadError('Не вдалося завантажити замовлення. Нічого не змінено.'))
-      .finally(() => setLoading(false))
+      .catch(() => { if (!cancelled) setLoadError('Не вдалося завантажити замовлення. Нічого не змінено.') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [id])
-
-  // Step 3: Items
-  const [items, setItems] = useState<ItemRow[]>([])
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
   // Швидка націнка: відсотки та округлення беремо з Налаштувань магазину.
   const [quickPercents, setQuickPercents] = useState<number[]>([])
@@ -472,31 +514,24 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   }, [])
 
 
-  // Step 4: Summary & Checkout
-  const [comment, setComment] = useState('')
-  const [isUrgent, setIsUrgent] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const savingRef = useRef(false)
-
   useEffect(() => {
     if (!backup) return
-    setItems(backup.items); setCustomerId(backup.customerId); setSelectedCustomer(backup.selectedCustomer)
-    setSelectedVehicle(backup.selectedVehicle); setVehicles(backup.vehicles ?? [])
-    setLoadedVehicleInfo(backup.loadedVehicleInfo); setLoadedOrderVersion(backup.loadedOrderVersion)
-    setComment(backup.comment); setIsUrgent(backup.isUrgent); setStep(backup.step)
-    setNewCustName(backup.newCustName); setNewCustPhone(backup.newCustPhone)
-    setNewVehBrand(backup.newVehBrand); setNewVehModel(backup.newVehModel); setNewVehYear(backup.newVehYear); setNewVehVin(backup.newVehVin)
-    setShowAddCustomer(backup.showAddCustomer); setShowAddVehicle(backup.showAddVehicle)
-    setDraftHint(backup.draftHint); setTotalPaid(backup.totalPaid ?? 0); setLoadedStatus(backup.loadedStatus ?? 'lead')
+    setItems(backup.items); setCustomerId(backup.customerId ?? ''); setSelectedCustomer(backup.selectedCustomer ?? null)
+    setSelectedVehicle(backup.selectedVehicle ?? null); setVehicles(backup.vehicles ?? [])
+    setLoadedVehicleInfo(backup.loadedVehicleInfo ?? null); setLoadedOrderVersion(backup.loadedOrderVersion)
+    setComment(backup.comment ?? ''); setIsUrgent(backup.isUrgent ?? false); setStep(backup.step ?? 1)
+    setNewCustName(backup.newCustName ?? ''); setNewCustPhone(backup.newCustPhone ?? '')
+    setNewVehBrand(backup.newVehBrand ?? ''); setNewVehModel(backup.newVehModel ?? ''); setNewVehYear(backup.newVehYear ?? ''); setNewVehVin(backup.newVehVin ?? '')
+    setShowAddCustomer(backup.showAddCustomer ?? false); setShowAddVehicle(backup.showAddVehicle ?? false)
+    setDraftHint(backup.draftHint ?? null); setTotalPaid(backup.totalPaid ?? 0); setLoadedStatus(backup.loadedStatus ?? 'lead')
     setFormReady(true)
   }, [backup])
 
   const snapshot: FormBackup = { items, customerId, selectedCustomer, selectedVehicle, vehicles, loadedVehicleInfo, loadedOrderVersion, comment, isUrgent, step,
     newCustName, newCustPhone, newVehBrand, newVehModel, newVehYear, newVehVin, showAddCustomer, showAddVehicle, draftHint, totalPaid, loadedStatus }
   const snapshotRef = useRef(snapshot)
-  snapshotRef.current = snapshot
   const readyRef = useRef(formReady)
-  readyRef.current = formReady
+  useLayoutEffect(() => { snapshotRef.current = snapshot; readyRef.current = formReady })
   const snapshotJson = JSON.stringify(snapshot)
   useEffect(() => {
     if (!formReady || backupFinished.current) return
@@ -514,21 +549,6 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     window.addEventListener('pagehide', flush)
     return () => { window.removeEventListener('pagehide', flush); flush() }
   }, [backupKey])
-
-  // Query parameter support
-  useEffect(() => {
-    if (backup) return
-    const qCustomerId = searchParams.get('customer_id')
-    if (qCustomerId) {
-      customerApi.get(qCustomerId)
-        .then((r) => {
-          if (r.data) {
-            handleCustomerSelect(r.data)
-          }
-        })
-        .catch(() => {})
-    }
-  }, [searchParams])
 
   // Load default/recent customers on mount
   useEffect(() => {
@@ -565,19 +585,31 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     }
   }, [customerSearch])
 
-  // Decode brand from VIN on the fly
+  // A VIN hint may fill a blank brand, but must never erase a manual/OCR value.
   useEffect(() => {
     if (newVehVin.length >= 4) {
       const brand = vinMake(newVehVin)
       if (brand !== 'Авто') {
-        setNewVehBrand(brand)
+        setNewVehBrand(current => current.trim() ? current : brand)
       }
     }
   }, [newVehVin])
 
   // Selection handlers
-  const customerVehicleRequest = useRef(0)
+  useEffect(() => () => { customerVehicleRequest.current++; vehicleReadRevision.current++ }, [])
+  function invalidateVehicleRead() {
+    vehicleReadRevision.current++
+    setDecodingVin(false)
+    setOcrLoading(false)
+  }
+  function beginVehicleRead() {
+    const revision = ++vehicleReadRevision.current
+    const customerRequest = customerVehicleRequest.current
+    return () => revision === vehicleReadRevision.current && customerRequest === customerVehicleRequest.current
+      && !savingRef.current && !backupFinished.current
+  }
   function handleSkipCustomer() {
+    invalidateVehicleRead()
     customerVehicleRequest.current++
     setSelectedCustomer(null)
     setCustomerId('')
@@ -588,8 +620,13 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   }
 
   function handleCustomerSelect(c: Customer) {
+    invalidateVehicleRead()
     const request = ++customerVehicleRequest.current
-    if (customerId && customerId !== c.id) setLoadedVehicleInfo(null)
+    if (customerId && customerId !== c.id) {
+      setLoadedVehicleInfo(null)
+      setShowAddVehicle(false)
+      setNewVehVin(''); setNewVehBrand(''); setNewVehModel(''); setNewVehYear('')
+    }
     setSelectedVehicle(null)
     setVehicles([])
     setSelectedCustomer(c)
@@ -600,7 +637,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     // Load customer vehicles
     customerVehiclesApi.list(c.id)
       .then((r) => {
-        if (request !== customerVehicleRequest.current) return
+        if (request !== customerVehicleRequest.current || savingRef.current) return
         const list = (r as any).data ?? []
         setVehicles(list)
         // ORD-4: якщо авто рівно одне — підставляємо й одразу до товарів
@@ -612,29 +649,52 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         }
       })
       .catch(() => {
-        if (request !== customerVehicleRequest.current) return
+        if (request !== customerVehicleRequest.current || savingRef.current) return
         setStep(2)
       })
   }
 
   function handleVehicleSelect(v: CustomerVehicle | null) {
+    invalidateVehicleRead()
+    customerVehicleRequest.current++
     setSelectedVehicle(v)
     setLoadedVehicleInfo(null)
     setShowAddVehicle(false)
     setStep(3)
   }
 
+  // Query parameter support, after selection handlers are initialized.
+  useEffect(() => {
+    if (backup || id || initialBackup.error) return
+    let cancelled = false
+    const request = customerVehicleRequest.current
+    const qCustomerId = searchParams.get('customer_id')
+    if (qCustomerId) {
+      customerApi.get(qCustomerId)
+        .then((r) => {
+          if (!cancelled && request === customerVehicleRequest.current && !savingRef.current && r.data) handleCustomerSelect(r.data)
+        })
+        .catch(() => {})
+    }
+    return () => { cancelled = true }
+  }, [searchParams])
+
   // Create handlers
+  const customerCreateBusy = useRef(false)
+  const vehicleCreateBusy = useRef(false)
   async function handleCreateCustomer(e: React.FormEvent) {
     e.preventDefault()
+    if (customerCreateBusy.current || savingRef.current) return
     if (!newCustPhone.trim()) {
       toast.error('Введіть номер телефону')
       return
     }
+    customerCreateBusy.current = true
+    const request = customerVehicleRequest.current
     setAddingCustomer(true)
     try {
       const res = await customerApi.quickCreate(newCustPhone.trim(), newCustName.trim())
-      if (res.data) {
+      if (res.data && request === customerVehicleRequest.current && !savingRef.current) {
         toast.success(res.meta?.reused ? 'Клієнт уже є в базі — вибрано його картку' : 'Клієнта створено!')
         saveRecentItem('recent_phones', newCustPhone.trim())
         handleCustomerSelect(res.data)
@@ -645,7 +705,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         try {
           const found = await customerApi.list({ search: newCustPhone.trim(), page: 1, per_page: 1 })
           const existing = found.data?.[0]
-          if (existing) {
+          if (existing && request === customerVehicleRequest.current && !savingRef.current) {
             toast.success(`Клієнт уже є в базі — вибрано: ${existing.full_name ?? existing.phone}`)
             handleCustomerSelect(existing)
             return
@@ -654,60 +714,65 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
       }
       toast.error(err instanceof Error ? err.message : 'Помилка при створенні клієнта')
     } finally {
+      customerCreateBusy.current = false
       setAddingCustomer(false)
     }
   }
 
-  const [decodingVin, setDecodingVin] = useState(false)
   async function handleDecodeVin() {
+    if (savingRef.current || vehicleCreateBusy.current) return
     const vin = newVehVin.trim()
     if (vin.length < 11) { toast.error('Введіть VIN (мінімум 11 символів)'); return }
+    const isCurrent = beginVehicleRead()
+    setOcrLoading(false)
     setDecodingVin(true)
     try {
       const { data } = await api.get<{ data: { make: string; model: string; year: string } }>(
         `/api/v1/vin/decode?vin=${encodeURIComponent(vin)}`,
       )
+      if (!isCurrent()) return
       if (data.make) setNewVehBrand(data.make)
       if (data.model) setNewVehModel(data.model)
       if (data.year) setNewVehYear(String(data.year))
       if (data.make || data.model) toast.success('VIN декодовано')
       else toast.warning('Сервіс не повернув марку/модель за цим VIN')
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка декодування VIN')
+      if (isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка декодування VIN')
     } finally {
-      setDecodingVin(false)
+      if (isCurrent()) setDecodingVin(false)
     }
   }
 
-  const [ocrLoading, setOcrLoading] = useState(false)
   async function handleVinPhoto(file: File) {
+    if (savingRef.current || vehicleCreateBusy.current) return
+    const isCurrent = beginVehicleRead()
+    setDecodingVin(false)
     setOcrLoading(true)
     try {
       const data = await recognizeVehicleImage(file)
+      if (!isCurrent()) return
       if (data.vin) setNewVehVin(data.vin)
       if (data.make) setNewVehBrand(data.make)
       if (data.model) setNewVehModel(data.model)
       if (data.year) setNewVehYear(String(data.year))
-      setLoadedVehicleInfo({
-        vin: data.vin ?? undefined,
-        make: data.make ?? undefined,
-        model: data.model ?? undefined,
-        year: data.year ?? undefined,
-      })
       const vehicleLabel = [data.make, data.model, data.year].filter(Boolean).join(' ')
       toast.success(data.vin ? `VIN розпізнано: ${data.vin}` : `Автомобіль розпізнано: ${vehicleLabel}`)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати фото')
+      if (isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати фото')
     } finally {
-      setOcrLoading(false)
+      if (isCurrent()) setOcrLoading(false)
     }
   }
   async function handleCreateVehicle(e: React.FormEvent) {
     e.preventDefault()
+    if (vehicleCreateBusy.current || savingRef.current) return
     if (!newVehBrand.trim() || !newVehModel.trim()) {
       toast.error('Введіть марку та модель')
       return
     }
+    vehicleCreateBusy.current = true
+    invalidateVehicleRead()
+    const request = customerVehicleRequest.current
     setAddingVehicle(true)
     try {
       const res = await customerVehiclesApi.create(customerId, {
@@ -716,10 +781,11 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         year: newVehYear ? parseInt(newVehYear) : null,
         vin: newVehVin.trim() || null,
       })
-      if (res.data) {
+      if (res.data && request === customerVehicleRequest.current && !savingRef.current) {
         toast.success('Автомобіль додано!')
         // Reload vehicles list
         const vList = await customerVehiclesApi.list(customerId)
+        if (request !== customerVehicleRequest.current || savingRef.current) return
         setVehicles((vList as any).data ?? [])
         if (newVehVin.trim()) saveRecentItem('recent_vins', newVehVin.trim())
         handleVehicleSelect(res.data)
@@ -727,6 +793,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     } catch {
       toast.error('Помилка додавання автомобіля')
     } finally {
+      vehicleCreateBusy.current = false
       setAddingVehicle(false)
     }
   }
@@ -921,10 +988,11 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     if (!buy) { toast.error('Спершу вкажіть ціну закупки'); return }
     try {
       const res = await pricingApi.autoRetail(buy)
+      if (savingRef.current || backupFinished.current) return
       const retailPrice = res.data.retail_price
       if (retailPrice != null) setItems((current) => current.map((item) => {
         const same = item === row || (row.id && item.id === row.id) || (row.local_key && item.local_key === row.local_key)
-        return same && Math.round(orderNumber(item.buy_price ?? '0') * 100) === buy ? { ...item, sell_price: String(retailPrice / 100) } : item
+        return same && item.sell_price === row.sell_price && Math.round(orderNumber(item.buy_price ?? '0') * 100) === buy ? { ...item, sell_price: String(retailPrice / 100) } : item
       }))
       else toast.warning('Націнка за таблицею не налаштована')
     } catch { toast.error('Помилка розрахунку за таблицею') }
@@ -947,30 +1015,28 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     }
   }
 
-  const totalKop = useMemo(() => {
-    return items.reduce((s, row) => {
-      if (!row.name.trim() || row.item_status === 'canceled' || row.item_status === 'returned') return s
-      const price = orderNumber(row.sell_price) || 0
-      const qty = orderNumber(row.qty) || 0
-      return s + Math.round(Math.round(price * 100) * qty)
-    }, 0)
-  }, [items])
-
   // Сума до сплати: знижка береться з картки клієнта у касі, у замовленні її не дублюємо.
   const toPayKop = Math.max(0, totalKop - totalPaid)
   // Save a draft without advancing supply status. Only explicit registration activates it.
   async function handleSave(action: 'save' | 'order' = 'save') {
-    if (savingRef.current) return
+    if (savingRef.current || pendingSave || initialBackup.error) return
     const validItems = items.filter((row) => row.name.trim())
     if (!validItems.length) { toast.error('Додайте хоча б одну позицію з назвою'); setStep(3); return }
     const error = validateOrderRows(validItems)
     if (error) { toast.error(error); setStep(3); return }
-    savingRef.current = true
-    setSaving(true)
-    const vehicleInfo = selectedVehicle
+    let vehicleInfo = selectedVehicle
       ? { make: selectedVehicle.brand, model: selectedVehicle.model, year: selectedVehicle.year ?? undefined, vin: selectedVehicle.vin ?? undefined }
       : loadedVehicleInfo
+    if (showAddVehicle && selectedCustomer) {
+      try { vehicleInfo = orderVehicleFromDraft({ brand: newVehBrand, model: newVehModel, year: newVehYear, vin: newVehVin }) ?? vehicleInfo }
+      catch (error) { toast.error(error instanceof Error ? error.message : 'Перевірте дані автомобіля'); setStep(2); return }
+    }
+    savingRef.current = true
+    invalidateVehicleRead()
+    customerVehicleRequest.current++
+    setSaving(true)
     const payload: CreateOrderPayload = {
+      ...(id ? { expected_updated_at: loadedOrderVersion } : {}),
       customer_id: customerId || null,
       ...(!id ? { source: action === 'save' ? 'mobile_draft' as const : 'walk_in' as const } : {}),
       vehicle_info: vehicleInfo,
@@ -988,25 +1054,59 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
       })),
     }
     try {
-      const { order: saved, activationError } = await saveOrderForm(orderApi, payload, {
+      if (!writeOrderFormDraft(backupKey, snapshotRef.current)) throw new Error('Не вдалося зберегти форму на пристрої. Запис замовлення не розпочато.')
+      const attempt = isDesktopRuntime() ? beginOrderSaveAttempt(backupKey, payload, id, action === 'order') : null
+      if (attempt) setPendingSave(attempt)
+      const { order: saved, activationError } = await saveOrderForm(orderApi, { ...payload, ...(attempt ? { operation_id: attempt.operationId } : {}) }, {
         id, version: loadedOrderVersion, activate: action === 'order',
-        onPersisted: () => {
-          backupFinished.current = true
-          try { sessionStorage.removeItem(backupKey) } catch { /* saved document remains accessible */ }
-        },
+        onPersisted: finishSavedForm,
       })
-      if (activationError) {
+      if (saved.lan_sync && saved.lan_sync.state !== 'cached') {
+        toast.warning(saved.lan_sync.message)
+      } else if (activationError) {
         toast.warning('Чернетку збережено, але оформлення не завершено: ' + (activationError instanceof Error ? activationError.message : 'спробуйте з картки замовлення'))
       } else {
         toast.success(action === 'order' ? 'Замовлення оформлено' : id ? 'Зміни збережено' : 'Чернетку збережено')
       }
       navigate('/orders/' + saved.id)
     } catch (saveError) {
+      try {
+        if (readOrderSaveAttempt(backupKey)) {
+          const recovered = await checkOrderSaveAttempt(backupKey, orderApi.getSaveResult)
+          if (recovered) {
+            finishSavedForm()
+            toast.warning('Замовлення збережене. Відповідь загубилася; відкриваємо наявну картку без повторного запису.')
+            navigate('/orders/' + recovered.id)
+            return
+          }
+          setPendingSave(null)
+        }
+      } catch {
+        toast.error('Результат збереження ще невідомий. Дані форми залишилися; натисніть «Перевірити збереження» перед наступною дією.')
+        return
+      }
       toast.error(saveError instanceof Error ? saveError.message : 'Помилка збереження. Введені дані залишилися у формі.')
     } finally {
       savingRef.current = false
       setSaving(false)
     }
+  }
+
+  function finishSavedForm() {
+    backupFinished.current = true
+    try { removeOrderFormDraft(backupKey); clearOrderSaveAttempt(backupKey); setPendingSave(null) }
+    catch { toast.warning('Замовлення збережено, але локальний журнал не очищено. При поверненні у форму перевірте результат, не створюйте повторно.') }
+  }
+
+  async function handleCheckSave() {
+    if (savingRef.current) return
+    savingRef.current = true; setCheckingSave(true)
+    try {
+      const saved = await checkOrderSaveAttempt(backupKey, orderApi.getSaveResult)
+      if (saved) { finishSavedForm(); toast.success('Знайдено збережене замовлення'); navigate('/orders/' + saved.id) }
+      else { setPendingSave(null); toast.warning('Попередній запис не відбувся. Можна продовжити редагування та зберегти.') }
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося перевірити збереження') }
+    finally { savingRef.current = false; setCheckingSave(false) }
   }
 
 
@@ -1034,7 +1134,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   }
   // Ctrl+S only saves; it never silently advances the order status.
   const saveRef = useRef(handleSave)
-  saveRef.current = handleSave
+  useLayoutEffect(() => { saveRef.current = handleSave })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -1051,7 +1151,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const customerListLoading = customerSearch.trim().length >= 2 ? searchCustomersLoading : defaultCustomersLoading
   const hasValidItems = items.some((item) => item.name.trim().length > 0)
 
-  if (loadError) return <Layout title="Замовлення" onBack={() => navigate('/orders')}><p className="p-4 text-red-700">{loadError}</p><Button onClick={onReset}>Повторити завантаження</Button></Layout>
+  if (initialBackup.error || loadError) return <Layout title="Замовлення" onBack={() => navigate('/orders')}><p role="alert" className="p-4 text-red-700">{initialBackup.error || loadError}</p><Button onClick={onReset}>Повторити завантаження</Button></Layout>
   if (loading) {
     return (
       <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
@@ -1064,7 +1164,12 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
 
   return (
     <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
-      <fieldset disabled={saving} className={`mx-auto min-w-0 max-w-4xl space-y-4 transition-[margin] lg:max-w-none ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
+      <OrderLanNotice />
+      {pendingSave && <div role="alert" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+        <p>Збереження замовлення ще не підтверджене. Спочатку перевірте результат — це не створює новий документ.</p>
+        <Button disabled={saving || checkingSave} onClick={handleCheckSave}>Перевірити збереження</Button>
+      </div>}
+      <fieldset disabled={saving || checkingSave || !!pendingSave} className={`mx-auto min-w-0 max-w-4xl space-y-4 transition-[margin] lg:max-w-none ${draftHintOpen ? 'xl:mr-[26rem]' : ''}`}>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
           <p role="status">{backupState}</p>
           <button type="button" onClick={() => setDiscardPrompt(true)} className="underline">Відкинути незбережені правки</button>
@@ -1073,7 +1178,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
           <p>Прибрати введені зміни з цього пристрою? Збережене замовлення не буде видалено.</p>
           <div className="mt-2 flex gap-2">
             <Button variant="danger" onClick={() => {
-              try { sessionStorage.removeItem(backupKey) } catch { toast.error('Не вдалося очистити форму'); return }
+              try { removeOrderFormDraft(backupKey) } catch { toast.error('Не вдалося очистити форму'); return }
               backupFinished.current = true
               onReset()
             }}>Відкинути правки</Button>
@@ -1352,7 +1457,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                     <Input
                       label="VIN-код (17 знаків)"
                       value={newVehVin}
-                      onChange={(e) => setNewVehVin(e.target.value.toUpperCase())}
+                      onChange={(e) => { invalidateVehicleRead(); setNewVehVin(e.target.value.toUpperCase()) }}
                       placeholder="KNEDE241260000300"
                     />
                     <div className="flex items-center gap-3 mt-1.5">
@@ -1373,7 +1478,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                           <button
                             key={v}
                             type="button"
-                            onClick={() => setNewVehVin(v)}
+                            onClick={() => { invalidateVehicleRead(); setNewVehVin(v) }}
                             className="text-[10px] bg-gray-100 hover:bg-yellow-100 text-gray-700 px-2 py-0.5 rounded-full transition font-mono border border-gray-200/50"
                           >
                             {v}
@@ -1385,27 +1490,27 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                     <Input
                       label="Марка / Бренд"
                       value={newVehBrand}
-                      onChange={(e) => setNewVehBrand(e.target.value)}
+                      onChange={(e) => { invalidateVehicleRead(); setNewVehBrand(e.target.value) }}
                       placeholder="Kia"
                       required
                     />
                     <Input
                       label="Модель"
                       value={newVehModel}
-                      onChange={(e) => setNewVehModel(e.target.value)}
+                      onChange={(e) => { invalidateVehicleRead(); setNewVehModel(e.target.value) }}
                       placeholder="Rio"
                       required
                     />
                     <Input
                       label="Рік випуску"
                       value={newVehYear}
-                      onChange={(e) => setNewVehYear(e.target.value)}
+                      onChange={(e) => { invalidateVehicleRead(); setNewVehYear(e.target.value) }}
                       placeholder="2015"
                       type="number"
                     />
                   </div>
                   <div className="flex justify-end gap-2">
-                    <Button variant="secondary" size="sm" onClick={() => setShowAddVehicle(false)}>Скасувати</Button>
+                    <Button variant="secondary" size="sm" onClick={() => { invalidateVehicleRead(); setShowAddVehicle(false) }}>Скасувати</Button>
                     <Button type="submit" size="sm" disabled={addingVehicle}>Додати автомобіль</Button>
                   </div>
                 </form>

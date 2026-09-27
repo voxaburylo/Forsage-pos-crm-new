@@ -16,6 +16,36 @@ function numberValue(value: unknown): number {
 export class LocalWarehouseRepository {
   constructor(private readonly db: LocalDatabase) {}
 
+  // Commit receipt or cancellation fence is decided atomically on the authoritative PC.
+  // A delayed LAN write cannot arrive after "not committed" and silently change stock.
+  resolveOperation(kind: 'movement' | 'reserve' | 'consumption', operationId: string, userId: string, tenantId = DEFAULT_TENANT_ID): { status: 'committed'; result: any } | { status: 'not_committed' } {
+    if (!['movement', 'reserve', 'consumption'].includes(kind) || typeof operationId !== 'string'
+      || !operationId.trim() || operationId.length > 200 || !userId) throw new Error('Некоректна складська операція')
+    return this.db.transaction(() => {
+      const key = 'mutation:' + kind + ':' + tenantId + ':' + operationId
+      const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (row) {
+        const saved = JSON.parse(row.value_json)
+        if (saved.cancelled === true) {
+          if (saved.cancelled_by !== userId) throw new Error('Операція належить іншому працівнику')
+          return { status: 'not_committed' as const }
+        }
+        if (!saved.result?.id || typeof saved.fingerprint !== 'string') throw new Error('Пошкоджений запис результату операції')
+        const query = kind === 'movement'
+          ? 'SELECT created_by AS actor FROM warehouse_movements WHERE id = ? AND tenant_id = ?'
+          : kind === 'reserve'
+            ? 'SELECT reserved_by AS actor FROM stock_reserves WHERE id = ? AND tenant_id = ?'
+            : 'SELECT created_by AS actor FROM internal_consumptions WHERE id = ? AND tenant_id = ?'
+        const document = this.db.prepare(query).get(saved.result.id, tenantId) as { actor: string } | undefined
+        if (!document || document.actor !== userId) throw new Error('Операція належить іншому працівнику або її документ недоступний')
+        return { status: 'committed' as const, result: saved.result }
+      }
+      this.db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)')
+        .run(key, JSON.stringify({ cancelled: true, cancelled_by: userId }), nowIso())
+      return { status: 'not_committed' as const }
+    })
+  }
+
   listMovements(input: { tenant_id?: string; page?: number; per_page?: number } = {}): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const page = Math.max(1, Number(input.page ?? 1))
@@ -145,6 +175,7 @@ export class LocalWarehouseRepository {
     customer_id?: string | null
     order_id?: string | null
     expires_at?: string | null
+    duration_days?: number
     user_id?: string | null
   }): any {
     return this.db.transaction(() => input.operation_id
@@ -170,8 +201,11 @@ export class LocalWarehouseRepository {
     const qty = numberValue(input.qty)
     if (qty <= 0) throw new Error('Кількість резерву має бути більше нуля')
     let expiresAt: string | null = null
-    if (input.expires_at) {
-      const expires = new Date(input.expires_at)
+    if (input.duration_days !== undefined && (!Number.isInteger(input.duration_days) || input.duration_days < 1 || input.duration_days > 365 || input.expires_at)) {
+      throw new Error('Вкажіть один коректний термін резерву')
+    }
+    if (input.expires_at || input.duration_days) {
+      const expires = input.duration_days ? new Date(Date.now() + input.duration_days * 86_400_000) : new Date(input.expires_at!)
       if (!Number.isFinite(expires.getTime()) || expires.getTime() <= Date.now()) throw new Error('Термін резерву має бути в майбутньому')
       expiresAt = expires.toISOString()
     }
@@ -285,6 +319,16 @@ export class LocalWarehouseRepository {
     return row
   }
 
+  getWriteoffByOperation(operationId: string, userId: string, tenantId = DEFAULT_TENANT_ID): any | null {
+    if (typeof operationId !== 'string' || !operationId.trim() || operationId.length > 200) throw new Error('Некоректний номер операції списання')
+    const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key=?')
+      .get(`mutation:writeoff:${tenantId}:${operationId}`) as { value_json: string } | undefined
+    if (!row) return null
+    const saved = JSON.parse(row.value_json).result
+    if (!saved?.id || saved.created_by !== userId) throw new Error('Операція списання належить іншому працівнику')
+    return this.getWriteoff(saved.id, tenantId)
+  }
+
   createWriteoff(input: {
     operation_id?: string
     tenant_id?: string
@@ -293,18 +337,30 @@ export class LocalWarehouseRepository {
     user_id?: string | null
     items: Array<{ product_id: string; qty: number }>
   }): any {
-    if (input.operation_id) return idempotentMutation(this.db, 'writeoff:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input, () => this.createWriteoff({ ...input, operation_id: undefined }))
+    return this.db.transaction(() => input.operation_id
+      ? idempotentMutation(this.db, 'writeoff:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input, () => this.createWriteoffInTransaction(input))
+      : this.createWriteoffInTransaction(input))
+  }
+
+  private createWriteoffInTransaction(input: Parameters<LocalWarehouseRepository['createWriteoff']>[0]): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     if (!Array.isArray(input.items) || input.items.length === 0) throw new Error('Додайте товари для списання')
+    if (input.items.length > 5000) throw new Error('В одному акті списання може бути до 5000 позицій')
+    if (!['damage', 'expiry', 'loss', 'audit', 'other'].includes(input.reason)) throw new Error('Виберіть причину списання')
     const uniqueProducts = new Set(input.items.map((item) => item.product_id))
     if (uniqueProducts.size !== input.items.length) throw new Error('Один товар не можна додавати до акта списання кілька разів')
     const prepared = input.items.map((item) => {
       const product = this.product(item.product_id, tenantId)
-      const qty = numberValue(item.qty)
-      if (qty <= 0) throw new Error('Кількість списання має бути більше нуля')
+      const qty = item.qty
+      if (typeof qty !== 'number' || !Number.isFinite(qty) || qty <= 0 || qty > Number.MAX_SAFE_INTEGER / 1000
+        || Math.abs(qty * 1000 - Math.round(qty * 1000)) > 0.000001) throw new Error('Кількість списання має бути коректним числом більше нуля, до 3 знаків після коми')
+      if (product.is_service) throw new Error('Послугу не можна списати зі складу: ' + product.name)
       if (qty > numberValue(product.qty_on_hand)) throw new Error('Недостатньо товару для списання: ' + product.name)
-      return { product, qty, id: randomUUID() }
+      const cost = Math.round(numberValue(product.purchase_price) * qty)
+      if (!Number.isSafeInteger(cost) || cost < 0 || cost > 2_147_483_647) throw new Error('Сума списання надто велика: ' + product.name)
+      return { product, qty, cost, id: randomUUID() }
     })
+    if (prepared.reduce((sum, item) => sum + item.cost, 0) > 2_147_483_647) throw new Error('Загальна сума акта списання надто велика')
     const timestamp = nowIso()
     const id = randomUUID()
     this.db.transaction(() => {
@@ -314,14 +370,14 @@ export class LocalWarehouseRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(id, tenantId, input.reason, input.notes ?? null, input.user_id ?? null, timestamp, timestamp, timestamp)
       for (const item of prepared) {
-        const nextQty = numberValue(item.product.qty_on_hand) - item.qty
+        const nextQty = Math.round((numberValue(item.product.qty_on_hand) - item.qty) * 1000) / 1000
         this.db.prepare(`
           INSERT INTO writeoff_items (
             id, tenant_id, writeoff_id, product_id, qty, cost_kopecks, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           item.id, tenantId, id, item.product.id, item.qty,
-          Math.round(numberValue(item.product.purchase_price) * item.qty), timestamp, timestamp,
+          item.cost, timestamp, timestamp,
         )
         this.db.prepare(`
           UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
@@ -351,7 +407,7 @@ export class LocalWarehouseRepository {
   private product(id: string, tenantId: string): any {
     // All document writes resolve the current authoritative catalog row.
     const product = this.db.prepare(`
-      SELECT id, name, sku, barcode, unit, purchase_price, qty_on_hand, storage_bin
+      SELECT id, name, sku, barcode, unit, purchase_price, qty_on_hand, storage_bin, is_service
       FROM products
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
       LIMIT 1

@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { localizeDesktopIpcError } from '../src/ipcError'
 
 describe('localizeDesktopIpcError', () => {
+  it.each(['LOCAL_SALE_INVALID_AMOUNT', 'LOCAL_SALE_INVALID_DISCOUNT', 'LOCAL_SALE_INVALID_BONUS',
+    'LOCAL_SALE_INVALID_PAYMENT_METHOD', 'LOCAL_BACKUP_CORRUPT', 'LOCAL_BACKUP_BROKEN_REFERENCES',
+    'LOCAL_BACKUP_TIMEOUT', 'LOCAL_BACKUP_INCOMPLETE', 'LOCAL_ASYNC_TRANSACTION_FORBIDDEN'])('explains safety failure %s', code => {
+    expect(localizeDesktopIpcError(new Error(code)).message).not.toContain('LOCAL_')
+  })
+  it.each(['PRINT_NOT_CONFIRMED', 'TSPL_PRINT_NOT_CONFIRMED', 'RAW_PRINT_TIMEOUT', 'TSPL_PRINTER_NOT_READY [PRINT_SUBMISSION_STARTED]'])('does not convert uncertain print %s into a definite failure', code => {
+    const message = localizeDesktopIpcError(new Error(code)).message
+    expect(message).toContain('міг бути надрукований')
+    expect(message).not.toContain('НЕ надруковано')
+  })
   it('removes Electron IPC implementation details', () => {
     expect(localizeDesktopIpcError(
       new Error("Error invoking remote method 'desktop:catalog:save-product': Error: Вкажіть назву"),

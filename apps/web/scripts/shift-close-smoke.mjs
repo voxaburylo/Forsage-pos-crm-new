@@ -1,4 +1,5 @@
 // Runs the actual modal with fake APIs in an isolated browser. No store data or network.
+import { createSmokeCache } from './ui-smoke-cache.mjs'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -35,7 +36,7 @@ f.bridge={pos:{shiftReport:()=>read('report'),expectedCash:()=>read('cash'),clos
 f.render=(id='A',open=true)=>{f.id=id;root.render(React.createElement(ShiftCloseModal,{open,shiftId:id,onClose:()=>f.render(id,false),onClosed:()=>{f.closed++;f.render(id,false)}}))};
 f.render();
 `
-const server = await createServer({
+const server = await createServer({cacheDir:createSmokeCache(),
   configFile: false, root: path.join(root, 'apps/web'), logLevel: 'error',
   esbuild: { jsx: 'automatic' }, resolve: { alias: { '@': path.join(root, 'apps/web/src') } },
   server: { host: '127.0.0.1', port: 0 },

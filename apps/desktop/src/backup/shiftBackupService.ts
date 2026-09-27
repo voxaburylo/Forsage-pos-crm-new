@@ -2,7 +2,7 @@ import { assertBackupSpace } from './backupSpace'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { mkdir, rename, stat } from 'node:fs/promises'
-import { existsSync, createReadStream } from 'node:fs'
+import { existsSync, createReadStream, readdirSync } from 'node:fs'
 import { LocalDatabase } from '../db/localDatabase'
 import { createVerifiedBackup } from '../db/verifiedBackup'
 import type { exportShiftSnapshot } from './shiftExportWorker'
@@ -81,8 +81,25 @@ export class ShiftBackupService {
       ORDER BY closed_at,id LIMIT 1`).all(tenant)
   }
   status(tenant: string) {
-    return this.db.prepare(`SELECT id,closed_at,captured_at,export_directory,local_error,cloud_error,cloud_completed_at
-      FROM shift_backups WHERE tenant_id=? ORDER BY closed_at DESC,id DESC LIMIT 20`).all(tenant)
+    const rows = this.db.prepare(`SELECT id,closed_at,captured_at,export_directory,local_error,cloud_error,cloud_completed_at,local_path,compressed_path,sha256
+      FROM shift_backups WHERE tenant_id=? AND (id IN
+        (SELECT id FROM shift_backups WHERE tenant_id=? ORDER BY closed_at DESC,id DESC LIMIT 20)
+        OR id = (SELECT id FROM shift_backups WHERE tenant_id=? AND cloud_completed_at IS NOT NULL ORDER BY captured_at DESC,id DESC LIMIT 1))
+      ORDER BY closed_at DESC,id DESC`).all(tenant, tenant, tenant) as Array<Pick<ShiftBackupJob, 'id'|'closed_at'|'captured_at'|'export_directory'|'local_error'|'cloud_error'|'cloud_completed_at'|'local_path'|'compressed_path'|'sha256'>>
+    const root = path.resolve(this.db.dataRoot, 'shift-backups')
+    return rows.map(({ local_path, compressed_path, sha256, ...row }) => {
+      let exportsReady = false
+      if (row.export_directory && path.dirname(path.resolve(row.export_directory)) === path.resolve(this.programDirectory, 'Вивантаження')) {
+        try {
+          const files = readdirSync(row.export_directory)
+          exportsReady = files.some(name => /^Товари_.+\.xlsx$/.test(name)) && files.some(name => /^Клієнти_.+\.xlsx$/.test(name))
+        } catch { /* Missing or inaccessible files are not a ready export. */ }
+      }
+      return { ...row, exports_ready: exportsReady,
+      local_ready: Boolean(local_path && compressed_path && sha256
+        && path.dirname(path.resolve(local_path)) === root && path.dirname(path.resolve(compressed_path)) === root
+        && existsSync(local_path) && existsSync(compressed_path)),
+    } })
   }
   async upload(tenant: string, id: string, signedUrl: string, trustedOrigin: string) {
     const job = this.db.prepare('SELECT * FROM shift_backups WHERE id=? AND tenant_id=?').get(id,tenant) as unknown as ShiftBackupJob | undefined

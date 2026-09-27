@@ -49,6 +49,12 @@ describe('private bounded local black box', () => {
     new BlackBoxStore(root, randomUUID()).start()
     expect(readdirSync(root)).not.toContain(old)
   })
+  it('keeps AI stage codes but never the document or server details', () => {
+    const data=safeDiagnosticDetails(new Error('AI_OPERATION_RECOGNITION_TIMEOUT secret invoice contents'))
+    expect(data.error_code).toBe('ai-recognition-timeout')
+    expect(JSON.stringify(data)).not.toContain('secret invoice')
+    expect(safeDiagnosticDetails(new Error('AI_OPERATION_WRITE_SESSION')).error_code).toBe('ai-write-session')
+  })
   it('never serializes inputs, outputs, customer fields or raw error text', () => {
     const error = new Error('password=secret-token phone=+380501234567')
     error.stack = 'Error: secret-token\n at C:\\Users\\PrivateName\\app\\main.js:45:8'
@@ -64,9 +70,20 @@ describe('private bounded local black box', () => {
     for (const [message, code] of [
       ['Програму заблоковано. Введіть PIN або пароль', 'session-locked'],
       ['MIRROR_IDENTITY_UNAVAILABLE', 'mirror-key-unavailable'],
+      ['AI_SUPPLY_RESPONSE_INVALID', 'ai-supply-response-invalid'],
+      ['AI_SUPPLY_TEXT_NO_TABLE', 'ai-supply-text-no-table'],
+      ['AI_SUPPLY_PHOTO_NO_TABLE', 'ai-supply-photo-no-table'],
+      ['AI_STATUS_SESSION', 'ai-session-required'],
+      ['AI_STATUS_ACCESS', 'ai-access-denied'],
+      ['AI_STATUS_NETWORK', 'ai-network-unavailable'],
+      ['AI_STATUS_TIMEOUT', 'ai-status-timeout'],
+      ['AI_STATUS_SERVER', 'ai-status-server-error'],
+      ['AI_PROCESSING_CLEANUP_FAILED Private path', 'ai-processing-cleanup-failed'],
       ['Недостатньо товару «Private product». Доступно: 1, потрібно: 2', 'insufficient-stock'],
       ['TSPL_PRINT_NOT_CONFIRMED: Private printer', 'print-outcome-unknown'],
       ['PRINT_GUARD_TIMEOUT', 'print-timeout'],
+      ['PRINT_DOCUMENT_LOAD_FAILED (ERR_FAILED)', 'print-document-load-failed'],
+      ['PRINT_RENDER_TIMEOUT', 'print-render-timeout'],
     ]) {
       const details = safeDiagnosticDetails(new Error(message))
       expect(details.error_code).toBe(code)

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { hasMeaningfulDesktopSyncChanges } from './useDesktopOutboxSync'
+import { hasMeaningfulDesktopSyncChanges, desktopSyncDelay } from './useDesktopOutboxSync'
 
 const syncApiSource = readFileSync(new URL('../lib/desktopSyncApi.ts', import.meta.url), 'utf8')
 const offlineDbSource = readFileSync(new URL('../lib/offlineDB.ts', import.meta.url), 'utf8')
@@ -10,6 +10,13 @@ const localSyncAgentSource = readFileSync(new URL('../components/LocalSyncAgent.
 const posPageSource = readFileSync(new URL('../features/pos/POSPage.tsx', import.meta.url), 'utf8')
 
 describe('локальна каса відправляє резервну копію, але не забирає стан із сервера', () => {
+  it('backs off idle checks without slowing pending changes or removing retry backoff', () => {
+    expect(desktopSyncDelay(false, 0, false)).toBe(60_000)
+    expect(desktopSyncDelay(false, 0, true)).toBe(120_000)
+    expect(desktopSyncDelay(true, 0, true)).toBe(10_000)
+    expect(desktopSyncDelay(true, 1, false)).toBe(15_000)
+    expect(desktopSyncDelay(true, 50, false)).toBe(300_000)
+  })
   it('повідомляє лише про відправлені локальні зміни', () => {
     expect(hasMeaningfulDesktopSyncChanges({
       pushed: 0,

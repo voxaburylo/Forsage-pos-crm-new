@@ -26,6 +26,58 @@ describe('AI invoice import into local supply draft', () => {
     }
   })
 
+  it('indexes Unicode SKU fallbacks once per batch and sees cards created earlier in that batch', () => {
+    catalog.upsertProduct({ id: 'unicode', sku: 'АрТ-１', name: 'Наш товар', qty_on_hand: 0 })
+    const all = vi.spyOn(db, 'prepare')
+    const result = supply.createInvoiceFromAiRows({ rows: [
+      { name: 'Назва постачальника', sku: 'арт-1', qty: 2, purchase_price_uah: 10 },
+      { name: 'Новий', sku: 'NEW-CACHED', qty: 3, purchase_price_uah: 10 },
+      { name: 'Новий інша назва', sku: 'new-cached', qty: 4, purchase_price_uah: 10 },
+    ] })
+    expect(result.matched).toBe(2); expect(result.created).toBe(1)
+    expect(result.draft_items[0].product_id).toBe('unicode')
+    expect(result.draft_items[1].product_id).toBe(result.draft_items[2].product_id)
+    const fullScans = all.mock.calls.filter(([sql]) => /SELECT id, sku, deleted_at/.test(sql) && !sql.includes('AND trim(sku)'))
+    expect(fullScans).toHaveLength(1)
+    all.mockRestore()
+  })
+
+  it('creates an absent suggested folder once and keeps existing product folders', () => {
+    const existingFolder = catalog.createCategory('Фільтри')
+    catalog.upsertProduct({ id: 'known', sku: 'KNOWN', name: 'Наш фільтр', category_id: existingFolder.id, qty_on_hand: 0, purchase_price: 1000, retail_price: 2000 })
+    const result = supply.createInvoiceFromAiRows({ rows: [
+      { name: 'Шина перша', sku: 'TYRE-1', category_name: 'Шини', qty: 8, purchase_price_uah: 100 },
+      { name: 'Шина друга', sku: 'TYRE-2', category_name: '  шини  ', qty: 2, purchase_price_uah: 200 },
+      { name: 'Фільтр з фото', sku: 'KNOWN', category_name: 'Інша папка', qty: 3, purchase_price_uah: 10 },
+    ] })
+    expect(catalog.listCategories()).toHaveLength(2)
+    expect(result.draft_items[0].category_id).toBe(result.draft_items[1].category_id)
+    expect(result.draft_items[2].category_id).toBe(existingFolder.id)
+    expect(catalog.findBySku('TYRE-1')?.qty_on_hand).toBe(0)
+    expect(result.invoice.items[0].qty).toBe(8)
+  })
+  it('rolls newly created folders back if a later photo row is invalid', () => {
+    expect(() => supply.createInvoiceFromAiRows({ rows: [
+      { name: 'Шина', category_name: 'Шини', qty: 8, purchase_price_uah: 100 },
+      { name: 'Поганий рядок', qty: '', purchase_price_uah: 100 },
+    ] })).toThrow('кількість')
+    expect(catalog.listCategories()).toHaveLength(0)
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+  it('prevents Cyrillic folder duplicates and recognizes different casing', () => {
+    catalog.createCategory('  Шини   зимові ')
+    expect(() => catalog.createCategory('шини зимові')).toThrow('вже існує')
+    expect(catalog.listCategories()).toHaveLength(1)
+  })
+  it('does not create a second document when a create reply was lost', () => {
+    catalog.upsertProduct({ id: 'test-tyre', sku: 'TEST-TYRE', name: 'Шина', qty_on_hand: 0, purchase_price: 1000, retail_price: 1500 })
+    const input = { operation_id: 'create-retry', items: [{ product_id: 'test-tyre', qty: 8, purchase_price: 1000 }] }
+    const first = supply.createInvoice(input)
+    expect(supply.createInvoice(input).id).toBe(first.id)
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 1 })
+    expect(catalog.findBySku('TEST-TYRE')?.qty_on_hand).toBe(0)
+  })
+
   it('matches an existing barcode and creates unknown rows without barcode or category', () => {
     const existing = catalog.upsertProduct({
       id: 'existing-ai-product',
@@ -101,7 +153,7 @@ describe('AI invoice import into local supply draft', () => {
     expect(result.created).toBe(1)
     expect(result.matched).toBe(19)
     expect(new Set(result.invoice.items.map((item: any) => item.product_id)).size).toBe(1)
-    expect(prepare.mock.calls.filter(([sql]) => /SELECT id, name FROM products/.test(sql))).toHaveLength(1)
+    expect(prepare.mock.calls.filter(([sql]) => /SELECT p.id,p.name,p.sku,p.barcode,b.name AS brand FROM products/.test(sql))).toHaveLength(1)
     prepare.mockRestore()
   })
 

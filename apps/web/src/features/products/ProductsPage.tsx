@@ -16,7 +16,8 @@ import type { ProductFilters } from './productApi'
 import { adminApi } from '@/features/admin/adminApi'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import type { Product, PaginatedProducts } from '@/types/product'
-import { kopecksToHryvnia, stockStatus } from '@/types/product'
+import { hryvniaToKopecks, kopecksToHryvnia, stockStatus } from '@/types/product'
+import { updateCatalogPages } from './catalogPageUpdate'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Modal, ConfirmDialog, SplitButton } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -110,6 +111,8 @@ export default function ProductsPage() {
   const [editPriceId, setEditPriceId] = useState<string | null>(null)
   const [priceDraft, setPriceDraft]   = useState('')
   const [savingPrice, setSavingPrice] = useState(false)
+  const priceSaveBusyRef = useRef(false)
+  const binSaveBusyRef = useRef(false)
   const [editBinId, setEditBinId]     = useState<string | null>(null)
   const [binDraft, setBinDraft]       = useState('')
   const [savingBin, setSavingBin]     = useState(false)
@@ -145,42 +148,55 @@ export default function ProductsPage() {
   })
 
   function startEditPrice(p: Product) {
+    if (!canEditCatalog) return
     setEditPriceId(p.id)
     setPriceDraft(kopecksToHryvnia(p.retail_price))
   }
 
   async function saveEditPrice(p: Product) {
-    const val = parseFloat(priceDraft.replace(',', '.'))
-    if (isNaN(val) || val < 0) { toast.error('Невірна ціна'); setEditPriceId(null); return }
-    if (kopecksToHryvnia(p.retail_price) === priceDraft.trim()) { setEditPriceId(null); return }
+    if (!canEditCatalog || priceSaveBusyRef.current) return
+    if (!priceDraft.trim()) { toast.error('Вкажіть ціну; для безкоштовного товару введіть 0.'); return }
+    let kopecks: number
+    try { kopecks = hryvniaToKopecks(priceDraft) }
+    catch (error) { toast.error(error instanceof Error ? error.message : 'Невірна ціна'); return }
+    if (p.retail_price === kopecks) { setEditPriceId(null); return }
+    priceSaveBusyRef.current = true
     setSavingPrice(true)
     try {
-      await productApi.update(p.id, { retail_price: String(val) })
+      const saved = await productApi.update(p.id, { retail_price: kopecksToHryvnia(kopecks) })
       // оновлюємо локально, без перезавантаження списку
-      setResult((prev) => prev ? { ...prev, data: prev.data.map((x) => x.id === p.id ? { ...x, retail_price: Math.round(val * 100) } : x) } : prev)
+      const patch = { retail_price: saved.data.retail_price }
+      setPages(prev => updateCatalogPages(prev, p.id, patch))
+      setResult((prev) => prev ? { ...prev, data: prev.data.map((x) => x.id === p.id ? { ...x, ...patch } : x) } : prev)
       toast.success('Ціну оновлено')
+      setEditPriceId(current => current === p.id ? null : current)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка збереження')
     } finally {
       setSavingPrice(false)
-      setEditPriceId(null)
+      priceSaveBusyRef.current = false
     }
   }
 
   // Інлайн-редагування комірки (місця зберігання) прямо у списку
   async function saveEditBin(p: Product) {
+    if (!canEditCatalog || binSaveBusyRef.current) return
     const val = binDraft.trim()
     if ((p.storage_bin ?? '') === val) { setEditBinId(null); return }
+    binSaveBusyRef.current = true
     setSavingBin(true)
     try {
-      await productApi.update(p.id, { storage_bin: val })
-      setResult((prev) => prev ? { ...prev, data: prev.data.map((x) => x.id === p.id ? { ...x, storage_bin: val } : x) } : prev)
+      const saved = await productApi.update(p.id, { storage_bin: val })
+      const patch = { storage_bin: saved.data.storage_bin }
+      setPages(prev => updateCatalogPages(prev, p.id, patch))
+      setResult((prev) => prev ? { ...prev, data: prev.data.map((x) => x.id === p.id ? { ...x, ...patch } : x) } : prev)
       toast.success('Комірку оновлено')
+      setEditBinId(current => current === p.id ? null : current)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка збереження')
     } finally {
       setSavingBin(false)
-      setEditBinId(null)
+      binSaveBusyRef.current = false
     }
   }
 
@@ -867,6 +883,7 @@ export default function ProductsPage() {
                           {editBinId === p.id ? (
                             <input
                               type="text" autoFocus
+                              aria-label={`Комірка: ${p.name}`}
                               value={binDraft}
                               disabled={savingBin}
                               onChange={(e) => setBinDraft(e.target.value)}
@@ -876,7 +893,7 @@ export default function ProductsPage() {
                               className="w-20 border border-yellow-400 rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400"
                             />
                           ) : (
-                            <button onClick={() => { setEditBinId(p.id); setBinDraft(p.storage_bin ?? '') }} title="Клік — змінити комірку"
+                            <button disabled={!canEditCatalog} onClick={() => { setEditBinId(p.id); setBinDraft(p.storage_bin ?? '') }} title={canEditCatalog ? 'Клік — змінити комірку' : 'Комірка'}
                               className="hover:bg-yellow-50 rounded transition-colors cursor-text">
                               {p.storage_bin
                                 ? <span className="text-xs text-gray-500 font-mono bg-gray-50 px-1.5 py-0.5 rounded border border-gray-200">📍 {p.storage_bin}</span>
@@ -887,7 +904,8 @@ export default function ProductsPage() {
                         <td className="px-3 py-3 text-right font-bold text-sm text-gray-800 nums-tabular">
                           {editPriceId === p.id ? (
                             <input
-                              type="number" min="0" step="0.01" autoFocus
+                              type="text" inputMode="decimal" autoFocus
+                              aria-label={`Ціна: ${p.name}`}
                               value={priceDraft}
                               disabled={savingPrice}
                               onChange={(e) => setPriceDraft(e.target.value)}
@@ -896,7 +914,7 @@ export default function ProductsPage() {
                               className="w-24 border border-yellow-400 rounded px-1.5 py-0.5 text-right text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                             />
                           ) : (
-                            <button onClick={() => startEditPrice(p)} title="Клік — змінити ціну"
+                            <button disabled={!canEditCatalog} onClick={() => startEditPrice(p)} title={canEditCatalog ? 'Клік — змінити ціну' : 'Ціна'}
                               className="hover:bg-yellow-50 rounded px-1.5 py-0.5 transition-colors cursor-text">
                               {kopecksToHryvnia(p.retail_price)} ₴
                             </button>

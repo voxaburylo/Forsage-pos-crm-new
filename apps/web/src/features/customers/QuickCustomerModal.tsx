@@ -10,6 +10,8 @@ import type { PriceTier } from '@/features/admin/pricingApi'
 import { TAGS } from '@/types/customer'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
+import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
+import { useScopedAction } from '@/hooks/useScopedAction'
 
 interface Props {
   open: boolean
@@ -70,7 +72,8 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   const [carVin, setCarVin] = useState('')
   const [carNotes, setCarNotes] = useState('')
   const [tiers, setTiers] = useState<PriceTier[]>([])
-  const [saving, setSaving] = useState(false)
+  const action = useScopedAction(`${open}:${scopeKey}`)
+  const saving = action.busy
   const [recentPhones, setRecentPhones] = useState<string[]>([])
 
   // Reset state on open
@@ -142,13 +145,15 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
+    if (action.isBusy()) return
     if (offline) {
       toast.error('Створення нового клієнта потребує інтернету')
       return
     }
     if (!phone.trim()) { toast.error("Телефон обов'язковий"); return }
     if (!name.trim())  { toast.error("Ім'я обов'язкове"); return }
-    setSaving(true)
+    const attempt = action.begin()
+    if (!attempt) return
     try {
       const hasVehicle = carVin.trim() || carBrand.trim() || carModel.trim()
       const result = await customerApi.create({
@@ -172,27 +177,31 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
         } : {}),
       })
       const { data } = result
+      if (!attempt.isCurrent()) return
       toast.success(result.meta?.reused
-        ? result.meta.vehicle_added ? 'Клієнт уже існував — автомобіль додано до його картки' : 'Клієнт уже є в базі — вибрано його картку'
+        ? result.meta.card_attached
+          ? result.meta.vehicle_added ? 'Клієнт уже є — картку й автомобіль додано' : 'Клієнт уже є — штрихкод картки збережено'
+          : result.meta.vehicle_added ? 'Клієнт уже існував — автомобіль додано до його картки' : 'Клієнт уже є в базі — вибрано його картку'
         : result.meta?.vehicle_added ? 'Клієнта й автомобіль створено' : 'Клієнта створено')
       saveRecentItem('recent_phones', phone.trim())
       onCreated(data)
       onClose()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка')
+      if (attempt.isCurrent()) toast.error(err instanceof Error ? err.message : 'Помилка')
     } finally {
-      setSaving(false)
+      attempt.finish()
     }
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Клієнт у чеку" size={mode === 'create' ? 'lg' : 'sm'}>
+    <Modal open={open} onClose={() => { if (!action.isBusy()) onClose() }} title="Клієнт у чеку" size={mode === 'create' ? 'lg' : 'sm'}>
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-gray-200 -mt-1">
         {((offline ? ['search'] : ['search', 'create']) as Mode[]).map((m) => (
           <button
             key={m}
-            onClick={() => setMode(m)}
+            disabled={saving}
+            onClick={() => { if (!action.isBusy()) setMode(m) }}
             className={
               'px-4 py-2 text-sm font-medium border-b-2 transition-colors ' +
               (mode === m
@@ -331,6 +340,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
         </div>
       ) : (
         <form onSubmit={handleCreate} className="space-y-5">
+          <fieldset disabled={saving} className="space-y-5 min-w-0">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
             <Input
@@ -359,18 +369,8 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
             )}
             </div>
             <Input label="Ім'я *" value={name} onChange={(e) => setName(e.target.value)} placeholder="Іван Іваненко" required />
+            <CustomerCardBarcodeField value={cardBarcode} onChange={setCardBarcode} disabled={saving} />
             <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="client@example.com" />
-            <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">Штрихкод картки</label>
-              <div className="flex gap-2">
-                <input value={cardBarcode} onChange={(e) => setCardBarcode(e.target.value.replace(/\s/g, ''))}
-                  placeholder="Відскануйте або введіть"
-                  className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2.5 font-mono text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
-                <Button type="button" variant="secondary" size="sm" onClick={() => setCardBarcode('200' + String(Math.floor(Math.random() * 1_000_000_000)).padStart(10, '0'))}>
-                  Згенерувати
-                </Button>
-              </div>
-            </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">Статус клієнта</label>
               <select disabled={!canManageStatus} value={clientStatus} onChange={(e) => setClientStatus(e.target.value)}
@@ -432,10 +432,11 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
             <Button type="submit" loading={saving} className="flex-1">
               Створити й додати до чека
             </Button>
-            <Button type="button" variant="secondary" onClick={() => setMode('search')}>
+            <Button type="button" variant="secondary" onClick={() => { if (!action.isBusy()) setMode('search') }}>
               Назад
             </Button>
           </div>
+          </fieldset>
         </form>
       )}
     </Modal>

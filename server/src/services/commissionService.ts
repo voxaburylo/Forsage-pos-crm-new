@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { runTransaction } from '../db/pg.js'
 import { db } from '../db/supabase.js'
 import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -16,6 +17,23 @@ export interface CreateCommissionRuleInput {
 }
 
 const TABLE = 'commission_rules'
+
+export async function replaceEmployeeRules(userId: string, rules: CreateCommissionRuleInput[], tenantId: string) {
+  if (!Array.isArray(rules) || rules.length > 3 || rules.some(rule => !rule || !['pos_sales','order_sales','tire_service'].includes(rule.rule_type ?? '') || [rule.pct_from_revenue,rule.pct_from_profit].some(value => !Number.isFinite(value) || value < 0 || value > 100))) throw new AppError('INVALID_RULE', 'Некоректні правила зарплати', 422)
+  const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId)
+  if (error || !data.user || data.user.app_metadata?.tenant_id !== tenantId || data.user.app_metadata?.deleted_at) throw new AppError('USER_NOT_FOUND', 'Працівника не знайдено', 404)
+  if (data.user.app_metadata?.role === 'owner' && rules.length) throw new AppError('INVALID_EMPLOYEE', 'Власник не входить до зарплатної відомості', 422)
+  if (new Set(rules.map(rule => rule.rule_type)).size !== rules.length) throw new AppError('DUPLICATE_RULE', 'Повторне правило зарплати', 422)
+  return runTransaction(async client => {
+    // Serialize concurrent edits of the same employee, including an empty rule list.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`staff-rules:${tenantId}:${userId}`])
+    await client.query("DELETE FROM commission_rules WHERE tenant_id=$1 AND user_id=$2 AND brand_id IS NULL AND category_id IS NULL AND rule_type IN ('personal_sales','pos_sales','order_sales','tire_service')", [tenantId,userId])
+    for (const rule of rules) {
+      await client.query('INSERT INTO commission_rules(id,tenant_id,user_id,rule_type,pct_from_revenue,pct_from_profit) VALUES($1,$2,$3,$4,$5,$6)', [randomUUID(),tenantId,userId,rule.rule_type,rule.pct_from_revenue,rule.pct_from_profit])
+    }
+    return { success: true }
+  })
+}
 
 function commissionReversalId(returnId: string, employeeId: string): string {
   const hex = createHash('sha256').update(`commission-reversal:${returnId}:${employeeId}`).digest('hex').slice(0, 32)

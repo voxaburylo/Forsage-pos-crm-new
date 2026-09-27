@@ -86,14 +86,34 @@ async function withoutOwnerPayrollRows<T extends { employee_id: string }>(tenant
   return rows.filter((row) => !owners.has(row.employee_id))
 }
 
+// Data API response caps must not silently lower monthly or daily payroll totals.
+async function allSalarySummaryRows(tenantId: string, field: 'period' | 'work_date', value: string) {
+  const rows: Array<{ id: string; employee_id: string; employee_name: string; amount: number; type: string }> = []
+  let afterId: string | undefined
+  for (;;) {
+    let query = db.from('salary_payments').select('id, employee_id, employee_name, amount, type')
+      .eq('tenant_id', tenantId).eq(field, value).order('id', { ascending: true }).limit(500)
+    if (afterId) query = query.gt('id', afterId)
+    const { data, error } = await query
+    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    rows.push(...(data ?? []))
+    if (!data || data.length < 500) return rows
+    const nextId = String(data[data.length - 1].id)
+    if (afterId === nextId) throw new AppError('DB_ERROR', 'Не вдалося прочитати повну історію зарплати', 500)
+    afterId = nextId
+  }
+}
+
 async function buildTireServiceReport(tenantId: string, date: string) {
-  const workers = (await adminService.listUsers(tenantId))
+  const users = await adminService.listUsers(tenantId)
+  const names = new Map(users.map(user => [user.id, user.full_name]))
+  const workers = users
     .filter((user) => user.is_active && user.role === 'tire_worker')
   const workerIds = workers.map((worker) => worker.id)
   if (workerIds.length === 0) {
-    return { data: [], receipts: [], date, totals: { services_qty: 0, service_revenue: 0, cash_revenue: 0, cash_handed_over: 0, cash_pending: 0, due: 0, payable_due: 0 } }
+    return { data: [], receipts: [], salary_operations: [], cash_handovers: [], details_version: 1, date, totals: { services_qty: 0, service_revenue: 0, cash_revenue: 0, cash_handed_over: 0, cash_pending: 0, due: 0, payable_due: 0 } }
   }
-  const [salaryResult, receiptResult, handoverResult] = await Promise.all([
+  const [salaryResult, receiptResult, handoverResult, operationsResult, cashDetailsResult] = await Promise.all([
     pool.query(`
       SELECT employee_id::text,
         COALESCE(SUM(CASE WHEN type IN ('salary','bonus') THEN amount ELSE 0 END), 0)::bigint AS earned,
@@ -101,22 +121,25 @@ async function buildTireServiceReport(tenantId: string, date: string) {
         COALESCE(SUM(CASE WHEN type = 'penalty' THEN amount ELSE 0 END), 0)::bigint AS penalty,
         COALESCE(SUM(CASE WHEN source IN ('commission','commission_reversal') THEN amount ELSE 0 END), 0)::bigint AS commission_earned,
         COALESCE(SUM(CASE WHEN source = 'daily_rate' THEN amount ELSE 0 END), 0)::bigint AS daily_rate
-      FROM salary_payments
-      WHERE tenant_id = $1 AND work_date = $2
+      FROM salary_payments p
+      WHERE tenant_id = $1 AND work_date = $2 AND to_jsonb(p)->>'deleted_at' IS NULL
       GROUP BY employee_id
     `, [tenantId, date]),
     pool.query(`
       WITH service_sales AS (
         SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
-          sale.payment_method, sale.total, sale.cash_amount,
+          sale.payment_method, sale.total, sale.cash_amount, sale.cashier_id, sale.notes,
+          json_agg(json_build_object('id', item.id, 'description', COALESCE(NULLIF(item.description, ''), product.name, 'Послуги шиномонтажу'),
+            'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total) ORDER BY item.id) AS services,
           COALESCE(SUM(item.qty), 0)::float AS services_qty,
           COALESCE(SUM(item.total), 0)::bigint AS service_revenue
         FROM sales sale
         JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id
-        JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
+        LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
         WHERE sale.tenant_id = $1 AND sale.status = 'completed'
           AND sale.manager_id = ANY($3::uuid[])
-          AND product.sku = 'POS-TIRE-SERVICE'
+          AND COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'
+          AND to_jsonb(sale)->>'deleted_at' IS NULL AND to_jsonb(item)->>'deleted_at' IS NULL
           AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date = $2::date
         GROUP BY sale.id
       )
@@ -124,22 +147,44 @@ async function buildTireServiceReport(tenantId: string, date: string) {
         LEAST(service_revenue, ROUND(service_revenue::numeric *
           CASE WHEN payment_method = 'cash' THEN COALESCE(NULLIF(cash_amount, 0), total) ELSE COALESCE(cash_amount, 0) END / total
         ))::bigint ELSE 0 END AS cash_revenue
-      FROM service_sales ORDER BY completed_at DESC
+      FROM service_sales ORDER BY completed_at, id
     `, [tenantId, date, workerIds]),
     pool.query(`
       SELECT employee_id::text, COALESCE(SUM(amount), 0)::bigint AS amount
-      FROM cash_operations
+      FROM cash_operations c
       WHERE tenant_id = $1 AND type = 'in' AND source = 'cashbox' AND work_date = $2
-        AND employee_id = ANY($3::uuid[])
+        AND employee_id = ANY($3::uuid[]) AND to_jsonb(c)->>'deleted_at' IS NULL
       GROUP BY employee_id
     `, [tenantId, date, workerIds]),
+    pool.query(`
+      SELECT p.id, p.employee_id::text, p.type, p.source, p.amount, p.method, p.note,
+        p.work_date::text, p.created_at, p.created_by, p.commission_source_sale_id AS sale_id, c.source AS fund_source
+      FROM salary_payments p
+      LEFT JOIN cash_operations c ON c.id = p.cash_operation_id AND c.tenant_id = p.tenant_id
+      WHERE p.tenant_id = $1 AND p.work_date = $2 AND p.employee_id = ANY($3::uuid[])
+        AND to_jsonb(p)->>'deleted_at' IS NULL
+      ORDER BY p.created_at, p.id
+    `, [tenantId, date, workerIds]),
+    pool.query(`
+      SELECT c.id, c.employee_id::text, c.amount, c.work_date::text, c.created_at, c.note, c.created_by
+      FROM cash_operations c
+      WHERE c.tenant_id = $1 AND c.type = 'in' AND c.source = 'cashbox' AND c.work_date = $2
+        AND c.employee_id = ANY($3::uuid[]) AND to_jsonb(c)->>'deleted_at' IS NULL
+      ORDER BY c.created_at, c.id
+    `, [tenantId, date, workerIds]),
   ])
+  const salaryOperations = operationsResult.rows.map(row => ({ ...row, amount: Number(row.amount), cashier_name: names.get(row.created_by) ?? null }))
+  const cashHandovers = cashDetailsResult.rows.map(row => ({ ...row, amount: Number(row.amount), cashier_name: names.get(row.created_by) ?? null }))
   const workerNames = new Map(workers.map((worker) => [worker.id, worker.full_name]))
   const receipts = receiptResult.rows.map((row) => ({
     id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
     employee_id: row.employee_id, employee_name: workerNames.get(row.employee_id) ?? 'Шиномонтажник',
     services_qty: Number(row.services_qty ?? 0), service_revenue: Number(row.service_revenue ?? 0),
     cash_revenue: Number(row.cash_revenue ?? 0), payment_method: row.payment_method, total: Number(row.total ?? 0),
+    cashier_id: row.cashier_id, cashier_name: names.get(row.cashier_id) ?? null, notes: row.notes ?? null,
+    services: row.services ?? [],
+    commission_earned: salaryOperations.filter(operation => operation.sale_id === row.id && operation.employee_id === row.employee_id && operation.source === 'commission')
+      .reduce((sum, operation) => sum + operation.amount, 0),
   }))
   const salaryByWorker = new Map(salaryResult.rows.map((row) => [row.employee_id, row]))
   const handedByWorker = new Map(handoverResult.rows.map((row) => [row.employee_id, Number(row.amount ?? 0)]))
@@ -167,11 +212,12 @@ async function buildTireServiceReport(tenantId: string, date: string) {
       services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
       service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
       commission_earned: Number(salary.commission_earned ?? 0), daily_rate: recordedDailyRate + projectedDailyRate,
+      daily_rate_projected: projectedDailyRate,
       earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
       salary_ready: salaryReady, payable_due: salaryReady ? due : 0,
     }
   })
-  return { data, receipts, date, totals: {
+  return { data, receipts, salary_operations: salaryOperations, cash_handovers: cashHandovers, details_version: 1, date, totals: {
     services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
     service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
     cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),
@@ -195,20 +241,24 @@ router.get('/', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const period     = req.query.period as string | undefined
     const employeeId = req.query.employee_id as string | undefined
+    const pagination = z.object({ page: z.coerce.number().int().min(1).max(1_000_000).default(1), per_page: z.coerce.number().int().min(1).max(500).default(200) }).safeParse(req.query)
+    if (!pagination.success) throw new AppError('VALIDATION_ERROR', 'Некоректна сторінка історії зарплати', 400)
+    const { page, per_page: size } = pagination.data
 
     let query = db
       .from('salary_payments')
       .select('*')
       .eq('tenant_id', req.user!.tenant_id)
       .order('created_at', { ascending: false })
-      .limit(200)
+      .order('id', { ascending: false })
+      .range((page - 1) * size, page * size)
 
     if (period)     query = query.eq('period', period)
     if (employeeId) query = query.eq('employee_id', employeeId)
 
     const { data, error } = await query
     if (error) throw new AppError('DB_ERROR', error.message, 500)
-    res.json({ data: await withoutOwnerPayrollRows(req.user!.tenant_id, data ?? []) })
+    res.json({ data: await withoutOwnerPayrollRows(req.user!.tenant_id, (data ?? []).slice(0, size)), has_more: (data?.length ?? 0) > size })
   } catch (err) { next(err) }
 })
 
@@ -217,13 +267,7 @@ router.get('/summary', requireRole('owner', 'admin'), async (req, res, next) => 
   try {
     const period = (req.query.period as string) ?? new Date().toISOString().slice(0, 7)
 
-    const { data, error } = await db
-      .from('salary_payments')
-      .select('employee_id, employee_name, amount, type')
-      .eq('tenant_id', req.user!.tenant_id)
-      .eq('period', period)
-
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    const data = await allSalarySummaryRows(req.user!.tenant_id, 'period', period)
 
     const map: Record<string, {
       employee_id: string
@@ -267,12 +311,7 @@ router.get('/daily-summary', requireRole('owner', 'admin'), async (req, res, nex
   try {
     const date = String(req.query.date ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' }))
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError('VALIDATION_ERROR', 'Невірна дата', 422)
-    const { data, error } = await db
-      .from('salary_payments')
-      .select('employee_id, employee_name, amount, type')
-      .eq('tenant_id', req.user!.tenant_id)
-      .eq('work_date', date)
-    if (error) throw new AppError('DB_ERROR', error.message, 500)
+    const data = await allSalarySummaryRows(req.user!.tenant_id, 'work_date', date)
 
     const map: Record<string, any> = {}
     for (const row of await withoutOwnerPayrollRows(req.user!.tenant_id, data ?? [])) {

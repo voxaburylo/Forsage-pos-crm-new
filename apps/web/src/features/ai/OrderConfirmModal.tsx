@@ -3,6 +3,7 @@ import { AlertTriangle, Check, Plus, Trash2 } from 'lucide-react'
 import { Button, Modal } from '@/components/ui'
 import type { AiPendingAction } from './aiApi'
 import { aiOrderPayload } from './localAiAction'
+import { assertAiOrderShape } from './aiOrderShape'
 
 // Редаговане підтвердження замовлення, розпізнаного ШІ з фото зошита.
 // Сумнівні поля (uncertain) підсвічуються бурштиновим — їх варто перевірити.
@@ -40,6 +41,7 @@ const UNCERTAIN_LABELS: Record<string, string> = {
 }
 
 export function toDraft(payload: Record<string, any>): OrderDraft {
+  assertAiOrderShape(payload)
   const items: any[] = Array.isArray(payload.items) ? payload.items : []
   return {
     customer_name: String(payload.customer_name ?? ''),
@@ -85,6 +87,13 @@ export function toPayload(d: OrderDraft): Record<string, any> {
   return payload
 }
 
+export function orderDraftTotal(draft: OrderDraft): number | null {
+  try {
+    const body = aiOrderPayload({items:draft.items})
+    return body.items.reduce((sum,item)=>sum+Math.round(item.qty*item.sell_price),0)/100
+  } catch { return null }
+}
+
 interface Props {
   action: AiPendingAction
   applying: boolean
@@ -92,7 +101,12 @@ interface Props {
   onClose: () => void
 }
 
-export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Props) {
+export function OrderConfirmModal(props: Props) {
+  try { assertAiOrderShape(props.action.payload) }
+  catch (error) { return <Modal open onClose={props.onClose} title="Не вдалося підготувати замовлення"><p role="alert">{error instanceof Error ? error.message : 'Некоректна відповідь ШІ'}</p><p>Замовлення не створено. Закрийте це вікно та повторіть розпізнавання.</p></Modal> }
+  return <OrderConfirmContent {...props} />
+}
+function OrderConfirmContent({ action, applying, onConfirm, onClose }: Props) {
   const [draft, setDraft] = useState<OrderDraft>(() => toDraft(action.payload))
   const [validationError, setValidationError] = useState('')
   const uncertain = useMemo(() => new Set(action.uncertain ?? []), [action.uncertain])
@@ -118,11 +132,7 @@ export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Prop
       items: [...d.items, { name: '', part_number: '', qty: '1', sell_price_uah: '', buy_price_uah: '', arrived: false }],
     }))
 
-  const totalUah = draft.items.reduce((s, it) => {
-    const price = Number(String(it.sell_price_uah).replace(',', '.')) || 0
-    const qty = Number(String(it.qty).replace(',', '.')) || 0
-    return s + price * qty
-  }, 0)
+  const totalUah = orderDraftTotal(draft)
 
   const canSave = draft.items.some((it) => it.name.trim()) || !!draft.vin.trim()
 
@@ -268,7 +278,7 @@ export function OrderConfirmModal({ action, applying, onConfirm, onClose }: Prop
         {/* Підсумок + кнопки */}
         <div className="flex items-center justify-between pt-3 border-t border-gray-100">
           <p className="text-sm text-gray-500">
-            Разом: <b className="text-gray-900">{totalUah.toFixed(2)} грн</b>
+            Разом: <b className="text-gray-900">{totalUah === null ? 'Перевірте кількість і ціни' : `${totalUah.toFixed(2)} грн`}</b>
           </p>
           <div className="flex gap-2">
             <Button type="button" variant="secondary" disabled={applying} onClick={onClose}>Скасувати</Button>

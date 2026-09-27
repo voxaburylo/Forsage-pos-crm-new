@@ -16,6 +16,7 @@
  * падають з помилкою, а не тихо спрацьовують: краще гучна відмова, яку
  * касир побачить одразу, ніж зниклий чек, який знайдеться через місяць.
  */
+import { normalizeCatalogSearchQuery, articleSearchTerms } from '../../../desktop/src/lib/catalogSearchQuery'
 import { isDesktopRuntime } from './desktopBridge'
 import { catalogComparator } from './catalogOrder'
 import { catalogLanguageTokenGroups } from '../../../desktop/src/lib/catalogLanguageSearch'
@@ -46,6 +47,8 @@ function normalizeOfflineProductSearchText(value: unknown): string {
 }
 
 function offlineProductSearchNeedles(raw: string): string[] {
+  const articleTerms = articleSearchTerms(raw)
+  if (articleTerms.length) return [...new Set(articleTerms.map(normalizeOfflineProductSearchText))]
   const values = new Set<string>()
   const normalized = normalizeOfflineProductSearchText(raw)
   if (normalized) values.add(normalized)
@@ -78,7 +81,7 @@ function compactOfflineLookupCode(raw: string): string {
 }
 
 export function offlineProductMatchesQuery(product: any, rawQuery: string): boolean {
-  const query = String(rawQuery ?? '').trim()
+  const query = normalizeCatalogSearchQuery(rawQuery)
   if (!query) return true
   const queryLower = query.toLocaleLowerCase('uk-UA')
   const compactQuery = compactOfflineLookupCode(query)

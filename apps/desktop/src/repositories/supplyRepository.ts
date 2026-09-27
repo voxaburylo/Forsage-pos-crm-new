@@ -1,33 +1,15 @@
 import { randomUUID } from 'node:crypto'
+import { AiInvoiceMatcher } from './aiInvoiceIdentity'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
 import { readOpenCashBalance } from './cashBalance'
 import { idempotentMutation } from './idempotentMutation'
+import { assertDocumentRevision, documentRevision } from './documentRevision'
+import { checkedSupplyMoney as checkedMoney, normalizeSupplyItem, MAX_SUPPLY_MONEY as MAX_DATABASE_MONEY } from './supplyValidation'
 
 function nowIso(): string {
   return new Date().toISOString()
-}
-
-const MAX_DATABASE_MONEY = 2_147_483_647
-
-function money(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  return Math.round(value)
-}
-
-function checkedMoney(value: number, label: string): number {
-  const normalized = money(value)
-  if (normalized < 0) throw new Error(`${label} не може бути від’ємною`)
-  if (normalized > MAX_DATABASE_MONEY) {
-    throw new Error(`${label} надто велика. Перевірте, чи штрихкод випадково не потрапив у поле ціни.`)
-  }
-  return normalized
-}
-
-function qty(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  return Math.max(0, Number(value))
 }
 
 function text(value: unknown): string | null {
@@ -45,6 +27,7 @@ interface SupplyInvoiceItemInput {
 }
 
 interface CreateSupplyInvoiceInput {
+  operation_id?: string
   id?: string
   tenant_id?: string
   supplier_id?: string | null
@@ -59,6 +42,7 @@ interface CreateSupplyInvoiceInput {
 }
 
 interface UpdateSupplyInvoiceInput {
+  expected_revision?: string
   tenant_id?: string
   supplier_id?: string | null
   invoice_number?: string | null
@@ -68,6 +52,7 @@ interface UpdateSupplyInvoiceInput {
 }
 
 interface PaymentInput {
+  expected_revision?: string
   tenant_id?: string
   amount: number
   payment_method: 'cash' | 'card' | 'transfer'
@@ -92,15 +77,9 @@ export class LocalSupplyRepository {
     if (filters.is_active === 'false') where.push('is_active = 0')
     const search = text(filters.search)
     if (search) {
-      where.push(`(
-        name LIKE ? OR name LIKE ? OR name LIKE ?
-        OR COALESCE(contact_name, '') LIKE ? OR COALESCE(contact_name, '') LIKE ? OR COALESCE(contact_name, '') LIKE ?
-        OR phone LIKE ?
-      )`)
-      const raw = `%${search}%`
-      const title = `%${search.charAt(0).toUpperCase()}${search.slice(1).toLowerCase()}%`
-      const upper = `%${search.toUpperCase()}%`
-      params.push(raw, title, upper, raw, title, upper, raw)
+      where.push(`(instr(forsage_lower(name), ?) > 0 OR instr(forsage_lower(contact_name), ?) > 0 OR instr(COALESCE(phone, ''), ?) > 0)`)
+      const normalized = search.toLocaleLowerCase('uk-UA')
+      params.push(normalized, normalized, search)
     }
     const whereSql = where.join(' AND ')
     const totalRow = this.db.prepare(`SELECT count(*) AS count FROM suppliers WHERE ${whereSql}`).get(...params) as { count: number }
@@ -108,7 +87,7 @@ export class LocalSupplyRepository {
       SELECT id, name, phone, email, contact_name, notes, is_active, created_at, updated_at, deleted_at
       FROM suppliers
       WHERE ${whereSql}
-      ORDER BY name ASC
+      ORDER BY name ASC, id ASC
       LIMIT ? OFFSET ?
     `).all(...params, perPage, offset) as any[]
     return {
@@ -134,6 +113,10 @@ export class LocalSupplyRepository {
   }
 
   saveSupplier(input: any, supplierId?: string): any {
+    return this.db.transaction(() => this.saveSupplierInTransaction(input, supplierId))
+  }
+
+  private saveSupplierInTransaction(input: any, supplierId?: string): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = nowIso()
     const id = supplierId ?? randomUUID()
@@ -168,6 +151,7 @@ export class LocalSupplyRepository {
   }
 
   deleteSupplier(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    return this.db.transaction(() => {
     this.getSupplier(id, tenantId)
     const timestamp = nowIso()
     this.db.prepare(`
@@ -176,6 +160,7 @@ export class LocalSupplyRepository {
     `).run(timestamp, timestamp, timestamp, id, tenantId)
     this.addOutbox(tenantId, 'supplier', id, 'supplier.deleted', { id }, timestamp)
     return { ok: true }
+    })
   }
 
   mergeSuppliers(primaryId: string, duplicateId: string, tenantId = DEFAULT_TENANT_ID): any {
@@ -230,6 +215,8 @@ export class LocalSupplyRepository {
   }
   listInvoices(filters: {
     tenant_id?: string
+    search?: string
+    exclude_ids?: string[]
     status?: string
     supplier_id?: string
     page?: number
@@ -249,6 +236,21 @@ export class LocalSupplyRepository {
       where.push('i.supplier_id = ?')
       params.push(filters.supplier_id)
     }
+    if (filters.exclude_ids?.length) {
+      where.push('i.id NOT IN (SELECT value FROM json_each(?))')
+      params.push(JSON.stringify(filters.exclude_ids))
+    }
+    const tokens = (text(filters.search)?.slice(0, 200) || '').toLocaleLowerCase('uk-UA').split(/\s+/).filter(Boolean)
+    if (tokens.length) {
+      const productMatch = tokens.map(() => `(instr(forsage_lower(p.name), ?) > 0 OR instr(forsage_lower(p.sku), ?) > 0 OR instr(forsage_lower(p.barcode), ?) > 0)`).join(' AND ')
+      where.push(`EXISTS (
+        SELECT 1 FROM supply_invoice_items item JOIN products p ON p.id = item.product_id AND p.tenant_id = item.tenant_id
+        WHERE item.invoice_id = i.id AND item.tenant_id = i.tenant_id AND item.deleted_at IS NULL AND ${productMatch}
+      )`)
+      // Unsaved/unlinked rows live in the renderer draft store, not a SQLite
+      // draft_payload column. localInvoiceList overlays those before pagination.
+      params.push(...tokens.flatMap(token => [token, token, token]))
+    }
     const whereSql = where.join(' AND ')
     const totalRow = this.db.prepare(`
       SELECT count(*) AS count
@@ -258,9 +260,9 @@ export class LocalSupplyRepository {
     const rows = this.db.prepare(`
       SELECT i.*, s.name AS supplier_name
       FROM supply_invoices i
-      LEFT JOIN suppliers s ON s.id = i.supplier_id
+      LEFT JOIN suppliers s ON s.id = i.supplier_id AND s.tenant_id = i.tenant_id
       WHERE ${whereSql}
-      ORDER BY i.created_at DESC
+      ORDER BY i.created_at DESC, i.id DESC
       LIMIT ? OFFSET ?
     `).all(...params, perPage, offset) as any[]
     return {
@@ -286,13 +288,27 @@ export class LocalSupplyRepository {
     const invoice = this.mapInvoiceRow(row)
     invoice.items = this.listItems(id, tenantId)
     invoice.payments = this.listPayments(id, tenantId)
+    invoice.edit_revision = documentRevision([
+      invoice.id, invoice.supplier_id, invoice.invoice_number, invoice.status, invoice.notes,
+      invoice.total, invoice.paid_amount, invoice.payment_method, invoice.updated_at,
+      invoice.items.map((item: any) => [item.id, item.product_id, item.qty, item.purchase_price, item.total]).sort((a: any[], b: any[]) => String(a[0]).localeCompare(String(b[0]))),
+      invoice.payments.map((payment: any) => [payment.id, payment.amount, payment.payment_method, payment.fund_source]).sort((a: any[], b: any[]) => String(a[0]).localeCompare(String(b[0]))),
+    ])
     return invoice
+  }
+
+  previewInvoiceFromAiRows(input: { tenant_id?: string; rows: Array<Record<string, unknown>> }) {
+    if (!Array.isArray(input?.rows) || !input.rows.length || input.rows.length > 2000) throw new Error('Перевірте таблицю товарів (до 2000 рядків).')
+    return this.db.readSnapshot(() => {
+      const matcher = new AiInvoiceMatcher(this.db, input.tenant_id ?? DEFAULT_TENANT_ID)
+      return input.rows.map(row => matcher.review(row))
+    })
   }
 
   /**
    * Створює локальну чернетку приходу з розпізнаних AI-рядків.
    * Існуючі картки шукаються за штрихкодом, артикулом або точною назвою;
-   * нові картки створюються без штрихкоду й категорії для ручного заповнення.
+   * нові картки створюються без штрихкоду; папку вибираємо або створюємо з пропозиції AI.
    */
   createInvoiceFromAiRows(input: {
     operation_id?: string
@@ -313,7 +329,7 @@ export class LocalSupplyRepository {
     if (input.operation_id) return idempotentMutation(this.db, 'ai-invoice:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input,
       () => this.createInvoiceFromAiRows({ ...input, operation_id: undefined }))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    if (!Array.isArray(input.rows) || input.rows.length === 0) throw new Error('AI не знайшов позицій у накладній')
+    if (!Array.isArray(input.rows) || input.rows.length === 0 || input.rows.length > 2000) throw new Error('AI не повернув таблицю товарів (до 2000 рядків).')
     const catalog = new LocalCatalogRepository(this.db)
     const settings = catalog.getSettings()
     const normalize = (value: unknown) => String(value ?? '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -342,9 +358,15 @@ export class LocalSupplyRepository {
         if (related) return related.id
       }
       const normalizedName = normalize(productName)
-      return normalizedCategories
-        .filter((category) => category.normalized.length >= 3 && normalizedName.includes(category.normalized))
-        .sort((a, b) => b.normalized.length - a.normalized.length)[0]?.id ?? null
+      const byName = normalizedCategories
+        .filter((category) => category.normalized.length >= 3 && (' ' + normalizedName + ' ').includes(' ' + category.normalized + ' '))
+        .sort((a, b) => b.normalized.length - a.normalized.length)[0]
+      if (byName) return byName.id
+      const cleanName = String(suggested ?? '').trim().replace(/\s+/g, ' ')
+      if (!wanted || cleanName.length > 120 || ['без папки', 'без категорії', 'без категории', 'невідомо', 'unknown', 'null'].includes(wanted)) return null
+      const createdCategory = catalog.createCategory(cleanName, 0, tenantId)
+      normalizedCategories.push({ ...createdCategory, normalized: wanted })
+      return createdCategory.id
     }
     const retailFromGrid = (purchasePrice: number, categoryId: string | null): number => {
       if (purchasePrice <= 0) return 0
@@ -377,19 +399,12 @@ export class LocalSupplyRepository {
     const items: SupplyInvoiceItemInput[] = []
     const draftItems: Array<Record<string, unknown>> = []
 
-    const invoice = this.db.transaction(() => {
-      // One exact-name index for the whole document, including newly created rows.
-      const names = new Map<string, string[]>()
-      for (const candidate of this.db.prepare(`SELECT id, name FROM products
-        WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1`).all(tenantId) as Array<{ id: string; name: string }>) {
-        const key = normalize(candidate.name)
-        names.set(key, [...(names.get(key) ?? []), candidate.id])
-      }
+    const invoice = this.db.transaction(() => catalog.withSkuLookupIndex(tenantId, () => {
+      const matcher = new AiInvoiceMatcher(this.db, tenantId)
       for (const raw of input.rows) {
         const recognizedName = String(raw.name ?? raw.title ?? raw.description ?? '').trim()
         if (!recognizedName) throw new Error(`Рядок ${items.length + 1}: відсутня назва товару. Перевірте розпізнавання.`)
         const recognizedSku = String(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number ?? '').trim()
-        const recognizedBarcode = String(raw.barcode ?? raw.ean ?? '').trim()
         const rawQty = raw.qty ?? raw.quantity ?? raw.qty_on_hand
         const qtyText = String(rawQty ?? '').trim().replace(',', '.')
         const rowQty = Number(qtyText)
@@ -398,14 +413,8 @@ export class LocalSupplyRepository {
         }
         const purchasePrice = moneyUah(raw.purchase_price_uah ?? raw.purchase_price ?? raw.cost_price)
 
-        let product = recognizedBarcode ? catalog.findByBarcode(recognizedBarcode, tenantId) : null
-        if (!product && recognizedSku) product = catalog.findBySku(recognizedSku, tenantId)
-        if (!product) {
-          const wantedName = normalize(recognizedName)
-          const exact = names.get(wantedName) ?? []
-          if (exact.length > 1) throw new Error(`Знайдено кілька карток «${recognizedName}». Уточніть артикул або штрихкод у накладній.`)
-          if (exact.length === 1) product = catalog.findById(exact[0], tenantId)
-        }
+        const review = matcher.resolve(raw)
+        let product = review.product_id ? catalog.findById(review.product_id, tenantId) : null
 
         const wasCreated = !product
         let categoryId = product?.category_id ?? resolveCategoryId(
@@ -417,7 +426,7 @@ export class LocalSupplyRepository {
         if (!product) {
           const productId = randomUUID()
           const productSku = recognizedSku || `AI-${productId.slice(0, 8).toUpperCase()}`
-          const brandName = String(raw.brand_name ?? raw.brand ?? '').trim()
+          const brandName = review.brand
           let brandId: string | null = null
           if (brandName) {
             const storedBrand = this.db.prepare(`
@@ -431,7 +440,8 @@ export class LocalSupplyRepository {
             id: productId,
             tenant_id: tenantId,
             sku: productSku,
-            name: recognizedName,
+            name: review.name,
+            notes: `Назва у джерелі: ${review.source_name}${brandName ? `\nБренд у джерелі: ${brandName}` : ''}`,
             barcode: null,
             purchase_price: purchasePrice,
             retail_price: retailPrice,
@@ -441,10 +451,10 @@ export class LocalSupplyRepository {
             is_service: false,
             category_id: categoryId,
             brand_id: brandId,
-          })
+          }, { restoreArchivedSku: false })
           created++
-          names.set(normalize(product.name), [product.id])
-          unresolved.push({ name: recognizedName, sku: productSku, needs_barcode: true, needs_category: !categoryId })
+          matcher.add({ id: product.id, name: product.name, sku: product.sku, barcode: product.barcode ?? null, brand: brandName || null }, review.source_name)
+          unresolved.push({ name: product.name, sku: productSku, needs_barcode: true, needs_category: !categoryId })
         } else {
           matched++
           categoryId = product.category_id ?? categoryId
@@ -476,10 +486,16 @@ export class LocalSupplyRepository {
         user_id: input.user_id ?? null,
         items,
       })
-    })
+    }))
     return { invoice, matched, created, unresolved, draft_items: draftItems }
   }
   createInvoice(input: CreateSupplyInvoiceInput): any {
+    return this.db.transaction(() => this.createInvoiceInTransaction(input))
+  }
+
+  private createInvoiceInTransaction(input: CreateSupplyInvoiceInput): any {
+    if (input.operation_id) return idempotentMutation(this.db, 'supply-create:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input,
+      () => this.createInvoice({ ...input, operation_id: undefined }))
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new Error('Додайте хоча б один товар у накладну')
     }
@@ -489,22 +505,20 @@ export class LocalSupplyRepository {
     const normalizedItems = input.items.map((item) => {
       const product = this.findProduct(item.product_id, tenantId)
       if (!product) throw new Error('Товар у накладній не знайдено в локальній базі')
-      const itemQty = qty(item.qty)
-      if (itemQty <= 0) throw new Error('Кількість у накладній має бути більше нуля')
-      const purchasePrice = checkedMoney(item.purchase_price, 'Ціна закупівлі')
-      return {
+      return normalizeSupplyItem({
         id: item.id ?? randomUUID(),
         product_id: item.product_id,
-        qty: itemQty,
-        purchase_price: purchasePrice,
-        total: checkedMoney(item.total ?? itemQty * purchasePrice, 'Сума позиції'),
-      }
+        qty: item.qty,
+        purchase_price: item.purchase_price,
+        total: item.total,
+      })
     })
     const total = checkedMoney(
       normalizedItems.reduce((sum, item) => sum + item.total, 0),
       'Сума накладної',
     )
-    const paidAmount = Math.min(checkedMoney(input.paid_amount ?? 0, 'Сума оплати'), total)
+    const paidAmount = checkedMoney(input.paid_amount ?? 0, 'Сума оплати')
+    if (paidAmount > total) throw new Error('Сума оплати перевищує суму накладної')
     const paymentMethod = paidAmount > 0 ? (input.payment_method ?? 'cash') : null
     const fundSource = input.fund_source ?? (paymentMethod === 'cash' ? 'cashbox' : 'bank_account')
     const userId = input.user_id ?? null
@@ -561,8 +575,13 @@ export class LocalSupplyRepository {
   }
 
   updateInvoice(id: string, input: UpdateSupplyInvoiceInput): any {
+    return this.db.transaction(() => this.updateInvoiceInTransaction(id, input))
+  }
+
+  private updateInvoiceInTransaction(id: string, input: UpdateSupplyInvoiceInput): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const invoice = this.getInvoice(id, tenantId)
+    assertDocumentRevision(invoice.edit_revision, input.expected_revision, 'Накладна')
     if (invoice.status !== 'draft') {
       throw new Error('Проведену накладну не можна редагувати напряму. Натисніть «Редагувати» в проведеній накладній — програма скасує її і відкриє копію для правок.')
     }
@@ -570,16 +589,13 @@ export class LocalSupplyRepository {
     const normalizedItems = input.items === undefined ? null : input.items.map((item) => {
       const product = this.findProduct(item.product_id, tenantId)
       if (!product) throw new Error('Товар у накладній не знайдено в локальній базі')
-      const itemQty = qty(item.qty)
-      if (itemQty <= 0) throw new Error('Кількість у накладній має бути більше нуля')
-      const purchasePrice = checkedMoney(item.purchase_price, 'Ціна закупівлі')
-      return {
+      return normalizeSupplyItem({
         id: item.id ?? randomUUID(),
         product_id: item.product_id,
-        qty: itemQty,
-        purchase_price: purchasePrice,
-        total: checkedMoney(item.total ?? itemQty * purchasePrice, 'Сума позиції'),
-      }
+        qty: item.qty,
+        purchase_price: item.purchase_price,
+        total: item.total,
+      })
     })
     if (normalizedItems && normalizedItems.length === 0) throw new Error('Додайте хоча б один товар у накладну')
     const total = checkedMoney(
@@ -589,6 +605,9 @@ export class LocalSupplyRepository {
       'Сума накладної',
     )
     const supplierId = input.supplier_id !== undefined ? input.supplier_id : invoice.supplier_id ?? null
+    if (total < Number(invoice.paid_amount ?? 0)) throw new Error('Сума накладної менша за вже внесену оплату. Спочатку звірте оплату.')
+    if (Number(invoice.paid_amount ?? 0) > 0 && supplierId !== (invoice.supplier_id ?? null))
+      throw new Error('Не можна змінити постачальника накладної з оплатою. Спочатку звірте оплату.')
     const invoiceNumber = input.invoice_number !== undefined ? text(input.invoice_number) : invoice.invoice_number ?? null
     const notes = input.notes !== undefined ? input.notes ?? null : invoice.notes ?? null
 
@@ -618,11 +637,12 @@ export class LocalSupplyRepository {
     return this.getInvoice(id, tenantId)
   }
 
-  postInvoice(id: string, input: { tenant_id?: string; user_id?: string | null } = {}): any {
+  postInvoice(id: string, input: { tenant_id?: string; user_id?: string | null; expected_revision?: string } = {}): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = nowIso()
     this.db.transaction(() => {
       const invoice = this.getInvoice(id, tenantId)
+      assertDocumentRevision(invoice.edit_revision, input.expected_revision, 'Накладна')
       if (invoice.status !== 'draft') throw new Error('Накладну вже проведено або скасовано')
       const items = this.db.prepare(`
         SELECT ii.id, ii.product_id, ii.qty, ii.purchase_price, ii.total,
@@ -637,11 +657,15 @@ export class LocalSupplyRepository {
       if (missing) {
         throw new Error(`Неможливо провести накладну: товар ${missing.product_name || missing.product_id} відсутній або видалений`)
       }
+      for (const item of items) normalizeSupplyItem(item)
+      const total = checkedMoney(items.reduce((sum, item) => sum + Number(item.total), 0), 'Сума накладної')
+      if (Number(invoice.paid_amount ?? 0) > total) throw new Error('Сума накладної менша за вже внесену оплату. Спочатку звірте оплату.')
 
       for (const item of items) {
         const product = this.findProduct(item.product_id, tenantId)
         if (!product) throw new Error(`Товар ${item.product_id} не знайдено в локальній базі`)
         const newQty = Number(product.qty_on_hand ?? 0) + Number(item.qty ?? 0)
+        if (!Number.isFinite(newQty) || Math.abs(newQty) > Number.MAX_SAFE_INTEGER) throw new Error('Некоректний залишок товару. Проведення зупинено.')
         this.db.prepare(`
           UPDATE products
           SET qty_on_hand = ?, purchase_price = ?, dirty_at = ?, updated_at = ?
@@ -659,7 +683,6 @@ export class LocalSupplyRepository {
         )
       }
 
-      const total = items.reduce((sum, item) => sum + Number(item.total ?? 0), 0)
       this.db.prepare(`
         UPDATE supply_invoices
         SET status = 'posted', total = ?, posted_by = ?, posted_at = ?, dirty_at = ?, updated_at = ?
@@ -692,6 +715,7 @@ export class LocalSupplyRepository {
       }
     }
     const invoice = this.getInvoice(id, tenantId)
+    assertDocumentRevision(invoice.edit_revision, input.expected_revision, 'Накладна')
     if (invoice.status === 'cancelled') throw new Error('Не можна оплатити скасовану накладну')
     const remaining = Number(invoice.total ?? 0) - Number(invoice.paid_amount ?? 0)
     const amount = checkedMoney(input.amount, 'Сума оплати')
@@ -720,11 +744,12 @@ export class LocalSupplyRepository {
     return this.getInvoice(id, tenantId)
   }
 
-  cancelInvoice(id: string, tenantId = DEFAULT_TENANT_ID): any {
+  cancelInvoice(id: string, tenantId = DEFAULT_TENANT_ID, expectedRevision?: string): any {
     const timestamp = nowIso()
     this.db.transaction(() => {
       const invoice = this.getInvoice(id, tenantId)
       if (invoice.status === 'cancelled') return
+      assertDocumentRevision(invoice.edit_revision, expectedRevision, 'Накладна')
       if (Number(invoice.paid_amount ?? 0) > 0) {
         throw new Error('Не можна скасувати оплачену накладну. Спочатку оформіть повернення або перенесення оплати.')
       }
@@ -778,8 +803,13 @@ export class LocalSupplyRepository {
     })
     return this.getInvoice(id, tenantId)
   }
-  deleteInvoice(id: string, tenantId = DEFAULT_TENANT_ID): void {
+  deleteInvoice(id: string, tenantId = DEFAULT_TENANT_ID, expectedRevision?: string): void {
+    return this.db.transaction(() => this.deleteInvoiceInTransaction(id, tenantId, expectedRevision))
+  }
+
+  private deleteInvoiceInTransaction(id: string, tenantId: string, expectedRevision?: string): void {
     const invoice = this.getInvoice(id, tenantId)
+    assertDocumentRevision(invoice.edit_revision, expectedRevision, 'Накладна')
     if (invoice.status !== 'draft' || Number(invoice.paid_amount ?? 0) > 0) {
       throw new Error('Видалити можна лише неоплачену чернетку накладної. Проведені, скасовані та оплачені документи залишаються в історії.')
     }

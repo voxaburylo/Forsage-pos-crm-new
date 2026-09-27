@@ -6,6 +6,7 @@
  * ітерація 4. Тут немає жодного React-стану: усе, що можна перевірити без
  * браузера, тепер лежить окремо від екрана.
  */
+import { invoiceIdForDraft, removeInvoiceDrafts } from './invoiceDraftStore'
 import { parseLocaleNumber } from '@/lib/parseDecimal'
 import type { Product, ProductFormData } from '@/types/product'
 import type { SupplyInvoice } from '@/types/supplier'
@@ -24,6 +25,16 @@ export interface LineItem {
   photo_url?: string | null
   is_new?: boolean
   client_key: string
+  product_base?: InvoiceProductBase
+}
+export interface InvoiceProductBase {
+  name: string; sku: string; barcode: string | null; category_id: string | null
+  storage_bin: string | null; retail_price: number; photo_url: string | null
+}
+export function invoiceProductBase(product: { name: string; sku: string; retail_price: number; barcode?: string | null; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }): InvoiceProductBase {
+  const text = (value: string | null | undefined) => value?.trim() || null
+  return { name: product.name.trim(), sku: product.sku.trim(), retail_price: product.retail_price,
+    barcode: text(product.barcode), category_id: text(product.category_id), storage_bin: text(product.storage_bin), photo_url: text(product.photo_url) }
 }
 export type InvoicePaymentMethod = 'cash' | 'card' | 'transfer'
 export type SupplierPaymentFundSource = 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
@@ -39,8 +50,9 @@ export interface SupplyInvoiceLocalDraft {
   payFullNow?: boolean
   paymentMethod: InvoicePaymentMethod
   fundSource: InvoiceFundSource
-  postImmediately: boolean
   serverInvoiceId?: string | null
+  baseRevision?: string
+  commitInvoiceId?: string
   savedAt: string
 }
 
@@ -74,8 +86,9 @@ export function loadSupplyInvoiceDraft(key: string): SupplyInvoiceLocalDraft | n
       fundSource: draft.fundSource === 'owner_funds' || draft.fundSource === 'bank_account' || draft.fundSource === 'business_card' || draft.fundSource === 'split_cashbox_owner'
         ? draft.fundSource
         : 'cashbox',
-      postImmediately: draft.postImmediately !== false,
-      serverInvoiceId: typeof draft.serverInvoiceId === 'string' ? draft.serverInvoiceId : null,
+      serverInvoiceId: invoiceIdForDraft(key, draft),
+      baseRevision: typeof draft.baseRevision === 'string' ? draft.baseRevision : undefined,
+      commitInvoiceId: typeof draft.commitInvoiceId === 'string' ? draft.commitInvoiceId : undefined,
       savedAt: String(draft.savedAt ?? new Date().toISOString()),
     }
   } catch {
@@ -87,8 +100,8 @@ export function saveSupplyInvoiceDraft(key: string, draft: Omit<SupplyInvoiceLoc
   localStorage.setItem(key, JSON.stringify({ ...draft, savedAt: new Date().toISOString() }))
 }
 
-export function clearSupplyInvoiceDraft(key: string) {
-  localStorage.removeItem(key)
+export function clearSupplyInvoiceDraft(key: string, invoiceId?: string | null) {
+  removeInvoiceDrafts(key, invoiceId)
 }
 
 export type SupplyInvoiceDraftData = Omit<SupplyInvoiceLocalDraft, 'savedAt'>
@@ -128,6 +141,7 @@ export function invoiceItemsToLineItems(inv: SupplyInvoice): LineItem[] {
   return (inv.items ?? []).map((i) => ({
     client_key: makeLineKey(),
     product_id: i.product_id,
+    product_base: i.product ? invoiceProductBase(i.product) : undefined,
     product_name: i.product?.name ?? 'Товар #' + i.product_id.slice(0, 8),
     qty: i.qty,
     purchase_price: i.purchase_price,
@@ -153,12 +167,14 @@ export function draftFromServerInvoice(inv: SupplyInvoice): SupplyInvoiceLocalDr
       notes: String(rawPayload.notes ?? inv.notes ?? ''),
       items: normalizeSupplyInvoiceDraftItems(rawPayload.items),
       paidAmount: String(rawPayload.paidAmount ?? ''),
+      cashboxPaidAmount: String(rawPayload.cashboxPaidAmount ?? ''),
+      payFullNow: rawPayload.payFullNow === true,
       paymentMethod: rawPayload.paymentMethod === 'card' || rawPayload.paymentMethod === 'transfer' ? rawPayload.paymentMethod : 'cash',
       fundSource: rawPayload.fundSource === 'owner_funds' || rawPayload.fundSource === 'bank_account' || rawPayload.fundSource === 'business_card' || rawPayload.fundSource === 'split_cashbox_owner'
         ? rawPayload.fundSource
         : 'cashbox',
-      postImmediately: rawPayload.postImmediately !== false,
       serverInvoiceId: inv.id,
+      baseRevision: inv.edit_revision,
       savedAt,
     }
   }
@@ -171,8 +187,8 @@ export function draftFromServerInvoice(inv: SupplyInvoice): SupplyInvoiceLocalDr
       paidAmount: inv.paid_amount ? kopecksForForm(inv.paid_amount) : '',
       paymentMethod: inv.payment_method === 'card' || inv.payment_method === 'transfer' ? inv.payment_method : 'cash',
       fundSource: 'cashbox',
-      postImmediately: false,
       serverInvoiceId: inv.id,
+      baseRevision: inv.edit_revision,
       savedAt,
     }
   }

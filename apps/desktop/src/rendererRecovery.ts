@@ -43,6 +43,9 @@ export class RendererRecovery {
   private async run(): Promise<void> {
     const delays = this.options.delays ?? [250, 500, 1000, 2000, 3000]
     let lastError: unknown
+    // Chromium can emit several gone/load-failed events while replacing one
+    // process. Let it finish cleanup before initiating another native load.
+    if (this.crashTimes.length) await this.delay(delays[0] ?? 250)
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       if (this.stopped || this.options.isDestroyed()) return
       const generation = this.generation
@@ -54,12 +57,16 @@ export class RendererRecovery {
       } catch (error) { lastError = error }
       if (this.stopped || this.options.isDestroyed()) return
       this.options.retry(attempt + 1, lastError)
-      if (attempt < delays.length) await new Promise<void>((resolve) => {
-        const done = () => { clearTimeout(timer); this.cancelDelay = null; resolve() }
-        const timer = setTimeout(done, delays[attempt])
-        this.cancelDelay = done
-      })
+      if (attempt < delays.length) await this.delay(delays[attempt])
     }
     throw lastError instanceof Error ? lastError : new Error('Не вдалося завантажити інтерфейс Forsage')
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const done = () => { clearTimeout(timer); this.cancelDelay = null; resolve() }
+      const timer = setTimeout(done, ms)
+      this.cancelDelay = done
+    })
   }
 }

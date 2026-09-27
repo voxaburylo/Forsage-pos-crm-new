@@ -1,3 +1,4 @@
+import { loadSoldItemSuppliers } from './soldItemSuppliers.js'
 import { readReportPages } from '../lib/readReportPages.js'
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -8,6 +9,7 @@ import {
   type SaleReceipt,
 } from './cashAccounting.js'
 import { kyivDateKey, kyivDateRange } from '../lib/businessDate.js'
+import { allocateReceiptRevenue } from '../lib/receiptRevenue.js'
 
 function inclusiveKyivRange(fromDate: string, toDate: string): { from: string; to: string } {
   const { from, toExclusive } = kyivDateRange(fromDate, toDate)
@@ -387,21 +389,33 @@ export async function getShiftReport(shiftId: string, tenantId: string) {
 // Агрегує однакові позиції завершених чеків; послуги пропускаються.
 export async function getSoldItems(fromDate: string, toDate: string, tenantId: string) {
   const { from, toExclusive } = kyivDateRange(fromDate, toDate)
-  const { data: sales, error: salesError } = await readReportPages(db.from('sales').select('id')
+  const { data: sales, error: salesError } = await readReportPages(db.from('sales').select('id, total')
     .eq('tenant_id', tenantId).in('status', ['completed', 'returned'])
     .gte('completed_at', from).lt('completed_at', toExclusive)
     .order('completed_at', { ascending: true }))
   if (salesError) throw new AppError('DB_ERROR', salesError.message, 500)
 
   const ids = sales.map((sale) => sale.id)
+  const totals = new Map(sales.map(sale => [sale.id, Number(sale.total)]))
   const agg = new Map<string, any>()
   for (let i = 0; i < ids.length; i += 100) {
     const { data: items, error: itemsErr } = await readReportPages(db.from('sale_items')
-      .select('product_id, qty, unit_price, discount, product:products(sku, barcode, name, unit, qty_on_hand, storage_bin, is_service)')
+      .select('id, sale_id, product_id, qty, total, core_deposit_amount, product:products(sku, barcode, name, unit, qty_on_hand, storage_bin, is_service)')
       .eq('tenant_id', tenantId)
       .in('sale_id', ids.slice(i, i + 100)))
     if (itemsErr) throw new AppError('DB_ERROR', itemsErr.message, 500)
-    for (const it of (items ?? []) as any[]) {
+    const receipts = new Map<string, any[]>()
+    for (const item of items) {
+      const lines = receipts.get(item.sale_id) ?? []
+      lines.push(item)
+      receipts.set(item.sale_id, lines)
+    }
+    const allocated = new Map<string, number>()
+    for (const [saleId, lines] of receipts) {
+      const weighted = lines.map(line => ({ id: line.id, total: Number(line.total), coreTotal: Math.round(Number(line.core_deposit_amount ?? 0) * Number(line.qty)) }))
+      for (const [id, amount] of allocateReceiptRevenue(totals.get(saleId)!, weighted)) allocated.set(id, amount)
+    }
+    for (const it of items as any[]) {
       if (!it.product_id || it.product?.is_service) continue
       const cur = agg.get(it.product_id) ?? {
         product_id: it.product_id,
@@ -418,7 +432,7 @@ export async function getSoldItems(fromDate: string, toDate: string, tenantId: s
         refund_total: 0,
         net_revenue: 0,
       }
-      const lineRevenue = it.unit_price * Number(it.qty) - (it.discount ?? 0)
+      const lineRevenue = allocated.get(it.id)!
       cur.qty_sold += Number(it.qty)
       cur.qty_net += Number(it.qty)
       cur.revenue += lineRevenue
@@ -451,5 +465,7 @@ export async function getSoldItems(fromDate: string, toDate: string, tenantId: s
       current.net_revenue = Math.max(0, current.revenue - current.refund_total)
     }
   }
-  return [...agg.values()].sort((a, b) => b.qty_net - a.qty_net)
+  const suppliers = await loadSoldItemSuppliers(tenantId, [...agg.keys()])
+  return [...agg.values()].map(item => ({ ...item, suppliers: suppliers.get(item.product_id) ?? [] }))
+    .sort((a, b) => b.qty_net - a.qty_net || a.name.localeCompare(b.name, 'uk'))
 }

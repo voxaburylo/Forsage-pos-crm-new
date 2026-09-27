@@ -35,3 +35,45 @@ jobs:
         env:
           FORSAGE_DESKTOP_BUILD: '1'
       - run: pnpm --filter desktop build
+      - run: node apps/desktop/scripts/embed-renderer.cjs
+      - run: node apps/desktop/scripts/build-info.cjs
+      - run: node apps/desktop/scripts/verify-build.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-worker-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-crash-smoke.cjs
+      - run: node apps/desktop/scripts/release-crash-smoke.cjs
+      - run: node apps/desktop/scripts/readiness-crash-smoke.cjs
+      - run: pnpm exec playwright install chromium
+      - run: node apps/web/scripts/shift-close-smoke.mjs
+      - run: node apps/web/scripts/readiness-ui-smoke.mjs
+      - run: node apps/web/scripts/invoice-search-ui-smoke.mjs
+      - run: node apps/web/scripts/invoice-revision-ui-smoke.mjs
+      - run: node apps/web/scripts/inventory-revision-ui-smoke.mjs
+      - run: node apps/web/scripts/writeoff-return-ui-smoke.mjs
+      - run: node apps/web/scripts/warehouse-action-ui-smoke.mjs
+      - run: node apps/web/scripts/order-form-recovery-ui-smoke.mjs
+      - run: node apps/web/scripts/orders-photo-ui-smoke.mjs
+      - run: node apps/web/scripts/access-race-ui-smoke.mjs
+      - run: node apps/web/scripts/customer-staff-action-ui-smoke.mjs
+      - run: node apps/web/scripts/payroll-action-ui-smoke.mjs
+      - run: node apps/web/scripts/navigation-resource-smoke.mjs
+      - run: node apps/web/scripts/catalog-edit-ui-smoke.mjs
+      - run: node apps/web/scripts/product-photo-ui-smoke.mjs
+      - run: node apps/web/scripts/stability-ui-smoke.mjs
+      - run: node apps/web/scripts/tire-service-ui-smoke.mjs
+      - run: node apps/web/scripts/ai-supply-input-ui-smoke.mjs
+      - run: node apps/web/scripts/catalog-agent-safety-ui-smoke.mjs
+      - run: pnpm --filter desktop exec electron scripts/ai-input-renderer-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/ai-invoice-worker-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/receiving-worker-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/inventory-lifecycle-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/writeoff-return-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/product-detail-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/warehouse-recovery-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/order-save-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/order-resources-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/staff-lifecycle-smoke.cjs
+      - run: pnpm --filter desktop exec electron scripts/daily-access-smoke.cjs
+      - run: pnpm --filter desktop exec electron scripts/blackbox-ui-smoke.cjs
+      - run: pnpm --filter desktop exec electron scripts/print-render-smoke.cjs --software
+      - run: node apps/web/scripts/receipt-layout-ui-smoke.mjs
+      - run: node apps/desktop/scripts/portable-lifecycle-smoke.cjs

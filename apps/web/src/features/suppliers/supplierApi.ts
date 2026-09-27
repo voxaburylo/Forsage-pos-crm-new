@@ -1,8 +1,11 @@
+import { readInvoiceDraftRecords, removeInvoiceDrafts, isMissingInvoiceError } from './invoiceDraftStore'
+import { listLocalInvoicesWithDrafts } from './localInvoiceList'
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
 import { durableLocalRequest } from '@/lib/durableLocalRequest'
+import type { LineItem, SupplierPaymentFundSource, InvoicePaymentMethod } from './invoiceFormModel'
 import type {
   Supplier, PaginatedSuppliers,
   SupplyInvoice, PaginatedInvoices, SupplierDebtsResult,
@@ -17,6 +20,7 @@ export interface SupplierFilters {
 }
 
 export interface InvoiceFilters {
+  search?: string
   status?: string
   supplier_id?: string
   page?: number
@@ -31,38 +35,6 @@ function localSupply() {
   return desktopBridge()?.supply ?? null
 }
 
-function readLocalInvoiceDrafts(): SupplyInvoice[] {
-  if (typeof window === 'undefined') return []
-  const drafts: SupplyInvoice[] = []
-  for (let i = 0; i < window.localStorage.length; i += 1) {
-    const key = window.localStorage.key(i) ?? ''
-    if (!key.startsWith('forsage:supply-invoice:') || !key.endsWith(':draft:v2')) continue
-    try {
-      const raw = JSON.parse(window.localStorage.getItem(key) || '')
-      if (!raw || !Array.isArray(raw.items)) continue
-      const savedAt = String(raw.savedAt || new Date().toISOString())
-      const total = raw.items.reduce((sum: number, item: any) => sum + Math.max(0, Number(item?.total) || 0), 0)
-      drafts.push({
-        id: 'local-draft:' + encodeURIComponent(key),
-        supplier_id: raw.supplierId ? String(raw.supplierId) : null,
-        invoice_number: raw.invoiceNumber ? String(raw.invoiceNumber) : null,
-        status: 'draft',
-        total,
-        paid_amount: 0,
-        payment_method: null,
-        notes: raw.notes ? String(raw.notes) : null,
-        posted_by: null,
-        posted_at: null,
-        created_at: savedAt,
-        updated_at: savedAt,
-        supplier: raw.supplierId ? { id: String(raw.supplierId), name: 'Постачальник' } : null,
-      })
-    } catch {
-      // Пошкоджений локальний чернетник не повинен блокувати список накладних.
-    }
-  }
-  return drafts.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
-}
 function buildQuery(filters: object): string {
   const params = new URLSearchParams()
   Object.entries(filters as Record<string, unknown>).forEach(([k, v]) => {
@@ -135,21 +107,23 @@ export const supplierApi = {
     return api.get<{ data: SupplierDebtsResult }>('/api/v1/suppliers/debts')
   },
   // Приходні накладні
+  commitReceiving: async (body: {
+    invoice_id: string; expected_revision?: string; supplier_id: string
+    invoice_number: string | null; notes: string | null; items: LineItem[]
+    payments: Array<{ amount: number; payment_method: InvoicePaymentMethod; fund_source: SupplierPaymentFundSource; shift_id?: string | null; note?: string | null }>
+  }) => {
+    const local = localSupply()
+    if (!local?.commitReceiving) throw new Error('Для безпечного приймання оновіть локальну програму на головному ПК. Дані не записано.')
+    const userId = currentUserId()
+    const data = await durableLocalRequest('receiving:' + userId + ':' + body.invoice_id, body,
+      operationId => local.commitReceiving!({ ...body, operation_id: operationId, user_id: userId }))
+    requestDesktopSync()
+    return { data } as { data: SupplyInvoice }
+  },
   listInvoices: async (filters: InvoiceFilters = {}) => {
     const local = localSupply()
     if (local?.listInvoices) {
-      const result = await local.listInvoices(filters) as PaginatedInvoices
-      const localDrafts = !filters.status || filters.status === 'draft' ? readLocalInvoiceDrafts() : []
-      if (localDrafts.length === 0) return result
-      return {
-        ...result,
-        data: [...localDrafts, ...result.data],
-        pagination: {
-          ...result.pagination,
-          total: result.pagination.total + localDrafts.length,
-          total_pages: Math.max(1, Math.ceil((result.pagination.total + localDrafts.length) / (result.pagination.per_page || 20))),
-        },
-      }
+      return listLocalInvoicesWithDrafts(local, filters, readInvoiceDraftRecords())
     }
     return api.get<PaginatedInvoices>(`/api/v1/suppliers/invoices${buildQuery(filters)}`)
   },
@@ -164,17 +138,19 @@ export const supplierApi = {
     if (localSupply()) return { data: null } as { data: SupplyInvoice | null }
     return api.get<{ data: SupplyInvoice | null }>('/api/v1/suppliers/invoices/draft/latest', { silent: true, timeoutMs: 5000 })
   },
-  createInvoice: async (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; fund_source?: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card' | null; shift_id?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }) => {
+  createInvoice: async (body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; paid_amount?: number; payment_method?: 'cash' | 'card' | 'transfer' | null; fund_source?: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card' | null; shift_id?: string | null; items: Array<{ product_id: string; qty: number; purchase_price: number; total: number }> }, draftScope = 'new') => {
     const local = localSupply()
     if (local?.createInvoice) {
-      const data = await local.createInvoice({ ...body, user_id: currentUserId() })
+      const userId = currentUserId()
+      const data = await durableLocalRequest('supply-create:' + userId + ':' + draftScope, body,
+        operationId => local.createInvoice({ ...body, operation_id: operationId, user_id: userId }))
       requestDesktopSync()
       return { data } as { data: SupplyInvoice }
     }
     return api.post<{ data: SupplyInvoice }>('/api/v1/suppliers/invoices', body)
   },
 
-  updateInvoice: async (id: string, body: { supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; items?: Array<{ product_id: string; qty: number; purchase_price: number; total: number }>; draft_payload?: Record<string, unknown> | null }) => {
+  updateInvoice: async (id: string, body: { expected_revision?: string; supplier_id?: string | null; invoice_number?: string | null; notes?: string | null; items?: Array<{ product_id: string; qty: number; purchase_price: number; total: number }>; draft_payload?: Record<string, unknown> | null }) => {
     const local = localSupply()
     if (local?.updateInvoice) {
       const data = await local.updateInvoice(id, { ...body, user_id: currentUserId() })
@@ -199,6 +175,7 @@ export const supplierApi = {
   },
 
   payInvoice: async (id: string, body: {
+    expected_revision?: string
     amount: number
     payment_method: 'cash' | 'card' | 'transfer'
     fund_source: 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
@@ -216,33 +193,37 @@ export const supplierApi = {
     return api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/pay`, body)
   },
 
-  postInvoice: async (id: string) => {
+  postInvoice: async (id: string, expectedRevision?: string) => {
     const local = localSupply()
     if (local?.postInvoice) {
-      const data = await local.postInvoice(id, { user_id: currentUserId() })
+      const data = await local.postInvoice(id, { user_id: currentUserId(), expected_revision: expectedRevision })
       requestDesktopSync()
       return { data } as { data: SupplyInvoice }
     }
     return api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/post`, {})
   },
 
-  cancelInvoice: async (id: string) => {
+  cancelInvoice: async (id: string, expectedRevision?: string) => {
     const local = localSupply()
     if (local?.cancelInvoice) {
-      const data = await local.cancelInvoice(id)
+      const data = await local.cancelInvoice(id, undefined, expectedRevision)
       requestDesktopSync()
       return { data } as { data: SupplyInvoice }
     }
     return api.post<{ data: SupplyInvoice }>(`/api/v1/suppliers/invoices/${id}/cancel`, {})
   },
 
-  deleteInvoice: async (id: string) => {
+  deleteInvoice: async (id: string, expectedRevision?: string) => {
     const local = localSupply()
     if (local?.deleteInvoice) {
-      await local.deleteInvoice(id)
+      try { await local.deleteInvoice(id, undefined, expectedRevision) } catch (error) {
+        if (!isMissingInvoiceError(error)) throw error
+      }
+      removeInvoiceDrafts(undefined, id)
       requestDesktopSync()
       return
     }
-    return api.delete<void>(`/api/v1/suppliers/invoices/${id}`)
+    await api.delete<void>(`/api/v1/suppliers/invoices/${id}`)
+    removeInvoiceDrafts(undefined, id)
   },
 }

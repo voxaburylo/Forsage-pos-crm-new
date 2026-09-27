@@ -1,3 +1,5 @@
+import { suspendAudioAfterServiceCrash } from './audioService'
+
 export function reportLocalError(error: unknown, kind: 'renderer-error' | 'renderer-rejection' = 'renderer-error'): void {
   try {
     window.forsageDesktop?.diagnostics?.reportError(kind,
@@ -7,6 +9,7 @@ export function reportLocalError(error: unknown, kind: 'renderer-error' | 'rende
 
 export function installLocalDiagnostics(): void {
   if (!window.forsageDesktop?.diagnostics) return
+  window.forsageDesktop.diagnostics.onAudioUnavailable?.(suspendAudioAfterServiceCrash)
   window.addEventListener('error', event => reportLocalError(event.error ?? event.message))
   window.addEventListener('unhandledrejection', event => reportLocalError(event.reason, 'renderer-rejection'))
 }

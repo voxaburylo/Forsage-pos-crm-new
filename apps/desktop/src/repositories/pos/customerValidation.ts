@@ -1,3 +1,8 @@
+/** Keep leading zeros and letters; keyboard scanners may append whitespace. */
+export function normalizeCustomerBarcode(value: unknown): string {
+  return String(value ?? '').replace(/\s/g, '')
+}
+
 export function customerPhoneKey(value: unknown): string {
   const digits = String(value ?? '').replace(/\D/g, '')
   return digits.length === 10 && digits.startsWith('0') ? `38${digits}` : digits

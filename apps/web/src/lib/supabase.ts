@@ -6,8 +6,8 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 const desktopRuntime = typeof window !== 'undefined' && Boolean(window.forsageDesktop)
 
 if (desktopRuntime && typeof localStorage !== 'undefined') {
-  // Remove credentials left by older desktop builds. Local cashiers must always
-  // authenticate again after the application is restarted.
+  // Remove browser-stored credentials from older desktop builds. Main may
+  // restore an encrypted day permission; server passwords/tokens stay out of localStorage.
   try {
     const obsoleteKeys = new Set([
       'forsage_offline_auth_v1',
@@ -34,7 +34,7 @@ export const supabase = createClient(
   supabaseAnonKey || 'missing-anon-key',
   {
     auth: {
-      // Every cashier must enter their own password after desktop restart.
+      // Main, not browser storage, decides whether today's local access is valid.
       persistSession: !desktopRuntime,
       autoRefreshToken: true,
       detectSessionInUrl: !desktopRuntime,

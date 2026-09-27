@@ -973,8 +973,15 @@ export async function resolveTsplPrinter(): Promise<string | null> {
   }
 }
 
-function labelPrintErrorMessage(error: unknown): string {
+export function labelPrintErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? '')
+  if (raw.includes('PRINT_REPEAT_CANCELLED')) return 'Повтор скасовано. Перевірте попереднє завдання у черзі принтера.'
+  if (raw.includes('PRINT_SUBMISSION_STARTED') || /PRINT_OUTCOME_UNKNOWN|print-outcome-unknown|TSPL_TOTAL_TIMEOUT|TSPL_PRINT_ABORTED/.test(raw)) {
+    return 'Завдання могло бути надруковано частково або повністю. Windows не підтвердила результат. Перевірте етикетки й чергу перед повтором.'
+  }
+  if (raw.includes('PRINT_DOCUMENT_LOAD_FAILED') || (/ERR_(FAILED|INVALID_URL|ABORTED)/.test(raw) && raw.includes('data:text/html'))) {
+    return 'Не вдалося завантажити макет етикеток. Завдання ще не надіслано на принтер. Якщо вибрана велика партія — спробуйте меншу кількість або оновіть програму.'
+  }
   if (raw.includes('TSPL_PRINTER_NOT_SET')) return 'Принтер етикеток не вибрано.'
   if (raw.includes('RAW_PRINT_TIMEOUT')) return 'Принтер не відповів протягом 60 секунд.'
   if (raw.includes('RAW_PRINT_OPEN_FAILED')) return 'Не вдалося відкрити вибраний принтер етикеток.'
@@ -993,10 +1000,16 @@ function labelPrintErrorMessage(error: unknown): string {
     return 'Не вдалося підготувати чіткий штрих-код для друку. Перезапустіть програму та повторіть.'
   }
   if (raw.includes('TSPL_QUEUE_STUCK')) {
-    return 'У черзі друку залипло старе завдання, і Windows не дає його прибрати. '
-      + 'Перезапустіть службу «Диспетчер друку» (Спулер) або комп’ютер, потім спробуйте ще раз.'
+    return 'У черзі принтера є зависле попереднє завдання. Нові етикетки не надсилалися. '
+      + 'Перевірте чергу й підключення принтера; перед повтором переконайтеся, що старі етикетки не друкуються.'
   }
-  if (raw.includes('TSPL_PRINTER_NOT_READY') || raw.includes('TSPL_PRINT_NOT_CONFIRMED')) {
+  if (raw.includes('TSPL_PRINT_NOT_CONFIRMED')) {
+    return 'Windows не підтвердила завершення друку. Перевірте папір і чергу принтера перед повтором, щоб не отримати дублікати.'
+  }
+  if (raw.includes('write EOF') || raw.includes('EPIPE')) {
+    return 'Служба друку закрила з’єднання. Перевірте чергу та підключення принтера перед повтором.'
+  }
+  if (raw.includes('TSPL_PRINTER_NOT_READY')) {
     return 'Принтер етикеток не готовий: перевірте живлення й USB-кабель, наявність стрічки та закриту кришку. '
       + 'Етикетки НЕ надруковано.'
   }

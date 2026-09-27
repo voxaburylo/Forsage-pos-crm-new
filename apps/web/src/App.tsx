@@ -66,6 +66,8 @@ const AutoPurchasePage      = lazyPage(() => import('@/features/autoPurchase/Aut
 const AuditLogPage          = lazyPage(() => import('@/features/admin/AuditLogPage'))
 const TemplateEditor        = lazyPage(() => import('@/features/notifications/TemplateEditor'))
 
+import { CUSTOMER_CARD_EDITOR_ROLES } from '@/features/customers/customerEditPermissions'
+
 const OFFICE_ROLES = ['owner', 'admin', 'manager']
 const ADMIN_ROLES = ['owner', 'admin']
 const WAREHOUSE_ROLES = ['owner', 'admin', 'storekeeper']
@@ -74,7 +76,9 @@ const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeep
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const REPORT_ROLES = ['owner', 'admin', 'manager', 'cashier']
+const CatalogAgentPage = lazyPage(() => import('@/features/ai/CatalogAgentPage'))
 const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
+import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
 
 function AnalyticsHome() {
   const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
@@ -194,7 +198,7 @@ function App() {
           <Route path="/customers"           element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
           <Route path="/customers/new"       element={<TillOnly what="Створення клієнта"><ProtectedRoute><CustomerFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
-          <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={OFFICE_ROLES}><CustomerFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CustomerFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/pos"      element={<TillOnly what="Каса"><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
@@ -231,7 +235,8 @@ function App() {
           <Route path="/audit"           element={<TillOnly what="Журнал аудиту"><ProtectedRoute roles={ADMIN_ROLES}><AuditLogPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/templates" element={<TillOnly what="Шаблони"><ProtectedRoute roles={ADMIN_ROLES}><TemplateEditor /></ProtectedRoute></TillOnly>} />
           <Route path="/notifications"  element={<TillOnly what="Сповіщення"><ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/ai-assistant"   element={<TillOnly what="AI-помічник"><ProtectedRoute roles={OFFICE_ROLES}><AiAssistantPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/ai-agent" element={<TillOnly what="AI-агент"><ProtectedRoute roles={ADMIN_ROLES}><CatalogAgentPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/ai-assistant"   element={<TillOnly what="ШІ-помічник"><ProtectedRoute roles={AI_ASSISTANT_ROLES}><AiAssistantPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/inventory"               element={<TillOnly what="Ревізія"><ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><InventoryPage /></ProtectedRoute></TillOnly>} />
           <Route path="/inventory/picking"       element={<TillOnly what="Збірка замовлень"><ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><WarehousePicking /></ProtectedRoute></TillOnly>} />

@@ -7,7 +7,7 @@ import { REASON_LABEL, REASON_COLOR } from '@/types/writeoff'
 import type { Writeoff, PaginatedWriteoffs, WriteoffReason } from '@/types/writeoff'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Table } from '@/components/ui'
-import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/stores/authStore'
 import { formatDate, formatMoney } from '@/lib/utils'
 
 const REASONS: Array<{ value: WriteoffReason | ''; label: string }> = [
@@ -24,26 +24,28 @@ export default function WriteoffsPage() {
   const [result, setResult]   = useState<PaginatedWriteoffs | null>(null)
   const [reason, setReason]   = useState<WriteoffReason | ''>('')
   const [page, setPage]       = useState(1)
-  const [loading, setLoading] = useState(false)
-
-  const requests = useLatestRequest([reason, page])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const userId = useAuthStore(s => s.session?.user?.id)
+  const requests = useLatestRequest([reason, page, userId])
   const load = useCallback(async () => {
     const isCurrent = requests.begin()
     setResult(null)
     setLoading(true)
+    setLoadError('')
     try {
       const data = await writeoffApi.list({ reason: reason || undefined, page, per_page: 20 })
       if (!isCurrent()) return
       setResult(data)
     } catch {
-      if (isCurrent()) toast.error('Помилка завантаження')
+      if (isCurrent()) setLoadError('Не вдалося завантажити акти списання. Це не означає, що актів немає.')
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [reason, page])
+  }, [reason, page, requests, userId])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setPage(1) }, [reason])
+
 
   const total = result?.pagination?.total ?? 0
   const pages = result?.pagination?.total_pages ?? 1
@@ -84,7 +86,7 @@ export default function WriteoffsPage() {
 
   return (
     <Layout
-      title={'Списання (' + total + ')'}
+      title={result ? 'Списання (' + total + ')' : 'Списання'}
       actions={
         <Button icon={<Plus size={16} />} onClick={() => navigate('/inventory/writeoffs/new')}>
           Новий акт
@@ -96,7 +98,7 @@ export default function WriteoffsPage() {
       </p>
       <div className="mb-4 flex gap-2 flex-wrap">
         {REASONS.map((r) => (
-          <button key={r.value} onClick={() => setReason(r.value as WriteoffReason | '')}
+          <button key={r.value} onClick={() => { setReason(r.value); setPage(1) }}
             className={
               'px-3 py-1.5 text-sm rounded-lg transition-colors ' +
               (reason === r.value
@@ -114,7 +116,7 @@ export default function WriteoffsPage() {
           data={result?.data ?? []}
           keyFn={(w) => w.id}
           loading={loading}
-          empty={
+          empty={loadError ? <div role="alert" className="p-6 text-red-700">{loadError} <button type="button" className="underline" onClick={load}>Повторити</button></div> :
             <div className="flex flex-col items-center gap-2 text-gray-400 py-8">
               <Trash2 size={36} className="opacity-30" />
               <p className="text-sm">Актів списання немає</p>

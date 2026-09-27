@@ -8,7 +8,9 @@ import { CustomerBalances } from './CustomerBalances'
 import { parseCustomerMoney } from './customerUi'
 import { pricingApi, type PriceTier } from '@/features/admin/pricingApi'
 import { customerApi } from './customerApi'
+import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
 import { customerVehiclesApi } from './customerVehiclesApi'
+import { useScopedAction } from '@/hooks/useScopedAction'
 import { useAuthStore } from '@/stores/authStore'
 import { buildRoleSafeCustomerUpdate, canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
 
@@ -33,12 +35,14 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
   const [car, setCar] = useState<VehicleDraft>(EMPTY_CAR)
   const [deposit, setDeposit] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [savingCar, setSavingCar] = useState(false)
+  const action = useScopedAction(`${open}:${customer?.id ?? ''}:${role ?? ''}`)
+  const [actionKind, setActionKind] = useState<'customer' | 'car' | null>(null)
+  const saving = action.busy && actionKind === 'customer'
+  const savingCar = action.busy && actionKind === 'car'
+  const [carsState, setCarsState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [loadError, setLoadError] = useState('')
   const [revision, setRevision] = useState(0)
   const initialForm = useRef('')
-  const busy = useRef(false)
 
   function fill(c: Customer) {
     setCurrent(c)
@@ -63,21 +67,23 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
     setLoadError('')
     setDeposit(null)
     setCars([])
+    setCarsState('loading')
+    setActionKind(null)
     setTiers([])
     setCar(EMPTY_CAR)
     setLoading(true)
     customerApi.get(customer.id).then(({ data }) => { if (!cancelled) fill(data) })
       .catch((error) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : 'Не вдалося завантажити картку') })
       .finally(() => { if (!cancelled) setLoading(false) })
-    customerVehiclesApi.list(customer.id).then(({ data }) => { if (!cancelled) setCars(data) })
-      .catch(() => { if (!cancelled) toast.error('Не вдалося завантажити автомобілі') })
+    customerVehiclesApi.list(customer.id).then(({ data }) => { if (!cancelled) { setCars(data); setCarsState('ready') } })
+      .catch(() => { if (!cancelled) { setCarsState('error'); toast.error('Не вдалося завантажити автомобілі') } })
     if (canManageFinancials) pricingApi.listTiers().then(({ data }) => { if (!cancelled) setTiers(data) }).catch(() => {})
     posCustomerMoneyApi.getDeposit(customer.id).then(({ data }) => { if (!cancelled) setDeposit(data.balance) }).catch(() => {})
     return () => { cancelled = true }
   }, [canManageFinancials, customer?.id, open, revision])
 
   function requestClose() {
-    if (busy.current || savingCar) return
+    if (action.isBusy()) return
     const dirty = current && (JSON.stringify(form) !== initialForm.current || JSON.stringify(car) !== JSON.stringify(EMPTY_CAR))
     if (!dirty || confirm('Закрити картку без збереження введених змін?')) onClose()
   }
@@ -99,15 +105,16 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (busy.current || loading || savingCar) return
+    if (action.isBusy() || loading) return
     if (JSON.stringify(car) !== JSON.stringify(EMPTY_CAR)) { toast.error('Спочатку збережіть автомобіль або скасуйте його редагування'); return }
     if (!current || !form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
     const bonus = parseCustomerMoney(form.bonus_balance)
     const discount = Number(form.discount_pct.replace(',', '.'))
     if (canManageFinancials && bonus === null) { toast.error('Некоректний баланс бонусів'); return }
     if (canManageDiscount && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
-    busy.current = true
-    setSaving(true)
+    const attempt = action.begin()
+    if (!attempt) return
+    setActionKind('customer')
     try {
       const update = buildRoleSafeCustomerUpdate(role, {
         phone:form.phone.trim(), full_name:form.full_name.trim(), email:form.email.trim(), birth_date:form.birth_date || null,
@@ -125,38 +132,47 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
         expected_updated_at: current.updated_at,
         ...(bonusChanged ? { bonus_balance: bonus!, expected_bonus_balance: current.bonus_balance, bonus_description: 'Ручне коригування у картці клієнта' } : {}),
       })
+      if (!attempt.isCurrent()) return
       onSaved(data)
       toast.success('Картку клієнта збережено')
       onClose()
-    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти клієнта') }
-    finally { busy.current = false; setSaving(false) }
+    } catch (error) { if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти клієнта') }
+    finally { attempt.finish() }
   }
 
   async function saveCar() {
     if (!current) return
-    if (savingCar || busy.current) return
+    if (action.isBusy() || loading || carsState !== 'ready') return
     if (!car.brand.trim() || !car.model.trim()) { toast.error('Вкажіть марку та модель'); return }
     if (car.year && (!Number.isInteger(Number(car.year)) || Number(car.year) < 1900 || Number(car.year) > new Date().getFullYear() + 1)) { toast.error('Вкажіть коректний рік автомобіля'); return }
-    setSavingCar(true)
+    const attempt = action.begin()
+    if (!attempt) return
+    setActionKind('car')
     try {
       const body = { brand:car.brand.trim(), model:car.model.trim(), year:car.year ? Number(car.year) : null, vin:car.vin.trim().toUpperCase() || null, notes:car.notes.trim() || null }
       const result = car.id
         ? await customerVehiclesApi.update(current.id, car.id, body)
         : await customerVehiclesApi.create(current.id, body)
+      if (!attempt.isCurrent()) return
       setCars((list) => car.id ? list.map((item) => item.id === car.id ? result.data : item) : [result.data, ...list])
       setCar(EMPTY_CAR)
       toast.success(car.id ? 'Автомобіль оновлено' : 'Автомобіль додано')
-    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти автомобіль') }
-    finally { setSavingCar(false) }
+    } catch (error) { if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти автомобіль') }
+    finally { attempt.finish() }
   }
 
   async function deleteCar(item: CustomerVehicle) {
-    if (!current || !confirm('Видалити ' + item.brand + ' ' + item.model + '?')) return
+    if (!current || action.isBusy() || loading || carsState !== 'ready' || !confirm('Видалити ' + item.brand + ' ' + item.model + '?')) return
+    const attempt = action.begin()
+    if (!attempt) return
+    setActionKind('car')
     try {
       await customerVehiclesApi.delete(current.id, item.id)
+      if (!attempt.isCurrent()) return
       setCars((list) => list.filter((value) => value.id !== item.id))
       if (car.id === item.id) setCar(EMPTY_CAR)
-    } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося видалити автомобіль') }
+    } catch (error) { if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося видалити автомобіль') }
+    finally { attempt.finish() }
   }
 
   return <Modal open={open} onClose={requestClose} title="Картка клієнта" size="xl">
@@ -179,8 +195,8 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
             <Input label="Ім'я" value={form.full_name} onChange={(e)=>set('full_name',e.target.value)} />
             <Input label="Email" type="email" value={form.email} onChange={(e)=>set('email',e.target.value)} />
             <Input label="Дата народження" type="date" value={form.birth_date} onChange={(e)=>set('birth_date',e.target.value)} />
-            <Input label="Штрихкод картки" value={form.card_barcode} onChange={(e)=>set('card_barcode',e.target.value.replace(/\s/g,''))} placeholder="Скануйте або введіть" />
           </div>
+          <CustomerCardBarcodeField value={form.card_barcode} onChange={(value) => set('card_barcode', value)} disabled={saving} />
           <div><label className="mb-1 block text-sm font-medium text-gray-700">Примітки</label><textarea value={form.notes} onChange={(e)=>set('notes',e.target.value)} rows={3} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-300" /></div>
         </section>
         <section className="space-y-3 rounded-xl border border-yellow-100 bg-yellow-50/50 p-4">
@@ -217,6 +233,8 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
       </div>
       <section className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
         <h3 className="mb-3 flex items-center gap-2 font-semibold text-gray-900"><Car size={17}/> Автомобілі ({cars.length})</h3>
+        {carsState !== 'ready' && <p role="status" className="mb-3 text-sm text-gray-500">{carsState === 'loading' ? 'Завантажуємо автомобілі…' : 'Не вдалося завантажити автомобілі. Натисніть «Оновити дані» нижче.'}</p>}
+        <fieldset disabled={carsState !== 'ready'} className="min-w-0">
         {cars.length > 0 && <div className="mb-4 grid gap-2 md:grid-cols-2">{cars.map((item)=><div key={item.id} className="flex items-center gap-2 rounded-lg border border-blue-100 bg-white p-3"><button type="button" onClick={()=>setCar({id:item.id,brand:item.brand,model:item.model,year:item.year?String(item.year):'',vin:item.vin??'',notes:item.notes??''})} className="min-w-0 flex-1 text-left"><p className="truncate text-sm font-semibold">{item.brand} {item.model} {item.year ? '· ' + item.year : ''}</p><p className="truncate font-mono text-xs text-gray-500">{item.vin||'VIN не вказано'}</p></button><button type="button" onClick={()=>deleteCar(item)} className="p-2 text-gray-300 hover:text-red-500"><Trash2 size={15}/></button></div>)}</div>}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <Input label="Марка *" value={car.brand} onChange={(e)=>setCar({...car,brand:e.target.value})}/>
@@ -226,8 +244,9 @@ export function QuickCustomerEditModal({ customer, open, onClose, onSaved }: Pro
           <Input label="Примітка" value={car.notes} onChange={(e)=>setCar({...car,notes:e.target.value})}/>
         </div>
         <div className="mt-3 flex gap-2"><Button type="button" variant="secondary" size="sm" loading={savingCar} icon={car.id?<Save size={14}/>:<Plus size={14}/>} onClick={saveCar}>{car.id?'Зберегти автомобіль':'Додати автомобіль'}</Button>{car.id&&<Button type="button" variant="secondary" size="sm" onClick={()=>setCar(EMPTY_CAR)}>Скасувати</Button>}</div>
+        </fieldset>
       </section>
-      <div className="flex flex-wrap gap-3 border-t border-gray-100 pt-4"><Button type="submit" loading={saving} icon={<Save size={16}/>} className="flex-1">Зберегти картку</Button><Button type="button" variant="secondary" onClick={() => { if (confirm('Завантажити свіжі дані? Незбережені зміни цієї картки буде втрачено.')) setRevision((n) => n + 1) }}>Оновити дані</Button><Button type="button" variant="secondary" onClick={requestClose}>Закрити</Button></div>
+      <div className="flex flex-wrap gap-3 border-t border-gray-100 pt-4"><Button type="submit" loading={saving} icon={<Save size={16}/>} className="flex-1">Зберегти картку</Button><Button type="button" variant="secondary" onClick={() => { if (!action.isBusy() && confirm('Завантажити свіжі дані? Незбережені зміни цієї картки буде втрачено.')) setRevision((n) => n + 1) }}>Оновити дані</Button><Button type="button" variant="secondary" onClick={requestClose}>Закрити</Button></div>
       </fieldset>
     </form>}
   </Modal>

@@ -39,6 +39,19 @@ describe('coordinated renderer recovery', () => {
     await vi.runAllTimersAsync()
     expect(load).toHaveBeenCalledTimes(1)
   })
+  it('waits for native crash cleanup and can cancel that wait without another load', async () => {
+    vi.useFakeTimers()
+    const load = vi.fn().mockResolvedValue(undefined)
+    const recovery = new RendererRecovery({ load, isDestroyed: () => false, retry: vi.fn(), delays: [250] })
+    await recovery.start()
+    const pending = recovery.crashed()
+    await vi.advanceTimersByTimeAsync(249)
+    expect(load).toHaveBeenCalledTimes(1)
+    recovery.stop()
+    await pending
+    await vi.runAllTimersAsync()
+    expect(load).toHaveBeenCalledTimes(1)
+  })
   it('limits load errors and allows no retries after repeated crashes', async () => {
     vi.useFakeTimers()
     const load = vi.fn().mockRejectedValue(new Error('ERR_FAILED'))
@@ -47,7 +60,8 @@ describe('coordinated renderer recovery', () => {
     await vi.runAllTimersAsync(); await pending
     expect(load).toHaveBeenCalledTimes(2)
     load.mockResolvedValue(undefined)
-    await recovery.crashed(); await recovery.crashed()
+    const firstCrash = recovery.crashed(); await vi.runAllTimersAsync(); await firstCrash
+    const secondCrash = recovery.crashed(); await vi.runAllTimersAsync(); await secondCrash
     await expect(recovery.crashed()).rejects.toThrow('кілька разів')
     const before = load.mock.calls.length
     await recovery.start()
@@ -59,9 +73,10 @@ describe('coordinated renderer recovery', () => {
     expect(load).not.toHaveBeenCalled()
     vi.useFakeTimers()
     const recovery = new RendererRecovery({ load, isDestroyed: () => false, retry: vi.fn() })
-    await recovery.crashed(); await recovery.crashed()
+    const firstCrash = recovery.crashed(); await vi.runAllTimersAsync(); await firstCrash
+    const secondCrash = recovery.crashed(); await vi.runAllTimersAsync(); await secondCrash
     vi.advanceTimersByTime(60001)
-    await recovery.crashed()
+    const thirdCrash = recovery.crashed(); await vi.runAllTimersAsync(); await thirdCrash
     expect(load).toHaveBeenCalledTimes(3)
   })
 })

@@ -1,4 +1,9 @@
 export const CUSTOMER_FINANCIAL_ROLES = ['owner', 'admin', 'manager'] as const
+export const CUSTOMER_CARD_EDITOR_ROLES = ['owner', 'admin', 'manager', 'cashier']
+
+export function canEditCustomerCard(role: string | null | undefined): boolean {
+  return CUSTOMER_CARD_EDITOR_ROLES.includes(role ?? '')
+}
 
 export function canManageCustomerFinancials(role: string | null | undefined): boolean {
   return CUSTOMER_FINANCIAL_ROLES.some((allowedRole) => allowedRole === role)

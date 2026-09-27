@@ -18,7 +18,7 @@ function normalizePhone(raw: string): string {
 
 function isProgramAccessDenied(user: unknown): boolean {
   const metadata = (user as { app_metadata?: Record<string, unknown> } | null | undefined)?.app_metadata
-  return metadata?.role === 'tire_worker' || metadata?.can_login === false
+  return metadata?.role === 'tire_worker' || metadata?.can_login === false || metadata?.is_active === false || Boolean(metadata?.deleted_at)
 }
 
 // Відрізняємо тимчасову мережеву помилку від помилки облікових даних.
@@ -63,6 +63,12 @@ export function desktopServerRetryDelay(attempt: number): number {
   return DESKTOP_SERVER_RETRY_MS[index]
 }
 let desktopServerLoginGeneration = 0
+const desktopRetryTimers = new Set<ReturnType<typeof setTimeout>>()
+function nextDesktopLoginGeneration() {
+  for (const timer of desktopRetryTimers) clearTimeout(timer)
+  desktopRetryTimers.clear()
+  return ++desktopServerLoginGeneration
+}
 
 async function connectDesktopToServer(
   email: string,
@@ -73,10 +79,12 @@ async function connectDesktopToServer(
   if (generation !== desktopServerLoginGeneration) return
 
   const retry = () => {
-    const delay = desktopServerRetryDelay(attempt)
-    window.setTimeout(() => {
+    if (generation !== desktopServerLoginGeneration) return
+    const timer = setTimeout(() => {
+      desktopRetryTimers.delete(timer)
       void connectDesktopToServer(email, password, attempt + 1, generation)
-    }, delay)
+    }, desktopServerRetryDelay(attempt))
+    desktopRetryTimers.add(timer)
   }
   if (typeof navigator !== 'undefined' && navigator.onLine === false) { retry(); return }
   try {
@@ -85,6 +93,8 @@ async function connectDesktopToServer(
     if (error) { if (isNetworkFailure(error)) retry(); return }
     if (!data.session) { retry(); return }
     if (isProgramAccessDenied(data.user)) { await supabase.auth.signOut().catch(() => {}); return }
+    const current = useAuthStore.getState().session
+    if (!current || current.user.id !== data.session.user.id) return
     useAuthStore.getState().setSession(data.session)
   } catch {
     // Локальний вхід уже успішний: повторюємо серверний вхід у фоні,
@@ -93,8 +103,7 @@ async function connectDesktopToServer(
   }
 }
 
-function startDesktopServerConnection(email: string, password: string): void {
-  const generation = ++desktopServerLoginGeneration
+function startDesktopServerConnection(email: string, password: string, generation: number): void {
   void connectDesktopToServer(email, password, 0, generation)
 }
 
@@ -145,6 +154,10 @@ function createDesktopSession(user: { id: string; email: string; phone?: string 
 }
 // Desktop завжди перевіряє пароль у локальній базі; веб — через Supabase.
 export async function signIn(phone: string, password: string) {
+  const generation = nextDesktopLoginGeneration()
+  const assertCurrent = () => {
+    if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
+  }
   const normalized = normalizePhone(phone)
   const email = phoneToEmail(normalized)
 
@@ -154,15 +167,17 @@ export async function signIn(phone: string, password: string) {
     if (localLogin) {
       try {
         const localUser = await localLogin(normalized, password)
+        assertCurrent()
         const session = createDesktopSession(localUser)
         useAuthStore.getState().setOfflineSession(session)
         // Локальний пароль перевірено — відкриваємо програму одразу. Паралельно
         // отримуємо справжню Supabase-сесію для синхронізації та веб-розділів.
-        startDesktopServerConnection(email, password)
+        startDesktopServerConnection(email, password, generation)
         return session
       } catch (localError) {
+        assertCurrent()
         const message = localError instanceof Error ? localError.message : ''
-        if (message.includes('Забагато спроб') || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+        if (message.includes('Забагато спроб') || /LOCAL_AUTH_(ARCHIVED|DISABLED)/.test(message) || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
           throw localError
         }
 
@@ -172,14 +187,17 @@ export async function signIn(phone: string, password: string) {
         const onlineLogin = desktopAuth?.loginOnline
         if (!onlineLogin) throw localError
         const provisioned = await onlineLogin(normalized, password)
+        assertCurrent()
+        useAuthStore.getState().setOfflineSession(createDesktopSession(provisioned.user))
         const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
           access_token: provisioned.access_token,
           refresh_token: provisioned.refresh_token,
         })
+        assertCurrent()
         if (sessionError || !sessionData.session) {
           const session = createDesktopSession(provisioned.user)
           useAuthStore.getState().setOfflineSession(session)
-          startDesktopServerConnection(email, password)
+          startDesktopServerConnection(email, password, generation)
           return session
         }
         useAuthStore.getState().setSession(sessionData.session)
@@ -222,31 +240,55 @@ export async function signIn(phone: string, password: string) {
   return data.session
 }
 
-export async function signInRemembered(pin: string) {
-  const unlock = desktopBridge()?.auth?.unlockRemembered
-  if (!unlock) throw new Error('Оновіть локальну програму')
-  const user = await unlock(pin)
-  const session = createDesktopSession(user)
-  useAuthStore.getState().setOfflineSession(session)
-  // Reuse only the same user's existing server session; never persist their password.
-  void supabase.auth.getSession().then(({ data }) => {
-    if (data.session?.user.id === user.id && useAuthStore.getState().session?.user.id === user.id) {
-      useAuthStore.getState().setSession(data.session)
-    }
-  }).catch(() => {})
-  return session
+let restoreFlight: Promise<Session | null> | null = null
+export function restoreDesktopSession(): Promise<Session | null> {
+  if (restoreFlight) return restoreFlight
+  const restore = desktopBridge()?.auth?.restore
+  if (!isDesktopRuntime() || !restore) return Promise.resolve(null)
+  const generation = nextDesktopLoginGeneration()
+  restoreFlight = (async () => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      const user = await Promise.race([
+        restore(),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('RESTORE_TIMEOUT')), 5000) }),
+      ])
+      if (!user || generation !== desktopServerLoginGeneration) return null
+      const session = createDesktopSession(user)
+      useAuthStore.getState().setOfflineSession(session)
+      // Attach only an already existing matching online session. Passwords are
+      // never restored from storage, and local access does not wait for internet.
+      void supabase.auth.getSession().then(({ data }) => {
+        if (generation === desktopServerLoginGeneration && data.session?.user.id === user.id
+          && !isProgramAccessDenied(data.session.user) && useAuthStore.getState().session?.user.id === user.id) {
+          useAuthStore.getState().setSession(data.session)
+        }
+      }).catch(() => {})
+      return session
+    } finally { if (timeout) clearTimeout(timeout) }
+  })().finally(() => { restoreFlight = null })
+  return restoreFlight
 }
 
 export async function signOut() {
-  // Відкладена спроба від попереднього локального входу не повинна знову
-  // авторизувати користувача після виходу або зміни касира.
-  desktopServerLoginGeneration += 1
+  nextDesktopLoginGeneration()
   const localLogout = desktopBridge()?.auth?.logout
   if (localLogout) {
+    // Revoke the encrypted day permission before displaying the login page.
+    // Do not report successful logout if main could not remove that permission.
     await localLogout()
     useAuthStore.getState().setSession(null)
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        supabase.auth.signOut({ scope: 'local' }).catch(() => {}),
+        new Promise<void>(resolve => { timeout = setTimeout(resolve, 2000) }),
+      ])
+    } finally { if (timeout) clearTimeout(timeout) }
+    return
   }
-  await supabase.auth.signOut()
+  await supabase.auth.signOut({ scope: 'local' })
+  useAuthStore.getState().setSession(null)
 }
 
 export async function getSession() {

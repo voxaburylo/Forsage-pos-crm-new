@@ -11,21 +11,36 @@ const STORAGE_KEY = 'forsage_pos_sound_enabled'
 // ================================================================
 
 let audioCtx: AudioContext | null = null
-let _initialized = false
+let disabledForSession = false
+let resumePending = false
+
+/** A failed native sound service must not be restarted on every product scan. */
+export function suspendAudioAfterServiceCrash(): void {
+  disabledForSession = true
+  const context = audioCtx
+  audioCtx = null
+  resumePending = false
+  try { if (context && context.state !== 'closed') void context.close().catch(() => {}) } catch { /* already gone */ }
+}
 
 /** Ініціалізація AudioContext при першій взаємодії користувача */
 export function initAudio(): AudioContext | null {
-  if (_initialized && audioCtx) return audioCtx
+  if (disabledForSession || !isSoundEnabled()) return null
   try {
-    // Resume, якщо контекст у suspended стані (autoplay policy)
-    if (audioCtx?.state === 'suspended') {
-      audioCtx.resume()
-      return audioCtx
+    if (audioCtx?.state === 'closed') {
+      suspendAudioAfterServiceCrash()
+      return null
     }
-    audioCtx = new AudioContext()
-    _initialized = true
+    audioCtx ??= new AudioContext()
+    // Resume even an already initialized context (sleep/autoplay can suspend it).
+    // Handle rejection; otherwise a sound failure becomes an unhandled UI error.
+    if (audioCtx.state === 'suspended' && !resumePending) {
+      resumePending = true
+      void audioCtx.resume().catch(suspendAudioAfterServiceCrash).finally(() => { resumePending = false })
+    }
     return audioCtx
   } catch {
+    suspendAudioAfterServiceCrash()
     return null
   }
 }
@@ -35,13 +50,14 @@ export function initAudio(): AudioContext | null {
 // ================================================================
 
 export function isSoundEnabled(): boolean {
-  const stored = localStorage.getItem(STORAGE_KEY)
+  let stored: string | null = null
+  try { stored = localStorage.getItem(STORAGE_KEY) } catch { /* storage can be unavailable */ }
   // Default: enabled (true), тільки якщо явно 'false' — вимкнено
   return stored !== 'false'
 }
 
 export function setSoundEnabled(enabled: boolean): void {
-  localStorage.setItem(STORAGE_KEY, enabled ? 'true' : 'false')
+  try { localStorage.setItem(STORAGE_KEY, enabled ? 'true' : 'false') } catch { /* optional preference */ }
 }
 
 export function toggleSound(): boolean {
@@ -70,6 +86,7 @@ function playOscillator(
     const gain = ctx.createGain()
     osc.connect(gain)
     gain.connect(ctx.destination)
+    osc.onended = () => { osc.disconnect(); gain.disconnect() }
 
     osc.type = type
     osc.frequency.setValueAtTime(frequency, ctx.currentTime + startDelay)
@@ -131,6 +148,7 @@ export function playCashRegister(): void {
       const gain = ctx.createGain()
       osc.connect(gain)
       gain.connect(ctx.destination)
+      osc.onended = () => { osc.disconnect(); gain.disconnect() }
       osc.type = 'sine'
       osc.frequency.setValueAtTime(freq, ctx.currentTime)
       gain.gain.setValueAtTime(0.15, ctx.currentTime)
@@ -146,6 +164,7 @@ export function playCashRegister(): void {
       const gain = ctx.createGain()
       osc.connect(gain)
       gain.connect(ctx.destination)
+      osc.onended = () => { osc.disconnect(); gain.disconnect() }
       osc.type = 'sine'
       osc.frequency.setValueAtTime(freq, ctx.currentTime + 0.3)
       gain.gain.setValueAtTime(0.1, ctx.currentTime + 0.3)

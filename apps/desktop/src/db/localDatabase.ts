@@ -5,6 +5,8 @@ import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { LOCAL_MIGRATIONS } from './schema'
 import { createVerifiedBackup } from './verifiedBackup'
+import { assertBackupContents } from './backupValidation'
+import { assertBackupSpace } from '../backup/backupSpace'
 import { backupsToPrune } from './backupPolicy'
 import { customerPhoneKey } from '../repositories/pos/customerValidation'
 
@@ -62,11 +64,13 @@ const DATABASE_FILE = 'forsage.db'
 const SIDECAR_SUFFIXES = ['-wal', '-shm']
 const BACKUP_FILE_PATTERN = /^Forsage-\d{4}-\d{2}-\d{2}_.+\.db$/
 const DATABASE_IDENTITY_FILE = 'database-identity.json'
+export const MAX_CACHED_STATEMENTS = 512
 
 export class LocalDatabase {
   private readonly database: DatabaseSync
   private readonly statements = new Map<string, StatementSync>()
   private backupInProgress: Promise<string> | null = null
+  private transactionSequence = 0
   readonly dataRoot: string
   readonly databasePath: string
   readonly backupsPath: string
@@ -182,14 +186,10 @@ export class LocalDatabase {
   static assertBackupIsUsable(sourcePath: string): void {
     const probe = new DatabaseSync(sourcePath, { readOnly: true, timeout: 5_000 })
     try {
-      const row = probe.prepare('PRAGMA quick_check').get() as { quick_check: string } | undefined
-      if (row?.quick_check !== 'ok') throw new Error('LOCAL_BACKUP_CORRUPT')
+      assertBackupContents(probe)
       const version = probe.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number }
       const buildVersion = Math.max(...LOCAL_MIGRATIONS.map((migration) => migration.version))
       if (version.version > buildVersion) throw new OutdatedBuildError(version.version, buildVersion)
-      if (!probe.prepare("SELECT value_json FROM app_meta WHERE key = 'device_id'").get()) {
-        throw new Error('LOCAL_BACKUP_NOT_FORSAGE_DATABASE')
-      }
     } finally {
       probe.close()
     }
@@ -314,21 +314,42 @@ export class LocalDatabase {
 
   prepare(sql: string): StatementSync {
     const cached = this.statements.get(sql)
-    if (cached) return cached
+    if (cached) {
+      this.statements.delete(sql)
+      this.statements.set(sql, cached)
+      return cached
+    }
     const statement = this.database.prepare(sql)
     this.statements.set(sql, statement)
+    if (this.statements.size > MAX_CACHED_STATEMENTS) this.statements.delete(this.statements.keys().next().value!)
     return statement
   }
 
   transaction<T>(work: () => T): T {
-    if (this.database.isTransaction) return work()
-    this.database.exec('BEGIN IMMEDIATE')
+    return this.runTransaction(work, 'BEGIN IMMEDIATE')
+  }
+
+  /** Consistent WAL snapshot for multi-query reads, without taking the writer lock. */
+  readSnapshot<T>(work: () => T): T {
+    return this.runTransaction(work, 'BEGIN')
+  }
+
+  private runTransaction<T>(work: () => T, begin: 'BEGIN' | 'BEGIN IMMEDIATE'): T {
+    if (Object.prototype.toString.call(work) === '[object AsyncFunction]') throw new Error('LOCAL_ASYNC_TRANSACTION_FORBIDDEN')
+    const savepoint = this.database.isTransaction ? `forsage_nested_${++this.transactionSequence}` : null
+    this.database.exec(savepoint ? `SAVEPOINT ${savepoint}` : begin)
     try {
       const result = work()
-      this.database.exec('COMMIT')
+      if (result != null && (typeof result === 'object' || typeof result === 'function') && typeof (result as { then?: unknown }).then === 'function') {
+        // Do not let a rejected callback become an unhandled process rejection.
+        void Promise.resolve(result).catch(() => {})
+        throw new Error('LOCAL_ASYNC_TRANSACTION_FORBIDDEN')
+      }
+      this.database.exec(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT')
       return result
     } catch (error) {
-      this.database.exec('ROLLBACK')
+      if (savepoint) this.database.exec(`ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}`)
+      else this.database.exec('ROLLBACK')
       throw error
     }
   }
@@ -377,7 +398,8 @@ export class LocalDatabase {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
     const destination = path.join(this.backupsPath, `Forsage-${stamp}-${randomUUID().slice(0, 8)}.db`)
     const partial = `${destination}.partial`
-    const operation = createVerifiedBackup(this.databasePath, partial).then(() => {
+    const operation = assertBackupSpace(this.backupsPath, this.databasePath)
+      .then(() => createVerifiedBackup(this.databasePath, partial)).then(() => {
       // Неповний або неперевірений файл ніколи не потрапляє до списку копій.
       renameSync(partial, destination)
       return destination

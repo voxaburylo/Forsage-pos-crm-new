@@ -2,6 +2,7 @@ import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { RendererRecovery } from './rendererRecovery'
 import { BlackBox } from './diagnostics/blackBox'
+import { readBuildInfo } from './diagnostics/buildInfo'
 import { LOCAL_CRASH_OPTIONS } from './diagnostics/localCrashCapture'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
@@ -14,6 +15,7 @@ import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDa
 import { startBackupScheduler } from './db/backupScheduler'
 import { ShiftBackupService } from './backup/shiftBackupService'
 import { customerHistory } from './repositories/customerHistory'
+import { runCatalogAgent } from './repositories/catalogAgentWorker'
 import { assertLocalDataAuthority } from './security/localDataAuthority'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
@@ -30,10 +32,12 @@ import type {
 } from './db/localTypes'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { applyCatalogBatch } from './repositories/catalogBatchWorker'
+import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker } from './repositories/supplyInvoiceWorker'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSupplyRepository } from './repositories/supplyRepository'
+import { requireDocumentRevision } from './repositories/documentRevision'
 import { LocalStaffRepository } from './repositories/staffRepository'
 import { LocalWarehouseRepository } from './repositories/warehouseRepository'
 import { LocalPurchaseRepository } from './repositories/localPurchaseRepository'
@@ -46,16 +50,27 @@ import {
 } from './fiscal/cashalotService'
 import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
 import { canUseReceiptGdiFallback, printReceiptViaGdi } from './print/receiptGdiPrinter'
-import { enqueuePrinterJob } from './print/printerJobQueue'
+import { enqueuePrinterJob, setPrinterJobGuard } from './print/printerJobQueue'
+import { PrintAttemptGuard } from './print/printAttemptGuard'
+import { setPrintProcessReporter } from './print/printProcess'
 import { assertPrinterRole, type PrinterRole } from './print/printerRole'
 import { withPrintTimeout } from './print/printTimeout'
+import { loadPrintHtml } from './print/loadPrintHtml'
+import { getPrintSession } from './print/printSession'
+import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
+import { LanOrderQueue } from './lan/orderQueue'
+import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
 
 // Keep the existing encryption profile stable across package/product renames.
 app.setPath('userData', path.join(app.getPath('appData'), 'desktop'))
+// This business UI/thermal rasterizer does not require 3D acceleration.
+// Avoid the hardware-driver path on Windows, including remote desktop sessions.
+if (process.platform === 'win32') app.disableHardwareAcceleration()
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
 const blackBox = gotSingleInstanceLock ? new BlackBox(path.join(
@@ -63,7 +78,9 @@ const blackBox = gotSingleInstanceLock ? new BlackBox(path.join(
 )) : null
 blackBox?.record('runtime', { pid: process.pid, version: app.getVersion(), electron: process.versions.electron,
   node: process.versions.node, platform: process.platform, arch: process.arch })
-try { blackBox?.record('build', { build: createHash('sha256').update(readFileSync(__filename)).digest('hex') }) } catch { /* optional identity */ }
+const desktopBuildInfo = readBuildInfo(__dirname)
+try { blackBox?.record('build', { build: desktopBuildInfo?.contentHash ?? createHash('sha256').update(readFileSync(__filename)).digest('hex'),
+  release: desktopBuildInfo?.releaseId, builtAt: desktopBuildInfo?.builtAt, version: desktopBuildInfo?.version }) } catch { /* optional identity */ }
 // Capture the native stack on the next renderer/GPU/utility crash, locally only.
 if (gotSingleInstanceLock) {
   try {
@@ -75,6 +92,18 @@ if (gotSingleInstanceLock) {
   } catch (error) { blackBox?.record('local-crash-capture-failed', error) }
 }
 let diagnosticCommandSequence = 0
+let audioServiceUnavailable = false
+blackBox?.record('rendering-policy', { reason: process.platform === 'win32' ? 'software' : 'system-default' })
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.session !== getPrintSession()) return
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  contents.on('render-process-gone', (_goneEvent, details) => {
+    if (details.reason !== 'clean-exit' && details.reason !== 'killed') blackBox?.record('print-renderer-process-gone', details)
+  })
+  contents.on('did-fail-load', (_loadEvent, errorCode, _description, _url, isMainFrame) => {
+    if (isMainFrame) blackBox?.record('print-document-load-failed', { exitCode: errorCode })
+  })
+})
 
 // Electron does not provide the usual browser text menu automatically.
 // Install it for every current and future BrowserWindow (main UI, print preview,
@@ -122,6 +151,9 @@ let localSync: LocalSyncRepository | null = null
 let localSupplierCatalog: LocalSupplierCatalogRepository | null = null
 let localProblems: LocalProblemRepository | null = null
 let localNetwork: LocalNetworkCoordinator | null = null
+let lanOrderQueue: LanOrderQueue | null = null
+let lanOrderClient: LanOrderClient | null = null
+let lanOrderTimer: ReturnType<typeof setInterval> | null = null
 type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
 const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
 const activeDesktopCommands = new Set<Promise<unknown>>()
@@ -131,29 +163,14 @@ let desktopDataRoot: string | null = null
 let desktopAuthSession: { id: string; tenant_id: string; role: string } | null = null
 let rememberedAccess: RememberedAccess | null = null
 let rememberedSessionRequired = false
-let passwordAuthenticatedAt = 0
-function rememberedPinRequired(): boolean {
-  try {
-    const row = localDatabase?.prepare("SELECT value_json FROM app_meta WHERE key='local_login_pin_required'").get() as { value_json:string } | undefined
-    return !row || JSON.parse(row.value_json) !== false
-  } catch { return true }
-}
+let desktopLoginGeneration = 0
 function rememberedUser(id: string, tenant: string): RememberedUser | null {
   return (localDatabase?.prepare('SELECT id,tenant_id,role,phone,full_name,password_hash,pin_hash,is_active,deleted_at FROM staff_users WHERE id=? AND tenant_id=?').get(id,tenant) as RememberedUser | undefined) ?? null
 }
 function getRememberedAccess(): RememberedAccess {
   if (!localDatabase) throw Error('Локальна база ще не готова')
   if (!rememberedAccess) {
-    powerMonitor.on('suspend', () => rememberedAccess?.lock())
-    powerMonitor.on('lock-screen', () => rememberedAccess?.lock())
-    // Lock independently of renderer polling, including a busy/frozen renderer.
-    const idleTimer = setInterval(() => {
-      if (rememberedSessionRequired && rememberedPinRequired() && powerMonitor.getSystemIdleTime() >= 300) {
-        rememberedAccess?.lock()
-        desktopAuthSession = null
-      }
-    }, 1000)
-    idleTimer.unref()
+
     rememberedAccess = new RememberedAccess({
     read: () => {
       const row = localDatabase!.prepare("SELECT value_json FROM app_meta WHERE key='windows_day_access'").get() as { value_json:string } | undefined
@@ -169,19 +186,23 @@ function getRememberedAccess(): RememberedAccess {
     },
     decrypt: text => safeStorage.decryptString(Buffer.from(text,'base64')),
     user: rememberedUser,
-    pinRequired: rememberedPinRequired,
+
     })
   }
   return rememberedAccess
 }
 function rememberedStatus() {
-  const access = getRememberedAccess()
-  if (rememberedSessionRequired && powerMonitor.getSystemIdleTime() >= 300) access.lock()
-  if (!desktopAuthSession) access.lock()
-  const status = access.status()
-  const locked = Boolean((status && !desktopAuthSession) || status?.locked || (rememberedSessionRequired && !status))
+  const status = getRememberedAccess().status()
+  const locked = rememberedSessionRequired && !status
   if (locked) desktopAuthSession = null
-  return { ...status, locked, available: Boolean(status), pinRequired: rememberedPinRequired() }
+  return { ...status, locked, available: Boolean(status) }
+}
+function completeDesktopLogin(user: { id: string; tenant_id: string; role: string }) {
+  const storedUser = rememberedUser(user.id, user.tenant_id)
+  if (!storedUser) throw Error('Працівника не знайдено')
+  getRememberedAccess().remember(storedUser)
+  rememberedSessionRequired = true
+  desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
 }
 
 function diagnosticValue(value: unknown, depth = 0): string {
@@ -284,9 +305,15 @@ function requireCashalot(): CashalotService {
 
 function requireDesktopSession(): { id: string; tenant_id: string; role: string } {
   const contextualSession = desktopSessionContext.getStore()
-  if (contextualSession) return contextualSession
-  if (rememberedSessionRequired && rememberedStatus().locked) throw Error('Програму заблоковано. Введіть PIN або пароль')
+  if (contextualSession) {
+    const current = activeSession(requireLocalDatabase(), contextualSession)
+    if (!current) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
+    return current
+  }
+  if (rememberedSessionRequired && rememberedStatus().locked) throw Error('Збережений вхід завершено. Увійдіть із паролем')
   if (!desktopAuthSession) throw new Error('Необхідно увійти в програму')
+  desktopAuthSession = activeSession(requireLocalDatabase(), desktopAuthSession)
+  if (!desktopAuthSession) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
   return desktopAuthSession
 }
 
@@ -364,7 +391,7 @@ function recordOnlinePasswordFailure(attemptKey: string): never {
     : 'Невірний номер телефону або пароль')
 }
 
-async function loginOnlineAndProvisionLocal(phone: string, password: string): Promise<DesktopOnlineLoginResult> {
+async function loginOnlineAndProvisionLocal(phone: string, password: string, generation: number): Promise<DesktopOnlineLoginResult> {
   const normalizedPhone = normalizeAuthPhone(phone)
   if (!normalizedPhone || !password) throw new Error('Вкажіть номер телефону та пароль')
   const attemptKey = `${DEFAULT_TENANT_ID}:${normalizedPhone}`
@@ -421,6 +448,10 @@ async function loginOnlineAndProvisionLocal(phone: string, password: string): Pr
     throw new Error('Обліковий запис не належить цьому магазину')
   }
 
+  if (payload.user?.app_metadata?.is_active === false || payload.user?.app_metadata?.can_login === false || payload.user?.app_metadata?.role === 'tire_worker' || payload.user?.app_metadata?.deleted_at) {
+    throw new Error('[LOCAL_AUTH_DISABLED] Доступ працівника на сервері вимкнено. Зверніться до власника.')
+  }
+  if (generation !== desktopLoginGeneration) throw Error('Спробу входу скасовано')
   const user = requireLocalStaff().adoptServerAuthenticatedPassword(
     serverUserId,
     normalizedPhone,
@@ -428,7 +459,6 @@ async function loginOnlineAndProvisionLocal(phone: string, password: string): Pr
     DEFAULT_TENANT_ID,
   )
   onlinePasswordAttempts.delete(attemptKey)
-  desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
   return {
     user,
     access_token: payload.access_token,
@@ -508,7 +538,13 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
     try {
       const session = PUBLIC_DESKTOP_CHANNELS.has(channel) ? null : requireDesktopSession()
       if (session && localNetwork?.getStatus().mode === 'client' && isLanProxyChannel(channel)) {
-        return await localNetwork.invoke(channel, args, session)
+        if (databaseMaintenance) throw new Error('Дочекайтеся завершення обслуговування бази')
+        if (!isDesktopChannelAllowed(channel, session.role)) throw new Error('Недостатньо прав для цієї дії')
+        for (const argument of args) validateTenantArguments(argument, session.tenant_id)
+        const command = lanOrderClient!.invoke(channel, args, session)
+        activeDesktopCommands.add(command)
+        try { return await command }
+        finally { activeDesktopCommands.delete(command) }
       }
       return await executeDesktopCommand(channel, listener, event, args, session)
     } catch (error) {
@@ -550,6 +586,8 @@ async function executeDesktopCommand(
   if (databaseMaintenance) throw new Error('База готується до перезапуску. Дочекайтеся завершення.')
   if (!PUBLIC_DESKTOP_CHANNELS.has(channel)) {
     if (!session) throw new Error('Необхідно увійти в програму')
+    session = activeSession(requireLocalDatabase(), session)
+    if (!session) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
     if (!isDesktopChannelAllowed(channel, session.role)) {
       throw new Error('Недостатньо прав для цієї дії')
     }
@@ -569,12 +607,7 @@ async function executeDesktopCommand(
 }
 
 function resolveLanSession(userId: string): LanSession | null {
-  const row = requireLocalDatabase().prepare(`
-    SELECT id, tenant_id, role, is_active FROM staff_users
-    WHERE id = ? AND tenant_id = ? LIMIT 1
-  `).get(userId, DEFAULT_TENANT_ID) as (LanSession & { is_active: number }) | undefined
-  if (!row || row.is_active !== 1 || row.role === 'tire_worker') return null
-  return { id: row.id, tenant_id: row.tenant_id, role: row.role }
+  return activeSession(requireLocalDatabase(), { id: userId, tenant_id: DEFAULT_TENANT_ID })
 }
 
 async function executeLanCommand(channel: string, args: unknown[], session: LanSession): Promise<unknown> {
@@ -670,11 +703,14 @@ async function createWindow(): Promise<void> {
   const packagedRendererPath = path.resolve(rendererIndexPath()).toLocaleLowerCase('en-US')
   const window = mainWindow
   window.on('close', () => blackBox?.record('window-close-request'))
-  window.webContents.on('did-finish-load', () => blackBox?.record('renderer-loaded'))
+  window.webContents.on('did-finish-load', () => {
+    blackBox?.record('renderer-loaded')
+    if (audioServiceUnavailable) window.webContents.send('desktop:audio-unavailable')
+  })
   window.webContents.on('console-message', (_event, level, message) => {
     if (level === 3) blackBox?.record('renderer-console-error', new Error(message.slice(0, 2048)))
   })
-  const recovery = new RendererRecovery({
+  const makeRecovery = () => new RendererRecovery({
     isDestroyed: () => window.isDestroyed(),
     load: async () => {
       if (!app.isPackaged && developmentUrl) return window.loadURL(developmentUrl)
@@ -684,14 +720,28 @@ async function createWindow(): Promise<void> {
     },
     retry: (attempt, error) => writeDesktopDiagnostic('renderer-load-retry', { attempt, target: rendererIndexPath(), error: diagnosticValue(error) }),
   })
+  let recovery = makeRecovery()
   let recoveryFailed = false
   const failRecovery = (error: unknown) => {
     if (recoveryFailed || window.isDestroyed()) return
     recoveryFailed = true
     recovery.stop()
     writeDesktopDiagnostic('renderer-recovery-failed', diagnosticValue(error))
-    dialog.showErrorBox('Forsage не вдалося відновити', error instanceof Error ? error.message : 'Перезапустіть програму. Дані залишено в локальній базі.')
-    app.quit()
+    // Do not quit the database/server because one UI process failed. No sync
+    // modal that blocks the main loop; only the user chooses to close the app.
+    window.show()
+    void dialog.showMessageBox(window, {
+      type: 'error', title: 'Не вдалося відновити інтерфейс',
+      message: 'Інтерфейс тимчасово не працює. Локальні дані збережено.',
+      detail: 'Можна повторити завантаження інтерфейсу без закриття всієї програми. Якщо перед збоєм проводили оплату — перевірте список чеків перед повторною оплатою.',
+      buttons: ['Відновити інтерфейс', 'Закрити програму'], defaultId: 0, cancelId: 1,
+    }).then(result => {
+      if (window.isDestroyed()) return
+      if (result.response === 1) { app.quit(); return }
+      recovery = makeRecovery()
+      recoveryFailed = false
+      void recovery.start().catch(failRecovery)
+    }).catch(dialogError => writeDesktopDiagnostic('recovery-dialog-failed', dialogError))
   }
   window.on('closed', () => {
     blackBox?.record('window-closed')
@@ -772,6 +822,7 @@ async function executePrintHtmlDocument(html: string, options: DesktopPrintOptio
   const deviceName = String(options.deviceName ?? '').trim()
   if (options.printerRole) assertPrinterRole(deviceName, options.printerRole)
   const documentName = createPrintDocumentName(options.printerRole)
+  assertPrintRuntimeFiles()
   const widthMm = sanitizePageMm(options.widthMm, 40, 10, 300)
   const heightMm = sanitizePageMm(options.heightMm, 30, 10, 300)
   const printWindow = new BrowserWindow({
@@ -783,6 +834,7 @@ async function executePrintHtmlDocument(html: string, options: DesktopPrintOptio
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: {
+      session: getPrintSession(),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -795,7 +847,7 @@ async function executePrintHtmlDocument(html: string, options: DesktopPrintOptio
 
   try {
     await withPrintTimeout(
-      printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`),
+      loadPrintHtml(printWindow, html),
       15_000,
       'PRINT_RENDER_TIMEOUT',
       destroyPrintWindow,
@@ -901,6 +953,9 @@ async function executePrintHtmlDocument(html: string, options: DesktopPrintOptio
         // Принтер не готовий або завдання не поїхало — інші налаштування паперу
         // цього не виправлять, тому каскад далі не має сенсу.
         if (error instanceof Error && isSpoolerGuardError(error)) break
+        // Only a rejected configuration is known not to have printed. Never
+        // resubmit an ambiguous driver failure with different paper settings.
+        if (!(error instanceof Error) || error.message !== 'Invalid printer settings') break
         // «Invalid printer settings» / подібне — пробуємо наступний, простіший варіант
       }
     }
@@ -985,6 +1040,18 @@ app.whenReady().then(async () => {
     ? path.join(process.env.LOCALAPPDATA, 'Forsage')
     : app.getPath('userData')
   desktopDataRoot = dataRoot
+  const printGuard = new PrintAttemptGuard(path.join(dataRoot, 'print-state', 'attempt'), async printer => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'warning', title: 'Перевірте попередній друк',
+      message: 'Попередня спроба друку не має підтвердженого результату.',
+      detail: `Принтер: ${printer}\nПеревірте папір і чергу Windows. Якщо документ уже надруковано або ще друкується — скасуйте повтор. Новий друк почнеться лише після вашого підтвердження.`,
+      buttons: ['Скасувати', 'Перевірив — друкувати'], defaultId: 0, cancelId: 0,
+    })
+    return result.response === 1
+  }, writeDesktopDiagnostic)
+  setPrinterJobGuard((printer, job) => printGuard.run(printer, job))
+  setPrintProcessReporter(writeDesktopDiagnostic)
   const opened = openLocalDatabaseOrExplain(dataRoot)
   if (!opened) return
   localDatabase = opened.database
@@ -994,7 +1061,7 @@ app.whenReady().then(async () => {
   localOrders = new LocalOrderRepository(localDatabase)
   localPos = new LocalPosRepository(localDatabase)
   localSupply = new LocalSupplyRepository(localDatabase)
-  localStaff = new LocalStaffRepository(localDatabase)
+  localStaff = new LocalStaffRepository(localDatabase, reason => blackBox?.record('local-auth-result', { reason }))
   localWarehouse = new LocalWarehouseRepository(localDatabase)
   localSync = new LocalSyncRepository(localDatabase, createMirrorSigner(path.dirname(path.dirname(localDatabase.databasePath)), {
     encrypt: text => {
@@ -1021,11 +1088,26 @@ app.whenReady().then(async () => {
   })
   cashalot = new CashalotService(dataRoot)
   localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession)
+  lanOrderQueue = new LanOrderQueue(localDatabase, (channel, args, session) => localNetwork!.invoke(channel, args, session))
+  lanOrderClient = new LanOrderClient(localNetwork, lanOrderQueue)
+  lanOrderTimer = setInterval(() => {
+    if (databaseMaintenance || localNetwork?.getStatus().mode !== 'client') return
+    let session: LanSession
+    try { session = requireDesktopSession() } catch { return }
+    const work = lanOrderClient!.flush(session)
+    activeDesktopCommands.add(work)
+    void work.catch(error => recordDesktopProblem({ source: 'app', code: 'lan.order_queue', title: 'Черга замовлень ПК менеджера', detail: error instanceof Error ? error.message : String(error) }))
+      .finally(() => activeDesktopCommands.delete(work))
+  }, 15_000)
+  lanOrderTimer.unref()
 
-  handleDesktopIpc('desktop:get-runtime-info', () => requireLocalDatabase().info())
+  handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo }))
 
   handleDesktopIpc('desktop:lan:get-status', () => localNetwork?.getStatus())
-  handleDesktopIpc('desktop:lan:update', (_event, input) => localNetwork?.update(input))
+  handleDesktopIpc('desktop:lan:update', (_event, input) => {
+    if (lanOrderQueue?.hasPending()) throw new Error('Спочатку передайте або перевірте всі офлайн-замовлення. Зміна головного ПК зараз може розділити бази.')
+    return localNetwork?.update(input)
+  })
   handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
   handleDesktopIpc('desktop:problems:list', (_event, options?: { includeResolved?: boolean; limit?: number }) =>
     requireLocalProblems().list({ includeResolved: options?.includeResolved, limit: options?.limit }))
@@ -1054,6 +1136,7 @@ app.whenReady().then(async () => {
     shiftBackups!.cloudFailed(requireDesktopSession().tenant_id, id, String(message)))
   handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
   handleDesktopIpc('desktop:backup:restore', async (_event, fileName: string) => {
+    if (lanOrderQueue?.hasPending()) throw new Error('Не можна відновити стару базу, поки є непередані офлайн-замовлення. Спочатку збережіть і звірте їх із головним ПК.')
     if (activeDesktopCommands.size > 1) {
       throw new Error('Дочекайтеся завершення поточних операцій перед відновленням бази.')
     }
@@ -1180,6 +1263,13 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:catalog:upsert-product', () => assertLocalDataAuthority('desktop:catalog:upsert-product'))
   handleDesktopIpc('desktop:catalog:analytics', (_event, input) => localAnalytics(requireLocalDatabase(), input))
+  handleDesktopIpc('desktop:catalog:agent-scan', (_event, input) => runCatalogAgent(requireLocalDatabase().dataRoot, 'scan', input ?? {}, requireDesktopSession().id))
+  handleDesktopIpc('desktop:catalog:agent-apply', async (_event, input) => {
+    const userId = requireDesktopSession().id
+    const backupPath = await requireLocalDatabase().backupNow()
+    const result = await runCatalogAgent(requireLocalDatabase().dataRoot, 'apply', input, userId)
+    return { ...result, backupPath }
+  })
   handleDesktopIpc('desktop:catalog:apply-batch', (_event, input) => applyCatalogBatch(requireLocalDatabase().dataRoot, input))
   handleDesktopIpc('desktop:catalog:save-product', (_event, product: LocalProductUpsert, options) =>
     requireLocalCatalog().saveProduct(product, options),
@@ -1189,6 +1279,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:catalog:list-cross-numbers', (_event, productId: string) =>
     requireLocalCatalog().listCrossNumbers(productId),
+  )
+  handleDesktopIpc('desktop:catalog:change-cross-numbers', (_event, productId: string, change) =>
+    requireLocalCatalog().changeCrossNumbers(productId, change),
   )
   handleDesktopIpc('desktop:catalog:list-analogs', (_event, productId: string, limit?: number) =>
     requireLocalCatalog().listAnalogs(productId, undefined, limit),
@@ -1220,58 +1313,46 @@ app.whenReady().then(async () => {
   )
 
   handleDesktopIpc('desktop:auth:login', (_event, phone: string, password: string) => {
+    desktopLoginGeneration++
     const user = requireLocalStaff().loginWithPassword(phone, password)
-    getRememberedAccess().forget()
-    rememberedSessionRequired = false
-    passwordAuthenticatedAt = Date.now()
-    desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
+    completeDesktopLogin(user)
     return user
   })
   handleDesktopIpc('desktop:auth:login-online', async (_event, phone: string, password: string) => {
-    const result = await loginOnlineAndProvisionLocal(phone, password)
-    getRememberedAccess().forget()
-    rememberedSessionRequired = false
-    passwordAuthenticatedAt = Date.now()
+    const generation = ++desktopLoginGeneration
+    const result = await loginOnlineAndProvisionLocal(phone, password, generation)
+    if (generation !== desktopLoginGeneration) throw Error('Спробу входу скасовано')
+    completeDesktopLogin(result.user)
     return result
   })
   handleDesktopIpc('desktop:auth:remembered-status', () => rememberedStatus())
-  handleDesktopIpc('desktop:auth:set-pin-required', (_event, enabled: boolean) => {
-    requireDesktopSession()
-    if (typeof enabled !== 'boolean') throw Error('Некоректне налаштування PIN')
-    localDatabase!.prepare("INSERT INTO app_meta(key,value_json,updated_at) VALUES('local_login_pin_required',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at").run(JSON.stringify(enabled),new Date().toISOString())
-    return { pinRequired: enabled }
-  })
-  handleDesktopIpc('desktop:auth:remember', (_event, pin: string) => {
-    const session = requireDesktopSession()
-    if (Date.now()-passwordAuthenticatedAt > 120_000 || !passwordAuthenticatedAt) throw Error('Спочатку увійдіть із паролем')
-    if (rememberedPinRequired() && !/^\d{4}$/.test(pin)) throw Error('PIN має містити 4 цифри')
-    let user = rememberedUser(session.id,session.tenant_id)
-    if (!user) throw Error('Працівника не знайдено')
-    if (rememberedPinRequired()) {
-      if (!user.pin_hash) requireLocalStaff().setPin(session.id,pin,session.tenant_id)
-      else if (!requireLocalStaff().verifyPin(session.id,pin,session.tenant_id).valid) throw Error('Невірний поточний PIN')
-    }
-    user = rememberedUser(session.id,session.tenant_id)!
-    getRememberedAccess().remember(user)
-    rememberedSessionRequired = true
-    passwordAuthenticatedAt = 0
-    return rememberedStatus()
-  })
-  handleDesktopIpc('desktop:auth:unlock-remembered', (_event, pin: string) => {
-    const user = getRememberedAccess().unlock(pin)
+  handleDesktopIpc('desktop:auth:restore', () => {
+    desktopLoginGeneration++
+    const user = getRememberedAccess().restore()
+    if (!user) return null
     desktopAuthSession = { id:user.id, tenant_id:user.tenant_id, role:user.role }
     rememberedSessionRequired = true
-    passwordAuthenticatedAt = 0
     return user
   })
   handleDesktopIpc('desktop:auth:logout', () => {
+    desktopLoginGeneration++
     getRememberedAccess().forget()
     rememberedSessionRequired = false
-    passwordAuthenticatedAt = 0
     desktopAuthSession = null
     return { success: true }
   })
-  handleDesktopIpc('desktop:staff:list-users', () => requireLocalStaff().listUsers())
+  handleDesktopIpc('desktop:staff:list-users', (_event, includeArchived?: boolean) => requireLocalStaff().listUsers(requireDesktopSession().tenant_id, includeArchived === true))
+  handleDesktopIpc('desktop:staff:restore-user', (_event, id: string) => {
+    const session = requireDesktopSession()
+    if (!['owner', 'admin'].includes(session.role)) throw new Error('Недостатньо прав для відновлення працівника')
+    return requireLocalStaff().restoreUser(id, session.tenant_id)
+  })
+  handleDesktopIpc('desktop:staff:save-settings', (_event, id: string, input: any, rules: any[]) => {
+    const session = requireDesktopSession()
+    if (!['owner', 'admin'].includes(session.role)) throw new Error('Недостатньо прав для зміни працівника')
+    if (id === session.id && (input.is_active === false || input.role === 'tire_worker')) throw new Error('Не можна вимкнути власний доступ')
+    return requireLocalStaff().saveUserSettings(id, input, rules, session.tenant_id)
+  })
   handleDesktopIpc('desktop:purchases:list-rules', () => requireLocalPurchases().listRules(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:purchases:create-rule', (_event, input: any) => requireLocalPurchases().createRule(input))
   handleDesktopIpc('desktop:purchases:delete-rule', (_event, id: string) => requireLocalPurchases().deleteRule(id, requireDesktopSession().tenant_id))
@@ -1280,8 +1361,16 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:purchases:supplier-needs', () => requireLocalPurchases().supplierNeeds(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password?: string) =>
     requireLocalStaff().saveServerUser(input, password))
-  handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => requireLocalStaff().updateUser(id, input))
-  handleDesktopIpc('desktop:staff:delete-user', (_event, id: string) => requireLocalStaff().deleteUser(id))
+  handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => {
+    if (id === requireDesktopSession().id && (input.is_active === false || input.role === 'tire_worker')) throw new Error('Не можна вимкнути власний доступ')
+    return requireLocalStaff().updateUser(id, input)
+  })
+  handleDesktopIpc('desktop:staff:delete-user', (_event, id: string) => {
+    const session = requireDesktopSession()
+    if (!['owner', 'admin'].includes(session.role)) throw new Error('Недостатньо прав для видалення працівника')
+    if (id === session.id) throw new Error('Не можна видалити власний обліковий запис')
+    return requireLocalStaff().deleteUser(id, session.tenant_id)
+  })
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
   handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
@@ -1301,6 +1390,11 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
+  for (const kind of ['movement', 'reserve', 'consumption'] as const) {
+    handleDesktopIpc('desktop:warehouse:resolve-' + kind, (_event, operationId: string) =>
+      requireLocalWarehouse().resolveOperation(kind, operationId, requireDesktopSession().id, requireDesktopSession().tenant_id),
+    )
+  }
   handleDesktopIpc('desktop:warehouse:list-movements', (_event, input?: any) =>
     requireLocalWarehouse().listMovements(input),
   )
@@ -1321,6 +1415,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:warehouse:get-writeoff', (_event, id: string, tenantId?: string) =>
     requireLocalWarehouse().getWriteoff(id, tenantId),
+  )
+  handleDesktopIpc('desktop:warehouse:get-writeoff-by-operation', (_event, id: string) =>
+    requireLocalWarehouse().getWriteoffByOperation(id, requireDesktopSession().id, requireDesktopSession().tenant_id),
   )
   handleDesktopIpc('desktop:warehouse:create-writeoff', (_event, input: any) =>
     requireLocalWarehouse().createWriteoff({ ...input, user_id: requireDesktopSession().id }),
@@ -1366,20 +1463,24 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:inventory:scan', (_event, sessionId: string, input: any) =>
     requireLocalInventory().scan(sessionId, { ...input, user_id: requireDesktopSession().id }),
   )
-  handleDesktopIpc('desktop:inventory:set-item-qty', (_event, sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) =>
-    requireLocalInventory().setItemQty(sessionId, itemId, input),
+  handleDesktopIpc('desktop:inventory:set-item-qty', (_event, sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number; expected_revision?: string }) =>
+    requireLocalInventory().setItemQty(sessionId, itemId, { ...input, expected_revision: requireDocumentRevision(input?.expected_revision) }),
   )
-  handleDesktopIpc('desktop:inventory:remove-item', (_event, sessionId: string, itemId: string, tenantId?: string) =>
-    requireLocalInventory().removeItem(sessionId, itemId, tenantId),
+  handleDesktopIpc('desktop:inventory:remove-item', (_event, sessionId: string, itemId: string, tenantId?: string, expectedRevision?: string) =>
+    requireLocalInventory().removeItem(sessionId, itemId, tenantId, requireDocumentRevision(expectedRevision)),
   )
   handleDesktopIpc('desktop:inventory:labels', (_event, sessionId: string, tenantId?: string) =>
     requireLocalInventory().getLabels(sessionId, tenantId),
   )
-  handleDesktopIpc('desktop:inventory:apply-price', (_event, sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }) =>
-    requireLocalInventory().applyPrice(sessionId, input),
+  handleDesktopIpc('desktop:inventory:update-products', (_event, sessionId: string, input: Parameters<LocalInventoryRepository['updateProducts']>[1]) =>
+    requireLocalInventory().updateProducts(sessionId, input),
   )
-  handleDesktopIpc('desktop:inventory:complete', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) =>
-    requireLocalInventory().complete(sessionId, { ...(input ?? {}), user_id: requireDesktopSession().id }),
+  handleDesktopIpc('desktop:inventory:apply-price', (_event, sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number; expected_price?: number }) => {
+    if (!Number.isSafeInteger(input?.expected_price) || Number(input?.expected_price) < 0) throw new Error('DOCUMENT_CONFLICT: Звірте актуальну ціну товару перед зміною.')
+    return requireLocalInventory().applyPrice(sessionId, input)
+  })
+  handleDesktopIpc('desktop:inventory:complete', (_event, sessionId: string, input?: { tenant_id?: string; user_id?: string | null; expected_revision?: string }) =>
+    requireLocalInventory().complete(sessionId, { ...(input ?? {}), expected_revision: requireDocumentRevision(input?.expected_revision), user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:orders:list-ready', (_event, input?: { tenant_id?: string; search?: string; limit?: number }) =>
     requireLocalOrders().listReadyOrders(input),
@@ -1387,9 +1488,26 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:orders:list', (_event, input) =>
     requireLocalOrders().listOrders(input),
   )
-  handleDesktopIpc('desktop:orders:save', (_event, input, id?: string) =>
-    requireLocalOrders().saveOrder({ ...input, manager_id: requireDesktopSession().id }, id),
+  handleDesktopIpc('desktop:orders:count', (_event, input) => requireLocalOrders().countOrders(input))
+  handleDesktopIpc('desktop:orders:save', (_event, input, id?: string) => {
+    if (id && !String(input?.expected_updated_at ?? '').trim()) throw new Error('Немає версії замовлення. Відкрийте актуальну картку перед редагуванням.')
+    return requireLocalOrders().saveOrder({ ...input, manager_id: requireDesktopSession().id }, id)
+  })
+  handleDesktopIpc('desktop:orders:get-save-result', (_event, operationId: string, id?: string) =>
+    requireLocalOrders().getSaveResult(operationId, requireDesktopSession().id, requireDesktopSession().tenant_id, id),
   )
+  handleDesktopIpc('desktop:orders:accept-offline', (_event, input) =>
+    requireLocalOrders().acceptOfflineOrder(input, requireDesktopSession()),
+  )
+  handleDesktopIpc('desktop:orders:offline-status', () => lanOrderClient?.status(requireDesktopSession()))
+  handleDesktopIpc('desktop:orders:retry-offline', (_event, id: string) => {
+    if (localNetwork?.getStatus().mode !== 'client') throw new Error('Ця дія доступна тільки на ПК менеджера')
+    return lanOrderClient!.retry(requireDesktopSession(), id)
+  })
+  handleDesktopIpc('desktop:orders:discard-offline', (_event, id: string) => {
+    if (localNetwork?.getStatus().mode !== 'client') throw new Error('Ця дія доступна тільки на ПК менеджера')
+    return lanOrderClient!.discard(requireDesktopSession(), id)
+  })
   handleDesktopIpc('desktop:orders:delete', (_event, id: string, tenantId?: string) =>
     requireLocalOrders().deleteOrder(id, tenantId),
   )
@@ -1455,22 +1573,22 @@ app.whenReady().then(async () => {
     requireLocalSupply().createInvoice({ ...input, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:create-invoice-from-ai', (_event, input: any) =>
-    requireLocalSupply().createInvoiceFromAiRows({ ...input, user_id: requireDesktopSession().id }),
+    createAiInvoiceInWorker(requireLocalDatabase().dataRoot, { ...input, tenant_id: requireDesktopSession().tenant_id, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:supply:update-invoice', (_event, id: string, input: any) =>
-    requireLocalSupply().updateInvoice(id, input),
+    requireLocalSupply().updateInvoice(id, { ...input, expected_revision: requireDocumentRevision(input?.expected_revision) }),
   )
   handleDesktopIpc('desktop:supply:pay-invoice', (_event, id: string, input: any) =>
-    requireLocalSupply().payInvoice(id, { ...input, user_id: requireDesktopSession().id }),
+    requireLocalSupply().payInvoice(id, { ...input, user_id: requireDesktopSession().id, expected_revision: requireDocumentRevision(input?.expected_revision) }),
   )
   handleDesktopIpc('desktop:supply:post-invoice', (_event, id: string, input?: any) =>
-    requireLocalSupply().postInvoice(id, { ...(input ?? {}), user_id: requireDesktopSession().id }),
+    requireLocalSupply().postInvoice(id, { ...(input ?? {}), user_id: requireDesktopSession().id, expected_revision: requireDocumentRevision(input?.expected_revision) }),
   )
-  handleDesktopIpc('desktop:supply:cancel-invoice', (_event, id: string, tenantId?: string) =>
-    requireLocalSupply().cancelInvoice(id, tenantId),
+  handleDesktopIpc('desktop:supply:cancel-invoice', (_event, id: string, tenantId?: string, expectedRevision?: string) =>
+    requireLocalSupply().cancelInvoice(id, tenantId, requireDocumentRevision(expectedRevision)),
   )
-  handleDesktopIpc('desktop:supply:delete-invoice', (_event, id: string, tenantId?: string) =>
-    requireLocalSupply().deleteInvoice(id, tenantId),
+  handleDesktopIpc('desktop:supply:delete-invoice', (_event, id: string, tenantId?: string, expectedRevision?: string) =>
+    requireLocalSupply().deleteInvoice(id, tenantId, requireDocumentRevision(expectedRevision)),
   )
   handleDesktopIpc('desktop:pos:list-debtors', (_event, limit?: number) =>
     requireLocalPos().listDebtors(undefined, limit),
@@ -1489,6 +1607,12 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:pos:get-customer-sales', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getCustomerSales(id, tenantId),
+  )
+  handleDesktopIpc('desktop:supply:preview-invoice-from-ai', (_event, input: any) =>
+    previewAiInvoiceInWorker(requireLocalDatabase().dataRoot, { ...input, tenant_id: requireDesktopSession().tenant_id }),
+  )
+  handleDesktopIpc('desktop:supply:commit-receiving', (_event, input: any) =>
+    commitReceivingInWorker(requireLocalDatabase().dataRoot, { ...input, tenant_id: requireDesktopSession().tenant_id, user_id: requireDesktopSession().id }),
   )
   handleDesktopIpc('desktop:pos:save-customer', (_event, input, id?: string) => {
     const pos = requireLocalPos()
@@ -1574,6 +1698,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:pos:get-return', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getReturn(id, tenantId),
+  )
+  handleDesktopIpc('desktop:pos:get-return-by-operation', (_event, id: string) =>
+    requireLocalPos().getReturnByOperation(id, requireDesktopSession().id, requireDesktopSession().tenant_id),
   )
   handleDesktopIpc('desktop:pos:get-sale-for-return', (_event, saleId: string, tenantId?: string) =>
     requireLocalPos().getSaleForReturn(saleId, tenantId),
@@ -1754,6 +1881,12 @@ process.on('unhandledRejection', (reason) => {
 app.on('child-process-gone', (_event, details) => {
   if (details.reason !== 'clean-exit' && details.reason !== 'killed') {
     writeDesktopDiagnostic('child-process-gone', details)
+    if (details.type === 'Utility' && details.serviceName === 'audio.mojom.AudioService') {
+      // Sound is optional: stop reopening a failed native service for every scan.
+      audioServiceUnavailable = true
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:audio-unavailable')
+      blackBox?.record('audio-disabled-for-session')
+    }
   }
 })
 
@@ -1764,6 +1897,8 @@ app.on('before-quit', (event) => {
   if (databaseMaintenance) return
   blackBox?.record('shutdown-start')
   databaseMaintenance = true
+  if (lanOrderTimer) clearInterval(lanOrderTimer)
+  lanOrderTimer = null
   stopBackupScheduler?.()
   stopBackupScheduler = null
   void (async () => {
@@ -1771,6 +1906,7 @@ app.on('before-quit', (event) => {
       await localNetwork?.stop()
       // Не закриваємо SQLite під оплатою/фіскальною відповіддю, що ще триває.
       await Promise.allSettled([...activeDesktopCommands])
+      await lanOrderQueue?.settle()
       cashalot?.stopWorker()
       await shiftBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))

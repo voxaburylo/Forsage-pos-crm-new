@@ -1,3 +1,4 @@
+import { receiptPrintErrorMessage } from './receiptPrintError'
 import { createPortal } from 'react-dom'
 import qrcode from 'qrcode-generator'
 import type { Sale } from '@/types/sale'
@@ -35,7 +36,7 @@ function cached(key: string): string {
 
 export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerName, paperWidthMm }: Props) {
   const isOfflineReceipt = sale.sale_number.startsWith('OFF-')
-  const savedWidth = Number(localStorage.getItem('forsage_receipt_width_mm'))
+  const savedWidth = Number(cached('forsage_receipt_width_mm'))
   const receiptWidth = paperWidthMm ?? (savedWidth === 80 ? 80 : 58)
   // Офлайн-безпечно: якщо пропси не передані, беремо з кешу localStorage
   const name = shopName || cached('forsage_shop_name') || 'Форсаж'
@@ -63,12 +64,12 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
           width: ${receiptWidth}mm;
           max-width: ${receiptWidth}mm;
           margin: 0;
-          padding: 2mm ${sidePadding}mm 4mm;
-          font-family: 'Courier New', 'Lucida Console', monospace;
+          padding: 2mm ${sidePadding}mm 6mm;
+          font-family: Arial, 'Segoe UI', sans-serif;
           /* Термопринтер друкує лише чистий чорний; сірі відтінки він дизерить
              у крапки — виходить «брудно». Тому все чорне і жирнувате, а шрифт
              більший, бо на 10px чек майже не читався. */
-          font-size: 13px;
+          font-size: 15px;
           font-weight: 700;
           line-height: 1.4;
           color: #000;
@@ -81,12 +82,14 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
         .receipt-print .rp-center { text-align: center; }
         .receipt-print .rp-bold { font-weight: 700; }
         .receipt-print .rp-large { font-size: 17px; }
-        .receipt-print .rp-small { font-size: 11px; color: #000; }
+        .receipt-print .rp-small { font-size: 12px; color: #000; }
         .receipt-print .rp-dash { border: none; border-top: 1px dashed #000; margin: 2mm 0; }
         .receipt-print .rp-thin { border: none; border-top: 1px solid #000; margin: 1.5mm 0; }
         .receipt-print .rp-row { display: flex; justify-content: space-between; gap: 2mm; }
         .receipt-print .rp-row > :last-child { flex-shrink: 0; text-align: right; }
-        .receipt-print .rp-item-name { white-space: normal; overflow-wrap: anywhere; }
+        .receipt-print .rp-item-price { font-size: 13px; line-height: 1.3; gap: 1mm; }
+        .receipt-print .rp-quantity { white-space: nowrap; }
+        .receipt-print .rp-item-name { font-size: 15px; white-space: normal; overflow-wrap: anywhere; }
         .receipt-print .rp-total { font-size: 22px; font-weight: 700; text-align: center; margin: 2mm 0; }
         .receipt-print .rp-thanks { text-align: center; margin-top: 2mm; font-size: 13px; }
         .receipt-print svg { display: block; width: 22mm; height: 22mm; margin: 0 auto; }
@@ -102,9 +105,9 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
       <hr className="rp-dash" />
 
       {/* Службова інформація */}
-      <div className="rp-row">
-        <span>Чек: #{sale.sale_number}</span>
-        <span>{formatDateTime(sale.completed_at)}</span>
+      <div className="rp-small">
+        <div>Чек: #{sale.sale_number}</div>
+        <div>{formatDateTime(sale.completed_at)}</div>
       </div>
       {sale.customer && (
         <div>Клієнт: {sale.customer.full_name ?? sale.customer.phone}</div>
@@ -117,7 +120,7 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
       {/* Заголовок таблиці */}
       <div className="rp-row rp-bold rp-small">
         <span>Товар</span>
-        <span>     Qty    Сума</span>
+        <span>К-ть / Сума</span>
       </div>
       <hr className="rp-thin" />
 
@@ -125,8 +128,8 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
       {(sale.sale_items ?? []).map((item, i) => (
         <div key={i} style={{ marginBottom: '1mm' }}>
           <div className="rp-item-name">{item.product?.name ?? item.product_id}</div>
-          <div className="rp-row">
-            <span>{kopecksToHryvnia(item.unit_price)} ₴ × {item.qty} {item.product?.unit ?? 'шт'}</span>
+          <div className="rp-row rp-item-price">
+            <span>{kopecksToHryvnia(item.unit_price)} ₴ × <span className="rp-quantity">{item.qty} {item.product?.unit ?? 'шт'}</span></span>
             <span className="rp-bold">{kopecksToHryvnia(item.total)} ₴</span>
           </div>
           {item.discount > 0 && (
@@ -187,27 +190,6 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
   )
 }
 
-/** Людське пояснення для кодів охорони черги друку (див. spoolerGuard). */
-function receiptPrintErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error ?? '')
-  if (raw.includes('PRINT_QUEUE_STUCK')) {
-    return 'У черзі чекового принтера залипло старе завдання, і Windows не дає його прибрати. '
-      + 'Перезапустіть службу «Диспетчер друку» (Спулер) або комп’ютер.'
-  }
-  if (raw.includes('PRINT_PRINTER_NOT_READY') || raw.includes('PRINT_NOT_CONFIRMED')) {
-    return 'Чековий принтер не готовий: перевірте живлення, USB-кабель і наявність паперу. Чек НЕ надруковано.'
-  }
-  if (raw.includes('PRINT_RECEIPT_PRINTER_NOT_SET') || raw.includes('PRINT_RECEIPT_PRINTER_MISMATCH')) {
-    return 'Чековий принтер POS-58 не знайдено. Чек не буде перенаправлено на принтер етикеток POS-80.'
-  }
-  if (raw.includes('PRINT_OUTCOME_UNKNOWN')) {
-    return 'Windows не підтвердила результат друку. Не запускайте чек повторно автоматично: перевірте принтер і чергу друку.'
-  }
-  if (raw.includes('PRINT_RENDER_TIMEOUT') || raw.includes('PRINT_RESOURCES_TIMEOUT')) {
-    return 'Чек не вдалося підготувати до друку вчасно. Повторний прихований друк не запускався.'
-  }
-  return ''
-}
 
 const receiptPrintFlight = new SingleFlight<void>()
 

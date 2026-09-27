@@ -7,6 +7,10 @@ import { calculateBarcodeCanvasGeometry } from './tsplBarcodeRaster'
 import { enqueuePrinterJob } from './printerJobQueue'
 import { assertPrinterRole } from './printerRole'
 import { withPrintTimeout } from './printTimeout'
+import { waitForPrintProcess } from './printProcess'
+import { loadPrintHtml } from './loadPrintHtml'
+import { getPrintSession } from './printSession'
+import { assertPrintRuntimeFiles } from './printRuntime'
 
 // Прямий друк етикеток мовою TSPL (термопринтери типу PS-HL80, Xprinter тощо).
 //
@@ -70,13 +74,13 @@ function sanitizeMm(value: unknown, fallback: number, min: number, max: number):
 // скінчились етикетки, відкрита кришка. Windows не прибирає такі завдання сам —
 // вони лишаються Retained і мовчки блокують ВСІ наступні друки.
 const FATAL_JOB_PATTERN = 'Error|Offline|PaperOut|UserIntervention'
-const NOT_READY_PATTERN = 'Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
+const NOT_READY_PATTERN = 'Paused|Error|Offline|PaperOut|PaperProblem|NotAvailable|Unavailable'
 // Blocked у Windows для RAW/USB-принтерів може бути коротким перехідним станом.
 // Його не можна одразу знімати з черги: так програма сама скасовувала живий друк.
 // Найпідступніше зависання не має статусу помилки взагалі: `Printing, Retained`
 // з PagesPrinted=0, яке висить годинами. Ловимо його за віком і відсутністю
 // прогресу — інакше воно блокує чергу непоміченим.
-const IN_FLIGHT_JOB_PATTERN = 'Printing|Retained|Deleting|Spooling'
+const IN_FLIGHT_JOB_PATTERN = 'Normal|None|Printing|Retained|Deleting|Spooling'
 const STALE_JOB_SECONDS = 90
 
 const RAW_PRINT_SCRIPT = String.raw`
@@ -141,7 +145,7 @@ public class ForsageRawPrint {
   public static extern bool OpenPrinter(string szPrinter, out IntPtr hPrinter, IntPtr pd);
   [DllImport("winspool.Drv")] public static extern bool ClosePrinter(IntPtr hPrinter);
   [DllImport("winspool.Drv", EntryPoint="StartDocPrinterW", SetLastError=true, CharSet=CharSet.Unicode)]
-  public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In] DOCINFO di);
+  public static extern uint StartDocPrinter(IntPtr hPrinter, int level, [In] DOCINFO di);
   [DllImport("winspool.Drv")] public static extern bool EndDocPrinter(IntPtr hPrinter);
   [DllImport("winspool.Drv")] public static extern bool StartPagePrinter(IntPtr hPrinter);
   [DllImport("winspool.Drv")] public static extern bool EndPagePrinter(IntPtr hPrinter);
@@ -159,13 +163,17 @@ try {
   $di = New-Object ForsageRawPrint+DOCINFO
   $di.pDocName = $docName
   $di.pDataType = 'RAW'
-  if (-not [ForsageRawPrint]::StartDocPrinter($h, 1, $di)) { throw 'RAW_PRINT_STARTDOC_FAILED' }
-  [void][ForsageRawPrint]::StartPagePrinter($h)
+  [Console]::Out.WriteLine('FORSAGE_PRINT_STAGE:submission-started')
+  $jobId = [ForsageRawPrint]::StartDocPrinter($h, 1, $di)
+  if ($jobId -eq 0) { throw 'RAW_PRINT_STARTDOC_FAILED' }
+  [Console]::Out.WriteLine("FORSAGE_PRINT_STAGE:job-created:$jobId")
+  if (-not [ForsageRawPrint]::StartPagePrinter($h)) { throw 'RAW_PRINT_STARTPAGE_FAILED' }
   $written = 0
   if (-not [ForsageRawPrint]::WritePrinter($h, $data, $data.Length, [ref]$written)) { throw 'RAW_PRINT_WRITE_FAILED' }
   if ($written -ne $data.Length) { throw "RAW_PRINT_INCOMPLETE: $written/$($data.Length)" }
-  [void][ForsageRawPrint]::EndPagePrinter($h)
-  [void][ForsageRawPrint]::EndDocPrinter($h)
+  if (-not [ForsageRawPrint]::EndPagePrinter($h)) { throw 'RAW_PRINT_ENDPAGE_FAILED' }
+  if (-not [ForsageRawPrint]::EndDocPrinter($h)) { throw 'RAW_PRINT_ENDDOC_FAILED' }
+  [Console]::Out.WriteLine('FORSAGE_PRINT_STAGE:submitted')
 } finally {
   [void][ForsageRawPrint]::ClosePrinter($h)
 }
@@ -173,8 +181,8 @@ try {
 # ── Postflight ───────────────────────────────────────────────────────────────
 # WritePrinter вважається успішним, щойно байти лягли у спулер — навіть якщо
 # принтера фізично немає. Тому чекаємо, поки завдання реально піде з черги.
-# Черга спорожніла = надруковано; статус помилки = ні. Якщо ж воно й далі
-# спокійно друкується (велика партія), мовчки виходимо з успіхом.
+# Черга спорожніла — Windows завершила відправку, але це не датчик паперу.
+# Для довгої партії приймаємо лише підтверджений прогрес PagesPrinted > 0.
 try {
   $deadline = (Get-Date).AddSeconds(15)
   $failure = $null
@@ -186,17 +194,18 @@ try {
     if ($bad.Count -gt 0) { $failure = $bad[0].JobStatus; break }
     Start-Sleep -Milliseconds 400
   }
-  if (-not $failure) {
+  if ($null -eq $failure) {
     $left = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction SilentlyContinue |
       Where-Object { $_.DocumentName -eq $docName })
     if ($left.Count -gt 0) {
       $active = @($left | Where-Object { $_.PagesPrinted -gt 0 })
-      if ($active.Count -eq 0) { $failure = $left[0].JobStatus }
+      # Normal is a numeric enum value 0: assigning it directly made if($failure)
+      # false and incorrectly reported success for a job still waiting in the queue.
+      if ($active.Count -eq 0) { $failure = 'No pages printed (' + [string]$left[0].JobStatus + ')' }
     }
   }
-  if ($failure) {
-    Get-StuckJobs | Where-Object { $_.DocumentName -eq $docName } |
-      Remove-PrintJob -Confirm:$false -ErrorAction SilentlyContinue
+  if ($null -ne $failure) {
+    # A partially printed job must not be removed or resubmitted automatically.
     throw "TSPL_PRINT_NOT_CONFIRMED: $failure"
   }
 } catch [System.Management.Automation.CommandNotFoundException] {
@@ -211,67 +220,17 @@ function sendRawToPrinter(printerName: string, data: Buffer, signal: AbortSignal
   fs.writeFileSync(scriptPath, RAW_PRINT_SCRIPT, 'utf8')
   const documentName = `Forsage-label-${randomUUID().slice(0, 8)}`
 
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new Error('TSPL_PRINT_ABORTED'))
-      return
-    }
-
-    const ps = spawn('powershell.exe', [
-      '-NoProfile', '-NoLogo', '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass',
-      '-File', scriptPath,
-      '-PrinterName', printerName,
-      '-DocumentName', documentName,
-    ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    let timeout: NodeJS.Timeout | null = null
-    const cleanup = () => {
-      if (timeout) clearTimeout(timeout)
-      signal.removeEventListener('abort', abort)
-    }
-    const succeed = () => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve()
-    }
-    const fail = (error: unknown) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error instanceof Error ? error : new Error(String(error)))
-    }
-    const abort = () => {
-      try { ps.kill() } catch { /* already stopped */ }
-      fail(new Error('TSPL_PRINT_ABORTED'))
-    }
-
-    ps.stdout.on('data', (chunk) => { stdout += String(chunk) })
-    ps.stderr.on('data', (chunk) => { stderr += String(chunk) })
-    ps.on('error', fail)
-    ps.stdin.on('error', fail)
-    signal.addEventListener('abort', abort, { once: true })
-
-    // Із запасом на preflight (~1.5с) і очікування підтвердження друку (до 15с).
-    timeout = setTimeout(() => {
-      try { ps.kill() } catch { /* already stopped */ }
-      fail(new Error('RAW_PRINT_TIMEOUT'))
-    }, 60_000)
-
-    ps.on('close', (exitCode) => {
-      if (exitCode === 0 && stdout.includes('RAW_PRINT_OK')) succeed()
-      else fail(new Error(stderr.trim() || stdout.trim() || `RAW_PRINT_EXIT_${exitCode}`))
-    })
-
-    try {
-      ps.stdin.end(data.toString('base64'))
-    } catch (error) {
-      fail(error)
-    }
+  if (signal.aborted) return Promise.reject(new Error('TSPL_PRINT_ABORTED'))
+  const ps = spawn('powershell.exe', [
+    '-NoProfile', '-NoLogo', '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+    '-PrinterName', printerName, '-DocumentName', documentName,
+  ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  return waitForPrintProcess(ps, data.toString('base64'), {
+    successMarker: 'RAW_PRINT_OK', failureCode: 'RAW_PRINT_FAILED',
+    timeoutCode: 'RAW_PRINT_TIMEOUT', timeoutMs: 60_000,
+    signal, abortCode: 'TSPL_PRINT_ABORTED',
+    printer: printerName, documentName,
   })
 }
 
@@ -472,6 +431,7 @@ async function executeLabelsTsplCore(
   const scaleFactor = screen.getPrimaryDisplay()?.scaleFactor || 1
   const zoom = ZOOM / scaleFactor
 
+  assertPrintRuntimeFiles()
   const renderWindow = new BrowserWindow({
     show: false,
     width: Math.ceil(widthDots / scaleFactor) + 2,
@@ -480,6 +440,7 @@ async function executeLabelsTsplCore(
     frame: false,
     backgroundColor: '#ffffff',
     webPreferences: {
+      session: getPrintSession(),
       offscreen: true,
       sandbox: true,
       contextIsolation: true,
@@ -497,9 +458,8 @@ async function executeLabelsTsplCore(
   try {
     renderWindow.webContents.setFrameRate(30)
     renderWindow.webContents.startPainting()
-    const encodedHtml = Buffer.from(html, 'utf8').toString('base64')
     await stage(
-      renderWindow.loadURL(`data:text/html;charset=utf-8;base64,${encodedHtml}`),
+      loadPrintHtml(renderWindow, html),
       TSPL_RENDER_TIMEOUT_MS,
       'TSPL_RENDER_TIMEOUT',
     )

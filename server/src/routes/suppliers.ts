@@ -18,7 +18,8 @@ const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper'] 
 router.use((req, res, next) => {
   const isInvoiceRoute = req.path === '/invoices' || req.path.startsWith('/invoices/')
   const isQuickCreate = req.method === 'POST' && req.path === '/'
-  return requireRole(...(isInvoiceRoute || isQuickCreate ? RECEIVING_ROLES : SUPPLIER_ROLES))(req, res, next)
+  const isSupplierLookup = req.method === 'GET' && (req.path === '/' || /^\/[0-9a-f-]{36}$/i.test(req.path))
+  return requireRole(...(isInvoiceRoute || isQuickCreate || isSupplierLookup ? RECEIVING_ROLES : SUPPLIER_ROLES))(req, res, next)
 })
 
 // ===================== Приходні накладні =====================

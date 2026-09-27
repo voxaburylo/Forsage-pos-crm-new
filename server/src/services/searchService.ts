@@ -1,3 +1,4 @@
+import { normalizeCatalogSearchQuery, articleSearchTerms } from '../lib/catalogSearchQuery.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -151,6 +152,9 @@ function replaceLatinTokens(text: string, converter: (token: string) => string):
 }
 
 export function buildProductSearchTerms(query: string): string[] {
+  query = normalizeCatalogSearchQuery(query)
+  const articleTerms = articleSearchTerms(query)
+  if (articleTerms.length) return articleTerms
   const terms = new Set<string>()
   addCyrillicVariants(terms, query)
 
@@ -172,7 +176,7 @@ export function buildProductSearchTerms(query: string): string[] {
 }
 
 export async function searchProductsForPOS(q: string, limit: number, tenantId: string): Promise<SearchResult[]> {
-  const cleanQuery = q.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+  const cleanQuery = normalizeCatalogSearchQuery(q)
   const searchTerms = buildProductSearchTerms(cleanQuery)
 
   // [1] Прямий пошук по товарах

@@ -10,6 +10,8 @@ import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
+import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
+import { useScopedAction } from '@/hooks/useScopedAction'
 
 interface FormData {
   phone:         string
@@ -34,6 +36,11 @@ const EMPTY: FormData = {
 }
 
 export default function CustomerFormPage() {
+  const { id } = useParams<{ id: string }>()
+  return <CustomerForm key={id ?? 'new'} />
+}
+
+function CustomerForm() {
   const navigate = useNavigate()
   const { id }   = useParams<{ id: string }>()
   const isEdit   = !!id && id !== 'new'
@@ -46,8 +53,9 @@ export default function CustomerFormPage() {
 
   const [form, setForm]     = useState<FormData>(EMPTY)
   const [tiers, setTiers]   = useState<PriceTier[]>([])
-  const [loading, setLoading] = useState(false)
-  const [saving, setSaving]   = useState(false)
+  const [loading, setLoading] = useState(isEdit)
+  const action = useScopedAction(`${id ?? 'new'}:${role ?? ''}`)
+  const saving = action.busy
 
   useEffect(() => {
     pricingApi.listTiers().then((res) => setTiers(res.data)).catch(() => {})
@@ -55,8 +63,10 @@ export default function CustomerFormPage() {
 
   useEffect(() => {
     if (!isEdit) return
+    let active = true
     setLoading(true)
     customerApi.get(id).then(({ data }) => {
+      if (!active) return
       const d = data as typeof data & { price_tier_id?: string | null }
       setVersion(d.updated_at)
       setLoyaltyMode(d.loyalty_mode ?? 'discount')
@@ -76,9 +86,11 @@ export default function CustomerFormPage() {
         car_vin:       '',
       })
     }).catch(() => {
+      if (!active) return
       toast.error('Клієнта не знайдено')
       navigate('/customers')
-    }).finally(() => setLoading(false))
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [id, isEdit, navigate])
 
   function set(field: keyof FormData, value: string) {
@@ -94,10 +106,11 @@ export default function CustomerFormPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (saving || loading) return
+    if (action.isBusy() || loading) return
     if (!form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
 
-    setSaving(true)
+    const attempt = action.begin()
+    if (!attempt) return
     try {
       const body = {
         phone:         form.phone || undefined,
@@ -120,12 +133,16 @@ export default function CustomerFormPage() {
       }
       if (isEdit) {
         await customerApi.update(id, { ...body, expected_updated_at: version })
+        if (!attempt.isCurrent()) return
         toast.success('Клієнта оновлено')
         navigate('/customers')
       } else {
         const result = await customerApi.create(body as Parameters<typeof customerApi.create>[0])
+        if (!attempt.isCurrent()) return
         if (result.meta?.reused) {
-          toast.success(result.meta.vehicle_added
+          toast.success(result.meta.card_attached
+            ? result.meta.vehicle_added ? 'Клієнт уже є — картку й автомобіль додано' : 'Клієнт уже є — штрихкод картки збережено'
+            : result.meta.vehicle_added
             ? 'Клієнт уже існував — нове авто додано в його картку'
             : 'Клієнт уже існує — відкрито його картку')
         } else {
@@ -134,9 +151,9 @@ export default function CustomerFormPage() {
         navigate(`/customers/${result.data.id}`)
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка збереження')
+      if (attempt.isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка збереження')
     } finally {
-      setSaving(false)
+      attempt.finish()
     }
   }
 
@@ -146,6 +163,7 @@ export default function CustomerFormPage() {
     <Layout title={isEdit ? 'Редагувати клієнта' : 'Новий клієнт'}>
       <div className="max-w-lg">
         <form onSubmit={handleSubmit}>
+          <fieldset disabled={saving}>
           <Card className="space-y-5">
 
             <Input label="Телефон *" type="tel"
@@ -155,6 +173,8 @@ export default function CustomerFormPage() {
             <Input label="Ім'я"
               value={form.full_name} onChange={(e) => set('full_name', e.target.value)}
               placeholder="Іваненко Іван Іванович" />
+
+            <CustomerCardBarcodeField value={form.card_barcode} onChange={(value) => set('card_barcode', value)} disabled={saving} />
 
             <Input label="Email" type="email"
               value={form.email} onChange={(e) => set('email', e.target.value)}
@@ -205,22 +225,6 @@ export default function CustomerFormPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Штрих-код картки</label>
-                <div className="flex gap-2">
-                  <input value={form.card_barcode} onChange={(e) => set('card_barcode', e.target.value)}
-                    placeholder="Згенерувати або ввести"
-                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-                  <button type="button" onClick={() => {
-                      const barcode = '200' + String(Math.floor(Math.random() * 1_000_000_000)).padStart(10, '0')
-                      set('card_barcode', barcode)
-                    }}
-                    className="px-3 py-2 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200">Згенерувати</button>
-                </div>
-              </div>
-            </div>
-
             {canManageFinancials && tiers.length > 0 && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Ціновий рівень</label>
@@ -262,11 +266,12 @@ export default function CustomerFormPage() {
               <Button type="submit" loading={saving} icon={<Save size={16} />}>
                 {isEdit ? 'Зберегти зміни' : 'Створити клієнта'}
               </Button>
-              <Button type="button" variant="secondary" onClick={() => navigate('/customers')}>
+              <Button type="button" variant="secondary" onClick={() => { if (!action.isBusy()) navigate('/customers') }}>
                 Скасувати
               </Button>
             </div>
           </Card>
+          </fieldset>
         </form>
       </div>
     </Layout>

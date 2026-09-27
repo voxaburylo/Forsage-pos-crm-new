@@ -1,6 +1,7 @@
 import { api } from '@/lib/api'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { applyLocalAiAction } from './localAiAction'
+import { aiRequestHistory } from './aiRequestHistory'
 
 export const AI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] as const
 export type AiModel = (typeof AI_MODELS)[number]
@@ -71,7 +72,9 @@ export interface AiChatMessage {
 }
 
 export const aiApi = {
-  status: () => api.get<{ data: AiStatus }>('/api/v1/ai/status'),
+  reviewCatalog: (body: { products: Array<{ id: string; name: string; sku: string; brand: string; category_id: string | null }>; categories: Array<{ id: string; name: string }> }) =>
+    api.post<{ data: { proposals: Array<{ id: string; name: string; sku: string; category_id: string | null; reason: string }> } }>('/api/v1/ai/catalog-review', body, undefined, { timeoutMs: 120000, silent: true }),
+  status: () => api.get<{ data: AiStatus }>('/api/v1/ai/status', { silent: true, timeoutMs: 15_000 }),
   usage:  () => api.get<{ data: AiUsage }>('/api/v1/ai/usage'),
 
   saveConfig: (body: { api_key?: string | null; model?: AiModel; enabled?: boolean }) =>
@@ -81,11 +84,11 @@ export const aiApi = {
     api.post<{ data: { ok: boolean } }>('/api/v1/ai/test', body ?? {}),
 
   chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }) =>
-    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', body, undefined, { timeoutMs: 600000, silent: true }),
+    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', { ...body, history: body.history ? aiRequestHistory(body.history) : undefined }, undefined, { timeoutMs: 600000, silent: true }),
 
   recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[] }) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 180000, silent: true }),
 
-  applyAction: (body: { tool: string; payload: Record<string, any> }): Promise<{ data: AiApplyResult }> =>
-    isDesktopRuntime() ? applyLocalAiAction(body.tool, body.payload) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
+  applyAction: (body: { tool: string; payload: Record<string, any>; operation_id?: string }): Promise<{ data: AiApplyResult }> =>
+    isDesktopRuntime() ? applyLocalAiAction(body.tool, body.payload, body.operation_id) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
 }

@@ -53,6 +53,9 @@ export interface ReceiptTab {
   automaticDiscountPct: number
 }
 
+export type OpenReceiptSnapshot = Pick<ReceiptTab,
+  'idempotencyKey' | 'items' | 'customer' | 'notes' | 'bonusToRedeem' | 'customerOrderId' | 'automaticDiscountPct'>
+
 const MAX_TABS = 5
 
 let tabCounter = 0
@@ -160,6 +163,8 @@ interface POSState {
   closeTab: (tabId: string) => void
   setActiveTab: (tabId: string) => void
   getActiveTab: () => ReceiptTab | null
+
+  replaceOpenReceipts: (receipts: OpenReceiptSnapshot[], activeOperationId?: string | null) => void
 
   // Дії (на активній вкладці)
   addItem: (item: Omit<POSItem, 'total'>) => void
@@ -294,6 +299,19 @@ export const usePOSStore = create<POSState>((set, get) => {
     getActiveTab: () => {
       const { tabs, activeTabId } = get()
       return tabs.find((t) => t.id === activeTabId) ?? null
+    },
+
+    // Hydrate once per cashier session, atomically, before persistence subscribes.
+    replaceOpenReceipts: (receipts, activeOperationId) => {
+      const seen = new Set<string>()
+      const tabs = receipts.slice(0, MAX_TABS).filter(receipt => {
+        if (seen.has(receipt.idempotencyKey)) return false
+        seen.add(receipt.idempotencyKey)
+        return true
+      }).map(receipt => ({ ...createEmptyTab(), ...receipt, ...calcTotals(receipt.items) }))
+      if (!tabs.length) tabs.push(createEmptyTab())
+      const activeTabId = tabs.find(tab => tab.idempotencyKey === activeOperationId)?.id ?? tabs[0].id
+      set({ tabs, activeTabId, ...getActiveTabGetters(tabs, activeTabId) })
     },
 
     // Дії на активній вкладці

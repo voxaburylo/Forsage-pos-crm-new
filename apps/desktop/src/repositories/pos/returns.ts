@@ -108,7 +108,7 @@ export class LocalPosReturns extends LocalPosSales {
       || alreadyRefunded > productRefundPool
       || rows.some((item) => (
         Number(item.already_returned_qty) < 0
-        || Number(item.already_returned_qty) > Number(item.qty)
+        || Math.round(Number(item.already_returned_qty) * 1000) > Math.round(Number(item.qty) * 1000)
         || Number(item.already_refunded_kopecks) < 0
         || Number(item.already_refunded_kopecks) > (allocation.lineRefunds.get(item.id) ?? 0)
       ))
@@ -117,7 +117,7 @@ export class LocalPosReturns extends LocalPosSales {
     }
     const items = returnableRows.map((item) => {
       const refundableTotal = allocation.lineRefunds.get(item.id) ?? 0
-      const alreadyReturnedQty = Number(item.already_returned_qty)
+      const alreadyReturnedQty = Math.round(Number(item.already_returned_qty) * 1000) / 1000
       const alreadyRefundedKopecks = money(Number(item.already_refunded_kopecks))
       return {
         id: item.id,
@@ -131,7 +131,9 @@ export class LocalPosReturns extends LocalPosSales {
         refundable_total: refundableTotal,
         already_returned_qty: alreadyReturnedQty,
         already_refunded_kopecks: alreadyRefundedKopecks,
-        available_qty: Math.max(0, Number(item.qty) - alreadyReturnedQty),
+        available_qty: Math.max(0, Math.round((Number(item.qty) - alreadyReturnedQty) * 1000) / 1000),
+        // Public form contract; keep the older name for repository/report consumers.
+        available_refund: Math.max(0, refundableTotal - alreadyRefundedKopecks),
         refundable_kopecks: Math.max(0, refundableTotal - alreadyRefundedKopecks),
       }
     })
@@ -152,6 +154,16 @@ export class LocalPosReturns extends LocalPosSales {
       },
       items,
     }
+  }
+
+  getReturnByOperation(id: string, cashierId: string, tenantId = DEFAULT_TENANT_ID): any | null {
+    const key = operationId(id)
+    if (!key) throw new Error('Відсутній номер операції повернення')
+    const row = this.db.prepare('SELECT id, approved_by FROM customer_returns WHERE tenant_id=? AND client_operation_id=? AND deleted_at IS NULL')
+      .get(tenantId, key) as { id: string; approved_by: string } | undefined
+    if (!row) return null
+    if (row.approved_by !== cashierId) throw new Error('Операція повернення належить іншому працівнику')
+    return this.getReturn(row.id, tenantId)
   }
 
   createReturn(input: any): any {
@@ -231,7 +243,7 @@ export class LocalPosReturns extends LocalPosSales {
         if (ready.stock_action === 'return_to_stock' && item.product_id) {
           const product = this.getProductForUpdate(item.product_id, tenantId)
           if (product && product.is_service !== 1) {
-            const nextQty = Number(product.qty_on_hand ?? 0) + item.quantity
+            const nextQty = Math.round((Number(product.qty_on_hand ?? 0) + item.quantity) * 1000) / 1000
             this.db.prepare(`
               UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
               WHERE id = ? AND tenant_id = ?
@@ -283,7 +295,7 @@ export class LocalPosReturns extends LocalPosSales {
             ) returned ON returned.sale_item_id = si.id
             WHERE si.sale_id = ? AND si.tenant_id = ? AND si.deleted_at IS NULL
             GROUP BY si.product_id
-            HAVING COALESCE(SUM(returned.qty), 0) >= SUM(si.qty)
+            HAVING ROUND(COALESCE(SUM(returned.qty), 0), 3) >= ROUND(SUM(si.qty), 3)
           )
       `).run(
         timestamp, timestamp, tenantId, ready.sale.id, tenantId,
@@ -465,6 +477,8 @@ export class LocalPosReturns extends LocalPosSales {
       if (
         !Number.isFinite(quantity)
         || quantity <= 0
+        || quantity > Number.MAX_SAFE_INTEGER / 1000
+        || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001
         || quantity > Number(source.available_qty) + Number.EPSILON
       ) {
         throw new Error(`Для ${source.product_name} доступно до повернення: ${source.available_qty}`)

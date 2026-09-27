@@ -10,8 +10,10 @@ import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import { money, nowIso } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosShifts } from './shifts'
-import { customerPhoneKey, validateCustomerChanges } from './customerValidation'
+import { customerPhoneKey, normalizeCustomerBarcode, validateCustomerChanges } from './customerValidation'
 import { idempotentMutation } from '../idempotentMutation'
+
+type CustomerSaveResult = { data: any; meta?: { reused: boolean; vehicle_added: boolean; card_attached?: boolean } }
 
 export class LocalPosCustomers extends LocalPosShifts {
   listDebtors(tenantId = DEFAULT_TENANT_ID, limit = 200): Array<{
@@ -136,7 +138,7 @@ export class LocalPosCustomers extends LocalPosShifts {
   }
 
   findCustomerByBarcode(barcode: string, tenantId = DEFAULT_TENANT_ID): any | null {
-    const normalized = String(barcode ?? '').trim()
+    const normalized = normalizeCustomerBarcode(barcode)
     if (!normalized) return null
     const row = this.db.prepare(`
       SELECT c.*,
@@ -180,8 +182,16 @@ export class LocalPosCustomers extends LocalPosShifts {
     `).all(customerId, tenantId) as any[]
   }
 
-  saveCustomer(input: any, customerId?: string): { data: any; meta?: { reused: boolean; vehicle_added: boolean } } {
+  saveCustomer(input: any, customerId?: string): CustomerSaveResult {
+    // Phone/card checks and all related writes must succeed or roll back together.
+    return this.db.transaction(() => this.saveCustomerInTransaction(input, customerId))
+  }
+
+  private saveCustomerInTransaction(input: any, customerId?: string): CustomerSaveResult {
     validateCustomerChanges(input)
+    if (input.card_barcode !== undefined) {
+      input = { ...input, card_barcode: normalizeCustomerBarcode(input.card_barcode) || null }
+    }
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     let timestamp = nowIso()
     const phone = String(input.phone ?? '').trim()
@@ -194,8 +204,24 @@ export class LocalPosCustomers extends LocalPosShifts {
         LIMIT 1
       `).get(tenantId, customerPhoneKey(phone)) as { id: string } | undefined
       if (existing) {
+        const current = this.getCustomer(existing.id, tenantId)
+        const currentBarcode = normalizeCustomerBarcode(current.card_barcode)
+        const requestedBarcode = input.card_barcode
+        if (requestedBarcode && currentBarcode && requestedBarcode !== currentBarcode) {
+          throw new Error('У клієнта з цим телефоном уже є інша картка. Відкрийте його картку для заміни штрихкоду. Зміни не збережено.')
+        }
+        // Empty input on creation is not a request to erase an existing card.
+        // Use the regular update path for uniqueness, versioning and the outbox.
+        const cardAttached = Boolean(requestedBarcode && !currentBarcode)
+        if (requestedBarcode) {
+          this.assertCustomerBarcodeAvailable(requestedBarcode, existing.id, tenantId)
+          if (cardAttached) this.saveCustomerInTransaction({
+            tenant_id: tenantId, card_barcode: requestedBarcode,
+            expected_updated_at: current.updated_at, user_id: input.user_id,
+          }, existing.id)
+        }
         const vehicleAdded = this.addCustomerVehicle(existing.id, tenantId, input.vehicle, timestamp)
-        return { data: this.getCustomer(existing.id, tenantId), meta: { reused: true, vehicle_added: vehicleAdded } }
+        return { data: this.getCustomer(existing.id, tenantId), meta: { reused: true, vehicle_added: vehicleAdded, card_attached: cardAttached } }
       }
     }
 
@@ -205,10 +231,7 @@ export class LocalPosCustomers extends LocalPosShifts {
       if (duplicate) throw new Error('Клієнт із таким телефоном уже існує. Відкрийте його картку.')
     }
     if (input.card_barcode !== undefined) {
-      input = { ...input, card_barcode: String(input.card_barcode ?? '').replace(/\s/g, '') || null }
-      if (input.card_barcode && this.db.prepare('SELECT id FROM customers WHERE tenant_id = ? AND deleted_at IS NULL AND id <> ? AND card_barcode = ? LIMIT 1').get(tenantId, id, input.card_barcode)) {
-        throw new Error('Цей штрихкод уже належить іншому клієнту')
-      }
+      this.assertCustomerBarcodeAvailable(input.card_barcode, id, tenantId)
     }
     if (customerId) {
       const requestedBonus = input.bonus_balance !== undefined ? money(input.bonus_balance) : null
@@ -299,6 +322,12 @@ export class LocalPosCustomers extends LocalPosShifts {
       this.addCustomerVehicle(id, tenantId, input.vehicle, timestamp)
     })
     return { data: this.getCustomer(id, tenantId), meta: { reused: false, vehicle_added: Boolean(input.vehicle) } }
+  }
+
+  private assertCustomerBarcodeAvailable(barcode: string | null, id: string, tenantId: string): void {
+    if (barcode && this.db.prepare('SELECT id FROM customers WHERE tenant_id = ? AND deleted_at IS NULL AND id <> ? AND card_barcode = ? LIMIT 1').get(tenantId, id, barcode)) {
+      throw new Error('Цей штрихкод уже належить іншому клієнту. Перевірте картку — зміни не збережено.')
+    }
   }
 
   deleteCustomer(customerId: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {

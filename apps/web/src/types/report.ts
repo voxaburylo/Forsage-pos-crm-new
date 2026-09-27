@@ -1,4 +1,6 @@
 export interface SoldItem {
+  /** Absent only on older backends; an empty array means no posted supply. */
+  suppliers?: Array<{ id: string; name: string }>
   product_id: string
   sku: string
   barcode: string | null

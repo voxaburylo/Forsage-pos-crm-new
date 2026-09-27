@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ bridge: vi.fn(), reserve: vi.fn(), movement: vi.fn(), consumption: vi.fn(), generate: vi.fn(), remote: vi.fn() }))
+const mocks = vi.hoisted(() => ({ bridge: vi.fn(), reserve: vi.fn(), movement: vi.fn(), consumption: vi.fn(), generate: vi.fn(), remote: vi.fn(), resolve: vi.fn() }))
 vi.mock('@/lib/desktopBridge', () => ({ desktopBridge: mocks.bridge }))
 vi.mock('@/lib/api', () => ({ api: { get: mocks.remote, post: mocks.remote } }))
 vi.mock('@/stores/authStore', () => ({ useAuthStore: { getState: () => ({ session: { user: { id: 'manager' } } }) } }))
@@ -11,7 +11,8 @@ describe('local auxiliary API boundary', () => {
     vi.clearAllMocks()
     const storage = new Map<string, string>()
     vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) })
-    mocks.bridge.mockReturnValue({ warehouse: { createReserve: mocks.reserve, createMovement: mocks.movement, createConsumption: mocks.consumption }, purchases: { generateInvoices: mocks.generate } })
+    mocks.resolve.mockRejectedValue(Error('offline'))
+    mocks.bridge.mockReturnValue({ warehouse: { resolveOperation: mocks.resolve, createReserve: mocks.reserve, createMovement: mocks.movement, createConsumption: mocks.consumption }, purchases: { generateInvoices: mocks.generate } })
   })
   afterEach(() => vi.unstubAllGlobals())
   it.each(['reserve', 'movement', 'consumption', 'generate'] as const)('%s preserves retry identity and never writes remotely', async name => {

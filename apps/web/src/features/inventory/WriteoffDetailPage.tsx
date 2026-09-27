@@ -1,5 +1,6 @@
 import { useLatestRequest } from '@/hooks/useLatestRequest'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useAuthStore } from '@/stores/authStore'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Plus, X } from 'lucide-react'
 import { writeoffApi } from './writeoffApi'
@@ -7,25 +8,39 @@ import { REASON_LABEL, REASON_COLOR } from '@/types/writeoff'
 import type { Writeoff } from '@/types/writeoff'
 import { Layout } from '@/components/Layout'
 import { Badge, Button, Card } from '@/components/ui'
-import { toast } from '@/components/ui/Toast'
+
 import { formatDate, formatMoney } from '@/lib/utils'
 
 export default function WriteoffDetailPage() {
   const navigate = useNavigate()
   const { id } = useParams()
-  const requests = useLatestRequest(id)
+  const userId = useAuthStore(s => s.session?.user?.id)
+  const requests = useLatestRequest([id, userId])
+  const [loadError, setLoadError] = useState('')
   const [writeoff, setWriteoff] = useState<Writeoff | null>(null)
   const [loading, setLoading]   = useState(true)
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     const current = requests.begin()
     setLoading(true)
-    writeoffApi.get(id!).then((res) => { if (current()) setWriteoff(res.data) }).catch(() => {
+    setLoadError('')
+    setWriteoff(null)
+    try {
+      if (!id) throw new Error('Не вказано акт списання')
+      const res = await writeoffApi.get(id)
       if (!current()) return
-      toast.error('Акт не знайдено')
-      navigate('/inventory/writeoffs')
-    }).finally(() => { if (current()) setLoading(false) })
-  }, [id])
+      if (!res.data || res.data.id !== id) throw new Error('Акт списання не знайдено')
+      setWriteoff(res.data)
+    } catch (error) {
+      if (current()) setLoadError(error instanceof Error ? error.message : 'Не вдалося відкрити акт списання')
+    } finally { if (current()) setLoading(false) }
+  }, [id, requests, userId])
+
+  useEffect(() => { void load() }, [load])
+
+  if (loadError) return <Layout title="Акт списання" onBack={() => navigate('/inventory/writeoffs')}>
+    <div role="alert" className="p-4 text-red-700">{loadError}. <button type="button" className="underline" onClick={load}>Повторити</button></div>
+  </Layout>
 
   if (loading || !writeoff || writeoff.id !== id) {
     return <Layout title="Завантаження..."><div className="text-gray-400 text-sm">Завантаження...</div></Layout>

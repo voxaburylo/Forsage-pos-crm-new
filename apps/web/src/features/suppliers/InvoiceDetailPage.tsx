@@ -1,5 +1,6 @@
+import { invoiceActions, invoiceActionError } from './invoiceActions'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Tag, Trash2 } from 'lucide-react'
 import { supplierApi } from './supplierApi'
@@ -27,6 +28,7 @@ export default function InvoiceDetailPage() {
   const [invoice, setInvoice] = useState<SupplyInvoice | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
+  const actionLock = useRef(false)
   const [labelModal, setLabelModal]       = useState(false)
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState('')
@@ -35,18 +37,27 @@ export default function InvoiceDetailPage() {
   const [paymentNote, setPaymentNote] = useState('')
 
   const userRole = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
-  const canDelete = userRole === 'owner' || userRole === 'admin'
+  const actions = invoiceActions(invoice, userRole)
+  const canDelete = actions.canDelete
+
+  function reportActionError(error: unknown, fallback: string) {
+    toast.error(invoiceActionError(error, fallback))
+    if (error instanceof Error && error.message.includes('DOCUMENT_CONFLICT')) load()
+  }
 
   async function handleDelete() {
-    if (!confirm('Ви впевнені, що хочете остаточно видалити цю накладну? Цю дію неможливо скасувати.')) return
+    if (!actions.canDelete || actionLock.current) return
+    if (!confirm('Видалити неоплачену чернетку накладної? Залишки товарів не зміняться.')) return
+    actionLock.current = true
     setActionLoading(true)
     try {
-      await supplierApi.deleteInvoice(id!)
+      await supplierApi.deleteInvoice(id!, invoice?.edit_revision)
       toast.success('Накладну видалено')
       navigate('/suppliers/invoices')
-    } catch {
-      toast.error('Помилка видалення накладної')
+    } catch (error) {
+      reportActionError(error, 'Не вдалося видалити чернетку')
     } finally {
+      actionLock.current = false
       setActionLoading(false)
     }
   }
@@ -64,29 +75,35 @@ export default function InvoiceDetailPage() {
   useEffect(() => { load() }, [id])
 
   async function handlePost() {
+    if (!actions.canPost || actionLock.current) return
     if (!confirm('Провести накладну? Це збільшить залишки товарів на складі.')) return
+    actionLock.current = true
     setActionLoading(true)
     try {
-      await supplierApi.postInvoice(id!)
+      await supplierApi.postInvoice(id!, invoice?.edit_revision)
       toast.success('Накладну проведено')
       load()
-    } catch {
-      toast.error('Помилка проведення')
+    } catch (error) {
+      reportActionError(error, 'Помилка проведення')
     } finally {
+      actionLock.current = false
       setActionLoading(false)
     }
   }
 
   async function handleCancel() {
+    if (!actions.canCancel || actionLock.current) return
     if (!confirm('Скасувати накладну? Товари будуть списані зі складу.')) return
+    actionLock.current = true
     setActionLoading(true)
     try {
-      await supplierApi.cancelInvoice(id!)
+      await supplierApi.cancelInvoice(id!, invoice?.edit_revision)
       toast.success('Накладну скасовано')
       load()
-    } catch {
-      toast.error('Помилка скасування')
+    } catch (error) {
+      reportActionError(error, 'Помилка скасування')
     } finally {
+      actionLock.current = false
       setActionLoading(false)
     }
   }
@@ -94,25 +111,29 @@ export default function InvoiceDetailPage() {
   // Редагування проведеної накладної: безпечно через скасування (повертає залишки)
   // + відкриття копії-чернетки з тими самими позиціями. Далі правиш і проводиш заново.
   async function handleEditPosted() {
+    if (!actions.canCancel || actionLock.current) return
     if (!confirm('Щоб редагувати проведену накладну, її буде СКАСОВАНО (залишки повернуться зі складу), і відкриється копія для правок.\n\nПотім потрібно буде провести її заново. Продовжити?')) return
+    actionLock.current = true
     setActionLoading(true)
     try {
-      await supplierApi.cancelInvoice(id!)
+      await supplierApi.cancelInvoice(id!, invoice?.edit_revision)
       navigate(`/suppliers/invoices/new?clone=${id}`)
-    } catch {
-      toast.error('Не вдалося підготувати накладну до редагування')
+    } catch (error) {
+      reportActionError(error, 'Не вдалося підготувати накладну до редагування')
+      actionLock.current = false
       setActionLoading(false)
     }
   }
 
   async function handleSupplierPayment() {
-    if (!invoice) return
-    const amount = Math.round(Number(paymentAmount) * 100)
+    if (!invoice || !actions.canPay || actionLock.current) return
+    const amount = Math.round(Number(paymentAmount.trim().replace(',', '.')) * 100)
     const debt = Math.max(0, invoice.total - (invoice.paid_amount ?? 0))
-    if (!amount || amount <= 0 || amount > debt) {
+    if (!Number.isFinite(amount) || amount <= 0 || amount > debt) {
       toast.error('Перевірте суму оплати')
       return
     }
+    actionLock.current = true
     setActionLoading(true)
     try {
       const currentShift = fundSource === 'cashbox'
@@ -124,6 +145,7 @@ export default function InvoiceDetailPage() {
         return
       }
       await supplierApi.payInvoice(id!, {
+        expected_revision: invoice.edit_revision,
         amount,
         payment_method: paymentMethod,
         fund_source: fundSource,
@@ -135,8 +157,9 @@ export default function InvoiceDetailPage() {
       setPaymentNote('')
       load()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка оплати')
+      reportActionError(err, 'Помилка оплати')
     } finally {
+      actionLock.current = false
       setActionLoading(false)
     }
   }
@@ -154,7 +177,7 @@ export default function InvoiceDetailPage() {
       actions={
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => navigate(`/suppliers/invoices/new?clone=${id}`)}>
-            Дублювати
+            Створити копію
           </Button>
           {invoice.status === 'draft' && (
             <>
@@ -166,7 +189,7 @@ export default function InvoiceDetailPage() {
               <Button variant="outline" onClick={() => navigate(`/suppliers/invoices/${id}/edit`)}>
                 Редагувати
               </Button>
-              <Button onClick={handlePost} disabled={actionLoading}>
+              <Button onClick={handlePost} disabled={actionLoading || !actions.canPost}>
                 {actionLoading ? '...' : 'Провести'}
               </Button>
             </>
@@ -176,29 +199,24 @@ export default function InvoiceDetailPage() {
               <Button variant="secondary" icon={<Tag size={15} />} onClick={() => setLabelModal(true)}>
                 Друк етикеток
               </Button>
-              <Button variant="outline" onClick={handleEditPosted} disabled={actionLoading}>
+              {actions.canCancel && <Button variant="outline" onClick={handleEditPosted} disabled={actionLoading}>
                 Скасувати і редагувати копію
-              </Button>
-              <Button variant="danger-outline" onClick={handleCancel} disabled={actionLoading}>
+              </Button>}
+              {actions.canCancel && <Button variant="danger-outline" onClick={handleCancel} disabled={actionLoading}>
                 {actionLoading ? '...' : 'Скасувати'}
-              </Button>
+              </Button>}
             </>
           )}
-          {invoice.status === 'cancelled' && (
-            <>
-              <Button onClick={() => navigate(`/suppliers/invoices/new?clone=${id}`)} disabled={actionLoading}>
-                Провести заново
-              </Button>
-              {canDelete && (
-                <Button variant="danger" icon={<Trash2 size={15} />} onClick={handleDelete} disabled={actionLoading}>
-                  {actionLoading ? '...' : 'Видалити'}
-                </Button>
-              )}
-            </>
-          )}
+
         </div>
       }
     >
+      {actions.cancelled && (
+        <div role="status" className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+          Накладну скасовано. Вона більше не додає залишків і не створює боргу постачальнику.
+          Документ збережено в історії разом зі скасуванням — повторно видаляти його не потрібно.
+        </div>
+      )}
       {/* Інформація */}
       <Card className="mb-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -225,20 +243,21 @@ export default function InvoiceDetailPage() {
         {/* Оплата постачальнику */}
         {(() => {
           const paid = invoice.paid_amount ?? 0
-          const debt = Math.max(0, invoice.total - paid)
+          const debt = actions.debt
+          if (actions.cancelled) return null
           return (
             <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
               <span className="text-gray-600">Оплачено: <strong className="text-green-600">{formatMoney(paid)}</strong></span>
               {debt > 0 ? (
                 <>
                   <span className="text-gray-600">Борг постачальнику: <strong className="text-red-600">{formatMoney(debt)}</strong></span>
-                  <Button size="sm" variant="outline" disabled={actionLoading}
+                  {actions.canPay && <Button size="sm" variant="outline" disabled={actionLoading}
                     onClick={() => {
                       setPaymentAmount((debt / 100).toFixed(2))
                       setPaymentOpen(true)
                     }}>
-                    💵 Доплатити
-                  </Button>
+                    Доплатити
+                  </Button>}
                 </>
               ) : (
                 <span className="text-green-600 font-semibold">✓ Оплачено повністю</span>

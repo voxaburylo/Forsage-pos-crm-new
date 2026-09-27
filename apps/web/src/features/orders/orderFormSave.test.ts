@@ -8,6 +8,14 @@ function setup(status: CustomerOrder['status'] = 'lead') {
   return { writer, order, persisted: vi.fn() }
 }
 describe('saving and registering an order', () => {
+  it('keeps an offline order as a pending draft without advancing status or reserving', async () => {
+    const { writer, order, persisted } = setup()
+    order.lan_sync = { state: 'pending', message: 'Очікує передавання' }
+    const result = await saveOrderForm(writer, { items: [] }, { activate: true, onPersisted: persisted })
+    expect(result.order.lan_sync?.state).toBe('pending')
+    expect(persisted).toHaveBeenCalledWith(order)
+    expect(writer.updateStatus).not.toHaveBeenCalled()
+  })
   it('saves drafts without marking them ordered at a supplier', async () => {
     const { writer, persisted } = setup()
     const result = await saveOrderForm(writer, { items: [] }, { activate: false, onPersisted: persisted })

@@ -1,25 +1,46 @@
 // Persist identity before IPC. A lost reply/restart must replay the same write.
 const active = new Map<string, Promise<unknown>>()
 function canonical(value: unknown): unknown {
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Некоректна кількість або сума. Запис не виконано.')
   if (Array.isArray(value)) return value.map(canonical)
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
     .filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b))
     .map(([key, item]) => [key, canonical(item)]))
   return value
 }
-export async function durableLocalRequest<T>(scope: string, payload: unknown, send: (id: string) => Promise<T>, storage: Storage = localStorage): Promise<T> {
+function readPending(scope: string, storage: Storage): Record<string, string> {
+  const parsed: unknown = JSON.parse(storage.getItem('forsage:pending-request:v1:' + scope) ?? '{}')
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object'
+    || Object.values(parsed).some(id => typeof id !== 'string' || !id.trim() || id.length > 200))
+    throw new Error('Пошкоджений журнал незавершених операцій. Запис не розпочато.')
+  return parsed as Record<string, string>
+}
+
+export function pendingLocalRequests(scope: string, storage: Storage = localStorage) {
+  return Object.entries(readPending(scope, storage)).map(([fingerprint, operationId]) => {
+    const payload: unknown = JSON.parse(fingerprint)
+    return { operationId, payload }
+  })
+}
+
+export function clearPendingLocalRequest(scope: string, operationId: string, storage: Storage = localStorage) {
+  const pending = readPending(scope, storage)
+  for (const [fingerprint, id] of Object.entries(pending)) if (id === operationId) delete pending[fingerprint]
+  const key = 'forsage:pending-request:v1:' + scope
+  if (Object.keys(pending).length) storage.setItem(key, JSON.stringify(pending))
+  else storage.removeItem(key)
+}
+
+export async function durableLocalRequest<T>(scope: string, payload: unknown, send: (id: string) => Promise<T>, storage: Storage = localStorage, options: { exclusive?: boolean } = {}): Promise<T> {
   const key = `forsage:pending-request:v1:${scope}`
   const fingerprint = JSON.stringify(canonical(payload))
   const runningKey = key + fingerprint
   const running = active.get(runningKey)
   if (running) return running as Promise<T>
-  const read = (): Record<string, string> => {
-    const parsed: unknown = JSON.parse(storage.getItem(key) ?? '{}')
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object'
-      || Object.values(parsed).some(id => typeof id !== 'string')) throw new Error('Пошкоджений журнал незавершених операцій. Запис не розпочато.')
-    return parsed as Record<string, string>
-  }
+  const read = () => readPending(scope, storage)
   const pending = read()
+  if (options.exclusive && Object.keys(pending).some(key => key !== fingerprint))
+    throw new Error('Є складська операція без підтвердження. Спочатку перевірте попередню спробу.')
   const id = pending[fingerprint] ?? crypto.randomUUID()
   pending[fingerprint] = id
   storage.setItem(key, JSON.stringify(pending))

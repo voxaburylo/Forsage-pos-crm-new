@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useScopedAction } from '@/hooks/useScopedAction'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { staffTransactionAmount } from '@/features/staff/staffFormModel'
 import { ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Button, Card, Modal } from '@/components/ui'
@@ -32,12 +36,7 @@ function currentPeriod(): string {
 }
 
 function localDate(): string {
-  const date = new Date()
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, '0'),
-    String(date.getDate()).padStart(2, '0'),
-  ].join('-')
+  return businessDateKey()
 }
 
 function periodLabel(period: string): string {
@@ -53,7 +52,14 @@ export default function PayrollPage() {
   const [daily, setDaily] = useState<DailySummary[]>([])
   const [selected, setSelected] = useState<AdminUser | null>(null)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  const action = useScopedAction(JSON.stringify([period, selected?.id]))
+  const saving = action.busy
+  const canWrite = isDesktopRuntime()
+  const [loadError, setLoadError] = useState('')
+  const [loadedPeriod, setLoadedPeriod] = useState<string | null>(null)
+  const ready = !loading && !loadError && loadedPeriod === period
+  const [historyLimit, setHistoryLimit] = useState(50)
+  useEffect(() => { setHistoryLimit(50) }, [selected?.id, period])
   const [form, setForm] = useState({
     type: 'advance' as OperationType,
     method: 'cash' as PaymentMethod,
@@ -66,6 +72,8 @@ export default function PayrollPage() {
     const isCurrent = requests.begin()
     setSummary([]); setPayments([]); setDaily([])
     setLoading(true)
+    setLoadError('')
+    setLoadedPeriod(null)
     try {
       const [usersResult, summaryResult, paymentsResult, dailyResult] = await Promise.all([
         adminApi.listUsers(),
@@ -78,8 +86,13 @@ export default function PayrollPage() {
       setSummary(summaryResult.data ?? [])
       setPayments(paymentsResult.data ?? [])
       setDaily(dailyResult.data ?? [])
+      setLoadedPeriod(period)
     } catch (error) {
-      if (isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити зарплату')
+      if (isCurrent()) {
+        const message = error instanceof Error ? error.message : 'Не вдалося завантажити зарплату'
+        setLoadError(message)
+        toast.error(message)
+      }
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -106,7 +119,15 @@ export default function PayrollPage() {
   )
 
   function shiftPeriod(delta: number) {
+    if (action.isBusy()) return
+    setSelected(null)
     setPeriod(shiftBusinessMonth(period, delta))
+  }
+
+  function openEmployee(user: AdminUser) {
+    if (action.isBusy() || !ready) return
+    setForm({ type: 'advance', method: 'cash', amount: '', note: '' })
+    setSelected(user)
   }
 
   async function currentShiftId(): Promise<string> {
@@ -117,17 +138,16 @@ export default function PayrollPage() {
   }
 
   async function createOperation() {
-    if (!selected) return
-    const amount = Math.round(Number(form.amount) * 100)
-    if (!Number.isFinite(amount) || amount <= 0) {
-      toast.error('Вкажіть коректну суму')
-      return
-    }
-    setSaving(true)
+    if (!selected || !canWrite || !ready) return
+    const attempt = action.begin()
+    if (!attempt) return
     try {
+      const amount = staffTransactionAmount(form.amount)
+      const workDate = localDate()
       const shiftId = form.type === 'advance' && form.method === 'cash'
         ? await currentShiftId()
         : null
+      if (!attempt.isCurrent()) return
       await staffApi.createSalary({
         employee_id: selected.id,
         employee_name: selected.full_name || selected.email,
@@ -137,64 +157,75 @@ export default function PayrollPage() {
         period,
         note: form.note.trim() || null,
         shift_id: shiftId,
-        work_date: localDate(),
+        work_date: workDate,
       })
+      if (!attempt.isCurrent()) return
       setForm((value) => ({ ...value, amount: '', note: '' }))
       toast.success('Операцію збережено')
       await load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти операцію')
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти операцію')
     } finally {
-      setSaving(false)
+      attempt.finish()
     }
   }
 
   async function payDaily(fundSource: SalaryFundSource) {
-    if (!selected) return
-    if (fundSource === 'owner_funds' && !window.confirm('Виплатити заробіток власними коштами? Залишок каси не зміниться.')) return
-    setSaving(true)
+    if (!selected || !canWrite || !ready) return
+    const attempt = action.begin()
+    if (!attempt) return
     try {
+      const workDate = localDate()
+      if (fundSource === 'owner_funds' && !window.confirm('Виплатити заробіток власними коштами? Залишок каси не зміниться.')) return
       const shiftId = await currentShiftId()
+      if (!attempt.isCurrent()) return
       const result = await staffApi.dailyPayout({
         employee_id: selected.id,
         employee_name: selected.full_name || selected.email,
         method: 'cash',
         fund_source: fundSource,
         shift_id: shiftId,
-        work_date: localDate(),
+        work_date: workDate,
       })
+      if (!attempt.isCurrent()) return
       toast.success('Виплачено ' + formatMoney(result.data.amount))
       await load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося провести виплату')
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося провести виплату')
     } finally {
-      setSaving(false)
+      attempt.finish()
     }
   }
 
   async function deleteOperation(id: string) {
-    if (!window.confirm('Видалити цю операцію?')) return
+    if (!canWrite || !ready) return
+    const attempt = action.begin()
+    if (!attempt) return
     try {
+      if (!window.confirm('Скасувати цю операцію зарплати?')) return
       await staffApi.deleteSalary(id)
+      if (!attempt.isCurrent()) return
+      toast.success('Операцію скасовано')
       await load()
-      toast.success('Операцію видалено')
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося видалити операцію')
+      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося скасувати операцію')
+    } finally {
+      attempt.finish()
     }
   }
 
   return (
     <Layout title="Зарплата та виплати">
       <div className="mb-4 flex items-center gap-2">
-        <button onClick={() => shiftPeriod(-1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronLeft size={16} /></button>
+        <button aria-label="Попередній місяць" disabled={saving} onClick={() => shiftPeriod(-1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronLeft size={16} /></button>
         <strong className="analytics-month-label text-center capitalize">{periodLabel(period)}</strong>
-        <button onClick={() => shiftPeriod(1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronRight size={16} /></button>
+        <button aria-label="Наступний місяць" disabled={saving} onClick={() => shiftPeriod(1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronRight size={16} /></button>
       </div>
 
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Card><p className="text-xs text-gray-500">Нараховано</p><p className="mt-1 text-2xl font-bold text-gray-900">{formatMoney(totals.earned)}</p></Card>
-        <Card><p className="text-xs text-gray-500">Виплачено</p><p className="mt-1 text-2xl font-bold text-blue-700">{formatMoney(totals.paid)}</p></Card>
-        <Card><p className="text-xs text-gray-500">До виплати</p><p className="mt-1 text-2xl font-bold text-amber-700">{formatMoney(totals.balance)}</p></Card>
+        <Card><p className="text-xs text-gray-500">Нараховано</p><p className="mt-1 text-2xl font-bold text-gray-900">{ready ? formatMoney(totals.earned) : '—'}</p></Card>
+        <Card><p className="text-xs text-gray-500">Виплачено</p><p className="mt-1 text-2xl font-bold text-blue-700">{ready ? formatMoney(totals.paid) : '—'}</p></Card>
+        <Card><p className="text-xs text-gray-500">До виплати</p><p className="mt-1 text-2xl font-bold text-amber-700">{ready ? formatMoney(totals.balance) : '—'}</p></Card>
       </div>
 
       <Card padding="none">
@@ -206,6 +237,8 @@ export default function PayrollPage() {
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr><td colSpan={6} className="px-4 py-10 text-center text-gray-400">Завантаження…</td></tr>
+              ) : loadError ? (
+                <tr><td colSpan={6} className="px-4 py-6 text-center"><p role="alert" className="text-red-700">Дані зарплати недоступні: {loadError}</p><Button variant="secondary" onClick={() => { if (!action.isBusy()) void load() }}>Повторити завантаження</Button></td></tr>
               ) : users.length === 0 ? (
                 <tr><td colSpan={6} className="px-4 py-10 text-center text-gray-400">Працівників не знайдено</td></tr>
               ) : users.map((user) => {
@@ -217,7 +250,7 @@ export default function PayrollPage() {
                     <td data-label="Нараховано" className="px-2 py-3 text-right">{formatMoney(row?.earned ?? 0)}</td>
                     <td data-label="Виплачено" className="px-2 py-3 text-right">{formatMoney(row?.paid ?? 0)}</td>
                     <td data-label="До виплати" className="px-2 py-3 text-right font-bold text-amber-700">{formatMoney(row?.balance ?? 0)}</td>
-                    <td data-label="" className="px-4 py-3 text-right"><Button size="sm" variant="secondary" onClick={() => setSelected(user)}><CreditCard size={14} /> Операції</Button></td>
+                    <td data-label="" className="px-4 py-3 text-right"><Button size="sm" disabled={saving || !ready} variant="secondary" onClick={() => openEmployee(user)}><CreditCard size={14} /> Операції</Button></td>
                   </tr>
                 )
               })}
@@ -226,15 +259,24 @@ export default function PayrollPage() {
         </div>
       </Card>
 
-      <Modal open={!!selected} onClose={() => setSelected(null)} title={selected?.full_name || 'Виплати'} size="xl">
+      <Modal open={!!selected} onClose={() => { if (!action.isBusy()) setSelected(null) }} title={selected?.full_name || 'Виплати'} size="xl">
         {selected && (
           <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {selected.role === 'tire_worker' && <Link
+              to={`/analytics/sales?tab=tire&employee=${encodeURIComponent(selected.id)}`}
+              aria-disabled={saving} onClick={event => { if (action.isBusy()) event.preventDefault() }}
+              className="block rounded-lg border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm font-semibold text-gray-900">
+              Роботи, чеки та розрахунок зарплати за день →
+            </Link>}
+            {!ready && <p role="status" className="text-sm text-amber-800">{loadError ? 'Не вдалося оновити дані. Закрийте вікно та повторіть завантаження; збережена операція не скасовується.' : 'Оновлюємо розрахунок зарплати…'}</p>}
+            {ready && <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Card><p className="text-xs text-gray-400">Нараховано</p><strong>{formatMoney(selectedSummary?.earned ?? 0)}</strong></Card>
               <Card><p className="text-xs text-gray-400">Виплачено</p><strong>{formatMoney(selectedSummary?.paid ?? 0)}</strong></Card>
               <Card><p className="text-xs text-gray-400">До виплати</p><strong className="text-amber-700">{formatMoney(selectedSummary?.balance ?? 0)}</strong></Card>
               <Card><p className="text-xs text-gray-400">Сьогодні</p><strong>{formatMoney(selectedDaily?.balance ?? 0)}</strong></Card>
-            </div>
+            </div>}
+            {canWrite ? <fieldset disabled={saving || !ready} className="min-w-0 space-y-3">
+            <p className="text-xs text-gray-500">Денна виплата — за сьогодні ({localDate()}). Для минулого дня шиномонтажу відкрийте «Роботи, чеки та розрахунок зарплати».</p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <Button loading={saving} onClick={() => payDaily('cashbox')}>Видати денний заробіток з каси</Button>
               <Button loading={saving} variant="secondary" onClick={() => payDaily('owner_funds')}>Видати коштами власника</Button>
@@ -242,16 +284,17 @@ export default function PayrollPage() {
             <div className="grid grid-cols-1 gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 sm:grid-cols-2">
               <select value={form.type} onChange={(event) => setForm((value) => ({ ...value, type: event.target.value as OperationType }))} className="rounded-lg border border-gray-200 bg-white px-3 py-2"><option value="salary">Нарахувати ставку</option><option value="bonus">Премія</option><option value="advance">Виплата / аванс</option><option value="penalty">Штраф</option></select>
               <select value={form.method} onChange={(event) => setForm((value) => ({ ...value, method: event.target.value as PaymentMethod }))} className="rounded-lg border border-gray-200 bg-white px-3 py-2"><option value="cash">Готівка</option><option value="card">Картка</option><option value="transfer">Переказ</option></select>
-              <input type="number" min="0.01" step="0.01" value={form.amount} onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))} placeholder="Сума, грн" className="rounded-lg border border-gray-200 bg-white px-3 py-2" />
+              <input inputMode="decimal" value={form.amount} onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))} placeholder="Сума, грн" className="rounded-lg border border-gray-200 bg-white px-3 py-2" />
               <input value={form.note} onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))} placeholder="Примітка" className="rounded-lg border border-gray-200 bg-white px-3 py-2" />
               <Button loading={saving} onClick={createOperation} className="sm:col-span-2">Зберегти операцію</Button>
             </div>
+            </fieldset> : <p className="text-sm text-gray-500">У вебверсії доступний лише перегляд. Виплати та зміни виконуйте в локальній програмі.</p>}
             <div>
               <h3 className="mb-2 text-sm font-bold text-gray-900">Операції за місяць</h3>
               <div className="analytics-operation-history max-h-64 divide-y divide-gray-100 overflow-auto rounded-xl border border-gray-200">
-                {selectedPayments.length === 0 ? (
+                {!ready ? <p className="px-4 py-8 text-center text-sm text-gray-400">Історія операцій ще не завантажена.</p> : selectedPayments.length === 0 ? (
                   <p className="px-4 py-8 text-center text-sm text-gray-400">Операцій за цей місяць немає</p>
-                ) : selectedPayments.map((payment) => (
+                ) : selectedPayments.slice(0, historyLimit).map((payment) => (
                   <div key={payment.id} className="analytics-payment-row flex items-center justify-between gap-3 px-4 py-3 text-sm">
                     <div className="min-w-0">
                       <p className="font-semibold text-gray-900">{OPERATION_LABELS[payment.type]}</p>
@@ -262,15 +305,17 @@ export default function PayrollPage() {
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <strong>{formatMoney(payment.amount)}</strong>
-                      <button type="button" onClick={() => deleteOperation(payment.id)}
+                      {canWrite && <button type="button" disabled={saving || !ready} onClick={() => deleteOperation(payment.id)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-red-500 hover:bg-red-50"
-                        title="Видалити операцію">
+                        title="Скасувати операцію">
                         <Trash2 size={15} />
-                      </button>
+                      </button>}
                     </div>
                   </div>
                 ))}
               </div>
+              {ready && <p className="mt-2 text-xs text-gray-500">Показано {Math.min(historyLimit, selectedPayments.length)} з {selectedPayments.length}</p>}
+              {ready && historyLimit < selectedPayments.length && <Button type="button" variant="secondary" onClick={() => setHistoryLimit(value => value + 50)}>Показати ще 50</Button>}
             </div>
           </div>
         )}

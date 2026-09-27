@@ -4,12 +4,18 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { syncDesktopNow } from '@/lib/desktopSyncApi'
 import { useAuthStore } from '@/stores/authStore'
 
-const IDLE_INTERVAL_MS = 10_000
+const IDLE_INTERVAL_MS = 60_000
 const PENDING_INTERVAL_MS = 10_000
 const RETRY_MIN_MS = 15_000
 const RETRY_MAX_MS = 5 * 60_000
 const STARTUP_DELAY_MS = 1_500
 const IMMEDIATE_SYNC_DELAY_MS = 2_000
+
+export function desktopSyncDelay(pending: boolean, retryAttempt: number, hidden: boolean): number {
+  if (retryAttempt > 0) return Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(10, retryAttempt - 1))
+  if (pending) return PENDING_INTERVAL_MS
+  return hidden ? 120_000 : IDLE_INTERVAL_MS
+}
 
 export function hasMeaningfulDesktopSyncChanges(result: {
   pushed: number
@@ -53,31 +59,29 @@ export function useDesktopOutboxSync(serverOnline: boolean) {
 
     let cancelled = false
     let timer: number | null = null
+    let running = false
+    let requested = false
 
     const schedule = (delay: number) => {
       if (cancelled) return
       if (timer !== null) window.clearTimeout(timer)
       timer = window.setTimeout(async () => {
+        timer = null
+        if (running) { requested = true; return }
+        running = true
         const result = await syncNow()
-        const retryDelay = Math.min(
-          RETRY_MAX_MS,
-          RETRY_MIN_MS * (2 ** Math.max(0, retryAttemptRef.current - 1)),
-        )
-        const nextDelay = retryAttemptRef.current > 0
-          ? retryDelay
-          : result.pushed > 0 || result.pending > 0
-            ? PENDING_INTERVAL_MS
-            : IDLE_INTERVAL_MS
+        running = false
+        const nextDelay = requested && retryAttemptRef.current === 0 ? IMMEDIATE_SYNC_DELAY_MS
+          : desktopSyncDelay(result.pushed > 0 || result.pending > 0, retryAttemptRef.current, document.visibilityState !== 'visible')
+        requested = false
         schedule(nextDelay)
       }, delay)
     }
 
-    const requestImmediateSync = () => schedule(IMMEDIATE_SYNC_DELAY_MS)
+    const requestImmediateSync = () => { if (running) requested = true; else schedule(IMMEDIATE_SYNC_DELAY_MS) }
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         requestImmediateSync()
-      } else {
-        schedule(1_000)
       }
     }
 

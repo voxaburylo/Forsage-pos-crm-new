@@ -1,18 +1,21 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { navigationAllowed } from '@/lib/navigationAccess'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { toast } from '@/components/ui/Toast'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
   ChevronDown, Tag, UserCog, Users,
-  X, PackagePlus,
+  X, PackagePlus, Sparkles,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { PICKING_STATUSES } from '@/features/inventory/pickingApi'
+import { createReadPoller } from '@/lib/readPoller'
+import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
 
 interface NavItem {
   to: string
@@ -54,6 +57,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/labels',              icon: <Tag size={18} />,             label: 'Печать этикеток',       roles: ['owner','admin'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
       { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
+      { to: '/ai-assistant',        icon: <Sparkles size={18} />,        label: 'ШІ-помічник',          roles: AI_ASSISTANT_ROLES },
     ],
   },
   {
@@ -67,6 +71,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Адміністрування',
     roles: ['owner', 'admin'],
     items: [
+      { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'AI-агент', roles: ['owner','admin'] },
       { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда та ЗП',        roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
     ],
@@ -189,11 +194,12 @@ function NavSection({
 
 export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
   const navigate = useNavigate()
-  const location = useLocation()
   const { session } = useAuthStore()
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
   const [pickingCount, setPickingCount] = useState(0)
+  const signingOut = useRef(false)
+  const [leaving, setLeaving] = useState(false)
 
   useEffect(() => {
     const isStorekeeper = role === 'storekeeper'
@@ -201,41 +207,49 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     if (!isOffice && !isStorekeeper) return
 
 
-    function fetchPicking() {
-      if (isDesktopAccessLocked()) return
-      const local = desktopBridge()?.orders?.list
-      if (local) {
-        // Той самий фільтр, що й у списку збірки — інакше лічильник у меню
-        // показував більше, ніж реально в черзі (враховував відкриті lead/new).
-        (async () => {
+    let active = true
+    const poller = createReadPoller({
+      intervalMs: 120_000,
+      canRead: () => !isDesktopAccessLocked() && document.visibilityState !== 'hidden',
+      read: async () => {
+        const local = desktopBridge()?.orders
+        if (local?.count) return local.count({ statuses: PICKING_STATUSES })
+        if (local?.list) {
+          // Compatibility with older desktop bridges: filter before loading, and stop on unmount.
           let count = 0
-          for (let offset = 0; ; offset += 500) {
-            const rows = await local({ limit: 500, offset })
+          for (let offset = 0; active; offset += 500) {
+            const rows = await local.list({ status: PICKING_STATUSES.join(','), limit: 500, offset })
             count += (rows ?? []).filter((order: any) => PICKING_STATUSES.includes(order.status)).length
             if (!rows || rows.length < 500) break
           }
           return count
-        })().then(setPickingCount)
-          .catch(() => {})
-        return
-      }
-      api.get<{ data: any[] }>('/api/v1/picking/orders', { silent: true } as any)
-        .then((r) => setPickingCount((r.data ?? []).length))
-        .catch(() => {})
+        }
+        const result = await api.get<{ data: any[] }>('/api/v1/picking/orders', { silent: true })
+        return (result.data ?? []).length
+      },
+      onData: setPickingCount,
+    })
+    poller.wake()
+    const events = ['forsage:desktop-access-changed', 'forsage:desktop-sync-completed', 'focus']
+    for (const event of events) window.addEventListener(event, poller.wake)
+    document.addEventListener('visibilitychange', poller.wake)
+    return () => {
+      active = false; poller.stop()
+      for (const event of events) window.removeEventListener(event, poller.wake)
+      document.removeEventListener('visibilitychange', poller.wake)
     }
-    fetchPicking()
-    const t = setInterval(fetchPicking, 120_000)
-    window.addEventListener('forsage:desktop-access-changed', fetchPicking)
-    return () => { clearInterval(t); window.removeEventListener('forsage:desktop-access-changed', fetchPicking) }
-  }, [role, location.pathname, location.search])
+  }, [role, session?.user?.id])
 
   const badgeMap: Record<string, number> = {
     '/inventory/picking': pickingCount,
   }
 
   async function handleSignOut() {
-    await signOut()
-    navigate('/login')
+    if (signingOut.current) return
+    signingOut.current = true; setLeaving(true)
+    try { await signOut(); navigate('/login', { replace: true }) }
+    catch { toast.error('Не вдалося завершити вихід. Спробуйте ще раз.') }
+    finally { signingOut.current = false; setLeaving(false) }
   }
 
   return (
@@ -284,6 +298,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
       <div className="px-2 py-3 border-t border-gray-100 pb-safe">
         <button
           onClick={handleSignOut}
+          disabled={leaving}
           className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-500 hover:bg-gray-50 hover:text-gray-700 w-full transition-colors"
         >
           <LogOut size={18} />

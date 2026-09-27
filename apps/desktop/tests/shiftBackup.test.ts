@@ -49,6 +49,8 @@ describe('shift backups and full customer history',()=>{
     await restarted.tick()
     const job=db.prepare('SELECT * FROM shift_backups WHERE id=?').get(id) as any
     expect(job.local_error).toBeNull();expect(job.sha256).toHaveLength(64)
+    expect(restarted.status(DEFAULT_TENANT_ID)[0]).toMatchObject({ id, local_ready: true, exports_ready: true, cloud_completed_at: null })
+    expect(restarted.status(randomUUID())).toEqual([])
     const {readdirSync}=await import('node:fs')
     const file=readdirSync(job.export_directory).find(name=>name.startsWith('Товари'))!
     const sheet=XLSX.read(readFileSync(path.join(job.export_directory,file)),{type:'buffer'}).Sheets['Товари']
@@ -58,6 +60,9 @@ describe('shift backups and full customer history',()=>{
     expect(restarted.pending(randomUUID())).toEqual([])
     restarted.confirmed(DEFAULT_TENANT_ID,id,job.sha256)
     expect(restarted.pending(DEFAULT_TENANT_ID)).toEqual([])
+    expect(restarted.status(DEFAULT_TENANT_ID)[0].cloud_completed_at).toBeTruthy()
+    db.prepare('UPDATE shift_backups SET compressed_path=? WHERE id=?').run(path.join(root, 'missing.gz'), id)
+    expect(restarted.status(DEFAULT_TENANT_ID)[0].local_ready).toBe(false)
     await restarted.stop()
     const next=pos.openShift({cashier_id:cashier});pos.closeShift(cashier,0,null,next)
     await restarted.tick()

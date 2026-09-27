@@ -11,6 +11,16 @@ import { LocalWarehouseRepository } from '../src/repositories/warehouseRepositor
 import { LocalStaffRepository } from '../src/repositories/staffRepository'
 
 describe('section audit: durable financial and stock writes', () => {
+  it('does not overwrite a concurrent catalog edit with an old read-merge-save payload', () => {
+    const catalog = new LocalCatalogRepository(db)
+    const first = catalog.saveProduct({ id: randomUUID(), sku: randomUUID(), name: 'CAS', retail_price: 100, qty_on_hand: 3 })
+    const second = catalog.saveProduct({ id: first.id, sku: first.sku, name: first.name, retail_price: 200, expected_updated_at: first.updated_at })
+    expect(second.updated_at).not.toBe(first.updated_at)
+    expect(() => catalog.saveProduct({ id: first.id, sku: first.sku, name: 'Old', retail_price: 100, expected_updated_at: first.updated_at })).toThrow('LOCAL_PRODUCT_STALE')
+    expect(catalog.findById(first.id)).toMatchObject({ retail_price: 200, name: 'CAS', qty_on_hand: 3 })
+    const row = db.prepare("SELECT payload_json FROM sync_outbox WHERE aggregate_id=? ORDER BY sequence DESC LIMIT 1").get(first.id) as { payload_json: string }
+    expect(row.payload_json).not.toContain('expected_updated_at')
+  })
   let root: string, db: LocalDatabase, pos: LocalPosRepository, customer: string, cashier: string, shift: string
   beforeEach(() => {
     root = mkdtempSync(path.join(tmpdir(), 'forsage-section-audit-'))
@@ -59,6 +69,17 @@ describe('section audit: durable financial and stock writes', () => {
     expect(warehouse.createWriteoff(request).id).toBe(first.id)
     expect(db.prepare('SELECT qty_on_hand n FROM products WHERE id = ?').get(product.id)).toEqual({ n: 6 })
     expect(db.prepare("SELECT count(*) n FROM inventory_movements WHERE source_type = 'writeoff'").get()).toEqual({ n: 1 })
+  })
+  it('checks the current stock for multi-unit writeoffs and rejects excess without partial writes', () => {
+    const catalog = new LocalCatalogRepository(db)
+    const product = catalog.upsertProduct({ id: randomUUID(), sku: randomUUID(), name: 'Writeoff quantity', qty_on_hand: 12, purchase_price: 100 })
+    const warehouse = new LocalWarehouseRepository(db)
+    const saved = warehouse.createWriteoff({ reason: 'damage', items: [{ product_id: product.id, qty: 5 }] })
+    expect(saved.items[0].qty).toBe(5)
+    expect(catalog.findById(product.id)?.qty_on_hand).toBe(7)
+    expect(() => warehouse.createWriteoff({ reason: 'damage', items: [{ product_id: product.id, qty: 8 }] })).toThrow('Недостатньо')
+    expect(catalog.findById(product.id)?.qty_on_hand).toBe(7)
+    expect(db.prepare('SELECT count(*) n FROM writeoff_items WHERE product_id = ?').get(product.id)).toEqual({ n: 1 })
   })
   it('a salary correction is inserted only once', () => {
     const id = randomUUID(), timestamp = new Date().toISOString()

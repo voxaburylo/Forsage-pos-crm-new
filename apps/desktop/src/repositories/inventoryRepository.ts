@@ -2,6 +2,21 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalProductUpsert } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
+import { assertDocumentRevision, documentRevision } from './documentRevision'
+import { applyInventoryProductEdits, type InventoryProductEdit } from './inventoryProductEdits'
+
+function itemRevision(item: any): string {
+  return documentRevision([item.id, item.product_id, item.expected_stock, item.counted_stock,
+    Boolean(item.was_counted), Boolean(item.price_checked), item.observed_retail_price, item.updated_at])
+}
+
+function sessionRevision(session: any, items: any[]): string {
+  return documentRevision([session.id, session.name, session.status,
+    [...items].sort((a, b) => String(a.id).localeCompare(String(b.id), 'en')).map(item =>
+      [item.id, item.edit_revision, item.product?.id ?? null, item.product?.name ?? null,
+        item.product?.sku ?? null, item.product?.qty_on_hand ?? null,
+        item.product?.retail_price ?? null, item.product?.purchase_price ?? null])])
+}
 
 function checkedNonnegative(value: unknown): number {
   const parsed = Number(value)
@@ -139,6 +154,10 @@ export class LocalInventoryRepository {
     })
   }
   startSession(sessionId: string, input: { tenant_id?: string; user_id?: string | null } = {}): { total_products: number } {
+    return this.db.transaction(() => this.startSessionInTransaction(sessionId, input))
+  }
+
+  private startSessionInTransaction(sessionId: string, input: { tenant_id?: string; user_id?: string | null }): { total_products: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const timestamp = nowIso()
     const row = this.getSessionRow(sessionId, tenantId)
@@ -161,6 +180,10 @@ export class LocalInventoryRepository {
     })
   }
   deleteEmptySession(sessionId: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
+    return this.db.transaction(() => this.deleteEmptySessionInTransaction(sessionId, tenantId))
+  }
+
+  private deleteEmptySessionInTransaction(sessionId: string, tenantId: string): { ok: true } {
     const row = this.getSessionRow(sessionId, tenantId)
     if (!row) return { ok: true }
     if (row.status === 'completed') throw new Error('Завершену ревізію видаляти не можна')
@@ -188,6 +211,10 @@ export class LocalInventoryRepository {
     return { ok: true }
   }
   getSessionData(sessionId: string, tenantId = DEFAULT_TENANT_ID, userId = ''): any {
+    return this.db.readSnapshot(() => this.getSessionDataInTransaction(sessionId, tenantId, userId))
+  }
+
+  private getSessionDataInTransaction(sessionId: string, tenantId: string, userId: string): any {
     const session = this.getSessionRow(sessionId, tenantId)
     if (!session) throw new Error('Ревізію не знайдено')
     const items = this.listCountedItems(sessionId, tenantId)
@@ -196,6 +223,7 @@ export class LocalInventoryRepository {
       .map((item) => ({ id: item.id, product_id: item.product_id, observed_retail_price: item.observed_retail_price, product: item.product }))
     return {
       ...session,
+      edit_revision: sessionRevision(session, items),
       items,
       price_issues: priceIssues,
       my_entries: this.listEntries(sessionId, tenantId, userId),
@@ -221,6 +249,10 @@ export class LocalInventoryRepository {
   }
 
   countProduct(sessionId: string, input: InventoryCountInput): { data: any; session: any } {
+    return this.db.transaction(() => this.countProductInTransaction(sessionId, input))
+  }
+
+  private countProductInTransaction(sessionId: string, input: InventoryCountInput): { data: any; session: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const userId = input.user_id ?? ''
     this.requireActiveSession(sessionId, tenantId)
@@ -296,6 +328,10 @@ export class LocalInventoryRepository {
   }
 
   private scanOnce(sessionId: string, input: InventoryScanInput): { item: any } {
+    return this.db.transaction(() => this.scanOnceInTransaction(sessionId, input))
+  }
+
+  private scanOnceInTransaction(sessionId: string, input: InventoryScanInput): { item: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const userId = input.user_id ?? ''
     this.requireActiveSession(sessionId, tenantId)
@@ -348,14 +384,17 @@ export class LocalInventoryRepository {
     return { item: this.decorateItem(item, tenantId) }
   }
 
-  setItemQty(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }): any {
+  setItemQty(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number; expected_revision?: string }): any {
     return this.db.transaction(() => this.setItemQtyInTransaction(sessionId, itemId, input))
   }
 
-  private setItemQtyInTransaction(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }): any {
+  private setItemQtyInTransaction(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number; expected_revision?: string }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     this.requireActiveSession(sessionId, tenantId)
     const qty = checkedNonnegative(input.counted_stock)
+    const current = this.findItemById(itemId, tenantId)
+    if (!current || current.session_id !== sessionId) throw new Error('Рядок ревізії не знайдено')
+    assertDocumentRevision(current.edit_revision, input.expected_revision, 'Позиція ревізії')
     if (qty < 0) throw new Error('Некоректна кількість')
     const timestamp = nowIso()
     const result = this.db.prepare(`
@@ -370,10 +409,15 @@ export class LocalInventoryRepository {
     return this.findItemById(itemId, tenantId)
   }
 
-  removeItem(sessionId: string, itemId: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
-    this.requireActiveSession(sessionId, tenantId)
-    const timestamp = nowIso()
-    this.db.transaction(() => {
+  removeItem(sessionId: string, itemId: string, tenantId = DEFAULT_TENANT_ID, expectedRevision?: string): { ok: true } {
+    return this.db.transaction(() => {
+      this.requireActiveSession(sessionId, tenantId)
+      const item = this.findItemById(itemId, tenantId)
+      if (!item || item.session_id !== sessionId) throw new Error('Рядок ревізії не знайдено')
+      // An acknowledged removal can be retried, but never remove a NEW count.
+      if (!item.was_counted) return { ok: true as const }
+      assertDocumentRevision(item.edit_revision, expectedRevision, 'Позиція ревізії')
+      const timestamp = nowIso()
       this.db.prepare(`
         DELETE FROM inventory_count_entries
         WHERE inventory_item_id = ? AND session_id = ? AND tenant_id = ?
@@ -386,33 +430,43 @@ export class LocalInventoryRepository {
         WHERE id = ? AND session_id = ? AND tenant_id = ?
       `).run(timestamp, itemId, sessionId, tenantId)
       this.touchSession(sessionId, tenantId, timestamp)
+      return { ok: true as const }
     })
-    return { ok: true }
   }
 
-  applyPrice(sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }): { data: any; session: any } {
+  updateProducts(sessionId: string, input: { tenant_id?: string; edits: InventoryProductEdit[] }): any[] {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    return this.db.transaction(() => {
+      this.requireActiveSession(sessionId, tenantId)
+      return applyInventoryProductEdits(this.db, tenantId, input.edits)
+    })
+  }
+
+  applyPrice(sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number; expected_price?: number }): { data: any; session: any } {
+    return this.db.transaction(() => this.applyPriceInTransaction(sessionId, input))
+  }
+
+  private applyPriceInTransaction(sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number; expected_price?: number }): { data: any; session: any } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     this.requireActiveSession(sessionId, tenantId)
     const item = this.findItemByProduct(sessionId, input.product_id, tenantId)
-    if (!item?.was_counted || !this.findProductById(input.product_id, tenantId)) throw new Error('Товар ревізії не знайдено або видалений')
+    const current = this.findProductById(input.product_id, tenantId)
+    if (!item?.was_counted || !current) throw new Error('Товар ревізії не знайдено або видалений')
     const price = checkedNonnegative(input.retail_price)
+    applyInventoryProductEdits(this.db, tenantId, [{ product_id: input.product_id,
+      values: { retail_price: price }, base: { retail_price: input.expected_price ?? current.retail_price } }])
     const timestamp = nowIso()
-    this.db.transaction(() => {
-      this.db.prepare('UPDATE products SET retail_price = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
-        .run(price, timestamp, timestamp, input.product_id, tenantId)
-      this.db.prepare('UPDATE inventory_items SET price_checked = 1, observed_retail_price = NULL, updated_at = ? WHERE session_id = ? AND product_id = ? AND tenant_id = ?')
-        .run(timestamp, sessionId, input.product_id, tenantId)
-      const product = this.productOutboxPayload(input.product_id, tenantId)
-      if (product) this.addOutbox(tenantId, 'product', input.product_id, 'product.upsert', product, timestamp)
-    })
+    this.db.prepare('UPDATE inventory_items SET price_checked = 1, observed_retail_price = NULL, updated_at = ? WHERE session_id = ? AND product_id = ? AND tenant_id = ? AND deleted_at IS NULL')
+      .run(timestamp, sessionId, input.product_id, tenantId)
+    this.touchSession(sessionId, tenantId, timestamp)
     return { data: { product: this.findProductById(input.product_id, tenantId) }, session: this.getSessionData(sessionId, tenantId) }
   }
 
-  complete(sessionId: string, input: { tenant_id?: string; user_id?: string | null } = {}): { items_updated: number } {
+  complete(sessionId: string, input: { tenant_id?: string; user_id?: string | null; expected_revision?: string } = {}): { items_updated: number } {
     return this.db.transaction(() => this.completeInTransaction(sessionId, input))
   }
 
-  private completeInTransaction(sessionId: string, input: { tenant_id?: string; user_id?: string | null }): { items_updated: number } {
+  private completeInTransaction(sessionId: string, input: { tenant_id?: string; user_id?: string | null; expected_revision?: string }): { items_updated: number } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const session = this.requireSession(sessionId, tenantId)
     if (session.status === 'completed') {
@@ -423,6 +477,7 @@ export class LocalInventoryRepository {
     if (session.status !== 'in_progress') throw new Error('Ревізія не активна')
     const timestamp = nowIso()
     const items = this.listCountedItems(sessionId, tenantId)
+    assertDocumentRevision(sessionRevision(session, items), input.expected_revision, 'Ревізія')
     if (items.length === 0) throw new Error('Неможливо завершити порожню ревізію. Спочатку додайте хоча б один порахований товар.')
     let updated = 0
     for (const item of items) {
@@ -508,39 +563,6 @@ export class LocalInventoryRepository {
     return row ?? null
   }
 
-  private productOutboxPayload(productId: string, tenantId: string): any | null {
-    const product = this.findProductById(productId, tenantId)
-    if (!product) return null
-    let specs: Record<string, string> = {}
-    if (product.specs_json) {
-      try {
-        const parsed = JSON.parse(product.specs_json)
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) specs = parsed
-      } catch {
-        specs = {}
-      }
-    }
-    return {
-      id: product.id,
-      sku: product.sku,
-      name: product.name,
-      barcode: product.barcode ?? null,
-      brand_id: product.brand_id ?? null,
-      category_id: product.category_id ?? null,
-      unit: product.unit ?? 'шт',
-      purchase_price: num(product.purchase_price),
-      retail_price: num(product.retail_price),
-      qty_on_hand: num(product.qty_on_hand),
-      reorder_point: num(product.reorder_point),
-      notes: product.notes ?? null,
-      is_active: product.is_active === 1 || product.is_active === true,
-      is_service: product.is_service === 1 || product.is_service === true,
-      storage_bin: product.storage_bin ?? null,
-      is_favorite: product.is_favorite === 1 || product.is_favorite === true,
-      photo_url: product.photo_url ?? null,
-      specs,
-    }
-  }
 
   private findProductByCode(code: string, tenantId: string): any | null {
     const normalized = String(code ?? '').trim()
@@ -587,7 +609,7 @@ export class LocalInventoryRepository {
 
   private findItemById(itemId: string, tenantId: string): any | null {
     const row = this.db.prepare(`
-      SELECT id, product_id, expected_stock, counted_stock, price_checked,
+      SELECT id, session_id, product_id, expected_stock, counted_stock, price_checked,
              observed_retail_price, updated_at, was_counted
       FROM inventory_items
       WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
@@ -600,6 +622,7 @@ export class LocalInventoryRepository {
     if (!item) return null
     return {
       ...item,
+      edit_revision: itemRevision(item),
       price_checked: item.price_checked === 1 || item.price_checked === true,
       product: this.findProductById(item.product_id, tenantId),
     }
@@ -629,6 +652,7 @@ export class LocalInventoryRepository {
     `).all(sessionId, tenantId) as any[]
     return rows.map(({ product_json, ...row }) => ({
       ...row,
+      edit_revision: itemRevision(row),
       price_checked: row.price_checked === 1,
       product: product_json === null ? null : JSON.parse(product_json),
     }))

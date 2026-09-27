@@ -58,4 +58,28 @@ describe('local supply money validation', () => {
       WHERE aggregate_type = 'supply_invoice'
     `).get()).toEqual({ count: 0 })
   })
+
+  it.each([NaN, Infinity, -Infinity, -0.1])('does not silently turn invalid purchase price %s into zero', (price) => {
+    const product = catalog.upsertProduct({ id: randomUUID(), sku: randomUUID(), name: 'Тест ціни', qty_on_hand: 0 })
+    expect(() => supply.createInvoice({ items: [{ product_id: product.id, qty: 2, purchase_price: price }] })).toThrow()
+    expect(db.prepare('SELECT count(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+
+  it('rejects stale line totals and overpayment rather than silently changing the payment', () => {
+    const product = catalog.upsertProduct({ id: randomUUID(), sku: randomUUID(), name: 'Тест суми', qty_on_hand: 0 })
+    expect(() => supply.createInvoice({ items: [{ product_id: product.id, qty: 98, purchase_price: 100, total: 4600 }] })).toThrow('Сума позиції')
+    expect(() => supply.createInvoice({ paid_amount: 201, fund_source: 'owner_funds', items: [{ product_id: product.id, qty: 2, purchase_price: 100 }] })).toThrow('перевищує')
+    expect(db.prepare('SELECT count(*) n FROM supplier_payments').get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT count(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+
+  it('keeps paid drafts financially consistent after edits', () => {
+    const product = catalog.upsertProduct({ id: randomUUID(), sku: randomUUID(), name: 'Оплачена чернетка', qty_on_hand: 0 })
+    const invoice = supply.createInvoice({ paid_amount: 200, fund_source: 'owner_funds', items: [{ product_id: product.id, qty: 2, purchase_price: 100 }] })
+    expect(() => supply.updateInvoice(invoice.id, { items: [{ product_id: product.id, qty: 1, purchase_price: 100 }] })).toThrow('менша')
+    const supplier = supply.saveSupplier({ name: 'Інший постачальник' })
+    expect(() => supply.updateInvoice(invoice.id, { supplier_id: supplier.id })).toThrow('постачальника')
+    expect(supply.getInvoice(invoice.id).total).toBe(200)
+    expect(supply.getInvoice(invoice.id).paid_amount).toBe(200)
+  })
 })

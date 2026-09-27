@@ -6,11 +6,14 @@ import { AppError } from '../middleware/errorHandler.js'
 import { encryptSecret, decryptSecret } from '../lib/crypto.js'
 import { searchProductsForPOS } from './searchService.js'
 import { getProduct, createProduct, updateProduct } from './productService.js'
-import { listCategories, listBrands, createCategory } from './adminService.js'
+import { listCategories, createCategory } from './adminService.js'
 import { listCustomers, updateCustomer } from './customerService.js'
 import { normalizePhone } from '../validators/customerSchema.js'
-import { normalizeArticle } from '../validators/productValidator.js'
+import { AI_TIME_LIMITS, AiExecutionBudget, isAiBudgetError, withAiExecutionBudget } from './aiExecutionBudget.js'
+import { boundedAiReadResult, readAiDuplicates, readAiLookup } from './aiCatalogReads.js'
 import { parseAiJsonObject } from './aiInvoiceResponse.js'
+import { aiUserMessage, withAiDataBoundary } from './aiPromptSafety.js'
+import { createAiToolBudget, parseAiReadArguments } from './aiToolSafety.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
 // Значення орієнтовні (тарифи Google можуть змінюватись) — лічильник показуємо
@@ -38,12 +41,13 @@ export interface AiConfig {
   apiKey: string | null // розшифрований (тільки для внутрішнього використання)
 }
 
-export async function getAiConfig(tenantId: string): Promise<AiConfig> {
-  const { data, error } = await db
+export async function getAiConfig(tenantId: string, signal?: AbortSignal): Promise<AiConfig> {
+  let query = db
     .from('shop_settings')
     .select('ai_enabled, ai_model, ai_api_key_encrypted')
     .eq('tenant_id', tenantId)
-    .single()
+  if (signal) query = query.abortSignal(signal)
+  const { data, error } = await query.single()
 
   if (error || !data) throw new AppError('DB_ERROR', 'Налаштування не знайдено', 500)
 
@@ -106,13 +110,16 @@ export async function saveAiConfig(
 // ─── Перевірка ключа ─────────────────────────────────────────────────────────
 export async function testKey(apiKey: string, model: string): Promise<{ ok: boolean }> {
   try {
-    const genAI = new GoogleGenerativeAI(apiKey)
-    const m = genAI.getGenerativeModel({ model })
-    const res = await m.generateContent('Відповідай одним словом: ОК')
-    const text = res.response.text().trim()
-    logger.info({ model, text }, '[ai] test key ok')
-    return { ok: true }
+    return await withAiExecutionBudget(AI_TIME_LIMITS.keyTest, async budget => {
+      const genAI = new GoogleGenerativeAI(apiKey)
+      const m = genAI.getGenerativeModel({ model })
+      const res = await budget.run(signal => m.generateContent('Відповідай одним словом: ОК', { signal }))
+      const text = res.response.text().trim()
+      logger.info({ model, text }, '[ai] test key ok')
+      return { ok: true }
+    })
   } catch (e: any) {
+    if (isAiBudgetError(e)) throw e
     logger.warn({ err: e?.message }, '[ai] test key failed')
     throw new AppError('AI_KEY_INVALID', 'Ключ або модель не працюють: ' + (e?.message ?? ''), 400)
   }
@@ -121,10 +128,10 @@ export async function testKey(apiKey: string, model: string): Promise<{ ok: bool
 // ─── Облік використання ──────────────────────────────────────────────────────
 export async function recordAiUsage(
   tenantId: string, userId: string | null, model: string,
-  promptTokens: number, completionTokens: number,
+  promptTokens: number, completionTokens: number, signal?: AbortSignal,
 ): Promise<void> {
   try {
-    await db.from('ai_usage').insert({
+    let query = db.from('ai_usage').insert({
       tenant_id: tenantId,
       user_id: userId,
       model,
@@ -133,6 +140,8 @@ export async function recordAiUsage(
       total_tokens: promptTokens + completionTokens,
       cost_usd: computeCostUsd(model, promptTokens, completionTokens),
     })
+    if (signal) query = query.abortSignal(signal)
+    await query
   } catch (e: any) {
     logger.warn({ err: e?.message }, '[ai] failed to log usage')
   }
@@ -537,7 +546,8 @@ export interface PendingAction {
 
 const money = (kop: number) => (kop / 100).toFixed(2) + ' грн'
 
-async function executeReadTool(name: string, args: any, tenantId: string): Promise<any> {
+async function executeReadTool(name: string, args: any, tenantId: string, budget: AiExecutionBudget): Promise<any> {
+  args = parseAiReadArguments(name, args)
   switch (name) {
     case 'search_products': {
       const limit = Math.min(Math.max(Number(args?.limit) || 8, 1), 15)
@@ -565,14 +575,8 @@ async function executeReadTool(name: string, args: any, tenantId: string): Promi
         notes: p.notes, storage_bin: p.storage_bin, has_photo: !!p.photo_url,
       }
     }
-    case 'list_categories': {
-      const cats = await listCategories(tenantId)
-      return { categories: cats.map((c: any) => ({ id: c.id, name: c.name })) }
-    }
-    case 'list_brands': {
-      const brands = await listBrands(tenantId)
-      return { brands: brands.map((b: any) => ({ id: b.id, name: b.name })) }
-    }
+    case 'list_categories': return readAiLookup(db, tenantId, 'categories', budget)
+    case 'list_brands': return readAiLookup(db, tenantId, 'brands', budget)
     case 'list_products_page': {
       const perPage = Math.min(Math.max(Number(args?.per_page) || 200, 1), 200)
       const page = Math.max(Number(args?.page) || 1, 1)
@@ -582,7 +586,9 @@ async function executeReadTool(name: string, args: any, tenantId: string): Promi
         .eq('tenant_id', tenantId)
         .is('deleted_at', null)
         .order('name')
+        .order('id')
         .range((page - 1) * perPage, page * perPage - 1)
+        .abortSignal(budget.signal)
       // Ознаки російської: літери ёыэъ або типові закінчення, яких нема в українській
       if (filter === 'russian_names') q = q.filter('name', 'imatch', '[ёыэъ]|(ый|ое|ая|ние|ской|ского)\\y')
       if (filter === 'no_category') q = q.is('category_id', null)
@@ -598,44 +604,8 @@ async function executeReadTool(name: string, args: any, tenantId: string): Promi
         })),
       }
     }
-    case 'find_duplicate_products': {
-      const by = String(args?.by ?? 'name') === 'sku' ? 'sku' : 'name'
-      const limit = Math.min(Math.max(Number(args?.limit) || 20, 1), 40)
-      // Тягнемо весь каталог порціями і групуємо на сервері — без токенів
-      const all: any[] = []
-      for (let from = 0; ; from += 1000) {
-        const { data, error } = await db.from('products')
-          .select('id, sku, name, qty_on_hand, retail_price')
-          .eq('tenant_id', tenantId).is('deleted_at', null)
-          .range(from, from + 999)
-        if (error) return { error: error.message }
-        all.push(...(data ?? []))
-        if (!data || data.length < 1000) break
-      }
-      const groups = new Map<string, any[]>()
-      for (const p of all) {
-        const key = by === 'sku'
-          ? normalizeArticle(String(p.sku ?? ''))
-          : String(p.name ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
-        if (!key) continue
-        const g = groups.get(key) ?? []
-        g.push(p)
-        groups.set(key, g)
-      }
-      const dupGroups = [...groups.values()]
-        .filter((g) => g.length >= 2)
-        .sort((a, b) => b.length - a.length)
-      return {
-        total_groups: dupGroups.length,
-        showing: Math.min(limit, dupGroups.length),
-        groups: dupGroups.slice(0, limit).map((g) => ({
-          products: g.map((p) => ({
-            product_id: p.id, sku: p.sku, name: p.name,
-            qty: p.qty_on_hand, price_uah: (p.retail_price ?? 0) / 100,
-          })),
-        })),
-      }
-    }
+    case 'find_duplicate_products':
+      return readAiDuplicates(db, tenantId, args.by, args.limit, budget)
     case 'search_customers': {
       const limit = Math.min(Math.max(Number(args?.limit) || 10, 1), 20)
       const { data } = await listCustomers({ search: String(args?.query ?? ''), page: 1, per_page: limit } as any, tenantId)
@@ -653,7 +623,8 @@ async function executeReadTool(name: string, args: any, tenantId: string): Promi
 
 function newActionId() { return 'act_' + Math.random().toString(36).slice(2, 10) }
 
-async function buildPendingAction(name: string, args: any, tenantId: string): Promise<PendingAction> {
+async function buildPendingAction(name: string, args: any, tenantId: string, budget: AiExecutionBudget): Promise<PendingAction> {
+  budget.check()
   const id = newActionId()
 
   // ── Масові дії ──────────────────────────────────────────────────────────
@@ -699,8 +670,8 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
     const ids = list.map((u) => String(u.product_id)).filter(Boolean)
     const current = new Map<string, { sku: string; name: string }>()
     for (let i = 0; i < ids.length; i += 200) {
-      const { data } = await db.from('products').select('id, sku, name')
-        .eq('tenant_id', tenantId).in('id', ids.slice(i, i + 200))
+      const { data } = await budget.run(signal => db.from('products').select('id, sku, name')
+        .eq('tenant_id', tenantId).in('id', ids.slice(i, i + 200)).abortSignal(signal))
       for (const p of data ?? []) current.set(p.id, { sku: p.sku, name: p.name })
     }
     const items = list.map((u) => {
@@ -725,8 +696,8 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
     const ids = [...new Set(list.flatMap((m) => [String(m.primary_product_id), String(m.duplicate_product_id)]))]
     const info = new Map<string, { sku: string; name: string; qty: number }>()
     for (let i = 0; i < ids.length; i += 200) {
-      const { data } = await db.from('products').select('id, sku, name, qty_on_hand')
-        .eq('tenant_id', tenantId).in('id', ids.slice(i, i + 200))
+      const { data } = await budget.run(signal => db.from('products').select('id, sku, name, qty_on_hand')
+        .eq('tenant_id', tenantId).in('id', ids.slice(i, i + 200)).abortSignal(signal))
       for (const p of data ?? []) info.set(p.id, { sku: p.sku, name: p.name, qty: p.qty_on_hand })
     }
     const label = (pid: any) => {
@@ -819,7 +790,7 @@ async function buildPendingAction(name: string, args: any, tenantId: string): Pr
   }
 
   if (name === 'update_product') {
-    const current = await getProduct(String(args.product_id), tenantId)
+    const current = await budget.run(() => getProduct(String(args.product_id), tenantId))
     const changes: PendingAction['changes'] = []
     if (args.name !== undefined && args.name !== current.name)
       changes.push({ label: 'Назва', old: current.name, next: String(args.name) })
@@ -954,16 +925,17 @@ async function salvageFromImages(
   userText: string,
   imageParts: Part[],
   tenantId: string,
+  budget: AiExecutionBudget,
 ): Promise<{ actions: PendingAction[]; promptTokens: number; completionTokens: number }> {
   const model = genAI.getGenerativeModel({
     model: modelName,
-    systemInstruction: SALVAGE_PROMPT,
+    systemInstruction: withAiDataBoundary(SALVAGE_PROMPT),
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: SALVAGE_SCHEMA as any,
     },
   })
-  const res = await model.generateContent([{ text: userText } as Part, ...imageParts])
+  const res = await budget.run(signal => model.generateContent([{ text: userText } as Part, ...imageParts], { signal }))
   const um = res.response.usageMetadata
   const promptTokens = um?.promptTokenCount ?? 0
   const completionTokens = um?.totalTokenCount != null
@@ -977,15 +949,15 @@ async function salvageFromImages(
   if (Array.isArray(parsed.orders)) {
     for (const order of parsed.orders) {
       if (Array.isArray(order?.items) && order.items.length > 0) {
-        actions.push(await buildPendingAction('create_order', order, tenantId))
+        actions.push(await buildPendingAction('create_order', order, tenantId, budget))
       }
     }
   }
   if (Array.isArray(parsed.products) && parsed.products.length > 0) {
-    actions.push(await buildPendingAction('create_products_bulk', { products: parsed.products }, tenantId))
+    actions.push(await buildPendingAction('create_products_bulk', { products: parsed.products }, tenantId, budget))
   }
   if (Array.isArray(parsed.customers) && parsed.customers.length > 0) {
-    actions.push(await buildPendingAction('create_customers_bulk', { customers: parsed.customers }, tenantId))
+    actions.push(await buildPendingAction('create_customers_bulk', { customers: parsed.customers }, tenantId, budget))
   }
   return { actions, promptTokens, completionTokens }
 }
@@ -1006,17 +978,18 @@ function isTransientGeminiError(e: any): boolean {
 }
 
 // Виклик Gemini з експоненційним бекофом на транзієнтних помилках.
-async function sendWithRetry(chat: any, parts: string | Part[], iter: number) {
+async function sendWithRetry(chat: any, parts: string | Part[], iter: number, budget: AiExecutionBudget) {
   const delays = [600, 1500, 3000] // мс: до 3 повторів
   let lastErr: any
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      return await chat.sendMessage(parts)
+      return await budget.run(signal => chat.sendMessage(parts, { signal }))
     } catch (e: any) {
+      if (isAiBudgetError(e)) throw e
       lastErr = e
       if (attempt < delays.length && isTransientGeminiError(e)) {
         logger.warn({ err: e?.message, iter, attempt }, '[ai] transient Gemini error, retrying')
-        await new Promise((r) => setTimeout(r, delays[attempt]))
+        await budget.delay(delays[attempt])
         continue
       }
       break
@@ -1058,7 +1031,16 @@ export async function recognizeSupplyInvoicePhoto(
   userId: string | null,
   params: { message?: string; images: ChatImage[] },
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
-  const cfg = await getAiConfig(tenantId)
+  return withAiExecutionBudget(AI_TIME_LIMITS.invoice, budget => recognizeSupplyInvoicePhotoWithinBudget(tenantId, userId, params, budget))
+}
+
+async function recognizeSupplyInvoicePhotoWithinBudget(
+  tenantId: string,
+  userId: string | null,
+  params: { message?: string; images: ChatImage[] },
+  budget: AiExecutionBudget,
+): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
+  const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
   if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Gemini не налаштовано. Додайте його в Налаштуваннях.', 400)
   if (!cfg.enabled) throw new AppError('AI_DISABLED', 'Помічник АІ вимкнено в Налаштуваннях.', 400)
   if (!params.images.length) throw new AppError('VALIDATION_ERROR', 'Додайте фото накладної', 422)
@@ -1073,7 +1055,7 @@ export async function recognizeSupplyInvoicePhoto(
   const genAI = new GoogleGenerativeAI(cfg.apiKey)
   const model = genAI.getGenerativeModel({
     model: cfg.model,
-    systemInstruction: instruction,
+    systemInstruction: withAiDataBoundary(instruction),
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: SUPPLY_INVOICE_PHOTO_SCHEMA as any,
@@ -1102,8 +1084,9 @@ export async function recognizeSupplyInvoicePhoto(
           { text: requestText },
           { inlineData: { mimeType: image.mime_type, data: image.data_base64 } },
         ]
-        response = (await model.generateContent(parts)).response
+        response = (await budget.run(signal => model.generateContent(parts, { signal }))).response
       } catch (error: any) {
+        if (isAiBudgetError(error)) throw error
         if (isQuotaError(error)) throw new AppError('AI_QUOTA_EXCEEDED', 'Вичерпано ліміт Gemini. Спробуйте пізніше.', 429)
         if (attempt === 0 && isTransientGeminiError(error)) {
           logger.warn({ err: error?.message, imageIndex, attempt }, '[ai] transient invoice OCR error, retrying')
@@ -1183,13 +1166,13 @@ export async function recognizeSupplyInvoicePhoto(
     }))
   if (!products.length) throw new AppError('AI_NO_ROWS', 'На фото не знайдено товарних рядків. Перевірте якість і повторіть.', 422)
 
-  const action = await buildPendingAction('create_products_bulk', { products }, tenantId)
+  const action = await budget.run(() => buildPendingAction('create_products_bulk', { products }, tenantId, budget))
   action.payload = {
     ...action.payload,
     supplier_name: String(parsed?.supplier_name ?? '').trim() || null,
     invoice_number: String(parsed?.invoice_number ?? '').trim() || null,
   }
-  await recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
+  await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
   return {
     reply: `Розпізнано ${products.length} позицій. Перевірте таблицю та натисніть «Застосувати».`,
     actions: [action],
@@ -1206,14 +1189,23 @@ export async function runChat(
   userId: string | null,
   params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[] },
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
-  const cfg = await getAiConfig(tenantId)
+  return withAiExecutionBudget(AI_TIME_LIMITS.chat, budget => runChatWithinBudget(tenantId, userId, params, budget))
+}
+
+async function runChatWithinBudget(
+  tenantId: string,
+  userId: string | null,
+  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[] },
+  budget: AiExecutionBudget,
+): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
+  const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
   if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Gemini не налаштовано. Додайте його в Налаштуваннях.', 400)
   if (!cfg.enabled) throw new AppError('AI_DISABLED', 'Помічник АІ вимкнено в Налаштуваннях.', 400)
 
   const genAI = new GoogleGenerativeAI(cfg.apiKey)
   const model = genAI.getGenerativeModel({
     model: cfg.model,
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: withAiDataBoundary(SYSTEM_PROMPT),
     tools: [{ functionDeclarations: toolDeclarations }],
   })
 
@@ -1223,11 +1215,7 @@ export async function runChat(
 
   const chat = model.startChat({ history })
 
-  let userText = params.message
-  if (params.fileText) {
-    const clipped = params.fileText.slice(0, 900_000)
-    userText += `\n\n[Прикріплений файл / вставлені дані]:\n${clipped}`
-  }
+  const userText = aiUserMessage(params.message, params.fileText)
 
   const actions: PendingAction[] = []
   let promptTokens = 0
@@ -1242,14 +1230,16 @@ export async function runChat(
   let nextParts: string | Part[] = imageParts.length > 0
     ? [{ text: userText } as Part, ...imageParts]
     : userText
+  const reserveToolCalls = createAiToolBudget()
   let sawMalformedCall = false
   let corrections = 0
 
   for (let iter = 0; iter < 10; iter++) {
     let result
     try {
-      result = await sendWithRetry(chat, nextParts, iter)
+      result = await sendWithRetry(chat, nextParts, iter, budget)
     } catch (err: any) {
+      if (isAiBudgetError(err)) throw err
       if (isQuotaError(err)) {
         logger.warn({ err: err?.message, iter }, '[ai] Gemini quota exceeded')
         throw new AppError(
@@ -1317,22 +1307,30 @@ export async function runChat(
       break
     }
 
+    try { reserveToolCalls(calls.length) }
+    catch { throw new AppError('AI_TOOL_LIMIT', 'Забагато дій в одному запиті ШІ. Звузьте запит і повторіть. Зміни не застосовано.', 422) }
     const responseParts: Part[] = []
     for (const call of calls) {
       if (READ_TOOLS.has(call.name)) {
         let data: any
-        try { data = await executeReadTool(call.name, call.args, tenantId) }
-        catch (e: any) { data = { error: e?.message ?? 'помилка' } }
+        try {
+          data = boundedAiReadResult(await withAiExecutionBudget(AI_TIME_LIMITS.read,
+            readBudget => readBudget.run(() => executeReadTool(call.name, call.args, tenantId, readBudget)), budget.signal))
+        } catch (e: any) {
+          if (isAiBudgetError(e)) throw e
+          data = { error: e?.message ?? 'помилка' }
+        }
         responseParts.push({ functionResponse: { name: call.name, response: data } })
       } else if (WRITE_TOOLS.has(call.name) || BULK_TOOLS.has(call.name)) {
         try {
-          const action = await buildPendingAction(call.name, call.args, tenantId)
+          const action = await budget.run(() => buildPendingAction(call.name, call.args, tenantId, budget))
           actions.push(action)
           responseParts.push({ functionResponse: { name: call.name, response: {
             status: 'pending_user_confirmation',
             message: 'Пропозицію показано користувачу. Він підтвердить її вручну кнопкою «Застосувати».',
           } } })
         } catch (e: any) {
+          if (isAiBudgetError(e)) throw e
           responseParts.push({ functionResponse: { name: call.name, response: { error: e?.message ?? 'помилка' } } })
         }
       } else {
@@ -1351,7 +1349,7 @@ export async function runChat(
   // немає — рятувальний прохід у JSON-режимі: розпізнаємо самі, без інструментів.
   if (actions.length === 0 && sawMalformedCall && imageParts.length > 0) {
     try {
-      const s = await salvageFromImages(genAI, cfg.model, userText, imageParts, tenantId)
+      const s = await budget.run(() => salvageFromImages(genAI, cfg.model, userText, imageParts, tenantId, budget))
       promptTokens += s.promptTokens
       completionTokens += s.completionTokens
       if (s.actions.length > 0) {
@@ -1360,11 +1358,12 @@ export async function runChat(
         logger.info({ actions: s.actions.length }, '[ai] salvage pass recovered actions')
       }
     } catch (e: any) {
+      if (isAiBudgetError(e)) throw e
       logger.warn({ err: e?.message }, '[ai] salvage pass failed')
     }
   }
 
-  await recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens)
+  await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
 
   if (!reply) {
     reply = actions.length > 0 ? 'Підготував пропозицію нижче.' : 'Готово.'

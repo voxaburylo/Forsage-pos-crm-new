@@ -35,6 +35,41 @@ describe('local return document, money and stock consistency', () => {
   const input = () => ({ sale_id: sale, approved_by: cashier, shift_id: shift, client_operation_id: randomUUID(),
     items: [{ sale_item_id: line, product_id: product, quantity: 1 }],
   })
+  it('checks a committed return by operation without moving money or stock again', () => {
+    const request=input(),result=pos.createReturn(request)
+    expect(pos.getReturnByOperation(request.client_operation_id,cashier).id).toBe(result.id)
+    expect(pos.getReturnByOperation(randomUUID(),cashier)).toBeNull()
+    expect(()=>pos.getReturnByOperation(request.client_operation_id,'other')).toThrow('іншому')
+    expect(qty()).toBe(8)
+    expect(pos.getExpectedCash(cashier)?.expected_amount).toBe(1200)
+  })
+  it('exposes the exact remaining discounted refund using the form contract', () => {
+    expect(pos.getSaleForReturn(sale).items[0].available_refund).toBe(300)
+    pos.createReturn(input())
+    const item=pos.getSaleForReturn(sale).items[0]
+    expect(item.available_refund).toBe(200)
+    expect(item.available_refund).toBe(item.refundable_kopecks)
+  })
+  it('returns fractional quantities and the last discounted kopeck without floating-point tails', () => {
+    const receipt=pos.checkout({cashier_id:cashier,shift_id:shift,discount:1,
+      items:[{product_id:product,qty:0.3,unit_price:100}],payments:[{method:'cash',amount:29}]})
+    const source=pos.getSaleForReturn(receipt.sale_id).items[0]
+    const partial=(quantity:number)=>({...input(),sale_id:receipt.sale_id,
+      items:[{sale_item_id:source.id,product_id:product,quantity}]})
+    expect(pos.createReturn(partial(0.1)).refund_kopecks).toBe(10)
+    expect(pos.getSaleForReturn(receipt.sale_id).items[0]).toMatchObject({available_qty:0.2,available_refund:19})
+    expect(pos.createReturn(partial(0.2)).refund_kopecks).toBe(19)
+    expect(pos.getSaleForReturn(receipt.sale_id).items[0]).toMatchObject({available_qty:0,available_refund:0})
+    expect(qty()).toBe(7)
+    expect(pos.getSale(receipt.sale_id).status).toBe('returned')
+  })
+  it('rejects quantities below the supported thousandth without touching stock or cash', () => {
+    const request=input()
+    request.items[0].quantity=0.0001
+    expect(()=>pos.createReturn(request)).toThrow('доступно до повернення')
+    expect(qty()).toBe(7)
+    expect(pos.getExpectedCash(cashier)?.expected_amount).toBe(1300)
+  })
   it.each([undefined, null])('uses defaults consistently for omitted/null options (%s)', (missing) => {
     const result = pos.createReturn({ ...input(), refund_method: missing, stock_action: missing })
     expect(result).toMatchObject({ refund_method: 'cash', stock_action: 'return_to_stock', refund_kopecks: 100 })

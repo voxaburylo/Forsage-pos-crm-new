@@ -82,6 +82,65 @@ describe('customer card integrity', () => {
     expect(() => pos.saveCustomer({ card_barcode: 'CARD123' }, second.id)).toThrow('іншому клієнту')
     expect(pos.getCustomer(second.id).phone).toBe('0507654321')
   })
+  it('saves a pre-existing physical card for a new client, preserving leading zeros', () => {
+    const card = pos.saveCustomer(customerWritePayload({ phone: '0501234567', card_barcode: ' 00012 345\r\n' }, { id: 'cashier', role: 'cashier' })).data
+    expect(card.card_barcode).toBe('00012345')
+    expect(pos.findCustomerByBarcode(' 00012 345\r\n')?.id).toBe(card.id)
+    expect(isDesktopChannelAllowed('desktop:pos:save-customer', 'cashier')).toBe(true)
+  })
+  it('attaches a physical card to a phone match without replacing other profile fields', () => {
+    const old = pos.saveCustomer({ phone: '+38 (050) 123-45-67', full_name: 'Коваль', discount_pct: 7 }).data
+    const result = pos.saveCustomer({ phone: '0501234567', full_name: 'Не замінювати', discount_pct: 0, card_barcode: '000123' })
+    expect(result.meta).toMatchObject({ reused: true, card_attached: true })
+    expect(result.data).toMatchObject({ id: old.id, full_name: 'Коваль', discount_pct: 7, card_barcode: '000123' })
+    expect(result.data.updated_at > old.updated_at).toBe(true)
+    expect(db.prepare('SELECT count(*) n FROM customers').get()).toEqual({ n: 1 })
+    expect(pos.findCustomerByBarcode('000123')?.id).toBe(old.id)
+    const updates = db.prepare("SELECT payload_json FROM sync_outbox WHERE operation_type = 'customer.updated'").all() as Array<{ payload_json: string }>
+    expect(updates).toHaveLength(1)
+    expect(JSON.parse(updates[0].payload_json)).toMatchObject({ id: old.id, card_barcode: '000123' })
+    const again = pos.saveCustomer({ phone: '0501234567', card_barcode: '000123' })
+    expect(again.meta).toMatchObject({ reused: true, card_attached: false })
+    expect(again.data.updated_at).toBe(result.data.updated_at)
+  })
+  it.each([undefined, null, '', '  '])('does not erase a card when reusing a phone with empty code %s', (barcode) => {
+    const old = create()
+    expect(pos.saveCustomer({ phone: '0501234567', card_barcode: barcode }).data.card_barcode).toBe(old.card_barcode)
+  })
+  it('does not silently replace an existing card via new-client creation', () => {
+    const old = create()
+    const before = db.prepare('SELECT count(*) n FROM sync_outbox').get()
+    expect(() => pos.saveCustomer({ phone: '0501234567', card_barcode: 'OTHER', vehicle: { brand: 'VW', model: 'Golf' } })).toThrow('інша картка')
+    expect(pos.getCustomer(old.id).card_barcode).toBe('CARD123')
+    expect(db.prepare('SELECT count(*) n FROM customer_vehicles').get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT count(*) n FROM sync_outbox').get()).toEqual(before)
+  })
+  it('rejects another client card both for a new phone and a reused phone', () => {
+    create()
+    const second = pos.saveCustomer({ phone: '0507654321' }).data
+    for (const phone of ['0501111111', '0507654321']) {
+      expect(() => pos.saveCustomer({ phone, card_barcode: ' CARD123\r\n', vehicle: { brand: 'VW', model: 'Golf' } })).toThrow('іншому клієнту')
+    }
+    expect(pos.getCustomer(second.id).card_barcode).toBeNull()
+    expect(db.prepare('SELECT count(*) n FROM customers').get()).toEqual({ n: 2 })
+    expect(db.prepare('SELECT count(*) n FROM customer_vehicles').get()).toEqual({ n: 0 })
+  })
+  it('rolls back card attachment and outbox if vehicle creation fails', () => {
+    const old = pos.saveCustomer({ phone: '0501234567' }).data
+    const before = db.prepare('SELECT count(*) n FROM sync_outbox').get()
+    db.prepare("CREATE TRIGGER reject_test_vehicle BEFORE INSERT ON customer_vehicles BEGIN SELECT RAISE(ABORT, 'test vehicle failure'); END").run()
+    expect(() => pos.saveCustomer({ phone: '0501234567', card_barcode: '000123', vehicle: { brand: 'VW', model: 'Golf' } })).toThrow('test vehicle failure')
+    expect(pos.getCustomer(old.id)).toMatchObject({ card_barcode: null, updated_at: old.updated_at })
+    expect(db.prepare('SELECT count(*) n FROM sync_outbox').get()).toEqual(before)
+  })
+  it('allows deliberate cashier replacement in the editor with version checking', () => {
+    const old = create()
+    const payload = customerWritePayload({ card_barcode: '000009', expected_updated_at: old.updated_at }, { id: 'cashier', role: 'cashier' }, old)
+    expect(pos.saveCustomer(payload, old.id).data.card_barcode).toBe('000009')
+    expect(pos.findCustomerByBarcode('CARD123')).toBeNull()
+    expect(pos.findCustomerByBarcode('000009')?.id).toBe(old.id)
+    expect(() => pos.saveCustomer({ card_barcode: 'STALE', expected_updated_at: old.updated_at }, old.id)).toThrow('вже змінено')
+  })
   it('rejects a stale card and does not partially save contact data or bonuses', () => {
     const old = create()
     pos.saveCustomer({ bonus_balance: 500 }, old.id)

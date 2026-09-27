@@ -2,10 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Table } from '@/components/ui/Table'
 import { readFileSync } from 'node:fs'
+import { ReportSourceNote } from './ReportSourceNote'
 
 const styles = readFileSync(new URL('./analyticsLayout.css', import.meta.url), 'utf8')
 
 describe('analytics responsive layout', () => {
+  it('does not present a server copy as live till totals', () => {
+    const remote = renderToStaticMarkup(<ReportSourceNote local={false} />)
+    expect(remote).toContain('може відставати')
+    expect(remote).toContain('не підтверджено')
+    expect(renderToStaticMarkup(<ReportSourceNote local />)).toContain('локальна база')
+  })
   it('keeps a label with every generic report cell without changing values', () => {
     const html = renderToStaticMarkup(<Table
       columns={[

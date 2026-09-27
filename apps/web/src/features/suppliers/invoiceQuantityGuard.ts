@@ -5,23 +5,20 @@ export interface InvoiceQuantityLine {
   total: number
 }
 
-export function parseManualInvoiceQuantity(value: string | number): number {
-  const parsed = Number(String(value).trim().replace(',', '.'))
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+export function nextInvoiceItems<T>(current: T[], update: T[] | ((items: T[]) => T[])): T[] {
+  return typeof update === 'function' ? update(current) : update
 }
 
-export function applyManualInvoiceQuantities<T extends InvoiceQuantityLine>(
+/** Freeze the visible quantities before asynchronous product lookups begin. */
+export function captureInvoiceQuantities<T extends InvoiceQuantityLine>(
   items: T[],
-  overrides: ReadonlyMap<string, number>,
+  inputs: ReadonlyArray<{ client_key: string; value: string }>,
 ): T[] {
-  return items.map((item) => {
-    if (!overrides.has(item.client_key)) return item
-    const qty = overrides.get(item.client_key)!
-    if (qty === item.qty) return item
-    return {
-      ...item,
-      qty,
-      total: Math.round(qty * item.purchase_price),
-    }
+  const values = new Map(inputs.map(input => [input.client_key, input.value]))
+  return items.map((item, index) => {
+    const raw = values.get(item.client_key)
+    const qty = raw === undefined ? item.qty : Number(raw.trim().replace(',', '.'))
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error(`Рядок ${index + 1}: вкажіть кількість більше нуля`)
+    return { ...item, qty, total: Math.round(qty * item.purchase_price) }
   })
 }

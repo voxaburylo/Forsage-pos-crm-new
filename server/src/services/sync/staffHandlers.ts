@@ -49,7 +49,7 @@ export async function applyStaffUserUpsert(tenantId: string, operation: SyncOutb
       throw new AppError('SYNC_TENANT_MISMATCH', 'Співробітник належить іншому магазину', 403)
     }
     const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-      email: normalizedPhoneEmail(payload.phone),
+      email: payload.phone ? normalizedPhoneEmail(payload.phone) : existing.user.email,
       user_metadata: {
         ...existing.user.user_metadata,
         phone: payload.phone ?? null,
@@ -60,6 +60,8 @@ export async function applyStaffUserUpsert(tenantId: string, operation: SyncOutb
         tenant_id: tenantId,
         role: payload.role ?? 'cashier',
         is_active: payload.is_active !== false,
+        can_login: payload.role !== 'tire_worker' && payload.is_active !== false,
+        deleted_at: null,
         base_rate: Number(payload.base_rate ?? 0),
         rate_period: payload.rate_period === 'month' ? 'month' : 'day',
       },
@@ -81,6 +83,8 @@ export async function applyStaffUserUpsert(tenantId: string, operation: SyncOutb
       tenant_id: tenantId,
       role: payload.role ?? 'cashier',
       is_active: payload.is_active !== false,
+      can_login: payload.role !== 'tire_worker' && payload.is_active !== false,
+      deleted_at: null,
       base_rate: Number(payload.base_rate ?? 0),
       rate_period: payload.rate_period === 'month' ? 'month' : 'day',
     },
@@ -94,7 +98,7 @@ export async function applyStaffUserDeleted(tenantId: string, operation: SyncOut
   if (readError) throw new AppError('AUTH_ERROR', readError.message, 500)
   if (!existing.user || existing.user.app_metadata?.tenant_id !== tenantId) return
   const { error } = await supabaseAdmin.auth.admin.updateUserById(operation.aggregate_id, {
-    app_metadata: { ...existing.user.app_metadata, is_active: false },
+    app_metadata: { ...existing.user.app_metadata, is_active: false, can_login: false, deleted_at: operation.created_at },
   })
   if (error) throw new AppError('AUTH_ERROR', error.message, 500)
 }

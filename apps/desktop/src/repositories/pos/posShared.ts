@@ -56,6 +56,7 @@ export function paymentMethod(payments: LocalSalePaymentInput[]): LocalSaleCheck
 }
 
 export function canonicalValue(value: unknown): unknown {
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Некоректна кількість або сума. Запис не виконано.')
   if (Array.isArray(value)) return value.map(canonicalValue)
   if (!value || typeof value !== 'object') return value
   return Object.fromEntries(

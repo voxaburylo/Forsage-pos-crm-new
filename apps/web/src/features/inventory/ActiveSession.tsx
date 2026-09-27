@@ -24,6 +24,8 @@ import { inventoryPage, INVENTORY_PAGE_SIZE } from './inventoryPaging'
 import { InventoryReadGuard, inventoryHasPendingWrites, updateScanSummary } from './inventoryScanState'
 import { InventoryWriteQueue, waitForInventoryWrites } from './inventoryWriteQueue'
 import { InventoryInputGuard, parseInventoryNumber } from './inventoryInput'
+import { InventoryQuantityInput, normalizeQuantityDrafts, type InventoryQuantityDraft, type InventoryQuantityDrafts, type InventoryQuantitySaved } from './InventoryQuantityInput'
+import { InventoryProductInput, inventoryProductFields, normalizeProductDrafts, type InventoryProductDraft, type InventoryProductDrafts, type InventoryProductField } from './InventoryProductInput'
 
 interface ProductInfo {
   id: string
@@ -46,6 +48,7 @@ interface ProductInfo {
 
 interface InventoryItem {
   id: string
+  edit_revision?: string
   product_id: string
   expected_stock: number
   counted_stock: number
@@ -82,6 +85,7 @@ interface Summary {
 
 interface SessionData {
   id: string
+  edit_revision?: string
   name: string
   status: 'draft' | 'in_progress' | 'completed'
   items: InventoryItem[]
@@ -123,6 +127,8 @@ interface InventoryLocalDraft {
   priceStatus: 'unchecked' | 'match' | 'mismatch'
   observedPrice: string
   applyNewPrice: boolean
+  rowQuantityDrafts?: InventoryQuantityDrafts
+  rowProductDrafts?: InventoryProductDrafts
   savedAt: string
 }
 
@@ -146,6 +152,8 @@ function loadInventoryLocalDraft(sessionId: string): InventoryLocalDraft | null 
       priceStatus: draft.priceStatus === 'match' || draft.priceStatus === 'mismatch' ? draft.priceStatus : 'unchecked',
       observedPrice: String(draft.observedPrice ?? ''),
       applyNewPrice: draft.applyNewPrice !== false,
+      rowQuantityDrafts: normalizeQuantityDrafts(draft.rowQuantityDrafts),
+      rowProductDrafts: normalizeProductDrafts(draft.rowProductDrafts),
       savedAt: String(draft.savedAt ?? new Date().toISOString()),
     }
   } catch {
@@ -173,7 +181,7 @@ function persistInventoryLocalDraft(sessionId: string, draft: InventoryDraftPayl
   const quickChanged = JSON.stringify(draft.quickProduct) !== JSON.stringify(emptyQuickProduct)
   const hasDraft = Boolean(
     draft.query.trim() || draft.selected || draft.qty !== '1' || draft.quickCreateOpen || quickChanged ||
-    draft.priceStatus !== 'unchecked' || draft.observedPrice.trim() || draft.applyNewPrice !== true,
+    draft.priceStatus !== 'unchecked' || draft.observedPrice.trim() || draft.applyNewPrice !== true || Object.keys(draft.rowQuantityDrafts ?? {}).length > 0 || Object.keys(draft.rowProductDrafts ?? {}).length > 0,
   )
   if (!hasDraft) {
     clearInventoryLocalDraft(sessionId)
@@ -226,6 +234,7 @@ export default function ActiveSession() {
   const [applyNewPrice, setApplyNewPrice] = useState(true)
   // Завершення ревізії та масова націнка — власні модалки замість prompt/confirm
   const [completeOpen, setCompleteOpen] = useState(false)
+  const [completeReview, setCompleteReview] = useState<SessionData | null>(null)
   const [pctOpen, setPctOpen] = useState(false)
   const [pctValue, setPctValue] = useState('10')
   const [applyingPriceId, setApplyingPriceId] = useState<string | null>(null)
@@ -271,11 +280,43 @@ export default function ActiveSession() {
   const writeFailuresRef = useRef(0)
   const writeQueueRef = useRef(new InventoryWriteQueue())
   const inputGuardRef = useRef(new InventoryInputGuard())
+  const quantityDraftsRef = useRef<InventoryQuantityDrafts>({})
+  const [rowQuantityDrafts, setRowQuantityDrafts] = useState<InventoryQuantityDrafts>({})
+  const [rowProductDrafts, setRowProductDrafts] = useState<InventoryProductDrafts>({})
+  const productDraftsRef = useRef<InventoryProductDrafts>({})
+  function changeProductDraft(itemId: string, field: InventoryProductField, draft?: InventoryProductDraft) {
+    const row = { ...productDraftsRef.current[itemId] }
+    if (draft) row[field] = draft
+    else delete row[field]
+    const next = { ...productDraftsRef.current }
+    if (Object.keys(row).length) next[itemId] = row
+    else delete next[itemId]
+    productDraftsRef.current = next; setRowProductDrafts(next)
+    inventoryDraftSnapshotRef.current = { ...inventoryDraftSnapshotRef.current, rowProductDrafts: next }
+    if (id) {
+      if (draft) inputGuardRef.current.markSaveFailed(id, itemId, field)
+      else inputGuardRef.current.markSaved(id, itemId, field)
+      refreshFailedInputs(id)
+    }
+  }
   const [failedInputWritesBySession, setFailedInputWritesBySession] = useState<Record<string, number>>({})
   const failedInputWrites = failedInputWritesBySession[id ?? ''] ?? 0
   function refreshFailedInputs(sessionId: string) {
     const count = inputGuardRef.current.failedSaveCount(sessionId)
     setFailedInputWritesBySession(previous => ({ ...previous, [sessionId]: count }))
+  }
+  function changeQuantityDraft(itemId: string, draft?: InventoryQuantityDraft) {
+    const next = { ...quantityDraftsRef.current }
+    if (draft) next[itemId] = draft
+    else delete next[itemId]
+    quantityDraftsRef.current = next
+    setRowQuantityDrafts(next)
+    inventoryDraftSnapshotRef.current = { ...inventoryDraftSnapshotRef.current, rowQuantityDrafts: next }
+    if (id) {
+      if (draft) inputGuardRef.current.markSaveFailed(id, itemId, 'qty')
+      else { inputGuardRef.current.markSaved(id, itemId, 'qty'); inputGuardRef.current.validate(id, itemId, 'qty', '0') }
+      refreshFailedInputs(id)
+    }
   }
   const creatingProductRef = useRef(false)
   const flushingInputRef = useRef(false)
@@ -337,8 +378,10 @@ export default function ActiveSession() {
       priceStatus,
       observedPrice,
       applyNewPrice,
+      rowQuantityDrafts,
+      rowProductDrafts,
     }
-  }, [query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice])
+  }, [query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice, rowQuantityDrafts, rowProductDrafts])
 
   useEffect(() => {
     inventoryCompletedRef.current = isCurrentSessionCompleted
@@ -354,6 +397,14 @@ export default function ActiveSession() {
     [sessionItems],
   )
   const countedWindow = inventoryPage(countedRows.length, countedPage)
+  const missingDraftRows = [...new Set([...Object.keys(rowQuantityDrafts), ...Object.keys(rowProductDrafts)])]
+    .filter(itemId => session?.id === id && !countedRows.some(row => row.id === itemId && row.product))
+  function discardMissingDraft(itemId: string) {
+    if (!confirm('Рядок або товар уже прибрано. Відкинути лише ці незбережені правки? Залишки товарів не зміняться.')) return
+    changeQuantityDraft(itemId)
+    for (const field of inventoryProductFields) changeProductDraft(itemId, field)
+    if (id) { inputGuardRef.current.removeItem(id, itemId); refreshFailedInputs(id) }
+  }
   const priceWindow = inventoryPage(session?.price_issues.length ?? 0, pricePage)
   useEffect(() => { setCountedPage(0); setPricePage(0) }, [id])
 
@@ -396,6 +447,16 @@ export default function ActiveSession() {
     inventoryDraftPersistenceDisabledRef.current = false
     if (!id) return
     const draft = loadInventoryLocalDraft(id)
+    const restoredQuantities = draft?.rowQuantityDrafts ?? {}
+    quantityDraftsRef.current = restoredQuantities
+    setRowQuantityDrafts(restoredQuantities)
+    const restoredProducts = draft?.rowProductDrafts ?? {}
+    productDraftsRef.current = restoredProducts; setRowProductDrafts(restoredProducts)
+    for (const [itemId, fields] of Object.entries(restoredProducts)) {
+      for (const field of Object.keys(fields)) inputGuardRef.current.markSaveFailed(id, itemId, field)
+    }
+    for (const itemId of Object.keys(restoredQuantities)) inputGuardRef.current.markSaveFailed(id, itemId, 'qty')
+    refreshFailedInputs(id)
     if (draft) {
       setQuery(draft.query)
       setSelected(draft.selected)
@@ -421,7 +482,7 @@ export default function ActiveSession() {
       persistInventoryLocalDraft(id, inventoryDraftSnapshotRef.current)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [id, session?.id, session?.status, query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice])
+  }, [id, session?.id, session?.status, query, selected, qty, quickCreateOpen, quickProduct, priceStatus, observedPrice, applyNewPrice, rowQuantityDrafts, rowProductDrafts])
 
   useEffect(() => {
     if (!id) return
@@ -535,7 +596,7 @@ export default function ActiveSession() {
     }
   }
   async function savePrice() {
-    if (!selected || !canEditPrice) return
+    if (!id || !selected || !canEditPrice) return
     const retail = Math.round(parseFloat(String(editRetail).replace(',', '.')) * 100)
     const purchase = Math.round(parseFloat(String(editPurchase).replace(',', '.')) * 100)
     if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна продажу'); return }
@@ -543,7 +604,7 @@ export default function ActiveSession() {
     setSavingPrice(true)
     try {
       await trackRowWrite(async () => {
-        await productApi.update(selected.id, { retail_price: money2(retail), purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        await inventoryApi.updateProducts(id, [{ product_id: selected.id, values: { retail_price: retail, purchase_price: purchase }, base: { retail_price: selected.retail_price, purchase_price: selected.purchase_price ?? 0 } }])
         toast.success('Ціни товару оновлено')
         setSelected((cur) => cur ? { ...cur, retail_price: retail, purchase_price: purchase } : cur)
         playSuccessBeep()
@@ -615,15 +676,18 @@ export default function ActiveSession() {
   }
 
   // Встановити абсолютну кількість рядка (редагування прямо в рядку).
-  async function setItemQty(item: InventoryItem, value: string) {
-    if (!id) return
-    const qty = inputGuardRef.current.validate(id, item.id, 'qty', value)
-    if (qty === null) { toast.error('Вкажіть кількість числом. Для нульового залишку введіть 0.'); return }
+  async function setItemQty(item: InventoryItem, draft: InventoryQuantityDraft): Promise<InventoryQuantitySaved | null> {
+    if (!id) return null
+    const qty = inputGuardRef.current.validate(id, item.id, 'qty', draft.value)
+    if (qty === null) { toast.error('Вкажіть кількість числом. Для нульового залишку введіть 0.'); return null }
     try {
-      await trackRowWrite(async function () {
+      const saved = await trackRowWrite(async function () {
         try {
-          await inventoryApi.setItemQty(id, item.id, qty, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+          if (desktopBridge() && !draft.baseRevision) throw new Error('Оновіть дані ревізії та звірте кількість перед збереженням.')
+          const response = await inventoryApi.setItemQty(id, item.id, qty, { expectedRevision: draft.baseRevision, silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
           inputGuardRef.current.markSaved(id, item.id, 'qty')
+          changeQuantityDraft(item.id)
+          return response.data as InventoryQuantitySaved
         } catch (error) {
           inputGuardRef.current.markSaveFailed(id, item.id, 'qty')
           setHighlightedItemId(item.id)
@@ -632,8 +696,11 @@ export default function ActiveSession() {
         } finally { refreshFailedInputs(id) }
       })
       load(true)
+      return saved
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося змінити кількість')
+      void load(true)
+      return null
     }
   }
 
@@ -641,7 +708,10 @@ export default function ActiveSession() {
     if (!id) return
     try {
       await trackRowWrite(async () => {
-        await inventoryApi.removeItem(id, item.id, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        if (desktopBridge() && !item.edit_revision) throw new Error('Оновіть ревізію перед видаленням рядка.')
+        await inventoryApi.removeItem(id, item.id, { expectedRevision: item.edit_revision, silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        changeQuantityDraft(item.id)
+        for (const field of inventoryProductFields) changeProductDraft(item.id, field)
         inputGuardRef.current.removeItem(id, item.id)
         refreshFailedInputs(id)
         setSelectedIds((prev) => {
@@ -654,98 +724,38 @@ export default function ActiveSession() {
       })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося прибрати товар')
+      void load(true)
     }
   }
 
-  // Встановити роздрібну ціну товару прямо з рядка.
-  async function setItemRetail(item: InventoryItem, value: string) {
-    if (!id || !item.product || !canEditPrice) return
-    const product = item.product
-    inputGuardRef.current.validate(id, item.id, 'retail', value)
-    const retail = kopecksFromInput(value)
-    if (retail === null) { toast.error('Некоректна ціна'); return }
+  async function setItemProductField(item: InventoryItem, field: InventoryProductField, draft: InventoryProductDraft): Promise<string | number | null> {
+    if (!id || !item.product || !canEditPrice) return null
+    const value = field === 'retail_price' || field === 'purchase_price' ? kopecksFromInput(draft.value) : draft.value.trim()
+    if (value === null || (typeof value === 'string' && value.length < (field === 'name' ? 2 : 1))) {
+      toast.error('Перевірте введене значення: назва/артикул не можуть бути порожніми, ціна має бути числом.')
+      return null
+    }
     try {
-      await trackRowWrite(async () => {
-        try {
-          await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-          inputGuardRef.current.markSaved(id, item.id, 'retail')
-        } catch (error) {
-          inputGuardRef.current.markSaveFailed(id, item.id, 'retail')
-          setHighlightedItemId(item.id)
-          setShowRecent(true)
-          throw error
-        } finally { refreshFailedInputs(id) }
-        load(true)
+      const products = await trackRowWrite(async () => {
+        if (draft.base === undefined) throw new Error('DOCUMENT_CONFLICT: Звірте актуальне значення перед записом.')
+        const saved = await inventoryApi.updateProducts(id, [{ product_id: item.product!.id, values: { [field]: value }, base: { [field]: draft.base } }])
+        changeProductDraft(item.id, field)
+        setSelected(current => current?.id === item.product!.id ? { ...current, ...saved[0] } : current)
+        return saved
       })
+      void load(true)
+      return products[0]?.[field] ?? value
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити ціну')
+      setHighlightedItemId(item.id); setShowRecent(true)
+      toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти товар')
+      void load(true)
+      return null
     }
-  }
-
-  // Встановити закупівельну ціну товару прямо з рядка.
-  async function setItemPurchase(item: InventoryItem, value: string) {
-    if (!id || !item.product || !canEditPrice) return
-    const product = item.product
-    inputGuardRef.current.validate(id, item.id, 'purchase', value)
-    const purchase = kopecksFromInput(value)
-    if (purchase === null) { toast.error('Некоректна закупівельна ціна'); return }
-    try {
-      await trackRowWrite(async () => {
-        try {
-          await productApi.update(product.id, { purchase_price: money2(purchase) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-          inputGuardRef.current.markSaved(id, item.id, 'purchase')
-        } catch (error) {
-          inputGuardRef.current.markSaveFailed(id, item.id, 'purchase')
-          setHighlightedItemId(item.id)
-          setShowRecent(true)
-          throw error
-        } finally { refreshFailedInputs(id) }
-        load(true)
-      })
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити закупку')
-    }
-  }
-
-  async function updateItemProduct(item: InventoryItem, patch: Partial<Pick<ProductInfo, 'sku' | 'name'>>) {
-    if (!item.product || !canEditPrice) return
-    const product = item.product
-    const payload: Partial<Pick<ProductInfo, 'sku' | 'name'>> = {}
-    if (patch.sku !== undefined) {
-      const sku = patch.sku.trim()
-      if (!sku) { toast.error('Артикул не може бути порожнім'); return }
-      payload.sku = sku
-    }
-    if (patch.name !== undefined) {
-      const name = patch.name.trim()
-      if (name.length < 2) { toast.error('Назва товару закоротка'); return }
-      payload.name = name
-    }
-    if (Object.keys(payload).length === 0) return
-    try {
-      await trackRowWrite(async () => {
-        const response = await productApi.update(product.id, payload as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS }) as { data: ProductInfo }
-        setSelected((cur) => cur?.id === product?.id ? { ...cur, ...response.data } : cur)
-        toast.success('Товар оновлено')
-        load(true)
-      })
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося оновити товар')
-      load(true)
-    }
-  }
-
-  async function setItemSku(item: InventoryItem, value: string) {
-    await updateItemProduct(item, { sku: value })
-  }
-
-  async function setItemName(item: InventoryItem, value: string) {
-    await updateItemProduct(item, { name: value })
   }
 
   // Націнка на рядок: швидкий % від закупки або за матрицею націнок.
   async function applyRowMarkup(item: InventoryItem, kind: 'percent' | 'table', pct?: number) {
-    if (!item.product || !canEditPrice) return
+    if (!id || !item.product || !canEditPrice) return
     const product = item.product
     const purchase = product.purchase_price ?? 0
     if (purchase <= 0) { toast.error('У товару нема закупівельної ціни'); return }
@@ -761,7 +771,7 @@ export default function ActiveSession() {
     }
     try {
       await trackRowWrite(async () => {
-        await productApi.update(product.id, { retail_price: money2(retail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        await inventoryApi.updateProducts(id, [{ product_id: product.id, values: { retail_price: retail }, base: { retail_price: product.retail_price, purchase_price: purchase } }])
         load(true)
       })
     } catch (error) {
@@ -770,6 +780,7 @@ export default function ActiveSession() {
   }
 
   async function applyMassPrice(action: { type: 'percent' | 'amount' | 'markup' | 'markup_table'; value: number }) {
+    if (!id) return
     const ids = Array.from(selectedIds)
     if (ids.length === 0) { toast.error('Виберіть товари'); return }
     const rows = countedRows.filter((row) => row.product && ids.includes(row.product.id))
@@ -777,7 +788,7 @@ export default function ActiveSession() {
     setMassBusy(true)
     try {
       await trackRowWrite(async () => {
-        let updated = 0
+        const edits: Parameters<typeof inventoryApi.updateProducts>[1] = []
         for (const row of rows) {
           const product = row.product!
           const purchase = Number(product.purchase_price ?? 0)
@@ -790,16 +801,17 @@ export default function ActiveSession() {
             const { data } = await pricingApi.autoRetail(purchase)
             nextRetail = Number(data?.retail_price ?? 0)
           }
-          if (nextRetail === null || !Number.isFinite(nextRetail) || nextRetail < 0) continue
-          await productApi.update(product.id, { retail_price: money2(nextRetail) } as any, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
-          updated += 1
+          if (nextRetail === null || !Number.isSafeInteger(nextRetail) || nextRetail < 0) throw new Error(`Некоректна ціна для «${product.name}». Жодну ціну не змінено.`)
+          edits.push({ product_id: product.id, values: { retail_price: nextRetail }, base: { retail_price: currentRetail, purchase_price: purchase } })
         }
-        toast.success(`Оновлено ${updated} товар(ів)`)
+        await inventoryApi.updateProducts(id, edits)
+        toast.success(`Оновлено ${edits.length} товар(ів)`)
         setSelectedIds(new Set())
         load(true)
       })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося оновити масово')
+      load(true)
     } finally {
       setMassBusy(false)
     }
@@ -1040,7 +1052,7 @@ export default function ActiveSession() {
         let freshSession = response.session
         if (willApplyPrice) {
           try {
-            const applied = await inventoryApi.applyPrice(id, { product_id: selected.id, retail_price: observedKopecks! }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+            const applied = await inventoryApi.applyPrice(id, { product_id: selected.id, retail_price: observedKopecks!, expected_price: selected.retail_price }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
             freshSession = applied.session
             toast.success(`Ціну змінено: ${selected.name} → ${formatMoney(observedKopecks!)}`)
           } catch (error) {
@@ -1143,7 +1155,7 @@ export default function ActiveSession() {
     setApplyingPriceId(product.id)
     try {
       await trackRowWrite(async () => {
-        const response = await inventoryApi.applyPrice(id, { product_id: product.id, retail_price: issue.observed_retail_price }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
+        const response = await inventoryApi.applyPrice(id, { product_id: product.id, retail_price: issue.observed_retail_price, expected_price: product.retail_price }, { silent: true, timeoutMs: INVENTORY_WRITE_TIMEOUT_MS })
         setSession(response.session)
         toast.success(`Ціну змінено: ${product.name} → ${formatMoney(issue.observed_retail_price)}`)
       })
@@ -1168,11 +1180,12 @@ export default function ActiveSession() {
   // (десктоп-каса) prompt() не реалізує — кнопка «Завершити» просто мовчала.
   function openCompleteConfirm() {
     if (!session || !canComplete) return
+    setCompleteReview(session)
     setCompleteOpen(true)
   }
 
   async function completeSession() {
-    if (!id || !session || !canComplete || completingRef.current) return
+    if (!id || !session || !completeReview || !canComplete || completingRef.current) return
     completingRef.current = true
     const scanFailuresBefore = scanFailuresRef.current
     const writeFailuresBefore = writeFailuresRef.current
@@ -1185,10 +1198,11 @@ export default function ActiveSession() {
       finally { flushingInputRef.current = false }
       await waitForPendingRowWrites()
       if (inventoryApi.pendingScans(id).length) throw new Error('Є незавершені сканування. Відновіть або перевірте чергу перед завершенням ревізії.')
-      if (inputGuardRef.current.hasErrors(id)) throw new Error('Є некоректна або незбережена кількість чи ціна. Повторіть збереження проблемних полів перед завершенням ревізії.')
+      if (inputGuardRef.current.hasErrors(id)) throw new Error('Є некоректна або незбережена кількість, ціна чи дані товару. Повторіть збереження проблемних полів перед завершенням ревізії.')
       if (scanFailuresRef.current !== scanFailuresBefore) throw new Error('Не всі сканування збережено. Перевірте повідомлення та товари перед завершенням ревізії.')
       if (writeFailuresRef.current !== writeFailuresBefore) throw new Error('Не всі правки збережено. Виправте помилку перед завершенням ревізії.')
-      const response = await inventoryApi.complete(id, { silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
+      if (desktopBridge() && !completeReview.edit_revision) throw new Error('DOCUMENT_CONFLICT: Оновіть ревізію й відкрийте завершення знову для перевірки актуальних залишків.')
+      const response = await inventoryApi.complete(id, { expectedRevision: completeReview.edit_revision, silent: true, timeoutMs: INVENTORY_COMPLETE_TIMEOUT_MS })
       const updated = Number((response.data as any)?.items_updated ?? 0)
       setCompleteOpen(false)
       toast.success(`Ревізію завершено. Оновлено ${Number.isFinite(updated) ? updated : 0} товарів.`)
@@ -1198,6 +1212,7 @@ export default function ActiveSession() {
       navigate('/inventory')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося завершити ревізію')
+      if (error instanceof Error && error.message.includes('DOCUMENT_CONFLICT')) setCompleteOpen(false)
       load(true)
     } finally {
       completingRef.current = false
@@ -1664,6 +1679,14 @@ export default function ActiveSession() {
           )}
           {showRecent && (
             <div className="divide-y divide-gray-100 border-t border-gray-100">
+              {missingDraftRows.map(itemId => <div key={itemId} className="border-b border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p className="font-semibold">Рядок або товар уже прибрано — залишилися ваші незбережені правки</p>
+                <p className="break-words">{[
+                  rowQuantityDrafts[itemId] && `Кількість: ${rowQuantityDrafts[itemId].value}`,
+                  ...inventoryProductFields.map(field => rowProductDrafts[itemId]?.[field] && `${{ name: 'Назва', sku: 'Артикул', purchase_price: 'Закупівля', retail_price: 'Продаж' }[field]}: ${rowProductDrafts[itemId][field]!.value}`),
+                ].filter(Boolean).join(' · ')}</p>
+                <button type="button" className="mt-1 underline" onClick={() => discardMissingDraft(itemId)}>Відкинути правки прибраного рядка</button>
+              </div>)}
               {countedRows.length === 0 ? (
                 <p className="py-8 text-center text-sm text-gray-400">
                   Скануйте штрихкод або знайдіть товар — він з'явиться тут рядком.
@@ -1676,11 +1699,13 @@ export default function ActiveSession() {
                   canEditPrice={canEditPrice}
                   selected={item.product?.id ? selectedIds.has(item.product.id) : false}
                   onToggleSelect={() => item.product?.id && toggleSelectId(item.product.id)}
-                  onSetQty={(value) => setItemQty(item, value)}
-                  onSetSku={(value) => setItemSku(item, value)}
-                  onSetName={(value) => setItemName(item, value)}
-                  onSetPurchase={(value) => setItemPurchase(item, value)}
-                  onSetRetail={(value) => setItemRetail(item, value)}
+                  quantityDraft={rowQuantityDrafts[item.id]}
+                  onQuantityDraft={draft => changeQuantityDraft(item.id, draft)}
+                  onQuantityDiscard={() => changeQuantityDraft(item.id)}
+                  onSetQty={draft => setItemQty(item, draft)}
+                  productDrafts={rowProductDrafts[item.id]}
+                  onProductDraft={(field, draft) => changeProductDraft(item.id, field, draft)}
+                  onSetProduct={(field, draft) => setItemProductField(item, field, draft)}
                   onMarkup={(kind, pct) => applyRowMarkup(item, kind, pct)}
                   quickPercents={quickPercents}
                   onPrintLabel={() => printInventoryLabels(item)}
@@ -1762,12 +1787,13 @@ export default function ActiveSession() {
 
       <Modal open={completeOpen} onClose={() => setCompleteOpen(false)} title="Завершити ревізію" size="md">
         {(() => {
-          const counted = session.summary.counted_products ?? 0
-          const missing = Math.max(0, (session.summary.total_products ?? 0) - counted)
-          const priceIssues = session.summary.price_mismatch_products ?? 0
+          const reviewed = completeReview ?? session
+          const counted = reviewed.summary.counted_products ?? 0
+          const missing = Math.max(0, (reviewed.summary.total_products ?? 0) - counted)
+          const priceIssues = reviewed.summary.price_mismatch_products ?? 0
           // Список змін залишків: було (облік) → стане (факт). Зменшення — зверху й червоним,
           // щоб одразу побачити помилки (напр. «було 24 → стане 1») ДО застосування.
-          const changes = session.items
+          const changes = reviewed.items
             .map((it) => ({ name: it.product?.name ?? it.product?.sku ?? '—', was: it.expected_stock, now: it.counted_stock }))
             .sort((a, b) => (a.now - a.was) - (b.now - b.was))
           const decreases = changes.filter((c) => c.now < c.was).length
@@ -1845,22 +1871,25 @@ export default function ActiveSession() {
 }
 
 // Один рядок товару в ревізії: кількість і ціна редагуються прямо тут.
-// Поля неконтрольовані (defaultValue + key) — зберігаються на blur/Enter і
-// не збивають фокус при фоновому оновленні кожні 8с.
+// Незбережений ввід і початкове значення поля зберігаються окремо від відповіді БД.
 function InventoryRowBase({
   item, isActive, canEditPrice, selected,
-  onToggleSelect, onSetQty, onSetSku, onSetName, onSetPurchase, onSetRetail, onMarkup, quickPercents, onPrintLabel, labelPrinting, highlighted, onRemove,
+  quantityDraft, onQuantityDraft, onQuantityDiscard,
+  productDrafts, onProductDraft, onSetProduct,
+  onToggleSelect, onSetQty, onMarkup, quickPercents, onPrintLabel, labelPrinting, highlighted, onRemove,
 }: {
   item: InventoryItem
   isActive: boolean
   canEditPrice: boolean
   selected: boolean
   onToggleSelect: () => void
-  onSetQty: (value: string) => void
-  onSetSku: (value: string) => void
-  onSetName: (value: string) => void
-  onSetPurchase: (value: string) => void
-  onSetRetail: (value: string) => void
+  quantityDraft?: InventoryQuantityDraft
+  onQuantityDraft: (draft: InventoryQuantityDraft) => void
+  onQuantityDiscard: () => void
+  onSetQty: (draft: InventoryQuantityDraft) => Promise<InventoryQuantitySaved | null>
+  productDrafts?: Partial<Record<InventoryProductField, InventoryProductDraft>>
+  onProductDraft: (field: InventoryProductField, draft?: InventoryProductDraft) => void
+  onSetProduct: (field: InventoryProductField, draft: InventoryProductDraft) => Promise<string | number | null>
   onMarkup: (kind: 'percent' | 'table', pct?: number) => void
   quickPercents: number[]
   onPrintLabel: () => void
@@ -1868,11 +1897,13 @@ function InventoryRowBase({
   highlighted: boolean
   onRemove: () => void
 }) {
-  const retailStr = ((item.product?.retail_price ?? 0) / 100).toFixed(2)
-  const purchaseStr = ((item.product?.purchase_price ?? 0) / 100).toFixed(2)
   const product = item.product
   const unit = product?.unit ?? 'шт'
   const barcode = product?.barcode || 'без штрихкоду'
+  const productInput = (field: InventoryProductField) => <InventoryProductInput field={field}
+    current={product?.[field] ?? (field.endsWith('_price') ? 0 : '')} draft={productDrafts?.[field]} disabled={!isActive}
+    onDraft={draft => onProductDraft(field, draft)} onDiscard={() => onProductDraft(field)}
+    onSave={draft => onSetProduct(field, draft)} />
   return (
     <div id={`inventory-row-${item.id}`} className={`grid grid-cols-1 gap-2 px-3 py-2.5 text-sm transition-all duration-500 lg:grid-cols-[minmax(260px,1fr)_92px_104px_104px_92px_auto] lg:items-center lg:gap-3 ${highlighted ? 'bg-yellow-100 ring-2 ring-yellow-400 shadow-[0_0_0_3px_rgba(250,204,21,0.18)]' : 'bg-white'}`}>
       <div className="flex min-w-0 items-start gap-2">
@@ -1883,21 +1914,7 @@ function InventoryRowBase({
         <div className="min-w-0 flex-1">
           <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Назва</span>
           {canEditPrice && product ? (
-            <textarea
-              key={`name-${product.name}`}
-              defaultValue={product.name}
-              disabled={!isActive}
-              rows={2}
-              title={product.name}
-              onBlur={(event) => onSetName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  ;(event.target as HTMLTextAreaElement).blur()
-                }
-              }}
-              className="w-full resize-y rounded-lg border border-gray-200 px-2 py-1.5 text-sm font-semibold leading-snug text-gray-900 outline-none focus:border-yellow-500 disabled:bg-gray-50"
-            />
+            productInput('name')
           ) : (
             <p className="whitespace-normal break-words font-medium text-gray-900" title={product?.name}>{product?.name ?? 'Товар'}</p>
           )}
@@ -1905,14 +1922,7 @@ function InventoryRowBase({
             <span className="flex min-w-0 items-center gap-1">
               <span className="font-sans font-semibold uppercase tracking-wide text-gray-400">Арт.</span>
               {canEditPrice && product ? (
-                <input
-                  key={`sku-${product.sku}`}
-                  defaultValue={product.sku}
-                  disabled={!isActive}
-                  onBlur={(event) => onSetSku(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-                  className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs text-gray-900 outline-none focus:border-yellow-500 disabled:bg-gray-50"
-                />
+                productInput('sku')
               ) : (
                 <span className="min-w-0 break-all font-mono text-gray-800">{product?.sku || 'без SKU'}</span>
               )}
@@ -1928,35 +1938,24 @@ function InventoryRowBase({
       </div>
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Закупка</span>
-        {canEditPrice ? (
-          <input key={`b-${product?.purchase_price}`} type="number" min="0" step="1" inputMode="decimal"
-            defaultValue={purchaseStr} disabled={!isActive}
-            onBlur={(event) => onSetPurchase(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-            className="mt-0.5 w-24 rounded-lg border border-gray-300 px-2 py-1 text-right font-semibold outline-none focus:border-blue-500" />
+        {canEditPrice && product ? (
+          productInput('purchase_price')
         ) : (
           <span className="font-semibold text-gray-800">{formatMoney(product?.purchase_price ?? 0)}</span>
         )}
       </div>
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Продаж</span>
-        {canEditPrice ? (
-          <input key={`p-${product?.retail_price}`} type="number" min="0" step="1" inputMode="decimal"
-            defaultValue={retailStr} disabled={!isActive}
-            onBlur={(event) => onSetRetail(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-            className="mt-0.5 w-24 rounded-lg border border-gray-300 px-2 py-1 text-right font-semibold outline-none focus:border-blue-500" />
+        {canEditPrice && product ? (
+          productInput('retail_price')
         ) : (
           <span className="font-semibold text-gray-800">{formatMoney(product?.retail_price ?? 0)}</span>
         )}
       </div>
       <div>
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400">Факт</span>
-        <input key={`q-${item.counted_stock}`} type="number" min="0" step="1" inputMode="numeric"
-          defaultValue={String(item.counted_stock)} disabled={!isActive}
-          onBlur={(event) => onSetQty(event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
-          className="mt-0.5 w-20 rounded-lg border border-yellow-300 px-2 py-1 text-center font-bold outline-none focus:border-yellow-500" />
+        <InventoryQuantityInput current={item} draft={quantityDraft} disabled={!isActive || !product}
+          onDraft={onQuantityDraft} onDiscard={onQuantityDiscard} onSave={onSetQty} />
       </div>
       <div className="flex items-center gap-1.5 lg:justify-end">
         {canEditPrice && isActive && (
@@ -1995,6 +1994,8 @@ function InventoryRowBase({
 // логічно стабільні (closure над item + стабільними сеттерами стану).
 const InventoryRow = memo(InventoryRowBase, (prev, next) =>
   prev.item === next.item &&
+  prev.quantityDraft === next.quantityDraft &&
+  prev.productDrafts === next.productDrafts &&
   prev.isActive === next.isActive &&
   prev.canEditPrice === next.canEditPrice &&
   prev.selected === next.selected &&

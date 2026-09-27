@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { catalogReviewSchema, reviewCatalog } from '../services/catalogAgentService.js'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -55,6 +56,14 @@ router.post('/test', requireRole('owner', 'admin'), async (req, res, next) => {
     const model = (typeof req.body?.model === 'string' && req.body.model) || cfg.model
     res.json({ data: await testKey(key, model) })
   } catch (err) { next(err) }
+})
+
+router.post('/catalog-review', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const input = catalogReviewSchema.safeParse(req.body)
+    if (!input.success) throw new AppError('VALIDATION_ERROR', 'Некоректний пакет перевірки каталогу', 422)
+    res.json({ data: await reviewCatalog(req.user!.tenant_id, req.user!.id, input.data) })
+  } catch (error) { next(error) }
 })
 
 const chatSchema = z.object({

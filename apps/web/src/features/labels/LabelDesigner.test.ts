@@ -7,6 +7,7 @@ import {
   labelSettingsContentSignature,
   labelSettingsSyncTimestamp,
   labelProductMatchesQuery,
+  labelPrintErrorMessage,
 } from './LabelDesigner'
 
 vi.mock('@/lib/barcodeSvg', () => ({
@@ -136,5 +137,30 @@ describe('label settings saved-content confirmation', () => {
       width_mm: 58,
       sync_updated_at: '2026-07-28T12:00:01.000Z',
     }))
+  })
+})
+
+
+describe('label printing failure messages', () => {
+  it.each(['PRINT_DOCUMENT_LOAD_FAILED', "ERR_FAILED (-2) loading 'data:text/html;base64,PRIVATE'", "ERR_INVALID_URL (-300) loading 'data:text/html,PRIVATE'"])('explains document load failure without leaking HTML: %s', (error) => {
+    const message = labelPrintErrorMessage(new Error(error))
+    expect(message).toContain('макет етикеток')
+    expect(message).toContain('ще не надіслано')
+    expect(message).not.toContain('PRIVATE')
+    expect(message).not.toContain('data:text/html')
+  })
+  it('explains a rejected queue without claiming jobs were deleted', () => {
+    const message = labelPrintErrorMessage(new Error('TSPL_QUEUE_STUCK'))
+    expect(message).toContain('Нові етикетки не надсилалися')
+    expect(message).not.toContain('Windows не дає його прибрати')
+  })
+  it('does not claim uncertain printing definitely produced no labels', () => {
+    const message = labelPrintErrorMessage(new Error('TSPL_PRINT_NOT_CONFIRMED'))
+    expect(message).toContain('не підтвердила')
+    expect(message).not.toContain('НЕ надруковано')
+  })
+  it('explains broken input pipes from older desktop builds', () => {
+    expect(labelPrintErrorMessage(new Error('write EOF'))).toContain('Служба друку закрила')
+    expect(labelPrintErrorMessage(new Error('EPIPE'))).toContain('Служба друку закрила')
   })
 })

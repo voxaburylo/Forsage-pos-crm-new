@@ -27,6 +27,7 @@ export interface CustomerOrderItem {
 }
 
 export interface CustomerOrder {
+  lan_sync?: { state: 'pending' | 'blocked' | 'cached'; message: string; local_id?: string; cached_at?: string }
   id: string
   order_number: number | null
   kp_number: string | null
@@ -71,6 +72,7 @@ export interface CreateOrderItemPayload {
 }
 
 export interface CreateOrderPayload {
+  operation_id?: string
   expected_updated_at?: string
   customer_id?: string | null
   chat_id?: string | null
@@ -127,7 +129,7 @@ export const orderApi = {
     const local = desktopBridge()?.orders?.save
     if (local) {
       const user = useAuthStore.getState().session?.user?.id ?? 'local'
-      const data = await durableLocalRequest(`order-create:${user}`, body,
+      const data = body.operation_id ? await local(body) : await durableLocalRequest(`order-create:${user}`, body,
         operation_id => local({ ...body, operation_id }))
       requestOrderSync()
       return { data: data as CustomerOrder }
@@ -159,6 +161,7 @@ export const orderApi = {
     }, opts)
   },
   update: async (id: string, body: CreateOrderPayload, opts: OrderRequestOptions = {}) => {
+    if (!body.expected_updated_at?.trim()) throw new Error('Немає версії замовлення. Відкрийте актуальну картку перед редагуванням.')
     const local = desktopBridge()?.orders?.save
     if (local) {
       const data = await local(body, id)
@@ -166,6 +169,12 @@ export const orderApi = {
       return { data: data as CustomerOrder }
     }
     return api.put<{ data: CustomerOrder }>('/api/v1/customer-orders/' + id, body, { timeoutMs: ORDER_WRITE_TIMEOUT_MS, ...opts })
+  },
+
+  getSaveResult: async (operationId: string, id?: string): Promise<CustomerOrder | null> => {
+    const lookup = desktopBridge()?.orders?.getSaveResult
+    if (!lookup) throw new Error('Для перевірки збереження потрібна оновлена локальна програма')
+    return lookup(operationId, id)
   },
 
   delete: async (id: string, opts: OrderRequestOptions = {}) => {

@@ -33,7 +33,7 @@ export const updateUserSchema = z.object({
   full_name: z.string().min(1).max(200).optional(),
   base_rate: z.number().int().min(0).optional(),
   rate_period: z.enum(['day', 'month']).optional(),
-  phone:     z.string().min(1).optional(),
+  phone:     phoneSchema.optional(),
 })
 
 // --- Categories ---

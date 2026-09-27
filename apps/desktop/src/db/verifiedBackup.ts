@@ -1,10 +1,14 @@
 import { Worker } from 'node:worker_threads'
+import path from 'node:path'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import { assertBackupContents } from './backupValidation'
 
 // Окреме read-only з'єднання: каса може писати під час копіювання.
 // quick_check також не блокує головний потік Electron на великій базі.
 const BACKUP_WORKER = `
 const { workerData, parentPort } = require('node:worker_threads');
 const { DatabaseSync, backup } = require('node:sqlite');
+const assertBackupContents = (${assertBackupContents.toString()});
 (async () => {
   const source = new DatabaseSync(workerData.source, { readOnly: true, timeout: 5000 });
   try { await backup(source, workerData.destination, { rate: 128 }); }
@@ -14,22 +18,27 @@ const { DatabaseSync, backup } = require('node:sqlite');
   const probe = new DatabaseSync(workerData.destination, { timeout: 5000 });
   try {
     probe.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;');
-    const result = probe.prepare('PRAGMA quick_check').get();
-    if (result?.quick_check !== 'ok') throw new Error('LOCAL_BACKUP_CORRUPT');
-    if (!probe.prepare("SELECT value_json FROM app_meta WHERE key = 'device_id'").get()) {
-      throw new Error('LOCAL_BACKUP_NOT_FORSAGE_DATABASE');
-    }
-    for (const table of ['products', 'sales', 'inventory_sessions', 'supply_invoices', 'sync_outbox']) {
-      if (!probe.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) {
-        throw new Error('LOCAL_BACKUP_MISSING_TABLE: ' + table);
-      }
-    }
+    assertBackupContents(probe);
   } finally { probe.close(); }
   parentPort.postMessage({ ok: true });
 })().catch(error => { parentPort.postMessage({ error: error.message }); });
 `
 
 export function createVerifiedBackup(source: string, destination: string): Promise<void> {
+  const normalize = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
+  if (normalize(source) === normalize(destination)) return Promise.reject(new Error('LOCAL_BACKUP_SAME_FILE'))
+  try {
+    // A junction, symbolic link or hard link must never turn a backup into a
+    // write over the authoritative database, even when the paths look different.
+    const realSource = realpathSync(source)
+    const realDestination = existsSync(destination) ? realpathSync(destination)
+      : path.join(realpathSync(path.dirname(path.resolve(destination))), path.basename(destination))
+    if (normalize(realSource) === normalize(realDestination)) throw new Error('LOCAL_BACKUP_SAME_FILE')
+    if (existsSync(destination)) {
+      const from = statSync(source, { bigint: true }), to = statSync(destination, { bigint: true })
+      if (from.ino !== 0n && from.ino === to.ino && from.dev === to.dev) throw new Error('LOCAL_BACKUP_SAME_FILE')
+    }
+  } catch (error) { return Promise.reject(error) }
   return new Promise((resolve, reject) => {
     const worker = new Worker(BACKUP_WORKER, { eval: true, workerData: { source, destination } })
     let verified = false

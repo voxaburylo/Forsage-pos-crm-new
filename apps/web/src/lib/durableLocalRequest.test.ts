@@ -6,6 +6,12 @@ describe('durable local requests', () => {
   const storage = { getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } } as Storage
   beforeEach(() => values.clear())
+  it.each([NaN, Infinity, -Infinity])('rejects invalid nested number %s before persisting or sending', async amount => {
+    const send = vi.fn()
+    await expect(durableLocalRequest('invalid', { rows: [{ amount }] }, send, storage)).rejects.toThrow('Некоректна')
+    expect(send).not.toHaveBeenCalled()
+    expect(values.size).toBe(0)
+  })
   it('reuses identity after lost reply; next successful operation has a new identity', async () => {
     const ids: string[] = []
     await expect(durableLocalRequest('cash', { amount: 100 }, async id => { ids.push(id); throw Error('lost reply') }, storage)).rejects.toThrow()

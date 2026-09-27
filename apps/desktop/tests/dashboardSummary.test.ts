@@ -118,6 +118,27 @@ describe('local dashboard summary', () => {
     ])
   })
 
+  it('enriches net sales with all historical suppliers without multiplying sales or writing stock', () => {
+    const product = catalog.upsertProduct({ id: randomUUID(), sku: 'SUP-REPORT', name: 'Supplier report', qty_on_hand: 10, purchase_price: 50, retail_price: 100 })
+    const a = supply.saveSupplier({ name: 'Автокомфорт' })
+    const b = supply.saveSupplier({ name: 'Інший' })
+    for (const supplier of [a, a, b]) {
+      const invoice = supply.createInvoice({ supplier_id: supplier.id, items: [{ product_id: product.id, qty: 2, purchase_price: 50 }] })
+      supply.postInvoice(invoice.id)
+      db.prepare("UPDATE supply_invoices SET posted_at = '2020-01-01T12:00:00Z' WHERE id = ?").run(invoice.id)
+    }
+    const sale = pos.checkout({ cashier_id: cashierId, shift_id: shiftId,
+      items: [{ product_id: product.id, qty: 2, unit_price: 100 }], payments: [{ method: 'cash', amount: 200 }] })
+    const line = pos.getSaleForReturn(sale.sale_id).items[0]
+    pos.createReturn({ sale_id: sale.sale_id, approved_by: cashierId, shift_id: shiftId, reason: 'other', refund_method: 'cash', stock_action: 'return_to_stock',
+      items: [{ sale_item_id: line.id, product_id: product.id, quantity: 1, condition: 'good' }] })
+    const before = db.prepare('SELECT qty_on_hand FROM products WHERE id = ?').get(product.id)
+    const rows = pos.soldItemsReport({ date_from: new Date(Date.now() - 60_000).toISOString(), date_to: new Date(Date.now() + 60_000).toISOString() })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ qty_sold: 2, qty_returned: 1, qty_net: 1, net_revenue: 100, suppliers: [{ id: a.id, name: a.name }, { id: b.id, name: b.name }] })
+    expect(db.prepare('SELECT qty_on_hand FROM products WHERE id = ?').get(product.id)).toEqual(before)
+  })
+
   it('deducts full returns in their own period without inventing expenses', () => {
     const product = catalog.upsertProduct({ id: randomUUID(), sku: 'RETURN', name: 'Return', qty_on_hand: 4, purchase_price: 40, retail_price: 100 })
     const sale = pos.checkout({ cashier_id: cashierId, shift_id: shiftId,

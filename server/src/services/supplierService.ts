@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { literalContainsFilter } from '../lib/postgrestLiteralSearch.js'
 import { getShiftCashBreakdown } from './shiftService.js'
 import type {
   CreateSupplierInput, UpdateSupplierInput, SupplierListQuery,
@@ -68,9 +69,10 @@ export async function listSuppliers(query: SupplierListQuery, tenantId: string) 
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .order('name', { ascending: true })
+    .order('id', { ascending: true })
     .range(offset, offset + per_page - 1)
 
-  if (search)     q = q.or(`name.ilike.%${search}%,contact_name.ilike.%${search}%,phone.ilike.%${search}%`)
+  if (search?.trim()) q = q.or(literalContainsFilter(['name', 'contact_name', 'phone'], search.trim()))
   if (is_active)  q = q.eq('is_active', is_active === 'true')
 
   const { data, error, count } = await q
@@ -194,25 +196,44 @@ export async function deleteSupplier(id: string, tenantId: string) {
 // ===================== Приходні накладні =====================
 
 export async function listSupplyInvoices(query: SupplyInvoiceListQuery, tenantId: string) {
-  const { status, supplier_id, page, per_page } = query
+  const { status, supplier_id, page, per_page, search } = query
   const offset = (page - 1) * per_page
+  const tokens = (search || '').trim().split(/\s+/).filter(Boolean)
 
   let q = db
     .from(INVOICE_TABLE)
-    .select('*, supplier:suppliers(id,name)', { count: 'exact' })
+    .select('*, supplier:suppliers(id,name)' + (tokens.length ? ', matched_items:supply_invoice_items!inner(product:products!inner(id))' : ''), { count: 'exact' })
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
     .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
     .range(offset, offset + per_page - 1)
 
   if (status)      q = q.eq('status', status)
   if (supplier_id) q = q.eq('supplier_id', supplier_id)
+  if (tokens.length) {
+    // Cloud invoice items are physically replaced/deleted and have no
+    // deleted_at column (unlike local SQLite items). Parent tombstones apply above.
+    q = q.eq('matched_items.tenant_id', tenantId)
+      .eq('matched_items.product.tenant_id', tenantId)
+    // Every term must match the same product. Parent invoices remain unique;
+    // filtering is applied in Postgres before exact count and pagination.
+    for (const token of tokens) q = q.or(literalContainsFilter(['name', 'sku', 'barcode'], token), { referencedTable: 'matched_items.product' })
+  }
 
-  const { data, error, count } = await q
+  let { data, error, count } = await q
+  if (error?.code === 'PGRST103') {
+    // Another user may have removed the last page since the list was opened.
+    // Read the filtered count again, so the UI can move to the new last page.
+    const recount = await q.range(0, 0)
+    error = recount.error
+    count = recount.count
+    data = []
+  }
   if (error) throw new AppError('DB_ERROR', error.message, 500)
 
   return {
-    data: data ?? [],
+    data: (data ?? []).map((row: any) => { const { matched_items: _matches, ...invoice } = row; return invoice }),
     pagination: { page, per_page, total: count ?? 0, total_pages: Math.ceil((count ?? 0) / per_page) },
   }
 }

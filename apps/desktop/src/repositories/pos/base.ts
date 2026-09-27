@@ -179,7 +179,7 @@ export class LocalPosBase {
   protected getProductForUpdate(productId: string, tenantId: string): LocalProduct | null {
     const row = this.db.prepare(`
       SELECT id, tenant_id, sku, name, barcode, unit, purchase_price, retail_price,
-             qty_on_hand, is_active, is_service, storage_bin
+             qty_on_hand, is_active, is_service, requires_core_return, core_deposit_amount, storage_bin
       FROM products
       WHERE id = ?
         AND tenant_id = ?

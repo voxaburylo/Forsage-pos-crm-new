@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { assertOrderItemAmounts, assertOrderTotal } from './orderValidation'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalPosRepository } from './posRepository'
@@ -56,7 +57,7 @@ export class LocalOrderRepository {
     this.pos = new LocalPosRepository(db)
   }
 
-  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string; customer_id?: string } = {}): any[] {
+  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string; customer_id?: string; exclude_ids?: string[] } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const offset = pageInteger(input.offset ?? 0, 0, 0, Number.MAX_SAFE_INTEGER)
     const limit = pageInteger(input.limit ?? 200, 200, 1, 500)
@@ -65,6 +66,8 @@ export class LocalOrderRepository {
     let searchSql = ''
     const statuses = String(input.status ?? '').split(',').map((status) => status.trim()).filter(Boolean)
     let statusSql = ''
+    const excluded = Array.isArray(input.exclude_ids) ? input.exclude_ids.filter(id => typeof id === 'string').slice(0, 500) : []
+    if (excluded.length) { statusSql += ` AND o.id NOT IN (${excluded.map(() => '?').join(',')})`; params.push(...excluded) }
     if (input.customer_id) { statusSql += ' AND o.customer_id = ?'; params.push(input.customer_id) }
     if (statuses.length > 0) {
       statusSql += ` AND o.status IN (${statuses.map(() => '?').join(',')})`
@@ -100,8 +103,68 @@ export class LocalOrderRepository {
     return this.decorateOrders(rows, tenantId)
   }
 
+  countOrders(input: { tenant_id?: string; statuses?: string[] } = {}): number {
+    const statuses = [...new Set(input.statuses ?? [])]
+    if (!statuses.length) return 0
+    if (statuses.length > 16 || statuses.some(status => !ACTIVE_STATUSES.includes(status) && !TERMINAL_STATUSES.has(status))) throw new Error('Некоректні статуси замовлень')
+    const row = this.db.prepare(`SELECT COUNT(*) AS total FROM customer_orders
+      WHERE tenant_id = ? AND deleted_at IS NULL AND status IN (${statuses.map(() => '?').join(',')})`)
+      .get(input.tenant_id ?? DEFAULT_TENANT_ID, ...statuses) as { total: number }
+    return Number(row.total)
+  }
+
   saveOrder(input: any, orderId?: string): any {
     return this.db.transaction(() => this.saveOrderInTransaction(input, orderId))
+  }
+
+  /** Read-only acknowledgment: never repeat a save just to find out whether it committed. */
+  getSaveResult(operationId: string, managerId: string, tenantId = DEFAULT_TENANT_ID, orderId?: string): any {
+    if (!/^[a-zA-Z0-9-]{16,80}$/.test(operationId)) throw new Error('Некоректний номер операції замовлення')
+    const key = orderId ? `order-update:${tenantId}:${orderId}:${operationId}` : `order-create:${tenantId}:${operationId}`
+    const receipt = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+    if (!receipt) return null
+    const saved = JSON.parse(receipt.value_json)
+    const order = this.getOrder(saved.id, tenantId)
+    if ((saved.managerId ?? order?.manager_id) !== managerId) throw new Error('Операція замовлення належить іншому працівнику')
+    if (!order) throw new Error('Раніше збережене замовлення видалене. Новий запис автоматично не створюється.')
+    return order
+  }
+
+  /** Durable LAN acknowledgment. A lost response can be replayed without creating or reserving twice. */
+  acceptOfflineOrder(envelope: any, session: { id: string; tenant_id: string }): any {
+    if (!/^[a-zA-Z0-9-]{16,80}$/.test(String(envelope?.operation_id ?? ''))) throw new Error('Некоректний номер операції замовлення')
+    const tenantId = session.tenant_id
+    const key = `lan-order-receipt:v1:${tenantId}:${session.id}:${envelope.operation_id}`
+    const fingerprint = createHash('sha256').update(JSON.stringify(envelope)).digest('hex')
+    return this.db.transaction(() => {
+      const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (row) {
+        const receipt = JSON.parse(row.value_json)
+        if (receipt.fingerprint !== fingerprint) throw new Error('Повтор операції містить інші дані')
+        return receipt.result
+      }
+      const body = envelope.input
+      if (!body || !Array.isArray(body.items)) throw new Error('Немає позицій замовлення')
+      if (body.tenant_id && body.tenant_id !== tenantId) throw new Error('Операція належить іншому магазину')
+      if (Number(body.prepayment || 0) || body.prepayment_method || body.exchange_source_order_id) throw new Error('Оплати та обмін не приймаються через чергу замовлень')
+      if (envelope.order_id && !envelope.expected_updated_at) throw new Error('Немає версії замовлення для безпечного редагування')
+      const existing = envelope.order_id ? this.getOrder(String(envelope.order_id), tenantId) : null
+      for (const item of body.items) {
+        const before = existing?.items?.find((row: any) => row.id === item.id)
+        if ((item.item_status ?? 'pending') !== (before?.item_status ?? 'pending')) throw new Error('Статус товару змінився на головному ПК. Перевірте замовлення.')
+        if (item.product_id && !this.db.prepare('SELECT id FROM products WHERE id=? AND tenant_id=? AND deleted_at IS NULL').get(item.product_id, tenantId)) throw new Error('Товар замовлення не знайдений на головному ПК')
+      }
+      if (body.customer_id && !this.db.prepare('SELECT id FROM customers WHERE id=? AND tenant_id=? AND deleted_at IS NULL').get(body.customer_id, tenantId)) throw new Error('Клієнт замовлення не знайдений на головному ПК')
+      const result = this.saveOrder({
+        tenant_id: tenantId, manager_id: session.id,
+        customer_id: body.customer_id, vehicle_info: body.vehicle_info,
+        comment: body.comment, source: body.source, items: body.items,
+        expected_updated_at: envelope.expected_updated_at,
+      }, envelope.order_id || undefined)
+      this.db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)')
+        .run(key, JSON.stringify({ fingerprint, result }), nowIso())
+      return result
+    })
   }
 
   private nextTimestamp(tenantId: string, orderId?: string): string {
@@ -113,7 +176,8 @@ export class LocalOrderRepository {
 
   private saveOrderInTransaction(input: any, orderId?: string): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const receiptKey = !orderId && input.operation_id ? `order-create:${tenantId}:${input.operation_id}` : null
+    if (input.operation_id && !/^[a-zA-Z0-9-]{16,80}$/.test(String(input.operation_id))) throw new Error('Некоректний номер операції замовлення')
+    const receiptKey = input.operation_id ? (orderId ? `order-update:${tenantId}:${orderId}:${input.operation_id}` : `order-create:${tenantId}:${input.operation_id}`) : null
     const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
     if (receiptKey) {
       const receipt = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(receiptKey) as { value_json: string } | undefined
@@ -149,10 +213,7 @@ export class LocalOrderRepository {
     }
     const rawItems = Array.isArray(input.items) ? input.items : existing?.items ?? []
     const items = rawItems.map((item: any) => {
-      if (!Number.isFinite(Number(item.qty)) || Number(item.qty) <= 0
-        || !Number.isFinite(Number(item.sell_price)) || Number(item.sell_price) < 0) {
-        throw new Error('Вкажіть додатну кількість та невід’ємну ціну позиції')
-      }
+      assertOrderItemAmounts(item)
       const product = item.product_id ? this.db.prepare(`
         SELECT requires_core_return, core_deposit_amount
         FROM products
@@ -187,6 +248,7 @@ export class LocalOrderRepository {
         + Math.round(num(item.sell_price) * qty)
         + Math.round(num(item.core_deposit_amount) * qty)
     }, 0)
+    assertOrderTotal(totalAmount)
     const orderNumber = existing?.order_number ?? this.nextOrderNumber(tenantId, timestamp)
     const status = existing?.status ?? 'lead'
     // Payment totals are a ledger projection and may only be changed by POS operations.
@@ -294,7 +356,7 @@ export class LocalOrderRepository {
       )
       this.syncOrderReserves(id, tenantId)
       if (receiptKey) this.db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)')
-        .run(receiptKey, JSON.stringify({ id, fingerprint }), timestamp)
+        .run(receiptKey, JSON.stringify({ id, fingerprint, managerId: input.manager_id }), timestamp)
     })
     return this.getOrder(id, tenantId)
   }
@@ -920,7 +982,7 @@ export class LocalOrderRepository {
           const reserve = this.db.prepare(`SELECT COALESCE(SUM(qty), 0) qty FROM stock_reserves
             WHERE tenant_id = ? AND product_id = ? AND (order_id IS NULL OR order_id <> ?)
               AND released_at IS NULL AND deleted_at IS NULL
-              AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+              AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
           `).get(tenantId, product.id, orderId) as { qty: number }
           const available = num(product.qty_on_hand) - num(reserve.qty)
           if (combinedQty > available) throw new Error(`Недостатньо залишку для «${product.name}»: доступно ${available}, потрібно ${combinedQty}`)

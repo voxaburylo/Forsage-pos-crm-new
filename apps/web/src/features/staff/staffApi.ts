@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { useAuthStore } from '@/stores/authStore'
+import { collectSalaryHistory } from './salaryHistory'
 
 export interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
 export interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string }
@@ -13,6 +14,7 @@ export interface TireServiceReportRow {
   service_revenue: number
   commission_earned: number
   daily_rate: number
+  daily_rate_projected?: number
   earned: number
   paid: number
   penalty: number
@@ -30,9 +32,22 @@ export interface TireServiceReceipt {
   employee_id: string; employee_name: string
   services_qty: number; service_revenue: number; cash_revenue: number
   payment_method: string; total: number
+  cashier_id?: string; cashier_name?: string | null; notes?: string | null
+  services?: Array<{ id: string; description: string; qty: number; unit_price: number; total: number }>
+  commission_earned?: number
+}
+export interface TireSalaryOperation {
+  id: string; employee_id: string; type: SalaryPayment['type']; source: string; amount: number
+  method: SalaryPayment['method']; note: string | null; work_date: string; created_at: string
+  created_by: string | null; cashier_name: string | null; sale_id: string | null; fund_source: string | null
+}
+export interface TireCashHandover {
+  id: string; employee_id: string; amount: number; work_date: string; created_at: string
+  note: string | null; created_by: string | null; cashier_name: string | null
 }
 export interface TireServiceReport {
   data: TireServiceReportRow[]; receipts: TireServiceReceipt[]; date: string
+  details_version?: number; salary_operations?: TireSalaryOperation[]; cash_handovers?: TireCashHandover[]
   totals: { services_qty: number; service_revenue: number; cash_revenue: number; cash_handed_over: number; cash_pending: number; due: number; payable_due: number }
 }
 export interface TireCashHandoverInput {
@@ -55,8 +70,15 @@ export const staffApi = {
   },
   async listSalary(period: string): Promise<{ data: SalaryPayment[] }> {
     const local = localStaff()?.listSalary
-    if (local) return { data: await local({ period }) as SalaryPayment[] }
-    return api.get<{ data: SalaryPayment[] }>(`/api/v1/salary?period=${period}`)
+    const size = 200
+    return { data: await collectSalaryHistory<SalaryPayment>(async page => {
+      if (local) {
+        const data = await local({ period, page, per_page: size }) as SalaryPayment[]
+        return { data, has_more: data.length === size }
+      }
+      const result = await api.get<{ data: SalaryPayment[]; has_more?: boolean }>(`/api/v1/salary?period=${encodeURIComponent(period)}&page=${page}&per_page=${size}`)
+      return { data: result.data, has_more: result.has_more ?? result.data.length === size }
+    }) }
   },
   async dailySummary(date: string): Promise<{ data: DailySummary[] }> {
     const local = localStaff()?.dailySummary

@@ -1,58 +1,72 @@
-import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
-import { syncHealthLabel, syncSeverity } from '@/hooks/useDesktopSyncHealth'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { readFileSync, existsSync } from 'node:fs'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { syncSeverity, useDesktopSyncHealth } from '@/hooks/useDesktopSyncHealth'
+import { useAuthStore } from '@/stores/authStore'
+import { ServerCopyStatusCard } from '@/features/settings/ServerCopyStatusCard'
 import type { DesktopSyncStatus } from '@/lib/desktopBridge'
-
-const layoutSource = readFileSync(new URL('./Layout.tsx', import.meta.url), 'utf8')
-const posPageSource = readFileSync(new URL('../features/pos/POSPage.tsx', import.meta.url), 'utf8')
-const localSyncAgentSource = readFileSync(new URL('./LocalSyncAgent.tsx', import.meta.url), 'utf8')
-
+vi.mock('@/hooks/useDesktopSyncHealth', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/hooks/useDesktopSyncHealth')>()
+  return { ...actual, useDesktopSyncHealth: vi.fn() }
+})
+vi.mock('@/stores/authStore', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/stores/authStore')>()
+  return { ...actual, useAuthStore: Object.assign((selector: any) => selector(actual.useAuthStore.getState()), actual.useAuthStore) }
+})
+const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
+const layoutSource = source('./Layout.tsx')
+const posPageSource = source('../features/pos/POSPage.tsx')
+const localSyncAgentSource = source('./LocalSyncAgent.tsx')
+const settingsSource = source('../features/settings/SettingsPage.tsx')
+const cardSource = source('../features/settings/ServerCopyStatusCard.tsx')
 function status(overrides: Partial<DesktopSyncStatus> = {}): DesktopSyncStatus {
-  return {
-    pending: 0,
-    retrying: 0,
-    stuck: 0,
-    total: 0,
-    oldest_created_at: null,
-    last_error: null,
-    pull_last_success_at: null,
-    pull_last_error: null,
-    ...overrides,
-  }
+  return { pending: 0, retrying: 0, stuck: 0, total: 0, oldest_created_at: null,
+    last_error: null, pull_last_success_at: null, pull_last_error: null, ...overrides }
 }
-
-describe('desktop sync health severity', () => {
-  it('stays silent while everything is synchronized', () => {
+beforeEach(() => {
+  vi.mocked(useDesktopSyncHealth).mockReset()
+  vi.mocked(useDesktopSyncHealth).mockReturnValue({ status: status(), severity: 'clean', refresh: vi.fn() })
+  useAuthStore.setState({ session: { user: { app_metadata: { role: 'owner' } } } as any })
+})
+describe('server copy diagnostics remain available without interrupting work', () => {
+  it('retains accurate status for explicit diagnostics', () => {
     expect(syncSeverity(null)).toBe('clean')
     expect(syncSeverity(status())).toBe('clean')
+    expect(syncSeverity(status({ pending: 2 }))).toBe('pending')
+    expect(syncSeverity(status({ retrying: 2 }))).toBe('pending')
+    expect(syncSeverity(status({ pending: 9, stuck: 4 }))).toBe('stuck')
   })
-
-  it('warns about work still waiting in the queue', () => {
-    expect(syncSeverity(status({ pending: 2, total: 2 }))).toBe('pending')
-    expect(syncSeverity(status({ retrying: 1, total: 1 }))).toBe('pending')
+  it('removes the queue badge from POS and all other working pages', () => {
+    expect(layoutSource).not.toContain('SyncHealthIndicator')
+    expect(posPageSource).not.toContain('SyncHealthIndicator')
+    expect(existsSync(new URL('./SyncHealthIndicator.tsx', import.meta.url))).toBe(false)
   })
-
-  it('treats exhausted operations as the loudest state', () => {
-    // Застряглі мають перебивати «чекає відправки»: вони самі вже не поїдуть.
-    expect(syncSeverity(status({ pending: 9, stuck: 1, total: 10 }))).toBe('stuck')
+  it('keeps diagnostics in settings, opened only by the user', () => {
+    expect(settingsSource).toContain('<ServerCopyStatusCard />')
+    expect(cardSource).toContain('useState(false)')
+    expect(cardSource).toContain('onClick={() => setOpen(true)}')
+    expect(cardSource).toContain('{open && <SyncHealthModal')
   })
-
-  it('labels the queue in words a cashier can act on', () => {
-    expect(syncHealthLabel(status({ stuck: 3, pending: 5, total: 8 }))).toBe('3 не відправлено')
-    expect(syncHealthLabel(status({ pending: 2, retrying: 1, total: 3 }))).toBe('3 чекає відправки')
+  for (const counts of [{ pending: 4 }, { stuck: 4, last_error: 'Test error' }]) {
+    it('does not open a dialog, flash counts or poll while settings diagnostics are closed: ' + JSON.stringify(counts), () => {
+      vi.mocked(useDesktopSyncHealth).mockReturnValue({ status: status(counts), severity: syncSeverity(status(counts)), refresh: vi.fn() })
+      const html = renderToStaticMarkup(React.createElement(ServerCopyStatusCard))
+      expect(html).toContain('Переглянути стан')
+      expect(html).not.toMatch(/не відправлено|чекає відправки|Test error|role="dialog"|animate-pulse/)
+      expect(useDesktopSyncHealth).toHaveBeenCalledWith(false)
+    })
+  }
+  it('does not expose diagnostics or poll for a cashier', () => {
+    useAuthStore.setState({ session: { user: { app_metadata: { role: 'cashier' } } } as any })
+    expect(renderToStaticMarkup(React.createElement(ServerCopyStatusCard))).toBe('')
+    expect(useDesktopSyncHealth).toHaveBeenCalledWith(false)
   })
-})
-
-describe('sync health indicator wiring', () => {
-  it('is mounted both in the shared header and in the cash register', () => {
-    // Каса має власну темну шапку і НЕ використовує Layout, тому індикатор
-    // потрібно тримати в обох місцях — інакше касир його не побачить.
-    expect(layoutSource).toContain('<SyncHealthIndicator')
-    expect(posPageSource).toContain('<SyncHealthIndicator theme="dark" />')
-  })
-
-  it('no longer throws the desktop sync error away', () => {
-    expect(localSyncAgentSource).toContain('const { lastError } = useDesktopOutboxSync(serverOnline)')
-    expect(localSyncAgentSource).toContain('useDesktopSyncErrorNotice(lastError)')
+  it('keeps the background worker and backups running without popup notices', () => {
+    expect(localSyncAgentSource).toContain('useOfflineSync(serverOnline)')
+    expect(localSyncAgentSource).toContain('useShiftBackups(serverOnline)')
+    expect(localSyncAgentSource).toContain('useDesktopOutboxSync(serverOnline)')
+    expect(localSyncAgentSource).not.toMatch(/toast|ERROR_TOAST_AFTER_MS|useDesktopSyncErrorNotice/)
+    expect(localSyncAgentSource).toContain("console.warn('[desktop-sync] ' + lastError)")
   })
 })

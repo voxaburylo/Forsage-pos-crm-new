@@ -20,6 +20,7 @@ export interface AdminUser {
   rate_period: 'day' | 'month'
   created_at: string
   updated_at?: string
+  deleted_at?: string | null
 }
 
 export type UserRole = 'owner' | 'admin' | 'manager' | 'cashier' | 'storekeeper' | 'sto_viewer' | 'tire_worker'
@@ -96,10 +97,28 @@ export interface ShopSettings {
 
 export const adminApi = {
   // Users
-  listUsers: async () => {
+  listUsers: async (includeArchived = false) => {
+    const staff = desktopBridge()?.staff?.listUsers
+    if (includeArchived && staff) return { data: await staff(true) as AdminUser[] }
     const local = desktopBridge()?.catalog.listStaff
     if (local) return { data: await local() as AdminUser[] }
-    return api.get<{ data: AdminUser[] }>('/api/v1/admin/users')
+    return api.get<{ data: AdminUser[] }>('/api/v1/admin/users' + (includeArchived ? '?include_archived=true' : ''))
+  },
+  restoreUser: async (id: string) => {
+    const local = desktopBridge()?.staff?.restoreUser
+    if (local) return { data: await local(id) as AdminUser }
+    return api.post<{ data: AdminUser }>(`/api/v1/admin/users/${id}/restore`, {})
+  },
+  saveUserSettings: async (id: string, body: { role?: UserRole; is_active?: boolean; full_name?: string; base_rate?: number; rate_period?: 'day' | 'month'; phone?: string }, rules: Array<{ rule_type: string; pct_from_revenue: number; pct_from_profit: number }>) => {
+    const local = desktopBridge()?.staff?.saveSettings
+    if (local) return { data: await local(id, body, rules) as AdminUser }
+    const response = await api.put<{ data: AdminUser }>(`/api/v1/admin/users/${id}`, body)
+    try {
+      await api.put(`/api/v1/commission/rules/employee/${id}`, { rules })
+    } catch {
+      throw new Error('Картку працівника збережено, але відсотки не оновлено. Старі відсотки залишилися. Повторіть збереження.')
+    }
+    return response
   },
   createUser: async (body: { phone?: string; password?: string; full_name: string; role: UserRole; base_rate?: number; rate_period?: 'day' | 'month' }) => {
     const saveLocal = desktopBridge()?.staff?.saveServerUser

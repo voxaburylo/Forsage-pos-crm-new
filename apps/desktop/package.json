@@ -8,14 +8,14 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "scripts": {
-    "build": "node scripts/verify-web-env.cjs && tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
+    "build": "node scripts/clean-build.cjs && node scripts/verify-web-env.cjs && tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "tsc -p tsconfig.json --watch",
     "smoke:db": "cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-local-db.cjs",
-    "pack": "pnpm build && electron-builder --dir",
-    "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && node scripts/embed-renderer.cjs && electron-builder --win portable --x64"
+    "pack": "cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && node scripts/embed-renderer.cjs && node scripts/build-info.cjs && node scripts/verify-build.cjs && electron-builder --dir && node scripts/verify-package.cjs",
+    "dist": "cross-env FORSAGE_DESKTOP_BUILD=1 pnpm --filter=web build && pnpm build && node scripts/embed-renderer.cjs && node scripts/build-info.cjs && node scripts/verify-build.cjs && electron-builder --win portable --x64 && node scripts/verify-package.cjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -49,6 +49,7 @@
       "artifactName": "Forsage-${version}-portable.${ext}"
     },
     "portable": {
+      "unpackDirName": true,
       "artifactName": "Forsage-${version}-portable.${ext}"
     }
   }

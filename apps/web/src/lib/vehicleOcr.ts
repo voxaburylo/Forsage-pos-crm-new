@@ -1,5 +1,6 @@
 import { api } from '@/lib/api'
-import { removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
+import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
+import { prepareImageDataUrl } from '@/lib/prepareImage'
 
 export interface VehicleOcrData {
   document_type: 'vin' | 'registration_certificate' | 'other'
@@ -11,27 +12,7 @@ export interface VehicleOcrData {
 }
 
 async function compressVehicleImage(file: Blob): Promise<Blob> {
-  const image = new Image()
-  const objectUrl = URL.createObjectURL(file)
-  try {
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve()
-      image.onerror = () => reject(new Error('Не вдалося прочитати фото'))
-      image.src = objectUrl
-    })
-    const scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight))
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('Не вдалося підготувати фото')
-    context.drawImage(image, 0, 0, canvas.width, canvas.height)
-    return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Не вдалося підготувати фото')), 'image/jpeg', 0.82)
-    })
-  } finally {
-    URL.revokeObjectURL(objectUrl)
-  }
+  return dataUrlToBlob(await prepareImageDataUrl(file, { maxDimension: 1600, quality: 0.82 }))
 }
 
 export async function recognizeVehicleImage(file: Blob): Promise<VehicleOcrData> {

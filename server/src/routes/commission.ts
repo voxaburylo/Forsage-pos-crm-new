@@ -41,7 +41,21 @@ router.post('/rules', async (req, res, next) => {
   }
 })
 
-// DELETE /api/v1/commission/rules/:id
+// PUT /api/v1/commission/rules/employee/:id
+router.put('/rules/employee/:id', async (req, res, next) => {
+  try {
+    const schema = z.object({ rules: z.array(z.object({
+      rule_type: z.enum(['pos_sales','order_sales','tire_service']),
+      pct_from_revenue: z.number().min(0).max(100),
+      pct_from_profit: z.number().min(0).max(100),
+    })).max(3) })
+    const input = schema.safeParse(req.body)
+    const id = z.string().uuid().safeParse(req.params.id)
+    if (!input.success || !id.success) throw new AppError('VALIDATION_ERROR', 'Некоректні дані правил працівника', 422)
+    res.json({ data: await commissionService.replaceEmployeeRules(id.data, input.data.rules, req.user!.tenant_id) })
+  } catch (err) { next(err) }
+})
+
 router.delete('/rules/:id', async (req, res, next) => {
   try {
     await commissionService.deleteCommissionRule(req.params.id, req.user!.tenant_id)

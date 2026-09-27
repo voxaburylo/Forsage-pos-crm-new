@@ -22,9 +22,23 @@ const ipcRenderer = {
   },
 }
 
+let audioUnavailable = false
+const audioFailureListeners = new Set<() => void>()
+electronIpcRenderer.on('desktop:audio-unavailable', () => {
+  audioUnavailable = true
+  for (const listener of audioFailureListeners) {
+    try { listener() } catch { /* optional audio must never affect IPC */ }
+  }
+})
 
 contextBridge.exposeInMainWorld('forsageDesktop', {
   diagnostics: {
+    onAudioUnavailable: (listener: () => void) => {
+      if (typeof listener !== 'function') return () => {}
+      audioFailureListeners.add(listener)
+      if (audioUnavailable) listener()
+      return () => { audioFailureListeners.delete(listener) }
+    },
     reportError: (kind: string, message: string, stack: string) => {
       if (kind !== 'renderer-error' && kind !== 'renderer-rejection') return
       reportDiagnostic({ kind, message: String(message).slice(0, 2048), stack: String(stack).slice(0, 4096) })
@@ -35,9 +49,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),
     logout: () => ipcRenderer.invoke('desktop:auth:logout'),
     rememberedStatus: () => ipcRenderer.invoke('desktop:auth:remembered-status'),
-    setPinRequired: (enabled: boolean) => ipcRenderer.invoke('desktop:auth:set-pin-required', enabled),
-    remember: (pin: string) => ipcRenderer.invoke('desktop:auth:remember', pin),
-    unlockRemembered: (pin: string) => ipcRenderer.invoke('desktop:auth:unlock-remembered', pin),
+    restore: () => ipcRenderer.invoke('desktop:auth:restore'),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
   lan: {
@@ -74,6 +86,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:list-products', options),
     listProductBarcodes: () =>
       ipcRenderer.invoke('desktop:catalog:list-product-barcodes'),
+    agentScan: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-scan', input),
+    agentApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-apply', input),
     listCategories: () =>
       ipcRenderer.invoke('desktop:catalog:list-categories'),
     listBrands: () =>
@@ -114,6 +128,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:list-popular', limit),
     listCrossNumbers: (productId: string) =>
       ipcRenderer.invoke('desktop:catalog:list-cross-numbers', productId),
+    changeCrossNumbers: (productId: string, change: unknown) =>
+      ipcRenderer.invoke('desktop:catalog:change-cross-numbers', productId, change),
     listAnalogs: (productId: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:list-analogs', productId, limit),
   },
@@ -134,7 +150,9 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:supplier-catalog:import-rows', filename, rows, options),
   },
   staff: {
-    listUsers: () => ipcRenderer.invoke('desktop:staff:list-users'),
+      listUsers: (includeArchived?: boolean) => ipcRenderer.invoke('desktop:staff:list-users', includeArchived),
+      restoreUser: (id: string) => ipcRenderer.invoke('desktop:staff:restore-user', id),
+      saveSettings: (id: string, input: unknown, rules: unknown[]) => ipcRenderer.invoke('desktop:staff:save-settings', id, input, rules),
     saveServerUser: (input: unknown, password?: string) => ipcRenderer.invoke('desktop:staff:save-server-user', input, password),
     updateUser: (id: string, input: unknown) => ipcRenderer.invoke('desktop:staff:update-user', id, input),
     deleteUser: (id: string) => ipcRenderer.invoke('desktop:staff:delete-user', id),
@@ -154,6 +172,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     deleteSalary: (id: string) => ipcRenderer.invoke('desktop:staff:delete-salary', id),
   },  warehouse: {
     listConsumptions: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:list-consumptions', input),
+    resolveOperation: (kind: 'movement' | 'reserve' | 'consumption', id: string) => ipcRenderer.invoke('desktop:warehouse:resolve-' + kind, id),
     createConsumption: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-consumption', input),
     listMovements: (input?: unknown) => ipcRenderer.invoke('desktop:warehouse:list-movements', input),
     createMovement: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-movement', input),
@@ -162,6 +181,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     releaseReserve: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:warehouse:release-reserve', id, tenantId),
     listWriteoffs: (input?: unknown) => ipcRenderer.invoke('desktop:warehouse:list-writeoffs', input),
     getWriteoff: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:warehouse:get-writeoff', id, tenantId),
+    getWriteoffByOperation: (id: string) => ipcRenderer.invoke('desktop:warehouse:get-writeoff-by-operation', id),
     createWriteoff: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:create-writeoff', input),
   }, purchases: {
     listRules: () => ipcRenderer.invoke('desktop:purchases:list-rules'),
@@ -183,15 +203,21 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     createProduct: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:create-product', sessionId, input),
     scan: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:scan', sessionId, input),
     setItemQty: (sessionId: string, itemId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:set-item-qty', sessionId, itemId, input),
-    removeItem: (sessionId: string, itemId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:remove-item', sessionId, itemId, tenantId),
+    removeItem: (sessionId: string, itemId: string, tenantId?: string, expectedRevision?: string) => ipcRenderer.invoke('desktop:inventory:remove-item', sessionId, itemId, tenantId, expectedRevision),
     labels: (sessionId: string, tenantId?: string) => ipcRenderer.invoke('desktop:inventory:labels', sessionId, tenantId),
     applyPrice: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:apply-price', sessionId, input),
+    updateProducts: (sessionId: string, input: unknown) => ipcRenderer.invoke('desktop:inventory:update-products', sessionId, input),
     complete: (sessionId: string, input?: unknown) => ipcRenderer.invoke('desktop:inventory:complete', sessionId, input),
   },
   orders: {
+    offlineStatus: () => ipcRenderer.invoke('desktop:orders:offline-status'),
+    discardOffline: (id: string) => ipcRenderer.invoke('desktop:orders:discard-offline', id),
+    retryOffline: (id: string) => ipcRenderer.invoke('desktop:orders:retry-offline', id),
     listReady: (input?: unknown) => ipcRenderer.invoke('desktop:orders:list-ready', input),
     list: (input?: unknown) => ipcRenderer.invoke('desktop:orders:list', input),
+    count: (input: { statuses: string[] }) => ipcRenderer.invoke('desktop:orders:count', input),
     save: (input: unknown, id?: string) => ipcRenderer.invoke('desktop:orders:save', input, id),
+    getSaveResult: (operationId: string, id?: string) => ipcRenderer.invoke('desktop:orders:get-save-result', operationId, id),
     delete: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:delete', id, tenantId),
     updateStatus: (id: string, status: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:update-status', id, status, tenantId),
     updateItemStatus: (orderId: string, itemId: string, status: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:update-item-status', orderId, itemId, status, tenantId),
@@ -214,12 +240,14 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listInvoices: (input?: unknown) => ipcRenderer.invoke('desktop:supply:list-invoices', input),
     getInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:get-invoice', id, tenantId),
     createInvoice: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice', input),
+    commitReceiving: (input: unknown) => ipcRenderer.invoke('desktop:supply:commit-receiving', input),
     createInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice-from-ai', input),
+    previewInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:preview-invoice-from-ai', input),
     updateInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:update-invoice', id, input),
     payInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:pay-invoice', id, input),
     postInvoice: (id: string, input?: unknown) => ipcRenderer.invoke('desktop:supply:post-invoice', id, input),
-    cancelInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:cancel-invoice', id, tenantId),
-    deleteInvoice: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:supply:delete-invoice', id, tenantId),
+    cancelInvoice: (id: string, tenantId?: string, expectedRevision?: string) => ipcRenderer.invoke('desktop:supply:cancel-invoice', id, tenantId, expectedRevision),
+    deleteInvoice: (id: string, tenantId?: string, expectedRevision?: string) => ipcRenderer.invoke('desktop:supply:delete-invoice', id, tenantId, expectedRevision),
   },
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) =>
@@ -232,6 +260,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     soldItemsReport: (input: unknown) => ipcRenderer.invoke('desktop:pos:sold-items-report', input),
     listReturns: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-returns', input),
     getReturn: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-return', id, tenantId),
+    getReturnByOperation: (id: string) => ipcRenderer.invoke('desktop:pos:get-return-by-operation', id),
     getSaleForReturn: (saleId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-sale-for-return', saleId, tenantId),
     createReturn: (input: unknown) => ipcRenderer.invoke('desktop:pos:create-return', input),
     getSale: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-sale', id, tenantId),

@@ -12,6 +12,7 @@ import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { mergeCustomerPage } from './customerUi'
+import { canEditCustomerCard } from './customerEditPermissions'
 
 const PER_PAGE = 50
 
@@ -23,6 +24,7 @@ export default function CustomersPage() {
   const scopeKey = session?.user.id ?? ''
   const writable = Boolean(desktopBridge())
   const canManageCustomers = writable && ['owner', 'admin', 'manager'].includes(role)
+  const canEditCard = writable && canEditCustomerCard(role)
   const canDeleteCustomers = writable && ['owner', 'admin'].includes(role)
   const [sp] = useSearchParams()
 
@@ -420,7 +422,7 @@ export default function CustomersPage() {
                               <span className="truncate">{c.card_barcode}</span>
                               <Copy size={12} className="shrink-0 opacity-40" />
                             </button>
-                            {canManageCustomers && (
+                            {canEditCard && (
                               <button type="button" onClick={() => startBarcodeEdit(c)}
                                 className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
                                 title="Змінити штрихкод картки">
@@ -428,7 +430,7 @@ export default function CustomersPage() {
                               </button>
                             )}
                           </>
-                        ) : canManageCustomers ? (
+                        ) : canEditCard ? (
                           <button type="button" onClick={() => startBarcodeEdit(c)}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-500 hover:border-yellow-400 hover:bg-yellow-50 hover:text-yellow-700">
                             <Barcode size={13} /> Додати штрихкод картки

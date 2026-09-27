@@ -94,7 +94,8 @@ export function uuidOr(value: unknown, fallback: string): string {
 }
 
 export function normalizedPhoneEmail(value: unknown): string {
-  const digits = String(value ?? '').replace(/\D/g, '')
+  const raw = String(value ?? '').replace(/\D/g, '')
+  const digits = raw.startsWith('0') ? `38${raw}` : raw.startsWith('80') ? `3${raw}` : raw
   return `${digits || randomUUID()}@forsage.internal`
 }
 

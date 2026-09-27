@@ -13,7 +13,7 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:pos:list-sales', 'manager')).toBe(true)
   })
   it('exposes only authentication endpoints before authentication', () => {
-    expect([...PUBLIC_DESKTOP_CHANNELS]).toEqual(['desktop:auth:login', 'desktop:auth:login-online', 'desktop:auth:logout', 'desktop:auth:remembered-status', 'desktop:auth:unlock-remembered'])
+    expect([...PUBLIC_DESKTOP_CHANNELS]).toEqual(['desktop:auth:login', 'desktop:auth:login-online', 'desktop:auth:logout', 'desktop:auth:remembered-status', 'desktop:auth:restore'])
   })
 
   it('keeps cashdesk actions available to cashiers but blocks administration and stock mutation', () => {

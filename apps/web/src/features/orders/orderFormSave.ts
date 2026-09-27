@@ -12,6 +12,8 @@ export async function saveOrderForm(writer: OrderWriter, payload: CreateOrderPay
   if (!order?.id) throw new Error('Не отримано ідентифікатор замовлення')
   // Once persisted, never offer to create this document again after a status failure.
   options.onPersisted(order)
+  // A durable local draft is not a confirmed reservation or registration on the hub.
+  if (order.lan_sync && order.lan_sync.state !== 'cached') return { order, activationError: null }
   if (options.activate && ['lead', 'quoted'].includes(order.status)) {
     try { await writer.updateStatus(order.id, 'new') }
     catch (activationError) { return { order, activationError } }

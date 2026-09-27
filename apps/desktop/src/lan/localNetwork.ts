@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
+import { LanUnavailableError } from './orderQueue'
 
 export type LanMode = 'standalone' | 'hub' | 'client'
 
@@ -33,6 +34,7 @@ type ResolveSession = (userId: string) => LanSession | null
 const DEFAULT_PORT = 3210
 const MAX_BODY_BYTES = 16 * 1024 * 1024
 const CONFIG_FILE = 'lan-config.json'
+const LAN_PROTOCOL_VERSION = 3
 
 function defaultConfig(): LanConfig {
   return { mode: 'standalone', port: DEFAULT_PORT, hubAddress: '', accessKey: '', allowedUserId: '' }
@@ -126,6 +128,9 @@ export function isLanProxyChannel(channel: string): boolean {
   return ![
     'desktop:auth:',
     'desktop:lan:',
+    'desktop:orders:offline-status',
+    'desktop:orders:discard-offline',
+    'desktop:orders:retry-offline',
     'desktop:print:',
     'desktop:fiscal:',
     'desktop:sync:',
@@ -211,12 +216,11 @@ export class LocalNetworkCoordinator {
     if (this.config.mode === 'hub') return this.getStatus()
     if (this.config.mode !== 'client') throw new Error('Оберіть режим компʼютера менеджера')
     try {
-      const response = await this.fetchWithTimeout(`${this.config.hubAddress}/forsage-lan/health`, {
+      const { response, payload: health } = await this.fetchWithTimeout(`${this.config.hubAddress}/forsage-lan/health`, {
         headers: { Authorization: `Bearer ${this.config.accessKey}` },
       }, 3_000)
       if (!response.ok) throw new Error(response.status === 401 ? 'Невірний код підключення' : `Головний ПК відповів з помилкою ${response.status}`)
-      const health = await response.json() as { service?: string; version?: number }
-      if (health.service !== 'forsage-lan' || health.version !== 2) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
+      if (health?.service !== 'forsage-lan' || health.version !== LAN_PROTOCOL_VERSION) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
       this.connected = true
       this.lastError = null
       return this.getStatus()
@@ -232,21 +236,28 @@ export class LocalNetworkCoordinator {
       throw new Error('LAN_PROXY_NOT_CONFIGURED')
     }
     let response: Response
+    let payload: { ok?: boolean; result?: unknown; error?: string } | null
     try {
-      response = await this.fetchWithTimeout(`${this.config.hubAddress}/forsage-lan/rpc`, {
+      const reply = await this.fetchWithTimeout(`${this.config.hubAddress}/forsage-lan/rpc`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.accessKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(encodeTransport({ channel, args, user_id: session.id, protocol_version: 2 })),
-      }, 30_000)
+        body: JSON.stringify(encodeTransport({ channel, args, user_id: session.id, protocol_version: LAN_PROTOCOL_VERSION })),
+      }, ['desktop:orders:list', 'desktop:orders:get', 'desktop:orders:accept-offline'].includes(channel) ? 3_000 : 30_000)
+      response = reply.response
+      payload = reply.payload
     } catch (error) {
       this.connected = false
       this.lastError = error instanceof Error ? error.message : 'Головний ПК недоступний'
-      throw new Error(`Немає звʼязку з головним ПК каси: ${this.lastError}`)
+      throw new LanUnavailableError(`Немає звʼязку з головним ПК каси. Складські операції та оплати недоступні: ${this.lastError}`)
     }
-    const payload = await response.json().catch(() => null) as { ok?: boolean; result?: unknown; error?: string } | null
+    if ((response.ok && !payload) || response.status >= 500 || response.status === 408 || response.status === 429) {
+      this.connected = false
+      this.lastError = 'Головний ПК не підтвердив результат операції. Перевірте зв’язок.'
+      throw new LanUnavailableError(this.lastError)
+    }
     this.connected = true
     this.lastError = null
     if (!response.ok || payload?.ok !== true) {
@@ -280,7 +291,7 @@ export class LocalNetworkCoordinator {
         return
       }
       if (request.method === 'GET' && request.url === '/forsage-lan/health') {
-        response.writeHead(200).end(JSON.stringify({ ok: true, service: 'forsage-lan', version: 2 }))
+        response.writeHead(200).end(JSON.stringify({ ok: true, service: 'forsage-lan', version: LAN_PROTOCOL_VERSION }))
         return
       }
       if (request.method !== 'POST' || request.url !== '/forsage-lan/rpc') {
@@ -290,7 +301,7 @@ export class LocalNetworkCoordinator {
       try {
         const body = await this.readBody(request)
         const decoded = decodeTransport(JSON.parse(body)) as { channel?: unknown; args?: unknown; user_id?: unknown; protocol_version?: unknown }
-        if (decoded.protocol_version !== 2) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
+        if (decoded.protocol_version !== LAN_PROTOCOL_VERSION) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
         const channel = String(decoded.channel ?? '')
         if (!isLanProxyChannel(channel)) throw new Error('Цю команду не можна виконувати через мережу')
         const requestedUserId = String(decoded.user_id ?? '')
@@ -337,11 +348,14 @@ export class LocalNetworkCoordinator {
     })
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  private async fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<{ response: Response; payload: any }> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      return await fetch(url, { ...init, signal: controller.signal })
+      const response = await fetch(url, { ...init, signal: controller.signal })
+      // Keep the deadline until the body is read; headers alone are not an acknowledgment.
+      const payload = await response.json().catch(error => { if (controller.signal.aborted) throw error; return null })
+      return { response, payload }
     } finally {
       clearTimeout(timeout)
     }

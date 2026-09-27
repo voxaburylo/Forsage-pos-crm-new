@@ -83,6 +83,7 @@ export const invoicePaymentSchema = z.object({
 })
 
 export const supplyInvoiceListSchema = z.object({
+  search:      z.string().trim().max(200).optional(),
   status:      z.enum(['draft', 'posted', 'cancelled']).optional(),
   supplier_id: z.string().uuid().optional(),
   page:        z.coerce.number().int().positive().default(1),

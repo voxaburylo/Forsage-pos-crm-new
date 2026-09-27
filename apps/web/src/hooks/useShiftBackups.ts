@@ -17,7 +17,7 @@ export function useShiftBackups(serverOnline: boolean) {
       let id = ''
       try {
         const [job] = await backup!.pending()
-        if (!job || stopped) return
+        if (!job || stopped) { delayUntil = Date.now() + 120_000; return }
         id = job.id
         const prepared = await api.post<{ data: { signed_url?: string; already_uploaded?: boolean } }>('/api/v1/backups/prepare', job)
         if (stopped) return
@@ -29,6 +29,7 @@ export function useShiftBackups(serverOnline: boolean) {
         if (checked.data.sha256 !== job.sha256) throw new Error('Контрольна сума серверної копії не збігається')
         await backup!.confirmed(id, job.sha256)
         failures = 0
+        delayUntil = 0
       } catch (error) {
         delayUntil = Date.now() + Math.min(15 * 60_000, 30_000 * 2 ** Math.min(++failures, 5))
         if (id) await backup!.failed(id, error instanceof Error ? error.message : 'Резервування не вдалося').catch(() => {})
@@ -36,9 +37,11 @@ export function useShiftBackups(serverOnline: boolean) {
     }
     const timer = window.setInterval(() => { void run() }, 30_000)
     const wake = () => { void run() }
+    const resume = () => { if (!failures) delayUntil = 0; void run() }
     window.addEventListener('forsage:desktop-access-changed', wake)
     window.addEventListener('forsage:desktop-sync-requested', wake)
+    window.addEventListener('online', resume)
     void run()
-    return () => { stopped = true; window.clearInterval(timer); window.removeEventListener('forsage:desktop-access-changed', wake); window.removeEventListener('forsage:desktop-sync-requested',wake) }
+    return () => { stopped = true; window.clearInterval(timer); window.removeEventListener('forsage:desktop-access-changed', wake); window.removeEventListener('forsage:desktop-sync-requested',wake); window.removeEventListener('online', resume) }
   }, [serverOnline, user?.id])
 }

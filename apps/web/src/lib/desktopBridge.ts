@@ -47,6 +47,7 @@ export interface DesktopProblemSummary {
 }
 
 export interface DesktopRuntimeInfo {
+  build?: { version: string; releaseId: string; builtAt: string; contentHash: string; sourceCommit: string | null; sourceDirty: boolean | null } | null
   databasePath: string
   deviceId: string
   schemaVersion: number
@@ -454,15 +455,16 @@ export interface DesktopFiscalReturnProcessResult {
 }
 
 interface ForsageDesktopBridge {
-  diagnostics?: { reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void }
+  diagnostics?: {
+    reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void
+    onAudioUnavailable?: (listener: () => void) => () => void
+  }
   auth?: {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
-    rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean; pinRequired?: boolean }>
-    setPinRequired?: (enabled: boolean) => Promise<{ pinRequired: boolean }>
-    remember?: (pin: string) => Promise<unknown>
-    unlockRemembered?: (pin: string) => Promise<{ id:string; tenant_id:string; role:string; phone:string; full_name:string; email:string; is_active:boolean }>
+    rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean }>
+    restore?: () => Promise<{ id:string; tenant_id:string; role:string; phone:string; full_name:string; email:string; is_active:boolean } | null>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   lan?: {
@@ -480,7 +482,7 @@ interface ForsageDesktopBridge {
   backupNow: () => Promise<string>
   shiftBackups?: {
     pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number }>>
-    status: () => Promise<Array<{ id: string; closed_at: string; captured_at: string | null; export_directory: string | null; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }>>
+    status: () => Promise<Array<{ id: string; closed_at: string; captured_at: string | null; export_directory: string | null; local_ready?: boolean; exports_ready?: boolean; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }>>
     upload: (id: string, url: string) => Promise<{ ok: true }>
     confirmed: (id: string, sha: string) => Promise<void>
     failed: (id: string, message: string) => Promise<void>
@@ -489,6 +491,8 @@ interface ForsageDesktopBridge {
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   catalog: {
+    agentScan?: (input: { min_markup: number }) => Promise<any>
+    agentApply?: (input: { operation_id: string; items: any[] }) => Promise<{ updated: number; backupPath: string }>
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
     findBySku?: (sku: string) => Promise<DesktopProduct | null>
@@ -511,6 +515,7 @@ interface ForsageDesktopBridge {
     applyBatch?: (input: { operation_id: string; kind: 'import' | 'bulk'; payload: any }) => Promise<any>
     saveProduct?: (product: {
       id: string
+      expected_updated_at?: string
       sku: string
       name: string
       unit?: string
@@ -538,6 +543,7 @@ interface ForsageDesktopBridge {
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
+    changeCrossNumbers?: (productId: string, change: { add?: string[]; removeId?: string; source?: string }) => Promise<Array<{ id: string; number: string; source: string }>>
     listAnalogs?: (productId: string, limit?: number) => Promise<DesktopProduct[]>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
@@ -557,7 +563,9 @@ interface ForsageDesktopBridge {
     importRows: (filename: string, rows: any[], options: any) => Promise<{ success: true; importId: string }>
   }
   staff?: {
-    listUsers: () => Promise<any[]>
+      listUsers: (includeArchived?: boolean) => Promise<any[]>
+      restoreUser?: (id: string) => Promise<any>
+      saveSettings?: (id: string, input: any, rules: any[]) => Promise<any>
     saveServerUser: (input: any, password?: string) => Promise<any>
     updateUser: (id: string, input: any) => Promise<any>
     deleteUser: (id: string) => Promise<{ ok: true }>
@@ -586,6 +594,8 @@ interface ForsageDesktopBridge {
     releaseReserve: (id: string, tenantId?: string) => Promise<{ ok: true }>
     listWriteoffs: (input?: any) => Promise<any>
     getWriteoff: (id: string, tenantId?: string) => Promise<any>
+    resolveOperation?: (kind: 'movement' | 'reserve' | 'consumption', id: string) => Promise<{ status: 'committed'; result: any } | { status: 'not_committed' }>
+    getWriteoffByOperation?: (id: string) => Promise<any | null>
     createWriteoff: (input: any) => Promise<any>
   }
   purchases?: {
@@ -607,16 +617,22 @@ interface ForsageDesktopBridge {
     count: (sessionId: string, input: any) => Promise<any>
     createProduct?: (sessionId: string, input: any) => Promise<any>
     scan: (sessionId: string, input: any) => Promise<any>
-    setItemQty: (sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number }) => Promise<any>
-    removeItem: (sessionId: string, itemId: string, tenantId?: string) => Promise<{ ok: true }>
+    setItemQty: (sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number; expected_revision?: string }) => Promise<any>
+    removeItem: (sessionId: string, itemId: string, tenantId?: string, expectedRevision?: string) => Promise<{ ok: true }>
     labels: (sessionId: string, tenantId?: string) => Promise<any[]>
-    applyPrice: (sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number }) => Promise<any>
-    complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null }) => Promise<any>
+    applyPrice: (sessionId: string, input: { tenant_id?: string; product_id: string; retail_price: number; expected_price?: number }) => Promise<any>
+    updateProducts?: (sessionId: string, input: { edits: Array<{ product_id: string; values: Partial<Record<'name' | 'sku' | 'retail_price' | 'purchase_price', string | number>>; base: Partial<Record<'name' | 'sku' | 'retail_price' | 'purchase_price', string | number>> }> }) => Promise<any[]>
+    complete: (sessionId: string, input?: { tenant_id?: string; user_id?: string | null; expected_revision?: string }) => Promise<any>
   }
   orders?: {
+    count?: (input: { statuses: string[] }) => Promise<number>
+    offlineStatus?: () => Promise<{ client: boolean; connected: boolean; pending: number; blocked: number; lastError: string | null }>
+    discardOffline?: (id: string) => Promise<{ success: true }>
+    retryOffline?: (id: string) => Promise<void>
     listReady: (input?: { tenant_id?: string; search?: string; customer_id?: string; limit?: number }) => Promise<any[]>
     list?: (input?: any) => Promise<any[]>
     save?: (input: any, id?: string) => Promise<any>
+    getSaveResult?: (operationId: string, id?: string) => Promise<any | null>
     delete?: (id: string, tenantId?: string) => Promise<{ success: true }>
     updateStatus?: (id: string, status: string, tenantId?: string) => Promise<any>
     updateItemStatus?: (orderId: string, itemId: string, status: string, tenantId?: string) => Promise<any>
@@ -639,6 +655,12 @@ interface ForsageDesktopBridge {
     listInvoices: (input?: any) => Promise<any>
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
+    commitReceiving?: (input: any) => Promise<any>
+    previewInvoiceFromAi?: (input: { rows: Array<Record<string, unknown>> }) => Promise<Array<{
+      name: string; source_name: string; brand: string; product_id: string | null
+      status: 'matched' | 'review' | 'new'; reason: string
+      candidates: Array<{ id: string; name: string; sku: string; barcode: string | null; brand: string | null }>
+    }>>
     createInvoiceFromAi?: (input: { operation_id?: string; tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{
       invoice: any
       matched: number
@@ -649,8 +671,8 @@ interface ForsageDesktopBridge {
     updateInvoice: (id: string, input: any) => Promise<any>
     payInvoice: (id: string, input: any) => Promise<any>
     postInvoice: (id: string, input?: any) => Promise<any>
-    cancelInvoice: (id: string, tenantId?: string) => Promise<any>
-    deleteInvoice: (id: string, tenantId?: string) => Promise<void>
+    cancelInvoice: (id: string, tenantId?: string, expectedRevision?: string) => Promise<any>
+    deleteInvoice: (id: string, tenantId?: string, expectedRevision?: string) => Promise<void>
   }
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
@@ -661,6 +683,7 @@ interface ForsageDesktopBridge {
     soldItemsReport?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any[]>
     listReturns?: (input?: any) => Promise<any>
     getReturn?: (id: string, tenantId?: string) => Promise<any>
+    getReturnByOperation?: (id: string) => Promise<any | null>
     getSaleForReturn?: (saleId: string, tenantId?: string) => Promise<any>
     createReturn?: (input: any) => Promise<any>
     getSale?: (id: string, tenantId?: string) => Promise<any>

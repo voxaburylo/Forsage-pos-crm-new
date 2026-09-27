@@ -12,6 +12,7 @@ import { LocalStaffRepository } from '../staffRepository'
 import { lineTotal, money, nowIso, operationId, payloadHash, paymentMethod } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosCustomers } from './customers'
+import { assertCheckoutPayload, assertSaleMoney } from './checkoutValidation'
 
 export class LocalPosSales extends LocalPosCustomers {
   getSale(saleId: string, tenantId = DEFAULT_TENANT_ID): any {
@@ -226,6 +227,7 @@ export class LocalPosSales extends LocalPosCustomers {
   }
 
   checkout(input: LocalSaleCheckoutInput): LocalSaleCheckoutResult {
+    assertCheckoutPayload(input)
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const clientOperationId = operationId(input.client_operation_id)
     const checkoutHash = this.checkoutPayloadHash(input, tenantId)
@@ -233,7 +235,6 @@ export class LocalPosSales extends LocalPosCustomers {
       const existing = this.existingCheckoutResult(tenantId, clientOperationId, checkoutHash)
       if (existing) return existing
     }
-    this.assertCheckoutReady(input)
     if (input.is_fiscal === true) {
       if (!clientOperationId) throw new Error('FISCAL_OPERATION_ID_REQUIRED')
       this.assertFiscalIntentCanCheckout(clientOperationId, checkoutHash, input.fiscal_number)
@@ -244,6 +245,7 @@ export class LocalPosSales extends LocalPosCustomers {
         const existing = this.existingCheckoutResult(tenantId, clientOperationId, checkoutHash)
         if (existing) return existing
       }
+      this.assertCheckoutReady(input)
       if (input.is_fiscal === true && clientOperationId) {
         this.assertFiscalIntentCanCheckout(clientOperationId, checkoutHash, input.fiscal_number)
       }
@@ -583,6 +585,7 @@ export class LocalPosSales extends LocalPosCustomers {
   }
 
   protected checkoutIdentity(input: LocalSaleCheckoutInput, tenantId: string): Record<string, unknown> {
+    assertCheckoutPayload(input)
     return {
       tenant_id: tenantId,
       cashier_id: String(input.cashier_id ?? ''),
@@ -644,7 +647,7 @@ export class LocalPosSales extends LocalPosCustomers {
         FROM stock_reserves
         WHERE tenant_id = ? AND product_id = ?
           AND released_at IS NULL AND deleted_at IS NULL
-          AND (expires_at IS NULL OR strftime('%s', expires_at) > strftime('%s', 'now'))
+          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
       `).get(tenantId, productId) as { qty: number } | undefined
       const available = Number(product.qty_on_hand ?? 0) - Number(reserve?.qty ?? 0)
       if (requestedQty > available) {
@@ -658,6 +661,7 @@ export class LocalPosSales extends LocalPosCustomers {
     subtotal: number
     total: number
   } {
+    assertCheckoutPayload(input)
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     if (!Array.isArray(input.items) || input.items.length === 0) throw new Error('LOCAL_SALE_EMPTY')
     if (!Array.isArray(input.payments) || input.payments.length === 0) throw new Error('LOCAL_SALE_PAYMENT_REQUIRED')
@@ -681,6 +685,8 @@ export class LocalPosSales extends LocalPosCustomers {
       const unitPrice = money(item.unit_price ?? product?.retail_price ?? 0)
       if (unitPrice <= 0) throw new Error('LOCAL_SALE_INVALID_PRICE')
       const gross = money(Number(item.qty) * unitPrice)
+      assertSaleMoney(gross)
+      if (money(item.discount ?? 0) > gross) throw new Error('LOCAL_SALE_INVALID_DISCOUNT')
       const itemDiscount = Math.min(gross, money(item.discount ?? 0))
       const coreDepositAmount = product?.requires_core_return === 1
         ? money(product.core_deposit_amount ?? 0)
@@ -700,7 +706,9 @@ export class LocalPosSales extends LocalPosCustomers {
         throw new Error('Недостатньо бонусів у клієнта')
       }
     }
-    const total = Math.max(0, subtotal - itemDiscountTotal - money(input.discount ?? 0))
+    assertSaleMoney(subtotal)
+    if (money(input.discount ?? 0) > subtotal - itemDiscountTotal) throw new Error('LOCAL_SALE_INVALID_DISCOUNT')
+    const total = subtotal - itemDiscountTotal - money(input.discount ?? 0)
     const paidTotal = input.payments.reduce((sum, payment) => sum + money(payment.amount), 0)
     if (paidTotal !== total) throw new Error('LOCAL_SALE_PAYMENT_MISMATCH')
     return { shift_id: shiftId, subtotal, total }

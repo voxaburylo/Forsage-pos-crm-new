@@ -38,6 +38,13 @@ function withUser<T extends Record<string, unknown>>(input: T = {} as T): T & { 
 }
 
 export const inventoryApi = {
+  updateProducts: async (id: string, edits: Array<{ product_id: string; values: Partial<Record<'name' | 'sku' | 'retail_price' | 'purchase_price', string | number>>; base: Partial<Record<'name' | 'sku' | 'retail_price' | 'purchase_price', string | number>> }>) => {
+    const local = localInventory()
+    if (!local?.updateProducts) throw new Error('Безпечне редагування товарів ревізії потребує актуальної локальної програми.')
+    const products = await local.updateProducts(id, { edits })
+    requestDesktopSync()
+    return products
+  },
   prepareScan: (id: string, body: ScanRequest): ScanRequest => {
     if (!localInventory()?.scanOperationIds) return body
     const saved = scanJournal().add(id, body)
@@ -156,19 +163,19 @@ export const inventoryApi = {
     })
   },
 
-  setItemQty: async (id: string, itemId: string, countedStock: number, opts: RequestOptions = {}): Promise<ApiResponse<any>> => {
+  setItemQty: async (id: string, itemId: string, countedStock: number, opts: RequestOptions & { expectedRevision?: string } = {}): Promise<ApiResponse<any>> => {
     const local = localInventory()
-    if (local?.setItemQty) return { data: await local.setItemQty(id, itemId, { counted_stock: countedStock }) }
+    if (local?.setItemQty) return { data: await local.setItemQty(id, itemId, { counted_stock: countedStock, expected_revision: opts.expectedRevision }) }
     return api.put<ApiResponse<any>>(`/api/v1/inventory/${id}/items/${itemId}`, { counted_stock: countedStock }, {
       silent: opts.silent ?? true,
       timeoutMs: opts.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
     })
   },
 
-  removeItem: async (id: string, itemId: string, opts: RequestOptions = {}): Promise<void> => {
+  removeItem: async (id: string, itemId: string, opts: RequestOptions & { expectedRevision?: string } = {}): Promise<void> => {
     const local = localInventory()
     if (local?.removeItem) {
-      await local.removeItem(id, itemId)
+      await local.removeItem(id, itemId, undefined, opts.expectedRevision)
       return
     }
     await api.delete<void>(`/api/v1/inventory/${id}/items/${itemId}`, {
@@ -176,7 +183,7 @@ export const inventoryApi = {
       timeoutMs: opts.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
     } as any)
   },
-  applyPrice: async (id: string, body: { product_id: string; retail_price: number }, opts: RequestOptions = {}): Promise<{ data: any; session: any }> => {
+  applyPrice: async (id: string, body: { product_id: string; retail_price: number; expected_price?: number }, opts: RequestOptions = {}): Promise<{ data: any; session: any }> => {
     const local = localInventory()
     if (local?.applyPrice) {
       const result = await local.applyPrice(id, body)
@@ -189,10 +196,10 @@ export const inventoryApi = {
     })
   },
 
-  complete: async (id: string, opts: RequestOptions = {}): Promise<ApiResponse<{ items_updated?: number }>> => {
+  complete: async (id: string, opts: RequestOptions & { expectedRevision?: string } = {}): Promise<ApiResponse<{ items_updated?: number }>> => {
     const local = localInventory()
     if (local?.complete) {
-      const data = await local.complete(id, withUser({}))
+      const data = await local.complete(id, withUser({ expected_revision: opts.expectedRevision }))
       requestDesktopSync()
       return { data }
     }
