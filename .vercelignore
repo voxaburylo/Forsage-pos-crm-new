@@ -6,6 +6,7 @@ apps/desktop/src/*
 !apps/desktop/src/lib/
 apps/desktop/src/lib/*
 !apps/desktop/src/lib/catalogLanguageSearch.ts
+!apps/desktop/src/lib/catalogSearchQuery.ts
 
 # Dependencies and generated output are rebuilt by Vercel.
 node_modules/
