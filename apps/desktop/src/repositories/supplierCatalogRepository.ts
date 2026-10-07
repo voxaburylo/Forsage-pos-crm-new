@@ -621,9 +621,11 @@ export class LocalSupplierCatalogRepository {
   private validReference(table: 'suppliers', id: unknown, tenantId: string): string | null {
     const value = scopeValue(id)
     if (!value) return null
-    const row = this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1`)
+    const row = this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL AND is_active = 1 LIMIT 1`)
       .get(value, tenantId)
-    return row ? value : null
+    // A stale selection must not become the unassigned scope, especially in replace mode.
+    if (!row) throw new Error('Постачальник недоступний. Оновіть список і виберіть активну картку; прайс не змінено.')
+    return value
   }
 
   private addOutbox(

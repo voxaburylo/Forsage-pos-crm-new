@@ -74,6 +74,7 @@ jobs:
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/receiving-worker-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/inventory-lifecycle-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/writeoff-return-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/supplier-catalog-reference-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/product-detail-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/warehouse-recovery-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/order-save-smoke.cjs

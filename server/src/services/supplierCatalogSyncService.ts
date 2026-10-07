@@ -29,6 +29,13 @@ function isUuid(value: unknown): value is string {
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
 
+function supplierReference(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value !== 'string' || !isUuid(value.trim()))
+    throw new AppError('SYNC_SUPPLIER_CATALOG_INVALID', 'Некоректний ID постачальника; прайс не змінено', 400)
+  return value.trim().toLowerCase()
+}
+
 function cleanScope(value: unknown): string | null {
   const clean = String(value ?? '').trim()
   return clean || null
@@ -48,7 +55,7 @@ function normalizeItem(raw: any, fallbackId: unknown, timestamp: string): Catalo
   const quantity = Number.parseFloat(String(raw?.qty ?? '0').replace(',', '.'))
   return {
     id,
-    supplier_id: isUuid(raw?.supplier_id) ? raw.supplier_id : null,
+    supplier_id: supplierReference(raw?.supplier_id),
     sku,
     barcode: normalizeExactBarcode(raw?.barcode),
     brand: cleanScope(raw?.brand),
@@ -107,7 +114,9 @@ export function validateSupplierCatalogIdentityRows(rows: any[]): void {
 async function assertSupplier(client: pg.PoolClient, tenantId: string, supplierId: string | null): Promise<void> {
   if (!supplierId) return
   const result = await client.query(
-    'SELECT 1 FROM suppliers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1',
+    // Share the row lock with the whole catalog transaction: supplier merge/deletion
+    // must wait, then observe the committed reference instead of leaving an orphan.
+    'SELECT 1 FROM suppliers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND is_active = true LIMIT 1 FOR SHARE',
     [supplierId, tenantId],
   )
   if (result.rowCount === 0) throw new AppError('SUPPLIER_NOT_FOUND', 'Постачальника не знайдено', 404)
@@ -223,7 +232,7 @@ export async function applySupplierCatalogImported(
     throw new AppError('SYNC_SUPPLIER_CATALOG_INVALID', 'Некоректний або завеликий список позицій імпорту', 400)
   }
   const mode = payload.mode === 'replace' ? 'replace' : 'add'
-  const supplierId = isUuid(importRecord.supplier_id) ? importRecord.supplier_id : null
+  const supplierId = supplierReference(importRecord.supplier_id)
   const warehouseName = cleanScope(payload.warehouse_name)
   const items = payload.items.map((item: any) => normalizeItem({
     ...item,
