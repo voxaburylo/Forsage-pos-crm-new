@@ -26,7 +26,11 @@ try {
   assert.equal(db.prepare('SELECT count(*) n FROM supplier_price_items WHERE supplier_id IS NULL AND deleted_at IS NULL').get().n,1)
   assert.equal(db.prepare('SELECT count(*) n FROM supplier_price_items WHERE supplier_id=? AND deleted_at IS NULL').get(target).n,1)
   assert.equal(db.prepare('SELECT count(*) n FROM products').get().n,0)
-  console.log(JSON.stringify({ok:true,staged:process.argv.includes('--staged'),checks:5,shopDatabaseOpened:false}))
+  supply.deleteSupplier(target)
+  catalog.upsertRemoteImport({id:'historical-import',supplier_id:target,filename:'old.csv'},'00000000-0000-0000-0000-000000000001','2026-10-07T06:00:00Z')
+  assert.equal(db.prepare('SELECT supplier_id FROM supplier_price_imports WHERE id=?').get('historical-import').supplier_id,target)
+  assert.throws(()=>catalog.create({...item,supplier_id:target}),/Постачальник/)
+  console.log(JSON.stringify({ok:true,staged:process.argv.includes('--staged'),checks:7,shopDatabaseOpened:false}))
 } finally {
   db?.close()
   if(path.dirname(root)===path.resolve(tmpdir())&&path.basename(root).startsWith('forsage-price-supplier-smoke-'))rmSync(root,{recursive:true,force:true})

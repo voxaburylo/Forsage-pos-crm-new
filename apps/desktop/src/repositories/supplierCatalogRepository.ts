@@ -426,7 +426,7 @@ export class LocalSupplierCatalogRepository {
     const dirty = this.db.prepare('SELECT dirty_at FROM supplier_price_items WHERE id = ? AND tenant_id = ?')
       .get(item.id, tenantId) as { dirty_at: string | null } | undefined
     if (dirty?.dirty_at) return false
-    const normalized = this.normalizeInput({ ...item, tenant_id: tenantId }, tenantId)
+    const normalized = this.normalizeInput({ ...item, tenant_id: tenantId }, tenantId, true)
     const updatedAt = String(item.updated_at ?? importedAt)
     this.db.prepare(`
       INSERT INTO supplier_price_items (
@@ -455,7 +455,7 @@ export class LocalSupplierCatalogRepository {
     const dirty = this.db.prepare('SELECT dirty_at FROM supplier_price_imports WHERE id = ? AND tenant_id = ?')
       .get(record.id, tenantId) as { dirty_at: string | null } | undefined
     if (dirty?.dirty_at) return false
-    const supplierId = this.validReference('suppliers', record.supplier_id, tenantId)
+    const supplierId = this.validReference('suppliers', record.supplier_id, tenantId, true)
     const updatedAt = String(record.updated_at ?? importedAt)
     this.db.prepare(`
       INSERT INTO supplier_price_imports (
@@ -478,12 +478,12 @@ export class LocalSupplierCatalogRepository {
     return true
   }
 
-  private normalizeInput(input: LocalSupplierCatalogItemInput, tenantId: string) {
+  private normalizeInput(input: LocalSupplierCatalogItemInput, tenantId: string, historical = false) {
     const name = String(input.name ?? '').trim()
     if (!name) throw new Error('Назва товару обов’язкова')
     const price = Math.max(0, Math.round(Number(input.price_kopecks) || 0))
     return {
-      supplier_id: this.validReference('suppliers', input.supplier_id, tenantId),
+      supplier_id: this.validReference('suppliers', input.supplier_id, tenantId, historical),
       sku: normalizeLocalSupplierSku(input.sku),
       barcode: normalizeLocalSupplierBarcode(input.barcode) || null,
       brand: scopeValue(input.brand),
@@ -618,13 +618,18 @@ export class LocalSupplierCatalogRepository {
     }
   }
 
-  private validReference(table: 'suppliers', id: unknown, tenantId: string): string | null {
+  private validReference(table: 'suppliers', id: unknown, tenantId: string, historical = false): string | null {
     const value = scopeValue(id)
     if (!value) return null
-    const row = this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL AND is_active = 1 LIMIT 1`)
+    // Existing archived parents are legitimate in historical copies; preserve their ID.
+    // New edits still require an active supplier. A merged source must never gain new references.
+    const active = historical ? '' : ' AND deleted_at IS NULL AND is_active = 1'
+    const row = this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ?${active} LIMIT 1`)
       .get(value, tenantId)
+    const merged = historical && this.db.prepare('SELECT 1 FROM app_meta WHERE key=?')
+      .get('supplier-merge:' + tenantId + ':' + value)
     // A stale selection must not become the unassigned scope, especially in replace mode.
-    if (!row) throw new Error('Постачальник недоступний. Оновіть список і виберіть активну картку; прайс не змінено.')
+    if (!row || merged) throw new Error('Постачальник недоступний. Оновіть список і виберіть активну картку; прайс не змінено.')
     return value
   }
 
